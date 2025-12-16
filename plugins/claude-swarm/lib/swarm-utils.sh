@@ -864,6 +864,7 @@ spawn_teammate_kitty_resume() {
     esac
 
     # Launch with default allowed tools (comma-separated, quoted)
+    # Pass initial_prompt as CLI argument - more reliable than send-text
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --title "$window_title" \
@@ -874,18 +875,11 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model" --dangerously-skip-permissions
+        claude --model "$model" --dangerously-skip-permissions -- "$initial_prompt"
 
-    # Wait for Claude Code to be ready (intelligent polling)
-    wait_for_claude_ready "$swarm_var" 15
-
-    # Register window in team registry for reliable cleanup
+    # Brief wait for window to be queryable, then register
+    sleep 2
     register_window "$team_name" "$agent_name" "$swarm_var"
-
-    kitten_cmd send-text --match "var:${swarm_var}" -- "$initial_prompt"
-    sleep 0.5
-    # Use stdin piping for carriage return - more reliable across shell contexts
-    printf '\r' | kitten_cmd send-text --match "var:${swarm_var}" --stdin
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -930,15 +924,11 @@ spawn_teammate_tmux_resume() {
     local safe_id_val=$(printf %q "$agent_id")
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
+    local safe_prompt=$(printf %q "$initial_prompt")
 
-    # Set environment variables and launch claude using send-keys (safe)
-    # Include default allowed tools for swarm coordination
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions" Enter
-
-    sleep 1
-    # Use -l flag to send prompt as literal text (prevents key sequence injection)
-    tmux send-keys -t "$session_name" -l "$initial_prompt"
-    tmux send-keys -t "$session_name" Enter
+    # Set environment variables and launch claude with prompt as CLI argument
+    # Pass initial_prompt as CLI argument - more reliable than send-keys
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions -- $safe_prompt" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -1300,18 +1290,11 @@ spawn_teammate_tmux() {
     local safe_id_val=$(printf %q "$agent_id")
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
+    local safe_prompt=$(printf %q "$initial_prompt")
 
-    # Set environment variables and launch claude using send-keys (safe)
-    # Include default allowed tools for swarm coordination
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions" Enter
-
-    # Give it a moment to start
-    sleep 1
-
-    # Send initial prompt
-    # Use -l flag to send prompt as literal text (prevents key sequence injection)
-    tmux send-keys -t "$session_name" -l "$initial_prompt"
-    tmux send-keys -t "$session_name" Enter
+    # Set environment variables and launch claude with prompt as CLI argument
+    # Pass initial_prompt as CLI argument - more reliable than send-keys
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions -- $safe_prompt" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -1394,7 +1377,7 @@ spawn_teammate_kitty() {
 
     # Launch new kitty window/tab with env vars AND user variable for identification
     # --var sets a persistent user variable that survives title changes
-    # --allowedTools uses comma-separated, quoted patterns to avoid zsh glob expansion
+    # Pass initial_prompt as CLI argument - more reliable than send-text
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --title "$window_title" \
@@ -1405,19 +1388,11 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model" --dangerously-skip-permissions
+        claude --model "$model" --dangerously-skip-permissions -- "$initial_prompt"
 
-    # Wait for Claude Code to be ready (intelligent polling instead of hardcoded sleep)
-    wait_for_claude_ready "$swarm_var" 15
-
-    # Register window in team registry for reliable cleanup
+    # Brief wait for window to be queryable, then register
+    sleep 2
     register_window "$team_name" "$agent_name" "$swarm_var"
-
-    # Send initial prompt using user variable match (works even if title changes)
-    # Use stdin piping for carriage return - more reliable across shell contexts
-    kitten_cmd send-text --match "var:${swarm_var}" -- "$initial_prompt"
-    sleep 0.5
-    printf '\r' | kitten_cmd send-text --match "var:${swarm_var}" --stdin
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in kitty ${launch_type}${NC}"
     echo "  Agent ID: ${agent_id}"
