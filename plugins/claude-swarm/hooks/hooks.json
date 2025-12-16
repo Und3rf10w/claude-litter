@@ -1,6 +1,16 @@
 {
-  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, handle swarm launches",
+  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, handle swarm launches, heartbeat tracking",
   "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notification-heartbeat.sh"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -11,7 +21,7 @@
         ]
       }
     ],
-    "Stop": [
+    "SessionEnd": [
       {
         "hooks": [
           {

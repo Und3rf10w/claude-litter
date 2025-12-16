@@ -47,10 +47,10 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 ```
 
 This installs the swarm plugin, which includes:
-- 10 slash commands for team/task management
+- 17 slash commands for team/task management
 - 1 agent (swarm-coordinator) for automated orchestration
 - 1 skill (swarm-guide) for guidance
-- 4 hooks for session lifecycle events
+- 5 hooks for session lifecycle events
 
 ### Step 3: Configure Your Terminal
 
@@ -418,13 +418,13 @@ Kitty windows use user variables (`--var`) for reliable identification:
 
 ## Communication Patterns
 
-### Team Lead → Teammates
+### team-lead → Teammates
 
 ```bash
 /claude-swarm:swarm-message backend-dev "Priority change: implement OAuth first"
 ```
 
-### Teammates → Team Lead
+### Teammates → team-lead
 
 ```bash
 /claude-swarm:swarm-message team-lead "Task #1 complete. PR ready for review."
@@ -597,13 +597,53 @@ export SWARM_MULTIPLEXER=tmux
 
 ---
 
+## Hooks
+
+Claude Swarm includes 5 lifecycle hooks that automate coordination and monitoring:
+
+### SessionStart Hook
+**Trigger:** When a teammate Claude Code session starts
+**Action:** Automatically delivers unread inbox messages
+
+This ensures teammates see important messages from team-lead immediately upon starting their session, without needing to manually run `/swarm-inbox`.
+
+### SessionEnd Hook
+**Trigger:** When a teammate Claude Code session ends
+**Action:** Notifies team-lead via inbox message
+
+When a teammate exits, team-lead is informed so they can reassign work or respawn the teammate if needed.
+
+### Notification Hook
+**Trigger:** Periodic notifications during Claude Code operation
+**Action:** Updates heartbeat timestamp for health monitoring
+
+Each active teammate periodically updates their heartbeat file. Use `/swarm-diagnose` to detect stale agents that may be hung or idle.
+
+### PostToolUse:ExitPlanMode Hook
+**Trigger:** When Claude exits plan mode
+**Action:** Detects swarm launch requests and coordinates spawning
+
+When you approve a plan that includes creating a swarm team, this hook automatically handles the team creation and teammate spawning process.
+
+### PreToolUse:Task Hook
+**Trigger:** Before spawning a subagent with the Task tool
+**Action:** Injects team context (team name, agent ID, agent name, role)
+
+When teammates spawn their own subagents, those subagents automatically inherit the team context, ensuring proper coordination across nested agents.
+
+---
+
 ## Plugin Contents
 
-### Commands (11)
+### Commands (17)
 
-- swarm-create, swarm-spawn, swarm-message, swarm-inbox
-- swarm-status, swarm-cleanup, swarm-resume, swarm-session
-- task-create, task-list, task-update
+**Team Management:**
+- swarm-create, swarm-spawn, swarm-status, swarm-cleanup, swarm-resume
+- swarm-onboard, swarm-diagnose, swarm-verify, swarm-reconcile
+- swarm-list-teams, swarm-message, swarm-inbox, swarm-session
+
+**Task Management:**
+- task-create, task-list, task-update, task-delete
 
 ### Agents (1)
 
@@ -613,9 +653,10 @@ export SWARM_MULTIPLEXER=tmux
 
 - **swarm-guide** - Comprehensive guide to swarm coordination patterns
 
-### Hooks (4)
+### Hooks (5)
 
-- **SessionStart** - Auto-deliver unread messages
-- **Stop** - Notify team-lead when teammate ends
-- **PostToolUse:ExitPlanMode** - Handle swarm launch requests
-- **PreToolUse:Task** - Inject team context into subagents
+- **SessionStart** - Auto-deliver unread messages on session start
+- **SessionEnd** - Notify team-lead when teammate ends session
+- **Notification** - Heartbeat tracking for agent health monitoring
+- **PostToolUse:ExitPlanMode** - Handle swarm launch requests from plan mode
+- **PreToolUse:Task** - Inject team context into subagents before task execution

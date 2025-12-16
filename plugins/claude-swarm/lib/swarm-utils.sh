@@ -77,6 +77,8 @@ find_kitty_socket() {
             export SWARM_KITTY_SOCKET_CACHE="$KITTY_LISTEN_ON"
             echo "$KITTY_LISTEN_ON"
             return 0
+        else
+            echo -e "${YELLOW}Warning: KITTY_LISTEN_ON is set but socket is not responding${NC}" >&2
         fi
     fi
 
@@ -112,6 +114,14 @@ find_kitty_socket() {
         fi
     fi
 
+    # No socket found - provide helpful error guidance
+    echo -e "${RED}Error: Could not find a valid kitty socket${NC}" >&2
+    echo -e "${YELLOW}Troubleshooting steps:${NC}" >&2
+    echo -e "  1. Ensure you're running inside kitty terminal (not iTerm2, Terminal.app, etc.)" >&2
+    echo -e "  2. Enable remote control in kitty.conf: allow_remote_control yes" >&2
+    echo -e "  3. Enable listening: listen_on unix:/tmp/kitty-\$(whoami)" >&2
+    echo -e "  4. Restart kitty after config changes" >&2
+    echo -e "  5. Or set KITTY_LISTEN_ON manually: export KITTY_LISTEN_ON=unix:/path/to/socket" >&2
     return 1
 }
 
@@ -208,6 +218,56 @@ validate_name() {
 }
 
 # ============================================
+# FILE LOCKING (portable atomic locking)
+# ============================================
+
+# Acquire a file lock using mkdir (atomic on POSIX systems)
+# Usage: acquire_file_lock "/path/to/file.json" [max_attempts] [stale_threshold_sec]
+# Returns: 0 on success, 1 on failure
+# Side effect: Sets ACQUIRED_LOCK_FILE for cleanup
+acquire_file_lock() {
+    local target_file="$1"
+    local max_attempts="${2:-50}"
+    local stale_threshold="${3:-60}"
+    local lock_file="${target_file}.lock"
+
+    # Clean up stale locks older than threshold
+    if [[ -d "$lock_file" ]]; then
+        local lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
+        if [[ $lock_age -gt $stale_threshold ]]; then
+            rmdir "$lock_file" 2>/dev/null || true
+        fi
+    fi
+
+    local attempt=0
+    while ! mkdir "$lock_file" 2>/dev/null; do
+        ((attempt++))
+        if [[ $attempt -ge $max_attempts ]]; then
+            echo -e "${RED}Failed to acquire lock for ${target_file}${NC}" >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+
+    # Store lock path for cleanup
+    ACQUIRED_LOCK_FILE="$lock_file"
+    return 0
+}
+
+# Release a file lock
+# Usage: release_file_lock [lock_file]
+# If no argument provided, uses ACQUIRED_LOCK_FILE
+release_file_lock() {
+    local lock_file="${1:-$ACQUIRED_LOCK_FILE}"
+    if [[ -n "$lock_file" ]]; then
+        rmdir "$lock_file" 2>/dev/null || true
+        if [[ "$lock_file" == "$ACQUIRED_LOCK_FILE" ]]; then
+            unset ACQUIRED_LOCK_FILE
+        fi
+    fi
+}
+
+# ============================================
 # WINDOW REGISTRY (for kitty window tracking)
 # ============================================
 
@@ -223,14 +283,28 @@ register_window() {
         echo "[]" > "$registry_file"
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$registry_file"; then
+        echo -e "${RED}Failed to acquire lock for window registry${NC}" >&2
+        return 1
+    fi
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local tmp_file=$(mktemp)
 
-    jq --arg agent "$agent_name" \
+    if jq --arg agent "$agent_name" \
        --arg var "$swarm_var" \
        --arg ts "$timestamp" \
        '. += [{"agent": $agent, "swarm_var": $var, "registered_at": $ts}]' \
-       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+        release_file_lock
+        return 0
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update window registry${NC}" >&2
+        return 1
+    fi
 }
 
 # Unregister a kitty window from the team registry
@@ -243,11 +317,25 @@ unregister_window() {
         return 0
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$registry_file"; then
+        echo -e "${RED}Failed to acquire lock for window registry${NC}" >&2
+        return 1
+    fi
+
     local tmp_file=$(mktemp)
 
-    jq --arg agent "$agent_name" \
+    if jq --arg agent "$agent_name" \
        'map(select(.agent != $agent))' \
-       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+        release_file_lock
+        return 0
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update window registry${NC}" >&2
+        return 1
+    fi
 }
 
 # Get all registered windows for a team
@@ -357,22 +445,35 @@ add_member() {
         return 1
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$config_file"; then
+        echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+        return 1
+    fi
+
     # Add member to config with status tracking
     local tmp_file=$(mktemp)
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    jq --arg id "$agent_id" \
+    if jq --arg id "$agent_id" \
        --arg name "$agent_name" \
        --arg type "$agent_type" \
        --arg color "$agent_color" \
        --arg model "$agent_model" \
        --arg ts "$timestamp" \
        '.members += [{"agentId": $id, "name": $name, "type": $type, "color": $color, "model": $model, "status": "active", "lastSeen": $ts}]' \
-       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
+       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        release_file_lock
 
-    # Initialize inbox for new member
-    echo "[]" > "${TEAMS_DIR}/${team_name}/inboxes/${agent_name}.json"
+        # Initialize inbox for new member
+        echo "[]" > "${TEAMS_DIR}/${team_name}/inboxes/${agent_name}.json"
 
-    echo -e "${GREEN}Added '${agent_name}' to team '${team_name}'${NC}"
+        echo -e "${GREEN}Added '${agent_name}' to team '${team_name}'${NC}"
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to add member to team config${NC}" >&2
+        return 1
+    fi
 }
 
 get_team_config() {
@@ -446,12 +547,24 @@ update_member_status() {
         return 1
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$config_file"; then
+        echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+        return 1
+    fi
+
     local tmp_file=$(mktemp)
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    jq --arg name "$member_name" --arg status "$new_status" --arg ts "$timestamp" \
+    if jq --arg name "$member_name" --arg status "$new_status" --arg ts "$timestamp" \
        '(.members[] | select(.name == $name)) |= (.status = $status | .lastSeen = $ts)' \
-       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
+       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        release_file_lock
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        return 1
+    fi
 }
 
 get_member_status() {
@@ -479,6 +592,81 @@ get_team_status() {
     jq -r '.status // "unknown"' "$config_file"
 }
 
+# Get live agents from the current multiplexer
+# Returns newline-separated list of agent names with active sessions
+get_live_agents() {
+    local team_name="$1"
+    local live_agents=""
+
+    case "$SWARM_MULTIPLEXER" in
+        kitty)
+            live_agents=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" \
+                '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' \
+                2>/dev/null || true)
+            ;;
+        tmux)
+            live_agents=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | \
+                grep "swarm-${team_name}" | sed 's/swarm-[^-]*-//' || true)
+            ;;
+    esac
+
+    echo "$live_agents"
+}
+
+# Format a single member's status for display
+# Returns: display_line|is_mismatch (0 or 1)
+format_member_status() {
+    local name="$1"
+    local type="$2"
+    local config_status="$3"
+    local live_agents="$4"  # newline-separated list
+
+    local window_status=""
+    local status_icon=""
+    local is_mismatch=0
+
+    if [[ "$name" == "team-lead" ]]; then
+        window_status="(you)"
+        status_icon=""
+    elif echo "$live_agents" | grep -q "^${name}$"; then
+        window_status="window exists"
+        if [[ "$config_status" == "active" ]]; then
+            status_icon="${GREEN}✓${NC}"
+        else
+            status_icon="${YELLOW}⚠️${NC}"
+            is_mismatch=1
+        fi
+    else
+        window_status="no window"
+        if [[ "$config_status" == "offline" ]]; then
+            status_icon="${GREEN}✓${NC}"
+        else
+            status_icon="${RED}✗${NC}"
+            is_mismatch=1
+        fi
+    fi
+
+    # Return format: display_line|is_mismatch
+    printf "  %-25s config: %-8s %s %s|%d" "$name ($type)" "$config_status" "$window_status" "$status_icon" "$is_mismatch"
+}
+
+# Get task summary for a team
+# Returns: open_count|resolved_count
+get_task_summary() {
+    local team_name="$1"
+    local tasks_dir="${TASKS_DIR}/${team_name}"
+
+    if [[ ! -d "$tasks_dir" ]]; then
+        echo "0|0"
+        return 0
+    fi
+
+    local open=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "open") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+    local resolved=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "resolved") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+
+    echo "${open}|${resolved}"
+}
+
 # Get context for a member (for resume prompts)
 get_member_context() {
     local team_name="$1"
@@ -491,20 +679,17 @@ get_member_context() {
     # Get assigned tasks
     if [[ -d "$tasks_dir" ]]; then
         local assigned_tasks=""
-        local json_files=("$tasks_dir"/*.json)
-        if [[ -e "${json_files[0]}" ]]; then
-            for task_file in "${json_files[@]}"; do
-                if [[ -f "$task_file" ]]; then
-                    local owner=$(jq -r '.owner // ""' "$task_file")
-                    if [[ "$owner" == "$member_name" ]]; then
-                        local id=$(jq -r '.id' "$task_file")
-                        local subject=$(jq -r '.subject' "$task_file")
-                        local status=$(jq -r '.status' "$task_file")
-                        assigned_tasks="${assigned_tasks}\n  - Task #${id} [${status}]: ${subject}"
-                    fi
-                fi
-            done
-        fi
+        # Use find instead of glob to avoid zsh "no matches found" error
+        while IFS= read -r task_file; do
+            [[ -z "$task_file" ]] && continue
+            local owner=$(jq -r '.owner // ""' "$task_file")
+            if [[ "$owner" == "$member_name" ]]; then
+                local id=$(jq -r '.id' "$task_file")
+                local subject=$(jq -r '.subject' "$task_file")
+                local status=$(jq -r '.status' "$task_file")
+                assigned_tasks="${assigned_tasks}\n  - Task #${id} [${status}]: ${subject}"
+            fi
+        done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null)
         if [[ -n "$assigned_tasks" ]]; then
             context="${context}Your assigned tasks:${assigned_tasks}\n\n"
         fi
@@ -699,7 +884,8 @@ spawn_teammate_kitty_resume() {
 
     kitten_cmd send-text --match "var:${swarm_var}" -- "$initial_prompt"
     sleep 0.5
-    kitten_cmd send-text --match "var:${swarm_var}" $'\r'
+    # Use stdin piping for carriage return - more reliable across shell contexts
+    printf '\r' | kitten_cmd send-text --match "var:${swarm_var}" --stdin
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -906,18 +1092,15 @@ create_task() {
     mkdir -p "$tasks_dir"
 
     # Find next task ID
+    # Use find instead of glob to avoid zsh "no matches found" error
     local max_id=0
-    local json_files=("$tasks_dir"/*.json)
-    if [[ -e "${json_files[0]}" ]]; then
-        for f in "${json_files[@]}"; do
-            if [[ -f "$f" ]]; then
-                local id=$(basename "$f" .json)
-                if [[ "$id" =~ ^[0-9]+$ ]] && [[ $id -gt $max_id ]]; then
-                    max_id=$id
-                fi
-            fi
-        done
-    fi
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        local id=$(basename "$f" .json)
+        if [[ "$id" =~ ^[0-9]+$ ]] && [[ $id -gt $max_id ]]; then
+            max_id=$id
+        fi
+    done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null)
     local new_id=$((max_id + 1))
 
     local task_file="${tasks_dir}/${new_id}.json"
@@ -969,6 +1152,12 @@ update_task() {
         return 1
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$task_file"; then
+        echo -e "${RED}Failed to acquire lock for task #${task_id}${NC}" >&2
+        return 1
+    fi
+
     local tmp_file=$(mktemp)
     command cp "$task_file" "$tmp_file"
 
@@ -1000,8 +1189,15 @@ update_task() {
         esac
     done
 
-    command mv "$tmp_file" "$task_file"
-    echo -e "${GREEN}Updated task #${task_id}${NC}"
+    if command mv "$tmp_file" "$task_file"; then
+        release_file_lock
+        echo -e "${GREEN}Updated task #${task_id}${NC}"
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update task #${task_id}${NC}" >&2
+        return 1
+    fi
 }
 
 list_tasks() {
@@ -1016,27 +1212,28 @@ list_tasks() {
     echo "Tasks for team '${team_name}':"
     echo "--------------------------------"
 
-    local json_files=("$tasks_dir"/*.json)
-    if [[ -e "${json_files[0]}" ]]; then
-        for task_file in "${json_files[@]}"; do
-            if [[ -f "$task_file" ]]; then
-                local id=$(jq -r '.id' "$task_file")
-                local subject=$(jq -r '.subject' "$task_file")
-                local status=$(jq -r '.status' "$task_file")
-                local owner=$(jq -r '.owner // "unassigned"' "$task_file")
-                local blocked_by=$(jq -r '.blockedBy | if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end' "$task_file")
+    # Use find instead of glob to avoid zsh "no matches found" error
+    local task_count=0
+    while IFS= read -r task_file; do
+        [[ -z "$task_file" ]] && continue
+        ((task_count++))
+        local id=$(jq -r '.id' "$task_file")
+        local subject=$(jq -r '.subject' "$task_file")
+        local status=$(jq -r '.status' "$task_file")
+        local owner=$(jq -r '.owner // "unassigned"' "$task_file")
+        local blocked_by=$(jq -r '.blockedBy | if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end' "$task_file")
 
-                local status_color="${NC}"
-                if [[ "$status" == "open" ]]; then
-                    status_color="${YELLOW}"
-                elif [[ "$status" == "resolved" ]]; then
-                    status_color="${GREEN}"
-                fi
+        local status_color="${NC}"
+        if [[ "$status" == "open" ]]; then
+            status_color="${YELLOW}"
+        elif [[ "$status" == "resolved" ]]; then
+            status_color="${GREEN}"
+        fi
 
-                echo -e "#${id} ${status_color}[${status}]${NC} ${subject} (${owner})${blocked_by}"
-            fi
-        done
-    else
+        echo -e "#${id} ${status_color}[${status}]${NC} ${subject} (${owner})${blocked_by}"
+    done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null | sort)
+
+    if [[ $task_count -eq 0 ]]; then
         echo "  (no tasks yet)"
     fi
 }
@@ -1217,10 +1414,10 @@ spawn_teammate_kitty() {
     register_window "$team_name" "$agent_name" "$swarm_var"
 
     # Send initial prompt using user variable match (works even if title changes)
-    # Use \r (carriage return) to actually submit, not \n (which just adds a line)
+    # Use stdin piping for carriage return - more reliable across shell contexts
     kitten_cmd send-text --match "var:${swarm_var}" -- "$initial_prompt"
     sleep 0.5
-    kitten_cmd send-text --match "var:${swarm_var}" $'\r'
+    printf '\r' | kitten_cmd send-text --match "var:${swarm_var}" --stdin
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in kitty ${launch_type}${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -1456,66 +1653,39 @@ swarm_status() {
     local team_name="$1"
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
 
+    # Validate team exists
     if [[ ! -f "$config_file" ]]; then
         echo -e "${RED}Team '${team_name}' not found${NC}"
         return 1
     fi
 
+    # Header
     echo -e "${CYAN}=== Team: ${team_name} ===${NC}"
     echo -e "${BLUE}Multiplexer:${NC} ${SWARM_MULTIPLEXER}"
     echo ""
 
-    # Team info
+    # Team description
     local description=$(jq -r '.description' "$config_file")
     echo -e "${BLUE}Description:${NC} ${description}"
     echo ""
 
-    # Members with live window cross-reference
+    # Members section - using helper functions
     echo -e "${BLUE}Members (config vs live):${NC}"
-
-    # Get live windows/sessions
-    local live_agents=""
-    case "$SWARM_MULTIPLEXER" in
-        kitty)
-            live_agents=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null || true)
-            ;;
-        tmux)
-            live_agents=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}" | sed 's/swarm-[^-]*-//' || true)
-            ;;
-    esac
-
-    # Cross-reference each member
+    local live_agents=$(get_live_agents "$team_name")
     local mismatch_count=0
+
     while IFS='|' read -r name type config_status; do
         [[ -z "$name" ]] && continue
 
-        local window_status=""
-        local status_icon=""
+        local result=$(format_member_status "$name" "$type" "$config_status" "$live_agents")
+        local display_line="${result%|*}"
+        local is_mismatch="${result##*|}"
 
-        if [[ "$name" == "team-lead" ]]; then
-            window_status="(you)"
-            status_icon=""
-        elif echo "$live_agents" | grep -q "^${name}$"; then
-            window_status="window exists"
-            if [[ "$config_status" == "active" ]]; then
-                status_icon="${GREEN}✓${NC}"
-            else
-                status_icon="${YELLOW}⚠️${NC}"
-                mismatch_count=$((mismatch_count + 1))
-            fi
-        else
-            window_status="no window"
-            if [[ "$config_status" == "offline" ]]; then
-                status_icon="${GREEN}✓${NC}"
-            else
-                status_icon="${RED}✗${NC}"
-                mismatch_count=$((mismatch_count + 1))
-            fi
-        fi
-
-        printf "  %-25s config: %-8s %s %s\n" "$name ($type)" "$config_status" "$window_status" "$status_icon"
+        echo "$display_line"
+        mismatch_count=$((mismatch_count + is_mismatch))
     done < <(jq -r '.members[] | "\(.name)|\(.type)|\(.status)"' "$config_file")
 
+    # Mismatch warning
     if [[ $mismatch_count -gt 0 ]]; then
         echo ""
         echo -e "${YELLOW}  ⚠️  ${mismatch_count} status mismatch(es) detected. Run /claude-swarm:swarm-reconcile to fix.${NC}"
@@ -1531,16 +1701,17 @@ swarm_status() {
         fi
     fi
 
-    # Task summary
+    # Task summary - using helper function
     echo -e "${BLUE}Tasks:${NC}"
-    local tasks_dir="${TASKS_DIR}/${team_name}"
-    if [[ -d "$tasks_dir" ]]; then
-        local open=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "open") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
-        local resolved=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "resolved") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+    local task_summary=$(get_task_summary "$team_name")
+    local open="${task_summary%|*}"
+    local resolved="${task_summary#*|}"
+
+    if [[ "$open" == "0" && "$resolved" == "0" ]]; then
+        echo "  (no tasks)"
+    else
         echo "  Open: ${open}"
         echo "  Resolved: ${resolved}"
-    else
-        echo "  (no tasks)"
     fi
 }
 
@@ -1672,11 +1843,85 @@ reconcile_team_status() {
     return 0
 }
 
+# ============================================
+# UTILITY FUNCTIONS
+# ============================================
+
+# List all teams in the teams directory
+list_teams() {
+    if [[ ! -d "$TEAMS_DIR" ]]; then
+        echo "No teams directory found at ${TEAMS_DIR}"
+        return 0
+    fi
+
+    local team_count=0
+    echo "Available teams:"
+    echo "----------------"
+
+    while IFS= read -r team_dir; do
+        [[ -z "$team_dir" ]] && continue
+        local team_name=$(basename "$team_dir")
+        local config_file="${team_dir}/config.json"
+
+        if [[ -f "$config_file" ]]; then
+            ((team_count++))
+            local status=$(jq -r '.status // "unknown"' "$config_file")
+            local member_count=$(jq -r '.members | length' "$config_file")
+            local description=$(jq -r '.description // ""' "$config_file" | head -c 50)
+
+            local status_color="${NC}"
+            if [[ "$status" == "active" ]]; then
+                status_color="${GREEN}"
+            elif [[ "$status" == "suspended" ]]; then
+                status_color="${YELLOW}"
+            fi
+
+            echo -e "  ${team_name} ${status_color}[${status}]${NC} - ${member_count} members"
+            [[ -n "$description" ]] && echo "    ${description}"
+        fi
+    done < <(find "$TEAMS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+
+    if [[ $team_count -eq 0 ]]; then
+        echo "  (no teams found)"
+    fi
+    echo ""
+    echo "Total: ${team_count} team(s)"
+}
+
+# Delete a task by ID
+delete_task() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local task_id="$2"
+    local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
+
+    if [[ -z "$task_id" ]]; then
+        echo -e "${RED}Error: task_id is required${NC}"
+        echo "Usage: delete_task [team_name] <task_id>"
+        return 1
+    fi
+
+    if [[ ! -f "$task_file" ]]; then
+        echo -e "${RED}Task #${task_id} not found in team '${team_name}'${NC}"
+        return 1
+    fi
+
+    # Get task info before deletion for confirmation message
+    local subject=$(jq -r '.subject // "Unknown"' "$task_file")
+
+    if rm -f "$task_file"; then
+        echo -e "${GREEN}Deleted task #${task_id}: ${subject}${NC}"
+    else
+        echo -e "${RED}Failed to delete task #${task_id}${NC}"
+        return 1
+    fi
+}
+
 # Export functions for use in other scripts
 export -f find_kitty_socket validate_kitty_socket kitten_cmd wait_for_claude_ready detect_multiplexer generate_uuid validate_name
 export -f register_window unregister_window get_registered_windows clean_window_registry
 export -f create_team add_member get_team_config list_team_members
 export -f update_team_status update_member_status get_member_status get_team_status
+export -f get_live_agents format_member_status get_task_summary
 export -f check_heartbeats detect_crashed_agents reconcile_team_status
 export -f get_member_context suspend_team resume_team
 export -f spawn_teammate_kitty_resume spawn_teammate_tmux_resume
@@ -1687,3 +1932,5 @@ export -f list_swarm_sessions list_swarm_sessions_tmux list_swarm_sessions_kitty
 export -f kill_swarm_session kill_swarm_session_tmux kill_swarm_session_kitty
 export -f generate_kitty_session launch_kitty_session save_kitty_session
 export -f cleanup_team swarm_status
+export -f acquire_file_lock release_file_lock
+export -f list_teams delete_task

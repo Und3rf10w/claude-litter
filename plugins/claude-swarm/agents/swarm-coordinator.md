@@ -170,17 +170,45 @@ read_inbox "<team-name>" "team-lead"
 4. **Dependencies matter** - Use `--blocked-by` to prevent work on dependent tasks
 5. **Monitor progress** - Use `swarm_status` to track team progress
 
+## Best Practice: Use Slash Commands
+
+**IMPORTANT:** Prefer `/claude-swarm:*` slash commands over raw bash functions when available. Slash commands are more reliable because they:
+
+- Use proper socket discovery and validation
+- Register windows for cleanup tracking
+- Handle error cases consistently
+- Validate inputs against path traversal
+
+**Use slash commands for:**
+- `/claude-swarm:swarm-create <team> [description]` - Create team
+- `/claude-swarm:swarm-spawn <agent> [type] [model] [prompt]` - Spawn teammate
+- `/claude-swarm:swarm-message <to> <message>` - Send message
+- `/claude-swarm:swarm-inbox` - Check inbox
+- `/claude-swarm:swarm-status <team>` - View status
+- `/claude-swarm:task-create <subject> [description]` - Create task
+- `/claude-swarm:task-update <id> [options]` - Update task
+- `/claude-swarm:task-list` - List tasks
+
+**Use bash functions only when:**
+- You need to combine operations in complex scripts
+- The slash command doesn't exist for the operation
+- You're debugging or need low-level control
+
 ## Error Handling
 
 ### Spawn Failures
 
 If spawn_teammate fails for any teammate:
 
-1. **Check the error output** - spawn_teammate will print specific errors
-2. **Verify multiplexer** - Ensure tmux or kitty is available and working
-3. **Check for duplicate names** - Names must be unique within a team
-4. **Retry once** - Transient failures may succeed on retry
-5. **Adjust team plan** - If persistent failures, reduce team size or reassign tasks
+1. **Run diagnostics first**:
+   ```bash
+   /claude-swarm:swarm-diagnose <team>
+   ```
+2. **Check the error output** - spawn_teammate will print specific errors
+3. **Verify multiplexer** - Ensure tmux or kitty is available and working
+4. **Check for duplicate names** - Names must be unique within a team
+5. **Retry once** - Transient failures may succeed on retry
+6. **Adjust team plan** - If persistent failures, reduce team size or reassign tasks
 
 ### Status Mismatches
 
