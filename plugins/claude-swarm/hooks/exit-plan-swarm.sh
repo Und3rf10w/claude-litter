@@ -7,8 +7,10 @@ TOOL_RESULT=$(cat)
 
 # Check if this was a swarm launch request
 # The tool result will include launchSwarm info if requested
-if echo "$TOOL_RESULT" | grep -q '"launchSwarm":\s*true'; then
-    teammate_count=$(echo "$TOOL_RESULT" | grep -oP '"teammateCount":\s*\K\d+' || echo "3")
+if echo "$TOOL_RESULT" | grep -q '"launchSwarm".*true'; then
+    # Use sed for portability (grep -oP is GNU-only, fails on macOS)
+    teammate_count=$(echo "$TOOL_RESULT" | sed -n 's/.*"teammateCount":[[:space:]]*\([0-9]*\).*/\1/p')
+    teammate_count="${teammate_count:-3}"
 
     echo "<system-reminder>
 # Swarm Launch Detected

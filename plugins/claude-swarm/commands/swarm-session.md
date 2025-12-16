@@ -21,6 +21,7 @@ Manage kitty session files for a team.
 ## Session File Location
 
 Session files are stored with the team:
+
 ```
 ~/.claude/teams/{team}/swarm.kitty-session
 ```
@@ -28,6 +29,7 @@ Session files are stored with the team:
 ## Prerequisites
 
 This command is for **kitty terminal only**. Requires:
+
 - Running inside kitty terminal
 - Remote control enabled in `~/.config/kitty/kitty.conf`:
   ```

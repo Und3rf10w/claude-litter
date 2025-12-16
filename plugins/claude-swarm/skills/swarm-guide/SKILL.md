@@ -26,6 +26,14 @@ If using kitty, add to `~/.config/kitty/kitty.conf`:
 
 ```
 allow_remote_control yes
+listen_on unix:/tmp/kitty-$USER
+```
+
+**Important:** Restart kitty completely after changing config (not just reload). Verify with:
+
+```bash
+ls -la /tmp/kitty-$USER*  # Socket should exist
+kitten @ ls               # Should return JSON
 ```
 
 ### Override Detection
@@ -82,7 +90,8 @@ Just describe your task - the swarm-coordinator agent handles everything:
 | `/swarm-message <to> <message>`  | Send message to teammate                  |
 | `/swarm-inbox`                   | Check your inbox for messages             |
 | `/swarm-status <team>`           | View team status and progress             |
-| `/swarm-cleanup <team>`          | Clean up team resources                   |
+| `/swarm-cleanup <team>`          | Suspend team (soft) or delete (--force)   |
+| `/swarm-resume <team>`           | Resume a suspended team                   |
 | `/swarm-session <action> <team>` | Manage kitty session files (kitty only)   |
 | `/task-create <subject>`         | Create a new task                         |
 | `/task-list`                     | List all tasks                            |
@@ -139,11 +148,12 @@ Kitty windows use user variables (`--var`) for reliable identification. This mea
 
 ### Broadcasting to All
 
-The team-lead can broadcast:
+The team-lead can broadcast via the utility functions:
 
 ```bash
-# In team-lead session
-source ~/.claude/plugins/claude-swarm/lib/swarm-utils.sh
+# In team-lead session (commands use ${CLAUDE_PLUGIN_ROOT} internally)
+# Or if calling shell directly:
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
 broadcast_message "my-team" "Stand-up: share your progress" "team-lead"
 ```
 
@@ -231,13 +241,48 @@ tmux list-sessions | grep swarm
 /swarm-status my-team
 ```
 
-## Cleanup
+## Team Lifecycle
 
-When finished:
+Teams support suspend and resume for multi-day work:
+
+### States
+
+| State       | Description                     |
+| ----------- | ------------------------------- |
+| `active`    | Team running, members working   |
+| `suspended` | Sessions closed, data preserved |
+
+### Suspend a Team
 
 ```bash
-/swarm-cleanup my-team           # Kill sessions/windows
-/swarm-cleanup my-team --force   # Also remove files
+/swarm-cleanup my-team           # Soft: Kill sessions, keep data
+```
+
+This:
+
+- Closes all teammate sessions/windows
+- Marks members as "offline"
+- Preserves all tasks, messages, and config
+
+### Resume a Team
+
+```bash
+/swarm-resume my-team
+```
+
+This:
+
+- Changes team status to "active"
+- Respawns each offline teammate with:
+  - Their original model (haiku/sonnet/opus)
+  - Context about assigned tasks
+  - Notice of unread messages
+- Teammates can continue where they left off
+
+### Hard Cleanup (Delete)
+
+```bash
+/swarm-cleanup my-team --force   # Kill sessions AND delete all data
 ```
 
 ## Troubleshooting

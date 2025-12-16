@@ -28,6 +28,7 @@ swarm_status "$1"
 ```
 
 Present the information clearly, highlighting:
+
 1. Active vs inactive sessions
 2. Open tasks that need attention
 3. Any tasks that are blocked

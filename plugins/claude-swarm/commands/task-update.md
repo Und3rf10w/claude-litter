@@ -51,21 +51,25 @@ Report what was changed and the current task state.
 ## Examples
 
 **Assign to teammate:**
+
 ```
 /task-update 1 --assign backend-dev
 ```
 
 **Mark as resolved:**
+
 ```
 /task-update 1 --status resolved --comment "Done. See PR #42"
 ```
 
 **Add progress update:**
+
 ```
 /task-update 1 --comment "50% complete, working on tests"
 ```
 
 **Add dependency:**
+
 ```
 /task-update 2 --blocked-by 1
 ```

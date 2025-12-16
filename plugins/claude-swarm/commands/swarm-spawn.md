@@ -17,6 +17,7 @@ Spawn a new Claude Code teammate.
 ## Auto-Detection
 
 The plugin automatically detects which terminal multiplexer to use:
+
 - **kitty** - If running inside kitty terminal with remote control enabled
 - **tmux** - If tmux is available
 
@@ -25,9 +26,11 @@ Override with: `SWARM_MULTIPLEXER=tmux` or `SWARM_MULTIPLEXER=kitty`
 ## Prerequisites
 
 **For tmux:**
+
 - `tmux` must be installed
 
 **For kitty:**
+
 - Running inside kitty terminal
 - Remote control enabled in `~/.config/kitty/kitty.conf`:
   ```
@@ -35,12 +38,14 @@ Override with: `SWARM_MULTIPLEXER=tmux` or `SWARM_MULTIPLEXER=kitty`
   ```
 
 **Both require:**
+
 - A team must exist (create with `/swarm-create` first)
 - `CLAUDE_CODE_TEAM_NAME` environment variable must be set (set automatically by `/swarm-create`)
 
 ## Kitty Spawn Modes
 
 Set `SWARM_KITTY_MODE` environment variable:
+
 - `window` - Each teammate in separate kitty window (default)
 - `split` - Teammates in splits within current tab
 - `tab` - Each teammate in separate tab
@@ -67,6 +72,7 @@ spawn_teammate "$TEAM" "$NAME" "$TYPE" "$MODEL" "$PROMPT"
 ```
 
 After spawning, report:
+
 1. Teammate name and which multiplexer was used
 2. For tmux: How to attach with `tmux attach -t swarm-<team>-<name>`
 3. For kitty: Windows use user variables for identification (survives title changes)

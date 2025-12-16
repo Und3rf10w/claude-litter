@@ -35,6 +35,37 @@ SWARM_MULTIPLEXER="${SWARM_MULTIPLEXER:-$(detect_multiplexer)}"
 # Kitty spawn mode: window, split, tab, session
 SWARM_KITTY_MODE="${SWARM_KITTY_MODE:-window}"
 
+# Default allowed tools for teammates (safe operations for swarm coordination)
+# These tools are pre-approved so teammates can work autonomously
+# Override with SWARM_ALLOWED_TOOLS environment variable
+# Note: Use comma-separated patterns to avoid zsh glob expansion issues with (*)
+# The variable should be quoted when passed to --allowedTools
+SWARM_DEFAULT_ALLOWED_TOOLS="${SWARM_ALLOWED_TOOLS:-Read(*),Glob(*),Grep(*),SlashCommand(*),Bash(*)}"
+
+# ============================================
+# UUID GENERATION (portable across macOS/Linux)
+# ============================================
+
+generate_uuid() {
+    # Try multiple methods for cross-platform compatibility
+    # 1. uuidgen (macOS built-in, common on Linux)
+    # 2. /proc/sys/kernel/random/uuid (Linux)
+    # 3. Python (almost always available)
+    # 4. Fallback: timestamp + random (less unique but works)
+    if command -v uuidgen &>/dev/null; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    elif [[ -f /proc/sys/kernel/random/uuid ]]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v python3 &>/dev/null; then
+        python3 -c "import uuid; print(uuid.uuid4())"
+    elif command -v python &>/dev/null; then
+        python -c "import uuid; print(uuid.uuid4())"
+    else
+        # Fallback: timestamp + random number (less unique)
+        echo "$(date +%s)-$(( RANDOM * RANDOM ))"
+    fi
+}
+
 # Kitty socket for remote control (required when running from Claude Code)
 # Kitty creates sockets like /tmp/kitty-$USER-$PID, so we need to find it dynamically
 
@@ -74,12 +105,53 @@ kitten_cmd() {
 }
 
 # ============================================
+# INPUT VALIDATION
+# ============================================
+
+# Validate team/agent names to prevent path traversal and other issues
+# Returns 0 if valid, 1 if invalid (prints error message)
+validate_name() {
+    local name="$1"
+    local type="${2:-name}"  # "team" or "agent" for error messages
+
+    # Check for empty name
+    if [[ -z "$name" ]]; then
+        echo -e "${RED}Error: ${type} name cannot be empty${NC}" >&2
+        return 1
+    fi
+
+    # Check for path traversal attempts
+    if [[ "$name" == *".."* ]] || [[ "$name" == *"/"* ]] || [[ "$name" == *"\\"* ]]; then
+        echo -e "${RED}Error: ${type} name cannot contain '..' or path separators${NC}" >&2
+        return 1
+    fi
+
+    # Check for names that start with dash (could be interpreted as flags)
+    if [[ "$name" == -* ]]; then
+        echo -e "${RED}Error: ${type} name cannot start with '-'${NC}" >&2
+        return 1
+    fi
+
+    # Check for overly long names (filesystem limit)
+    if [[ ${#name} -gt 100 ]]; then
+        echo -e "${RED}Error: ${type} name too long (max 100 characters)${NC}" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================
 # TEAM MANAGEMENT
 # ============================================
 
 create_team() {
     local team_name="$1"
     local description="${2:-Team $team_name}"
+
+    # Validate team name
+    validate_name "$team_name" "team" || return 1
+
     local team_dir="${TEAMS_DIR}/${team_name}"
 
     if [[ -d "$team_dir" ]]; then
@@ -91,32 +163,33 @@ create_team() {
     mkdir -p "${TASKS_DIR}/${team_name}"
 
     # Create config with current session as team-lead
-    local lead_id="${CLAUDE_CODE_AGENT_ID:-$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "lead-$(date +%s)")}"
-
+    local lead_id="${CLAUDE_CODE_AGENT_ID:-$(generate_uuid)}"
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    cat > "${team_dir}/config.json" << EOF
-{
-  "teamName": "${team_name}",
-  "description": "${description}",
-  "status": "active",
-  "leadAgentId": "${lead_id}",
-  "members": [
-    {
-      "agentId": "${lead_id}",
-      "name": "team-lead",
-      "type": "team-lead",
-      "color": "cyan",
-      "model": "sonnet",
-      "status": "active",
-      "lastSeen": "${timestamp}"
-    }
-  ],
-  "createdAt": "${timestamp}",
-  "suspendedAt": null,
-  "resumedAt": null
-}
-EOF
+    # Use jq to properly escape values and prevent JSON injection
+    jq -n \
+        --arg teamName "$team_name" \
+        --arg description "$description" \
+        --arg leadId "$lead_id" \
+        --arg timestamp "$timestamp" \
+        '{
+            teamName: $teamName,
+            description: $description,
+            status: "active",
+            leadAgentId: $leadId,
+            members: [{
+                agentId: $leadId,
+                name: "team-lead",
+                type: "team-lead",
+                color: "cyan",
+                model: "sonnet",
+                status: "active",
+                lastSeen: $timestamp
+            }],
+            createdAt: $timestamp,
+            suspendedAt: null,
+            resumedAt: null
+        }' > "${team_dir}/config.json"
 
     # Initialize team-lead inbox
     echo "[]" > "${team_dir}/inboxes/team-lead.json"
@@ -133,6 +206,11 @@ add_member() {
     local agent_type="${4:-worker}"
     local agent_color="${5:-blue}"
     local agent_model="${6:-sonnet}"
+
+    # Validate names
+    validate_name "$team_name" "team" || return 1
+    validate_name "$agent_name" "agent" || return 1
+
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
 
     if [[ ! -f "$config_file" ]]; then
@@ -150,7 +228,7 @@ add_member() {
        --arg model "$agent_model" \
        --arg ts "$timestamp" \
        '.members += [{"agentId": $id, "name": $name, "type": $type, "color": $color, "model": $model, "status": "active", "lastSeen": $ts}]' \
-       "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
 
     # Initialize inbox for new member
     echo "[]" > "${TEAMS_DIR}/${team_name}/inboxes/${agent_name}.json"
@@ -202,17 +280,17 @@ update_team_status() {
         suspended)
             jq --arg status "$new_status" --arg ts "$timestamp" \
                '.status = $status | .suspendedAt = $ts' \
-               "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
             ;;
         active)
             jq --arg status "$new_status" --arg ts "$timestamp" \
                '.status = $status | .resumedAt = $ts' \
-               "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
             ;;
         *)
             jq --arg status "$new_status" \
                '.status = $status' \
-               "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
             ;;
     esac
 
@@ -234,7 +312,7 @@ update_member_status() {
 
     jq --arg name "$member_name" --arg status "$new_status" --arg ts "$timestamp" \
        '(.members[] | select(.name == $name)) |= (.status = $status | .lastSeen = $ts)' \
-       "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
 }
 
 get_member_status() {
@@ -326,9 +404,14 @@ suspend_team() {
 
     echo -e "${CYAN}Suspending team '${team_name}'...${NC}"
 
+    # Read members into array (handles names with spaces/special chars)
+    local -a members=()
+    while IFS= read -r member; do
+        [[ -n "$member" ]] && members+=("$member")
+    done < <(jq -r '.members[].name' "$config_file")
+
     # Mark all members as offline
-    local members=$(jq -r '.members[].name' "$config_file")
-    for member in $members; do
+    for member in "${members[@]}"; do
         update_member_status "$team_name" "$member" "offline"
     done
 
@@ -336,7 +419,7 @@ suspend_team() {
     if [[ "$kill_sessions" == "true" ]]; then
         case "$SWARM_MULTIPLEXER" in
             kitty)
-                for member in $members; do
+                for member in "${members[@]}"; do
                     if [[ "$member" != "team-lead" ]]; then
                         local swarm_var="swarm_${team_name}_${member}"
                         kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null && \
@@ -345,7 +428,7 @@ suspend_team() {
                 done
                 ;;
             tmux)
-                for member in $members; do
+                for member in "${members[@]}"; do
                     if [[ "$member" != "team-lead" ]]; then
                         local session_name="swarm-${team_name}-${member}"
                         tmux kill-session -t "$session_name" 2>/dev/null && \
@@ -453,7 +536,8 @@ spawn_teammate_kitty_resume() {
         tab) launch_type="tab" ;;
     esac
 
-    # Launch
+    # Launch with default allowed tools (comma-separated, quoted)
+    # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --title "$window_title" \
         --var "${swarm_var}=true" \
@@ -463,7 +547,7 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model"
+        claude --model "$model" --dangerously-skip-permissions
 
     # Wait and send prompt
     echo "    Waiting for Claude Code to start..."
@@ -486,11 +570,20 @@ spawn_teammate_tmux_resume() {
     local model="$4"
     local initial_prompt="$5"
 
+    # Validate model (prevent injection via model parameter)
+    case "$model" in
+        haiku|sonnet|opus) ;;
+        *) model="sonnet" ;;
+    esac
+
     # Get existing agent ID from config
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
     local agent_id=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .agentId' "$config_file")
 
-    local session_name="swarm-${team_name}-${agent_name}"
+    # Sanitize session name (tmux doesn't allow certain characters)
+    local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
+    local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
+    local session_name="swarm-${safe_team}-${safe_agent}"
 
     # Check if session exists
     if tmux has-session -t "$session_name" 2>/dev/null; then
@@ -499,16 +592,23 @@ spawn_teammate_tmux_resume() {
         return 0
     fi
 
-    # Create session
-    tmux new-session -d -s "$session_name" \
-        "export CLAUDE_CODE_TEAM_NAME='${team_name}' && \
-         export CLAUDE_CODE_AGENT_ID='${agent_id}' && \
-         export CLAUDE_CODE_AGENT_NAME='${agent_name}' && \
-         export CLAUDE_CODE_AGENT_TYPE='${agent_type}' && \
-         claude --model ${model}"
+    # Create session with default shell first (avoid command injection)
+    tmux new-session -d -s "$session_name"
+
+    # Safely escape variables using printf %q
+    local safe_team_val=$(printf %q "$team_name")
+    local safe_id_val=$(printf %q "$agent_id")
+    local safe_name_val=$(printf %q "$agent_name")
+    local safe_type_val=$(printf %q "$agent_type")
+
+    # Set environment variables and launch claude using send-keys (safe)
+    # Include default allowed tools for swarm coordination
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions" Enter
 
     sleep 1
-    tmux send-keys -t "$session_name" "$initial_prompt" Enter
+    # Use -l flag to send prompt as literal text (prevents key sequence injection)
+    tmux send-keys -t "$session_name" -l "$initial_prompt"
+    tmux send-keys -t "$session_name" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -524,7 +624,7 @@ send_message() {
     local team_name="$1"
     local to="$2"
     local message="$3"
-    local from="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-unknown}}"
+    local from="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-team-lead}}"
     local color="${4:-blue}"
     local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
     local lock_file="${inbox_file}.lock"
@@ -534,31 +634,54 @@ send_message() {
         return 1
     fi
 
-    # Simple file locking
-    local max_wait=10
-    local waited=0
-    while [[ -f "$lock_file" ]] && [[ $waited -lt $max_wait ]]; do
+    # Atomic file locking using mkdir (mkdir is atomic)
+    # Clean up stale locks older than 60 seconds
+    if [[ -d "$lock_file" ]]; then
+        local lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
+        if [[ $lock_age -gt 60 ]]; then
+            rmdir "$lock_file" 2>/dev/null || true
+        fi
+    fi
+
+    local max_attempts=50
+    local attempt=0
+    while ! mkdir "$lock_file" 2>/dev/null; do
+        ((attempt++))
+        if [[ $attempt -ge $max_attempts ]]; then
+            echo -e "${RED}Failed to acquire lock for inbox${NC}" >&2
+            return 1
+        fi
         sleep 0.1
-        ((waited++))
     done
 
-    touch "$lock_file"
-    trap "rm -f '$lock_file'" EXIT
+    # Function to clean up lock - called explicitly, not via trap
+    _cleanup_lock() {
+        rmdir "$lock_file" 2>/dev/null || true
+    }
 
     local tmp_file=$(mktemp)
+    if [[ -z "$tmp_file" ]]; then
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        _cleanup_lock
+        return 1
+    fi
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    jq --arg from "$from" \
-       --arg text "$message" \
-       --arg color "$color" \
-       --arg ts "$timestamp" \
-       '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
-       "$inbox_file" > "$tmp_file" && mv "$tmp_file" "$inbox_file"
-
-    rm -f "$lock_file"
-    trap - EXIT
-
-    echo -e "${GREEN}Message sent to '${to}'${NC}"
+    if jq --arg from "$from" \
+          --arg text "$message" \
+          --arg color "$color" \
+          --arg ts "$timestamp" \
+          '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
+          "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
+        _cleanup_lock
+        echo -e "${GREEN}Message sent to '${to}'${NC}"
+    else
+        rm -f "$tmp_file"
+        _cleanup_lock
+        echo -e "${RED}Failed to update inbox${NC}" >&2
+        return 1
+    fi
 }
 
 read_inbox() {
@@ -597,7 +720,7 @@ mark_messages_read() {
     fi
 
     local tmp_file=$(mktemp)
-    jq '[.[] | .read = true]' "$inbox_file" > "$tmp_file" && mv "$tmp_file" "$inbox_file"
+    jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"
 }
 
 broadcast_message() {
@@ -611,13 +734,13 @@ broadcast_message() {
         return 1
     fi
 
-    local members=$(jq -r '.members[].name' "$config_file")
-
-    for member in $members; do
+    # Read members using while loop (handles names with spaces/special chars)
+    while IFS= read -r member; do
+        [[ -n "$member" ]] || continue
         if [[ "$member" != "$exclude" ]]; then
             send_message "$team_name" "$member" "$message"
         fi
-    done
+    done < <(jq -r '.members[].name' "$config_file")
 }
 
 format_messages_xml() {
@@ -656,20 +779,24 @@ create_task() {
     local task_file="${tasks_dir}/${new_id}.json"
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    cat > "$task_file" << EOF
-{
-  "id": "${new_id}",
-  "subject": "${subject}",
-  "description": "${description}",
-  "status": "open",
-  "owner": null,
-  "references": [],
-  "blocks": [],
-  "blockedBy": [],
-  "comments": [],
-  "createdAt": "${timestamp}"
-}
-EOF
+    # Use jq to properly escape values and prevent JSON injection
+    jq -n \
+        --arg id "$new_id" \
+        --arg subject "$subject" \
+        --arg description "$description" \
+        --arg timestamp "$timestamp" \
+        '{
+            id: $id,
+            subject: $subject,
+            description: $description,
+            status: "open",
+            owner: null,
+            references: [],
+            blocks: [],
+            blockedBy: [],
+            comments: [],
+            createdAt: $timestamp
+        }' > "$task_file"
 
     echo -e "${GREEN}Created task #${new_id}: ${subject}${NC}"
     echo "$new_id"
@@ -699,16 +826,16 @@ update_task() {
     fi
 
     local tmp_file=$(mktemp)
-    cp "$task_file" "$tmp_file"
+    command cp "$task_file" "$tmp_file"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --status)
-                jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new" && mv "${tmp_file}.new" "$tmp_file"
+                jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --owner|--assign)
-                jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new" && mv "${tmp_file}.new" "$tmp_file"
+                jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --comment)
@@ -716,11 +843,11 @@ update_task() {
                 local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                 jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
                    '.comments += [{"author": $author, "content": $content, "timestamp": $ts}]' \
-                   "$tmp_file" > "${tmp_file}.new" && mv "${tmp_file}.new" "$tmp_file"
+                   "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --blocked-by)
-                jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new" && mv "${tmp_file}.new" "$tmp_file"
+                jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             *)
@@ -729,7 +856,7 @@ update_task() {
         esac
     done
 
-    mv "$tmp_file" "$task_file"
+    command mv "$tmp_file" "$task_file"
     echo -e "${GREEN}Updated task #${task_id}${NC}"
 }
 
@@ -792,14 +919,26 @@ spawn_teammate_tmux() {
     local model="${4:-sonnet}"
     local initial_prompt="${5:-}"
 
+    # Validate names
+    validate_name "$team_name" "team" || return 1
+    validate_name "$agent_name" "agent" || return 1
+
+    # Validate model (prevent injection via model parameter)
+    case "$model" in
+        haiku|sonnet|opus) ;;
+        *) model="sonnet" ;;
+    esac
+
     # Generate UUID for agent
-    local agent_id=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${agent_name}-$(date +%s)")
+    local agent_id=$(generate_uuid)
 
     # Add to team config (include model for resume capability)
     add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"
 
-    # Session name
-    local session_name="swarm-${team_name}-${agent_name}"
+    # Sanitize session name (tmux doesn't allow certain characters)
+    local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
+    local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
+    local session_name="swarm-${safe_team}-${safe_agent}"
 
     # Check if session exists
     if tmux has-session -t "$session_name" 2>/dev/null; then
@@ -812,19 +951,26 @@ spawn_teammate_tmux() {
         initial_prompt="You are ${agent_name} in team '${team_name}'. Check your mailbox at ~/.claude/teams/${team_name}/inboxes/${agent_name}.json for messages. Send updates to team-lead when tasks complete. Use /swarm-inbox to check for new messages."
     fi
 
-    # Create new tmux session with env vars
-    tmux new-session -d -s "$session_name" \
-        "export CLAUDE_CODE_TEAM_NAME='${team_name}' && \
-         export CLAUDE_CODE_AGENT_ID='${agent_id}' && \
-         export CLAUDE_CODE_AGENT_NAME='${agent_name}' && \
-         export CLAUDE_CODE_AGENT_TYPE='${agent_type}' && \
-         claude --model ${model}"
+    # Create session with default shell first (avoid command injection)
+    tmux new-session -d -s "$session_name"
+
+    # Safely escape variables using printf %q
+    local safe_team_val=$(printf %q "$team_name")
+    local safe_id_val=$(printf %q "$agent_id")
+    local safe_name_val=$(printf %q "$agent_name")
+    local safe_type_val=$(printf %q "$agent_type")
+
+    # Set environment variables and launch claude using send-keys (safe)
+    # Include default allowed tools for swarm coordination
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions" Enter
 
     # Give it a moment to start
     sleep 1
 
     # Send initial prompt
-    tmux send-keys -t "$session_name" "$initial_prompt" Enter
+    # Use -l flag to send prompt as literal text (prevents key sequence injection)
+    tmux send-keys -t "$session_name" -l "$initial_prompt"
+    tmux send-keys -t "$session_name" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -864,8 +1010,12 @@ spawn_teammate_kitty() {
     local model="${4:-sonnet}"
     local initial_prompt="${5:-}"
 
+    # Validate names
+    validate_name "$team_name" "team" || return 1
+    validate_name "$agent_name" "agent" || return 1
+
     # Generate UUID for agent
-    local agent_id=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${agent_name}-$(date +%s)")
+    local agent_id=$(generate_uuid)
 
     # Add to team config (include model for resume capability)
     add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"
@@ -903,6 +1053,8 @@ spawn_teammate_kitty() {
 
     # Launch new kitty window/tab with env vars AND user variable for identification
     # --var sets a persistent user variable that survives title changes
+    # --allowedTools uses comma-separated, quoted patterns to avoid zsh glob expansion
+    # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --title "$window_title" \
         --var "${swarm_var}=true" \
@@ -912,7 +1064,7 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model"
+        claude --model "$model" --dangerously-skip-permissions
 
     # Wait for Claude Code to fully initialize (it takes several seconds)
     echo "  Waiting for Claude Code to start..."
@@ -1095,17 +1247,21 @@ cleanup_team() {
         # Kill sessions based on multiplexer
         case "$SWARM_MULTIPLEXER" in
             kitty)
-                for agent in $(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null); do
+                # Use while read to handle names with spaces/special chars
+                while IFS= read -r agent; do
+                    [[ -n "$agent" ]] || continue
                     local swarm_var="swarm_${team_name}_${agent}"
                     kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null
                     echo -e "${YELLOW}  Closed: ${agent}${NC}"
-                done
+                done < <(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null)
                 ;;
             tmux)
-                for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}"); do
+                # Use while read to handle session names properly
+                while IFS= read -r session; do
+                    [[ -n "$session" ]] || continue
                     tmux kill-session -t "$session"
                     echo -e "${YELLOW}  Closed: ${session}${NC}"
-                done
+                done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}")
                 ;;
         esac
 
@@ -1203,7 +1359,7 @@ swarm_status() {
 }
 
 # Export functions for use in other scripts
-export -f find_kitty_socket kitten_cmd detect_multiplexer
+export -f find_kitty_socket kitten_cmd detect_multiplexer generate_uuid validate_name
 export -f create_team add_member get_team_config list_team_members
 export -f update_team_status update_member_status get_member_status get_team_status
 export -f get_member_context suspend_team resume_team

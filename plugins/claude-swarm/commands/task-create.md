@@ -35,6 +35,7 @@ echo "Created task #${TASK_ID}"
 ```
 
 After creating, report:
+
 1. Task ID assigned
 2. Suggest assigning with `/task-update <id> --assign <teammate>`
 3. Or setting dependencies with `/task-update <id> --blocked-by <other-id>`

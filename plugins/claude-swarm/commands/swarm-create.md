@@ -22,6 +22,7 @@ create_team "$1" "$2"
 ```
 
 After running, report:
+
 1. Team name and location
 2. That the current session is now team-lead
 3. Next steps: create tasks with `/task-create` and spawn teammates with `/swarm-spawn`

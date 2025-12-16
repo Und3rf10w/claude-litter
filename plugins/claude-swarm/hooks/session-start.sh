@@ -42,18 +42,21 @@ if [[ -n "$AGENT_NAME" ]] && [[ "$AGENT_NAME" != "team-lead" ]]; then
 
     if [[ -d "$tasks_dir" ]]; then
         assigned_tasks=""
-        for task_file in "$tasks_dir"/*.json 2>/dev/null; do
-            if [[ -f "$task_file" ]]; then
-                owner=$(jq -r '.owner // ""' "$task_file")
-                status=$(jq -r '.status' "$task_file")
+        task_files=("$tasks_dir"/*.json)
+        if [[ -e "${task_files[0]}" ]]; then
+            for task_file in "${task_files[@]}"; do
+                if [[ -f "$task_file" ]]; then
+                    owner=$(jq -r '.owner // ""' "$task_file")
+                    status=$(jq -r '.status' "$task_file")
 
-                if [[ "$owner" == "$AGENT_NAME" ]] && [[ "$status" == "open" ]]; then
-                    id=$(jq -r '.id' "$task_file")
-                    subject=$(jq -r '.subject' "$task_file")
-                    assigned_tasks+="- Task #${id}: ${subject}\n"
+                    if [[ "$owner" == "$AGENT_NAME" ]] && [[ "$status" == "open" ]]; then
+                        id=$(jq -r '.id' "$task_file")
+                        subject=$(jq -r '.subject' "$task_file")
+                        assigned_tasks+="- Task #${id}: ${subject}\n"
+                    fi
                 fi
-            fi
-        done
+            done
+        fi
 
         if [[ -n "$assigned_tasks" ]]; then
             output+="## Your Assigned Tasks\n\n"

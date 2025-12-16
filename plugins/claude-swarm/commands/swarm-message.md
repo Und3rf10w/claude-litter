@@ -33,5 +33,6 @@ send_message "$TEAM" "$TO" "$MESSAGE"
 ```
 
 Report:
+
 1. Message sent confirmation
 2. Note that the recipient will see the message when they run `/swarm-inbox` or on their next session start

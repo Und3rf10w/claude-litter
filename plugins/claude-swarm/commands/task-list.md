@@ -19,6 +19,7 @@ list_tasks "$TEAM"
 ```
 
 Present the task list clearly, organizing by:
+
 1. Open unassigned tasks (available for claiming)
 2. Open assigned tasks (in progress)
 3. Blocked tasks (waiting on dependencies)

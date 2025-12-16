@@ -34,6 +34,7 @@ cleanup_team "$1" "$FORCE_FLAG"
 ```
 
 Report:
+
 1. Which sessions/windows were killed
 2. If `--force`: which directories were removed
 3. Confirmation that cleanup is complete
