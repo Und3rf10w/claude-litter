@@ -1,6 +1,6 @@
 {
   "name": "claude-litter",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Claude Swarm Implementation Supporting Kitty",
   "owner": {
     "name": "Und3rf10w",
@@ -11,7 +11,7 @@
       "name": "claude-swarm",
       "source": "./plugins/claude-swarm",
       "description": "Multi-agent swarm coordination - spawn parallel teammates in tmux/kitty, assign tasks, coordinate work",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": {
         "name": "Und3rf10w"
       },
