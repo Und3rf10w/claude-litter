@@ -71,26 +71,64 @@ generate_uuid() {
 
 # Helper function to find the kitty socket
 find_kitty_socket() {
-    # First check if KITTY_LISTEN_ON is set explicitly
+    # Priority 1: Check if KITTY_LISTEN_ON is set explicitly
     if [[ -n "$KITTY_LISTEN_ON" ]]; then
-        echo "$KITTY_LISTEN_ON"
-        return 0
+        if validate_kitty_socket "$KITTY_LISTEN_ON"; then
+            export SWARM_KITTY_SOCKET_CACHE="$KITTY_LISTEN_ON"
+            echo "$KITTY_LISTEN_ON"
+            return 0
+        fi
     fi
 
-    # Find the most recent kitty socket
+    # Priority 2: Check cached socket
+    if [[ -n "$SWARM_KITTY_SOCKET_CACHE" ]]; then
+        if validate_kitty_socket "$SWARM_KITTY_SOCKET_CACHE"; then
+            echo "$SWARM_KITTY_SOCKET_CACHE"
+            return 0
+        else
+            # Cache is stale, clear it
+            unset SWARM_KITTY_SOCKET_CACHE
+        fi
+    fi
+
+    # Priority 3: Discovery - find the most recent kitty socket
     local socket=$(ls -t /tmp/kitty-$(whoami)-* 2>/dev/null | head -1)
     if [[ -S "$socket" ]]; then
-        echo "unix:$socket"
-        return 0
+        local socket_uri="unix:$socket"
+        if validate_kitty_socket "$socket_uri"; then
+            export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+            echo "$socket_uri"
+            return 0
+        fi
     fi
 
     # Fallback to simple pattern (in case kitty config uses exact name)
     if [[ -S "/tmp/kitty-$(whoami)" ]]; then
-        echo "unix:/tmp/kitty-$(whoami)"
-        return 0
+        local socket_uri="unix:/tmp/kitty-$(whoami)"
+        if validate_kitty_socket "$socket_uri"; then
+            export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+            echo "$socket_uri"
+            return 0
+        fi
     fi
 
     return 1
+}
+
+# Validate that a kitty socket is healthy and responsive
+validate_kitty_socket() {
+    local socket="$1"
+
+    if [[ -z "$socket" ]]; then
+        return 1
+    fi
+
+    # Test socket health with a simple ls command
+    if kitten @ --to "$socket" ls &>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Helper function for kitten @ commands with socket
@@ -102,6 +140,34 @@ kitten_cmd() {
         # Fallback to direct kitten @ (may fail without TTY)
         kitten @ "$@"
     fi
+}
+
+# Wait for Claude Code to be ready in a window
+# Uses polling instead of hardcoded sleep for more reliable startup detection
+wait_for_claude_ready() {
+    local swarm_var="$1"
+    local max_wait="${2:-15}"  # Maximum wait time in seconds (default 15)
+    local poll_interval=0.5     # Check every 0.5 seconds
+
+    local elapsed=0
+    echo "  Waiting for Claude Code to start (max ${max_wait}s)..."
+
+    while (( $(echo "$elapsed < $max_wait" | bc -l) )); do
+        # Check if window exists and is responsive
+        if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" '.[].tabs[].windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
+            # Window exists, give it a moment to fully initialize
+            sleep 1
+            echo "  Claude Code is ready (took ${elapsed}s)"
+            return 0
+        fi
+
+        sleep "$poll_interval"
+        elapsed=$(echo "$elapsed + $poll_interval" | bc -l)
+    done
+
+    # Timeout reached
+    echo "  Warning: Claude Code may not be fully ready yet (waited ${max_wait}s)"
+    return 1
 }
 
 # ============================================
@@ -139,6 +205,79 @@ validate_name() {
     fi
 
     return 0
+}
+
+# ============================================
+# WINDOW REGISTRY (for kitty window tracking)
+# ============================================
+
+# Register a kitty window in the team registry
+register_window() {
+    local team_name="$1"
+    local agent_name="$2"
+    local swarm_var="$3"
+    local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+
+    # Initialize registry if it doesn't exist
+    if [[ ! -f "$registry_file" ]]; then
+        echo "[]" > "$registry_file"
+    fi
+
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local tmp_file=$(mktemp)
+
+    jq --arg agent "$agent_name" \
+       --arg var "$swarm_var" \
+       --arg ts "$timestamp" \
+       '. += [{"agent": $agent, "swarm_var": $var, "registered_at": $ts}]' \
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
+}
+
+# Unregister a kitty window from the team registry
+unregister_window() {
+    local team_name="$1"
+    local agent_name="$2"
+    local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+
+    if [[ ! -f "$registry_file" ]]; then
+        return 0
+    fi
+
+    local tmp_file=$(mktemp)
+
+    jq --arg agent "$agent_name" \
+       'map(select(.agent != $agent))' \
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
+}
+
+# Get all registered windows for a team
+get_registered_windows() {
+    local team_name="$1"
+    local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+
+    if [[ -f "$registry_file" ]]; then
+        cat "$registry_file"
+    else
+        echo "[]"
+    fi
+}
+
+# Clean stale entries from registry (windows that no longer exist)
+clean_window_registry() {
+    local team_name="$1"
+    local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+
+    if [[ ! -f "$registry_file" ]]; then
+        return 0
+    fi
+
+    local live_windows=$(kitten_cmd ls 2>/dev/null | jq -r '.[].tabs[].windows[].user_vars | keys[]' 2>/dev/null || echo "")
+    local tmp_file=$(mktemp)
+
+    # Keep only entries that still exist in live windows
+    jq --argjson live "$(echo "$live_windows" | jq -R . | jq -s .)" \
+       '[.[] | select(.swarm_var as $var | $live | index($var) != null)]' \
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
 }
 
 # ============================================
@@ -419,11 +558,14 @@ suspend_team() {
     if [[ "$kill_sessions" == "true" ]]; then
         case "$SWARM_MULTIPLEXER" in
             kitty)
+                # Use registry + live query for comprehensive cleanup
                 for member in "${members[@]}"; do
                     if [[ "$member" != "team-lead" ]]; then
                         local swarm_var="swarm_${team_name}_${member}"
-                        kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null && \
+                        if kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null; then
                             echo -e "${YELLOW}  Closed: ${member}${NC}"
+                            unregister_window "$team_name" "$member"
+                        fi
                     fi
                 done
                 ;;
@@ -549,9 +691,11 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         claude --model "$model" --dangerously-skip-permissions
 
-    # Wait and send prompt
-    echo "    Waiting for Claude Code to start..."
-    sleep 4
+    # Wait for Claude Code to be ready (intelligent polling)
+    wait_for_claude_ready "$swarm_var" 15
+
+    # Register window in team registry for reliable cleanup
+    register_window "$team_name" "$agent_name" "$swarm_var"
 
     kitten_cmd send-text --match "var:${swarm_var}" -- "$initial_prompt"
     sleep 0.5
@@ -1066,9 +1210,11 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         claude --model "$model" --dangerously-skip-permissions
 
-    # Wait for Claude Code to fully initialize (it takes several seconds)
-    echo "  Waiting for Claude Code to start..."
-    sleep 4
+    # Wait for Claude Code to be ready (intelligent polling instead of hardcoded sleep)
+    wait_for_claude_ready "$swarm_var" 15
+
+    # Register window in team registry for reliable cleanup
+    register_window "$team_name" "$agent_name" "$swarm_var"
 
     # Send initial prompt using user variable match (works even if title changes)
     # Use \r (carriage return) to actually submit, not \n (which just adds a line)
@@ -1247,12 +1393,30 @@ cleanup_team() {
         # Kill sessions based on multiplexer
         case "$SWARM_MULTIPLEXER" in
             kitty)
-                # Use while read to handle names with spaces/special chars
+                # Use registry + live query for comprehensive cleanup
+                declare -A closed_agents
+
+                # First, close all registered windows
+                while IFS= read -r line; do
+                    [[ -n "$line" ]] || continue
+                    local agent=$(echo "$line" | jq -r '.agent')
+                    local swarm_var=$(echo "$line" | jq -r '.swarm_var')
+                    if kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null; then
+                        echo -e "${YELLOW}  Closed (registry): ${agent}${NC}"
+                        closed_agents["$agent"]=1
+                        unregister_window "$team_name" "$agent"
+                    fi
+                done < <(get_registered_windows "$team_name" | jq -c '.[]')
+
+                # Then, query live windows to catch any unregistered ones
                 while IFS= read -r agent; do
                     [[ -n "$agent" ]] || continue
-                    local swarm_var="swarm_${team_name}_${agent}"
-                    kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null
-                    echo -e "${YELLOW}  Closed: ${agent}${NC}"
+                    if [[ -z "${closed_agents[$agent]}" ]]; then
+                        local swarm_var="swarm_${team_name}_${agent}"
+                        if kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null; then
+                            echo -e "${YELLOW}  Closed (live query): ${agent}${NC}"
+                        fi
+                    fi
                 done < <(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null)
                 ;;
             tmux)
@@ -1306,34 +1470,56 @@ swarm_status() {
     echo -e "${BLUE}Description:${NC} ${description}"
     echo ""
 
-    # Members
-    echo -e "${BLUE}Members:${NC}"
-    jq -r '.members[] | "  - \(.name) (\(.type))"' "$config_file"
-    echo ""
+    # Members with live window cross-reference
+    echo -e "${BLUE}Members (config vs live):${NC}"
 
-    # Active sessions (based on multiplexer)
-    echo -e "${BLUE}Active Sessions:${NC}"
+    # Get live windows/sessions
+    local live_agents=""
     case "$SWARM_MULTIPLEXER" in
         kitty)
-            local windows=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null || true)
-            if [[ -n "$windows" ]]; then
-                echo "$windows" | sed 's/^/  - /'
-            else
-                echo "  (none)"
-            fi
+            live_agents=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' 2>/dev/null || true)
             ;;
         tmux)
-            local sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}" || true)
-            if [[ -n "$sessions" ]]; then
-                echo "$sessions" | sed 's/^/  - /'
-            else
-                echo "  (none)"
-            fi
-            ;;
-        *)
-            echo "  (no multiplexer)"
+            live_agents=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}" | sed 's/swarm-[^-]*-//' || true)
             ;;
     esac
+
+    # Cross-reference each member
+    local mismatch_count=0
+    while IFS='|' read -r name type config_status; do
+        [[ -z "$name" ]] && continue
+
+        local window_status=""
+        local status_icon=""
+
+        if [[ "$name" == "team-lead" ]]; then
+            window_status="(you)"
+            status_icon=""
+        elif echo "$live_agents" | grep -q "^${name}$"; then
+            window_status="window exists"
+            if [[ "$config_status" == "active" ]]; then
+                status_icon="${GREEN}✓${NC}"
+            else
+                status_icon="${YELLOW}⚠️${NC}"
+                mismatch_count=$((mismatch_count + 1))
+            fi
+        else
+            window_status="no window"
+            if [[ "$config_status" == "offline" ]]; then
+                status_icon="${GREEN}✓${NC}"
+            else
+                status_icon="${RED}✗${NC}"
+                mismatch_count=$((mismatch_count + 1))
+            fi
+        fi
+
+        printf "  %-25s config: %-8s %s %s\n" "$name ($type)" "$config_status" "$window_status" "$status_icon"
+    done < <(jq -r '.members[] | "\(.name)|\(.type)|\(.status)"' "$config_file")
+
+    if [[ $mismatch_count -gt 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}  ⚠️  ${mismatch_count} status mismatch(es) detected. Run /claude-swarm:swarm-reconcile to fix.${NC}"
+    fi
     echo ""
 
     # Session file (kitty only)
@@ -1358,10 +1544,140 @@ swarm_status() {
     fi
 }
 
+
+# ============================================
+# LIFECYCLE ROBUSTNESS
+# ============================================
+
+# Check for stale agents (no activity in 5 minutes)
+check_heartbeats() {
+    local team_name="$1"
+    local stale_threshold="${2:-300}"  # Default: 5 minutes (300 seconds)
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo "[]"
+        return 1
+    fi
+
+    local now=$(date +%s)
+    local stale_agents="[]"
+
+    # Find members with stale heartbeats
+    while IFS='|' read -r name last_seen status; do
+        if [[ "$status" == "active" ]] && [[ -n "$last_seen" ]]; then
+            # Convert ISO timestamp to epoch
+            local last_seen_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_seen" +%s 2>/dev/null || date -d "$last_seen" +%s 2>/dev/null || echo "0")
+            local elapsed=$((now - last_seen_epoch))
+
+            if [[ $elapsed -gt $stale_threshold ]]; then
+                stale_agents=$(echo "$stale_agents" | jq --arg name "$name" --arg elapsed "$elapsed" '. += [{"name": $name, "staleSec": ($elapsed | tonumber)}]')
+            fi
+        fi
+    done < <(jq -r '.members[] | "\(.name)|\(.lastSeen // "")|\(.status)"' "$config_file")
+
+    echo "$stale_agents"
+}
+
+# Detect crashed agents (marked active in config but no live session)
+detect_crashed_agents() {
+    local team_name="$1"
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo "[]"
+        return 1
+    fi
+
+    local crashed_agents="[]"
+
+    # Get active members from config
+    local active_members=$(jq -r '.members[] | select(.status == "active") | .name' "$config_file")
+
+    # Check each active member for live session
+    while IFS= read -r member_name; do
+        [[ -z "$member_name" ]] && continue
+
+        local has_session=false
+
+        case "$SWARM_MULTIPLEXER" in
+            kitty)
+                local swarm_var="swarm_${team_name}_${member_name}"
+                if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" '.[].tabs[].windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
+                    has_session=true
+                fi
+                ;;
+            tmux)
+                local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
+                local safe_member="${member_name//[^a-zA-Z0-9_-]/_}"
+                local session_name="swarm-${safe_team}-${safe_member}"
+                if tmux has-session -t "$session_name" 2>/dev/null; then
+                    has_session=true
+                fi
+                ;;
+        esac
+
+        if [[ "$has_session" == "false" ]]; then
+            crashed_agents=$(echo "$crashed_agents" | jq --arg name "$member_name" '. += [$name]')
+        fi
+    done <<< "$active_members"
+
+    echo "$crashed_agents"
+}
+
+# Reconcile team status: compare config vs reality and update config
+reconcile_team_status() {
+    local team_name="$1"
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local verbose="${2:-false}"
+
+    if [[ ! -f "$config_file" ]]; then
+        [[ "$verbose" == "true" ]] && echo -e "${RED}Team '${team_name}' not found${NC}" >&2
+        return 1
+    fi
+
+    local changes=0
+
+    # Detect crashed agents
+    local crashed=$(detect_crashed_agents "$team_name")
+    local crashed_count=$(echo "$crashed" | jq 'length')
+
+    if [[ "$crashed_count" -gt 0 ]]; then
+        [[ "$verbose" == "true" ]] && echo -e "${YELLOW}Found ${crashed_count} crashed agent(s)${NC}" >&2
+
+        # Mark crashed agents as offline
+        while IFS= read -r member_name; do
+            [[ -z "$member_name" ]] && continue
+            update_member_status "$team_name" "$member_name" "offline"
+            [[ "$verbose" == "true" ]] && echo -e "${YELLOW}  Marked ${member_name} as offline (no session found)${NC}" >&2
+            ((changes++))
+        done < <(echo "$crashed" | jq -r '.[]')
+    fi
+
+    # Check for stale heartbeats
+    local stale=$(check_heartbeats "$team_name")
+    local stale_count=$(echo "$stale" | jq 'length')
+
+    if [[ "$stale_count" -gt 0 ]]; then
+        [[ "$verbose" == "true" ]] && echo -e "${YELLOW}Found ${stale_count} stale agent(s)${NC}" >&2
+
+        while IFS='|' read -r name stale_sec; do
+            [[ -z "$name" ]] && continue
+            [[ "$verbose" == "true" ]] && echo -e "${YELLOW}  ${name} stale for ${stale_sec}s${NC}" >&2
+        done < <(echo "$stale" | jq -r '.[] | "\(.name)|\(.staleSec)"')
+    fi
+
+    [[ "$verbose" == "true" ]] && [[ "$changes" -eq 0 ]] && echo -e "${GREEN}Team status is consistent${NC}" >&2
+
+    return 0
+}
+
 # Export functions for use in other scripts
-export -f find_kitty_socket kitten_cmd detect_multiplexer generate_uuid validate_name
+export -f find_kitty_socket validate_kitty_socket kitten_cmd wait_for_claude_ready detect_multiplexer generate_uuid validate_name
+export -f register_window unregister_window get_registered_windows clean_window_registry
 export -f create_team add_member get_team_config list_team_members
 export -f update_team_status update_member_status get_member_status get_team_status
+export -f check_heartbeats detect_crashed_agents reconcile_team_status
 export -f get_member_context suspend_team resume_team
 export -f spawn_teammate_kitty_resume spawn_teammate_tmux_resume
 export -f send_message read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml

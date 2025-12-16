@@ -74,6 +74,22 @@ Choose models based on task complexity:
 - `sonnet` - Balanced (default)
 - `opus` - Complex reasoning
 
+**CRITICAL: Verify Spawn Success**
+
+After spawning teammates, you MUST verify they were successfully created:
+
+```bash
+# Use swarm-verify command to check all teammates are alive
+/claude-swarm:swarm-verify
+```
+
+If any spawns failed:
+
+1. Check the error messages from spawn_teammate
+2. Verify the multiplexer (tmux/kitty) is working
+3. Try respawning failed teammates
+4. If persistent failures, report to user and adjust the team plan
+
 ### 5. Assign Tasks
 
 ```bash
@@ -154,14 +170,58 @@ read_inbox "<team-name>" "team-lead"
 4. **Dependencies matter** - Use `--blocked-by` to prevent work on dependent tasks
 5. **Monitor progress** - Use `swarm_status` to track team progress
 
-## Cleanup
+## Error Handling
 
-When the team is done:
+### Spawn Failures
+
+If spawn_teammate fails for any teammate:
+
+1. **Check the error output** - spawn_teammate will print specific errors
+2. **Verify multiplexer** - Ensure tmux or kitty is available and working
+3. **Check for duplicate names** - Names must be unique within a team
+4. **Retry once** - Transient failures may succeed on retry
+5. **Adjust team plan** - If persistent failures, reduce team size or reassign tasks
+
+### Status Mismatches
+
+Config and reality may diverge (crashed sessions, manual kills):
 
 ```bash
-cleanup_team "<team-name>"  # Kills sessions only
-cleanup_team "<team-name>" --force  # Also removes files
+# Check for discrepancies
+/claude-swarm:swarm-reconcile
+
+# This will:
+# - Mark offline sessions as offline in config
+# - Report any zombie config entries
+# - Suggest cleanup or resume actions
 ```
+
+### Recovery Actions
+
+- **Respawn failed teammate**: Use spawn_teammate again with same name (will detect existing entry)
+- **Remove dead teammate**: Update config manually or use cleanup
+- **Resume suspended team**: Use `/claude-swarm:swarm-resume <team>`
+
+## Cleanup
+
+**As the coordinator, you are responsible for cleanup when:**
+
+1. **Task is complete** - Team accomplished its goal
+2. **Setup failed** - Spawn errors that can't be recovered
+3. **User requests it** - Explicit cleanup request
+
+Cleanup options:
+
+```bash
+cleanup_team "<team-name>"  # Kills sessions only (soft cleanup)
+cleanup_team "<team-name>" --force  # Also removes files (hard cleanup)
+```
+
+**Before cleanup:**
+
+- Verify team is done with tasks (check task list)
+- Ask user if they want to preserve data (use soft cleanup)
+- Send final messages to any active teammates
 
 ## Responding to the User
 

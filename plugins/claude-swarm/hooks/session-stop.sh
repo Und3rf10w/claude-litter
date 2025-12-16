@@ -29,8 +29,9 @@ if [[ "$AGENT_NAME" == "team-lead" ]] || [[ "$AGENT_TYPE" == "team-lead" ]]; the
         suspend_team "$TEAM_NAME" "true"
     fi
 else
-    # Teammate exiting: notify team-lead
-    send_message "$TEAM_NAME" "team-lead" "Session ending for ${AGENT_NAME}. Check task status for any incomplete work."
+    # Teammate exiting cleanly: notify team-lead
+    # Note: Crashed agents (no hook run) are detected by reconcile_team_status in session-start
+    send_message "$TEAM_NAME" "team-lead" "${AGENT_NAME} session ended cleanly. Check task status for any incomplete work."
 fi
 
 exit 0

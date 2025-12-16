@@ -13,8 +13,13 @@ if [[ -z "$TEAM_NAME" ]]; then
     exit 0
 fi
 
-# Mark this member as active
+# Mark this member as active (initializes heartbeat with lastSeen timestamp)
 update_member_status "$TEAM_NAME" "${AGENT_NAME:-team-lead}" "active"
+
+# If team-lead, reconcile team status (detect crashed agents)
+if [[ "${AGENT_NAME:-team-lead}" == "team-lead" ]]; then
+    reconcile_team_status "$TEAM_NAME" "false"
+fi
 
 # Build output message
 output=""
