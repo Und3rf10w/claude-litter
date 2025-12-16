@@ -1,0 +1,18 @@
+{
+  "name": "claude-swarm",
+  "version": "1.0.0",
+  "description": "Multi-agent swarm coordination for Claude Code - spawn parallel teammates in tmux/kitty, assign tasks, and coordinate work",
+  "author": {
+    "name": "Und3rf10w",
+    "email": "noemail@example.com"
+  },
+  "keywords": [
+    "swarm",
+    "multi-agent",
+    "tmux",
+    "kitty",
+    "coordination",
+    "tasks",
+    "teammates"
+  ]
+}
