@@ -253,16 +253,91 @@ Claude will automatically:
 
 ---
 
+## Team Lifecycle
+
+Teams support suspend and resume functionality, allowing you to pause work and continue later.
+
+### Team States
+
+| State       | Description                                    |
+| ----------- | ---------------------------------------------- |
+| `active`    | Team is running, members are working           |
+| `suspended` | Sessions closed, data preserved, resumable     |
+| `archived`  | Permanently stored (future feature)            |
+
+### Suspending a Team
+
+When you're done working (or need to take a break):
+
+```bash
+# Soft cleanup: Kill sessions, preserve data
+/claude-swarm:swarm-cleanup my-team
+
+# Hard cleanup: Delete everything permanently
+/claude-swarm:swarm-cleanup my-team --force
+```
+
+**What happens on suspend:**
+- All teammate sessions are closed
+- Team and member status set to "suspended"/"offline"
+- All data preserved (config, tasks, messages)
+
+### Resuming a Team
+
+To continue where you left off:
+
+```bash
+/claude-swarm:swarm-resume my-team
+```
+
+**What happens on resume:**
+- Team status changes to "active"
+- Each offline teammate is respawned with:
+  - Their original model (haiku/sonnet/opus)
+  - Context about assigned tasks
+  - Notification of unread messages
+- Teammates can pick up where they left off
+
+### Automatic Behavior
+
+**When team-lead exits:**
+- By default: All teammates are killed, team is suspended
+- With `SWARM_KEEP_ALIVE=true`: Teammates keep running
+
+**When a teammate exits:**
+- Team-lead is notified via inbox
+- Teammate marked as offline
+
+### Example Workflow
+
+```bash
+# Day 1: Start working
+/claude-swarm:swarm-create feature-x "New dashboard"
+/claude-swarm:swarm-spawn api-dev backend-developer sonnet
+/claude-swarm:task-create "Build API" "REST endpoints for dashboard"
+/claude-swarm:task-update 1 --assign api-dev
+
+# End of day: Suspend (or just close Claude Code)
+/claude-swarm:swarm-cleanup feature-x
+
+# Day 2: Resume work
+/claude-swarm:swarm-resume feature-x
+# api-dev respawns with context about Task #1
+```
+
+---
+
 ## Commands Reference
 
 ### Team Management
 
-| Command                       | Description       | Usage                                         |
-| ----------------------------- | ----------------- | --------------------------------------------- |
-| `/claude-swarm:swarm-create`  | Create a new team | `/swarm-create <team> [description]`          |
-| `/claude-swarm:swarm-spawn`   | Spawn a teammate  | `/swarm-spawn <name> [type] [model] [prompt]` |
-| `/claude-swarm:swarm-status`  | View team status  | `/swarm-status <team>`                        |
-| `/claude-swarm:swarm-cleanup` | Clean up team     | `/swarm-cleanup <team> [--force]`             |
+| Command                       | Description        | Usage                                         |
+| ----------------------------- | ------------------ | --------------------------------------------- |
+| `/claude-swarm:swarm-create`  | Create a new team  | `/swarm-create <team> [description]`          |
+| `/claude-swarm:swarm-spawn`   | Spawn a teammate   | `/swarm-spawn <name> [type] [model] [prompt]` |
+| `/claude-swarm:swarm-status`  | View team status   | `/swarm-status <team>`                        |
+| `/claude-swarm:swarm-cleanup` | Suspend/delete     | `/swarm-cleanup <team> [--force]`             |
+| `/claude-swarm:swarm-resume`  | Resume suspended   | `/swarm-resume <team>`                        |
 
 ### Task Management
 
@@ -402,11 +477,12 @@ When inside a swarm session, these are automatically set:
 
 ### User Configuration
 
-| Variable            | Description                | Default                   |
-| ------------------- | -------------------------- | ------------------------- |
-| `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`    | Auto-detect               |
-| `SWARM_KITTY_MODE`  | Kitty spawn mode           | `window`                  |
-| `KITTY_LISTEN_ON`   | Kitty socket path override | `unix:/tmp/kitty-$USER`   |
+| Variable            | Description                     | Default                   |
+| ------------------- | ------------------------------- | ------------------------- |
+| `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`         | Auto-detect               |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode                | `window`                  |
+| `KITTY_LISTEN_ON`   | Kitty socket path override      | `unix:/tmp/kitty-$USER`   |
+| `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits  | `false`                   |
 
 ---
 
@@ -523,10 +599,10 @@ export SWARM_MULTIPLEXER=tmux
 
 ## Plugin Contents
 
-### Commands (10)
+### Commands (11)
 
 - swarm-create, swarm-spawn, swarm-message, swarm-inbox
-- swarm-status, swarm-cleanup, swarm-session
+- swarm-status, swarm-cleanup, swarm-resume, swarm-session
 - task-create, task-list, task-update
 
 ### Agents (1)

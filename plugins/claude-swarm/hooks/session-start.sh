@@ -13,6 +13,9 @@ if [[ -z "$TEAM_NAME" ]]; then
     exit 0
 fi
 
+# Mark this member as active
+update_member_status "$TEAM_NAME" "${AGENT_NAME:-team-lead}" "active"
+
 # Build output message
 output=""
 
