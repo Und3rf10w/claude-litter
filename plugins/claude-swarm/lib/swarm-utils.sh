@@ -918,6 +918,10 @@ spawn_teammate_kitty_resume() {
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
     local agent_id=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .agentId' "$config_file")
 
+    # Get team-lead ID and agent color for InboxPoller activation
+    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+
     local swarm_var="swarm_${team_name}_${agent_name}"
     local window_title="swarm-${team_name}-${agent_name}"
 
@@ -953,6 +957,8 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
+        --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
+        --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
@@ -987,6 +993,10 @@ spawn_teammate_tmux_resume() {
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
     local agent_id=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .agentId' "$config_file")
 
+    # Get team-lead ID and agent color for InboxPoller activation
+    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+
     # Sanitize session name (tmux doesn't allow certain characters)
     local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
     local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
@@ -1008,12 +1018,14 @@ spawn_teammate_tmux_resume() {
     local safe_id_val=$(printf %q "$agent_id")
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
+    local safe_lead_id=$(printf %q "$lead_id")
+    local safe_agent_color=$(printf %q "$agent_color")
     local safe_prompt=$(printf %q "$initial_prompt")
     local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
     # Set environment variables and launch claude with prompt as CLI argument
     # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -1062,8 +1074,9 @@ send_message() {
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
 
-        # Send real-time notification to active teammate
-        notify_active_teammate "$team_name" "$to" "$from"
+        # # Send real-time notification to active teammate
+        # deprecated
+        # notify_active_teammate "$team_name" "$to" "$from"
     else
         rm -f "$tmp_file"
         release_file_lock
@@ -1072,7 +1085,7 @@ send_message() {
     fi
 }
 
-# Notify an active teammate via multiplexer
+# DEPRECATED: Notify an active teammate via multiplexer
 # Called after message is queued to provide real-time notification
 notify_active_teammate() {
     local team_name="$1"
@@ -1093,7 +1106,7 @@ notify_active_teammate() {
     case "$SWARM_MULTIPLEXER" in
         kitty)
             local swarm_var="swarm_${team_name}_${agent_name}"
-            kitten_cmd send-text --match "var:${swarm_var}" "/claude-swarm:swarm-inbox\r"
+            kitten_cmd send-text --match "var:${swarm_var}" $'/claude-swarm:swarm-inbox\r'
             ;;
         tmux)
             local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
@@ -1400,6 +1413,11 @@ spawn_teammate_tmux() {
     # Add to team config (include model for resume capability)
     add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"
 
+    # Get team-lead ID and agent color for InboxPoller activation
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+
     # Sanitize session name (tmux doesn't allow certain characters)
     local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
     local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
@@ -1425,12 +1443,14 @@ spawn_teammate_tmux() {
     local safe_id_val=$(printf %q "$agent_id")
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
+    local safe_lead_id=$(printf %q "$lead_id")
+    local safe_agent_color=$(printf %q "$agent_color")
     local safe_prompt=$(printf %q "$initial_prompt")
     local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
     # Set environment variables and launch claude with prompt as CLI argument
     # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -1486,6 +1506,11 @@ spawn_teammate_kitty() {
     # Add to team config (include model for resume capability)
     add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"
 
+    # Get team-lead ID and agent color for InboxPoller activation
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+
     # Use user variable for identification (persists even if title changes)
     local swarm_var="swarm_${team_name}_${agent_name}"
     local window_title="swarm-${team_name}-${agent_name}"
@@ -1535,6 +1560,8 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
+        --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
+        --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"

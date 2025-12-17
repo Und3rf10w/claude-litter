@@ -5,7 +5,7 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "1.3.1",
+    "version": "1.4.0",
     "description": "Custom Claude Swarm Implementation Supporting Kitty and Tmux"
   },
   "plugins": [
@@ -13,7 +13,7 @@
       "name": "claude-swarm",
       "source": "./plugins/claude-swarm",
       "description": "Multi-agent swarm coordination - spawn parallel teammates in tmux/kitty, assign tasks, coordinate work",
-      "version": "1.3.1",
+      "version": "1.4.0",
       "author": {
         "name": "Und3rf10w"
       },
