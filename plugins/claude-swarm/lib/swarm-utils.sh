@@ -1061,12 +1061,47 @@ send_message() {
           "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
+
+        # Send real-time notification to active teammate
+        notify_active_teammate "$team_name" "$to" "$from"
     else
         rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2
         return 1
     fi
+}
+
+# Notify an active teammate via multiplexer
+# Called after message is queued to provide real-time notification
+notify_active_teammate() {
+    local team_name="$1"
+    local agent_name="$2"
+    local from="$3"
+
+    # Skip if messaging self
+    if [[ "$agent_name" == "$from" ]]; then
+        return 0
+    fi
+
+    # Check if teammate is active
+    local live_agents=$(get_live_agents "$team_name")
+    if ! echo "$live_agents" | grep -q "^${agent_name}$"; then
+        return 0  # Not active, skip notification
+    fi
+
+    case "$SWARM_MULTIPLEXER" in
+        kitty)
+            local swarm_var="swarm_${team_name}_${agent_name}"
+            kitten_cmd send-text --match "var:${swarm_var}" "/claude-swarm:swarm-inbox\r"
+            ;;
+        tmux)
+            local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
+            local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
+            local session="swarm-${safe_team}-${safe_agent}"
+            tmux display-message -t "$session" "📬 New message from ${from}" 2>/dev/null || true
+            ;;
+    esac
 }
 
 read_inbox() {
@@ -2017,7 +2052,7 @@ export -f get_live_agents format_member_status get_task_summary
 export -f check_heartbeats detect_crashed_agents reconcile_team_status
 export -f get_member_context suspend_team resume_team
 export -f spawn_teammate_kitty_resume spawn_teammate_tmux_resume
-export -f send_message read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml
+export -f send_message notify_active_teammate read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml
 export -f create_task get_task update_task list_tasks assign_task
 export -f spawn_teammate spawn_teammate_tmux spawn_teammate_kitty
 export -f list_swarm_sessions list_swarm_sessions_tmux list_swarm_sessions_kitty
