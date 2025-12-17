@@ -205,9 +205,9 @@ export SWARM_KITTY_MODE=split   # Options: window, split, tab
 
 | Mode     | Behavior                                         |
 | -------- | ------------------------------------------------ |
-| `window` | Each teammate in separate kitty window (default) |
-| `split`  | Teammates in splits within current tab           |
+| `split`  | Teammates in splits within current tab (default) |
 | `tab`    | Each teammate in separate tab                    |
+| `window` | Each teammate in separate kitty window           |
 
 ### Socket Path Override
 
@@ -482,19 +482,21 @@ Messages are delivered:
 
 When inside a swarm session, these are automatically set:
 
-| Variable                 | Description            |
-| ------------------------ | ---------------------- |
-| `CLAUDE_CODE_TEAM_NAME`  | Current team name      |
-| `CLAUDE_CODE_AGENT_ID`   | Your unique agent UUID |
-| `CLAUDE_CODE_AGENT_NAME` | Your agent name        |
-| `CLAUDE_CODE_AGENT_TYPE` | Your role type         |
+| Variable                   | Description                          |
+| -------------------------- | ------------------------------------ |
+| `CLAUDE_CODE_TEAM_NAME`    | Current team name                    |
+| `CLAUDE_CODE_AGENT_ID`     | Your unique agent UUID               |
+| `CLAUDE_CODE_AGENT_NAME`   | Your agent name                      |
+| `CLAUDE_CODE_AGENT_TYPE`   | Your role type                       |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's agent UUID               |
+| `CLAUDE_CODE_AGENT_COLOR`  | Your display color                   |
 
 ### User Configuration
 
 | Variable            | Description                    | Default                 |
 | ------------------- | ------------------------------ | ----------------------- |
 | `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`        | Auto-detect             |
-| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `window`                |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `split`                 |
 | `KITTY_LISTEN_ON`   | Kitty socket path override     | `unix:/tmp/kitty-$USER` |
 | `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits | `false`                 |
 

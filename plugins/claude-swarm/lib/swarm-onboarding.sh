@@ -2,8 +2,29 @@
 # Claude Swarm Onboarding Wizard
 # One-time interactive setup for new users
 
-# Source core utilities using CLAUDE_PLUGIN_ROOT (set by Claude Code environment)
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+# Source core utilities - use CLAUDE_PLUGIN_ROOT if set, otherwise detect from script location
+if [[ -n "$CLAUDE_PLUGIN_ROOT" ]]; then
+    source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 2>&1
+else
+    # Detect script directory (same robust method as swarm-utils.sh)
+    if [[ -n "${BASH_SOURCE[0]}" ]]; then
+        _ONBOARD_SCRIPT_PATH="${BASH_SOURCE[0]}"
+    elif [[ -n "${ZSH_VERSION}" ]]; then
+        _ONBOARD_SCRIPT_PATH="${(%):-%x}"
+    else
+        _ONBOARD_SCRIPT_PATH="$0"
+    fi
+
+    if [[ -n "$_ONBOARD_SCRIPT_PATH" ]]; then
+        if command -v realpath &>/dev/null; then
+            _ONBOARD_LIB_DIR="$(dirname "$(realpath "$_ONBOARD_SCRIPT_PATH")")"
+        else
+            _ONBOARD_LIB_DIR="$(cd "$(dirname "$_ONBOARD_SCRIPT_PATH")" 2>/dev/null && pwd)"
+        fi
+        source "${_ONBOARD_LIB_DIR}/swarm-utils.sh" 2>&1
+        unset _ONBOARD_SCRIPT_PATH _ONBOARD_LIB_DIR
+    fi
+fi
 
 # ============================================
 # PHASE 1: Prerequisites Check
@@ -98,7 +119,7 @@ guide_kitty_configuration() {
 explain_swarm_concepts() {
     echo -e "${BLUE}=== Phase 3: Understanding Claude Swarm ===${NC}"
     echo ""
-    cat <<'CONCEPTS'
+    command cat <<'CONCEPTS'
 Claude Swarm enables you to run multiple Claude Code instances working together:
 
 🎯 WHAT IT DOES:

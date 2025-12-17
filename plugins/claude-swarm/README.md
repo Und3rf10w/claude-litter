@@ -177,6 +177,44 @@ Choose appropriate agent types when spawning teammates:
         └── 3.json
 ```
 
+### Library Architecture
+
+The swarm-utils library uses a modular architecture for better maintainability:
+
+```
+plugins/claude-swarm/lib/
+├── swarm-utils.sh              # Main entry point (sources all modules)
+├── core/
+│   ├── 00-globals.sh          # Global variables and configuration
+│   ├── 01-utils.sh            # Utility functions (UUID, validation)
+│   └── 02-file-lock.sh        # Atomic file locking
+├── multiplexer/
+│   ├── 03-multiplexer.sh      # Kitty/tmux detection and control
+│   └── 04-registry.sh         # Window registry tracking
+├── team/
+│   ├── 05-team.sh             # Team creation and management
+│   ├── 06-status.sh           # Status management and live agents
+│   └── 10-lifecycle.sh        # Suspend/resume operations
+├── communication/
+│   └── 07-messaging.sh        # Message inbox system
+├── tasks/
+│   └── 08-tasks.sh            # Task CRUD operations
+└── spawn/
+    ├── 09-spawn.sh            # Teammate spawning
+    ├── 11-cleanup.sh          # Team cleanup
+    ├── 12-kitty-session.sh    # Session file generation
+    └── 13-diagnostics.sh      # Health checks and diagnostics
+```
+
+**Key Features:**
+- **Modular design** - 13 specialized modules organized by functional responsibility
+- **Clear dependencies** - Numbered files ensure proper load order (00 → 13)
+- **Backward compatible** - All existing code continues to work unchanged
+- **Source guards** - Prevents double-loading of modules
+- **Maintainable** - Each module averages ~160 lines (down from 2090 line monolith)
+
+All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh`.
+
 ### Environment Variables
 
 When teammates are spawned, these variables are automatically set:
@@ -185,6 +223,8 @@ When teammates are spawned, these variables are automatically set:
 - `CLAUDE_CODE_AGENT_ID` - Unique agent UUID
 - `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
 - `CLAUDE_CODE_AGENT_TYPE` - Agent role type
+- `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller)
+- `CLAUDE_CODE_AGENT_COLOR` - Agent display color
 
 ## Best Practices
 
@@ -313,7 +353,7 @@ See the main Claude Code license.
 
 ## Version
 
-Current version: 1.2.0
+Current version: 1.4.1
 
 ## Support
 

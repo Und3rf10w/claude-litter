@@ -1,0 +1,189 @@
+#!/bin/bash
+# Module: 08-tasks.sh
+# Description: Task management CRUD operations
+# Dependencies: Various (see implementation plan)
+# Exports: create_task, get_task, update_task, list_tasks, assign_task
+
+[[ -n "${SWARM_08_TASKS_LOADED}" ]] && return 0
+SWARM_08_TASKS_LOADED=1
+
+if [[ -z "$TEAMS_DIR" ]]; then
+    echo "Error: 00-globals.sh must be sourced first" >&2
+    return 1
+fi
+
+create_task() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local subject="$2"
+    local description="$3"
+    local tasks_dir="${TASKS_DIR}/${team_name}"
+
+    command mkdir -p "$tasks_dir"
+
+    # Find next task ID
+    # Use find instead of glob to avoid zsh "no matches found" error
+    local max_id=0
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        local id=$(basename "$f" .json)
+        if [[ "$id" =~ ^[0-9]+$ ]] && [[ $id -gt $max_id ]]; then
+            max_id=$id
+        fi
+    done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null)
+    local new_id=$((max_id + 1))
+
+    local task_file="${tasks_dir}/${new_id}.json"
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Use jq to properly escape values and prevent JSON injection
+    jq -n \
+        --arg id "$new_id" \
+        --arg subject "$subject" \
+        --arg description "$description" \
+        --arg timestamp "$timestamp" \
+        '{
+            id: $id,
+            subject: $subject,
+            description: $description,
+            status: "pending",
+            owner: null,
+            references: [],
+            blocks: [],
+            blockedBy: [],
+            comments: [],
+            createdAt: $timestamp
+        }' > "$task_file"
+
+    echo -e "${GREEN}Created task #${new_id}: ${subject}${NC}"
+    echo "$new_id"
+}
+
+get_task() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local task_id="$2"
+    local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
+
+    if [[ -f "$task_file" ]]; then
+        command cat "$task_file"
+    else
+        echo "null"
+    fi
+}
+
+update_task() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local task_id="$2"
+    local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
+    shift 2
+
+    if [[ ! -f "$task_file" ]]; then
+        echo -e "${RED}Task #${task_id} not found${NC}"
+        return 1
+    fi
+
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$task_file"; then
+        echo -e "${RED}Failed to acquire lock for task #${task_id}${NC}" >&2
+        return 1
+    fi
+
+    local tmp_file=$(mktemp)
+    command cp "$task_file" "$tmp_file"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --status)
+                jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                shift 2
+                ;;
+            --owner|--assign)
+                jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                shift 2
+                ;;
+            --comment)
+                local author="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-unknown}}"
+                local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
+                   '.comments += [{"author": $author, "content": $content, "timestamp": $ts}]' \
+                   "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                shift 2
+                ;;
+            --blocked-by)
+                jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if command mv "$tmp_file" "$task_file"; then
+        release_file_lock
+        echo -e "${GREEN}Updated task #${task_id}${NC}"
+    else
+        command rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update task #${task_id}${NC}" >&2
+        return 1
+    fi
+}
+
+list_tasks() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local tasks_dir="${TASKS_DIR}/${team_name}"
+
+    if [[ ! -d "$tasks_dir" ]]; then
+        echo "No tasks found for team '${team_name}'"
+        return
+    fi
+
+    echo "Tasks for team '${team_name}':"
+    echo "--------------------------------"
+
+    # Use find instead of glob to avoid zsh "no matches found" error
+    local task_count=0
+    while IFS= read -r task_file; do
+        [[ -z "$task_file" ]] && continue
+        ((task_count++))
+        local id=$(jq -r '.id' "$task_file")
+        local subject=$(jq -r '.subject' "$task_file")
+        local task_status=$(jq -r '.status' "$task_file")
+        local owner=$(jq -r '.owner // "unassigned"' "$task_file")
+        local blocked_by=$(jq -r '.blockedBy | if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end' "$task_file")
+
+        local status_color="${NC}"
+        if [[ "$task_status" == "pending" ]]; then
+            status_color="${NC}"  # white/default
+        elif [[ "$task_status" == "in-progress" ]]; then
+            status_color="${BLUE}"
+        elif [[ "$task_status" == "blocked" ]]; then
+            status_color="${RED}"
+        elif [[ "$task_status" == "in-review" ]]; then
+            status_color="${YELLOW}"
+        elif [[ "$task_status" == "completed" ]]; then
+            status_color="${GREEN}"
+        fi
+
+        echo -e "#${id} ${status_color}[${task_status}]${NC} ${subject} (${owner})${blocked_by}"
+    done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null | sort)
+
+    if [[ $task_count -eq 0 ]]; then
+        echo "  (no tasks yet)"
+    fi
+}
+
+assign_task() {
+    local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    local task_id="$2"
+    local assignee="$3"
+
+    update_task "$team_name" "$task_id" --owner "$assignee"
+
+    # Notify assignee
+    send_message "$team_name" "$assignee" "You have been assigned task #${task_id}. Use TaskGet to see full details."
+}
+
+
+# Export public API
+export -f create_task get_task update_task list_tasks assign_task

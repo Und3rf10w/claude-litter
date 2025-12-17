@@ -275,6 +275,22 @@ Options:
 - Run diagnostics when issues occur
 - Use reconcile to fix status drift
 
+## Environment Variables
+
+When teammates are spawned, these variables are automatically set:
+
+- `CLAUDE_CODE_TEAM_NAME` - Current team name
+- `CLAUDE_CODE_AGENT_ID` - Unique agent UUID
+- `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
+- `CLAUDE_CODE_AGENT_TYPE` - Agent role type
+- `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID
+- `CLAUDE_CODE_AGENT_COLOR` - Agent display color
+
+User-configurable:
+
+- `SWARM_MULTIPLEXER` - Force "tmux" or "kitty" (auto-detected by default)
+- `SWARM_KITTY_MODE` - Kitty spawn mode: `split` (default), `tab`, or `window`
+
 ## See Also
 
 - [Comprehensive Guide](references/guide.md) - Terminal support, kitty features, lifecycle, troubleshooting

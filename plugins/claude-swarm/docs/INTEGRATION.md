@@ -69,7 +69,7 @@ Read team configuration and status for monitoring:
 
 ```bash
 # From external monitoring system
-cat ~/.claude/teams/my-team/config.json | jq '.members[] | {name, status, heartbeat}'
+cat ~/.claude/teams/my-team/config.json | jq '.members[] | {name, status, lastSeen}'
 
 # Display in custom dashboard
 watch -n 5 'cat ~/.claude/teams/my-team/config.json | jq ".members[] | {name, status}"'
@@ -131,42 +131,51 @@ team_name=$3
 
 ```json
 {
-  "name": "my-team",
+  "teamName": "my-team",
   "description": "Building authentication system",
-  "created_at": "2025-12-16T10:00:00Z",
-  "team_lead": {
-    "agent_id": "uuid-1",
-    "name": "team-lead",
-    "status": "active"
-  },
+  "status": "active",
+  "leadAgentId": "uuid-1",
   "members": [
     {
-      "agent_id": "uuid-2",
-      "name": "backend-dev",
-      "type": "backend-developer",
+      "agentId": "uuid-1",
+      "name": "team-lead",
+      "type": "team-lead",
+      "color": "cyan",
       "model": "sonnet",
       "status": "active",
-      "heartbeat": "2025-12-16T10:05:00Z"
+      "lastSeen": "2025-12-16T10:05:00Z"
     },
     {
-      "agent_id": "uuid-3",
+      "agentId": "uuid-2",
+      "name": "backend-dev",
+      "type": "backend-developer",
+      "color": "blue",
+      "model": "sonnet",
+      "status": "active",
+      "lastSeen": "2025-12-16T10:05:00Z"
+    },
+    {
+      "agentId": "uuid-3",
       "name": "frontend-dev",
       "type": "frontend-developer",
+      "color": "blue",
       "model": "sonnet",
       "status": "offline",
-      "heartbeat": "2025-12-16T09:55:00Z"
+      "lastSeen": "2025-12-16T09:55:00Z"
     }
   ],
-  "status": "active",
-  "multiplexer": "kitty"
+  "createdAt": "2025-12-16T10:00:00Z",
+  "suspendedAt": null,
+  "resumedAt": null
 }
 ```
 
 **Read this to:**
 - Check team member status
-- Monitor heartbeats for health checks
+- Monitor `lastSeen` timestamps for health checks
 - Build status dashboards
 - Verify team composition
+- Access `leadAgentId` for team-lead identification
 
 ### Task Files
 
@@ -211,20 +220,18 @@ team_name=$3
 ```json
 [
   {
-    "id": "msg-001",
     "from": "team-lead",
-    "subject": "Priority change",
-    "body": "Shift focus to API optimization",
-    "timestamp": "2025-12-16T10:00:00Z",
-    "read": false
+    "text": "Shift focus to API optimization",
+    "color": "cyan",
+    "read": false,
+    "timestamp": "2025-12-16T10:00:00Z"
   },
   {
-    "id": "msg-002",
     "from": "ci-pipeline",
-    "subject": "Tests passed",
-    "body": "All tests passing on feature-branch",
-    "timestamp": "2025-12-16T10:05:00Z",
-    "read": false
+    "text": "All tests passing on feature-branch",
+    "color": "blue",
+    "read": false,
+    "timestamp": "2025-12-16T10:05:00Z"
   }
 ]
 ```
@@ -251,6 +258,9 @@ echo $CLAUDE_CODE_TEAM_NAME        # "my-team"
 echo $CLAUDE_CODE_AGENT_ID         # "uuid-2"
 echo $CLAUDE_CODE_AGENT_NAME       # "backend-dev"
 echo $CLAUDE_CODE_AGENT_TYPE       # "backend-developer"
+echo $CLAUDE_CODE_TEAM_LEAD_ID     # "uuid-1" (team lead's UUID)
+echo $CLAUDE_CODE_AGENT_COLOR      # "blue"
+echo $KITTY_LISTEN_ON              # "unix:/tmp/kitty-user-12345" (kitty only)
 ```
 
 **Use these to:**
@@ -258,6 +268,16 @@ echo $CLAUDE_CODE_AGENT_TYPE       # "backend-developer"
 - Coordinate with external systems
 - Track work in monitoring systems
 - Build audit logs
+- Enable InboxPoller with team lead ID
+
+### User-Configurable Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SWARM_MULTIPLEXER` | Force "tmux" or "kitty" | Auto-detect |
+| `SWARM_KITTY_MODE` | Kitty spawn mode: split, tab, window | `split` |
+| `KITTY_LISTEN_ON` | Override kitty socket path | Auto-discovered |
+| `SWARM_KEEP_ALIVE` | Keep teammates running when team-lead exits | `false` |
 
 ### Setting Custom Variables
 
@@ -306,7 +326,7 @@ Claude Swarm provides 5 lifecycle hooks for custom automation:
 **Location:** `plugins/claude-swarm/hooks/notification-heartbeat.sh`
 
 **Use for:**
-- Update heartbeat timestamps
+- Update `lastSeen` timestamps
 - Detect stale/hung agents
 - Send periodic status updates
 
@@ -501,7 +521,7 @@ watch -n 5 "
 echo '=== Active Swarms ==='; \
 ls ~/.claude/teams/ | while read team; do
   echo \"\\n$team:\"; \
-  cat ~/.claude/teams/\$team/config.json | jq '{status, members: (.members | length), updated: .members[0].heartbeat}' 2>/dev/null; \
+  cat ~/.claude/teams/\$team/config.json | jq '{status, members: (.members | length), updated: .members[0].lastSeen}' 2>/dev/null; \
 done; \
 echo \"\\n=== Recent Tasks ===\"; \
 for task in ~/.claude/tasks/*/\* .json 2>/dev/null | head -5; do
@@ -525,18 +545,18 @@ if [ ! -f "$config" ]; then
   exit 1
 fi
 
-# Check for stale heartbeats (> 5 minutes old)
+# Check for stale lastSeen timestamps (> 5 minutes old)
 now=$(date +%s)
-members=$(cat "$config" | jq -r '.members[]')
 
-echo "$members" | while read -r member; do
-  heartbeat=$(echo "$member" | jq -r '.heartbeat')
-  member_time=$(date -d "$heartbeat" +%s)
-  age=$((now - member_time))
+cat "$config" | jq -r '.members[] | "\(.name)|\(.lastSeen)|\(.status)"' | while IFS='|' read -r name last_seen status; do
+  if [ "$status" = "active" ]; then
+    # Convert ISO timestamp (handle both macOS and Linux)
+    member_time=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_seen" +%s 2>/dev/null || date -d "$last_seen" +%s 2>/dev/null)
+    age=$((now - member_time))
 
-  if [ $age -gt 300 ]; then
-    member_name=$(echo "$member" | jq -r '.name')
-    echo "ALERT: $member_name heartbeat stale (${age}s old)"
+    if [ $age -gt 300 ]; then
+      echo "ALERT: $name lastSeen stale (${age}s old)"
+    fi
   fi
 done
 ```
@@ -545,9 +565,9 @@ done
 
 ## Monitoring and Observability
 
-### Heartbeat Monitoring
+### Heartbeat Monitoring (lastSeen)
 
-Claude Swarm automatically updates heartbeats for all active team members. Use this for:
+Claude Swarm automatically updates `lastSeen` timestamps for all active team members via the Notification hook. Use this for:
 
 - Detecting hung or crashed agents
 - Monitoring long-running operations
@@ -563,16 +583,17 @@ check_agent_health() {
   local max_age_seconds=600  # 10 minutes
 
   config="$HOME/.claude/teams/$team/config.json"
-  heartbeat=$(cat "$config" | jq -r ".members[] | select(.name==\"$agent\") | .heartbeat")
+  last_seen=$(cat "$config" | jq -r ".members[] | select(.name==\"$agent\") | .lastSeen")
 
-  if [ -z "$heartbeat" ]; then
+  if [ -z "$last_seen" ]; then
     echo "Agent not found"
     return 1
   fi
 
   current=$(date +%s)
-  heartbeat_time=$(date -d "$heartbeat" +%s)
-  age=$((current - heartbeat_time))
+  # Convert ISO timestamp to epoch (macOS vs Linux)
+  last_seen_time=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_seen" +%s 2>/dev/null || date -d "$last_seen" +%s 2>/dev/null)
+  age=$((current - last_seen_time))
 
   if [ $age -gt $max_age_seconds ]; then
     echo "UNHEALTHY: Agent inactive for ${age}s"
@@ -655,7 +676,7 @@ echo "swarm_tasks_in_progress{team=\"$team\"} $in_progress"
 1. **Always use JSON-aware tools** - Use `jq` or similar for manipulating JSON files to prevent corruption
 2. **Atomic writes** - Write to temporary files and move them atomically to prevent partial reads
 3. **Respect file ownership** - Don't directly modify plugin files; use commands instead
-4. **Monitor heartbeats** - Regularly check for stale heartbeats to detect issues
+4. **Monitor lastSeen** - Regularly check for stale `lastSeen` timestamps to detect issues
 5. **Version your integrations** - Track what external systems are interacting with swarms
 6. **Error handling** - Implement proper error handling for file-based operations
 7. **Backup important files** - Back up team configs and task files before bulk operations
@@ -749,7 +770,7 @@ team_name="deployment-$deployment_env"
 - Ensure teammate can run `/claude-swarm:swarm-inbox`
 - Check file permissions on inbox directory
 
-**Problem:** Stale heartbeats detected
+**Problem:** Stale lastSeen timestamps detected
 
 - Check if Claude Code instances are still running
 - Verify no zombie processes are blocking updates

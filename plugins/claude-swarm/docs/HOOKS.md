@@ -35,10 +35,14 @@ All hooks are registered in `hooks/hooks.json` and use the `${CLAUDE_PLUGIN_ROOT
 Hooks have access to the following environment variables:
 
 - `CLAUDE_CODE_TEAM_NAME` - Current team name (e.g., "swarm-review")
+- `CLAUDE_CODE_AGENT_ID` - Current agent's unique UUID
 - `CLAUDE_CODE_AGENT_NAME` - Current agent name (e.g., "team-lead", "doc-reviewer")
 - `CLAUDE_CODE_AGENT_TYPE` - Agent type (e.g., "team-lead", "reviewer", "developer")
+- `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller activation)
+- `CLAUDE_CODE_AGENT_COLOR` - Agent's display color (e.g., "blue", "cyan")
 - `CLAUDE_PLUGIN_ROOT` - Plugin root directory path
 - `SWARM_KEEP_ALIVE` - If "true", keeps teammates running when team-lead exits
+- `KITTY_LISTEN_ON` - Kitty socket path (passed to spawned teammates)
 
 ### Working Directory
 

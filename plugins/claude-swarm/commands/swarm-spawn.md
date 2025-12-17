@@ -46,9 +46,9 @@ Override with: `SWARM_MULTIPLEXER=tmux` or `SWARM_MULTIPLEXER=kitty`
 
 Set `SWARM_KITTY_MODE` environment variable:
 
-- `window` - Each teammate in separate kitty window (default)
-- `split` - Teammates in splits within current tab
+- `split` - Teammates in vertical splits within current tab (default)
 - `tab` - Each teammate in separate tab
+- `window` - Each teammate in separate OS-level kitty window
 
 ## Instructions
 

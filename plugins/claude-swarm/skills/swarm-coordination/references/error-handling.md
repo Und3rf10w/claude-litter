@@ -74,25 +74,34 @@ Error: Agent name 'backend-dev' already exists in team
 /claude-swarm:swarm-status <team-name>
 ```
 
-#### 3. Socket Permission Issues
+#### 3. Kitty Socket Issues
 
-**Error:**
+**Error (kitty):**
 ```
-Error: Cannot connect to socket /Users/.../.claude/sockets/...
+Error: Could not find a valid kitty socket
 ```
 
 **Solution:**
 ```bash
-# Check socket directory permissions
-ls -la ~/.claude/sockets/
+# 1. Verify kitty config has remote control enabled
+grep -E 'allow_remote_control|listen_on' ~/.config/kitty/kitty.conf
+# Should show:
+#   allow_remote_control yes
+#   listen_on unix:/tmp/kitty-$USER
 
-# Fix permissions if needed
-chmod 700 ~/.claude/sockets/
-chmod 600 ~/.claude/sockets/*
+# 2. Check socket exists (kitty appends -PID to path)
+ls -la /tmp/kitty-$(whoami)-*
 
-# Run reconcile to detect and fix issues
-/claude-swarm:swarm-reconcile <team-name>
+# 3. Test socket connectivity
+kitten @ ls
+
+# 4. Restart kitty completely if needed (not just reload)
+
+# 5. Or manually set socket path
+export KITTY_LISTEN_ON=unix:/tmp/kitty-$(whoami)-$KITTY_PID
 ```
+
+**Note:** Kitty creates sockets at `/tmp/kitty-$USER-$PID`. The plugin auto-discovers the correct socket, but if you have multiple kitty instances, you may need to set `KITTY_LISTEN_ON` explicitly.
 
 #### 4. Path Traversal Validation
 
@@ -223,7 +232,7 @@ rm ~/.claude/teams/<team-name>/config.json
 /claude-swarm:swarm-verify <team-name>
 
 # Check inbox manually
-cat ~/.claude/teams/<team-name>/inbox/<agent-name>.json
+cat ~/.claude/teams/<team-name>/inboxes/<agent-name>.json
 ```
 
 **Common Causes:**
@@ -259,10 +268,10 @@ Inbox command fails or shows garbled output
 **Solution:**
 ```bash
 # Back up current inbox
-cp ~/.claude/teams/<team-name>/inbox/<agent>.json ~/.claude/teams/<team-name>/inbox/<agent>.json.bak
+cp ~/.claude/teams/<team-name>/inboxes/<agent>.json ~/.claude/teams/<team-name>/inboxes/<agent>.json.bak
 
 # Reset inbox
-echo '[]' > ~/.claude/teams/<team-name>/inbox/<agent>.json
+echo '[]' > ~/.claude/teams/<team-name>/inboxes/<agent>.json
 
 # Notify sender to resend messages
 ```
@@ -444,7 +453,7 @@ Fix specific components:
 
 ```bash
 # Reset specific inbox
-echo '[]' > ~/.claude/teams/<team-name>/inbox/<agent>.json
+echo '[]' > ~/.claude/teams/<team-name>/inboxes/<agent>.json
 
 # Reset specific task
 # Edit ~/.claude/tasks/<team-name>/tasks.json manually
@@ -559,7 +568,7 @@ cat ~/.claude/teams/<team-name>/config.json
 cat ~/.claude/tasks/<team-name>/tasks.json
 
 # View raw inbox
-cat ~/.claude/teams/<team-name>/inbox/<agent>.json
+cat ~/.claude/teams/<team-name>/inboxes/<agent>.json
 ```
 
 ## Getting Help
@@ -584,6 +593,27 @@ cat ~/.claude/teams/<team-name>/config.json > config.txt
 
 4. **Report issue** with diagnostic information to maintainers
 
+## Environment Variables
+
+When debugging, these environment variables are set for spawned teammates:
+
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_CODE_TEAM_NAME` | Current team name |
+| `CLAUDE_CODE_AGENT_ID` | Agent's unique UUID |
+| `CLAUDE_CODE_AGENT_NAME` | Agent name (e.g., "backend-dev") |
+| `CLAUDE_CODE_AGENT_TYPE` | Agent role type |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's UUID |
+| `CLAUDE_CODE_AGENT_COLOR` | Agent display color |
+| `KITTY_LISTEN_ON` | Kitty socket path (kitty only) |
+
+User-configurable:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SWARM_MULTIPLEXER` | Force "tmux" or "kitty" | Auto-detect |
+| `SWARM_KITTY_MODE` | Kitty spawn mode | `split` |
+
 ## Quick Reference
 
 | Issue | Quick Fix |
@@ -594,5 +624,5 @@ cat ~/.claude/teams/<team-name>/config.json > config.txt
 | Messages not received | Verify agent name, check inbox |
 | Invalid task ID | Run `/claude-swarm:task-list` to see IDs |
 | Team creation fails | Check permissions, use valid name |
-| Can't connect to socket | Check permissions, run reconcile |
+| Kitty socket not found | Check `listen_on` in kitty.conf, restart kitty |
 | Cleanup incomplete | Use `--force` flag |

@@ -2,6 +2,19 @@
 
 Complete reference for the `swarm-utils.sh` bash library functions. These functions provide programmatic control over swarm teams.
 
+## Library Architecture
+
+The swarm-utils library uses a modular architecture with 13 specialized modules organized by functional responsibility:
+
+- **core/** - Global variables, utilities, file locking
+- **multiplexer/** - Terminal multiplexer detection and control (kitty/tmux)
+- **team/** - Team lifecycle, status management
+- **communication/** - Message inbox system
+- **tasks/** - Task management CRUD operations
+- **spawn/** - Teammate spawning, cleanup, diagnostics
+
+All modules are loaded automatically when you source `swarm-utils.sh`. The modular design improves maintainability while maintaining 100% backward compatibility with existing code.
+
 ## Setup
 
 Source the library before using functions:

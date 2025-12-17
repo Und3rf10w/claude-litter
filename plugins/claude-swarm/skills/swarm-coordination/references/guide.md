@@ -65,9 +65,9 @@ export SWARM_MULTIPLEXER=kitty  # Force kitty
 Set `SWARM_KITTY_MODE` before spawning:
 
 ```bash
-export SWARM_KITTY_MODE=window  # Separate windows (default)
-export SWARM_KITTY_MODE=split   # Splits within current tab
+export SWARM_KITTY_MODE=split   # Vertical splits within current tab (default)
 export SWARM_KITTY_MODE=tab     # Separate tabs
+export SWARM_KITTY_MODE=window  # Separate OS-level windows
 ```
 
 ### Session Files

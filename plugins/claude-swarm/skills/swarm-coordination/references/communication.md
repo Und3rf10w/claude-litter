@@ -347,3 +347,28 @@ This example demonstrates:
 - Coordination between dependent teammates
 - Regular status updates to team lead
 - Specific, actionable messages
+
+## Environment Variables
+
+Teammates have access to these environment variables for coordination:
+
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_CODE_TEAM_NAME` | Current team name |
+| `CLAUDE_CODE_AGENT_ID` | Your unique UUID |
+| `CLAUDE_CODE_AGENT_NAME` | Your agent name |
+| `CLAUDE_CODE_AGENT_TYPE` | Your role type |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's UUID |
+| `CLAUDE_CODE_AGENT_COLOR` | Your display color |
+
+## Kitty vs Tmux
+
+Spawn mode affects how teammates appear:
+
+| Mode | Behavior |
+|------|----------|
+| `split` | Vertical splits in current tab (default) |
+| `tab` | Separate tabs |
+| `window` | Separate OS windows |
+
+Set with: `export SWARM_KITTY_MODE=split`
