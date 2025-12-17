@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.4.1)
+│   └── claude-swarm/          # Main swarm plugin (v1.5.0)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17 slash commands (.md files)
@@ -30,7 +30,9 @@ claude-litter/
 │       │   ├── tasks/         # 08-tasks
 │       │   └── spawn/         # 09-spawn, 11-cleanup, 12-kitty-session, 13-diagnostics
 │       ├── skills/
-│       │   └── swarm-coordination/
+│       │   ├── swarm-orchestration/    # Team-lead operations
+│       │   ├── swarm-teammate/         # Worker coordination
+│       │   └── swarm-troubleshooting/  # Diagnostics & recovery
 │       └── docs/
 └── README.md
 ```
@@ -113,6 +115,125 @@ User-configurable:
 - `SWARM_MULTIPLEXER` - Force "tmux" or "kitty"
 - `SWARM_KITTY_MODE` - split (default), tab, or window (os-window)
 - `KITTY_LISTEN_ON` - Override kitty socket path
+
+## Known Issues and Workarounds
+
+### Library Source Output Bug
+
+**Issue**: The `swarm-utils.sh` entry point has `2>&1` on all source commands, causing function definitions to be printed to stdout when sourcing the library.
+
+**Impact**: Commands like `/claude-swarm:swarm-list-teams` show verbose function definition output before the actual results.
+
+**Location**: `plugins/claude-swarm/lib/swarm-utils.sh` lines 36-63
+
+**Fix**: Remove `2>&1` from all `source` commands. Example:
+```bash
+# Before (problematic):
+source "${SWARM_LIB_DIR}/core/00-globals.sh" 2>&1
+
+# After (correct):
+source "${SWARM_LIB_DIR}/core/00-globals.sh"
+```
+
+**Status**: Known issue as of v1.5.0. Will be fixed in next release.
+
+### Skills Architecture
+
+The plugin uses a **3-skill architecture** optimized for role-based context loading:
+
+#### 1. swarm-orchestration (~3,000 words, ~2,000 tokens)
+**Purpose**: Team-lead operations for creating and managing swarms
+**Auto-triggers on**: "set up team", "create swarm", "spawn teammates", "assign tasks", "coordinate agents", "swarm this task"
+**Covers**:
+- Analyzing tasks for swarm suitability
+- Creating teams and spawning teammates
+- Assigning tasks and monitoring progress
+- Normal workflow orchestration
+- Communication patterns
+- Slash command reference (via references/)
+
+#### 2. swarm-teammate (~2,000 words, ~1,200 tokens)
+**Purpose**: Worker coordination protocol and teammate identity
+**Auto-triggers via**: `CLAUDE_CODE_TEAM_NAME` environment variable (spawned teammates)
+**Covers**:
+- Teammate identity and role awareness
+- Communication protocol (inbox checking, messaging)
+- Task update procedures
+- Coordination with team-lead and peers
+- Working within swarm context
+
+#### 3. swarm-troubleshooting (~5,500 words, ~3,500 tokens)
+**Purpose**: Diagnostics, error recovery, and problem-solving
+**Auto-triggers on**: "spawn failed", "diagnose team", "fix swarm", "status mismatch", "recovery", "swarm not working"
+**Covers**:
+- Spawn failure diagnosis and recovery
+- Status mismatch reconciliation
+- Multiplexer troubleshooting (kitty/tmux)
+- Socket issues and connectivity problems
+- Detailed error recovery procedures
+- Advanced diagnostics reference (via references/)
+
+#### Design Rationale
+
+**Token Optimization**:
+- **Workers load only swarm-teammate**: Saves ~2,000 tokens per worker (no orchestration content)
+- **Team-lead loads swarm-orchestration**: Gets setup/management guidance without troubleshooting overhead
+- **Troubleshooting loads on-demand**: Heavy diagnostics (~3,500 tokens) only when needed
+
+**Expected Savings**:
+- 5-teammate swarm: **13,000 tokens saved** (62% reduction: from 21,000 to 8,000 tokens)
+- Workers: 3,500 → 1,200 tokens (66% reduction)
+- Team-lead: 3,500 → 2,000 tokens (43% reduction)
+- Team-lead with troubleshooting: 3,500 → 5,500 tokens (57% increase, but only when diagnosing issues)
+
+**Progressive Disclosure**:
+Each skill follows the three-tier loading pattern:
+1. **SKILL.md** - Core guidance, auto-loaded
+2. **references/** - Detailed reference docs, manually loaded
+3. **examples/** - Practical examples, on-demand
+
+#### Triggering Logic
+
+**Explicit trigger phrases** (case-insensitive, partial match):
+- swarm-orchestration: "set up", "create", "spawn", "assign", "coordinate", "swarm"
+- swarm-troubleshooting: "fail", "diagnose", "fix", "mismatch", "recovery", "not working"
+
+**Environment-based auto-trigger**:
+- swarm-teammate: Automatically loads when `CLAUDE_CODE_TEAM_NAME` is set (all spawned teammates)
+
+**No overlap**: Trigger phrases are mutually exclusive to prevent multi-skill loading
+
+#### SWARM_TEAMMATE_SYSTEM_PROMPT Integration
+
+`lib/core/00-globals.sh` defines the system prompt for spawned teammates:
+
+```bash
+SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm..."
+```
+
+**Integration requirement**: After skills are created, update this prompt to reference swarm-teammate skill by name, ensuring teammates load appropriate guidance automatically.
+
+**Example integration**:
+```bash
+SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm. Follow the swarm-teammate skill guidelines..."
+```
+
+#### Cross-References
+
+Skills reference each other when appropriate:
+- **swarm-orchestration → swarm-troubleshooting**: "If spawn fails, see swarm-troubleshooting skill"
+- **swarm-teammate → swarm-orchestration**: "For team setup questions, ask team-lead or see swarm-orchestration"
+- **swarm-troubleshooting → swarm-orchestration**: "After recovery, return to swarm-orchestration for normal operations"
+
+#### Validation Criteria
+
+When testing the implementation, verify:
+1. **Triggering**: Each skill loads with appropriate phrases, no unwanted multi-loading
+2. **Content**: No unnecessary duplication (only essential overlaps like slash command lists)
+3. **Token counts**: Verify actual token usage matches estimates (±10%)
+4. **Environment integration**: `CLAUDE_CODE_TEAM_NAME` triggers swarm-teammate automatically
+5. **References**: Progressive disclosure works (references/ loads only when requested)
+6. **Cross-references**: Skills reference each other appropriately without creating dependency cycles
 
 ## Key Implementation Patterns
 

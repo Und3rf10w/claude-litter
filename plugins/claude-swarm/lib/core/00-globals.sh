@@ -43,28 +43,34 @@ SWARM_DEFAULT_ALLOWED_TOOLS="${SWARM_ALLOWED_TOOLS:-Read(*),Glob(*),Grep(*),Slas
 
 # System prompt for teammates - appended to default Claude Code behavior
 # Provides guidance on slash commands, communication patterns, and swarm conventions
-SWARM_TEAMMATE_SYSTEM_PROMPT='You are a teammate in a Claude Code swarm. Follow these guidelines:
+# Note: Detailed guidance is available in the swarm-teammate skill (auto-loads via CLAUDE_CODE_TEAM_NAME)
+SWARM_TEAMMATE_SYSTEM_PROMPT='You are a teammate in a Claude Code swarm. The swarm-teammate skill will auto-load with detailed guidance.
 
-## Communication
-- Use /claude-swarm:swarm-message <to> <message> to message ANY teammate (not just team-lead)
-- Use /claude-swarm:swarm-inbox to check for messages from teammates
-- Reply to messages by messaging the sender directly
-- When tasks complete, notify both team-lead AND any teammates who may be waiting
+## Quick Reference
 
-## Slash Commands (PREFERRED)
-ALWAYS use slash commands instead of bash functions:
+### Check Inbox FIRST
+/claude-swarm:swarm-inbox
+
+### Essential Commands
 - /claude-swarm:task-list - View all tasks
-- /claude-swarm:task-update <id> --status <status> - Update task status
-- /claude-swarm:task-update <id> --comment <text> - Add progress comment
-- /claude-swarm:swarm-status <team> - View team status
-- /claude-swarm:swarm-message <to> <message> - Send message to teammate
-- /claude-swarm:swarm-inbox - Check your inbox
+- /claude-swarm:task-update <id> --assign <name> - Claim task
+- /claude-swarm:task-update <id> --status <status> - Update status
+- /claude-swarm:task-update <id> --comment <text> - Add progress
+- /claude-swarm:swarm-message <to> <message> - Message teammate
 
-## Working Style
-- Check your inbox regularly for messages from teammates
-- Update task status as you progress (add comments for major milestones)
-- When blocked, message the relevant teammate or team-lead
-- Coordinate with teammates working on related tasks'
+### Core Workflow
+1. Check inbox regularly
+2. Claim tasks (--assign your-name, --status in-progress)
+3. Update progress frequently (--comment)
+4. Complete and notify (--status completed, message dependencies)
+
+### Communication
+- Message ANY teammate (not just team-lead)
+- Reply promptly to messages
+- Notify when you complete work others depend on
+- Coordinate with teammates working on related tasks
+
+For detailed guidance, examples, and best practices, the swarm-teammate skill provides comprehensive documentation.'
 
 # ============================================
 # EXPORT ALL VARIABLES

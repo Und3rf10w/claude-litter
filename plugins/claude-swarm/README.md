@@ -20,10 +20,12 @@ Claude Swarm enables you to orchestrate teams of Claude Code instances working t
 ### Prerequisites
 
 **Required:**
+
 - **Terminal multiplexer**: kitty (recommended) or tmux
 - **jq**: JSON processor for configuration management
 
 **For kitty users** (recommended for best experience):
+
 ```bash
 # Add to ~/.config/kitty/kitty.conf
 allow_remote_control yes
@@ -58,6 +60,7 @@ listen_on unix:/tmp/kitty-${USER}
 ### Basic Workflow
 
 **As team-lead:**
+
 ```bash
 # Check team status
 /claude-swarm:swarm-status my-project
@@ -70,6 +73,7 @@ listen_on unix:/tmp/kitty-${USER}
 ```
 
 **As teammate:**
+
 ```bash
 # Check your inbox
 /claude-swarm:swarm-inbox
@@ -99,6 +103,7 @@ listen_on unix:/tmp/kitty-${USER}
 ### Slash Commands (17)
 
 **Team Management:**
+
 - `/claude-swarm:swarm-create` - Create new team
 - `/claude-swarm:swarm-spawn` - Spawn teammate
 - `/claude-swarm:swarm-status` - View team status
@@ -111,16 +116,19 @@ listen_on unix:/tmp/kitty-${USER}
 - `/claude-swarm:swarm-reconcile` - Fix status mismatches
 
 **Communication:**
+
 - `/claude-swarm:swarm-message` - Send message to teammate
 - `/claude-swarm:swarm-inbox` - Check your inbox
 
 **Task Management:**
+
 - `/claude-swarm:task-create` - Create new task
 - `/claude-swarm:task-list` - List all tasks
 - `/claude-swarm:task-update` - Update task status/assignment
 - `/claude-swarm:task-delete` - Delete task
 
 **Kitty-Specific:**
+
 - `/claude-swarm:swarm-session` - Generate/launch kitty session files
 
 ### Hooks (5)
@@ -207,6 +215,7 @@ plugins/claude-swarm/lib/
 ```
 
 **Key Features:**
+
 - **Modular design** - 13 specialized modules organized by functional responsibility
 - **Clear dependencies** - Numbered files ensure proper load order (00 → 13)
 - **Backward compatible** - All existing code continues to work unchanged
@@ -262,6 +271,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Teammates fail to spawn
 
 **Solutions:**
+
 1. Run `/claude-swarm:swarm-diagnose <team>` for detailed diagnostics
 2. Verify multiplexer is available: `which kitty` or `which tmux`
 3. For kitty: Check socket with `ls /tmp/kitty-$(whoami)-*`
@@ -273,6 +283,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Config says "active" but no session exists
 
 **Solutions:**
+
 1. Run `/claude-swarm:swarm-reconcile <team>` to auto-fix
 2. Check for crashed agents with `/swarm-diagnose`
 3. Manual verification: `/swarm-verify <team>`
@@ -282,6 +293,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Teammate not receiving messages
 
 **Solutions:**
+
 1. Verify inbox file exists: `ls ~/.claude/teams/<team>/inboxes/`
 2. Check message format: `cat ~/.claude/teams/<team>/inboxes/<agent>.json | jq`
 3. Teammate should run `/swarm-inbox` to check manually
@@ -292,6 +304,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** "Could not find a valid kitty socket"
 
 **Solutions:**
+
 1. Ensure running inside kitty (not Terminal.app or iTerm2)
 2. Add to `~/.config/kitty/kitty.conf`:
    ```
@@ -307,6 +320,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** `/swarm-cleanup` doesn't kill sessions
 
 **Solutions:**
+
 1. Verify you're running as team-lead (not teammate)
 2. Check `SWARM_KEEP_ALIVE` env var (if set, teammates stay alive)
 3. Use `--force` flag for permanent deletion
@@ -317,6 +331,7 @@ When teammates are spawned, these variables are automatically set:
 ### CI/CD Integration
 
 See [Integration Guide](docs/INTEGRATION.md) for examples of:
+
 - Creating teams from GitHub Actions
 - Sending notifications from deployment pipelines
 - Monitoring team health from external systems
@@ -342,18 +357,6 @@ send_message "my-team" "backend-dev" "Deploy to staging"
 # Skip demo, just check prerequisites
 /claude-swarm:swarm-onboard --skip-demo
 ```
-
-## Contributing
-
-This plugin is part of the Claude Code ecosystem. For bugs, feature requests, or contributions, please refer to the Claude Code documentation.
-
-## License
-
-See the main Claude Code license.
-
-## Version
-
-Current version: 1.4.1
 
 ## Support
 
