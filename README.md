@@ -346,34 +346,34 @@ To continue where you left off:
 
 ### Team Management
 
-| Command                       | Description       | Usage                                         |
-| ----------------------------- | ----------------- | --------------------------------------------- |
-| `/claude-swarm:swarm-create`  | Create a new team | `/swarm-create <team> [description]`          |
-| `/claude-swarm:swarm-spawn`   | Spawn a teammate  | `/swarm-spawn <name> [type] [model] [prompt]` |
-| `/claude-swarm:swarm-status`  | View team status  | `/swarm-status <team>`                        |
-| `/claude-swarm:swarm-cleanup` | Suspend/delete    | `/swarm-cleanup <team> [--force]`             |
-| `/claude-swarm:swarm-resume`  | Resume suspended  | `/swarm-resume <team>`                        |
+| Command                       | Description       | Usage                                                      |
+| ----------------------------- | ----------------- | ---------------------------------------------------------- |
+| `/claude-swarm:swarm-create`  | Create a new team | `/claude-swarm:swarm-create <team> [description]`          |
+| `/claude-swarm:swarm-spawn`   | Spawn a teammate  | `/claude-swarm:swarm-spawn <name> [type] [model] [prompt]` |
+| `/claude-swarm:swarm-status`  | View team status  | `/claude-swarm:swarm-status <team>`                        |
+| `/claude-swarm:swarm-cleanup` | Suspend/delete    | `/claude-swarm:swarm-cleanup <team> [--force]`             |
+| `/claude-swarm:swarm-resume`  | Resume suspended  | `/claude-swarm:swarm-resume <team>`                        |
 
 ### Task Management
 
-| Command                     | Description    | Usage                                                 |
-| --------------------------- | -------------- | ----------------------------------------------------- |
-| `/claude-swarm:task-create` | Create a task  | `/task-create <subject> [description]`                |
-| `/claude-swarm:task-list`   | List all tasks | `/task-list`                                          |
-| `/claude-swarm:task-update` | Update a task  | `/task-update <id> [--status] [--assign] [--comment]` |
+| Command                     | Description    | Usage                                                           |
+| --------------------------- | -------------- | --------------------------------------------------------------- |
+| `/claude-swarm:task-create` | Create a task  | `/claude-swarm:task-create <subject> [description]`             |
+| `/claude-swarm:task-list`   | List all tasks | `/claude-swarm:task-list`                                       |
+| `/claude-swarm:task-update` | Update a task  | `/claude-swarm:task-update <id> [--status] [--assign] [--comment]` |
 
 ### Communication
 
-| Command                       | Description      | Usage                           |
-| ----------------------------- | ---------------- | ------------------------------- |
-| `/claude-swarm:swarm-message` | Send a message   | `/swarm-message <to> <message>` |
-| `/claude-swarm:swarm-inbox`   | Check your inbox | `/swarm-inbox [mark_read]`      |
+| Command                       | Description      | Usage                                         |
+| ----------------------------- | ---------------- | --------------------------------------------- |
+| `/claude-swarm:swarm-message` | Send a message   | `/claude-swarm:swarm-message <to> <message>` |
+| `/claude-swarm:swarm-inbox`   | Check your inbox | `/claude-swarm:swarm-inbox [mark_read]`      |
 
 ### Kitty-Specific
 
-| Command                       | Description          | Usage                                            |
-| ----------------------------- | -------------------- | ------------------------------------------------ |
-| `/claude-swarm:swarm-session` | Manage session files | `/swarm-session <generate\|launch\|save> <team>` |
+| Command                       | Description          | Usage                                                    |
+| ----------------------------- | -------------------- | -------------------------------------------------------- |
+| `/claude-swarm:swarm-session` | Manage session files | `/claude-swarm:swarm-session <generate\|launch\|save> <team>` |
 
 ---
 

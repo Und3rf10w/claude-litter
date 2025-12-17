@@ -1,9 +1,6 @@
----
-name: Swarm Guide
-description: This skill should be used when the user asks "how do I coordinate agents?", "set up a team", "work in parallel", "use swarm mode", "coordinate multiple Claude instances", or needs guidance on effective multi-agent collaboration patterns and best practices.
----
-
 # Swarm Coordination Guide
+
+Detailed reference for swarm mode concepts, terminal support, and operational patterns.
 
 ## What is Swarm Mode?
 
@@ -59,44 +56,6 @@ export SWARM_MULTIPLEXER=kitty  # Force kitty
 - Quick fixes or small features
 - Tasks where context sharing is critical
 
-## Quick Start
-
-### Option 1: Automated Orchestration
-
-Just describe your task - the swarm-coordinator agent handles everything:
-
-```
-"Set up a team to implement user authentication with login, signup, and password reset"
-```
-
-### Option 2: Manual Setup
-
-```bash
-/swarm-create my-team                    # Create team structure
-/task-create "Implement API endpoints"   # Create tasks
-/task-create "Build UI components"
-/swarm-spawn backend-dev backend         # Spawn teammates
-/swarm-spawn frontend-dev frontend
-/task-update 1 --assign backend-dev      # Assign work
-/task-update 2 --assign frontend-dev
-```
-
-## Available Commands
-
-| Command                          | Purpose                                   |
-| -------------------------------- | ----------------------------------------- |
-| `/swarm-create <team>`           | Create team directories and config        |
-| `/swarm-spawn <name> <type>`     | Spawn teammate (tmux/kitty auto-detected) |
-| `/swarm-message <to> <message>`  | Send message to teammate                  |
-| `/swarm-inbox`                   | Check your inbox for messages             |
-| `/swarm-status <team>`           | View team status and progress             |
-| `/swarm-cleanup <team>`          | Suspend team (soft) or delete (--force)   |
-| `/swarm-resume <team>`           | Resume a suspended team                   |
-| `/swarm-session <action> <team>` | Manage kitty session files (kitty only)   |
-| `/task-create <subject>`         | Create a new task                         |
-| `/task-list`                     | List all tasks                            |
-| `/task-update <id> [options]`    | Update task status/assignment             |
-
 ## Kitty-Specific Features
 
 ### Spawn Modes
@@ -109,22 +68,16 @@ export SWARM_KITTY_MODE=split   # Splits within current tab
 export SWARM_KITTY_MODE=tab     # Separate tabs
 ```
 
-Or use `--mode` argument:
-
-```bash
-/swarm-spawn backend-dev backend --mode=split
-```
-
 ### Session Files
 
 Session files are stored with the team and can restore your entire swarm:
 
 ```bash
 # Generate session file from team config
-/swarm-session generate my-team
+/claude-swarm:swarm-session generate my-team
 
 # Launch kitty with all teammates
-/swarm-session launch my-team
+/claude-swarm:swarm-session launch my-team
 
 # Or manually:
 kitty --session ~/.claude/teams/my-team/swarm.kitty-session
@@ -132,47 +85,20 @@ kitty --session ~/.claude/teams/my-team/swarm.kitty-session
 
 ### Window Identification
 
-Kitty windows use user variables (`--var`) for reliable identification. This means:
+Kitty windows use user variables (`--var`) for reliable identification:
 
 - Windows can be found even if claude renames tabs
 - Matching uses `var:swarm_<team>_<agent>` pattern
 - Works with `kitten @ close-window --match "var:..."`
-
-## Communication Patterns
-
-### Team Lead → Teammates
-
-```bash
-/swarm-message backend-dev "Priority change: implement OAuth first"
-```
-
-### Broadcasting to All
-
-The team-lead can broadcast via the utility functions:
-
-```bash
-# In team-lead session (commands use ${CLAUDE_PLUGIN_ROOT} internally)
-# Or if calling shell directly:
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
-broadcast_message "my-team" "Stand-up: share your progress" "team-lead"
-```
-
-### Teammates → Team Lead
-
-Teammates should report completion:
-
-```bash
-/swarm-message team-lead "Task #1 complete. PR ready for review."
-```
 
 ## Task Dependencies
 
 Set up dependencies when tasks must be completed in order:
 
 ```bash
-/task-create "Build API"                    # Task #1
-/task-create "Write integration tests"      # Task #2
-/task-update 2 --blocked-by 1               # #2 waits for #1
+/claude-swarm:task-create "Build API"                    # Task #1
+/claude-swarm:task-create "Write integration tests"      # Task #2
+/claude-swarm:task-update 2 --blocked-by 1               # #2 waits for #1
 ```
 
 ## Best Practices
@@ -182,7 +108,7 @@ Set up dependencies when tasks must be completed in order:
 When spawning teammates, give them specific instructions:
 
 ```bash
-/swarm-spawn api-dev backend --model=sonnet "You handle the REST API. Focus on /api/auth endpoints. Check task #1 for full requirements. Report to team-lead when done."
+/claude-swarm:swarm-spawn api-dev backend sonnet "You handle the REST API. Focus on /api/auth endpoints. Check task #1 for full requirements. Report to team-lead when done."
 ```
 
 ### 2. Right-Size Your Team
@@ -202,26 +128,26 @@ When spawning teammates, give them specific instructions:
 Teammates should periodically:
 
 ```bash
-/swarm-inbox          # Check for messages
-/task-list            # See task status
+/claude-swarm:swarm-inbox          # Check for messages
+/claude-swarm:task-list            # See task status
 ```
 
 ### 5. Clear Completion Signals
 
 When done, teammates should:
 
-1. Mark task resolved: `/task-update <id> --status resolved`
-2. Add completion comment: `/task-update <id> --comment "Done. See commit abc123"`
-3. Notify team-lead: `/swarm-message team-lead "Task #<id> complete"`
+1. Mark task resolved: `/claude-swarm:task-update <id> --status resolved`
+2. Add completion comment: `/claude-swarm:task-update <id> --comment "Done. See commit abc123"`
+3. Notify team-lead: `/claude-swarm:swarm-message team-lead "Task #<id> complete"`
 
 ## Monitoring Progress
 
 ### As Team Lead
 
 ```bash
-/swarm-status my-team   # Overview (shows multiplexer type)
-/task-list              # Task progress
-/swarm-inbox            # Check for updates
+/claude-swarm:swarm-status my-team   # Overview (shows multiplexer type)
+/claude-swarm:task-list              # Task progress
+/claude-swarm:swarm-inbox            # Check for updates
 ```
 
 ### Attach to Teammate (tmux)
@@ -238,7 +164,7 @@ tmux attach -t swarm-my-team-backend-dev
 tmux list-sessions | grep swarm
 
 # kitty (check status instead)
-/swarm-status my-team
+/claude-swarm:swarm-status my-team
 ```
 
 ## Team Lifecycle
@@ -255,7 +181,7 @@ Teams support suspend and resume for multi-day work:
 ### Suspend a Team
 
 ```bash
-/swarm-cleanup my-team           # Soft: Kill sessions, keep data
+/claude-swarm:swarm-cleanup my-team           # Soft: Kill sessions, keep data
 ```
 
 This:
@@ -267,7 +193,7 @@ This:
 ### Resume a Team
 
 ```bash
-/swarm-resume my-team
+/claude-swarm:swarm-resume my-team
 ```
 
 This:
@@ -282,7 +208,7 @@ This:
 ### Hard Cleanup (Delete)
 
 ```bash
-/swarm-cleanup my-team --force   # Kill sessions AND delete all data
+/claude-swarm:swarm-cleanup my-team --force   # Kill sessions AND delete all data
 ```
 
 ## Troubleshooting
@@ -291,7 +217,7 @@ This:
 
 Messages are file-based; teammates must check:
 
-- Run `/swarm-inbox` manually
+- Run `/claude-swarm:swarm-inbox` manually
 - Messages auto-deliver on session start (hook)
 
 ### Teammate Not Responding
@@ -300,21 +226,21 @@ Messages are file-based; teammates must check:
 
 1. Check session exists: `tmux list-sessions`
 2. Attach and check: `tmux attach -t swarm-<team>-<name>`
-3. Respawn if needed: `/swarm-spawn`
+3. Respawn if needed: `/claude-swarm:swarm-spawn`
 
 **kitty:**
 
-1. Check status: `/swarm-status <team>`
+1. Check status: `/claude-swarm:swarm-status <team>`
 2. Use kitten to list: `kitten @ ls | jq '.[] | .tabs[].windows[] | select(.user_vars.swarm_team)'`
-3. Respawn if needed: `/swarm-spawn`
+3. Respawn if needed: `/claude-swarm:swarm-spawn`
 
 ### Task Assignment Issues
 
 Verify agent name matches:
 
 ```bash
-/swarm-status <team>   # See member names
-/task-update <id> --assign <exact-name>
+/claude-swarm:swarm-status <team>   # See member names
+/claude-swarm:task-update <id> --assign <exact-name>
 ```
 
 ## Environment Variables

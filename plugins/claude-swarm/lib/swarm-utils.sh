@@ -866,6 +866,12 @@ spawn_teammate_kitty_resume() {
     local model="$4"
     local initial_prompt="$5"
 
+    # Validate model (prevent injection via model parameter)
+    case "$model" in
+        haiku|sonnet|opus) ;;
+        *) model="sonnet" ;;
+    esac
+
     # Get existing agent ID from config
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
     local agent_id=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .agentId' "$config_file")
@@ -904,9 +910,12 @@ spawn_teammate_kitty_resume() {
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
-    # Brief wait for window to be queryable, then register
-    sleep 2
-    register_window "$team_name" "$agent_name" "$swarm_var"
+    # Wait for Claude Code to be ready, then register
+    if wait_for_claude_ready "$swarm_var" 10; then
+        register_window "$team_name" "$agent_name" "$swarm_var"
+    else
+        echo -e "${YELLOW}    Warning: Claude Code may not be fully initialized for ${agent_name}${NC}" >&2
+    fi
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -976,42 +985,22 @@ send_message() {
     local from="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-team-lead}}"
     local color="${4:-blue}"
     local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
-    local lock_file="${inbox_file}.lock"
 
     if [[ ! -f "$inbox_file" ]]; then
         echo -e "${RED}Inbox for '${to}' not found in team '${team_name}'${NC}"
         return 1
     fi
 
-    # Atomic file locking using mkdir (mkdir is atomic)
-    # Clean up stale locks older than 60 seconds
-    if [[ -d "$lock_file" ]]; then
-        local lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
-        if [[ $lock_age -gt 60 ]]; then
-            rmdir "$lock_file" 2>/dev/null || true
-        fi
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$inbox_file"; then
+        echo -e "${RED}Failed to acquire lock for inbox${NC}" >&2
+        return 1
     fi
-
-    local max_attempts=50
-    local attempt=0
-    while ! mkdir "$lock_file" 2>/dev/null; do
-        ((attempt++))
-        if [[ $attempt -ge $max_attempts ]]; then
-            echo -e "${RED}Failed to acquire lock for inbox${NC}" >&2
-            return 1
-        fi
-        sleep 0.1
-    done
-
-    # Function to clean up lock - called explicitly, not via trap
-    _cleanup_lock() {
-        rmdir "$lock_file" 2>/dev/null || true
-    }
 
     local tmp_file=$(mktemp)
     if [[ -z "$tmp_file" ]]; then
         echo -e "${RED}Failed to create temp file${NC}" >&2
-        _cleanup_lock
+        release_file_lock
         return 1
     fi
 
@@ -1023,11 +1012,11 @@ send_message() {
           --arg ts "$timestamp" \
           '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
           "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
-        _cleanup_lock
+        release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
     else
         rm -f "$tmp_file"
-        _cleanup_lock
+        release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2
         return 1
     fi
@@ -1083,13 +1072,28 @@ broadcast_message() {
         return 1
     fi
 
+    local failed_count=0
+    local success_count=0
+
     # Read members using while loop (handles names with spaces/special chars)
     while IFS= read -r member; do
         [[ -n "$member" ]] || continue
         if [[ "$member" != "$exclude" ]]; then
-            send_message "$team_name" "$member" "$message"
+            if send_message "$team_name" "$member" "$message"; then
+                ((success_count++))
+            else
+                echo -e "${YELLOW}Warning: Failed to send message to '${member}'${NC}" >&2
+                ((failed_count++))
+            fi
         fi
     done < <(jq -r '.members[].name' "$config_file")
+
+    if [[ $failed_count -gt 0 ]]; then
+        echo -e "${YELLOW}Broadcast completed with ${failed_count} failure(s) and ${success_count} success(es)${NC}" >&2
+        return 1
+    fi
+
+    return 0
 }
 
 format_messages_xml() {
@@ -1369,6 +1373,12 @@ spawn_teammate_kitty() {
     validate_name "$team_name" "team" || return 1
     validate_name "$agent_name" "agent" || return 1
 
+    # Validate model (prevent injection via model parameter)
+    case "$model" in
+        haiku|sonnet|opus) ;;
+        *) model="sonnet" ;;
+    esac
+
     # Generate UUID for agent
     local agent_id=$(generate_uuid)
 
@@ -1423,9 +1433,12 @@ spawn_teammate_kitty() {
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
-    # Brief wait for window to be queryable, then register
-    sleep 2
-    register_window "$team_name" "$agent_name" "$swarm_var"
+    # Wait for Claude Code to be ready, then register
+    if wait_for_claude_ready "$swarm_var" 10; then
+        register_window "$team_name" "$agent_name" "$swarm_var"
+    else
+        echo -e "${YELLOW}Warning: Claude Code may not be fully initialized for ${agent_name}${NC}" >&2
+    fi
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in kitty ${launch_type}${NC}"
     echo "  Agent ID: ${agent_id}"
