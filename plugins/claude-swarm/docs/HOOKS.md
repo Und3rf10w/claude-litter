@@ -253,13 +253,13 @@ This hook runs after `ExitPlanMode` is called and checks if the tool result cont
 
 The user approved plan mode with swarm launch (3 teammates requested).
 
-Use the swarm-coordinator agent or these commands:
+Use these commands to set up the swarm:
 1. `/swarm-create <team-name>` - Create the team
 2. `/task-create <subject>` - Create tasks from the plan
 3. `/swarm-spawn <name> <type>` - Spawn 3 teammates
 4. `/task-update <id> --assign <name>` - Assign tasks
 
-Or simply describe the task to the swarm-coordinator agent for automated orchestration.
+Claude Code will invoke the swarm-coordination skill automatically for guidance.
 </system-reminder>
 ```
 
@@ -527,6 +527,7 @@ Expected performance:
 
 ## See Also
 
-- [Swarm Guide](./SWARM_GUIDE.md) - Comprehensive guide to using Claude Swarm
-- [Architecture](./ARCHITECTURE.md) - System architecture and design decisions
-- [API Reference](./API.md) - Slash command and function reference
+- **[Main README](../README.md)** - Overview, quick start, architecture, and troubleshooting
+- **[Commands Reference](COMMANDS.md)** - Complete slash command documentation
+- **[Integration Guide](INTEGRATION.md)** - CI/CD integration and external systems
+- **[Swarm Coordination Skill](../skills/swarm-coordination/SKILL.md)** - Orchestration workflows and best practices

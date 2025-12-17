@@ -37,5 +37,7 @@ echo "Created task #${TASK_ID}"
 After creating, report:
 
 1. Task ID assigned
-2. Suggest assigning with `/task-update <id> --assign <teammate>`
-3. Or setting dependencies with `/task-update <id> --blocked-by <other-id>`
+2. Initial status is `pending`
+3. Suggest assigning with `/task-update <id> --assign <teammate>`
+4. Or setting dependencies with `/task-update <id> --blocked-by <other-id>`
+5. Update status as work progresses: `pending` → `in-progress` → `in-review` → `completed`

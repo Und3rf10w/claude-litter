@@ -50,8 +50,7 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 This installs the swarm plugin, which includes:
 
 - 17 slash commands for team/task management
-- 1 agent (swarm-coordinator) for automated orchestration
-- 1 skill (swarm-guide) for guidance
+- 1 skill (swarm-coordination) for guidance
 - 5 hooks for session lifecycle events
 
 ### Step 3: Configure Your Terminal
@@ -74,6 +73,8 @@ vim ~/.config/kitty/kitty.conf
 allow_remote_control yes
 listen_on unix:/tmp/kitty-$USER
 ```
+
+> **Note:** Kitty automatically appends `-PID` to the socket path. So with the config above, the actual socket will be `/tmp/kitty-username-12345` (where 12345 is kitty's PID). The plugin handles this automatically.
 
 I would generally recommend you add this line too so that you can use SHIFT + Enter to insert a new line in Claude Code:
 
@@ -222,22 +223,20 @@ The plugin automatically detects sockets matching `/tmp/kitty-$USER-*` (kitty ap
 
 ## Quick Start
 
-### Option 1: Automated (Recommended)
-
-Just describe your task - the swarm-coordinator agent handles everything:
+Just describe your task - Claude Code will invoke the swarm-coordination skill:
 
 ```
 "Set up a team to implement user authentication with login, signup, and password reset"
 ```
 
-Claude will automatically:
+Claude will guide you through:
 
-1. Create a team
-2. Break down the task
-3. Spawn teammates
-4. Assign work
+1. Creating a team
+2. Breaking down the task
+3. Spawning teammates
+4. Assigning work
 
-### Option 2: Manual Setup
+Or use commands directly:
 
 ```bash
 # Create a team
@@ -572,10 +571,10 @@ If you see `Error: open /dev/tty: device not configured` when spawning teammates
 
 1. Ensure `listen_on unix:/tmp/kitty-$USER` is in your kitty.conf
 2. Restart kitty completely
-3. Verify socket exists:
+3. Verify socket exists (note: kitty appends `-PID` to the path):
 
    ```bash
-   ls -la /tmp/kitty-$USER
+   ls -la /tmp/kitty-$USER*
    ```
 
 4. Test socket connection:
@@ -667,13 +666,9 @@ When teammates spawn their own subagents, those subagents automatically inherit 
 
 - task-create, task-list, task-update, task-delete
 
-### Agents (1)
-
-- **swarm-coordinator** - Orchestrates team creation and task breakdown
-
 ### Skills (1)
 
-- **swarm-guide** - Comprehensive guide to swarm coordination patterns
+- **swarm-coordination** - Comprehensive guide to swarm coordination patterns
 
 ### Hooks (5)
 

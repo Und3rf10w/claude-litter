@@ -92,11 +92,15 @@ generate_uuid() {
 }
 
 # Kitty socket for remote control (required when running from Claude Code)
-# Kitty creates sockets like /tmp/kitty-$USER-$PID, so we need to find it dynamically
+# Per kitty docs: "If {kitty_pid} is present, then it is replaced by the PID...
+# otherwise the PID is appended to the value, with a hyphen."
+# So listen_on unix:/tmp/kitty-$USER creates /tmp/kitty-username-12345
 
 # Helper function to find the kitty socket
 find_kitty_socket() {
-    # Priority 1: Check if KITTY_LISTEN_ON is set explicitly
+    local user=$(whoami)
+
+    # Priority 1: Check if KITTY_LISTEN_ON is set explicitly (passed from parent or env)
     if [[ -n "$KITTY_LISTEN_ON" ]]; then
         if validate_kitty_socket "$KITTY_LISTEN_ON"; then
             export SWARM_KITTY_SOCKET_CACHE="$KITTY_LISTEN_ON"
@@ -107,7 +111,7 @@ find_kitty_socket() {
         fi
     fi
 
-    # Priority 2: Check cached socket
+    # Priority 2: Check cached socket (validated on each use)
     if [[ -n "$SWARM_KITTY_SOCKET_CACHE" ]]; then
         if validate_kitty_socket "$SWARM_KITTY_SOCKET_CACHE"; then
             echo "$SWARM_KITTY_SOCKET_CACHE"
@@ -118,35 +122,70 @@ find_kitty_socket() {
         fi
     fi
 
-    # Priority 3: Discovery - find the most recent kitty socket
-    local socket=$(ls -t /tmp/kitty-$(whoami)-* 2>/dev/null | head -1)
-    if [[ -S "$socket" ]]; then
-        local socket_uri="unix:$socket"
+    # Priority 3: If KITTY_PID is set, construct exact socket path
+    # This is most reliable when running inside a kitty window
+    if [[ -n "$KITTY_PID" ]]; then
+        local exact_socket="/tmp/kitty-${user}-${KITTY_PID}"
+        if [[ -S "$exact_socket" ]]; then
+            local socket_uri="unix:$exact_socket"
+            if validate_kitty_socket "$socket_uri"; then
+                export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+                export KITTY_LISTEN_ON="$socket_uri"  # Export for teammates
+                echo "$socket_uri"
+                return 0
+            fi
+        fi
+    fi
+
+    # Priority 4: Discovery - find kitty sockets with PID suffix (most common)
+    # Pattern: /tmp/kitty-username-* (kitty appends -PID)
+    local socket
+    for socket in $(ls -t /tmp/kitty-${user}-* 2>/dev/null); do
+        if [[ -S "$socket" ]]; then
+            local socket_uri="unix:$socket"
+            if validate_kitty_socket "$socket_uri"; then
+                export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+                export KITTY_LISTEN_ON="$socket_uri"  # Export for teammates
+                echo "$socket_uri"
+                return 0
+            fi
+        fi
+    done
+
+    # Priority 5: Check for socket without PID suffix (rare, explicit config)
+    if [[ -S "/tmp/kitty-${user}" ]]; then
+        local socket_uri="unix:/tmp/kitty-${user}"
         if validate_kitty_socket "$socket_uri"; then
             export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+            export KITTY_LISTEN_ON="$socket_uri"
             echo "$socket_uri"
             return 0
         fi
     fi
 
-    # Fallback to simple pattern (in case kitty config uses exact name)
-    if [[ -S "/tmp/kitty-$(whoami)" ]]; then
-        local socket_uri="unix:/tmp/kitty-$(whoami)"
-        if validate_kitty_socket "$socket_uri"; then
-            export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
-            echo "$socket_uri"
-            return 0
+    # Priority 6: Check common alternative locations
+    for socket in /tmp/mykitty /tmp/kitty; do
+        if [[ -S "$socket" ]]; then
+            local socket_uri="unix:$socket"
+            if validate_kitty_socket "$socket_uri"; then
+                export SWARM_KITTY_SOCKET_CACHE="$socket_uri"
+                export KITTY_LISTEN_ON="$socket_uri"
+                echo "$socket_uri"
+                return 0
+            fi
         fi
-    fi
+    done
 
     # No socket found - provide helpful error guidance
     echo -e "${RED}Error: Could not find a valid kitty socket${NC}" >&2
     echo -e "${YELLOW}Troubleshooting steps:${NC}" >&2
     echo -e "  1. Ensure you're running inside kitty terminal (not iTerm2, Terminal.app, etc.)" >&2
     echo -e "  2. Enable remote control in kitty.conf: allow_remote_control yes" >&2
-    echo -e "  3. Enable listening: listen_on unix:/tmp/kitty-\$(whoami)" >&2
-    echo -e "  4. Restart kitty after config changes" >&2
-    echo -e "  5. Or set KITTY_LISTEN_ON manually: export KITTY_LISTEN_ON=unix:/path/to/socket" >&2
+    echo -e "  3. Enable listening in kitty.conf: listen_on unix:/tmp/kitty-\$USER" >&2
+    echo -e "     (Note: kitty will append -PID, creating /tmp/kitty-${user}-12345)" >&2
+    echo -e "  4. Restart kitty completely after config changes" >&2
+    echo -e "  5. Or set socket manually: export KITTY_LISTEN_ON=unix:/tmp/kitty-${user}-\$KITTY_PID" >&2
+    echo -e "  6. Check existing sockets: ls -la /tmp/kitty-${user}*" >&2
     return 1
 }
 
@@ -676,7 +715,9 @@ format_member_status() {
 }
 
 # Get task summary for a team
-# Returns: open_count|resolved_count
+# Returns: active_count|completed_count
+# Active = pending, in-progress, blocked, in-review
+# Completed = completed
 get_task_summary() {
     local team_name="$1"
     local tasks_dir="${TASKS_DIR}/${team_name}"
@@ -686,10 +727,10 @@ get_task_summary() {
         return 0
     fi
 
-    local open=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "open") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
-    local resolved=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "resolved") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+    local active=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "pending" or .status == "in-progress" or .status == "blocked" or .status == "in-review") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+    local completed=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "completed") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
 
-    echo "${open}|${resolved}"
+    echo "${active}|${completed}"
 }
 
 # Get context for a member (for resume prompts)
@@ -711,8 +752,8 @@ get_member_context() {
             if [[ "$owner" == "$member_name" ]]; then
                 local id=$(jq -r '.id' "$task_file")
                 local subject=$(jq -r '.subject' "$task_file")
-                local status=$(jq -r '.status' "$task_file")
-                assigned_tasks="${assigned_tasks}\n  - Task #${id} [${status}]: ${subject}"
+                local task_status=$(jq -r '.status' "$task_file")
+                assigned_tasks="${assigned_tasks}\n  - Task #${id} [${task_status}]: ${subject}"
             fi
         done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null)
         if [[ -n "$assigned_tasks" ]]; then
@@ -819,11 +860,12 @@ resume_team() {
     # Mark team as active
     update_team_status "$team_name" "active"
 
-    # Mark current session (team-lead) as active
-    update_member_status "$team_name" "team-lead" "active"
+    # Mark current session as active (using CLAUDE_CODE_AGENT_NAME if set, otherwise assume team-lead)
+    local current_agent="${CLAUDE_CODE_AGENT_NAME:-team-lead}"
+    update_member_status "$team_name" "$current_agent" "active"
 
-    # Get offline members (excluding team-lead)
-    local offline_members=$(jq -r '.members[] | select(.status == "offline" and .name != "team-lead") | "\(.name)|\(.type)|\(.model // "sonnet")"' "$config_file")
+    # Get offline members (excluding current agent)
+    local offline_members=$(jq -r --arg current "$current_agent" '.members[] | select(.status == "offline" and .name != $current) | "\(.name)|\(.type)|\(.model // "sonnet")"' "$config_file")
 
     if [[ -z "$offline_members" ]]; then
         echo -e "${GREEN}Team '${team_name}' resumed (no teammates to respawn)${NC}"
@@ -894,8 +936,12 @@ spawn_teammate_kitty_resume() {
         tab) launch_type="tab" ;;
     esac
 
+    # Get kitty socket for passing to teammate
+    local kitty_socket=$(find_kitty_socket)
+
     # Launch with default allowed tools (comma-separated, quoted)
     # Pass initial_prompt as CLI argument - more reliable than send-text
+    # Pass KITTY_LISTEN_ON so teammates can discover the socket
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --cwd "$(pwd)" \
@@ -907,6 +953,7 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
+        --env "KITTY_LISTEN_ON=${kitty_socket}" \
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
@@ -1057,8 +1104,21 @@ mark_messages_read() {
         return 1
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$inbox_file"; then
+        echo -e "${RED}Failed to acquire lock for inbox${NC}" >&2
+        return 1
+    fi
+
     local tmp_file=$(mktemp)
-    jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"
+    if jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
+        release_file_lock
+        return 0
+    else
+        rm -f "$tmp_file"
+        release_file_lock
+        return 1
+    fi
 }
 
 broadcast_message() {
@@ -1139,7 +1199,7 @@ create_task() {
             id: $id,
             subject: $subject,
             description: $description,
-            status: "open",
+            status: "pending",
             owner: null,
             references: [],
             blocks: [],
@@ -1242,18 +1302,24 @@ list_tasks() {
         ((task_count++))
         local id=$(jq -r '.id' "$task_file")
         local subject=$(jq -r '.subject' "$task_file")
-        local status=$(jq -r '.status' "$task_file")
+        local task_status=$(jq -r '.status' "$task_file")
         local owner=$(jq -r '.owner // "unassigned"' "$task_file")
         local blocked_by=$(jq -r '.blockedBy | if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end' "$task_file")
 
         local status_color="${NC}"
-        if [[ "$status" == "open" ]]; then
+        if [[ "$task_status" == "pending" ]]; then
+            status_color="${NC}"  # white/default
+        elif [[ "$task_status" == "in-progress" ]]; then
+            status_color="${BLUE}"
+        elif [[ "$task_status" == "blocked" ]]; then
+            status_color="${RED}"
+        elif [[ "$task_status" == "in-review" ]]; then
             status_color="${YELLOW}"
-        elif [[ "$status" == "resolved" ]]; then
+        elif [[ "$task_status" == "completed" ]]; then
             status_color="${GREEN}"
         fi
 
-        echo -e "#${id} ${status_color}[${status}]${NC} ${subject} (${owner})${blocked_by}"
+        echo -e "#${id} ${status_color}[${task_status}]${NC} ${subject} (${owner})${blocked_by}"
     done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null | sort)
 
     if [[ $task_count -eq 0 ]]; then
@@ -1416,9 +1482,13 @@ spawn_teammate_kitty() {
             ;;
     esac
 
+    # Get kitty socket for passing to teammate
+    local kitty_socket=$(find_kitty_socket)
+
     # Launch new kitty window/tab with env vars AND user variable for identification
     # --var sets a persistent user variable that survives title changes
     # Pass initial_prompt as CLI argument - more reliable than send-text
+    # Pass KITTY_LISTEN_ON so teammates can discover the socket
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --cwd "$(pwd)" \
@@ -1430,6 +1500,7 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
+        --env "KITTY_LISTEN_ON=${kitty_socket}" \
         claude --model "$model" --dangerously-skip-permissions \
         --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
@@ -1491,7 +1562,7 @@ generate_kitty_session() {
 # Usage: kitty --session ${session_file}
 
 layout splits
-cd ${HOME}
+cd $(pwd)
 
 EOF
 
@@ -1725,14 +1796,14 @@ swarm_status() {
     # Task summary - using helper function
     echo -e "${BLUE}Tasks:${NC}"
     local task_summary=$(get_task_summary "$team_name")
-    local open="${task_summary%|*}"
-    local resolved="${task_summary#*|}"
+    local active="${task_summary%|*}"
+    local completed="${task_summary#*|}"
 
-    if [[ "$open" == "0" && "$resolved" == "0" ]]; then
+    if [[ "$active" == "0" && "$completed" == "0" ]]; then
         echo "  (no tasks)"
     else
-        echo "  Open: ${open}"
-        echo "  Resolved: ${resolved}"
+        echo "  Active: ${active}"
+        echo "  Completed: ${completed}"
     fi
 }
 
@@ -1886,18 +1957,18 @@ list_teams() {
 
         if [[ -f "$config_file" ]]; then
             ((team_count++))
-            local status=$(jq -r '.status // "unknown"' "$config_file")
+            local team_status=$(jq -r '.status // "unknown"' "$config_file")
             local member_count=$(jq -r '.members | length' "$config_file")
             local description=$(jq -r '.description // ""' "$config_file" | head -c 50)
 
             local status_color="${NC}"
-            if [[ "$status" == "active" ]]; then
+            if [[ "$team_status" == "active" ]]; then
                 status_color="${GREEN}"
-            elif [[ "$status" == "suspended" ]]; then
+            elif [[ "$team_status" == "suspended" ]]; then
                 status_color="${YELLOW}"
             fi
 
-            echo -e "  ${team_name} ${status_color}[${status}]${NC} - ${member_count} members"
+            echo -e "  ${team_name} ${status_color}[${team_status}]${NC} - ${member_count} members"
             [[ -n "$description" ]] && echo "    ${description}"
         fi
     done < <(find "$TEAMS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)

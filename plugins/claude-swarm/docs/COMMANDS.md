@@ -327,7 +327,7 @@ Comprehensive reference for all 17 Claude Swarm slash commands.
 
 **Arguments:**
 - `task_id` (required) - Task ID to update
-- `--status <status>` (optional) - New status: open, in-progress, resolved, blocked
+- `--status <status>` (optional) - New status: pending, in-progress, blocked, in-review, completed
 - `--assign <agent>` (optional) - Assign task to agent (e.g., "backend-dev")
 - `--blocked-by <id>` (optional) - Mark task as blocked by another task ID
 - `--comment <text>` (optional) - Add comment to task activity log
@@ -493,8 +493,7 @@ Commands automatically read these variables when available:
 
 ## Related Documentation
 
-- **Main README:** Installation, setup, quick start
-- **Hooks Documentation:** See README.md Hooks section
-- **Agent Types:** See README.md Agent Types section
-- **Best Practices:** See README.md Best Practices section
-- **Troubleshooting:** See README.md Troubleshooting section
+- **[Main README](../README.md)** - Installation, setup, quick start, agent types, best practices, troubleshooting
+- **[Hooks Documentation](HOOKS.md)** - Event-driven automation and lifecycle hooks
+- **[Integration Guide](INTEGRATION.md)** - CI/CD integration, external systems, custom tooling
+- **[Swarm Coordination Skill](../skills/swarm-coordination/SKILL.md)** - Orchestration workflows and best practices

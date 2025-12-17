@@ -26,10 +26,12 @@ allow_remote_control yes
 listen_on unix:/tmp/kitty-$USER
 ```
 
+> **Note:** Kitty automatically appends `-PID` to the socket path. So with the config above, the actual socket will be `/tmp/kitty-username-12345` (where 12345 is kitty's PID). The plugin handles this automatically.
+
 **Important:** Restart kitty completely after changing config (not just reload). Verify with:
 
 ```bash
-ls -la /tmp/kitty-$USER*  # Socket should exist
+ls -la /tmp/kitty-$USER*  # Socket should exist (with -PID suffix)
 kitten @ ls               # Should return JSON
 ```
 
@@ -136,7 +138,7 @@ Teammates should periodically:
 
 When done, teammates should:
 
-1. Mark task resolved: `/claude-swarm:task-update <id> --status resolved`
+1. Mark task completed: `/claude-swarm:task-update <id> --status completed`
 2. Add completion comment: `/claude-swarm:task-update <id> --comment "Done. See commit abc123"`
 3. Notify team-lead: `/claude-swarm:swarm-message team-lead "Task #<id> complete"`
 

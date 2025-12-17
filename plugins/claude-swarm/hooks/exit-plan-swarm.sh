@@ -17,13 +17,13 @@ if echo "$TOOL_RESULT" | grep -q '"launchSwarm".*true'; then
 
 The user approved plan mode with swarm launch (${teammate_count} teammates requested).
 
-Use the swarm-coordinator agent or these commands:
+Use these commands to set up the swarm:
 1. \`/swarm-create <team-name>\` - Create the team
 2. \`/task-create <subject>\` - Create tasks from the plan
 3. \`/swarm-spawn <name> <type>\` - Spawn ${teammate_count} teammates
 4. \`/task-update <id> --assign <name>\` - Assign tasks
 
-Or simply describe the task to the swarm-coordinator agent for automated orchestration.
+Claude Code will invoke the swarm-coordination skill automatically for guidance.
 </system-reminder>"
 fi
 

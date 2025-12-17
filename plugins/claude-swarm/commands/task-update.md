@@ -14,7 +14,7 @@ Update a task's properties.
 
 ## Options
 
-- `--status <open|resolved>` - Change task status
+- `--status <pending|in-progress|blocked|in-review|completed>` - Change task status
 - `--assign <name>` - Assign to teammate
 - `--comment <text>` - Add a comment
 - `--blocked-by <id>` - Add blocking dependency
@@ -31,7 +31,7 @@ TASK_ID="$1"
 
 if [[ -z "$TASK_ID" ]]; then
     echo "Error: Task ID required"
-    echo "Usage: /task-update <task_id> [--status open|resolved] [--assign name] [--comment text] [--blocked-by id]"
+    echo "Usage: /task-update <task_id> [--status pending|in-progress|blocked|in-review|completed] [--assign name] [--comment text] [--blocked-by id]"
     exit 1
 fi
 
@@ -56,10 +56,22 @@ Report what was changed and the current task state.
 /task-update 1 --assign backend-dev
 ```
 
-**Mark as resolved:**
+**Mark as completed:**
 
 ```
-/task-update 1 --status resolved --comment "Done. See PR #42"
+/task-update 1 --status completed --comment "Done. See PR #42"
+```
+
+**Start working on a task:**
+
+```
+/task-update 1 --status in-progress --comment "Starting implementation"
+```
+
+**Request review:**
+
+```
+/task-update 1 --status in-review --comment "Ready for code review"
 ```
 
 **Add progress update:**

@@ -1,10 +1,12 @@
 {
   "name": "claude-litter",
-  "version": "1.2.0",
-  "description": "Claude Swarm Implementation Supporting Kitty",
   "owner": {
     "name": "Und3rf10w",
     "email": "noemail@example.com"
+  },
+  "metadata": {
+    "version": "1.2.0",
+    "description": "Custom Claude Swarm Implementation Supporting Kitty and Tmux"
   },
   "plugins": [
     {
@@ -15,6 +17,8 @@
       "author": {
         "name": "Und3rf10w"
       },
+      "homepage": "https://github.com/Und3rf10w/claude-litter",
+      "repository": "https://github.com/Und3rf10w/claude-litter",
       "tags": [
         "swarm",
         "multi-agent",

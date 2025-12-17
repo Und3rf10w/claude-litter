@@ -54,10 +54,11 @@ if [[ -n "$AGENT_NAME" ]] && [[ "$AGENT_NAME" != "team-lead" ]]; then
                     owner=$(jq -r '.owner // ""' "$task_file")
                     status=$(jq -r '.status' "$task_file")
 
-                    if [[ "$owner" == "$AGENT_NAME" ]] && [[ "$status" == "open" ]]; then
+                    # Show tasks that are not completed
+                    if [[ "$owner" == "$AGENT_NAME" ]] && [[ "$status" != "completed" ]]; then
                         id=$(jq -r '.id' "$task_file")
                         subject=$(jq -r '.subject' "$task_file")
-                        assigned_tasks+="- Task #${id}: ${subject}\n"
+                        assigned_tasks+="- Task #${id} [${status}]: ${subject}\n"
                     fi
                 fi
             done

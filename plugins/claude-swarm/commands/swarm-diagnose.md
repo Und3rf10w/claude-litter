@@ -73,8 +73,10 @@ if [[ "$SWARM_MULTIPLEXER" == "kitty" ]]; then
         fi
     else
         echo "❌ ERROR: No kitty socket found"
-        echo "   Set KITTY_LISTEN_ON in your kitty.conf:"
+        echo "   Add to your kitty.conf:"
         echo "   listen_on unix:/tmp/kitty-\$USER"
+        echo "   (Note: kitty appends -PID, so socket becomes /tmp/kitty-\$USER-12345)"
+        echo "   Check with: ls -la /tmp/kitty-\$USER*"
     fi
 elif [[ "$SWARM_MULTIPLEXER" == "tmux" ]]; then
     if command -v tmux &>/dev/null; then
