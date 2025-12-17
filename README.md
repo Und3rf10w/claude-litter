@@ -36,6 +36,7 @@ Open Claude Code and run:
 ```
 
 This adds the Claude Litter marketplace from GitHub. Claude Code will:
+
 1. Clone the repository to `~/.claude/plugins/marketplaces/claude-litter/`
 2. Register the marketplace for plugin discovery
 3. Make the `claude-swarm` plugin available for installation
@@ -47,6 +48,7 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 ```
 
 This installs the swarm plugin, which includes:
+
 - 17 slash commands for team/task management
 - 1 agent (swarm-coordinator) for automated orchestration
 - 1 skill (swarm-guide) for guidance
@@ -73,7 +75,14 @@ allow_remote_control yes
 listen_on unix:/tmp/kitty-$USER
 ```
 
+I would generally recommend you add this line too so that you can use SHIFT + Enter to insert a new line in Claude Code:
+
+```conf
+map shift+enter send_text all \n
+```
+
 **3. Restart kitty completely** (not just reload config):
+
 - macOS: `Cmd+Q` then reopen kitty
 - Linux: Close all kitty windows and reopen
 
@@ -159,6 +168,7 @@ To automatically install Claude Litter for all team members working on a project
 ```
 
 When team members trust the repository folder, Claude Code automatically:
+
 1. Installs the Claude Litter marketplace
 2. Installs and enables the claude-swarm plugin
 
@@ -171,6 +181,7 @@ To update to the latest version:
 ```
 
 Or enable auto-updates:
+
 1. Run `/plugin` to open the plugin manager
 2. Select **Marketplaces**
 3. Choose **claude-litter**
@@ -259,11 +270,11 @@ Teams support suspend and resume functionality, allowing you to pause work and c
 
 ### Team States
 
-| State       | Description                                    |
-| ----------- | ---------------------------------------------- |
-| `active`    | Team is running, members are working           |
-| `suspended` | Sessions closed, data preserved, resumable     |
-| `archived`  | Permanently stored (future feature)            |
+| State       | Description                                |
+| ----------- | ------------------------------------------ |
+| `active`    | Team is running, members are working       |
+| `suspended` | Sessions closed, data preserved, resumable |
+| `archived`  | Permanently stored (future feature)        |
 
 ### Suspending a Team
 
@@ -278,6 +289,7 @@ When you're done working (or need to take a break):
 ```
 
 **What happens on suspend:**
+
 - All teammate sessions are closed
 - Team and member status set to "suspended"/"offline"
 - All data preserved (config, tasks, messages)
@@ -291,6 +303,7 @@ To continue where you left off:
 ```
 
 **What happens on resume:**
+
 - Team status changes to "active"
 - Each offline teammate is respawned with:
   - Their original model (haiku/sonnet/opus)
@@ -301,10 +314,12 @@ To continue where you left off:
 ### Automatic Behavior
 
 **When team-lead exits:**
+
 - By default: All teammates are killed, team is suspended
 - With `SWARM_KEEP_ALIVE=true`: Teammates keep running
 
 **When a teammate exits:**
+
 - Team-lead is notified via inbox
 - Teammate marked as offline
 
@@ -331,13 +346,13 @@ To continue where you left off:
 
 ### Team Management
 
-| Command                       | Description        | Usage                                         |
-| ----------------------------- | ------------------ | --------------------------------------------- |
-| `/claude-swarm:swarm-create`  | Create a new team  | `/swarm-create <team> [description]`          |
-| `/claude-swarm:swarm-spawn`   | Spawn a teammate   | `/swarm-spawn <name> [type] [model] [prompt]` |
-| `/claude-swarm:swarm-status`  | View team status   | `/swarm-status <team>`                        |
-| `/claude-swarm:swarm-cleanup` | Suspend/delete     | `/swarm-cleanup <team> [--force]`             |
-| `/claude-swarm:swarm-resume`  | Resume suspended   | `/swarm-resume <team>`                        |
+| Command                       | Description       | Usage                                         |
+| ----------------------------- | ----------------- | --------------------------------------------- |
+| `/claude-swarm:swarm-create`  | Create a new team | `/swarm-create <team> [description]`          |
+| `/claude-swarm:swarm-spawn`   | Spawn a teammate  | `/swarm-spawn <name> [type] [model] [prompt]` |
+| `/claude-swarm:swarm-status`  | View team status  | `/swarm-status <team>`                        |
+| `/claude-swarm:swarm-cleanup` | Suspend/delete    | `/swarm-cleanup <team> [--force]`             |
+| `/claude-swarm:swarm-resume`  | Resume suspended  | `/swarm-resume <team>`                        |
 
 ### Task Management
 
@@ -477,12 +492,12 @@ When inside a swarm session, these are automatically set:
 
 ### User Configuration
 
-| Variable            | Description                     | Default                   |
-| ------------------- | ------------------------------- | ------------------------- |
-| `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`         | Auto-detect               |
-| `SWARM_KITTY_MODE`  | Kitty spawn mode                | `window`                  |
-| `KITTY_LISTEN_ON`   | Kitty socket path override      | `unix:/tmp/kitty-$USER`   |
-| `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits  | `false`                   |
+| Variable            | Description                    | Default                 |
+| ------------------- | ------------------------------ | ----------------------- |
+| `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`        | Auto-detect             |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `window`                |
+| `KITTY_LISTEN_ON`   | Kitty socket path override     | `unix:/tmp/kitty-$USER` |
+| `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits | `false`                 |
 
 ---
 
@@ -602,30 +617,35 @@ export SWARM_MULTIPLEXER=tmux
 Claude Swarm includes 5 lifecycle hooks that automate coordination and monitoring:
 
 ### SessionStart Hook
+
 **Trigger:** When a teammate Claude Code session starts
 **Action:** Automatically delivers unread inbox messages
 
 This ensures teammates see important messages from team-lead immediately upon starting their session, without needing to manually run `/swarm-inbox`.
 
 ### SessionEnd Hook
+
 **Trigger:** When a teammate Claude Code session ends
 **Action:** Notifies team-lead via inbox message
 
 When a teammate exits, team-lead is informed so they can reassign work or respawn the teammate if needed.
 
 ### Notification Hook
+
 **Trigger:** Periodic notifications during Claude Code operation
 **Action:** Updates heartbeat timestamp for health monitoring
 
 Each active teammate periodically updates their heartbeat file. Use `/swarm-diagnose` to detect stale agents that may be hung or idle.
 
 ### PostToolUse:ExitPlanMode Hook
+
 **Trigger:** When Claude exits plan mode
 **Action:** Detects swarm launch requests and coordinates spawning
 
 When you approve a plan that includes creating a swarm team, this hook automatically handles the team creation and teammate spawning process.
 
 ### PreToolUse:Task Hook
+
 **Trigger:** Before spawning a subagent with the Task tool
 **Action:** Injects team context (team name, agent ID, agent name, role)
 
@@ -638,11 +658,13 @@ When teammates spawn their own subagents, those subagents automatically inherit 
 ### Commands (17)
 
 **Team Management:**
+
 - swarm-create, swarm-spawn, swarm-status, swarm-cleanup, swarm-resume
 - swarm-onboard, swarm-diagnose, swarm-verify, swarm-reconcile
 - swarm-list-teams, swarm-message, swarm-inbox, swarm-session
 
 **Task Management:**
+
 - task-create, task-list, task-update, task-delete
 
 ### Agents (1)

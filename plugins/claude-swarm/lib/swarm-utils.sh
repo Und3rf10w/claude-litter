@@ -42,6 +42,31 @@ SWARM_KITTY_MODE="${SWARM_KITTY_MODE:-window}"
 # The variable should be quoted when passed to --allowedTools
 SWARM_DEFAULT_ALLOWED_TOOLS="${SWARM_ALLOWED_TOOLS:-Read(*),Glob(*),Grep(*),SlashCommand(*),Bash(*)}"
 
+# System prompt for teammates - appended to default Claude Code behavior
+# Provides guidance on slash commands, communication patterns, and swarm conventions
+SWARM_TEAMMATE_SYSTEM_PROMPT='You are a teammate in a Claude Code swarm. Follow these guidelines:
+
+## Communication
+- Use /claude-swarm:swarm-message <to> <message> to message ANY teammate (not just team-lead)
+- Use /claude-swarm:swarm-inbox to check for messages from teammates
+- Reply to messages by messaging the sender directly
+- When tasks complete, notify both team-lead AND any teammates who may be waiting
+
+## Slash Commands (PREFERRED)
+ALWAYS use slash commands instead of bash functions:
+- /claude-swarm:task-list - View all tasks
+- /claude-swarm:task-update <id> --status <status> - Update task status
+- /claude-swarm:task-update <id> --comment <text> - Add progress comment
+- /claude-swarm:swarm-status <team> - View team status
+- /claude-swarm:swarm-message <to> <message> - Send message to teammate
+- /claude-swarm:swarm-inbox - Check your inbox
+
+## Working Style
+- Check your inbox regularly for messages from teammates
+- Update task status as you progress (add comments for major milestones)
+- When blocked, message the relevant teammate or team-lead
+- Coordinate with teammates working on related tasks'
+
 # ============================================
 # UUID GENERATION (portable across macOS/Linux)
 # ============================================
@@ -867,6 +892,7 @@ spawn_teammate_kitty_resume() {
     # Pass initial_prompt as CLI argument - more reliable than send-text
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
+        --cwd "$(pwd)" \
         --title "$window_title" \
         --var "${swarm_var}=true" \
         --var "swarm_team=${team_name}" \
@@ -875,7 +901,8 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model" --dangerously-skip-permissions -- "$initial_prompt"
+        claude --model "$model" --dangerously-skip-permissions \
+        --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
     # Brief wait for window to be queryable, then register
     sleep 2
@@ -917,7 +944,8 @@ spawn_teammate_tmux_resume() {
     fi
 
     # Create session with default shell first (avoid command injection)
-    tmux new-session -d -s "$session_name"
+    # Use -c to inherit current working directory
+    tmux new-session -d -s "$session_name" -c "$(pwd)"
 
     # Safely escape variables using printf %q
     local safe_team_val=$(printf %q "$team_name")
@@ -925,10 +953,11 @@ spawn_teammate_tmux_resume() {
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
     local safe_prompt=$(printf %q "$initial_prompt")
+    local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
     # Set environment variables and launch claude with prompt as CLI argument
     # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions -- $safe_prompt" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -1283,7 +1312,8 @@ spawn_teammate_tmux() {
     fi
 
     # Create session with default shell first (avoid command injection)
-    tmux new-session -d -s "$session_name"
+    # Use -c to inherit current working directory
+    tmux new-session -d -s "$session_name" -c "$(pwd)"
 
     # Safely escape variables using printf %q
     local safe_team_val=$(printf %q "$team_name")
@@ -1291,10 +1321,11 @@ spawn_teammate_tmux() {
     local safe_name_val=$(printf %q "$agent_name")
     local safe_type_val=$(printf %q "$agent_type")
     local safe_prompt=$(printf %q "$initial_prompt")
+    local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
     # Set environment variables and launch claude with prompt as CLI argument
     # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions -- $safe_prompt" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -1380,6 +1411,7 @@ spawn_teammate_kitty() {
     # Pass initial_prompt as CLI argument - more reliable than send-text
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
+        --cwd "$(pwd)" \
         --title "$window_title" \
         --var "${swarm_var}=true" \
         --var "swarm_team=${team_name}" \
@@ -1388,7 +1420,8 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_ID=${agent_id}" \
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
-        claude --model "$model" --dangerously-skip-permissions -- "$initial_prompt"
+        claude --model "$model" --dangerously-skip-permissions \
+        --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
 
     # Brief wait for window to be queryable, then register
     sleep 2
