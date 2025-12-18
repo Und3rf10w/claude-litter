@@ -88,28 +88,65 @@ update_task() {
     fi
 
     local tmp_file=$(mktemp)
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt/error
+    trap "rm -f '$tmp_file' '${tmp_file}.new'; release_file_lock" EXIT INT TERM
+
     command cp "$task_file" "$tmp_file"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --status)
-                jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task status${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --owner|--assign)
-                jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task owner${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --comment)
                 local author="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-unknown}}"
                 local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
-                   '.comments += [{"author": $author, "content": $content, "timestamp": $ts}]' \
-                   "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
+                   '.comments += [{"author": $author, "text": $content, "timestamp": $ts}]' \
+                   "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to add task comment${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --blocked-by)
-                jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task dependencies${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             *)
@@ -117,6 +154,9 @@ update_task() {
                 ;;
         esac
     done
+
+    # Clear trap before final operations
+    trap - EXIT INT TERM
 
     if command mv "$tmp_file" "$task_file"; then
         release_file_lock

@@ -11,14 +11,14 @@ if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
     TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
 elif [[ -n "$KITTY_PID" ]] && command -v kitten &>/dev/null; then
     # Lightweight user var query (no library sourcing for performance)
-    TEAM_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars.swarm_team // ""' 2>/dev/null || echo "")
+    TEAM_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[] | select(.is_active == true) | .windows[] | select(.is_focused == true) | .user_vars.swarm_team // ""' 2>/dev/null || echo "")
 fi
 [[ -z "$TEAM_NAME" ]] && exit 0
 
 if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
     AGENT_NAME="$CLAUDE_CODE_AGENT_NAME"
 elif [[ -n "$KITTY_PID" ]] && command -v kitten &>/dev/null; then
-    AGENT_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars.swarm_agent // ""' 2>/dev/null || echo "")
+    AGENT_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[] | select(.is_active == true) | .windows[] | select(.is_focused == true) | .user_vars.swarm_agent // ""' 2>/dev/null || echo "")
     [[ -z "$AGENT_NAME" ]] && AGENT_NAME="team-lead"
 else
     AGENT_NAME="team-lead"
