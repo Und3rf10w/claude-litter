@@ -165,21 +165,13 @@ spawn_teammate_tmux() {
         *) model="sonnet" ;;
     esac
 
-    # Acquire spawn lock to prevent TOCTOU race (check-then-spawn)
-    local spawn_lock="${TEAMS_DIR}/${team_name}/.spawn.lock"
-    if ! acquire_file_lock "$spawn_lock" 10 60; then
-        echo -e "${RED}Failed to acquire spawn lock (another spawn in progress?)${NC}" >&2
-        return 1
-    fi
-
     # Sanitize session name (tmux doesn't allow certain characters)
     local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
     local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
     local session_name="swarm-${safe_team}-${safe_agent}"
 
-    # Check if session exists (now protected by lock)
+    # Check if session already exists
     if tmux has-session -t "$session_name" 2>/dev/null; then
-        release_file_lock
         echo -e "${YELLOW}Session '${session_name}' already exists${NC}"
         return 1
     fi
@@ -188,9 +180,7 @@ spawn_teammate_tmux() {
     local agent_id=$(generate_uuid)
 
     # Add to team config (include model for resume capability)
-    # Note: add_member uses its own lock on config file - this is safe since spawn lock is different
     if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        release_file_lock
         echo -e "${RED}Failed to add member to team config${NC}" >&2
         return 1
     fi
@@ -227,9 +217,6 @@ spawn_teammate_tmux() {
 
     # Launch claude with prompt from file (safer than command line argument)
     tmux send-keys -t "$session_name" "claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt < $prompt_file; rm -f $prompt_file" Enter
-
-    # Release spawn lock now that session is created
-    release_file_lock
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -279,20 +266,12 @@ spawn_teammate_kitty() {
         *) model="sonnet" ;;
     esac
 
-    # Acquire spawn lock to prevent TOCTOU race (check-then-spawn)
-    local spawn_lock="${TEAMS_DIR}/${team_name}/.spawn.lock"
-    if ! acquire_file_lock "$spawn_lock" 10 60; then
-        echo -e "${RED}Failed to acquire spawn lock (another spawn in progress?)${NC}" >&2
-        return 1
-    fi
-
     # Use user variable for identification (persists even if title changes)
     local swarm_var="swarm_${team_name}_${agent_name}"
     local window_title="swarm-${team_name}-${agent_name}"
 
-    # Check if window already exists using user variable (now protected by lock)
+    # Check if window already exists using user variable
     if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" '.[].tabs[].windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
-        release_file_lock
         echo -e "${YELLOW}Kitty window for '${agent_name}' already exists${NC}"
         return 1
     fi
@@ -301,9 +280,7 @@ spawn_teammate_kitty() {
     local agent_id=$(generate_uuid)
 
     # Add to team config (include model for resume capability)
-    # Note: add_member uses its own lock on config file - this is safe since spawn lock is different
     if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        release_file_lock
         echo -e "${RED}Failed to add member to team config${NC}" >&2
         return 1
     fi
@@ -370,9 +347,6 @@ spawn_teammate_kitty() {
     else
         echo -e "${YELLOW}Warning: Claude Code may not be fully initialized for ${agent_name}${NC}" >&2
     fi
-
-    # Release spawn lock now that window is launched
-    release_file_lock
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in kitty ${launch_type}${NC}"
     echo "  Agent ID: ${agent_id}"
