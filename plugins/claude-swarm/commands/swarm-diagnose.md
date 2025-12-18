@@ -16,7 +16,7 @@ Run comprehensive diagnostics on a swarm team to identify configuration issues, 
 Run the following bash command to perform comprehensive team diagnostics:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
     echo "Error: Team name required"

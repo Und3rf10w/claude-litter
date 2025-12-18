@@ -55,7 +55,7 @@ Set `SWARM_KITTY_MODE` environment variable:
 Run the following bash command to spawn the teammate:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then

@@ -16,7 +16,7 @@ Check for messages from teammates.
 Run the following bash commands:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: env vars (teammates) > user vars (team-lead) > defaults
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then

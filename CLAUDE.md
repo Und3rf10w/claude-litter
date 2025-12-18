@@ -70,7 +70,7 @@ SWARM_MODULE_LOADED=1
 Commands source the entry point:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 ```
 
 ### Data Storage
@@ -294,7 +294,7 @@ Command instructions that Claude follows...
 
 ```bash
 # Source library for testing
-source plugins/claude-swarm/lib/swarm-utils.sh
+source plugins/claude-swarm/lib/swarm-utils.sh 1>/dev/null
 
 # Check multiplexer detection
 detect_multiplexer

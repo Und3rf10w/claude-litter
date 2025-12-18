@@ -33,31 +33,31 @@ fi
 # ============================================
 
 # Level 0: Globals (no dependencies)
-source "${SWARM_LIB_DIR}/core/00-globals.sh" 2>&1
+source "${SWARM_LIB_DIR}/core/00-globals.sh" 1>/dev/null
 
 # Level 1: Core utilities
-source "${SWARM_LIB_DIR}/core/01-utils.sh" 2>&1
-source "${SWARM_LIB_DIR}/core/02-file-lock.sh" 2>&1
+source "${SWARM_LIB_DIR}/core/01-utils.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/core/02-file-lock.sh" 1>/dev/null
 
 # Level 2: Multiplexer
-source "${SWARM_LIB_DIR}/multiplexer/03-multiplexer.sh" 2>&1
+source "${SWARM_LIB_DIR}/multiplexer/03-multiplexer.sh" 1>/dev/null
 
 # Level 3: Registry and Team
-source "${SWARM_LIB_DIR}/multiplexer/04-registry.sh" 2>&1
-source "${SWARM_LIB_DIR}/team/05-team.sh" 2>&1
+source "${SWARM_LIB_DIR}/multiplexer/04-registry.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/team/05-team.sh" 1>/dev/null
 
 # Level 4: Status and Messaging
-source "${SWARM_LIB_DIR}/team/06-status.sh" 2>&1
-source "${SWARM_LIB_DIR}/communication/07-messaging.sh" 2>&1
+source "${SWARM_LIB_DIR}/team/06-status.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/communication/07-messaging.sh" 1>/dev/null
 
 # Level 5: Tasks and Spawn
-source "${SWARM_LIB_DIR}/tasks/08-tasks.sh" 2>&1
-source "${SWARM_LIB_DIR}/spawn/09-spawn.sh" 2>&1
+source "${SWARM_LIB_DIR}/tasks/08-tasks.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/spawn/09-spawn.sh" 1>/dev/null
 
 # Level 6: Lifecycle and Sessions
-source "${SWARM_LIB_DIR}/team/10-lifecycle.sh" 2>&1
-source "${SWARM_LIB_DIR}/spawn/12-kitty-session.sh" 2>&1
+source "${SWARM_LIB_DIR}/team/10-lifecycle.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/spawn/12-kitty-session.sh" 1>/dev/null
 
 # Level 7: Cleanup and Diagnostics
-source "${SWARM_LIB_DIR}/spawn/11-cleanup.sh" 2>&1
-source "${SWARM_LIB_DIR}/spawn/13-diagnostics.sh" 2>&1
+source "${SWARM_LIB_DIR}/spawn/11-cleanup.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/spawn/13-diagnostics.sh" 1>/dev/null

@@ -58,11 +58,13 @@ Hooks execute in the context of the Claude Code session's current working direct
 ### Dependencies
 
 Most hooks source the shared utility library:
+
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 ```
 
 This provides access to functions like:
+
 - `update_member_status()`
 - `send_message()`
 - `broadcast_message()`
@@ -235,6 +237,7 @@ None (silent operation, but messages are sent via swarm-utils functions).
 #### Trigger Condition
 
 This hook runs after `ExitPlanMode` is called and checks if the tool result contains:
+
 ```json
 {
   "launchSwarm": true,
@@ -270,6 +273,7 @@ Claude Code will invoke the swarm-orchestration skill automatically for guidance
 #### Input Format (stdin)
 
 The hook receives the tool result as JSON:
+
 ```json
 {
   "launchSwarm": true,
@@ -360,9 +364,9 @@ Multiple messages are grouped together under a "## Unread Messages (N)" heading.
 
 All hooks follow a consistent exit code convention:
 
-| Exit Code | Meaning | Usage |
-|-----------|---------|-------|
-| `0` | Success | All hooks always exit with 0, even on failures |
+| Exit Code | Meaning | Usage                                          |
+| --------- | ------- | ---------------------------------------------- |
+| `0`       | Success | All hooks always exit with 0, even on failures |
 
 ### Rationale
 
@@ -374,6 +378,7 @@ All hooks exit with code `0` (success) even when encountering errors because:
 4. **Performance:** Hooks prioritize speed; failures are logged but don't interrupt
 
 Example from `notification-heartbeat.sh`:
+
 ```bash
 # Can't create temp file, skip silently
 if [[ -z "$TMP" ]]; then
@@ -411,11 +416,13 @@ bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"
 #### Heartbeat Not Updating
 
 Check the throttle file:
+
 ```bash
 ls -la /tmp/swarm-heartbeat-*
 ```
 
 Test manually:
+
 ```bash
 rm /tmp/swarm-heartbeat-*  # Clear throttle
 export CLAUDE_CODE_TEAM_NAME="your-team"
@@ -424,6 +431,7 @@ bash hooks/notification-heartbeat.sh
 ```
 
 Check the config file:
+
 ```bash
 jq '.members[] | {name, lastSeen}' ~/.claude/teams/your-team/config.json
 ```
@@ -431,16 +439,19 @@ jq '.members[] | {name, lastSeen}' ~/.claude/teams/your-team/config.json
 #### Messages Not Appearing
 
 Check inbox file:
+
 ```bash
 cat ~/.claude/teams/your-team/inboxes/your-agent.json | jq
 ```
 
 Verify message format:
+
 ```bash
 jq '[.[] | select(.read == false)]' ~/.claude/teams/your-team/inboxes/your-agent.json
 ```
 
 Test SessionStart hook:
+
 ```bash
 export CLAUDE_CODE_TEAM_NAME="your-team"
 export CLAUDE_CODE_AGENT_NAME="your-agent"
@@ -450,12 +461,14 @@ bash hooks/session-start.sh
 #### Team Not Suspending
 
 Check if team-lead detection is working:
+
 ```bash
 echo "AGENT_NAME: ${CLAUDE_CODE_AGENT_NAME}"
 echo "AGENT_TYPE: ${CLAUDE_CODE_AGENT_TYPE}"
 ```
 
 Test SessionEnd hook:
+
 ```bash
 export CLAUDE_CODE_TEAM_NAME="your-team"
 export CLAUDE_CODE_AGENT_NAME="team-lead"
@@ -463,6 +476,7 @@ bash hooks/session-stop.sh
 ```
 
 Check team config after suspension:
+
 ```bash
 jq '{status, suspendedAt, members: [.members[] | {name, status}]}' \
   ~/.claude/teams/your-team/config.json
@@ -471,12 +485,14 @@ jq '{status, suspendedAt, members: [.members[] | {name, status}]}' \
 #### Swarm Launch Not Detected
 
 Test with sample input:
+
 ```bash
 echo '{"launchSwarm": true, "teammateCount": 5}' | \
   bash hooks/exit-plan-swarm.sh
 ```
 
 Check pattern matching:
+
 ```bash
 echo '{"launchSwarm": true}' | grep -q '"launchSwarm".*true' && echo "Match"
 ```
@@ -484,12 +500,14 @@ echo '{"launchSwarm": true}' | grep -q '"launchSwarm".*true' && echo "Match"
 #### Task Context Not Appearing
 
 Verify team environment:
+
 ```bash
 echo "Team: ${CLAUDE_CODE_TEAM_NAME}"
 ls -la ~/.claude/teams/
 ```
 
 Test PreToolUse hook:
+
 ```bash
 export CLAUDE_CODE_TEAM_NAME="your-team"
 echo '{}' | bash hooks/task-team-context.sh
@@ -498,6 +516,7 @@ echo '{}' | bash hooks/task-team-context.sh
 ### Hook Execution Logs
 
 Claude Code may log hook execution. Check for logs in:
+
 - `~/.claude/logs/` - Claude Code session logs
 - `/tmp/swarm-hook-debug.log` - If you enabled debug output
 - stderr output in your terminal
@@ -505,11 +524,13 @@ Claude Code may log hook execution. Check for logs in:
 ### Verifying Hook Registration
 
 Check that hooks are properly registered:
+
 ```bash
 cat plugins/claude-swarm/hooks/hooks.json | jq
 ```
 
 Verify plugin is loaded:
+
 ```bash
 claude-code config plugins list
 ```
@@ -517,12 +538,14 @@ claude-code config plugins list
 ### Performance Profiling
 
 Time hook execution:
+
 ```bash
 time bash hooks/notification-heartbeat.sh
 time bash hooks/session-start.sh
 ```
 
 Expected performance:
+
 - **notification-heartbeat.sh**: <1ms (throttled path), ~50ms (update path)
 - **session-start.sh**: ~100-500ms (depends on message count)
 - **session-stop.sh**: ~100ms (member), ~500ms+ (team suspension)

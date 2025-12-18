@@ -359,7 +359,7 @@ See [Slash Commands Reference](references/slash-commands.md) for detailed option
 When you need to notify everyone (breaking changes, coordination checkpoints):
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 broadcast_message "payment-system" "Database schema updated - please pull latest migrations before continuing" "true"
 ```
 

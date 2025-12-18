@@ -17,7 +17,7 @@ Create a new team called `$1`.
 Run the following bash commands to create the team:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 TEAM_NAME="$1"
 DESCRIPTION="$2"

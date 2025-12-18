@@ -4,7 +4,7 @@
 
 # Source core utilities - use CLAUDE_PLUGIN_ROOT if set, otherwise detect from script location
 if [[ -n "$CLAUDE_PLUGIN_ROOT" ]]; then
-    source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 2>&1
+    source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 else
     # Detect script directory (same robust method as swarm-utils.sh)
     if [[ -n "${BASH_SOURCE[0]}" ]]; then
@@ -21,7 +21,7 @@ else
         else
             _ONBOARD_LIB_DIR="$(cd "$(dirname "$_ONBOARD_SCRIPT_PATH")" 2>/dev/null && pwd)"
         fi
-        source "${_ONBOARD_LIB_DIR}/swarm-utils.sh" 2>&1
+        source "${_ONBOARD_LIB_DIR}/swarm-utils.sh" 1>/dev/null
         unset _ONBOARD_SCRIPT_PATH _ONBOARD_LIB_DIR
     fi
 fi

@@ -16,7 +16,7 @@ Verify that all teammates in the config actually have active sessions running.
 Run the following bash command to verify all teammates:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: arg > env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$1" ]]; then

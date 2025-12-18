@@ -16,10 +16,10 @@ Create a new swarm team.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `team-name` | Yes | Unique team identifier (kebab-case recommended) |
-| `description` | No | Human-readable team description |
+| Parameter     | Required | Description                                     |
+| ------------- | -------- | ----------------------------------------------- |
+| `team-name`   | Yes      | Unique team identifier (kebab-case recommended) |
+| `description` | No       | Human-readable team description                 |
 
 **Examples:**
 
@@ -60,9 +60,9 @@ View comprehensive team status.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `team-name` | Yes | Name of team to check |
+| Parameter   | Required | Description           |
+| ----------- | -------- | --------------------- |
+| `team-name` | Yes      | Name of team to check |
 
 **Example:**
 
@@ -99,9 +99,9 @@ Verify all teammates are alive and responsive.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `team-name` | Yes | Name of team to verify |
+| Parameter   | Required | Description            |
+| ----------- | -------- | ---------------------- |
+| `team-name` | Yes      | Name of team to verify |
 
 **Example:**
 
@@ -136,10 +136,10 @@ Clean up a team by terminating sessions and optionally removing data.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `team-name` | Yes | Name of team to clean up |
-| `--force` | No | Also delete all team data (irreversible) |
+| Parameter   | Required | Description                              |
+| ----------- | -------- | ---------------------------------------- |
+| `team-name` | Yes      | Name of team to clean up                 |
+| `--force`   | No       | Also delete all team data (irreversible) |
 
 **Examples:**
 
@@ -153,10 +153,10 @@ Clean up a team by terminating sessions and optionally removing data.
 
 **Cleanup Types:**
 
-| Type | Sessions | Config | Tasks | Messages | Reversible |
-|------|----------|--------|-------|----------|------------|
-| **Soft** (default) | Killed | Preserved | Preserved | Preserved | Yes (use resume) |
-| **Hard** (--force) | Killed | Deleted | Deleted | Deleted | No |
+| Type               | Sessions | Config    | Tasks     | Messages  | Reversible       |
+| ------------------ | -------- | --------- | --------- | --------- | ---------------- |
+| **Soft** (default) | Killed   | Preserved | Preserved | Preserved | Yes (use resume) |
+| **Hard** (--force) | Killed   | Deleted   | Deleted   | Deleted   | No               |
 
 **Before Cleanup:**
 
@@ -185,31 +185,31 @@ Spawn a new teammate in the team.
 
 **Parameters:**
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `agent-name` | Yes | - | Unique name for this teammate |
-| `agent-type` | No | `worker` | Role type (see table below) |
-| `model` | No | `sonnet` | Claude model to use |
-| `initial-prompt` | No | Generic | Initial instructions for teammate |
+| Parameter        | Required | Default  | Description                       |
+| ---------------- | -------- | -------- | --------------------------------- |
+| `agent-name`     | Yes      | -        | Unique name for this teammate     |
+| `agent-type`     | No       | `worker` | Role type (see table below)       |
+| `model`          | No       | `sonnet` | Claude model to use               |
+| `initial-prompt` | No       | Generic  | Initial instructions for teammate |
 
 **Agent Types:**
 
-| Type | Use For |
-|------|---------|
-| `worker` | General-purpose tasks |
-| `backend-developer` | Server-side, API, database work |
-| `frontend-developer` | UI, components, styling |
-| `reviewer` | Code review, QA |
-| `researcher` | Documentation, analysis |
-| `tester` | Test writing, validation |
+| Type                 | Use For                         |
+| -------------------- | ------------------------------- |
+| `worker`             | General-purpose tasks           |
+| `backend-developer`  | Server-side, API, database work |
+| `frontend-developer` | UI, components, styling         |
+| `reviewer`           | Code review, QA                 |
+| `researcher`         | Documentation, analysis         |
+| `tester`             | Test writing, validation        |
 
 **Models:**
 
-| Model | Speed | Capability | Cost | Best For |
-|-------|-------|------------|------|----------|
-| `haiku` | Fastest | Basic | Lowest | Simple, repetitive tasks |
-| `sonnet` | Balanced | Good | Medium | Most tasks (recommended) |
-| `opus` | Slowest | Best | Highest | Complex reasoning, architecture |
+| Model    | Speed    | Capability | Cost    | Best For                        |
+| -------- | -------- | ---------- | ------- | ------------------------------- |
+| `haiku`  | Fastest  | Basic      | Lowest  | Simple, repetitive tasks        |
+| `sonnet` | Balanced | Good       | Medium  | Most tasks (recommended)        |
+| `opus`   | Slowest  | Best       | Highest | Complex reasoning, architecture |
 
 **Examples:**
 
@@ -227,6 +227,7 @@ Spawn a new teammate in the team.
 **Initial Prompt Best Practices:**
 
 Include:
+
 - ✓ Role identity ("You are the backend developer")
 - ✓ Task assignment ("Work on Task #2")
 - ✓ How to get details ("Check task list")
@@ -260,10 +261,10 @@ Send a message to a specific teammate.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `to` | Yes | Recipient's agent name |
-| `message` | Yes | Message text |
+| Parameter | Required | Description            |
+| --------- | -------- | ---------------------- |
+| `to`      | Yes      | Recipient's agent name |
+| `message` | Yes      | Message text           |
 
 **Examples:**
 
@@ -281,6 +282,7 @@ Send a message to a specific teammate.
 **Message Best Practices:**
 
 **Good messages:**
+
 - Reference specific files and line numbers
 - Include task IDs
 - Provide actionable information
@@ -288,6 +290,7 @@ Send a message to a specific teammate.
 - Be specific about requirements
 
 **Poor messages:**
+
 - Vague ("done", "working on it")
 - No context ("it's broken")
 - Missing details ("need help")
@@ -312,9 +315,9 @@ Check your inbox for messages from teammates.
 
 **Parameters:**
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `mark-read` | No | `true` | Mark messages as read after viewing |
+| Parameter   | Required | Default | Description                         |
+| ----------- | -------- | ------- | ----------------------------------- |
+| `mark-read` | No       | `true`  | Mark messages as read after viewing |
 
 **Examples:**
 
@@ -355,6 +358,7 @@ Blocked on Task #3: Need API endpoint URLs. Where is the base URL configured?
 **As Team Lead:**
 
 Check your inbox frequently! Teammates message you with:
+
 - Completion notifications
 - Blocker reports
 - Questions
@@ -376,10 +380,10 @@ Create a new task in the team task list.
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `subject` | Yes | Brief task title/summary |
-| `description` | No | Detailed requirements and context |
+| Parameter     | Required | Description                       |
+| ------------- | -------- | --------------------------------- |
+| `subject`     | Yes      | Brief task title/summary          |
+| `description` | No       | Detailed requirements and context |
 
 **Examples:**
 
@@ -394,6 +398,7 @@ Create a new task in the team task list.
 **Description Best Practices:**
 
 Include:
+
 - ✓ Specific deliverables
 - ✓ File paths affected
 - ✓ Acceptance criteria
@@ -419,18 +424,18 @@ Update task properties (status, assignment, comments, dependencies).
 
 **Parameters:**
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `task-id` | Yes | Task ID number (without #) |
+| Parameter | Required | Description                |
+| --------- | -------- | -------------------------- |
+| `task-id` | Yes      | Task ID number (without #) |
 
 **Options:**
 
-| Option | Value | Description |
-|--------|-------|-------------|
-| `--status` | `pending\|in-progress\|blocked\|in-review\|completed` | Change task status |
-| `--assign` | `<agent-name>` | Assign to teammate |
-| `--comment` | `<text>` | Add progress comment |
-| `--blocked-by` | `<task-id>` | Add blocking dependency |
+| Option         | Value                                                 | Description             |
+| -------------- | ----------------------------------------------------- | ----------------------- |
+| `--status`     | `pending\|in-progress\|blocked\|in-review\|completed` | Change task status      |
+| `--assign`     | `<agent-name>`                                        | Assign to teammate      |
+| `--comment`    | `<text>`                                              | Add progress comment    |
+| `--blocked-by` | `<task-id>`                                           | Add blocking dependency |
 
 **Examples:**
 
@@ -456,13 +461,13 @@ Update task properties (status, assignment, comments, dependencies).
 
 **Task Statuses:**
 
-| Status | Meaning | When to Use |
-|--------|---------|-------------|
-| `pending` | Not started | Initial state, waiting for assignment |
-| `in-progress` | Actively working | Teammate is currently working on it |
-| `blocked` | Cannot proceed | Waiting for dependency, information, or resource |
-| `in-review` | Work complete, needs review | Implementation done, awaiting approval |
-| `completed` | Fully done | Work finished and approved |
+| Status        | Meaning                     | When to Use                                      |
+| ------------- | --------------------------- | ------------------------------------------------ |
+| `pending`     | Not started                 | Initial state, waiting for assignment            |
+| `in-progress` | Actively working            | Teammate is currently working on it              |
+| `blocked`     | Cannot proceed              | Waiting for dependency, information, or resource |
+| `in-review`   | Work complete, needs review | Implementation done, awaiting approval           |
+| `completed`   | Fully done                  | Work finished and approved                       |
 
 **Notes:**
 
@@ -522,6 +527,7 @@ The following commands are documented in the **swarm-troubleshooting** skill:
 - `/claude-swarm:swarm-resume` - Resume suspended team
 
 Use the swarm-troubleshooting skill when:
+
 - Spawns fail
 - Status shows mismatches
 - Teammates aren't responsive
@@ -533,13 +539,13 @@ Use the swarm-troubleshooting skill when:
 
 **Why prefer slash commands?**
 
-| Aspect | Slash Commands | Bash Functions |
-|--------|----------------|----------------|
-| **Reliability** | ✓ Better error handling | Basic error handling |
-| **User Experience** | ✓ Clear output formatting | Raw output |
-| **Context Awareness** | ✓ Auto-uses team env vars | Must specify team |
-| **Validation** | ✓ Validates inputs | Limited validation |
-| **Discovery** | ✓ Shows in `/help` | Hidden in library |
+| Aspect                | Slash Commands            | Bash Functions       |
+| --------------------- | ------------------------- | -------------------- |
+| **Reliability**       | ✓ Better error handling   | Basic error handling |
+| **User Experience**   | ✓ Clear output formatting | Raw output           |
+| **Context Awareness** | ✓ Auto-uses team env vars | Must specify team    |
+| **Validation**        | ✓ Validates inputs        | Limited validation   |
+| **Discovery**         | ✓ Shows in `/help`        | Hidden in library    |
 
 **When to use bash functions:**
 
@@ -551,7 +557,7 @@ Use the swarm-troubleshooting skill when:
 **Sourcing bash library:**
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 ```
 
 Then call functions directly: `create_team`, `spawn_teammate`, `send_message`, etc.

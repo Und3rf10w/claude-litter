@@ -17,7 +17,7 @@ Reconcile team configuration with actual running sessions, fixing mismatches.
 Run the following bash command to reconcile the team:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 TEAM=""
 AUTO_FIX=false

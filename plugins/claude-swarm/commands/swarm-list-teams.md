@@ -11,7 +11,7 @@ List all available swarm teams with their status and member counts.
 Run the following bash command:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 list_teams
 ```

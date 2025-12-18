@@ -72,6 +72,7 @@ grep -E 'allow_remote_control|listen_on' ~/.config/kitty/kitty.conf
 Swarm coordination involves multiple moving parts: multiplexers (tmux/kitty), Claude Code processes, file system state, and network communication. When issues arise, systematic diagnosis is essential.
 
 **First, identify the symptom category**:
+
 1. **Spawn Issues** - Can't create new teammates
 2. **Status Issues** - Config doesn't match reality
 3. **Communication Issues** - Messages not delivered
@@ -105,7 +106,7 @@ Always start with diagnostics before attempting fixes:
 
 ### Diagnostic Decision Tree
 
-```
+````
 Issue Detected
 │
 ├─ Can't spawn teammates?
@@ -159,8 +160,10 @@ Spawn failures are the most common issue when creating swarm teams. Understandin
 2. **Run diagnostics**:
 ```bash
 /claude-swarm:swarm-diagnose <team-name>
-```
+````
+
 3. **Check system state**:
+
 ```bash
 # For kitty users
 kitten @ ls  # Should list windows without error
@@ -201,11 +204,13 @@ Spawn Command Fails
 #### 1. Multiplexer Not Available
 
 **Error:**
+
 ```
 Error: Neither tmux nor kitty is available
 ```
 
 **Solution:**
+
 ```bash
 # Install tmux (macOS)
 brew install tmux
@@ -220,11 +225,13 @@ which tmux  # or: which kitty
 #### 2. Duplicate Agent Names
 
 **Error:**
+
 ```
 Error: Agent name 'backend-dev' already exists in team
 ```
 
 **Solution:**
+
 ```bash
 # Use unique names
 /claude-swarm:swarm-spawn "backend-dev-2" "backend-developer" "sonnet" "..."
@@ -236,11 +243,13 @@ Error: Agent name 'backend-dev' already exists in team
 #### 3. Kitty Socket Issues
 
 **Error (kitty):**
+
 ```
 Error: Could not find a valid kitty socket
 ```
 
 **Solution:**
+
 ```bash
 # 1. Verify kitty config has remote control enabled
 grep -E 'allow_remote_control|listen_on' ~/.config/kitty/kitty.conf
@@ -265,6 +274,7 @@ export KITTY_LISTEN_ON=unix:/tmp/kitty-$(whoami)-$KITTY_PID
 **Deep dive on kitty socket discovery**:
 
 The spawn process tries sockets in this order:
+
 1. `$KITTY_LISTEN_ON` environment variable (if set and valid)
 2. Cached socket from previous successful connection
 3. `/tmp/kitty-$USER-$KITTY_PID` (exact match for current kitty)
@@ -295,6 +305,7 @@ export KITTY_LISTEN_ON=unix:/tmp/kitty-$(whoami)-$KITTY_PID
 ```
 
 **Configuration file location varies**:
+
 - Linux: `~/.config/kitty/kitty.conf`
 - macOS: `~/.config/kitty/kitty.conf` or `~/Library/Preferences/kitty/kitty.conf`
 - Check with: `kitty --debug-config | grep "Config file"`
@@ -331,11 +342,13 @@ ls -la /tmp/kitty-$(whoami)-*
 #### 4. Path Traversal Validation
 
 **Error:**
+
 ```
 Error: Invalid team name (path traversal detected)
 ```
 
 **Solution:**
+
 ```bash
 # Use simple team names without special characters
 # Good: "auth-team", "feature-x", "bugfix_123"
@@ -345,11 +358,13 @@ Error: Invalid team name (path traversal detected)
 #### 5. Session Creation Timeout
 
 **Error:**
+
 ```
 Error: Timeout waiting for teammate session to start
 ```
 
 **Solution:**
+
 ```bash
 # Retry once (may be transient)
 /claude-swarm:swarm-spawn "agent-name" ...
@@ -373,6 +388,7 @@ tmux list-sessions  # or: kitty @ ls
 ### Status Mismatches
 
 **Symptoms:**
+
 - Config shows teammate as "active" but session is dead
 - Session exists but not in config
 - Conflicting status information
@@ -384,6 +400,7 @@ tmux list-sessions  # or: kitty @ ls
 ```
 
 This will report:
+
 - Offline sessions still marked active
 - Zombie config entries
 - Active sessions not in config
@@ -394,6 +411,7 @@ This will report:
 #### 1. Teammate Session Crashed
 
 **Detection:**
+
 ```bash
 # Config shows active, but session doesn't exist
 /claude-swarm:swarm-verify <team-name>
@@ -401,6 +419,7 @@ This will report:
 ```
 
 **Solution:**
+
 ```bash
 # Run reconcile to update status
 /claude-swarm:swarm-reconcile <team-name>
@@ -418,6 +437,7 @@ This will report:
 User manually killed tmux/kitty session outside of cleanup command
 
 **Solution:**
+
 ```bash
 # Reconcile will detect and fix
 /claude-swarm:swarm-reconcile <team-name>
@@ -432,6 +452,7 @@ User manually killed tmux/kitty session outside of cleanup command
 Sessions killed but config files remain
 
 **Solution:**
+
 ```bash
 # Run cleanup properly
 /claude-swarm:swarm-cleanup <team-name> --force
@@ -443,6 +464,7 @@ rm ~/.claude/teams/<team-name>/config.json
 ### Communication Failures
 
 **Symptoms:**
+
 - Messages not received by teammates
 - Inbox shows no messages when some were sent
 - Message command succeeds but teammate never sees it
@@ -465,6 +487,7 @@ cat ~/.claude/teams/<team-name>/inboxes/<agent-name>.json
 #### 1. Teammate Not Checking Inbox
 
 **Solution:**
+
 - Remind teammates to run `/claude-swarm:swarm-inbox` regularly
 - Include inbox check in teammate initial prompts
 - Send follow-up message or use broadcast
@@ -472,11 +495,13 @@ cat ~/.claude/teams/<team-name>/inboxes/<agent-name>.json
 #### 2. Wrong Agent Name
 
 **Error:**
+
 ```
 Error: Agent 'backend' not found in team
 ```
 
 **Solution:**
+
 ```bash
 # Check exact agent names
 /claude-swarm:swarm-status <team-name>
@@ -491,6 +516,7 @@ Error: Agent 'backend' not found in team
 Inbox command fails or shows garbled output
 
 **Solution:**
+
 ```bash
 # Back up current inbox
 cp ~/.claude/teams/<team-name>/inboxes/<agent>.json ~/.claude/teams/<team-name>/inboxes/<agent>.json.bak
@@ -504,6 +530,7 @@ echo '[]' > ~/.claude/teams/<team-name>/inboxes/<agent>.json
 ### Task Management Issues
 
 **Symptoms:**
+
 - Task updates not reflected in task list
 - Cannot assign task to teammate
 - Task IDs don't match
@@ -523,11 +550,13 @@ cat ~/.claude/tasks/<team-name>/tasks.json
 #### 1. Invalid Task ID
 
 **Error:**
+
 ```
 Error: Task #99 not found
 ```
 
 **Solution:**
+
 ```bash
 # List tasks to see valid IDs
 /claude-swarm:task-list
@@ -539,11 +568,13 @@ Error: Task #99 not found
 #### 2. Invalid Status Value
 
 **Error:**
+
 ```
 Error: Invalid status 'done'
 ```
 
 **Solution:**
+
 ```bash
 # Use valid status values:
 # - pending
@@ -558,11 +589,13 @@ Error: Invalid status 'done'
 #### 3. Assigning to Non-Existent Agent
 
 **Error:**
+
 ```
 Error: Agent 'frontend' not found in team
 ```
 
 **Solution:**
+
 ```bash
 # Check exact agent names
 /claude-swarm:swarm-status <team-name>
@@ -574,6 +607,7 @@ Error: Agent 'frontend' not found in team
 ### Team Creation Issues
 
 **Symptoms:**
+
 - Team creation fails
 - Directory permission errors
 - Config file not created
@@ -593,11 +627,13 @@ ls -la ~/.claude/teams/
 #### 1. Team Already Exists
 
 **Error:**
+
 ```
 Error: Team 'my-team' already exists
 ```
 
 **Solution:**
+
 ```bash
 # Choose different name
 /claude-swarm:swarm-create "my-team-2" "description"
@@ -609,11 +645,13 @@ Error: Team 'my-team' already exists
 #### 2. Permission Denied
 
 **Error:**
+
 ```
 Error: Permission denied creating ~/.claude/teams/my-team/
 ```
 
 **Solution:**
+
 ```bash
 # Fix permissions on Claude directory
 chmod 700 ~/.claude/
@@ -626,11 +664,13 @@ chmod 700 ~/.claude/teams/
 #### 3. Invalid Team Name
 
 **Error:**
+
 ```
 Error: Invalid team name
 ```
 
 **Solution:**
+
 ```bash
 # Use alphanumeric with hyphens/underscores
 # Good: "feature-auth", "bugfix_123", "team2"
@@ -674,36 +714,42 @@ Problem Diagnosed
 ### Soft Recovery
 
 **When to use**:
+
 - 1-3 teammates offline, rest working fine
 - Status mismatch after manual session kill
 - Communication failures that don't affect work
 - Post-crash recovery where work is saved
 
 **What's preserved**:
+
 - All task data and comments
 - Inbox messages
 - Team configuration
 - Work completed by active teammates
 
 **What's affected**:
+
 - Offline teammates lose in-memory history (but can resume from files)
 - May need to re-explain context to respawned teammates
 
 **Step-by-step soft recovery**:
 
 1. **Identify offline teammates**:
+
 ```bash
 /claude-swarm:swarm-status <team-name>
 # Look for members showing "no window" with config "active"
 ```
 
 2. **Run reconcile to update status**:
+
 ```bash
 /claude-swarm:swarm-reconcile <team-name>
 # This marks offline sessions as offline in config
 ```
 
 3. **Decide on respawn strategy**:
+
 ```bash
 # Option A: Respawn specific teammate
 /claude-swarm:swarm-spawn "agent-name" "agent-type" "model" "Continue where you left off: [context]"
@@ -713,15 +759,17 @@ Problem Diagnosed
 ```
 
 4. **Verify recovery**:
+
 ```bash
 /claude-swarm:swarm-verify <team-name>
 # All teammates should show as active
 ```
 
 5. **Notify team of recovery**:
+
 ```bash
 # Via bash function
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 broadcast_message "<team-name>" "Recovery complete. Team member [name] has been respawned. Continue your work."
 ```
 
@@ -760,6 +808,7 @@ Result: Team back to full capacity in ~60 seconds, no data lost
 ### Hard Recovery
 
 **When to use**:
+
 - Entire team is non-functional
 - Config files corrupted or inconsistent
 - After failed migration or upgrade
@@ -767,12 +816,14 @@ Result: Team back to full capacity in ~60 seconds, no data lost
 - Starting over is faster than debugging
 
 **What's lost**:
+
 - Task comments and progress notes
 - Inbox messages (unread and read)
 - lastSeen timestamps
 - Team history
 
 **What's preserved**:
+
 - Task subjects and descriptions (if you note them first)
 - Codebase changes (if committed to git)
 - Your knowledge of work completed
@@ -799,11 +850,13 @@ cp ~/.claude/teams/<team-name>/config.json ~/config-backup.json
 **Step-by-step hard recovery**:
 
 1. **Full cleanup** (kills all sessions, optionally removes files):
+
 ```bash
 /claude-swarm:swarm-cleanup <team-name> --force
 ```
 
 2. **Verify cleanup**:
+
 ```bash
 # Check no sessions remain
 tmux list-sessions | grep <team-name>  # Should be empty
@@ -816,11 +869,13 @@ ls ~/.claude/teams/<team-name>/
 ```
 
 3. **Recreate team**:
+
 ```bash
 /claude-swarm:swarm-create <team-name> "Team description"
 ```
 
 4. **Recreate tasks** from backup:
+
 ```bash
 # Recreate each task manually
 /claude-swarm:task-create "Implement API endpoints" "Full description..."
@@ -829,6 +884,7 @@ ls ~/.claude/teams/<team-name>/
 ```
 
 5. **Respawn teammates**:
+
 ```bash
 /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "You are the backend developer. Focus on: [task details]"
 /claude-swarm:swarm-spawn "frontend-dev" "frontend-developer" "sonnet" "You are the frontend developer. Focus on: [task details]"
@@ -836,12 +892,14 @@ ls ~/.claude/teams/<team-name>/
 ```
 
 6. **Assign tasks**:
+
 ```bash
 /claude-swarm:task-update 1 --assign "backend-dev"
 /claude-swarm:task-update 2 --assign "frontend-dev"
 ```
 
 7. **Verify team health**:
+
 ```bash
 /claude-swarm:swarm-verify <team-name>
 /claude-swarm:swarm-status <team-name>
@@ -852,6 +910,7 @@ ls ~/.claude/teams/<team-name>/
 ### Partial Recovery
 
 **When to use**:
+
 - Specific component broken (one inbox, one task file)
 - Soft recovery too cautious, hard recovery too destructive
 - You know exactly what's broken and how to fix it
@@ -941,22 +1000,23 @@ cat ~/.claude/tasks/<team-name>/<id>.json | jq '.'
 
 ### Recovery Strategy Selection Guide
 
-| Symptom | Data Loss Risk | Recommended Strategy | Recovery Time |
-|---------|---------------|---------------------|---------------|
-| 1 teammate offline | None | Soft (respawn one) | 30 seconds |
-| Multiple offline | None | Soft (resume team) | 1-2 minutes |
-| Status mismatch only | None | Soft (reconcile) | 10 seconds |
-| Inbox corruption | Messages lost | Partial (reset inbox) | 30 seconds |
-| Task file corrupt | Comments lost | Partial (fix task) | 1-2 minutes |
-| Config corrupt | History lost | Hard (recreate) | 5-10 minutes |
-| Everything broken | All lost | Hard (full reset) | 10-15 minutes |
-| Persistent failures | Depends | Diagnose root cause first | Varies |
+| Symptom              | Data Loss Risk | Recommended Strategy      | Recovery Time |
+| -------------------- | -------------- | ------------------------- | ------------- |
+| 1 teammate offline   | None           | Soft (respawn one)        | 30 seconds    |
+| Multiple offline     | None           | Soft (resume team)        | 1-2 minutes   |
+| Status mismatch only | None           | Soft (reconcile)          | 10 seconds    |
+| Inbox corruption     | Messages lost  | Partial (reset inbox)     | 30 seconds    |
+| Task file corrupt    | Comments lost  | Partial (fix task)        | 1-2 minutes   |
+| Config corrupt       | History lost   | Hard (recreate)           | 5-10 minutes  |
+| Everything broken    | All lost       | Hard (full reset)         | 10-15 minutes |
+| Persistent failures  | Depends        | Diagnose root cause first | Varies        |
 
 ### When to Escalate
 
 Some issues require more than recovery:
 
 **Signs you need to investigate deeper**:
+
 - Recovery works but issue recurs within minutes
 - Multiple teammates crash simultaneously
 - Errors mention "out of memory" or "too many open files"
@@ -1013,12 +1073,14 @@ Prevention is significantly easier than recovery. Following these practices redu
 ```
 
 **What to look for**:
+
 - All teammates show "active" status
 - All sessions exist (check "window exists" or "session active")
 - No status mismatches
 - Multiplexer responds quickly
 
 **If verification fails immediately after spawn**:
+
 ```bash
 # Wait 5-10 seconds for Claude Code to fully initialize
 sleep 10
@@ -1039,11 +1101,12 @@ Slash commands have built-in validation, error handling, and safer parameter par
 /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "Implement API"
 
 # Direct bash function (AVOID unless necessary)
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 spawn_teammate "team" "backend-dev" "backend-developer" "sonnet" "Implement API"
 ```
 
 **Slash command advantages**:
+
 - Validates all parameters before execution
 - Provides clear error messages
 - Handles edge cases (special characters, quotes, etc.)
@@ -1051,6 +1114,7 @@ spawn_teammate "team" "backend-dev" "backend-developer" "sonnet" "Implement API"
 - Integrated with Claude Code's permission system
 
 **When bash functions are acceptable**:
+
 - In custom scripts combining multiple operations
 - When you need direct access to return values
 - For operations with no slash command equivalent
@@ -1082,6 +1146,7 @@ fi
 **Error handling best practices**:
 
 1. **Capture and log errors**:
+
 ```bash
 if ! /claude-swarm:swarm-spawn "agent" "worker" "sonnet" "prompt" 2> spawn-error.log; then
     echo "Spawn failed. Error log:"
@@ -1091,12 +1156,14 @@ fi
 ```
 
 2. **Set reasonable timeouts**:
+
 ```bash
 # Don't wait forever for unresponsive operations
 timeout 30s /claude-swarm:swarm-verify <team-name>
 ```
 
 3. **Validate prerequisites**:
+
 ```bash
 # Before spawning team, check prerequisites
 if [[ "$(detect_multiplexer)" == "none" ]]; then
@@ -1110,6 +1177,7 @@ fi
 For long-running teams (multiple hours or days), periodic health checks prevent gradual degradation.
 
 **Recommended check frequency**:
+
 - **Every 15-30 minutes** during active development
 - **After major operations** (spawning multiple teammates, large file changes)
 - **Before assigning new critical tasks**
@@ -1162,6 +1230,7 @@ done
 ### 5. Clean Up Properly
 
 **Why proper cleanup matters**:
+
 - Prevents orphaned sessions consuming resources
 - Avoids name collisions when recreating teams
 - Maintains clean state for future teams
@@ -1188,6 +1257,7 @@ done
 ```
 
 **When to use each**:
+
 - **Standard cleanup**: Team finished, might reference later, or debugging needed
 - **Force cleanup**: Team failed, won't use again, or need clean slate
 
@@ -1215,6 +1285,7 @@ ls ~/.claude/teams/<team-name>/       # Should not exist (if --force used)
 ### 6. Monitor Resource Usage
 
 **Why monitoring matters**: Large teams (5+ teammates) can consume significant resources. Each Claude Code process uses:
+
 - ~500MB RAM (varies by model)
 - 1-2 CPU cores during active work
 - File descriptors for sockets, logs, files
@@ -1238,14 +1309,15 @@ uptime
 
 **Resource limits**:
 
-| Team Size | RAM Needed | Recommended System |
-|-----------|------------|-------------------|
-| 2-3 teammates | 2-3 GB | 8GB RAM minimum |
-| 4-6 teammates | 3-5 GB | 16GB RAM recommended |
-| 7-10 teammates | 6-8 GB | 32GB RAM recommended |
-| 10+ teammates | 10+ GB | Not recommended without testing |
+| Team Size      | RAM Needed | Recommended System              |
+| -------------- | ---------- | ------------------------------- |
+| 2-3 teammates  | 2-3 GB     | 8GB RAM minimum                 |
+| 4-6 teammates  | 3-5 GB     | 16GB RAM recommended            |
+| 7-10 teammates | 6-8 GB     | 32GB RAM recommended            |
+| 10+ teammates  | 10+ GB     | Not recommended without testing |
 
 **When to scale back**:
+
 - System swap usage increases significantly
 - CPU load average > number of cores
 - Teammates become slow/unresponsive
@@ -1268,16 +1340,19 @@ uptime
 **Solution**: Provide comprehensive initial prompts
 
 **Bad initial prompt**:
+
 ```bash
 /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "Work on the backend"
 ```
 
 **Good initial prompt**:
+
 ```bash
 /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "You are the backend developer for team my-team. Your tasks: 1) Implement /api/users endpoint in src/api/users.ts, 2) Add database schema in migrations/. Current status: API routes defined, need implementation. Coordinate with frontend-dev for API contract. Check Task #3 for full requirements."
 ```
 
 **Initial prompt template**:
+
 ```
 You are the [ROLE] for team [TEAM_NAME].
 
@@ -1341,6 +1416,7 @@ This documentation is invaluable for recovery scenarios.
 ### Slow or Unresponsive Teammates
 
 **Symptoms**:
+
 - Teammates take >30 seconds to respond to messages
 - Commands timeout frequently
 - High CPU or memory usage
@@ -1364,6 +1440,7 @@ top -pid $(pgrep -f "CLAUDE_CODE_AGENT_NAME=backend-dev")
 **Common causes and solutions**:
 
 1. **Too many teammates for system resources**:
+
 ```bash
 # Solution: Reduce team size, use lighter models
 # Replace opus with sonnet, sonnet with haiku for non-critical tasks
@@ -1371,6 +1448,7 @@ top -pid $(pgrep -f "CLAUDE_CODE_AGENT_NAME=backend-dev")
 ```
 
 2. **Memory leaks in long-running teammates**:
+
 ```bash
 # Solution: Periodic restarts for long-lived teammates (>4 hours)
 # 1. Ask teammate to commit work
@@ -1379,6 +1457,7 @@ top -pid $(pgrep -f "CLAUDE_CODE_AGENT_NAME=backend-dev")
 ```
 
 3. **Disk I/O bottleneck**:
+
 ```bash
 # Check disk I/O
 iostat -x 1 5  # Run 5 samples, 1 second apart
@@ -1420,6 +1499,7 @@ done
 ### Network or API Rate Limiting
 
 **Symptoms**:
+
 - Claude API errors mentioning "rate limit"
 - Teammates getting "429 Too Many Requests"
 - Intermittent connection failures
@@ -1480,6 +1560,7 @@ tmux list-sessions
 **WARNING**: This destroys ALL team data across ALL teams. Only use as absolute last resort.
 
 **What gets destroyed**:
+
 - All team configurations
 - All task data and history
 - All inbox messages
@@ -1535,6 +1616,7 @@ chmod 700 ~/.claude/tasks/
 ```
 
 **After nuclear reset**:
+
 - All previous teams are gone
 - Need to recreate tasks from memory/notes
 - Teammates need complete context re-explanation
@@ -1570,35 +1652,35 @@ cat ~/.claude/teams/<team-name>/inboxes/<agent>.json
 
 When debugging, these environment variables are set for spawned teammates:
 
-| Variable | Description |
-|----------|-------------|
-| `CLAUDE_CODE_TEAM_NAME` | Current team name |
-| `CLAUDE_CODE_AGENT_ID` | Agent's unique UUID |
-| `CLAUDE_CODE_AGENT_NAME` | Agent name (e.g., "backend-dev") |
-| `CLAUDE_CODE_AGENT_TYPE` | Agent role type |
-| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's UUID |
-| `CLAUDE_CODE_AGENT_COLOR` | Agent display color |
-| `KITTY_LISTEN_ON` | Kitty socket path (kitty only) |
+| Variable                   | Description                      |
+| -------------------------- | -------------------------------- |
+| `CLAUDE_CODE_TEAM_NAME`    | Current team name                |
+| `CLAUDE_CODE_AGENT_ID`     | Agent's unique UUID              |
+| `CLAUDE_CODE_AGENT_NAME`   | Agent name (e.g., "backend-dev") |
+| `CLAUDE_CODE_AGENT_TYPE`   | Agent role type                  |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's UUID                 |
+| `CLAUDE_CODE_AGENT_COLOR`  | Agent display color              |
+| `KITTY_LISTEN_ON`          | Kitty socket path (kitty only)   |
 
 User-configurable:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable            | Description             | Default     |
+| ------------------- | ----------------------- | ----------- |
 | `SWARM_MULTIPLEXER` | Force "tmux" or "kitty" | Auto-detect |
-| `SWARM_KITTY_MODE` | Kitty spawn mode | `split` |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode        | `split`     |
 
 ## Quick Reference
 
-| Issue | Quick Fix |
-|-------|-----------|
-| Spawn fails | Run `/claude-swarm:swarm-diagnose` |
-| Status mismatch | Run `/claude-swarm:swarm-reconcile` |
-| Session crashed | Run `/claude-swarm:swarm-resume` |
-| Messages not received | Verify agent name, check inbox |
-| Invalid task ID | Run `/claude-swarm:task-list` to see IDs |
-| Team creation fails | Check permissions, use valid name |
+| Issue                  | Quick Fix                                      |
+| ---------------------- | ---------------------------------------------- |
+| Spawn fails            | Run `/claude-swarm:swarm-diagnose`             |
+| Status mismatch        | Run `/claude-swarm:swarm-reconcile`            |
+| Session crashed        | Run `/claude-swarm:swarm-resume`               |
+| Messages not received  | Verify agent name, check inbox                 |
+| Invalid task ID        | Run `/claude-swarm:task-list` to see IDs       |
+| Team creation fails    | Check permissions, use valid name              |
 | Kitty socket not found | Check `listen_on` in kitty.conf, restart kitty |
-| Cleanup incomplete | Use `--force` flag |
+| Cleanup incomplete     | Use `--force` flag                             |
 
 ## Related Skills
 

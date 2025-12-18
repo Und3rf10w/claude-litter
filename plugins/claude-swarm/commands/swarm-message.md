@@ -17,7 +17,7 @@ Send a message to a teammate.
 Run the following bash command to send the message:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: env vars (teammates) > user vars (team-lead) > defaults
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then

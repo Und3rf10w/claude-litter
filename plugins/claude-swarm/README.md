@@ -246,10 +246,12 @@ All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-
 **Team lead identification** (kitty only):
 
 Since the team lead doesn't have environment variables, kitty user vars are used:
+
 - `swarm_team` - Team name (set when creating team)
 - `swarm_agent` - Agent name (set to "team-lead")
 
 Commands use this priority chain:
+
 1. Environment variables (teammates)
 2. Kitty user vars (team lead)
 3. Defaults or error
@@ -362,7 +364,7 @@ See [Integration Guide](docs/INTEGRATION.md) for examples of:
 
 ```bash
 # Access swarm utilities in custom scripts
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Use any exported function
 create_team "my-team" "Custom workflow"
