@@ -21,20 +21,36 @@ create_team() {
 
     local team_dir="${TEAMS_DIR}/${team_name}"
 
-    if [[ -d "$team_dir" ]]; then
-        echo -e "${YELLOW}Team '${team_name}' already exists${NC}"
+    # Atomically create team directory (prevents TOCTOU race condition)
+    # mkdir without -p fails if directory exists, making this atomic
+    if ! command mkdir "$team_dir" 2>/dev/null; then
+        if [[ -d "$team_dir" ]]; then
+            echo -e "${YELLOW}Team '${team_name}' already exists${NC}"
+        else
+            echo -e "${RED}Failed to create team directory (check permissions)${NC}" >&2
+        fi
         return 1
     fi
 
-    command mkdir -p "${team_dir}/inboxes"
-    command mkdir -p "${TASKS_DIR}/${team_name}"
+    # Create subdirectories (team_dir now exclusively ours)
+    if ! command mkdir -p "${team_dir}/inboxes"; then
+        command rm -rf "$team_dir"
+        echo -e "${RED}Failed to create team inboxes directory${NC}" >&2
+        return 1
+    fi
+
+    if ! command mkdir -p "${TASKS_DIR}/${team_name}"; then
+        command rm -rf "$team_dir"
+        echo -e "${RED}Failed to create tasks directory${NC}" >&2
+        return 1
+    fi
 
     # Create config with current session as team-lead
     local lead_id="${CLAUDE_CODE_AGENT_ID:-$(generate_uuid)}"
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # Use jq to properly escape values and prevent JSON injection
-    jq -n \
+    if ! jq -n \
         --arg teamName "$team_name" \
         --arg description "$description" \
         --arg leadId "$lead_id" \
@@ -56,10 +72,18 @@ create_team() {
             createdAt: $timestamp,
             suspendedAt: null,
             resumedAt: null
-        }' > "${team_dir}/config.json"
+        }' > "${team_dir}/config.json"; then
+        command rm -rf "$team_dir" "${TASKS_DIR}/${team_name}"
+        echo -e "${RED}Failed to create team config${NC}" >&2
+        return 1
+    fi
 
     # Initialize team-lead inbox
-    echo "[]" > "${team_dir}/inboxes/team-lead.json"
+    if ! echo "[]" > "${team_dir}/inboxes/team-lead.json"; then
+        command rm -rf "$team_dir" "${TASKS_DIR}/${team_name}"
+        echo -e "${RED}Failed to create team-lead inbox${NC}" >&2
+        return 1
+    fi
 
     echo -e "${GREEN}Created team '${team_name}'${NC}"
     echo "  Config: ${team_dir}/config.json"
@@ -93,6 +117,16 @@ add_member() {
 
     # Add member to config with status tracking
     local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if jq --arg id "$agent_id" \
        --arg name "$agent_name" \
@@ -102,6 +136,7 @@ add_member() {
        --arg ts "$timestamp" \
        '.members += [{"agentId": $id, "name": $name, "type": $type, "color": $color, "model": $model, "status": "active", "lastSeen": $ts}]' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        trap - EXIT INT TERM
         release_file_lock
 
         # Initialize inbox for new member
@@ -109,6 +144,7 @@ add_member() {
 
         echo -e "${GREEN}Added '${agent_name}' to team '${team_name}'${NC}"
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to add member to team config${NC}" >&2

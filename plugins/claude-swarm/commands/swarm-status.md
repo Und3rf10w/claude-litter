@@ -13,9 +13,10 @@ Show status for a team.
 
 ## Instructions
 
-Run the following bash command:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
@@ -25,6 +26,7 @@ if [[ -z "$1" ]]; then
 fi
 
 swarm_status "$1"
+SCRIPT_EOF
 ```
 
 Present the information clearly, highlighting:

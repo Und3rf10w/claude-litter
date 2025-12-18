@@ -19,11 +19,24 @@ Resume the suspended team `$1`, respawning any offline teammates.
 
 ## Instructions
 
-Run the following to resume the team:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
-resume_team "$1"
+
+TEAM_NAME="$1"
+resume_team "$TEAM_NAME"
+
+# Set user vars on current window so team-lead can use commands
+if [[ "$SWARM_MULTIPLEXER" == "kitty" ]]; then
+    # Determine current agent (either env var or default to team-lead)
+    CURRENT_AGENT="${CLAUDE_CODE_AGENT_NAME:-team-lead}"
+    if [[ "$CURRENT_AGENT" == "team-lead" ]]; then
+        set_current_window_vars "swarm_team=${TEAM_NAME}" "swarm_agent=team-lead"
+    fi
+fi
+SCRIPT_EOF
 ```
 
 ## Notes

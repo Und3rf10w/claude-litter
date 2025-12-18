@@ -18,7 +18,17 @@ create_task() {
     local description="$3"
     local tasks_dir="${TASKS_DIR}/${team_name}"
 
-    command mkdir -p "$tasks_dir"
+    if ! command mkdir -p "$tasks_dir"; then
+        echo -e "${RED}Failed to create tasks directory${NC}" >&2
+        return 1
+    fi
+
+    # Acquire lock to prevent race condition in ID generation
+    local lock_file="${tasks_dir}/.tasks.lock"
+    if ! acquire_file_lock "$lock_file"; then
+        echo -e "${RED}Failed to acquire lock for task creation${NC}" >&2
+        return 1
+    fi
 
     # Find next task ID
     # Use find instead of glob to avoid zsh "no matches found" error
@@ -36,7 +46,7 @@ create_task() {
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # Use jq to properly escape values and prevent JSON injection
-    jq -n \
+    if ! jq -n \
         --arg id "$new_id" \
         --arg subject "$subject" \
         --arg description "$description" \
@@ -52,7 +62,14 @@ create_task() {
             blockedBy: [],
             comments: [],
             createdAt: $timestamp
-        }' > "$task_file"
+        }' > "$task_file"; then
+        release_file_lock
+        echo -e "${RED}Failed to create task file${NC}" >&2
+        return 1
+    fi
+
+    # Release lock after task file is written
+    release_file_lock
 
     echo -e "${GREEN}Created task #${new_id}: ${subject}${NC}"
     echo "$new_id"
@@ -61,6 +78,13 @@ create_task() {
 get_task() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
     local task_id="$2"
+
+    # Validate task ID (must be numeric to prevent path traversal)
+    if [[ ! "$task_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid task ID '${task_id}' (must be numeric)${NC}" >&2
+        return 1
+    fi
+
     local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
 
     if [[ -f "$task_file" ]]; then
@@ -70,9 +94,32 @@ get_task() {
     fi
 }
 
+# Helper function to detect direct dependency cycles
+# Returns 0 if cycle detected, 1 if no cycle
+check_direct_cycle() {
+    local team_name="$1"
+    local task_id="$2"
+    local target_id="$3"
+    local target_file="${TASKS_DIR}/${team_name}/${target_id}.json"
+
+    if [[ -f "$target_file" ]]; then
+        if jq -e --arg id "$task_id" '.blockedBy | index($id) != null' "$target_file" &>/dev/null; then
+            return 0  # Cycle detected
+        fi
+    fi
+    return 1  # No cycle
+}
+
 update_task() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
     local task_id="$2"
+
+    # Validate task ID (must be numeric to prevent path traversal)
+    if [[ ! "$task_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid task ID '${task_id}' (must be numeric)${NC}" >&2
+        return 1
+    fi
+
     local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
     shift 2
 
@@ -88,28 +135,95 @@ update_task() {
     fi
 
     local tmp_file=$(mktemp)
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt/error
+    trap "rm -f '$tmp_file' '${tmp_file}.new'; release_file_lock" EXIT INT TERM
+
     command cp "$task_file" "$tmp_file"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --status)
-                jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task status${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --owner|--assign)
-                jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task owner${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --comment)
                 local author="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-unknown}}"
                 local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
-                   '.comments += [{"author": $author, "content": $content, "timestamp": $ts}]' \
-                   "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                if ! jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
+                   '.comments += [{"author": $author, "text": $content, "timestamp": $ts}]' \
+                   "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to add task comment${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             --blocked-by)
-                jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new" && command mv "${tmp_file}.new" "$tmp_file"
+                local target_id="$2"
+
+                # Validate target task ID (must be numeric to prevent path traversal)
+                if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Invalid target task ID '${target_id}' (must be numeric)${NC}" >&2
+                    return 1
+                fi
+
+                # Check for self-blocking
+                if [[ "$task_id" == "$target_id" ]]; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Task #${task_id} cannot be blocked by itself${NC}" >&2
+                    return 1
+                fi
+
+                # Check for direct cycle
+                if check_direct_cycle "$team_name" "$task_id" "$target_id"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Adding dependency would create a cycle (task #${target_id} is already blocked by task #${task_id})${NC}" >&2
+                    return 1
+                fi
+
+                # Add dependency and remove duplicates
+                if ! jq --arg val "$target_id" '.blockedBy += [$val] | .blockedBy |= unique' "$tmp_file" > "${tmp_file}.new"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Failed to update task dependencies${NC}" >&2
+                    return 1
+                fi
+                command mv "${tmp_file}.new" "$tmp_file"
                 shift 2
                 ;;
             *)
@@ -117,6 +231,9 @@ update_task() {
                 ;;
         esac
     done
+
+    # Clear trap before final operations
+    trap - EXIT INT TERM
 
     if command mv "$tmp_file" "$task_file"; then
         release_file_lock

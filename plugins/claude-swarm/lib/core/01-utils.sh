@@ -48,8 +48,10 @@ generate_uuid() {
     elif command -v python &>/dev/null; then
         python -c "import uuid; print(uuid.uuid4())"
     else
-        # Fallback: timestamp + random number (less unique)
-        echo "$(date +%s)-$(( RANDOM * RANDOM ))"
+        # Fallback: enhanced method with hostname hash, PID, and nanoseconds
+        echo -e "${YELLOW}Warning: No UUID generator found, using fallback method${NC}" >&2
+        local hostname_hash=$(hostname 2>/dev/null | md5sum 2>/dev/null | cut -c1-8 || echo "nohash")
+        echo "$(date +%s%N 2>/dev/null || date +%s)-${hostname_hash}-$$-$(( RANDOM * RANDOM ))"
     fi
 }
 
@@ -105,8 +107,16 @@ get_current_window_var() {
         return 1
     fi
 
+    # Priority 1: Use KITTY_WINDOW_ID for reliable identification (doesn't depend on focus)
+    if [[ -n "$KITTY_WINDOW_ID" ]]; then
+        kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" --argjson id "$KITTY_WINDOW_ID" \
+            '.[].tabs[].windows[] | select(.id == $id) | .user_vars[$var] // ""' 2>/dev/null || echo ""
+        return
+    fi
+
+    # Priority 2: Fallback to focused window (less reliable but works for initial setup)
     kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" \
-        '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
+        '.[].tabs[] | select(.is_active == true) | .windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
 }
 
 # Set user vars on the current kitty window
@@ -116,7 +126,13 @@ set_current_window_vars() {
         return 1
     fi
 
-    kitten_cmd set-user-vars "$@" 2>/dev/null
+    # Use KITTY_WINDOW_ID for reliable targeting when available
+    if [[ -n "$KITTY_WINDOW_ID" ]]; then
+        kitten_cmd set-user-vars --match "id:$KITTY_WINDOW_ID" "$@" 2>/dev/null
+    else
+        # Fallback to default (focused window)
+        kitten_cmd set-user-vars "$@" 2>/dev/null
+    fi
 }
 
 # Export public API

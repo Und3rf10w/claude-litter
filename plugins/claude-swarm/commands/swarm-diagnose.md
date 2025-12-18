@@ -13,9 +13,10 @@ Run comprehensive diagnostics on a swarm team to identify configuration issues, 
 
 ## Instructions
 
-Run the following bash command to perform comprehensive team diagnostics:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
@@ -171,6 +172,7 @@ if [[ "$STALE_COUNT" -gt 0 ]]; then
 fi
 echo "- Use /swarm-status ${TEAM_NAME} for a quick overview"
 echo "- Use /swarm-resume ${TEAM_NAME} to respawn offline teammates"
+SCRIPT_EOF
 ```
 
 Present the diagnostic results clearly, highlighting any errors or warnings that need attention. If issues are found, provide specific remediation steps.

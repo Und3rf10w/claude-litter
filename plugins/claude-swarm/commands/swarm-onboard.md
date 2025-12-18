@@ -13,9 +13,10 @@ Welcome new users to Claude Swarm with an interactive setup experience.
 
 ## Instructions
 
-Run the onboarding wizard by sourcing the library and calling the orchestrator function:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 
 SKIP_DEMO=false
@@ -111,6 +112,7 @@ If yes, ask for team name and description, then run:
 ```bash
 /claude-swarm:swarm-create <team-name> <description>
 ```
+SCRIPT_EOF
 
 ---
 

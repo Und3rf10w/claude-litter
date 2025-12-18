@@ -14,9 +14,10 @@ Clean up a team's resources.
 
 ## Instructions
 
-Run the following bash command:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
@@ -31,6 +32,7 @@ if [[ "$2" == "--force" ]]; then
 fi
 
 cleanup_team "$1" "$FORCE_FLAG"
+SCRIPT_EOF
 ```
 
 Report:

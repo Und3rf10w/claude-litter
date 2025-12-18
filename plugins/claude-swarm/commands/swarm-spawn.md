@@ -5,7 +5,7 @@ argument-hint: <agent_name> [agent_type] [model] [prompt]
 
 # Spawn Teammate
 
-Spawn a new Claude Code teammate.
+Spawn a new Claude Code teammate. You can only spawn one teammate at a time. You must invoke this command multiple time to spawn multiple teammates.
 
 ## Arguments
 
@@ -52,9 +52,10 @@ Set `SWARM_KITTY_MODE` environment variable:
 
 ## Instructions
 
-Run the following bash command to spawn the teammate:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: env vars (teammates) > user vars (team-lead) > error
@@ -75,6 +76,7 @@ if [[ -z "$TEAM" ]]; then
 fi
 
 spawn_teammate "$TEAM" "$NAME" "$TYPE" "$MODEL" "$PROMPT"
+SCRIPT_EOF
 ```
 
 After spawning, report:

@@ -14,17 +14,29 @@ Send a message to a teammate.
 
 ## Instructions
 
-Run the following bash command to send the message:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-# Priority: env vars (teammates) > user vars (team-lead) > defaults
+# Priority: env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
     TEAM="$CLAUDE_CODE_TEAM_NAME"
 else
     TEAM="$(get_current_window_var 'swarm_team')"
-    [[ -z "$TEAM" ]] && TEAM="default"
+    if [[ -z "$TEAM" ]]; then
+        echo "Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME" >&2
+        exit 1
+    fi
+fi
+
+# Detect agent name for sender identity
+if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
+    FROM_AGENT="$CLAUDE_CODE_AGENT_NAME"
+else
+    FROM_AGENT="$(get_current_window_var 'swarm_agent')"
+    [[ -z "$FROM_AGENT" ]] && FROM_AGENT="team-lead"
 fi
 
 TO="$1"
@@ -36,7 +48,10 @@ if [[ -z "$TO" ]] || [[ -z "$MESSAGE" ]]; then
     exit 1
 fi
 
+# Temporarily set CLAUDE_CODE_AGENT_NAME so send_message uses correct sender
+export CLAUDE_CODE_AGENT_NAME="$FROM_AGENT"
 send_message "$TEAM" "$TO" "$MESSAGE"
+SCRIPT_EOF
 ```
 
 Report:

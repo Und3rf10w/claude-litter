@@ -4,6 +4,13 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# TODO: Replace 14:15 with the following block
+# if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+#     TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
+# else
+#     TEAM_NAME="$(get_current_window_var 'swarm_team' 2>/dev/null || echo '')"
+# fi
+
 # Only inject if we're part of a team
 TEAM_NAME="${CLAUDE_CODE_TEAM_NAME:-}"
 

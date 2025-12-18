@@ -14,17 +14,21 @@ Create a new task for the team.
 
 ## Instructions
 
-Run the following bash command:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-# Priority: env vars (teammates) > user vars (team-lead) > defaults
+# Priority: env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
     TEAM="$CLAUDE_CODE_TEAM_NAME"
 else
     TEAM="$(get_current_window_var 'swarm_team')"
-    [[ -z "$TEAM" ]] && TEAM="default"
+    if [[ -z "$TEAM" ]]; then
+        echo "Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME" >&2
+        exit 1
+    fi
 fi
 
 SUBJECT="$1"
@@ -39,6 +43,7 @@ fi
 TASK_ID=$(create_task "$TEAM" "$SUBJECT" "$DESCRIPTION")
 
 echo "Created task #${TASK_ID}"
+SCRIPT_EOF
 ```
 
 After creating, report:

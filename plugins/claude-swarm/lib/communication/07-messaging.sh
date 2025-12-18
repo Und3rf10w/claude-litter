@@ -16,8 +16,12 @@ send_message() {
     local team_name="$1"
     local to="$2"
     local message="$3"
-    local from="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-team-lead}}"
+    local from="${CLAUDE_CODE_AGENT_NAME:-$(get_current_window_var 'swarm_agent' 2>/dev/null || echo 'team-lead')}"
     local color="${4:-blue}"
+
+    # Validate recipient name (prevent path traversal)
+    validate_name "$to" "recipient" || return 1
+
     local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
 
     if [[ ! -f "$inbox_file" ]]; then
@@ -38,6 +42,9 @@ send_message() {
         return 1
     fi
 
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     if jq --arg from "$from" \
@@ -46,6 +53,7 @@ send_message() {
           --arg ts "$timestamp" \
           '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
           "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
+        trap - EXIT INT TERM
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
 
@@ -53,6 +61,7 @@ send_message() {
         # deprecated
         # notify_active_teammate "$team_name" "$to" "$from"
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2
@@ -134,10 +143,22 @@ mark_messages_read() {
     fi
 
     local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     if jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
+        trap - EXIT INT TERM
         release_file_lock
         return 0
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         return 1
@@ -148,6 +169,7 @@ broadcast_message() {
     local team_name="$1"
     local message="$2"
     local exclude="${3:-}"  # Agent to exclude (usually self)
+    local fail_fast="${4:-true}"
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
 
     if [[ ! -f "$config_file" ]]; then
@@ -165,8 +187,12 @@ broadcast_message() {
             if send_message "$team_name" "$member" "$message"; then
                 ((success_count++))
             else
-                echo -e "${YELLOW}Warning: Failed to send message to '${member}'${NC}" >&2
+                echo -e "${RED}Error: Failed to send message to '${member}'${NC}" >&2
                 ((failed_count++))
+                if [[ "$fail_fast" == "true" ]]; then
+                    echo -e "${RED}Aborting broadcast due to failure (fail-fast mode)${NC}" >&2
+                    return 1
+                fi
             fi
         fi
     done < <(jq -r '.members[].name' "$config_file")

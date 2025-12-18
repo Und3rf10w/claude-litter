@@ -29,7 +29,13 @@ check_heartbeats() {
     while IFS='|' read -r name last_seen status; do
         if [[ "$status" == "active" ]] && [[ -n "$last_seen" ]]; then
             # Convert ISO timestamp to epoch
-            local last_seen_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_seen" +%s 2>/dev/null || date -d "$last_seen" +%s 2>/dev/null || echo "0")
+            local last_seen_epoch
+            if ! last_seen_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_seen" +%s 2>/dev/null); then
+                if ! last_seen_epoch=$(date -d "$last_seen" +%s 2>/dev/null); then
+                    echo -e "${YELLOW}Warning: Cannot parse timestamp '$last_seen' for $name, skipping${NC}" >&2
+                    continue
+                fi
+            fi
             local elapsed=$((now - last_seen_epoch))
 
             if [[ $elapsed -gt $stale_threshold ]]; then

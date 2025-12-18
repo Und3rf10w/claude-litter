@@ -26,11 +26,18 @@ cleanup_team() {
         # Hard cleanup: kill sessions AND delete all data
         echo -e "${CYAN}Hard cleanup for team '${team_name}'...${NC}"
 
+        # Acquire registry lock before cleanup to prevent races with spawns
+        local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+        local registry_locked=false
+        if [[ -f "$registry_file" ]] && acquire_file_lock "$registry_file" 10 30; then
+            registry_locked=true
+        fi
+
         # Kill sessions based on multiplexer
         case "$SWARM_MULTIPLEXER" in
             kitty)
-                # Use registry + live query for comprehensive cleanup
-                declare -A closed_agents
+                # Use registry for cleanup (close-window is idempotent - safe to retry)
+                local closed_agents=""
 
                 # First, close all registered windows
                 while IFS= read -r line; do
@@ -39,7 +46,7 @@ cleanup_team() {
                     local swarm_var=$(echo "$line" | jq -r '.swarm_var')
                     if kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null; then
                         echo -e "${YELLOW}  Closed (registry): ${agent}${NC}"
-                        closed_agents["$agent"]=1
+                        closed_agents="${closed_agents}:${agent}:"
                         unregister_window "$team_name" "$agent"
                     fi
                 done < <(get_registered_windows "$team_name" | jq -c '.[]')
@@ -47,7 +54,8 @@ cleanup_team() {
                 # Then, query live windows to catch any unregistered ones
                 while IFS= read -r agent; do
                     [[ -n "$agent" ]] || continue
-                    if [[ -z "${closed_agents[$agent]}" ]]; then
+                    # Check if already closed (bash 3.2 compatible string search)
+                    if [[ "$closed_agents" != *":${agent}:"* ]]; then
                         local swarm_var="swarm_${team_name}_${agent}"
                         if kitten_cmd close-window --match "var:${swarm_var}" 2>/dev/null; then
                             echo -e "${YELLOW}  Closed (live query): ${agent}${NC}"
@@ -64,6 +72,11 @@ cleanup_team() {
                 done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}")
                 ;;
         esac
+
+        # Release registry lock before deleting files
+        if [[ "$registry_locked" == "true" ]]; then
+            release_file_lock
+        fi
 
         # Remove team directory
         if [[ -d "${TEAMS_DIR}/${team_name}" ]]; then

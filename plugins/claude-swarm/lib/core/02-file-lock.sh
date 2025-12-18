@@ -34,7 +34,14 @@ acquire_file_lock() {
     if [[ -d "$lock_file" ]]; then
         local lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
         if [[ $lock_age -gt $stale_threshold ]]; then
-            rmdir "$lock_file" 2>/dev/null || true
+            if ! rmdir "$lock_file" 2>/dev/null; then
+                # rmdir failed (permissions or not empty), try more aggressive cleanup
+                echo -e "${YELLOW}Warning: Stale lock exists but rmdir failed, attempting rm -rf${NC}" >&2
+                if ! command rm -rf "$lock_file" 2>/dev/null; then
+                    echo -e "${RED}Error: Cannot remove stale lock ${lock_file} (check permissions)${NC}" >&2
+                    # Continue anyway - maybe the lock will be released by its owner
+                fi
+            fi
         fi
     fi
 

@@ -10,7 +10,10 @@ TOOL_RESULT=$(cat)
 if echo "$TOOL_RESULT" | grep -q '"launchSwarm".*true'; then
     # Use sed for portability (grep -oP is GNU-only, fails on macOS)
     teammate_count=$(echo "$TOOL_RESULT" | sed -n 's/.*"teammateCount":[[:space:]]*\([0-9]*\).*/\1/p')
-    teammate_count="${teammate_count:-3}"
+    if [[ -z "$teammate_count" ]]; then
+        echo "Note: Could not detect teammate count from plan, defaulting to 3" >&2
+        teammate_count=3
+    fi
 
     echo "<system-reminder>
 # Swarm Launch Detected

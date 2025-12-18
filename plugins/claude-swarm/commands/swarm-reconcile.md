@@ -14,9 +14,10 @@ Reconcile team configuration with actual running sessions, fixing mismatches.
 
 ## Instructions
 
-Run the following bash command to reconcile the team:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 TEAM=""
@@ -68,12 +69,12 @@ declare -a DEAD_BUT_ACTIVE=()
 declare -a ALIVE_BUT_OFFLINE=()
 declare -a ZOMBIE_SESSIONS=()
 
-# Build list of sessions from config
+# Build list of sessions from config (use tab separator for safer parsing)
 declare -A CONFIG_MEMBERS
-while IFS='|' read -r NAME STATUS; do
+while IFS=$'\t' read -r NAME STATUS; do
     [[ -z "$NAME" ]] && continue
     CONFIG_MEMBERS["$NAME"]="$STATUS"
-done < <(jq -r '.members[] | "\(.name)|\(.status)"' "$CONFIG_FILE")
+done < <(jq -r '.members[] | "\(.name)\t\(.status)"' "$CONFIG_FILE")
 
 # Check each config member against reality
 echo "=== Config vs Reality ==="
@@ -182,6 +183,7 @@ if [[ ${#ZOMBIE_SESSIONS[@]} -gt 0 ]]; then
         echo "  - ${NAME}: kill_swarm_session '$TEAM' '$NAME'"
     done
 fi
+SCRIPT_EOF
 ```
 
 After running, report:
