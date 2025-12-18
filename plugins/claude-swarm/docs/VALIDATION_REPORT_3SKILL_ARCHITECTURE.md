@@ -341,7 +341,7 @@ The 3-skill architecture successfully achieves all design goals:
 
 **Migration Completed**:
 
-1. ✅ Plugin version bumped to reflect new architecture (v1.5.1)
+1. ✅ Plugin version bumped to reflect new architecture (v1.5.2)
 2. ✅ All references to old swarm-coordination skill updated
 3. ✅ Old skill removed from plugin
 4. 🔄 Monitoring usage patterns in production
