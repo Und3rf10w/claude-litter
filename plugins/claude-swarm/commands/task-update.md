@@ -21,17 +21,21 @@ Update a task's properties.
 
 ## Instructions
 
-Parse the arguments and build the update command:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-# Priority: env vars (teammates) > user vars (team-lead) > defaults
+# Priority: env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
     TEAM="$CLAUDE_CODE_TEAM_NAME"
 else
     TEAM="$(get_current_window_var 'swarm_team')"
-    [[ -z "$TEAM" ]] && TEAM="default"
+    if [[ -z "$TEAM" ]]; then
+        echo "Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME" >&2
+        exit 1
+    fi
 fi
 
 TASK_ID="$1"
@@ -51,6 +55,7 @@ update_task "$TEAM" "$TASK_ID" "$@"
 echo ""
 echo "Updated task:"
 get_task "$TEAM" "$TASK_ID" | jq '.'
+SCRIPT_EOF
 ```
 
 Report what was changed and the current task state.

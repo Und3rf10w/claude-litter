@@ -7,11 +7,22 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/swarm-utils.sh" 1>/dev/null
 
-# Only run if we're part of a team
-TEAM_NAME="${CLAUDE_CODE_TEAM_NAME:-}"
-AGENT_NAME="${CLAUDE_CODE_AGENT_NAME:-}"
+# Detect team and agent name (env vars for teammates, window vars for team-lead)
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM_NAME="$(get_current_window_var 'swarm_team' 2>/dev/null || echo '')"
+fi
+
+if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
+    AGENT_NAME="$CLAUDE_CODE_AGENT_NAME"
+else
+    AGENT_NAME="$(get_current_window_var 'swarm_agent' 2>/dev/null || echo '')"
+fi
+
 AGENT_TYPE="${CLAUDE_CODE_AGENT_TYPE:-}"
 
+# Only run if we're part of a team
 if [[ -z "$TEAM_NAME" ]] || [[ -z "$AGENT_NAME" ]]; then
     exit 0
 fi

@@ -270,6 +270,95 @@ case "$model" in
 esac
 ```
 
+## Shell Requirements
+
+### Bash Dependency
+
+**All swarm commands and library functions require bash:**
+
+- Command files use bash-specific syntax (`[[ ]]`, arrays, `printf %q`)
+- Hook scripts have `#!/bin/bash` shebangs
+- Library modules use bash features throughout (process substitution, associative arrays, regex matching)
+- Entry point (`swarm-utils.sh`) validates bash availability before loading modules
+
+**Commands execute with explicit bash invocation:**
+
+All command files wrap their scripts in bash heredocs:
+
+```bash
+bash << 'SCRIPT_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
+# ... command logic ...
+SCRIPT_EOF
+```
+
+This ensures commands execute in bash regardless of user's default shell (zsh on macOS).
+
+### Multiplexer Requirements and Limitations
+
+#### Kitty (Full Support)
+
+**Features available:**
+- Window variables (`swarm_team`, `swarm_agent`) for context detection
+- Automatic team/agent detection for team-leads
+- Split, tab, and window spawn modes
+- Session file generation and launching
+- All commands work seamlessly
+
+**Setup requirements:**
+- Running inside kitty terminal
+- Remote control enabled in `~/.config/kitty/kitty.conf`:
+  ```
+  allow_remote_control yes
+  listen_on unix:/tmp/kitty-$USER
+  ```
+
+#### Tmux (Partial Support)
+
+**Features available:**
+- Spawning teammates in separate sessions
+- Task management and messaging
+- All core swarm functionality
+
+**Limitations:**
+- No window variables (tmux has no equivalent to kitty user vars)
+- Team-leads cannot rely on automatic team detection
+- Commands will error instead of silently defaulting to "default" team
+
+**Workaround for team-leads in tmux:**
+
+Set team context manually in your shell:
+
+```bash
+export CLAUDE_CODE_TEAM_NAME="your-team-name"
+```
+
+Or always provide explicit team names when running commands:
+- `/swarm-status your-team-name`
+- `/swarm-verify your-team-name`
+
+**Note**: Spawned teammates (in both kitty and tmux) always have correct environment variables and work identically.
+
+### Error Messages
+
+When commands cannot determine team context, they now error with:
+
+```
+Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME
+```
+
+**Previous behavior (v1.5.3 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
+
+**New behavior**: Commands fail explicitly, preventing data corruption.
+
+### Known Limitations
+
+1. **Team-leads in tmux** cannot rely on automatic team detection via window variables
+2. **Window variables** (`swarm_team`, `swarm_agent`) only work in kitty
+3. **Commands require explicit team names** or environment variables when window vars unavailable
+4. **Hook changes** require Claude Code restart (hooks load at session start only)
+5. **Non-bash shells** will fail with clear error message when sourcing swarm-utils.sh
+
 ## Command Development
 
 Commands are markdown files in `plugins/claude-swarm/commands/`. They use bash execution syntax to call swarm-utils functions:

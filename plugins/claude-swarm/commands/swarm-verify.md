@@ -13,9 +13,10 @@ Verify that all teammates in the config actually have active sessions running.
 
 ## Instructions
 
-Run the following bash command to verify all teammates:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Priority: arg > env vars (teammates) > user vars (team-lead) > error
@@ -107,6 +108,7 @@ if [[ $DEAD_COUNT -gt 0 ]]; then
     echo "  - Use /claude-swarm:swarm-spawn <name> to manually respawn a specific teammate"
     echo "  - Check multiplexer logs if spawns are failing"
 fi
+SCRIPT_EOF
 ```
 
 After running, report:

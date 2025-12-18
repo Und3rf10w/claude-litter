@@ -14,9 +14,10 @@ Reconcile team configuration with actual running sessions, fixing mismatches.
 
 ## Instructions
 
-Run the following bash command to reconcile the team:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 TEAM=""
@@ -182,6 +183,7 @@ if [[ ${#ZOMBIE_SESSIONS[@]} -gt 0 ]]; then
         echo "  - ${NAME}: kill_swarm_session '$TEAM' '$NAME'"
     done
 fi
+SCRIPT_EOF
 ```
 
 After running, report:

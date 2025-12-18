@@ -28,6 +28,9 @@ generate_kitty_session() {
     # Get kitty socket for teammates to inherit
     local kitty_socket=$(find_kitty_socket)
 
+    # Get current directory for session file
+    local current_dir="$(pwd)"
+
     # Generate session file header
     command cat > "$session_file" << EOF
 # Auto-generated swarm session for team: ${team_name}
@@ -35,7 +38,7 @@ generate_kitty_session() {
 # Usage: kitty --session ${session_file}
 
 layout splits
-cd $(pwd)
+cd "${current_dir}"
 
 EOF
 
@@ -49,14 +52,23 @@ EOF
         local color=$(echo "$line" | cut -d'|' -f5)
         local swarm_var="swarm_${team_name}_${name}"
 
+        # Escape variables for safe embedding in session file
+        local safe_team=$(printf %q "$team_name")
+        local safe_name=$(printf %q "$name")
+        local safe_id=$(printf %q "$id")
+        local safe_type=$(printf %q "$type")
+        local safe_lead=$(printf %q "$lead_id")
+        local safe_color=$(printf %q "$color")
+        local safe_socket=$(printf %q "$kitty_socket")
+
         if [[ "$first" == "true" ]]; then
             echo "# First window (${name})" >> "$session_file"
-            echo "launch --title \"swarm-${team_name}-${name}\" --var \"${swarm_var}=true\" --var \"swarm_team=${team_name}\" --var \"swarm_agent=${name}\" --env CLAUDE_CODE_TEAM_NAME=${team_name} --env CLAUDE_CODE_AGENT_ID=${id} --env CLAUDE_CODE_AGENT_NAME=${name} --env CLAUDE_CODE_AGENT_TYPE=${type} --env CLAUDE_CODE_TEAM_LEAD_ID=${lead_id} --env CLAUDE_CODE_AGENT_COLOR=${color} --env KITTY_LISTEN_ON=${kitty_socket} claude --model ${model}" >> "$session_file"
+            echo "launch --title \"swarm-${team_name}-${name}\" --var \"${swarm_var}=true\" --var \"swarm_team=${team_name}\" --var \"swarm_agent=${name}\" --env CLAUDE_CODE_TEAM_NAME=${safe_team} --env CLAUDE_CODE_AGENT_ID=${safe_id} --env CLAUDE_CODE_AGENT_NAME=${safe_name} --env CLAUDE_CODE_AGENT_TYPE=${safe_type} --env CLAUDE_CODE_TEAM_LEAD_ID=${safe_lead} --env CLAUDE_CODE_AGENT_COLOR=${safe_color} --env KITTY_LISTEN_ON=${safe_socket} claude --model ${model}" >> "$session_file"
             first=false
         else
             echo "" >> "$session_file"
             echo "# Split window (${name})" >> "$session_file"
-            echo "launch --location=vsplit --title \"swarm-${team_name}-${name}\" --var \"${swarm_var}=true\" --var \"swarm_team=${team_name}\" --var \"swarm_agent=${name}\" --env CLAUDE_CODE_TEAM_NAME=${team_name} --env CLAUDE_CODE_AGENT_ID=${id} --env CLAUDE_CODE_AGENT_NAME=${name} --env CLAUDE_CODE_AGENT_TYPE=${type} --env CLAUDE_CODE_TEAM_LEAD_ID=${lead_id} --env CLAUDE_CODE_AGENT_COLOR=${color} --env KITTY_LISTEN_ON=${kitty_socket} claude --model ${model}" >> "$session_file"
+            echo "launch --location=vsplit --title \"swarm-${team_name}-${name}\" --var \"${swarm_var}=true\" --var \"swarm_team=${team_name}\" --var \"swarm_agent=${name}\" --env CLAUDE_CODE_TEAM_NAME=${safe_team} --env CLAUDE_CODE_AGENT_ID=${safe_id} --env CLAUDE_CODE_AGENT_NAME=${safe_name} --env CLAUDE_CODE_AGENT_TYPE=${safe_type} --env CLAUDE_CODE_TEAM_LEAD_ID=${safe_lead} --env CLAUDE_CODE_AGENT_COLOR=${safe_color} --env KITTY_LISTEN_ON=${safe_socket} claude --model ${model}" >> "$session_file"
         fi
     done < <(jq -r '.members[] | "\(.name)|\(.agentId)|\(.type)|\(.model // "sonnet")|\(.color // "blue")"' "$config_file")
 

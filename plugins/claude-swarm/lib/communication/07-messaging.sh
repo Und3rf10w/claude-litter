@@ -16,7 +16,7 @@ send_message() {
     local team_name="$1"
     local to="$2"
     local message="$3"
-    local from="${CLAUDE_CODE_AGENT_NAME:-${CLAUDE_CODE_AGENT_ID:-team-lead}}"
+    local from="${CLAUDE_CODE_AGENT_NAME:-$(get_current_window_var 'swarm_agent' 2>/dev/null || echo 'team-lead')}"
     local color="${4:-blue}"
     local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
 

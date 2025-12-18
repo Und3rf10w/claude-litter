@@ -13,17 +13,21 @@ Check for messages from teammates.
 
 ## Instructions
 
-Run the following bash commands:
+Execute the following script using bash explicitly:
 
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-# Priority: env vars (teammates) > user vars (team-lead) > defaults
+# Priority: env vars (teammates) > user vars (team-lead) > error
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
     TEAM="$CLAUDE_CODE_TEAM_NAME"
 else
     TEAM="$(get_current_window_var 'swarm_team')"
-    [[ -z "$TEAM" ]] && TEAM="default"
+    if [[ -z "$TEAM" ]]; then
+        echo "Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME" >&2
+        exit 1
+    fi
 fi
 
 if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
@@ -55,6 +59,7 @@ if [[ "$UNREAD_COUNT" -gt 0 ]]; then
 else
     echo "No unread messages."
 fi
+SCRIPT_EOF
 ```
 
 Present messages in a clear format and note any action items mentioned.

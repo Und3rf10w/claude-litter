@@ -38,7 +38,10 @@ This command is for **kitty terminal only**. Requires:
 
 ## Instructions
 
+Execute the following script using bash explicitly:
+
 ```bash
+bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 ACTION="$1"
@@ -67,6 +70,7 @@ case "$ACTION" in
         exit 1
         ;;
 esac
+SCRIPT_EOF
 ```
 
 ## Example Usage
