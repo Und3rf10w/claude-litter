@@ -18,7 +18,10 @@ create_task() {
     local description="$3"
     local tasks_dir="${TASKS_DIR}/${team_name}"
 
-    command mkdir -p "$tasks_dir"
+    if ! command mkdir -p "$tasks_dir"; then
+        echo -e "${RED}Failed to create tasks directory${NC}" >&2
+        return 1
+    fi
 
     # Acquire lock to prevent race condition in ID generation
     local lock_file="${tasks_dir}/.tasks.lock"
@@ -43,7 +46,7 @@ create_task() {
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # Use jq to properly escape values and prevent JSON injection
-    jq -n \
+    if ! jq -n \
         --arg id "$new_id" \
         --arg subject "$subject" \
         --arg description "$description" \
@@ -59,7 +62,11 @@ create_task() {
             blockedBy: [],
             comments: [],
             createdAt: $timestamp
-        }' > "$task_file"
+        }' > "$task_file"; then
+        release_file_lock
+        echo -e "${RED}Failed to create task file${NC}" >&2
+        return 1
+    fi
 
     # Release lock after task file is written
     release_file_lock
@@ -71,6 +78,13 @@ create_task() {
 get_task() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
     local task_id="$2"
+
+    # Validate task ID (must be numeric to prevent path traversal)
+    if [[ ! "$task_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid task ID '${task_id}' (must be numeric)${NC}" >&2
+        return 1
+    fi
+
     local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
 
     if [[ -f "$task_file" ]]; then
@@ -99,6 +113,13 @@ check_direct_cycle() {
 update_task() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
     local task_id="$2"
+
+    # Validate task ID (must be numeric to prevent path traversal)
+    if [[ ! "$task_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid task ID '${task_id}' (must be numeric)${NC}" >&2
+        return 1
+    fi
+
     local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
     shift 2
 
@@ -166,6 +187,15 @@ update_task() {
                 ;;
             --blocked-by)
                 local target_id="$2"
+
+                # Validate target task ID (must be numeric to prevent path traversal)
+                if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Invalid target task ID '${target_id}' (must be numeric)${NC}" >&2
+                    return 1
+                fi
 
                 # Check for self-blocking
                 if [[ "$task_id" == "$target_id" ]]; then

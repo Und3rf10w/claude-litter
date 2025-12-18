@@ -18,6 +18,10 @@ send_message() {
     local message="$3"
     local from="${CLAUDE_CODE_AGENT_NAME:-$(get_current_window_var 'swarm_agent' 2>/dev/null || echo 'team-lead')}"
     local color="${4:-blue}"
+
+    # Validate recipient name (prevent path traversal)
+    validate_name "$to" "recipient" || return 1
+
     local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
 
     if [[ ! -f "$inbox_file" ]]; then

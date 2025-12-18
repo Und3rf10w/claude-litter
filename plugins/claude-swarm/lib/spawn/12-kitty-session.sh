@@ -32,7 +32,7 @@ generate_kitty_session() {
     local current_dir="$(pwd)"
 
     # Generate session file header
-    command cat > "$session_file" << EOF
+    if ! command cat > "$session_file" << EOF
 # Auto-generated swarm session for team: ${team_name}
 # Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Usage: kitty --session ${session_file}
@@ -41,6 +41,10 @@ layout splits
 cd "${current_dir}"
 
 EOF
+    then
+        echo -e "${RED}Failed to create session file header${NC}" >&2
+        return 1
+    fi
 
     # Add launch commands for each member
     local first=true

@@ -22,15 +22,22 @@ update_team_status() {
         return 1
     fi
 
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$config_file"; then
+        echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+        return 1
+    fi
+
     local tmp_file=$(mktemp)
 
     if [[ -z "$tmp_file" ]]; then
+        release_file_lock
         echo -e "${RED}Failed to create temp file${NC}" >&2
         return 1
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'" EXIT INT TERM
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local result=0
@@ -56,9 +63,11 @@ update_team_status() {
     trap - EXIT INT TERM
 
     if [[ $result -eq 0 ]]; then
+        release_file_lock
         echo -e "${CYAN}Team '${team_name}' status: ${new_status}${NC}"
     else
         command rm -f "$tmp_file"
+        release_file_lock
         echo -e "${RED}Failed to update team status${NC}" >&2
         return 1
     fi
