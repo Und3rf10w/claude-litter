@@ -107,6 +107,14 @@ get_current_window_var() {
         return 1
     fi
 
+    # Priority 1: Use KITTY_WINDOW_ID for reliable identification (doesn't depend on focus)
+    if [[ -n "$KITTY_WINDOW_ID" ]]; then
+        kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" --argjson id "$KITTY_WINDOW_ID" \
+            '.[].tabs[].windows[] | select(.id == $id) | .user_vars[$var] // ""' 2>/dev/null || echo ""
+        return
+    fi
+
+    # Priority 2: Fallback to focused window (less reliable but works for initial setup)
     kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" \
         '.[].tabs[] | select(.is_active == true) | .windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
 }
@@ -118,7 +126,13 @@ set_current_window_vars() {
         return 1
     fi
 
-    kitten_cmd set-user-vars "$@" 2>/dev/null
+    # Use KITTY_WINDOW_ID for reliable targeting when available
+    if [[ -n "$KITTY_WINDOW_ID" ]]; then
+        kitten_cmd set-user-vars --match "id:$KITTY_WINDOW_ID" "$@" 2>/dev/null
+    else
+        # Fallback to default (focused window)
+        kitten_cmd set-user-vars "$@" 2>/dev/null
+    fi
 }
 
 # Export public API
