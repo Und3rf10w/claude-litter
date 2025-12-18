@@ -20,10 +20,12 @@ Claude Swarm enables you to orchestrate teams of Claude Code instances working t
 ### Prerequisites
 
 **Required:**
+
 - **Terminal multiplexer**: kitty (recommended) or tmux
 - **jq**: JSON processor for configuration management
 
 **For kitty users** (recommended for best experience):
+
 ```bash
 # Add to ~/.config/kitty/kitty.conf
 allow_remote_control yes
@@ -58,6 +60,7 @@ listen_on unix:/tmp/kitty-${USER}
 ### Basic Workflow
 
 **As team-lead:**
+
 ```bash
 # Check team status
 /claude-swarm:swarm-status my-project
@@ -70,6 +73,7 @@ listen_on unix:/tmp/kitty-${USER}
 ```
 
 **As teammate:**
+
 ```bash
 # Check your inbox
 /claude-swarm:swarm-inbox
@@ -92,13 +96,20 @@ listen_on unix:/tmp/kitty-${USER}
 
 ### Skills
 
-- **[Swarm Coordination Skill](skills/swarm-coordination/SKILL.md)** - Comprehensive orchestration guide for team-leads
+Claude Swarm uses a **3-skill architecture** optimized for role-based context loading:
+
+- **[Swarm Orchestration](skills/swarm-orchestration/SKILL.md)** - Team-lead operations for creating and managing swarms (~2,000 tokens)
+- **[Swarm Teammate](skills/swarm-teammate/SKILL.md)** - Worker coordination protocol and teammate identity (~1,200 tokens)
+- **[Swarm Troubleshooting](skills/swarm-troubleshooting/SKILL.md)** - Diagnostics, error recovery, and problem-solving (~3,500 tokens)
+
+Each skill auto-triggers based on context (e.g., teammates automatically load swarm-teammate via environment variables), providing progressive disclosure and optimal token efficiency.
 
 ## Components
 
 ### Slash Commands (17)
 
 **Team Management:**
+
 - `/claude-swarm:swarm-create` - Create new team
 - `/claude-swarm:swarm-spawn` - Spawn teammate
 - `/claude-swarm:swarm-status` - View team status
@@ -111,16 +122,19 @@ listen_on unix:/tmp/kitty-${USER}
 - `/claude-swarm:swarm-reconcile` - Fix status mismatches
 
 **Communication:**
+
 - `/claude-swarm:swarm-message` - Send message to teammate
 - `/claude-swarm:swarm-inbox` - Check your inbox
 
 **Task Management:**
+
 - `/claude-swarm:task-create` - Create new task
 - `/claude-swarm:task-list` - List all tasks
 - `/claude-swarm:task-update` - Update task status/assignment
 - `/claude-swarm:task-delete` - Delete task
 
 **Kitty-Specific:**
+
 - `/claude-swarm:swarm-session` - Generate/launch kitty session files
 
 ### Hooks (5)
@@ -135,9 +149,11 @@ listen_on unix:/tmp/kitty-${USER}
 
 - **swarm-coordinator** - Automated swarm orchestration agent
 
-### Skills (1)
+### Skills (3)
 
-- **swarm-coordination** - Orchestration workflows and best practices
+- **swarm-orchestration** - Team-lead operations and management
+- **swarm-teammate** - Worker coordination protocol
+- **swarm-troubleshooting** - Diagnostics and recovery
 
 ## Agent Types
 
@@ -177,14 +193,70 @@ Choose appropriate agent types when spawning teammates:
         └── 3.json
 ```
 
-### Environment Variables
+### Library Architecture
 
-When teammates are spawned, these variables are automatically set:
+The swarm-utils library uses a modular architecture for better maintainability:
+
+```
+plugins/claude-swarm/lib/
+├── swarm-utils.sh              # Main entry point (sources all modules)
+├── core/
+│   ├── 00-globals.sh          # Global variables and configuration
+│   ├── 01-utils.sh            # Utility functions (UUID, validation)
+│   └── 02-file-lock.sh        # Atomic file locking
+├── multiplexer/
+│   ├── 03-multiplexer.sh      # Kitty/tmux detection and control
+│   └── 04-registry.sh         # Window registry tracking
+├── team/
+│   ├── 05-team.sh             # Team creation and management
+│   ├── 06-status.sh           # Status management and live agents
+│   └── 10-lifecycle.sh        # Suspend/resume operations
+├── communication/
+│   └── 07-messaging.sh        # Message inbox system
+├── tasks/
+│   └── 08-tasks.sh            # Task CRUD operations
+└── spawn/
+    ├── 09-spawn.sh            # Teammate spawning
+    ├── 11-cleanup.sh          # Team cleanup
+    ├── 12-kitty-session.sh    # Session file generation
+    └── 13-diagnostics.sh      # Health checks and diagnostics
+```
+
+**Key Features:**
+
+- **Modular design** - 13 specialized modules organized by functional responsibility
+- **Clear dependencies** - Numbered files ensure proper load order (00 → 13)
+- **Backward compatible** - All existing code continues to work unchanged
+- **Source guards** - Prevents double-loading of modules
+- **Maintainable** - Each module averages ~160 lines (down from 2090 line monolith)
+
+All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh`.
+
+### Environment Variables & Identification
+
+**Spawned teammates** automatically receive these environment variables:
 
 - `CLAUDE_CODE_TEAM_NAME` - Current team name
 - `CLAUDE_CODE_AGENT_ID` - Unique agent UUID
 - `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
 - `CLAUDE_CODE_AGENT_TYPE` - Agent role type
+- `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller)
+- `CLAUDE_CODE_AGENT_COLOR` - Agent display color
+
+**Team lead identification** (kitty only):
+
+Since the team lead doesn't have environment variables, kitty user vars are used:
+
+- `swarm_team` - Team name (set when creating team)
+- `swarm_agent` - Agent name (set to "team-lead")
+
+Commands use this priority chain:
+
+1. Environment variables (teammates)
+2. Kitty user vars (team lead)
+3. Defaults or error
+
+This ensures inbox checking, messaging, and task commands work correctly for both team lead and teammates.
 
 ## Best Practices
 
@@ -222,6 +294,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Teammates fail to spawn
 
 **Solutions:**
+
 1. Run `/claude-swarm:swarm-diagnose <team>` for detailed diagnostics
 2. Verify multiplexer is available: `which kitty` or `which tmux`
 3. For kitty: Check socket with `ls /tmp/kitty-$(whoami)-*`
@@ -233,6 +306,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Config says "active" but no session exists
 
 **Solutions:**
+
 1. Run `/claude-swarm:swarm-reconcile <team>` to auto-fix
 2. Check for crashed agents with `/swarm-diagnose`
 3. Manual verification: `/swarm-verify <team>`
@@ -242,6 +316,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** Teammate not receiving messages
 
 **Solutions:**
+
 1. Verify inbox file exists: `ls ~/.claude/teams/<team>/inboxes/`
 2. Check message format: `cat ~/.claude/teams/<team>/inboxes/<agent>.json | jq`
 3. Teammate should run `/swarm-inbox` to check manually
@@ -252,6 +327,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** "Could not find a valid kitty socket"
 
 **Solutions:**
+
 1. Ensure running inside kitty (not Terminal.app or iTerm2)
 2. Add to `~/.config/kitty/kitty.conf`:
    ```
@@ -267,6 +343,7 @@ When teammates are spawned, these variables are automatically set:
 **Issue:** `/swarm-cleanup` doesn't kill sessions
 
 **Solutions:**
+
 1. Verify you're running as team-lead (not teammate)
 2. Check `SWARM_KEEP_ALIVE` env var (if set, teammates stay alive)
 3. Use `--force` flag for permanent deletion
@@ -277,6 +354,7 @@ When teammates are spawned, these variables are automatically set:
 ### CI/CD Integration
 
 See [Integration Guide](docs/INTEGRATION.md) for examples of:
+
 - Creating teams from GitHub Actions
 - Sending notifications from deployment pipelines
 - Monitoring team health from external systems
@@ -286,7 +364,7 @@ See [Integration Guide](docs/INTEGRATION.md) for examples of:
 
 ```bash
 # Access swarm utilities in custom scripts
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 # Use any exported function
 create_team "my-team" "Custom workflow"
@@ -302,18 +380,6 @@ send_message "my-team" "backend-dev" "Deploy to staging"
 # Skip demo, just check prerequisites
 /claude-swarm:swarm-onboard --skip-demo
 ```
-
-## Contributing
-
-This plugin is part of the Claude Code ecosystem. For bugs, feature requests, or contributions, please refer to the Claude Code documentation.
-
-## License
-
-See the main Claude Code license.
-
-## Version
-
-Current version: 1.2.0
 
 ## Support
 

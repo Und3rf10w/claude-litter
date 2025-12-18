@@ -22,7 +22,7 @@ Resume the suspended team `$1`, respawning any offline teammates.
 Run the following to resume the team:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 resume_team "$1"
 ```
 

@@ -16,9 +16,16 @@ Verify that all teammates in the config actually have active sessions running.
 Run the following bash command to verify all teammates:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-TEAM="${1:-${CLAUDE_CODE_TEAM_NAME:-}}"
+# Priority: arg > env vars (teammates) > user vars (team-lead) > error
+if [[ -n "$1" ]]; then
+    TEAM="$1"
+elif [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+fi
 
 if [[ -z "$TEAM" ]]; then
     echo "Error: Team name required"

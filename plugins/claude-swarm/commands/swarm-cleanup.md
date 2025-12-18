@@ -17,7 +17,7 @@ Clean up a team's resources.
 Run the following bash command:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
     echo "Error: Team name required"

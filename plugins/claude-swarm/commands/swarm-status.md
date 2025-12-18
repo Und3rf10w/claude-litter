@@ -16,7 +16,7 @@ Show status for a team.
 Run the following bash command:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 if [[ -z "$1" ]]; then
     echo "Error: Team name required"

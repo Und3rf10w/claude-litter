@@ -16,7 +16,7 @@ Welcome new users to Claude Swarm with an interactive setup experience.
 Run the onboarding wizard by sourcing the library and calling the orchestrator function:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 
 SKIP_DEMO=false
 [[ "$1" == "--skip-demo" ]] && SKIP_DEMO=true
@@ -68,6 +68,7 @@ show_available_commands
 Use AskUserQuestion to ask: "Would you like help configuring kitty for Claude Swarm?"
 
 If yes:
+
 ```bash
 guide_kitty_configuration
 ```
@@ -75,6 +76,7 @@ guide_kitty_configuration
 Then ask: "Have you added the configuration and restarted kitty?"
 
 If yes, verify:
+
 ```bash
 SOCKET=$(find_kitty_socket)
 if [[ -n "$SOCKET" ]] && validate_kitty_socket "$SOCKET" 2>/dev/null; then
@@ -93,6 +95,7 @@ fi
 Use AskUserQuestion to ask: "Would you like a guided walkthrough creating a test team?"
 
 If yes:
+
 ```bash
 run_onboarding_demo
 ```
@@ -104,6 +107,7 @@ run_onboarding_demo
 After showing available commands, use AskUserQuestion to ask: "Would you like me to help you create your first real team now?"
 
 If yes, ask for team name and description, then run:
+
 ```bash
 /claude-swarm:swarm-create <team-name> <description>
 ```
@@ -113,6 +117,7 @@ If yes, ask for team name and description, then run:
 ## Reporting
 
 After completing onboarding, summarize:
+
 1. Prerequisites status (all met / issues found)
 2. Whether kitty was configured (if applicable)
 3. Whether the demo walkthrough was completed

@@ -50,7 +50,7 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 This installs the swarm plugin, which includes:
 
 - 17 slash commands for team/task management
-- 1 skill (swarm-coordination) for guidance
+- 3 skills (swarm-orchestration, swarm-teammate, swarm-troubleshooting)
 - 5 hooks for session lifecycle events
 
 ### Step 3: Configure Your Terminal
@@ -205,9 +205,9 @@ export SWARM_KITTY_MODE=split   # Options: window, split, tab
 
 | Mode     | Behavior                                         |
 | -------- | ------------------------------------------------ |
-| `window` | Each teammate in separate kitty window (default) |
-| `split`  | Teammates in splits within current tab           |
+| `split`  | Teammates in splits within current tab (default) |
 | `tab`    | Each teammate in separate tab                    |
+| `window` | Each teammate in separate kitty window           |
 
 ### Socket Path Override
 
@@ -223,7 +223,7 @@ The plugin automatically detects sockets matching `/tmp/kitty-$USER-*` (kitty ap
 
 ## Quick Start
 
-Just describe your task - Claude Code will invoke the swarm-coordination skill:
+Just describe your task - Claude Code will auto-invoke the appropriate swarm skill:
 
 ```
 "Set up a team to implement user authentication with login, signup, and password reset"
@@ -482,19 +482,21 @@ Messages are delivered:
 
 When inside a swarm session, these are automatically set:
 
-| Variable                 | Description            |
-| ------------------------ | ---------------------- |
-| `CLAUDE_CODE_TEAM_NAME`  | Current team name      |
-| `CLAUDE_CODE_AGENT_ID`   | Your unique agent UUID |
-| `CLAUDE_CODE_AGENT_NAME` | Your agent name        |
-| `CLAUDE_CODE_AGENT_TYPE` | Your role type         |
+| Variable                   | Description                          |
+| -------------------------- | ------------------------------------ |
+| `CLAUDE_CODE_TEAM_NAME`    | Current team name                    |
+| `CLAUDE_CODE_AGENT_ID`     | Your unique agent UUID               |
+| `CLAUDE_CODE_AGENT_NAME`   | Your agent name                      |
+| `CLAUDE_CODE_AGENT_TYPE`   | Your role type                       |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's agent UUID               |
+| `CLAUDE_CODE_AGENT_COLOR`  | Your display color                   |
 
 ### User Configuration
 
 | Variable            | Description                    | Default                 |
 | ------------------- | ------------------------------ | ----------------------- |
 | `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`        | Auto-detect             |
-| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `window`                |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `split`                 |
 | `KITTY_LISTEN_ON`   | Kitty socket path override     | `unix:/tmp/kitty-$USER` |
 | `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits | `false`                 |
 
@@ -666,9 +668,11 @@ When teammates spawn their own subagents, those subagents automatically inherit 
 
 - task-create, task-list, task-update, task-delete
 
-### Skills (1)
+### Skills (3)
 
-- **swarm-coordination** - Comprehensive guide to swarm coordination patterns
+- **swarm-orchestration** - Team-lead operations and management (~2,000 tokens)
+- **swarm-teammate** - Worker coordination protocol (~1,200 tokens)
+- **swarm-troubleshooting** - Diagnostics and recovery (~3,500 tokens)
 
 ### Hooks (5)
 

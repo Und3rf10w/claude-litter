@@ -17,9 +17,16 @@ Create a new task for the team.
 Run the following bash command:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-TEAM="${CLAUDE_CODE_TEAM_NAME:-default}"
+# Priority: env vars (teammates) > user vars (team-lead) > defaults
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+    [[ -z "$TEAM" ]] && TEAM="default"
+fi
+
 SUBJECT="$1"
 DESCRIPTION="${2:-$1}"
 

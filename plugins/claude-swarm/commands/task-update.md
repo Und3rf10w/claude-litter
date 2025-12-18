@@ -24,9 +24,16 @@ Update a task's properties.
 Parse the arguments and build the update command:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-TEAM="${CLAUDE_CODE_TEAM_NAME:-default}"
+# Priority: env vars (teammates) > user vars (team-lead) > defaults
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+    [[ -z "$TEAM" ]] && TEAM="default"
+fi
+
 TASK_ID="$1"
 
 if [[ -z "$TASK_ID" ]]; then

@@ -39,7 +39,7 @@ This command is for **kitty terminal only**. Requires:
 ## Instructions
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 ACTION="$1"
 TEAM="$2"

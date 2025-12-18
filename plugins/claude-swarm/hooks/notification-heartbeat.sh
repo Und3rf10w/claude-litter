@@ -6,10 +6,23 @@
 # Only performs actual update every 60 seconds, which is plenty accurate
 # for the 5-minute stale detection threshold in check_heartbeats()
 
-TEAM_NAME="${CLAUDE_CODE_TEAM_NAME:-}"
+# Priority: env vars (teammates) > user vars (team-lead)
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
+elif [[ -n "$KITTY_PID" ]] && command -v kitten &>/dev/null; then
+    # Lightweight user var query (no library sourcing for performance)
+    TEAM_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars.swarm_team // ""' 2>/dev/null || echo "")
+fi
 [[ -z "$TEAM_NAME" ]] && exit 0
 
-AGENT_NAME="${CLAUDE_CODE_AGENT_NAME:-team-lead}"
+if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
+    AGENT_NAME="$CLAUDE_CODE_AGENT_NAME"
+elif [[ -n "$KITTY_PID" ]] && command -v kitten &>/dev/null; then
+    AGENT_NAME=$(kitten @ ls 2>/dev/null | jq -r '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars.swarm_agent // ""' 2>/dev/null || echo "")
+    [[ -z "$AGENT_NAME" ]] && AGENT_NAME="team-lead"
+else
+    AGENT_NAME="team-lead"
+fi
 THROTTLE_FILE="/tmp/swarm-heartbeat-${TEAM_NAME}-${AGENT_NAME}"
 
 # Throttle: skip if last update was < 60 seconds ago

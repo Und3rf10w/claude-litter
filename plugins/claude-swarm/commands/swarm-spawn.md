@@ -46,18 +46,24 @@ Override with: `SWARM_MULTIPLEXER=tmux` or `SWARM_MULTIPLEXER=kitty`
 
 Set `SWARM_KITTY_MODE` environment variable:
 
-- `window` - Each teammate in separate kitty window (default)
-- `split` - Teammates in splits within current tab
+- `split` - Teammates in vertical splits within current tab (default)
 - `tab` - Each teammate in separate tab
+- `window` - Each teammate in separate OS-level kitty window
 
 ## Instructions
 
 Run the following bash command to spawn the teammate:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
-TEAM="${CLAUDE_CODE_TEAM_NAME:-}"
+# Priority: env vars (teammates) > user vars (team-lead) > error
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+fi
+
 NAME="$1"
 TYPE="${2:-worker}"
 MODEL="${3:-sonnet}"
