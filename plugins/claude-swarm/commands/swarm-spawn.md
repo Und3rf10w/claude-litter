@@ -5,7 +5,7 @@ argument-hint: <agent_name> [agent_type] [model] [prompt]
 
 # Spawn Teammate
 
-Spawn a new Claude Code teammate.
+Spawn a new Claude Code teammate. You can only spawn one teammate at a time. You must invoke this command multiple time to spawn multiple teammates.
 
 ## Arguments
 
