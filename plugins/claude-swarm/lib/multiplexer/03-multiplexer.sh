@@ -148,28 +148,32 @@ kitten_cmd() {
 
 # Wait for Claude Code to be ready in a window
 # Uses polling instead of hardcoded sleep for more reliable startup detection
-# Note: Requires bc for floating-point arithmetic
+# Uses bash integer arithmetic with deciseconds to avoid bc dependency
 wait_for_claude_ready() {
     local swarm_var="$1"
     local max_wait="${2:-15}"  # Maximum wait time in seconds (default 15)
-    local poll_interval=0.5     # Check every 0.5 seconds
 
-    local elapsed=0
+    # Convert to deciseconds (tenths of a second) for integer arithmetic
+    local max_wait_ds=$((max_wait * 10))
+    local elapsed_ds=0
+    local poll_interval_ds=5  # 0.5 seconds = 5 deciseconds
+
     echo "  Waiting for Claude Code to start (max ${max_wait}s)..."
 
-    while (( $(echo "$elapsed < $max_wait" | bc -l) )); do
+    while (( elapsed_ds < max_wait_ds )); do
         # Check if window exists in active tab (scoped to prevent false positives from other tabs)
         # Note: During spawn, the active tab is where we just spawned the window
         if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" \
             '.[].tabs[] | select(.is_active == true) | .windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
             # Window exists, give it a moment to fully initialize
             sleep 1
-            echo "  Claude Code is ready (took ${elapsed}s)"
+            local elapsed_sec=$((elapsed_ds / 10))
+            echo "  Claude Code is ready (took ${elapsed_sec}s)"
             return 0
         fi
 
-        sleep "$poll_interval"
-        elapsed=$(echo "$elapsed + $poll_interval" | bc -l)
+        sleep 0.5
+        ((elapsed_ds += poll_interval_ds))
     done
 
     # Timeout reached

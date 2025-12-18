@@ -20,6 +20,13 @@ create_task() {
 
     command mkdir -p "$tasks_dir"
 
+    # Acquire lock to prevent race condition in ID generation
+    local lock_file="${tasks_dir}/.tasks.lock"
+    if ! acquire_file_lock "$lock_file"; then
+        echo -e "${RED}Failed to acquire lock for task creation${NC}" >&2
+        return 1
+    fi
+
     # Find next task ID
     # Use find instead of glob to avoid zsh "no matches found" error
     local max_id=0
@@ -54,6 +61,9 @@ create_task() {
             createdAt: $timestamp
         }' > "$task_file"
 
+    # Release lock after task file is written
+    release_file_lock
+
     echo -e "${GREEN}Created task #${new_id}: ${subject}${NC}"
     echo "$new_id"
 }
@@ -68,6 +78,22 @@ get_task() {
     else
         echo "null"
     fi
+}
+
+# Helper function to detect direct dependency cycles
+# Returns 0 if cycle detected, 1 if no cycle
+check_direct_cycle() {
+    local team_name="$1"
+    local task_id="$2"
+    local target_id="$3"
+    local target_file="${TASKS_DIR}/${team_name}/${target_id}.json"
+
+    if [[ -f "$target_file" ]]; then
+        if jq -e --arg id "$task_id" '.blockedBy | index($id) != null' "$target_file" &>/dev/null; then
+            return 0  # Cycle detected
+        fi
+    fi
+    return 1  # No cycle
 }
 
 update_task() {
@@ -139,7 +165,28 @@ update_task() {
                 shift 2
                 ;;
             --blocked-by)
-                if ! jq --arg val "$2" '.blockedBy += [$val]' "$tmp_file" > "${tmp_file}.new"; then
+                local target_id="$2"
+
+                # Check for self-blocking
+                if [[ "$task_id" == "$target_id" ]]; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Task #${task_id} cannot be blocked by itself${NC}" >&2
+                    return 1
+                fi
+
+                # Check for direct cycle
+                if check_direct_cycle "$team_name" "$task_id" "$target_id"; then
+                    trap - EXIT INT TERM
+                    command rm -f "$tmp_file" "${tmp_file}.new"
+                    release_file_lock
+                    echo -e "${RED}Error: Adding dependency would create a cycle (task #${target_id} is already blocked by task #${task_id})${NC}" >&2
+                    return 1
+                fi
+
+                # Add dependency and remove duplicates
+                if ! jq --arg val "$target_id" '.blockedBy += [$val] | .blockedBy |= unique' "$tmp_file" > "${tmp_file}.new"; then
                     trap - EXIT INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock

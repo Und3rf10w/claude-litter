@@ -48,8 +48,10 @@ generate_uuid() {
     elif command -v python &>/dev/null; then
         python -c "import uuid; print(uuid.uuid4())"
     else
-        # Fallback: timestamp + random number (less unique)
-        echo "$(date +%s)-$(( RANDOM * RANDOM ))"
+        # Fallback: enhanced method with hostname hash, PID, and nanoseconds
+        echo -e "${YELLOW}Warning: No UUID generator found, using fallback method${NC}" >&2
+        local hostname_hash=$(hostname 2>/dev/null | md5sum 2>/dev/null | cut -c1-8 || echo "nohash")
+        echo "$(date +%s%N 2>/dev/null || date +%s)-${hostname_hash}-$$-$(( RANDOM * RANDOM ))"
     fi
 }
 

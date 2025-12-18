@@ -143,7 +143,7 @@ resume_team() {
     update_member_status "$team_name" "$current_agent" "active"
 
     # Get offline members (excluding current agent)
-    local offline_members=$(jq -r --arg current "$current_agent" '.members[] | select(.status == "offline" and .name != $current) | "\(.name)|\(.type)|\(.model // "sonnet")"' "$config_file")
+    local offline_members=$(jq -r --arg current "$current_agent" '.members[] | select(.status == "offline" and .name != $current) | "\(.name)\t\(.type)\t\(.model // "sonnet")"' "$config_file")
 
     if [[ -z "$offline_members" ]]; then
         echo -e "${GREEN}Team '${team_name}' resumed (no teammates to respawn)${NC}"
@@ -152,7 +152,7 @@ resume_team() {
 
     # Respawn each offline member with context
     echo -e "${BLUE}Respawning teammates...${NC}"
-    while IFS='|' read -r member_name member_type member_model; do
+    while IFS=$'\t' read -r member_name member_type member_model; do
         if [[ -n "$member_name" ]]; then
             local context=$(get_member_context "$team_name" "$member_name")
             local resume_prompt="You are ${member_name} resuming work on team '${team_name}'. ${context}Check your inbox and tasks to continue where you left off."

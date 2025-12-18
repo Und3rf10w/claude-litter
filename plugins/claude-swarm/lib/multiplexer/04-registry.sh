@@ -135,16 +135,34 @@ clean_window_registry() {
     # Add trap to ensure cleanup on interrupt
     trap "rm -f '$tmp_file'" EXIT INT TERM
 
-    # Keep only entries that still exist in live windows
-    if jq --argjson live "$(echo "$live_windows" | jq -R . | jq -s .)" \
+    # Build live windows JSON array with validation
+    local live_json
+    if [[ -z "$live_windows" ]]; then
+        live_json="[]"
+    elif ! live_json=$(echo "$live_windows" | jq -R . 2>/dev/null | jq -s . 2>/dev/null); then
+        echo -e "${YELLOW}Warning: Failed to parse live windows list${NC}" >&2
+        trap - EXIT INT TERM
+        command rm -f "$tmp_file"
+        return 1
+    fi
+
+    # Keep only entries that still exist in live windows (with error checking)
+    if ! jq --argjson live "$live_json" \
        '[.[] | select(.swarm_var as $var | $live | index($var) != null)]' \
-       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+       "$registry_file" > "$tmp_file" 2>/dev/null; then
+        echo -e "${RED}Error: Registry cleanup jq filter failed${NC}" >&2
+        trap - EXIT INT TERM
+        command rm -f "$tmp_file"
+        return 1
+    fi
+
+    if command mv "$tmp_file" "$registry_file"; then
         trap - EXIT INT TERM
         return 0
     else
         trap - EXIT INT TERM
         command rm -f "$tmp_file"
-        echo -e "${RED}Failed to clean window registry${NC}" >&2
+        echo -e "${RED}Failed to update window registry${NC}" >&2
         return 1
     fi
 }

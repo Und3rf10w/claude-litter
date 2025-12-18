@@ -231,11 +231,8 @@ get_task_summary() {
         esac
     done < <(find "$tasks_dir" -name "*.json" -print0)
 
-    if [[ $errors -gt 0 ]]; then
-        echo -e "${YELLOW}Warning: $errors task file(s) have malformed JSON${NC}" >&2
-    fi
-
-    echo "${active}|${completed}"
+    # Return active|completed|errors so callers can handle error counts
+    echo "${active}|${completed}|${errors}"
 }
 
 # ============================================
@@ -297,14 +294,18 @@ swarm_status() {
     # Task summary - using helper function
     echo -e "${BLUE}Tasks:${NC}"
     local task_summary=$(get_task_summary "$team_name")
-    local active="${task_summary%|*}"
-    local completed="${task_summary#*|}"
+    # Parse three-field format: active|completed|errors
+    IFS='|' read -r active completed errors <<< "$task_summary"
 
     if [[ "$active" == "0" && "$completed" == "0" ]]; then
         echo "  (no tasks)"
     else
         echo "  Active: ${active}"
         echo "  Completed: ${completed}"
+    fi
+
+    if [[ "${errors:-0}" -gt 0 ]]; then
+        echo -e "  ${YELLOW}Warning: $errors task file(s) have corrupt JSON${NC}"
     fi
 }
 

@@ -26,6 +26,13 @@ cleanup_team() {
         # Hard cleanup: kill sessions AND delete all data
         echo -e "${CYAN}Hard cleanup for team '${team_name}'...${NC}"
 
+        # Acquire registry lock before cleanup to prevent races with spawns
+        local registry_file="${TEAMS_DIR}/${team_name}/.window_registry.json"
+        local registry_locked=false
+        if [[ -f "$registry_file" ]] && acquire_file_lock "$registry_file" 10 30; then
+            registry_locked=true
+        fi
+
         # Kill sessions based on multiplexer
         case "$SWARM_MULTIPLEXER" in
             kitty)
@@ -64,6 +71,11 @@ cleanup_team() {
                 done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "swarm-${team_name}")
                 ;;
         esac
+
+        # Release registry lock before deleting files
+        if [[ "$registry_locked" == "true" ]]; then
+            release_file_lock
+        fi
 
         # Remove team directory
         if [[ -d "${TEAMS_DIR}/${team_name}" ]]; then

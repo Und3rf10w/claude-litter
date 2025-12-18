@@ -165,6 +165,7 @@ broadcast_message() {
     local team_name="$1"
     local message="$2"
     local exclude="${3:-}"  # Agent to exclude (usually self)
+    local fail_fast="${4:-true}"
     local config_file="${TEAMS_DIR}/${team_name}/config.json"
 
     if [[ ! -f "$config_file" ]]; then
@@ -182,8 +183,12 @@ broadcast_message() {
             if send_message "$team_name" "$member" "$message"; then
                 ((success_count++))
             else
-                echo -e "${YELLOW}Warning: Failed to send message to '${member}'${NC}" >&2
+                echo -e "${RED}Error: Failed to send message to '${member}'${NC}" >&2
                 ((failed_count++))
+                if [[ "$fail_fast" == "true" ]]; then
+                    echo -e "${RED}Aborting broadcast due to failure (fail-fast mode)${NC}" >&2
+                    return 1
+                fi
             fi
         fi
     done < <(jq -r '.members[].name' "$config_file")

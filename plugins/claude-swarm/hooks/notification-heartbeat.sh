@@ -53,9 +53,12 @@ fi
 if jq --arg name "$AGENT_NAME" --arg ts "$TIMESTAMP" \
    '(.members[] | select(.name == $name)) |= (.lastSeen = $ts)' \
    "$CONFIG" > "$TMP" 2>/dev/null; then
-    /bin/mv -f "$TMP" "$CONFIG" 2>/dev/null
+    if ! /bin/mv -f "$TMP" "$CONFIG" 2>/dev/null; then
+        echo "swarm-heartbeat: mv failed for $AGENT_NAME" >> "/tmp/swarm-heartbeat-errors.log" 2>/dev/null
+        command rm -f "$TMP" 2>/dev/null
+    fi
 else
-    rm -f "$TMP" 2>/dev/null
+    command rm -f "$TMP" 2>/dev/null
 fi
 
 exit 0

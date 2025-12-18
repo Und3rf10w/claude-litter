@@ -211,7 +211,7 @@ spawn_teammate_tmux() {
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt < $prompt_file && rm $prompt_file" Enter
+    tmux send-keys -t "$session_name" "claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt < $prompt_file; rm -f $prompt_file" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"

@@ -34,7 +34,9 @@ update_member_status "$TEAM_NAME" "$AGENT_NAME" "offline"
 if [[ "$AGENT_NAME" == "team-lead" ]] || [[ "$AGENT_TYPE" == "team-lead" ]]; then
     if [[ "${SWARM_KEEP_ALIVE:-}" == "true" ]]; then
         # Keep teammates running, just notify them
-        broadcast_message "$TEAM_NAME" "Team-lead session ended. Team remains active. Continue with assigned tasks." "$AGENT_NAME"
+        if ! broadcast_message "$TEAM_NAME" "Team-lead session ended. Team remains active." "$AGENT_NAME" "false"; then
+            echo "$(date -u): Team-lead exit broadcast failed for $TEAM_NAME" >> "${TEAMS_DIR}/${TEAM_NAME}/events.log" 2>/dev/null
+        fi
     else
         # Suspend the team (kill all teammates, keep data)
         suspend_team "$TEAM_NAME" "true"
