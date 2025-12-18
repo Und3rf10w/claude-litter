@@ -5,7 +5,7 @@
 # - If teammate: notifies team-lead
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/swarm-utils.sh"
+source "${SCRIPT_DIR}/../lib/swarm-utils.sh" 1>/dev/null
 
 # Only run if we're part of a team
 TEAM_NAME="${CLAUDE_CODE_TEAM_NAME:-}"

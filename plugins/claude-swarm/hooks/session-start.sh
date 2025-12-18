@@ -3,7 +3,7 @@
 # Triggered when a Claude Code session starts
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/swarm-utils.sh"
+source "${SCRIPT_DIR}/../lib/swarm-utils.sh" 1>/dev/null
 
 # Only run if we're part of a team
 # Priority: env vars (teammates) > user vars (team-lead)
