@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.5.3)
+│   └── claude-swarm/          # Main swarm plugin (v1.6.0)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17 slash commands (.md files)
@@ -299,6 +299,7 @@ This ensures commands execute in bash regardless of user's default shell (zsh on
 #### Kitty (Full Support)
 
 **Features available:**
+
 - Window variables (`swarm_team`, `swarm_agent`) for context detection
 - Automatic team/agent detection for team-leads
 - Split, tab, and window spawn modes
@@ -306,6 +307,7 @@ This ensures commands execute in bash regardless of user's default shell (zsh on
 - All commands work seamlessly
 
 **Setup requirements:**
+
 - Running inside kitty terminal
 - Remote control enabled in `~/.config/kitty/kitty.conf`:
   ```
@@ -316,11 +318,13 @@ This ensures commands execute in bash regardless of user's default shell (zsh on
 #### Tmux (Partial Support)
 
 **Features available:**
+
 - Spawning teammates in separate sessions
 - Task management and messaging
 - All core swarm functionality
 
 **Limitations:**
+
 - No window variables (tmux has no equivalent to kitty user vars)
 - Team-leads cannot rely on automatic team detection
 - Commands will error instead of silently defaulting to "default" team
@@ -334,6 +338,7 @@ export CLAUDE_CODE_TEAM_NAME="your-team-name"
 ```
 
 Or always provide explicit team names when running commands:
+
 - `/swarm-status your-team-name`
 - `/swarm-verify your-team-name`
 
@@ -347,7 +352,7 @@ When commands cannot determine team context, they now error with:
 Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME
 ```
 
-**Previous behavior (v1.5.3 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
+**Previous behavior (v1.6.0 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
 
 **New behavior**: Commands fail explicitly, preventing data corruption.
 
