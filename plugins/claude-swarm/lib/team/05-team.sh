@@ -93,6 +93,16 @@ add_member() {
 
     # Add member to config with status tracking
     local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if jq --arg id "$agent_id" \
        --arg name "$agent_name" \
@@ -102,6 +112,7 @@ add_member() {
        --arg ts "$timestamp" \
        '.members += [{"agentId": $id, "name": $name, "type": $type, "color": $color, "model": $model, "status": "active", "lastSeen": $ts}]' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        trap - EXIT INT TERM
         release_file_lock
 
         # Initialize inbox for new member
@@ -109,6 +120,7 @@ add_member() {
 
         echo -e "${GREEN}Added '${agent_name}' to team '${team_name}'${NC}"
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to add member to team config${NC}" >&2

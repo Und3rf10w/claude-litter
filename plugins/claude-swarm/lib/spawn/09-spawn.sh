@@ -201,12 +201,17 @@ spawn_teammate_tmux() {
     local safe_type_val=$(printf %q "$agent_type")
     local safe_lead_id=$(printf %q "$lead_id")
     local safe_agent_color=$(printf %q "$agent_color")
-    local safe_prompt=$(printf %q "$initial_prompt")
     local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
-    # Set environment variables and launch claude with prompt as CLI argument
-    # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
+    # Set environment variables in the session
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color" Enter
+
+    # Write prompt to temporary file for safer passing (defense-in-depth against command injection)
+    local prompt_file=$(mktemp)
+    echo "$initial_prompt" > "$prompt_file"
+
+    # Launch claude with prompt from file (safer than command line argument)
+    tmux send-keys -t "$session_name" "claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt < $prompt_file && rm $prompt_file" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"

@@ -23,27 +23,45 @@ update_team_status() {
     fi
 
     local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'" EXIT INT TERM
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local result=0
 
     case "$new_status" in
         suspended)
             jq --arg status "$new_status" --arg ts "$timestamp" \
                '.status = $status | .suspendedAt = $ts' \
-               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file" || result=1
             ;;
         active)
             jq --arg status "$new_status" --arg ts "$timestamp" \
                '.status = $status | .resumedAt = $ts' \
-               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file" || result=1
             ;;
         *)
             jq --arg status "$new_status" \
                '.status = $status' \
-               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"
+               "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file" || result=1
             ;;
     esac
 
-    echo -e "${CYAN}Team '${team_name}' status: ${new_status}${NC}"
+    trap - EXIT INT TERM
+
+    if [[ $result -eq 0 ]]; then
+        echo -e "${CYAN}Team '${team_name}' status: ${new_status}${NC}"
+    else
+        command rm -f "$tmp_file"
+        echo -e "${RED}Failed to update team status${NC}" >&2
+        return 1
+    fi
 }
 
 update_member_status() {
@@ -63,13 +81,25 @@ update_member_status() {
     fi
 
     local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     if jq --arg name "$member_name" --arg status "$new_status" --arg ts "$timestamp" \
        '(.members[] | select(.name == $name)) |= (.status = $status | .lastSeen = $ts)' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        trap - EXIT INT TERM
         release_file_lock
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         return 1
@@ -109,6 +139,9 @@ get_live_agents() {
 
     case "$SWARM_MULTIPLEXER" in
         kitty)
+            # Query all tabs but filter by team name - this is intentional to find
+            # all agents for this team regardless of which tab they're in.
+            # The select filter prevents cross-team pollution.
             live_agents=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" \
                 '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars.swarm_agent' \
                 2>/dev/null || true)
@@ -174,8 +207,33 @@ get_task_summary() {
         return 0
     fi
 
-    local active=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "pending" or .status == "in-progress" or .status == "blocked" or .status == "in-review") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
-    local completed=$(find "$tasks_dir" -name "*.json" -exec jq -r 'select(.status == "completed") | .id' {} \; 2>/dev/null | wc -l | tr -d ' ')
+    # Count active tasks with better error handling
+    local active=0
+    local completed=0
+    local errors=0
+
+    while IFS= read -r -d '' task_file; do
+        # Validate JSON and count tasks, logging errors instead of silently suppressing
+        if ! jq -e . "$task_file" >/dev/null 2>&1; then
+            echo -e "${YELLOW}Warning: Malformed JSON in task file: $task_file${NC}" >&2
+            ((errors++))
+            continue
+        fi
+
+        local status=$(jq -r '.status // ""' "$task_file" 2>/dev/null)
+        case "$status" in
+            pending|in-progress|blocked|in-review)
+                ((active++))
+                ;;
+            completed)
+                ((completed++))
+                ;;
+        esac
+    done < <(find "$tasks_dir" -name "*.json" -print0)
+
+    if [[ $errors -gt 0 ]]; then
+        echo -e "${YELLOW}Warning: $errors task file(s) have malformed JSON${NC}" >&2
+    fi
 
     echo "${active}|${completed}"
 }

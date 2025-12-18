@@ -32,14 +32,25 @@ register_window() {
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local tmp_file=$(mktemp)
 
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     if jq --arg agent "$agent_name" \
        --arg var "$swarm_var" \
        --arg ts "$timestamp" \
        '. += [{"agent": $agent, "swarm_var": $var, "registered_at": $ts}]' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+        trap - EXIT INT TERM
         release_file_lock
         return 0
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -65,12 +76,23 @@ unregister_window() {
 
     local tmp_file=$(mktemp)
 
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
     if jq --arg agent "$agent_name" \
        'map(select(.agent != $agent))' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+        trap - EXIT INT TERM
         release_file_lock
         return 0
     else
+        trap - EXIT INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -99,13 +121,32 @@ clean_window_registry() {
         return 0
     fi
 
-    local live_windows=$(kitten_cmd ls 2>/dev/null | jq -r '.[].tabs[].windows[].user_vars | keys[]' 2>/dev/null || echo "")
+    # Query only windows for this specific team (scoped to prevent cross-team pollution)
+    local live_windows=$(kitten_cmd ls 2>/dev/null | jq -r --arg team "$team_name" \
+        '.[].tabs[].windows[] | select(.user_vars.swarm_team == $team) | .user_vars | keys[]' 2>/dev/null || echo "")
+
     local tmp_file=$(mktemp)
 
+    if [[ -z "$tmp_file" ]]; then
+        echo -e "${RED}Failed to create temp file for registry cleanup${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'" EXIT INT TERM
+
     # Keep only entries that still exist in live windows
-    jq --argjson live "$(echo "$live_windows" | jq -R . | jq -s .)" \
+    if jq --argjson live "$(echo "$live_windows" | jq -R . | jq -s .)" \
        '[.[] | select(.swarm_var as $var | $live | index($var) != null)]' \
-       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"
+       "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
+        trap - EXIT INT TERM
+        return 0
+    else
+        trap - EXIT INT TERM
+        command rm -f "$tmp_file"
+        echo -e "${RED}Failed to clean window registry${NC}" >&2
+        return 1
+    fi
 }
 
 

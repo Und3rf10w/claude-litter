@@ -158,8 +158,10 @@ wait_for_claude_ready() {
     echo "  Waiting for Claude Code to start (max ${max_wait}s)..."
 
     while (( $(echo "$elapsed < $max_wait" | bc -l) )); do
-        # Check if window exists and is responsive
-        if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" '.[].tabs[].windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
+        # Check if window exists in active tab (scoped to prevent false positives from other tabs)
+        # Note: During spawn, the active tab is where we just spawned the window
+        if kitten_cmd ls 2>/dev/null | jq -e --arg var "$swarm_var" \
+            '.[].tabs[] | select(.is_active == true) | .windows[] | select(.user_vars[$var] != null)' &>/dev/null; then
             # Window exists, give it a moment to fully initialize
             sleep 1
             echo "  Claude Code is ready (took ${elapsed}s)"
