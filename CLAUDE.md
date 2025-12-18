@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.5.0)
+│   └── claude-swarm/          # Main swarm plugin (v1.5.1)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17 slash commands (.md files)
@@ -43,30 +43,32 @@ claude-litter/
 
 The library uses a modular architecture with 13 modules loaded in dependency order:
 
-| Level | Module | Functions |
-|-------|--------|-----------|
-| 0 | `core/00-globals.sh` | Global vars, colors, `SWARM_KITTY_MODE`, `SWARM_TEAMMATE_SYSTEM_PROMPT` |
-| 1 | `core/01-utils.sh` | `generate_uuid`, `validate_name`, `kitten_cmd` |
-| 1 | `core/02-file-lock.sh` | `acquire_file_lock`, `release_file_lock` |
-| 2 | `multiplexer/03-multiplexer.sh` | `detect_multiplexer`, `find_kitty_socket`, `validate_kitty_socket` |
-| 3 | `multiplexer/04-registry.sh` | `register_window`, `unregister_window`, `get_registered_windows` |
-| 3 | `team/05-team.sh` | `create_team`, `add_member`, `get_team_config`, `list_teams` |
-| 4 | `team/06-status.sh` | `update_member_status`, `get_live_agents`, `swarm_status` |
-| 4 | `communication/07-messaging.sh` | `send_message`, `read_inbox`, `broadcast_message` |
-| 5 | `tasks/08-tasks.sh` | `create_task`, `get_task`, `update_task`, `list_tasks` |
-| 5 | `spawn/09-spawn.sh` | `spawn_teammate`, `spawn_teammate_kitty`, `spawn_teammate_tmux` |
-| 6 | `team/10-lifecycle.sh` | `suspend_team`, `resume_team` |
-| 6 | `spawn/12-kitty-session.sh` | `generate_kitty_session`, `launch_kitty_session` |
-| 7 | `spawn/11-cleanup.sh` | `cleanup_team` |
-| 7 | `spawn/13-diagnostics.sh` | `diagnose_team`, `verify_teammates` |
+| Level | Module                          | Functions                                                               |
+| ----- | ------------------------------- | ----------------------------------------------------------------------- |
+| 0     | `core/00-globals.sh`            | Global vars, colors, `SWARM_KITTY_MODE`, `SWARM_TEAMMATE_SYSTEM_PROMPT` |
+| 1     | `core/01-utils.sh`              | `generate_uuid`, `validate_name`, `kitten_cmd`                          |
+| 1     | `core/02-file-lock.sh`          | `acquire_file_lock`, `release_file_lock`                                |
+| 2     | `multiplexer/03-multiplexer.sh` | `detect_multiplexer`, `find_kitty_socket`, `validate_kitty_socket`      |
+| 3     | `multiplexer/04-registry.sh`    | `register_window`, `unregister_window`, `get_registered_windows`        |
+| 3     | `team/05-team.sh`               | `create_team`, `add_member`, `get_team_config`, `list_teams`            |
+| 4     | `team/06-status.sh`             | `update_member_status`, `get_live_agents`, `swarm_status`               |
+| 4     | `communication/07-messaging.sh` | `send_message`, `read_inbox`, `broadcast_message`                       |
+| 5     | `tasks/08-tasks.sh`             | `create_task`, `get_task`, `update_task`, `list_tasks`                  |
+| 5     | `spawn/09-spawn.sh`             | `spawn_teammate`, `spawn_teammate_kitty`, `spawn_teammate_tmux`         |
+| 6     | `team/10-lifecycle.sh`          | `suspend_team`, `resume_team`                                           |
+| 6     | `spawn/12-kitty-session.sh`     | `generate_kitty_session`, `launch_kitty_session`                        |
+| 7     | `spawn/11-cleanup.sh`           | `cleanup_team`                                                          |
+| 7     | `spawn/13-diagnostics.sh`       | `diagnose_team`, `verify_teammates`                                     |
 
 Each module has source guards to prevent double-loading:
+
 ```bash
 [[ -n "${SWARM_MODULE_LOADED}" ]] && return 0
 SWARM_MODULE_LOADED=1
 ```
 
 Commands source the entry point:
+
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
 ```
@@ -91,13 +93,13 @@ All state stored as JSON files under `~/.claude/`:
 
 5 hooks defined in `hooks/hooks.json`:
 
-| Event | Script | Purpose |
-|-------|--------|---------|
-| SessionStart | session-start.sh | Auto-deliver unread messages |
-| SessionEnd | session-stop.sh | Notify team-lead when teammate exits |
-| Notification | notification-heartbeat.sh | Update `lastSeen` timestamps |
-| PostToolUse:ExitPlanMode | exit-plan-swarm.sh | Handle swarm launches from plan mode |
-| PreToolUse:Task | task-team-context.sh | Inject team context into subagents |
+| Event                    | Script                    | Purpose                              |
+| ------------------------ | ------------------------- | ------------------------------------ |
+| SessionStart             | session-start.sh          | Auto-deliver unread messages         |
+| SessionEnd               | session-stop.sh           | Notify team-lead when teammate exits |
+| Notification             | notification-heartbeat.sh | Update `lastSeen` timestamps         |
+| PostToolUse:ExitPlanMode | exit-plan-swarm.sh        | Handle swarm launches from plan mode |
+| PreToolUse:Task          | task-team-context.sh      | Inject team context into subagents   |
 
 ### Environment Variables
 
@@ -116,35 +118,16 @@ User-configurable:
 - `SWARM_KITTY_MODE` - split (default), tab, or window (os-window)
 - `KITTY_LISTEN_ON` - Override kitty socket path
 
-## Known Issues and Workarounds
-
-### Library Source Output Bug
-
-**Issue**: The `swarm-utils.sh` entry point has `2>&1` on all source commands, causing function definitions to be printed to stdout when sourcing the library.
-
-**Impact**: Commands like `/claude-swarm:swarm-list-teams` show verbose function definition output before the actual results.
-
-**Location**: `plugins/claude-swarm/lib/swarm-utils.sh` lines 36-63
-
-**Fix**: Remove `2>&1` from all `source` commands. Example:
-```bash
-# Before (problematic):
-source "${SWARM_LIB_DIR}/core/00-globals.sh" 2>&1
-
-# After (correct):
-source "${SWARM_LIB_DIR}/core/00-globals.sh"
-```
-
-**Status**: Known issue as of v1.5.0. Will be fixed in next release.
-
 ### Skills Architecture
 
 The plugin uses a **3-skill architecture** optimized for role-based context loading:
 
 #### 1. swarm-orchestration (~3,000 words, ~2,000 tokens)
+
 **Purpose**: Team-lead operations for creating and managing swarms
 **Auto-triggers on**: "set up team", "create swarm", "spawn teammates", "assign tasks", "coordinate agents", "swarm this task"
 **Covers**:
+
 - Analyzing tasks for swarm suitability
 - Creating teams and spawning teammates
 - Assigning tasks and monitoring progress
@@ -153,9 +136,11 @@ The plugin uses a **3-skill architecture** optimized for role-based context load
 - Slash command reference (via references/)
 
 #### 2. swarm-teammate (~2,000 words, ~1,200 tokens)
+
 **Purpose**: Worker coordination protocol and teammate identity
 **Auto-triggers via**: `CLAUDE_CODE_TEAM_NAME` environment variable (spawned teammates)
 **Covers**:
+
 - Teammate identity and role awareness
 - Communication protocol (inbox checking, messaging)
 - Task update procedures
@@ -163,9 +148,11 @@ The plugin uses a **3-skill architecture** optimized for role-based context load
 - Working within swarm context
 
 #### 3. swarm-troubleshooting (~5,500 words, ~3,500 tokens)
+
 **Purpose**: Diagnostics, error recovery, and problem-solving
 **Auto-triggers on**: "spawn failed", "diagnose team", "fix swarm", "status mismatch", "recovery", "swarm not working"
 **Covers**:
+
 - Spawn failure diagnosis and recovery
 - Status mismatch reconciliation
 - Multiplexer troubleshooting (kitty/tmux)
@@ -176,11 +163,13 @@ The plugin uses a **3-skill architecture** optimized for role-based context load
 #### Design Rationale
 
 **Token Optimization**:
+
 - **Workers load only swarm-teammate**: Saves ~2,000 tokens per worker (no orchestration content)
 - **Team-lead loads swarm-orchestration**: Gets setup/management guidance without troubleshooting overhead
 - **Troubleshooting loads on-demand**: Heavy diagnostics (~3,500 tokens) only when needed
 
 **Expected Savings**:
+
 - 5-teammate swarm: **13,000 tokens saved** (62% reduction: from 21,000 to 8,000 tokens)
 - Workers: 3,500 → 1,200 tokens (66% reduction)
 - Team-lead: 3,500 → 2,000 tokens (43% reduction)
@@ -188,6 +177,7 @@ The plugin uses a **3-skill architecture** optimized for role-based context load
 
 **Progressive Disclosure**:
 Each skill follows the three-tier loading pattern:
+
 1. **SKILL.md** - Core guidance, auto-loaded
 2. **references/** - Detailed reference docs, manually loaded
 3. **examples/** - Practical examples, on-demand
@@ -195,10 +185,12 @@ Each skill follows the three-tier loading pattern:
 #### Triggering Logic
 
 **Explicit trigger phrases** (case-insensitive, partial match):
+
 - swarm-orchestration: "set up", "create", "spawn", "assign", "coordinate", "swarm"
 - swarm-troubleshooting: "fail", "diagnose", "fix", "mismatch", "recovery", "not working"
 
 **Environment-based auto-trigger**:
+
 - swarm-teammate: Automatically loads when `CLAUDE_CODE_TEAM_NAME` is set (all spawned teammates)
 
 **No overlap**: Trigger phrases are mutually exclusive to prevent multi-skill loading
@@ -214,6 +206,7 @@ SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm..."
 **Integration requirement**: After skills are created, update this prompt to reference swarm-teammate skill by name, ensuring teammates load appropriate guidance automatically.
 
 **Example integration**:
+
 ```bash
 SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm. Follow the swarm-teammate skill guidelines..."
 ```
@@ -221,6 +214,7 @@ SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm. Follow 
 #### Cross-References
 
 Skills reference each other when appropriate:
+
 - **swarm-orchestration → swarm-troubleshooting**: "If spawn fails, see swarm-troubleshooting skill"
 - **swarm-teammate → swarm-orchestration**: "For team setup questions, ask team-lead or see swarm-orchestration"
 - **swarm-troubleshooting → swarm-orchestration**: "After recovery, return to swarm-orchestration for normal operations"
@@ -228,6 +222,7 @@ Skills reference each other when appropriate:
 #### Validation Criteria
 
 When testing the implementation, verify:
+
 1. **Triggering**: Each skill loads with appropriate phrases, no unwanted multi-loading
 2. **Content**: No unnecessary duplication (only essential overlaps like slash command lists)
 3. **Token counts**: Verify actual token usage matches estimates (±10%)
@@ -240,6 +235,7 @@ When testing the implementation, verify:
 ### Concurrent Access Protection
 
 All JSON file updates use mkdir-based atomic locking:
+
 ```bash
 acquire_file_lock "$config_file"
 # ... modify file ...
@@ -249,6 +245,7 @@ release_file_lock
 ### Input Validation
 
 `validate_name()` prevents path traversal and injection:
+
 - No ".." or "/" in names
 - No names starting with "-"
 - Max 100 characters
@@ -256,6 +253,7 @@ release_file_lock
 ### Kitty Window Identification
 
 Uses user variables (`--var`) for reliable window matching even after title changes:
+
 ```bash
 kitten_cmd launch --var "swarm_${team}_${agent}=true" ...
 kitten_cmd close-window --match "var:swarm_${team}_${agent}"
@@ -264,6 +262,7 @@ kitten_cmd close-window --match "var:swarm_${team}_${agent}"
 ### Model Validation
 
 All spawn functions validate model parameter:
+
 ```bash
 case "$model" in
     haiku|sonnet|opus) ;;

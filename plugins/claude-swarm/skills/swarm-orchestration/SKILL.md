@@ -75,24 +75,24 @@ A swarm team consists of:
 
 Choose appropriate agent types when spawning teammates:
 
-| Role | Use For | Expertise |
-|------|---------|-----------|
-| `worker` | General-purpose tasks, utilities, scripts | Balanced capabilities |
-| `backend-developer` | API endpoints, server logic, database work | Server-side development |
-| `frontend-developer` | UI components, styling, user interactions | Client-side development |
-| `reviewer` | Code review, quality assurance, validation | Best practices, testing |
-| `researcher` | Documentation, investigation, analysis | Research and planning |
-| `tester` | Test writing, validation, QA | Testing frameworks |
+| Role                 | Use For                                    | Expertise               |
+| -------------------- | ------------------------------------------ | ----------------------- |
+| `worker`             | General-purpose tasks, utilities, scripts  | Balanced capabilities   |
+| `backend-developer`  | API endpoints, server logic, database work | Server-side development |
+| `frontend-developer` | UI components, styling, user interactions  | Client-side development |
+| `reviewer`           | Code review, quality assurance, validation | Best practices, testing |
+| `researcher`         | Documentation, investigation, analysis     | Research and planning   |
+| `tester`             | Test writing, validation, QA               | Testing frameworks      |
 
 ### Model Selection
 
 Pick models based on task complexity and cost considerations:
 
-| Model | Use For | Characteristics |
-|-------|---------|-----------------|
-| `haiku` | Simple, repetitive, well-defined tasks | Fast, cost-effective |
+| Model    | Use For                                    | Characteristics         |
+| -------- | ------------------------------------------ | ----------------------- |
+| `haiku`  | Simple, repetitive, well-defined tasks     | Fast, cost-effective    |
 | `sonnet` | Balanced complexity (default, recommended) | Good quality/cost ratio |
-| `opus` | Complex reasoning, architectural decisions | Highest capability |
+| `opus`   | Complex reasoning, architectural decisions | Highest capability      |
 
 ## Orchestration Workflow
 
@@ -101,6 +101,7 @@ Pick models based on task complexity and cost considerations:
 Before creating a team, break down the user's request:
 
 **Task Analysis Checklist:**
+
 - ✓ Identify distinct components that can work independently
 - ✓ Map dependencies between subtasks (what must complete before what)
 - ✓ Determine optimal team size (2-6 teammates typically)
@@ -112,6 +113,7 @@ Before creating a team, break down the user's request:
 User: "Implement payment processing system"
 
 Breakdown:
+
 - Task 1: Design payment API (researcher) - no dependencies
 - Task 2: Implement Stripe integration (backend-developer) - depends on Task 1
 - Task 3: Build payment UI (frontend-developer) - depends on Task 1
@@ -128,6 +130,7 @@ Use the slash command to create your team:
 ```
 
 **Team Naming Best Practices:**
+
 - Use descriptive, kebab-case names: `payment-feature`, `auth-refactor`
 - Keep names under 50 characters
 - Avoid special characters beyond hyphens
@@ -139,6 +142,7 @@ Use the slash command to create your team:
 ```
 
 This initializes:
+
 - Team configuration in `~/.claude/teams/payment-system/`
 - Task directory in `~/.claude/tasks/payment-system/`
 - Inbox system for team communication
@@ -153,6 +157,7 @@ For each subtask identified in your analysis:
 ```
 
 **Task Description Best Practices:**
+
 - Be specific about deliverables and acceptance criteria
 - Reference file paths, functions, or modules involved
 - Specify any constraints or requirements
@@ -186,6 +191,7 @@ For each role, spawn a teammate with a clear initial prompt:
 ```
 
 **Spawning Best Practices:**
+
 - Give teammates clear, specific instructions in the initial prompt
 - Reference their assigned task number
 - Tell them to check `/claude-swarm:task-list` for details
@@ -244,6 +250,7 @@ Check progress regularly:
 ```
 
 Teammates will message you with:
+
 - Completion notifications
 - Questions or clarifications
 - Blocker reports
@@ -320,18 +327,18 @@ Provide clear summary:
 
 **Always prefer slash commands over bash functions** for reliability:
 
-| Command | Purpose |
-|---------|---------|
-| `/claude-swarm:swarm-create <team> [desc]` | Create new team |
-| `/claude-swarm:swarm-spawn <name> [type] [model] [prompt]` | Spawn teammate |
-| `/claude-swarm:swarm-status <team>` | View team status |
-| `/claude-swarm:swarm-verify <team>` | Verify teammates alive |
-| `/claude-swarm:swarm-message <to> <msg>` | Send message |
-| `/claude-swarm:swarm-inbox` | Check messages |
-| `/claude-swarm:task-create <subject> [desc]` | Create task |
-| `/claude-swarm:task-update <id> [opts]` | Update task |
-| `/claude-swarm:task-list` | List all tasks |
-| `/claude-swarm:swarm-cleanup <team> [--force]` | Clean up team |
+| Command                                                    | Purpose                |
+| ---------------------------------------------------------- | ---------------------- |
+| `/claude-swarm:swarm-create <team> [desc]`                 | Create new team        |
+| `/claude-swarm:swarm-spawn <name> [type] [model] [prompt]` | Spawn teammate         |
+| `/claude-swarm:swarm-status <team>`                        | View team status       |
+| `/claude-swarm:swarm-verify <team>`                        | Verify teammates alive |
+| `/claude-swarm:swarm-message <to> <msg>`                   | Send message           |
+| `/claude-swarm:swarm-inbox`                                | Check messages         |
+| `/claude-swarm:task-create <subject> [desc]`               | Create task            |
+| `/claude-swarm:task-update <id> [opts]`                    | Update task            |
+| `/claude-swarm:task-list`                                  | List all tasks         |
+| `/claude-swarm:swarm-cleanup <team> [--force]`             | Clean up team          |
 
 For troubleshooting commands (diagnose, reconcile, recovery), see the **swarm-troubleshooting** skill.
 
@@ -388,6 +395,7 @@ The third parameter (`"true"`) excludes you (team-lead) from the broadcast.
 ```
 
 Shows:
+
 - Active teammates and their status
 - Task assignments
 - Overall progress
@@ -400,6 +408,7 @@ Shows:
 ```
 
 Shows:
+
 - All tasks with current status
 - Assignments
 - Dependencies (blocked-by relationships)
@@ -418,21 +427,21 @@ As team lead, check progress regularly:
 
 When teammates are spawned, these variables are automatically set:
 
-| Variable | Description |
-|----------|-------------|
-| `CLAUDE_CODE_TEAM_NAME` | Current team name |
-| `CLAUDE_CODE_AGENT_ID` | Unique agent UUID |
-| `CLAUDE_CODE_AGENT_NAME` | Agent name (e.g., "backend-dev") |
-| `CLAUDE_CODE_AGENT_TYPE` | Agent role type |
-| `CLAUDE_CODE_TEAM_LEAD_ID` | Your (team lead's) UUID |
-| `CLAUDE_CODE_AGENT_COLOR` | Agent display color |
+| Variable                   | Description                      |
+| -------------------------- | -------------------------------- |
+| `CLAUDE_CODE_TEAM_NAME`    | Current team name                |
+| `CLAUDE_CODE_AGENT_ID`     | Unique agent UUID                |
+| `CLAUDE_CODE_AGENT_NAME`   | Agent name (e.g., "backend-dev") |
+| `CLAUDE_CODE_AGENT_TYPE`   | Agent role type                  |
+| `CLAUDE_CODE_TEAM_LEAD_ID` | Your (team lead's) UUID          |
+| `CLAUDE_CODE_AGENT_COLOR`  | Agent display color              |
 
 User-configurable:
 
-| Variable | Description |
-|----------|-------------|
-| `SWARM_MULTIPLEXER` | Force "tmux" or "kitty" (auto-detected by default) |
-| `SWARM_KITTY_MODE` | Kitty spawn mode: `split` (default), `tab`, or `window` |
+| Variable            | Description                                             |
+| ------------------- | ------------------------------------------------------- |
+| `SWARM_MULTIPLEXER` | Force "tmux" or "kitty" (auto-detected by default)      |
+| `SWARM_KITTY_MODE`  | Kitty spawn mode: `split` (default), `tab`, or `window` |
 
 ## Best Practices
 
@@ -471,12 +480,12 @@ User-configurable:
 
 The plugin supports both **tmux** and **kitty**:
 
-| Feature | tmux | kitty |
-|---------|------|-------|
-| Multiple sessions | Yes | Yes |
-| Spawn modes | Sessions only | Window, Split, Tab |
-| Session files | No | Yes (.kitty-session) |
-| Auto-detection | Yes | Yes (via $KITTY_PID) |
+| Feature           | tmux          | kitty                |
+| ----------------- | ------------- | -------------------- |
+| Multiple sessions | Yes           | Yes                  |
+| Spawn modes       | Sessions only | Window, Split, Tab   |
+| Session files     | No            | Yes (.kitty-session) |
+| Auto-detection    | Yes           | Yes (via $KITTY_PID) |
 
 For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 
@@ -485,17 +494,20 @@ For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 **Scenario:** Implement user authentication system
 
 **1. Analyze:**
+
 - Task A: Design auth flow (researcher)
 - Task B: Implement backend auth (backend-developer) - depends on A
 - Task C: Create login UI (frontend-developer) - depends on A
 - Task D: Write auth tests (tester) - depends on B & C
 
 **2. Create Team:**
+
 ```bash
 /claude-swarm:swarm-create "auth-feature" "Implementing user authentication system"
 ```
 
 **3. Create Tasks:**
+
 ```bash
 /claude-swarm:task-create "Design auth flow" "Design authentication architecture, token strategy, and session management. Document in docs/auth-design.md"
 /claude-swarm:task-create "Implement backend auth" "Build JWT auth, login/logout endpoints, middleware. In backend/auth/"
@@ -508,6 +520,7 @@ For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 ```
 
 **4. Spawn Teammates:**
+
 ```bash
 /claude-swarm:swarm-spawn "auth-designer" "researcher" "sonnet" "You are the auth architect. Work on Task #1: Design authentication flow. Research JWT best practices, design token refresh strategy, plan session management. Document in docs/auth-design.md. Message team-lead when complete."
 
@@ -521,6 +534,7 @@ For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 ```
 
 **5. Assign Tasks:**
+
 ```bash
 /claude-swarm:task-update 1 --assign "auth-designer"
 /claude-swarm:task-update 2 --assign "backend-dev"
@@ -529,6 +543,7 @@ For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 ```
 
 **6. Monitor:**
+
 ```bash
 /claude-swarm:swarm-inbox     # Check for messages
 /claude-swarm:task-list        # Check progress
@@ -538,6 +553,7 @@ For kitty setup requirements, see [Setup Guide](references/setup-guide.md).
 **7. Coordinate:**
 
 When auth-designer completes:
+
 ```bash
 /claude-swarm:swarm-message "backend-dev" "Task #1 complete. Auth design ready in docs/auth-design.md. You're unblocked - start backend implementation."
 /claude-swarm:swarm-message "frontend-dev" "Task #1 complete. Auth design ready. You're unblocked - start UI development."
@@ -548,6 +564,7 @@ When auth-designer completes:
 Check deliverables, test integration, report to user.
 
 **9. Cleanup:**
+
 ```bash
 /claude-swarm:swarm-cleanup "auth-feature"
 ```
