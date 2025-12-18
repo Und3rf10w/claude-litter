@@ -106,7 +106,7 @@ get_current_window_var() {
     fi
 
     kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" \
-        '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
+        '.[].tabs[] | select(.is_active == true) | .windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
 }
 
 # Set user vars on the current kitty window
