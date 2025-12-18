@@ -31,7 +31,7 @@ fi
 # Bash requirement check - all modules use bash-specific syntax
 if [[ -z "$BASH_VERSION" ]]; then
     echo "Error: This library requires bash. Current shell: ${SHELL:-unknown}" >&2
-    echo "Please run with: bash -c 'source swarm-utils.sh && your_function'" >&2
+    echo "Please run with: bash -c 'source swarm-utils.sh 1>/dev/null && your_function'" >&2
     return 1 2>/dev/null || exit 1
 fi
 
