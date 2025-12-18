@@ -50,7 +50,7 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 This installs the swarm plugin, which includes:
 
 - 17 slash commands for team/task management
-- 1 skill (swarm-coordination) for guidance
+- 3 skills (swarm-orchestration, swarm-teammate, swarm-troubleshooting)
 - 5 hooks for session lifecycle events
 
 ### Step 3: Configure Your Terminal
@@ -223,7 +223,7 @@ The plugin automatically detects sockets matching `/tmp/kitty-$USER-*` (kitty ap
 
 ## Quick Start
 
-Just describe your task - Claude Code will invoke the swarm-coordination skill:
+Just describe your task - Claude Code will auto-invoke the appropriate swarm skill:
 
 ```
 "Set up a team to implement user authentication with login, signup, and password reset"
@@ -668,9 +668,11 @@ When teammates spawn their own subagents, those subagents automatically inherit 
 
 - task-create, task-list, task-update, task-delete
 
-### Skills (1)
+### Skills (3)
 
-- **swarm-coordination** - Comprehensive guide to swarm coordination patterns
+- **swarm-orchestration** - Team-lead operations and management (~2,000 tokens)
+- **swarm-teammate** - Worker coordination protocol (~1,200 tokens)
+- **swarm-troubleshooting** - Diagnostics and recovery (~3,500 tokens)
 
 ### Hooks (5)
 

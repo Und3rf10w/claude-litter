@@ -96,7 +96,13 @@ listen_on unix:/tmp/kitty-${USER}
 
 ### Skills
 
-- **[Swarm Coordination Skill](skills/swarm-coordination/SKILL.md)** - Comprehensive orchestration guide for team-leads
+Claude Swarm uses a **3-skill architecture** optimized for role-based context loading:
+
+- **[Swarm Orchestration](skills/swarm-orchestration/SKILL.md)** - Team-lead operations for creating and managing swarms (~2,000 tokens)
+- **[Swarm Teammate](skills/swarm-teammate/SKILL.md)** - Worker coordination protocol and teammate identity (~1,200 tokens)
+- **[Swarm Troubleshooting](skills/swarm-troubleshooting/SKILL.md)** - Diagnostics, error recovery, and problem-solving (~3,500 tokens)
+
+Each skill auto-triggers based on context (e.g., teammates automatically load swarm-teammate via environment variables), providing progressive disclosure and optimal token efficiency.
 
 ## Components
 
@@ -143,9 +149,11 @@ listen_on unix:/tmp/kitty-${USER}
 
 - **swarm-coordinator** - Automated swarm orchestration agent
 
-### Skills (1)
+### Skills (3)
 
-- **swarm-coordination** - Orchestration workflows and best practices
+- **swarm-orchestration** - Team-lead operations and management
+- **swarm-teammate** - Worker coordination protocol
+- **swarm-troubleshooting** - Diagnostics and recovery
 
 ## Agent Types
 
@@ -224,9 +232,9 @@ plugins/claude-swarm/lib/
 
 All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh`.
 
-### Environment Variables
+### Environment Variables & Identification
 
-When teammates are spawned, these variables are automatically set:
+**Spawned teammates** automatically receive these environment variables:
 
 - `CLAUDE_CODE_TEAM_NAME` - Current team name
 - `CLAUDE_CODE_AGENT_ID` - Unique agent UUID
@@ -234,6 +242,19 @@ When teammates are spawned, these variables are automatically set:
 - `CLAUDE_CODE_AGENT_TYPE` - Agent role type
 - `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller)
 - `CLAUDE_CODE_AGENT_COLOR` - Agent display color
+
+**Team lead identification** (kitty only):
+
+Since the team lead doesn't have environment variables, kitty user vars are used:
+- `swarm_team` - Team name (set when creating team)
+- `swarm_agent` - Agent name (set to "team-lead")
+
+Commands use this priority chain:
+1. Environment variables (teammates)
+2. Kitty user vars (team lead)
+3. Defaults or error
+
+This ensures inbox checking, messaging, and task commands work correctly for both team lead and teammates.
 
 ## Best Practices
 

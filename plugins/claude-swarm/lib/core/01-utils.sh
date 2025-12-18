@@ -90,5 +90,34 @@ validate_name() {
     return 0
 }
 
+# ============================================
+# KITTY USER VAR HELPERS
+# ============================================
+
+# Get a user var from the current kitty window
+# Usage: get_current_window_var "var_name"
+# Returns: value of the var, or empty string if not found
+get_current_window_var() {
+    local var_name="$1"
+
+    if [[ "$SWARM_MULTIPLEXER" != "kitty" ]]; then
+        echo ""
+        return 1
+    fi
+
+    kitten_cmd ls 2>/dev/null | jq -r --arg var "$var_name" \
+        '.[].tabs[].windows[] | select(.is_focused == true) | .user_vars[$var] // ""' 2>/dev/null || echo ""
+}
+
+# Set user vars on the current kitty window
+# Usage: set_current_window_vars "var1=value1" "var2=value2" ...
+set_current_window_vars() {
+    if [[ "$SWARM_MULTIPLEXER" != "kitty" ]]; then
+        return 1
+    fi
+
+    kitten_cmd set-user-vars "$@" 2>/dev/null
+}
+
 # Export public API
-export -f detect_multiplexer generate_uuid validate_name
+export -f detect_multiplexer generate_uuid validate_name get_current_window_var set_current_window_vars

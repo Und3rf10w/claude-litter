@@ -14,11 +14,20 @@ Create a new team called `$1`.
 
 ## Instructions
 
-Run the following bash command to create the team:
+Run the following bash commands to create the team:
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
-create_team "$1" "$2"
+
+TEAM_NAME="$1"
+DESCRIPTION="$2"
+
+create_team "$TEAM_NAME" "$DESCRIPTION"
+
+# Set user vars on current window so team-lead can check inbox
+if [[ "$SWARM_MULTIPLEXER" == "kitty" ]]; then
+    set_current_window_vars "swarm_team=${TEAM_NAME}" "swarm_agent=team-lead"
+fi
 ```
 
 After running, report:

@@ -36,8 +36,14 @@ for arg in "$@"; do
     esac
 done
 
-# Use environment variable if no team specified
-TEAM="${TEAM:-${CLAUDE_CODE_TEAM_NAME:-}}"
+# Priority: arg > env vars (teammates) > user vars (team-lead) > error
+if [[ -z "$TEAM" ]]; then
+    if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+        TEAM="$CLAUDE_CODE_TEAM_NAME"
+    else
+        TEAM="$(get_current_window_var 'swarm_team')"
+    fi
+fi
 
 if [[ -z "$TEAM" ]]; then
     echo "Error: Team name required"

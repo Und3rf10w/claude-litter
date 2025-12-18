@@ -18,8 +18,20 @@ Run the following bash commands:
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
 
-TEAM="${CLAUDE_CODE_TEAM_NAME:-default}"
-AGENT="${CLAUDE_CODE_AGENT_NAME:-team-lead}"
+# Priority: env vars (teammates) > user vars (team-lead) > defaults
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+    [[ -z "$TEAM" ]] && TEAM="default"
+fi
+
+if [[ -n "$CLAUDE_CODE_AGENT_NAME" ]]; then
+    AGENT="$CLAUDE_CODE_AGENT_NAME"
+else
+    AGENT="$(get_current_window_var 'swarm_agent')"
+    [[ -z "$AGENT" ]] && AGENT="team-lead"
+fi
 
 echo "=== Inbox for ${AGENT} in team ${TEAM} ==="
 echo ""

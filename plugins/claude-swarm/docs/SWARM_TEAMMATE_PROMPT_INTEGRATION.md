@@ -75,11 +75,11 @@ when: |
 
 ## Integration Benefits
 
-### Before (Current System Prompt)
+### Before (Old System Prompt)
 - **Token cost**: ~400 tokens
 - **Maintainability**: Hard to update (bash variable)
 - **Duplication**: Commands repeated in prompt + skill
-- **Total teammate context**: 3,500 tokens (old swarm-coordination)
+- **Total teammate context**: 3,500 tokens (old swarm-coordination skill)
 
 ### After (New System Prompt + Skill)
 - **Prompt token cost**: ~100 tokens (75% reduction)

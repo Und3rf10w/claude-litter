@@ -263,7 +263,7 @@ Use these commands to set up the swarm:
 3. `/swarm-spawn <name> <type>` - Spawn 3 teammates
 4. `/task-update <id> --assign <name>` - Assign tasks
 
-Claude Code will invoke the swarm-coordination skill automatically for guidance.
+Claude Code will invoke the swarm-orchestration skill automatically for guidance.
 </system-reminder>
 ```
 
@@ -534,4 +534,7 @@ Expected performance:
 - **[Main README](../README.md)** - Overview, quick start, architecture, and troubleshooting
 - **[Commands Reference](COMMANDS.md)** - Complete slash command documentation
 - **[Integration Guide](INTEGRATION.md)** - CI/CD integration and external systems
-- **[Swarm Coordination Skill](../skills/swarm-coordination/SKILL.md)** - Orchestration workflows and best practices
+- **Skills:**
+  - **[Swarm Orchestration](../skills/swarm-orchestration/SKILL.md)** - Team-lead operations and management
+  - **[Swarm Teammate](../skills/swarm-teammate/SKILL.md)** - Worker coordination protocol
+  - **[Swarm Troubleshooting](../skills/swarm-troubleshooting/SKILL.md)** - Diagnostics and recovery

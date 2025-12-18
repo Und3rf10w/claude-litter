@@ -48,7 +48,7 @@ The 3-skill architecture has been successfully implemented and validated. All to
 
 **Token Savings Calculation**:
 
-**Old Architecture** (single swarm-coordination skill):
+**Old Architecture** (single swarm-coordination skill) - **DEPRECATED**:
 - Team-lead: ~3,500 tokens
 - 5 workers: 5 × 3,500 = 17,500 tokens
 - **Total: 21,000 tokens**
@@ -278,7 +278,7 @@ The 3-skill architecture is **APPROVED for production use**. All validation crit
 
 3. **Token count monitoring**: Periodically re-validate actual token usage as skills evolve
 
-4. **Old skill deprecation**: Archive `skills/swarm-coordination/` once migration complete
+4. **Old skill deprecation**: ~~Archive `skills/swarm-coordination/`~~ **COMPLETED** - Old skill removed
 
 ---
 
@@ -312,11 +312,11 @@ The 3-skill architecture successfully achieves all design goals:
 - ✅ No functionality regression
 - ✅ Maintainable structure
 
-**Next Steps**:
-1. Bump plugin version to reflect new architecture
-2. Update any references to old swarm-coordination skill
-3. Consider archiving old skill after migration period
-4. Monitor usage patterns in production
+**Migration Completed**:
+1. ✅ Plugin version bumped to reflect new architecture (v1.5.0)
+2. ✅ All references to old swarm-coordination skill updated
+3. ✅ Old skill removed from plugin
+4. 🔄 Monitoring usage patterns in production
 
 ---
 

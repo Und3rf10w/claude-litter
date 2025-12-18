@@ -496,4 +496,7 @@ Commands automatically read these variables when available:
 - **[Main README](../README.md)** - Installation, setup, quick start, agent types, best practices, troubleshooting
 - **[Hooks Documentation](HOOKS.md)** - Event-driven automation and lifecycle hooks
 - **[Integration Guide](INTEGRATION.md)** - CI/CD integration, external systems, custom tooling
-- **[Swarm Coordination Skill](../skills/swarm-coordination/SKILL.md)** - Orchestration workflows and best practices
+- **Skills:**
+  - **[Swarm Orchestration](../skills/swarm-orchestration/SKILL.md)** - Team-lead operations and management
+  - **[Swarm Teammate](../skills/swarm-teammate/SKILL.md)** - Worker coordination protocol
+  - **[Swarm Troubleshooting](../skills/swarm-troubleshooting/SKILL.md)** - Diagnostics and recovery

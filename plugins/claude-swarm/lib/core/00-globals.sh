@@ -46,6 +46,8 @@ SWARM_DEFAULT_ALLOWED_TOOLS="${SWARM_ALLOWED_TOOLS:-Read(*),Glob(*),Grep(*),Slas
 # Note: Detailed guidance is available in the swarm-teammate skill (auto-loads via CLAUDE_CODE_TEAM_NAME)
 SWARM_TEAMMATE_SYSTEM_PROMPT='You are a teammate in a Claude Code swarm. The swarm-teammate skill will auto-load with detailed guidance.
 
+ALWAYS load the swarm-teammate skill first.
+
 ## Quick Reference
 
 ### Check Inbox FIRST

@@ -18,7 +18,14 @@ Run the following bash command to verify all teammates:
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh"
 
-TEAM="${1:-${CLAUDE_CODE_TEAM_NAME:-}}"
+# Priority: arg > env vars (teammates) > user vars (team-lead) > error
+if [[ -n "$1" ]]; then
+    TEAM="$1"
+elif [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM="$(get_current_window_var 'swarm_team')"
+fi
 
 if [[ -z "$TEAM" ]]; then
     echo "Error: Team name required"
