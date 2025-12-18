@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.6.1)
+│   └── claude-swarm/          # Main swarm plugin (v1.6.2)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17 slash commands (.md files)
@@ -352,7 +352,7 @@ When commands cannot determine team context, they now error with:
 Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME
 ```
 
-**Previous behavior (v1.6.1 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
+**Previous behavior (v1.6.2 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
 
 **New behavior**: Commands fail explicitly, preventing data corruption.
 
