@@ -157,7 +157,8 @@ spawn_teammate_tmux() {
     local permission_mode="${6:-}"
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
-    shift 8 2>/dev/null || true
+    local plugin_dir="${9:-}"
+    shift 9 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -275,6 +276,12 @@ spawn_teammate_tmux() {
         claude_cmd+=" --allowed-tools $safe_allowed_tools"
     fi
 
+    # Add plugin directory (safely escape)
+    if [[ -n "$plugin_dir" ]]; then
+        local safe_plugin_dir=$(printf %q "$plugin_dir")
+        claude_cmd+=" --plugin-dir $safe_plugin_dir"
+    fi
+
     # Add system prompt
     claude_cmd+=" --append-system-prompt $safe_system_prompt"
 
@@ -325,7 +332,8 @@ spawn_teammate_kitty() {
     local permission_mode="${6:-}"
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
-    shift 8 2>/dev/null || true
+    local plugin_dir="${9:-}"
+    shift 9 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -446,6 +454,11 @@ spawn_teammate_kitty() {
     # Add allowed tools
     if [[ -n "$allowed_tools" ]]; then
         claude_args+=("--allowed-tools" "$allowed_tools")
+    fi
+
+    # Add plugin directory
+    if [[ -n "$plugin_dir" ]]; then
+        claude_args+=("--plugin-dir" "$plugin_dir")
     fi
 
     # Add system prompt

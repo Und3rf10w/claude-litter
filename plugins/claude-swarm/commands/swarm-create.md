@@ -73,8 +73,8 @@ if [[ "$NO_LEAD" != "true" ]]; then
     # Spawn team-lead with appropriate prompt
     LEAD_PROMPT="You are the team-lead for '${TEAM_NAME}'. Use /task-list to view tasks, /swarm-spawn to spawn teammates, /swarm-status to check team status, and /swarm-message to communicate with teammates."
 
-    # Spawn team-lead with CLAUDE_CODE_IS_TEAM_LEAD environment variable
-    if spawn_teammate "$TEAM_NAME" "team-lead" "team-lead" "$LEAD_MODEL" "$LEAD_PROMPT" "" "" "" "CLAUDE_CODE_IS_TEAM_LEAD=true"; then
+    # Spawn team-lead with CLAUDE_CODE_IS_TEAM_LEAD environment variable and plugin directory
+    if spawn_teammate "$TEAM_NAME" "team-lead" "team-lead" "$LEAD_MODEL" "$LEAD_PROMPT" "" "" "" "$CLAUDE_PLUGIN_ROOT" "CLAUDE_CODE_IS_TEAM_LEAD=true"; then
         # Update team config to mark that team-lead has been spawned
         config_file="${TEAMS_DIR}/${TEAM_NAME}/config.json"
         if [[ -f "$config_file" ]]; then
