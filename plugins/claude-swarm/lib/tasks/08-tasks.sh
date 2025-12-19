@@ -248,6 +248,33 @@ update_task() {
 
 list_tasks() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
+    shift
+
+    # Parse filter options
+    local filter_status=""
+    local filter_owner=""
+    local filter_blocked="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --status)
+                filter_status="$2"
+                shift 2
+                ;;
+            --owner|--assignee)
+                filter_owner="$2"
+                shift 2
+                ;;
+            --blocked)
+                filter_blocked="true"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     local tasks_dir="${TASKS_DIR}/${team_name}"
 
     if [[ ! -d "$tasks_dir" ]]; then
@@ -255,19 +282,56 @@ list_tasks() {
         return
     fi
 
-    echo "Tasks for team '${team_name}':"
+    # Build filter description
+    local filter_desc=""
+    if [[ -n "$filter_status" ]]; then
+        filter_desc="${filter_desc} status=${filter_status}"
+    fi
+    if [[ -n "$filter_owner" ]]; then
+        filter_desc="${filter_desc} owner=${filter_owner}"
+    fi
+    if [[ "$filter_blocked" == "true" ]]; then
+        filter_desc="${filter_desc} blocked=true"
+    fi
+
+    if [[ -n "$filter_desc" ]]; then
+        echo "Tasks for team '${team_name}' (filters:${filter_desc}):"
+    else
+        echo "Tasks for team '${team_name}':"
+    fi
     echo "--------------------------------"
 
     # Use find instead of glob to avoid zsh "no matches found" error
     local task_count=0
     while IFS= read -r task_file; do
         [[ -z "$task_file" ]] && continue
+
+        # Read task data once
+        local task_json=$(cat "$task_file")
+        local id=$(echo "$task_json" | jq -r '.id')
+        local subject=$(echo "$task_json" | jq -r '.subject')
+        local task_status=$(echo "$task_json" | jq -r '.status')
+        local owner=$(echo "$task_json" | jq -r '.owner // "unassigned"')
+        local blocked_by_array=$(echo "$task_json" | jq -r '.blockedBy')
+        local blocked_by=$(echo "$blocked_by_array" | jq -r 'if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end')
+
+        # Apply filters
+        if [[ -n "$filter_status" ]] && [[ "$task_status" != "$filter_status" ]]; then
+            continue
+        fi
+
+        if [[ -n "$filter_owner" ]] && [[ "$owner" != "$filter_owner" ]]; then
+            continue
+        fi
+
+        if [[ "$filter_blocked" == "true" ]]; then
+            local has_blockers=$(echo "$blocked_by_array" | jq 'length > 0')
+            if [[ "$has_blockers" != "true" ]]; then
+                continue
+            fi
+        fi
+
         ((task_count++))
-        local id=$(jq -r '.id' "$task_file")
-        local subject=$(jq -r '.subject' "$task_file")
-        local task_status=$(jq -r '.status' "$task_file")
-        local owner=$(jq -r '.owner // "unassigned"' "$task_file")
-        local blocked_by=$(jq -r '.blockedBy | if length > 0 then " [blocked by #" + (. | join(", #")) + "]" else "" end' "$task_file")
 
         local status_color="${NC}"
         if [[ "$task_status" == "pending" ]]; then
@@ -286,7 +350,11 @@ list_tasks() {
     done < <(find "$tasks_dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null | sort)
 
     if [[ $task_count -eq 0 ]]; then
-        echo "  (no tasks yet)"
+        if [[ -n "$filter_desc" ]]; then
+            echo "  (no tasks match filters)"
+        else
+            echo "  (no tasks yet)"
+        fi
     fi
 }
 

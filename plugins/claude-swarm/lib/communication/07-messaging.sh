@@ -69,8 +69,45 @@ send_message() {
     fi
 }
 
+# Send text to an active teammate via multiplexer
+# Generalized function to send arbitrary text/commands to teammate windows
+# Used for notifications, command injection, or automated interactions
+send_text_to_teammate() {
+    local team_name="$1"
+    local agent_name="$2"
+    local text="$3"
+    local check_active="${4:-true}"  # Whether to verify teammate is active
+
+    # Check if teammate is active (skip if check_active=false)
+    if [[ "$check_active" == "true" ]]; then
+        local live_agents=$(get_live_agents "$team_name")
+        if ! echo "$live_agents" | grep -q "^${agent_name}$"; then
+            return 1  # Not active
+        fi
+    fi
+
+    case "$SWARM_MULTIPLEXER" in
+        kitty)
+            local swarm_var="swarm_${team_name}_${agent_name}"
+            # Send text with carriage return to execute
+            kitten_cmd send-text --match "var:${swarm_var}" "${text}"$'\r'
+            ;;
+        tmux)
+            local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
+            local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
+            local session="swarm-${safe_team}-${safe_agent}"
+            # Use send-keys to send text to session
+            tmux send-keys -t "$session" "$text" Enter 2>/dev/null || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # DEPRECATED: Notify an active teammate via multiplexer
 # Called after message is queued to provide real-time notification
+# Now uses generalized send_text_to_teammate function
 notify_active_teammate() {
     local team_name="$1"
     local agent_name="$2"
@@ -81,24 +118,8 @@ notify_active_teammate() {
         return 0
     fi
 
-    # Check if teammate is active
-    local live_agents=$(get_live_agents "$team_name")
-    if ! echo "$live_agents" | grep -q "^${agent_name}$"; then
-        return 0  # Not active, skip notification
-    fi
-
-    case "$SWARM_MULTIPLEXER" in
-        kitty)
-            local swarm_var="swarm_${team_name}_${agent_name}"
-            kitten_cmd send-text --match "var:${swarm_var}" $'/claude-swarm:swarm-inbox\r'
-            ;;
-        tmux)
-            local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
-            local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
-            local session="swarm-${safe_team}-${safe_agent}"
-            tmux display-message -t "$session" "📬 New message from ${from}" 2>/dev/null || true
-            ;;
-    esac
+    # Send inbox check command to active teammate
+    send_text_to_teammate "$team_name" "$agent_name" "/claude-swarm:swarm-inbox" "true"
 }
 
 read_inbox() {
@@ -213,4 +234,4 @@ format_messages_xml() {
 
 
 # Export public API
-export -f send_message notify_active_teammate read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml
+export -f send_message send_text_to_teammate notify_active_teammate read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml

@@ -333,11 +333,14 @@ Provide clear summary:
 | `/claude-swarm:swarm-spawn <name> [type] [model] [prompt]` | Spawn teammate         |
 | `/claude-swarm:swarm-status <team>`                        | View team status       |
 | `/claude-swarm:swarm-verify <team>`                        | Verify teammates alive |
-| `/claude-swarm:swarm-message <to> <msg>`                   | Send message           |
+| `/claude-swarm:swarm-message <to> <msg>`                   | Send message to one    |
+| `/claude-swarm:swarm-broadcast <msg> [--exclude]`          | Broadcast to all       |
+| `/claude-swarm:swarm-send-text <target> <text>`            | Send to terminal       |
 | `/claude-swarm:swarm-inbox`                                | Check messages         |
+| `/claude-swarm:swarm-consult <message>`                    | Ask team-lead          |
 | `/claude-swarm:task-create <subject> [desc]`               | Create task            |
 | `/claude-swarm:task-update <id> [opts]`                    | Update task            |
-| `/claude-swarm:task-list`                                  | List all tasks         |
+| `/claude-swarm:task-list [--status] [--owner] [--blocked]` | List tasks with filter |
 | `/claude-swarm:swarm-cleanup <team> [--force]`             | Clean up team          |
 
 For troubleshooting commands (diagnose, reconcile, recovery), see the **swarm-troubleshooting** skill.
@@ -385,6 +388,365 @@ The third parameter (`"true"`) excludes you (team-lead) from the broadcast.
 - Include context for blockers
 - Be proactive about potential issues
 - Provide actionable information
+
+## Advanced Features (v1.7.0+)
+
+### Broadcasting Messages to All Teammates
+
+**New Command**: `/claude-swarm:swarm-broadcast <message> [--exclude <agent-name>]`
+
+When you need to notify everyone simultaneously (breaking changes, critical updates):
+
+```bash
+/claude-swarm:swarm-broadcast "Database migration required - pull latest and run migrations before continuing"
+```
+
+**Arguments:**
+- `<message>` - Message to broadcast to all teammates (required)
+- `--exclude <agent-name>` - Optionally exclude a specific teammate (defaults to excluding the sender)
+
+**Use cases:**
+- Team-wide announcements
+- Breaking changes or critical updates
+- Coordination checkpoints
+- System-wide configuration changes
+- Critical blocker resolution
+
+**Examples:**
+
+```bash
+# Broadcast to all teammates
+/claude-swarm:swarm-broadcast "API v2 is now deployed"
+
+# Broadcast excluding a specific teammate
+/claude-swarm:swarm-broadcast "UI redesign approved - update all components" --exclude frontend-dev
+
+# Broadcast with multi-word message
+/claude-swarm:swarm-broadcast "Please review PR #42 before proceeding with your tasks"
+```
+
+**Best practices:**
+- Use sparingly (every message goes to all teammates simultaneously)
+- Include context and action items
+- Reference relevant documentation or task numbers
+- For routine updates, message specific teammates instead
+- By default excludes the sender (use `--exclude` to change)
+
+**How it works:**
+- Sends message to all team members' inboxes
+- Recipients see the message when they run `/swarm-inbox`
+- Messages auto-deliver on next session start (via SessionStart hook)
+- Supports multi-word messages without quotes
+
+### Consulting Team-Lead
+
+**New Command**: `/claude-swarm:swarm-consult <message>`
+
+Teammates ask the team-lead questions or report blockers with immediate notification:
+
+```bash
+/claude-swarm:swarm-consult "Should I proceed with refactoring the API module?"
+/claude-swarm:swarm-consult "Blocked on database schema - can you help?"
+```
+
+**How it works:**
+- Sends message to team-lead's inbox
+- Automatically triggers team-lead's inbox if they're active
+- If team-lead is offline, message waits for next inbox check
+- Team-lead responds via `/swarm-message`
+
+**Use cases:**
+- Ask for guidance or clarification
+- Report blockers
+- Request permission for major decisions
+- Escalate issues
+- Get unstuck
+
+**Examples:**
+
+```bash
+# Ask a question
+/claude-swarm:swarm-consult "Need clarification on task #5 - which endpoint should I modify?"
+
+# Report blocker
+/claude-swarm:swarm-consult "Blocked on database schema - can you help?"
+
+# Request decision
+/claude-swarm:swarm-consult "Should we refactor the auth module or proceed with current implementation?"
+```
+
+**Features:**
+- Prevents team-lead from consulting themselves
+- Works with both kitty and tmux
+- Graceful fallback if team-lead offline
+- Clear response when team-lead is notified
+
+### Sending Text to Teammate Terminals
+
+**New Command**: `/claude-swarm:swarm-send-text <target> <text>`
+
+Send text directly to a teammate's terminal (they see it typed in their session):
+
+```bash
+/claude-swarm:swarm-send-text backend-dev "/swarm-inbox"
+/claude-swarm:swarm-send-text all "/swarm-inbox\r"
+```
+
+**Arguments:**
+- `<target>` - Teammate name or "all" for all active teammates (required)
+- `<text>` - Text to send to terminal (required, use `\r` for Enter key)
+
+**Use cases:**
+- Trigger inbox checks for teammates with new messages
+- Send coordination commands to active teammates
+- Provide input to teammates waiting for user input
+- Broadcast commands to all active teammates
+- Wake up inactive terminals with commands
+
+**Examples:**
+
+```bash
+# Send command to specific teammate
+/claude-swarm:swarm-send-text backend-dev "/swarm-inbox"
+
+# Send text with Enter key to all teammates
+/claude-swarm:swarm-send-text all "/swarm-inbox\r"
+
+# Trigger a command for a teammate
+/claude-swarm:swarm-send-text frontend-dev "echo 'Starting work'\r"
+```
+
+**How it works:**
+- Text appears in teammate's terminal as if they typed it
+- Works with both kitty and tmux terminals
+- Uses kitty user variables or tmux session names for targeting
+- Only sends to active teammates (won't affect offline sessions)
+- Automatically skips sending to self
+- Use `\r` at end to simulate pressing Enter
+
+**Important notes:**
+- Text is sent directly to terminal - use with care
+- Inactive teammates won't receive the text
+- For persistent communication, use `/swarm-message` instead
+
+### Filtering Task Lists
+
+**Enhanced Command**: `/claude-swarm:task-list [--status STATUS] [--owner NAME] [--blocked]`
+
+View tasks with granular filtering to focus on what matters:
+
+```bash
+/claude-swarm:task-list --status in-progress      # Only in-progress tasks
+/claude-swarm:task-list --owner backend-dev       # Tasks for specific teammate
+/claude-swarm:task-list --status blocked          # Find all blockers
+/claude-swarm:task-list --blocked --owner frontend-dev  # Blocked tasks for one person
+```
+
+**Filter options:**
+- `--status <status>` - Filter by status: pending, in-progress, blocked, in-review, completed
+- `--owner <name>` or `--assignee <name>` - Filter by teammate name
+- `--blocked` - Show only tasks with blocking dependencies
+
+**Use cases:**
+- Monitor specific teammate progress
+- Find blocked tasks quickly
+- Focus on in-progress work
+- Identify pending tasks
+- Check for tasks awaiting review
+
+**Examples:**
+
+```bash
+# List all completed tasks
+/claude-swarm:task-list --status completed
+
+# Show pending work for frontend-dev
+/claude-swarm:task-list --status pending --owner frontend-dev
+
+# Find all blockers in the team
+/claude-swarm:task-list --blocked
+
+# Combine filters
+/claude-swarm:task-list --status in-progress --owner backend-dev
+```
+
+**How it works:**
+- Filters task list based on specified criteria
+- Combines multiple filters with AND logic
+- Status values: pending, in-progress, blocked, in-review, completed
+
+### Custom Environment Variables
+
+**Enhancement to**: `/claude-swarm:swarm-spawn`
+
+Pass custom environment variables to spawned teammates for configuration:
+
+```bash
+/claude-swarm:swarm-spawn "api-dev" "backend-developer" "sonnet" "Initial prompt here" API_KEY=sk_test_123 ENV=staging DEBUG=true
+```
+
+**How to use:**
+- Pass environment variables as additional arguments after the initial prompt
+- Each argument should be in format: `KEY=VALUE` (no spaces around the equals sign)
+- Values are safely escaped and exported in teammate's session
+- Works with both kitty and tmux
+
+**Examples:**
+
+```bash
+# Spawn with feature flags
+/claude-swarm:swarm-spawn "tester" "tester" "sonnet" "Run integration tests" FEATURE_FLAG_NEW_API=true ENVIRONMENT=testing
+
+# Spawn with API configuration
+/claude-swarm:swarm-spawn "integrations" "backend-developer" "opus" "Build integrations" API_ENDPOINT=https://api.staging.example.com DB_HOST=localhost
+
+# Spawn with credentials (team-specific)
+/claude-swarm:swarm-spawn "deploy" "worker" "sonnet" "Deploy to staging" AWS_REGION=us-east-1 DEPLOY_ENV=staging
+```
+
+**Use cases:**
+- Team-specific configuration
+- Environment selectors (dev, staging, prod)
+- Feature flags
+- API endpoints and connections
+- Tool-specific settings
+
+**Security notes:**
+- Command line arguments are visible in process listings
+- For sensitive credentials, consider using:
+  - `.env` files that teammates can source
+  - Secrets management systems
+  - Credential vaults or environment files
+- Team members should NOT see sensitive values
+- Keep sensitive data in separate configuration outside the command
+
+**How it works:**
+- Variables are exported as environment variables in the teammate's session
+- Available to use in bash commands and scripts
+- Override any team-level environment variables
+- Work alongside standard CLAUDE_CODE_* variables
+
+### Permission Mode Control
+
+**New Feature**: Control what Claude Code capabilities teammates can access
+
+Configure permissions and plan mode when spawning teammates:
+
+```bash
+/claude-swarm:swarm-spawn "reviewer" "reviewer" "sonnet" "Review code" PERMISSION_MODE PLAN_MODE ALLOWED_TOOLS
+```
+
+**Permission controls:**
+- `permission_mode` - Controls which tools teammates can use (ask/skip)
+- `plan_mode` (true/false) - Enable/disable EnterPlanMode skill
+- `allowed_tools` - Pattern of tools teammates can access
+
+**How to use:**
+- Pass as additional arguments after initial prompt (after any env vars)
+- Examples:
+  ```bash
+  # Restrict to skip/deny unknown tools
+  /claude-swarm:swarm-spawn "reviewer" "reviewer" "sonnet" "Review" skip unknown
+
+  # Enable plan mode for architect
+  /claude-swarm:swarm-spawn "architect" "researcher" "opus" "Design" ask true
+
+  # Restrict tool access patterns
+  /claude-swarm:swarm-spawn "readonly-auditor" "reviewer" "haiku" "Audit" skip "^Edit|^Write|^Delete"
+  ```
+
+**Use cases:**
+- Restrict reviewers from modifying code
+- Prevent accidental deletions or dangerous operations
+- Control which Claude Code features teammates can use
+- Implement graduated access control
+- Audit-only roles without modification capability
+
+**Permission mode options:**
+- `ask` - Ask teammate for permission before using tool
+- `skip` - Skip unknown/restricted tools silently
+
+**Plan mode:**
+- `true` or `enable` - Teammate can use EnterPlanMode
+- `false` - Teammate cannot enter plan mode
+
+**Allowed tools:**
+- Specify tool patterns (regex-compatible)
+- Examples: `Read|Glob`, `^Bash`, `^Edit|^Write`
+- Restrict to specific operations
+
+**Security benefits:**
+- Prevent accidental destructive actions
+- Control access to sensitive operations
+- Implement principle of least privilege
+- Role-based capability restriction
+- Audit trail for permission checks
+
+### Team-Lead Auto-Spawn on Team Creation
+
+**Enhanced Command**: `/claude-swarm:swarm-create <team-name> [description] [--no-lead] [--lead-model <model>]`
+
+**New behavior (v1.7.0+)**: Team-lead window automatically spawns when creating a team
+
+Previous behavior (v1.6.2): Required manual `/swarm-spawn` for team-lead context
+
+**Usage:**
+
+```bash
+# Create team and auto-spawn team-lead (default)
+/claude-swarm:swarm-create "payment-system" "Building payment processing system"
+
+# Create team without auto-spawning team-lead
+/claude-swarm:swarm-create "research-project" "Market research" --no-lead
+
+# Create team with specific model for team-lead
+/claude-swarm:swarm-create "complex-feature" "Complex feature" --lead-model opus
+```
+
+**New Options:**
+- `--no-lead` - Skip auto-spawn (useful if setting up remotely)
+- `--lead-model <model>` - Specify model for team-lead (haiku/sonnet/opus, default: sonnet)
+
+**What happens automatically:**
+- Team directory created in `~/.claude/teams/<team-name>/`
+- Team config initialized with empty members list
+- Team-lead window spawned in current terminal (kitty/tmux)
+- Team-lead has full environment variables set automatically
+- Ready to start spawning teammates immediately
+
+**Benefits:**
+- **Faster setup**: One command creates team and team-lead context
+- **Automatic detection**: Team-lead knows team name immediately
+- **Immediate productivity**: Start assigning tasks right away
+- **Optional**: Use `--no-lead` if needed for edge cases
+
+**Workflow improvement:**
+
+**Old (v1.6.2)**:
+```bash
+/swarm-create "team-name"
+/swarm-spawn "team-lead-window" "worker" "sonnet" "You are team-lead"
+# Now team-lead has context
+```
+
+**New (v1.7.0)**:
+```bash
+/swarm-create "team-name"
+# Team-lead already spawned and ready!
+```
+
+**Examples:**
+
+```bash
+# Quick team setup
+/claude-swarm:swarm-create "auth-feature" "User authentication system"
+
+# Complex project with power
+/claude-swarm:swarm-create "ai-infrastructure" "AI infrastructure overhaul" --lead-model opus
+
+# Remote setup without auto-spawn
+/claude-swarm:swarm-create "offshore-team" "Remote team project" --no-lead
+```
 
 ## Monitoring Progress
 

@@ -13,7 +13,7 @@
       "name": "claude-swarm",
       "source": "./plugins/claude-swarm",
       "description": "Multi-agent swarm coordination - spawn parallel teammates in tmux/kitty, assign tasks, coordinate work",
-      "version": "1.6.2",
+      "version": "1.7.0",
       "author": {
         "name": "Und3rf10w"
       },

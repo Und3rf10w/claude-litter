@@ -154,6 +154,13 @@ spawn_teammate_tmux() {
     local agent_type="${3:-worker}"
     local model="${4:-sonnet}"
     local initial_prompt="${5:-}"
+    local permission_mode="${6:-}"
+    local plan_mode="${7:-}"
+    local allowed_tools="${8:-}"
+    local plugin_dir="${9:-}"
+    shift 9 2>/dev/null || true
+    # Remaining arguments are custom environment variables in KEY=VALUE format
+    local custom_env_vars=("$@")
 
     # Validate names
     validate_name "$team_name" "team" || return 1
@@ -176,18 +183,36 @@ spawn_teammate_tmux() {
         return 1
     fi
 
-    # Generate UUID for agent
-    local agent_id=$(generate_uuid)
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local agent_id
+    local lead_id
 
-    # Add to team config (include model for resume capability)
-    if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        echo -e "${RED}Failed to add member to team config${NC}" >&2
-        return 1
+    # If spawning team-lead, use existing leadAgentId from config (created by create_team)
+    if [[ "$agent_name" == "team-lead" ]]; then
+        agent_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        lead_id="$agent_id"
+        if [[ -z "$agent_id" ]]; then
+            echo -e "${RED}No leadAgentId found in team config${NC}" >&2
+            return 1
+        fi
+        # Update existing team-lead member status instead of adding duplicate
+        local tmp_file=$(mktemp)
+        if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
+           "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        fi
+    else
+        # Generate UUID for non-team-lead agents
+        agent_id=$(generate_uuid)
+        lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        # Add to team config (include model for resume capability)
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+            echo -e "${RED}Failed to add member to team config${NC}" >&2
+            return 1
+        fi
     fi
 
-    # Get team-lead ID and agent color for InboxPoller activation
-    local config_file="${TEAMS_DIR}/${team_name}/config.json"
-    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    # Get agent color for InboxPoller activation
     local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
@@ -208,15 +233,64 @@ spawn_teammate_tmux() {
     local safe_agent_color=$(printf %q "$agent_color")
     local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
 
+    # Build custom environment variable exports
+    local custom_env_exports=""
+    for env_var in "${custom_env_vars[@]}"; do
+        if [[ "$env_var" =~ ^[A-Za-z_][A-Za-z0-9_]*=.* ]]; then
+            local key="${env_var%%=*}"
+            local value="${env_var#*=}"
+            local safe_value=$(printf %q "$value")
+            custom_env_exports+=" ${key}=${safe_value}"
+        fi
+    done
+
     # Set environment variables in the session
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color${custom_env_exports}" Enter
+
+    # Build Claude Code permission arguments
+    local claude_cmd="claude --model $model"
+
+    # Add permission mode flags
+    if [[ -n "$permission_mode" ]]; then
+        case "$permission_mode" in
+            skip|dangerously-skip-permissions)
+                claude_cmd+=" --dangerously-skip-permissions"
+                ;;
+            ask|ask-always)
+                # Default behavior, no flag needed
+                ;;
+        esac
+    else
+        # Default to skip permissions for swarm teammates
+        claude_cmd+=" --dangerously-skip-permissions"
+    fi
+
+    # Add plan mode flag (uses permission-mode plan)
+    if [[ "$plan_mode" == "true" || "$plan_mode" == "enable" ]]; then
+        claude_cmd+=" --permission-mode plan"
+    fi
+
+    # Add allowed tools (safely escape)
+    if [[ -n "$allowed_tools" ]]; then
+        local safe_allowed_tools=$(printf %q "$allowed_tools")
+        claude_cmd+=" --allowed-tools $safe_allowed_tools"
+    fi
+
+    # Add plugin directory (safely escape)
+    if [[ -n "$plugin_dir" ]]; then
+        local safe_plugin_dir=$(printf %q "$plugin_dir")
+        claude_cmd+=" --plugin-dir $safe_plugin_dir"
+    fi
+
+    # Add system prompt
+    claude_cmd+=" --append-system-prompt $safe_system_prompt"
 
     # Write prompt to temporary file for safer passing (defense-in-depth against command injection)
     local prompt_file=$(mktemp)
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt < $prompt_file; rm -f $prompt_file" Enter
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -255,6 +329,13 @@ spawn_teammate_kitty() {
     local agent_type="${3:-worker}"
     local model="${4:-sonnet}"
     local initial_prompt="${5:-}"
+    local permission_mode="${6:-}"
+    local plan_mode="${7:-}"
+    local allowed_tools="${8:-}"
+    local plugin_dir="${9:-}"
+    shift 9 2>/dev/null || true
+    # Remaining arguments are custom environment variables in KEY=VALUE format
+    local custom_env_vars=("$@")
 
     # Validate names
     validate_name "$team_name" "team" || return 1
@@ -276,18 +357,36 @@ spawn_teammate_kitty() {
         return 1
     fi
 
-    # Generate UUID for agent
-    local agent_id=$(generate_uuid)
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local agent_id
+    local lead_id
 
-    # Add to team config (include model for resume capability)
-    if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        echo -e "${RED}Failed to add member to team config${NC}" >&2
-        return 1
+    # If spawning team-lead, use existing leadAgentId from config (created by create_team)
+    if [[ "$agent_name" == "team-lead" ]]; then
+        agent_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        lead_id="$agent_id"
+        if [[ -z "$agent_id" ]]; then
+            echo -e "${RED}No leadAgentId found in team config${NC}" >&2
+            return 1
+        fi
+        # Update existing team-lead member status instead of adding duplicate
+        local tmp_file=$(mktemp)
+        if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
+           "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        fi
+    else
+        # Generate UUID for non-team-lead agents
+        agent_id=$(generate_uuid)
+        lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        # Add to team config (include model for resume capability)
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+            echo -e "${RED}Failed to add member to team config${NC}" >&2
+            return 1
+        fi
     fi
 
-    # Get team-lead ID and agent color for InboxPoller activation
-    local config_file="${TEAMS_DIR}/${team_name}/config.json"
-    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    # Get agent color for InboxPoller activation
     local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
@@ -318,6 +417,53 @@ spawn_teammate_kitty() {
     # Get kitty socket for passing to teammate
     local kitty_socket=$(find_kitty_socket)
 
+    # Build custom environment variable arguments for kitty launch
+    local custom_env_args=()
+    for env_var in "${custom_env_vars[@]}"; do
+        if [[ "$env_var" =~ ^[A-Za-z_][A-Za-z0-9_]*=.* ]]; then
+            custom_env_args+=("--env" "$env_var")
+        fi
+    done
+
+    # Build Claude Code permission arguments
+    local claude_args=("--model" "$model")
+
+    # Add permission mode flags
+    if [[ -n "$permission_mode" ]]; then
+        case "$permission_mode" in
+            skip|dangerously-skip-permissions)
+                claude_args+=("--dangerously-skip-permissions")
+                ;;
+            ask|ask-always)
+                # Default behavior, no flag needed
+                ;;
+            *)
+                echo -e "${YELLOW}Warning: Unknown permission mode '${permission_mode}', using default${NC}" >&2
+                ;;
+        esac
+    else
+        # Default to skip permissions for swarm teammates
+        claude_args+=("--dangerously-skip-permissions")
+    fi
+
+    # Add plan mode flag (uses permission-mode plan)
+    if [[ "$plan_mode" == "true" || "$plan_mode" == "enable" ]]; then
+        claude_args+=("--permission-mode" "plan")
+    fi
+
+    # Add allowed tools
+    if [[ -n "$allowed_tools" ]]; then
+        claude_args+=("--allowed-tools" "$allowed_tools")
+    fi
+
+    # Add plugin directory
+    if [[ -n "$plugin_dir" ]]; then
+        claude_args+=("--plugin-dir" "$plugin_dir")
+    fi
+
+    # Add system prompt
+    claude_args+=("--append-system-prompt" "$SWARM_TEAMMATE_SYSTEM_PROMPT")
+
     # Launch new kitty window/tab with env vars AND user variable for identification
     # --var sets a persistent user variable that survives title changes
     # Pass initial_prompt as CLI argument - more reliable than send-text
@@ -336,8 +482,8 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
-        claude --model "$model" --dangerously-skip-permissions \
-        --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
+        "${custom_env_args[@]}" \
+        claude "${claude_args[@]}" -- "$initial_prompt"
 
     # Wait for Claude Code to be ready, then register
     if wait_for_claude_ready "$swarm_var" 10; then
