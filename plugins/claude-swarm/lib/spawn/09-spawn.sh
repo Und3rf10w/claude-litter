@@ -182,18 +182,36 @@ spawn_teammate_tmux() {
         return 1
     fi
 
-    # Generate UUID for agent
-    local agent_id=$(generate_uuid)
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local agent_id
+    local lead_id
 
-    # Add to team config (include model for resume capability)
-    if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        echo -e "${RED}Failed to add member to team config${NC}" >&2
-        return 1
+    # If spawning team-lead, use existing leadAgentId from config (created by create_team)
+    if [[ "$agent_name" == "team-lead" ]]; then
+        agent_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        lead_id="$agent_id"
+        if [[ -z "$agent_id" ]]; then
+            echo -e "${RED}No leadAgentId found in team config${NC}" >&2
+            return 1
+        fi
+        # Update existing team-lead member status instead of adding duplicate
+        local tmp_file=$(mktemp)
+        if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
+           "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        fi
+    else
+        # Generate UUID for non-team-lead agents
+        agent_id=$(generate_uuid)
+        lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        # Add to team config (include model for resume capability)
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+            echo -e "${RED}Failed to add member to team config${NC}" >&2
+            return 1
+        fi
     fi
 
-    # Get team-lead ID and agent color for InboxPoller activation
-    local config_file="${TEAMS_DIR}/${team_name}/config.json"
-    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    # Get agent color for InboxPoller activation
     local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
@@ -331,18 +349,36 @@ spawn_teammate_kitty() {
         return 1
     fi
 
-    # Generate UUID for agent
-    local agent_id=$(generate_uuid)
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local agent_id
+    local lead_id
 
-    # Add to team config (include model for resume capability)
-    if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
-        echo -e "${RED}Failed to add member to team config${NC}" >&2
-        return 1
+    # If spawning team-lead, use existing leadAgentId from config (created by create_team)
+    if [[ "$agent_name" == "team-lead" ]]; then
+        agent_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        lead_id="$agent_id"
+        if [[ -z "$agent_id" ]]; then
+            echo -e "${RED}No leadAgentId found in team config${NC}" >&2
+            return 1
+        fi
+        # Update existing team-lead member status instead of adding duplicate
+        local tmp_file=$(mktemp)
+        if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
+           "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        fi
+    else
+        # Generate UUID for non-team-lead agents
+        agent_id=$(generate_uuid)
+        lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+        # Add to team config (include model for resume capability)
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+            echo -e "${RED}Failed to add member to team config${NC}" >&2
+            return 1
+        fi
     fi
 
-    # Get team-lead ID and agent color for InboxPoller activation
-    local config_file="${TEAMS_DIR}/${team_name}/config.json"
-    local lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
+    # Get agent color for InboxPoller activation
     local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
