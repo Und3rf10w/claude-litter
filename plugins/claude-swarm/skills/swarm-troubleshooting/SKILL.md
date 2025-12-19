@@ -1760,8 +1760,9 @@ User-configurable:
 
 ## Related Skills
 
-- **swarm-coordination** - Team lead orchestration, setting up teams, spawning teammates
-- **swarm-teammate** - Guidance for teammates working within a swarm
+- **swarm-orchestration** - User/orchestrator workflow for creating teams and delegating
+- **swarm-team-lead** - Guidance for spawned team-leads on coordination
+- **swarm-teammate** - Guidance for workers within a swarm
 
 ## Reference Documentation
 
