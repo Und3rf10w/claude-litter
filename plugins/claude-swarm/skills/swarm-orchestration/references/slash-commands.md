@@ -2,6 +2,18 @@
 
 Comprehensive reference for all slash commands used in swarm orchestration. Always prefer slash commands over bash functions for better reliability and error handling.
 
+## Who Runs These Commands?
+
+Commands can be run by either the **orchestrator** (user) or the **team-lead** depending on the orchestration mode:
+
+| Role | Delegation Mode (Default) | Direct Mode (`--no-lead`) |
+|------|---------------------------|---------------------------|
+| **User/Orchestrator** | `swarm-create`, `task-create` (high-level), `swarm-status`, `swarm-inbox`, `swarm-message` (to team-lead), `swarm-cleanup` | All commands |
+| **Team-lead** | `swarm-spawn`, `swarm-verify`, `task-create` (detailed), `task-update`, `swarm-message` (to workers), `swarm-broadcast`, `swarm-send-text` | N/A (user is team-lead) |
+| **Workers** | `swarm-inbox`, `swarm-message`, `task-update` (own tasks), `task-list` | Same |
+
+**Note:** In delegation mode, team-lead handles most coordination commands. In direct mode, the user handles everything.
+
 ## Team Management Commands
 
 ### `/claude-swarm:swarm-create`
@@ -11,24 +23,32 @@ Create a new swarm team.
 **Syntax:**
 
 ```bash
-/claude-swarm:swarm-create "<team-name>" "[description]"
+/claude-swarm:swarm-create "<team-name>" "[description]" [--no-lead] [--lead-model <model>]
 ```
 
 **Parameters:**
 
-| Parameter     | Required | Description                                     |
-| ------------- | -------- | ----------------------------------------------- |
-| `team-name`   | Yes      | Unique team identifier (kebab-case recommended) |
-| `description` | No       | Human-readable team description                 |
+| Parameter       | Required | Description                                       |
+| --------------- | -------- | ------------------------------------------------- |
+| `team-name`     | Yes      | Unique team identifier (kebab-case recommended)   |
+| `description`   | No       | Human-readable team description                   |
+| `--no-lead`     | No       | Skip auto-spawning team-lead window               |
+| `--lead-model`  | No       | Model for team-lead (haiku/sonnet/opus, default: sonnet) |
 
 **Examples:**
 
 ```bash
-# Minimal
+# Create team with auto-spawned team-lead (default)
 /claude-swarm:swarm-create "auth-feature"
 
 # With description
 /claude-swarm:swarm-create "payment-system" "Implementing Stripe payment processing"
+
+# With opus model for team-lead
+/claude-swarm:swarm-create "complex-feature" "Complex work" --lead-model opus
+
+# Without auto-spawning team-lead
+/claude-swarm:swarm-create "remote-team" "Remote setup" --no-lead
 ```
 
 **What It Does:**
@@ -37,6 +57,7 @@ Create a new swarm team.
 - Initializes config.json with team metadata
 - Creates task directory: `~/.claude/tasks/<team-name>/`
 - Sets up inbox system
+- Auto-spawns team-lead window (unless `--no-lead` specified)
 - Designates you as team-lead
 
 **Notes:**
@@ -180,17 +201,18 @@ Spawn a new teammate in the team.
 **Syntax:**
 
 ```bash
-/claude-swarm:swarm-spawn "<agent-name>" "[agent-type]" "[model]" "[initial-prompt]"
+/claude-swarm:swarm-spawn "<agent-name>" "[agent-type]" "[model]" "[initial-prompt]" [KEY=VALUE...]
 ```
 
 **Parameters:**
 
-| Parameter        | Required | Default  | Description                       |
-| ---------------- | -------- | -------- | --------------------------------- |
-| `agent-name`     | Yes      | -        | Unique name for this teammate     |
-| `agent-type`     | No       | `worker` | Role type (see table below)       |
-| `model`          | No       | `sonnet` | Claude model to use               |
-| `initial-prompt` | No       | Generic  | Initial instructions for teammate |
+| Parameter        | Required | Default  | Description                           |
+| ---------------- | -------- | -------- | ------------------------------------- |
+| `agent-name`     | Yes      | -        | Unique name for this teammate         |
+| `agent-type`     | No       | `worker` | Role type (see table below)           |
+| `model`          | No       | `sonnet` | Claude model to use                   |
+| `initial-prompt` | No       | Generic  | Initial instructions for teammate     |
+| `KEY=VALUE`      | No       | -        | Custom environment variables to set   |
 
 **Agent Types:**
 
@@ -222,7 +244,20 @@ Spawn a new teammate in the team.
 
 # Full specification with prompt
 /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "You are the backend developer. Work on Task #2: Implement Stripe integration. Check task list for details. Message team-lead when complete."
+
+# With custom environment variables
+/claude-swarm:swarm-spawn "tester" "tester" "sonnet" "Run integration tests" ENVIRONMENT=staging DEBUG=true
+
+# With API configuration
+/claude-swarm:swarm-spawn "integrations" "backend-developer" "opus" "Build integrations" API_ENDPOINT=https://api.staging.example.com
 ```
+
+**Custom Environment Variables:**
+
+- Pass `KEY=VALUE` arguments after the initial prompt
+- Variables are exported in the teammate's session
+- Available to bash commands and scripts
+- **Security note:** For sensitive credentials, use `.env` files instead (command-line args visible in process listings)
 
 **Initial Prompt Best Practices:**
 
@@ -366,6 +401,106 @@ Check your inbox frequently! Teammates message you with:
 
 ---
 
+### `/claude-swarm:swarm-broadcast`
+
+Broadcast a message to all teammates simultaneously.
+
+**Syntax:**
+
+```bash
+/claude-swarm:swarm-broadcast "<message>" [--exclude <agent-name>]
+```
+
+**Parameters:**
+
+| Parameter   | Required | Description                                           |
+| ----------- | -------- | ----------------------------------------------------- |
+| `message`   | Yes      | Message to broadcast to all teammates                 |
+| `--exclude` | No       | Exclude a specific teammate (defaults to sender)      |
+
+**Examples:**
+
+```bash
+# Broadcast to all teammates
+/claude-swarm:swarm-broadcast "Database migration required - pull latest and run migrations"
+
+# Exclude a specific teammate
+/claude-swarm:swarm-broadcast "UI redesign approved" --exclude frontend-dev
+```
+
+**How It Works:**
+
+- Sends message to all team members' inboxes
+- By default excludes the sender
+- Recipients see message on next `/swarm-inbox` or session start
+
+**Use Cases:**
+
+- Team-wide announcements
+- Breaking changes
+- Coordination checkpoints
+- Critical updates
+
+**Best Practices:**
+
+- Use sparingly (goes to everyone)
+- Include context and action items
+- For routine updates, message specific teammates instead
+
+---
+
+### `/claude-swarm:swarm-send-text`
+
+Send text directly to a teammate's terminal.
+
+**Syntax:**
+
+```bash
+/claude-swarm:swarm-send-text "<target>" "<text>"
+```
+
+**Parameters:**
+
+| Parameter | Required | Description                                      |
+| --------- | -------- | ------------------------------------------------ |
+| `target`  | Yes      | Teammate name or "all" for all active teammates  |
+| `text`    | Yes      | Text to send (use `\r` for Enter key)            |
+
+**Examples:**
+
+```bash
+# Trigger inbox check for a teammate
+/claude-swarm:swarm-send-text backend-dev "/swarm-inbox"
+
+# Send to all teammates with Enter key
+/claude-swarm:swarm-send-text all "/swarm-inbox\r"
+
+# Trigger a command
+/claude-swarm:swarm-send-text frontend-dev "echo 'Starting work'\r"
+```
+
+**How It Works:**
+
+- Text appears in teammate's terminal as if they typed it
+- Works with both kitty and tmux
+- Only sends to active teammates
+- Automatically skips sending to self
+- Use `\r` at end to simulate pressing Enter
+
+**Use Cases:**
+
+- Trigger inbox checks after sending messages
+- Send coordination commands
+- Provide input to waiting terminals
+
+**Important Notes:**
+
+- Text is sent directly to terminal - use with care
+- Inactive teammates won't receive the text
+- For persistent communication, use `/swarm-message` instead
+
+---
+
 ## Task Management Commands
 
 ### `/claude-swarm:task-create`
@@ -480,15 +615,40 @@ Update task properties (status, assignment, comments, dependencies).
 
 ### `/claude-swarm:task-list`
 
-List all tasks for the current team.
+List all tasks for the current team with optional filtering.
 
 **Syntax:**
 
 ```bash
-/claude-swarm:task-list
+/claude-swarm:task-list [--status <status>] [--owner <name>] [--blocked]
 ```
 
-**No parameters required** (uses `$CLAUDE_CODE_TEAM_NAME` environment variable).
+**Parameters:**
+
+| Parameter   | Required | Description                                                    |
+| ----------- | -------- | -------------------------------------------------------------- |
+| `--status`  | No       | Filter by status: pending, in-progress, blocked, in-review, completed |
+| `--owner`   | No       | Filter by assigned teammate (also accepts `--assignee`)        |
+| `--blocked` | No       | Show only tasks with blocking dependencies                     |
+
+**Examples:**
+
+```bash
+# List all tasks (no filter)
+/claude-swarm:task-list
+
+# Filter by status
+/claude-swarm:task-list --status in-progress
+
+# Filter by owner
+/claude-swarm:task-list --owner backend-dev
+
+# Show only blocked tasks
+/claude-swarm:task-list --blocked
+
+# Combine filters
+/claude-swarm:task-list --status pending --owner frontend-dev
+```
 
 **Output Format:**
 
@@ -515,6 +675,12 @@ Tasks for team 'payment-system':
 - To monitor progress (in-progress)
 - To identify blockers (blocked)
 - Before assigning new work
+
+**Filter Behavior:**
+
+- Filters combine with AND logic
+- Status values must match exactly
+- Owner filter matches agent name
 
 ---
 
@@ -578,6 +744,7 @@ Then call functions directly: `create_team`, `spawn_teammate`, `send_message`, e
 
 # 3. Spawn team
 /claude-swarm:swarm-spawn "<name>" "<type>" "<model>" "<prompt>"
+/claude-swarm:swarm-spawn "<name>" "<type>" "<model>" "<prompt>" KEY=VALUE...  # with env vars
 /claude-swarm:swarm-verify "<team>"
 
 # 4. Assign work
@@ -586,10 +753,13 @@ Then call functions directly: `create_team`, `spawn_teammate`, `send_message`, e
 # 5. Monitor
 /claude-swarm:swarm-status "<team>"
 /claude-swarm:task-list
+/claude-swarm:task-list --status in-progress --owner "<name>"  # with filters
 /claude-swarm:swarm-inbox
 
 # 6. Communicate
 /claude-swarm:swarm-message "<to>" "<message>"
+/claude-swarm:swarm-broadcast "<message>"                       # to all
+/claude-swarm:swarm-send-text "<target>" "<text>"               # to terminal
 
 # 7. Cleanup
 /claude-swarm:swarm-cleanup "<team>"

@@ -65,6 +65,82 @@ grep -E 'allow_remote_control|listen_on' ~/.config/kitty/kitty.conf
 
 **Quick diagnostic rule**: Always start with `/claude-swarm:swarm-diagnose <team>` - it runs all health checks and points you to the specific issue.
 
+## Troubleshooting Delegated Teams
+
+When using delegation mode (default), a spawned team-lead handles coordination. This affects how you troubleshoot.
+
+### Who Diagnoses What?
+
+| Issue Type | Who Should Diagnose | Commands |
+|------------|---------------------|----------|
+| Team-lead unresponsive | You (orchestrator) | `/swarm-diagnose`, `/swarm-status` |
+| Worker issues | Team-lead (first), then you | Ask team-lead to run `/swarm-diagnose` |
+| Communication failures | Team-lead (first) | Ask team-lead to check and report |
+| Task management issues | Team-lead | Team-lead manages tasks |
+
+### Diagnosing When Team-Lead Is Active
+
+If team-lead is working, ask them to diagnose:
+
+```bash
+/claude-swarm:swarm-message team-lead "Please run /swarm-diagnose and report any issues"
+
+# Or be more specific:
+/claude-swarm:swarm-message team-lead "Worker backend-dev seems stuck. Can you verify they're alive and check their status?"
+```
+
+**Why delegate diagnosis?** Team-lead has full context of the team state and can both diagnose and fix issues directly.
+
+### Diagnosing When Team-Lead Is Unresponsive
+
+If team-lead isn't responding, diagnose directly:
+
+```bash
+# 1. Check team status
+/claude-swarm:swarm-status my-team
+
+# 2. Is team-lead alive?
+# Look for "team-lead" in status output - does window exist?
+
+# 3. Run full diagnostics
+/claude-swarm:swarm-diagnose my-team
+
+# 4. If team-lead crashed, respawn them
+/claude-swarm:swarm-reconcile my-team
+/claude-swarm:swarm-spawn "team-lead" "team-lead" "sonnet" "You are the team-lead. Check /swarm-inbox for context. Resume coordination."
+```
+
+### When to Intervene Directly
+
+Intervene yourself when:
+- Team-lead is unresponsive or crashed
+- Multiple workers are down and team-lead isn't handling it
+- Critical issue needs immediate resolution
+- You need to see raw status (not team-lead's summary)
+
+Let team-lead handle when:
+- Individual worker issues (they can respawn)
+- Task reassignment (that's their job)
+- Communication failures between workers
+- Normal operational issues
+
+### Direct Intervention Commands
+
+```bash
+# View raw team state (bypassing team-lead)
+/claude-swarm:swarm-status my-team
+/claude-swarm:task-list
+
+# Diagnose directly
+/claude-swarm:swarm-diagnose my-team
+
+# Message workers directly (if team-lead down)
+/claude-swarm:swarm-message backend-dev "Team-lead is unresponsive. What's your current status?"
+
+# Broadcast to all (emergency)
+/claude-swarm:swarm-broadcast "Team-lead is down. Please pause work and report status."
+```
+
 ## Diagnostic Approach
 
 ### When Things Go Wrong
@@ -1684,8 +1760,9 @@ User-configurable:
 
 ## Related Skills
 
-- **swarm-coordination** - Team lead orchestration, setting up teams, spawning teammates
-- **swarm-teammate** - Guidance for teammates working within a swarm
+- **swarm-orchestration** - User/orchestrator workflow for creating teams and delegating
+- **swarm-team-lead** - Guidance for spawned team-leads on coordination
+- **swarm-teammate** - Guidance for workers within a swarm
 
 ## Reference Documentation
 

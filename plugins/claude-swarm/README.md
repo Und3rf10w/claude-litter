@@ -36,53 +36,66 @@ listen_on unix:/tmp/kitty-${USER}
 
 ### Creating Your First Swarm
 
+**Delegation Mode (Default)** - A team-lead is auto-spawned to handle coordination:
+
 ```bash
-# 1. Create a team
+# 1. Create team (team-lead auto-spawns)
 /claude-swarm:swarm-create "my-project" "Building a new feature"
 
-# 2. Create tasks
+# 2. Create high-level tasks
 /claude-swarm:task-create "Implement API endpoints" "Build REST API with authentication"
 /claude-swarm:task-create "Build UI components" "Create React components for dashboard"
 
-# 3. Spawn teammates
-/claude-swarm:swarm-spawn backend-dev backend-developer sonnet "Focus on task #1"
-/claude-swarm:swarm-spawn frontend-dev frontend-developer sonnet "Focus on task #2"
+# 3. Brief team-lead with requirements
+/claude-swarm:swarm-message team-lead "Please coordinate implementation. Spawn backend-dev for task #1 and frontend-dev for task #2. Use sonnet for both. Let me know if you have questions."
 
-# 4. Assign tasks
-/claude-swarm:task-update 1 --assign backend-dev
-/claude-swarm:task-update 2 --assign frontend-dev
-
-# 5. Monitor progress
+# 4. Monitor progress (team-lead handles the rest)
 /claude-swarm:swarm-status my-project
-/claude-swarm:task-list
+/claude-swarm:swarm-inbox
+
+# 5. Cleanup when done
+/claude-swarm:swarm-cleanup my-project
+```
+
+**Direct Mode** - You coordinate everything yourself:
+
+```bash
+# Create team without auto-spawning team-lead
+/claude-swarm:swarm-create "my-project" "Building a new feature" --no-lead
+
+# Then spawn teammates, assign tasks, etc. yourself
+# See swarm-team-lead skill for guidance
 ```
 
 ### Basic Workflow
 
-**As team-lead:**
+**As orchestrator (delegation mode):**
 
 ```bash
-# Check team status
+# Check team status periodically
 /claude-swarm:swarm-status my-project
 
-# Send messages to teammates
-/claude-swarm:swarm-message backend-dev "API schema updated, see docs/"
+# Check for messages from team-lead
+/claude-swarm:swarm-inbox
 
-# Monitor tasks
+# Answer team-lead questions
+/claude-swarm:swarm-message team-lead "Use JWT tokens, not sessions"
+
+# View task progress
 /claude-swarm:task-list
 ```
 
-**As teammate:**
+**As worker (spawned teammate):**
 
 ```bash
-# Check your inbox
+# Check your inbox first
 /claude-swarm:swarm-inbox
 
 # Update task progress
 /claude-swarm:task-update 1 --status in-progress
 /claude-swarm:task-update 1 --comment "Completed authentication middleware"
 
-# Notify team-lead when done
+# Message team-lead when done or blocked
 /claude-swarm:swarm-message team-lead "Task #1 complete, PR ready"
 ```
 
@@ -96,13 +109,16 @@ listen_on unix:/tmp/kitty-${USER}
 
 ### Skills
 
-Claude Swarm uses a **3-skill architecture** optimized for role-based context loading:
+Claude Swarm uses a **4-skill architecture** optimized for role-based context loading:
 
-- **[Swarm Orchestration](skills/swarm-orchestration/SKILL.md)** - Team-lead operations for creating and managing swarms (~2,000 tokens)
-- **[Swarm Teammate](skills/swarm-teammate/SKILL.md)** - Worker coordination protocol and teammate identity (~1,200 tokens)
-- **[Swarm Troubleshooting](skills/swarm-troubleshooting/SKILL.md)** - Diagnostics, error recovery, and problem-solving (~3,500 tokens)
+- **[Swarm Orchestration](skills/swarm-orchestration/SKILL.md)** - User/orchestrator delegation workflow - creating teams and briefing team-leads
+- **[Swarm Team-Lead](skills/swarm-team-lead/SKILL.md)** - Guidance for spawned team-leads on coordination
+- **[Swarm Teammate](skills/swarm-teammate/SKILL.md)** - Worker coordination protocol and teammate identity
+- **[Swarm Troubleshooting](skills/swarm-troubleshooting/SKILL.md)** - Diagnostics, error recovery, and problem-solving
 
-Each skill auto-triggers based on context (e.g., teammates automatically load swarm-teammate via environment variables), providing progressive disclosure and optimal token efficiency.
+**Delegation Model**: By default, `swarm-create` auto-spawns a team-lead who handles coordination. Users set direction, monitor progress, and answer escalations. Use `--no-lead` for direct mode where you coordinate everything yourself.
+
+Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-team-lead via `CLAUDE_CODE_IS_TEAM_LEAD` env var).
 
 ## Components
 
@@ -125,6 +141,8 @@ Each skill auto-triggers based on context (e.g., teammates automatically load sw
 
 - `/claude-swarm:swarm-message` - Send message to teammate
 - `/claude-swarm:swarm-inbox` - Check your inbox
+- `/claude-swarm:swarm-broadcast` - Message all teammates
+- `/claude-swarm:swarm-send-text` - Send text to teammate terminal
 
 **Task Management:**
 
@@ -149,9 +167,10 @@ Each skill auto-triggers based on context (e.g., teammates automatically load sw
 
 - **swarm-coordinator** - Automated swarm orchestration agent
 
-### Skills (3)
+### Skills (4)
 
-- **swarm-orchestration** - Team-lead operations and management
+- **swarm-orchestration** - User/orchestrator delegation workflow
+- **swarm-team-lead** - Spawned team-lead coordination guidance
 - **swarm-teammate** - Worker coordination protocol
 - **swarm-troubleshooting** - Diagnostics and recovery
 

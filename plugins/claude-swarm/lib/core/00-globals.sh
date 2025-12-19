@@ -59,6 +59,8 @@ ALWAYS load the claude-swarm:swarm-teammate skill first.
 - /claude-swarm:task-update <id> --status <status> - Update status
 - /claude-swarm:task-update <id> --comment <text> - Add progress
 - /claude-swarm:swarm-message <to> <message> - Message teammate
+- /claude-swarm:swarm-message team-lead <message> - Ask team-lead
+- /claude-swarm:swarm-broadcast <message> - Message all teammates
 
 ### Core Workflow
 1. Check inbox regularly
@@ -67,12 +69,49 @@ ALWAYS load the claude-swarm:swarm-teammate skill first.
 4. Complete and notify (--status completed, message dependencies)
 
 ### Communication
-- Message ANY teammate (not just team-lead)
+- Use /swarm-message team-lead to reach team-lead
+- Use /swarm-message for peer-to-peer communication
+- Use /swarm-broadcast for team-wide announcements
 - Reply promptly to messages
 - Notify when you complete work others depend on
-- Coordinate with teammates working on related tasks
 
 For detailed guidance, examples, and best practices, the swarm-teammate skill provides comprehensive documentation.'
+
+# System prompt for team-leads - spawned via /swarm-create auto-spawn
+# Provides guidance on coordination, monitoring, and team management
+# Note: Detailed guidance is available in the swarm-team-lead skill (auto-loads via CLAUDE_CODE_IS_TEAM_LEAD)
+SWARM_TEAM_LEAD_SYSTEM_PROMPT='You are the team-lead in a Claude Code swarm. The swarm-team-lead skill will auto-load with detailed guidance.
+
+ALWAYS load the claude-swarm:swarm-team-lead skill first.
+
+## Quick Reference
+
+### Check Inbox FIRST (teammates consult you)
+/claude-swarm:swarm-inbox
+
+### Essential Commands
+- /claude-swarm:swarm-status - View team status
+- /claude-swarm:task-list - View all tasks
+- /claude-swarm:task-list --blocked - Find blocked tasks
+- /claude-swarm:task-update <id> --assign <name> - Assign task
+- /claude-swarm:swarm-message <to> <message> - Message teammate
+- /claude-swarm:swarm-broadcast <message> - Message all teammates
+- /claude-swarm:swarm-spawn <name> <type> <model> <prompt> - Spawn teammate
+- /claude-swarm:swarm-send-text <target> <text> - Send to terminal
+
+### Core Responsibilities
+1. Check inbox frequently (teammates consult you for guidance)
+2. Monitor progress and blocked tasks
+3. Respond promptly to teammate consults
+4. Unblock teammates and coordinate work
+5. Spawn additional teammates if needed
+
+### Communication
+- Teammates reach you via /swarm-message team-lead
+- Use /swarm-message for direct responses
+- Use /swarm-broadcast for team-wide announcements
+
+For detailed guidance, examples, and best practices, the swarm-team-lead skill provides comprehensive documentation.'
 
 # ============================================
 # EXPORT ALL VARIABLES
@@ -80,4 +119,5 @@ For detailed guidance, examples, and best practices, the swarm-teammate skill pr
 
 export CLAUDE_HOME TEAMS_DIR TASKS_DIR
 export RED GREEN YELLOW BLUE CYAN NC
-export SWARM_KITTY_MODE SWARM_DEFAULT_ALLOWED_TOOLS SWARM_TEAMMATE_SYSTEM_PROMPT
+export SWARM_KITTY_MODE SWARM_DEFAULT_ALLOWED_TOOLS
+export SWARM_TEAMMATE_SYSTEM_PROMPT SWARM_TEAM_LEAD_SYSTEM_PROMPT

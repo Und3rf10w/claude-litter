@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.6.2 → v1.7.0)
+│   └── claude-swarm/          # Main swarm plugin (v1.8.0)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17+ slash commands (.md files)
@@ -30,7 +30,8 @@ claude-litter/
 │       │   ├── tasks/         # 08-tasks
 │       │   └── spawn/         # 09-spawn, 11-cleanup, 12-kitty-session, 13-diagnostics
 │       ├── skills/
-│       │   ├── swarm-orchestration/    # Team-lead operations
+│       │   ├── swarm-orchestration/    # User/orchestrator delegation workflow
+│       │   ├── swarm-team-lead/        # Spawned team-lead coordination
 │       │   ├── swarm-teammate/         # Worker coordination
 │       │   └── swarm-troubleshooting/  # Diagnostics & recovery
 │       └── docs/
@@ -120,25 +121,42 @@ User-configurable:
 
 ### Skills Architecture
 
-The plugin uses a **3-skill architecture** optimized for role-based context loading:
+The plugin uses a **4-skill architecture** optimized for role-based context loading:
 
-#### 1. swarm-orchestration (~3,000 words, ~2,000 tokens)
+#### 1. swarm-orchestration
 
-**Purpose**: Team-lead operations for creating and managing swarms
+**Purpose**: User/orchestrator workflow for creating and delegating to teams
 **Auto-triggers on**: "set up team", "create swarm", "spawn teammates", "assign tasks", "coordinate agents", "swarm this task"
 **Covers**:
 
-- Analyzing tasks for swarm suitability
-- Creating teams and spawning teammates
-- Assigning tasks and monitoring progress
-- Normal workflow orchestration
-- Communication patterns
-- Slash command reference (via references/)
+- Delegation mode vs direct mode
+- Creating teams (auto-spawns team-lead by default)
+- Briefing team-lead with requirements
+- Monitoring progress and responding to escalations
+- High-level task creation
+- Slash command reference for orchestrators
 
-#### 2. swarm-teammate (~2,000 words, ~1,200 tokens)
+**Key concept**: By default, users DELEGATE to a spawned team-lead who handles coordination. Users set direction, monitor, and answer escalations.
 
-**Purpose**: Worker coordination protocol and teammate identity
-**Auto-triggers via**: `CLAUDE_CODE_TEAM_NAME` environment variable (spawned teammates)
+#### 2. swarm-team-lead
+
+**Purpose**: Guidance for spawned team-leads on coordination
+**Auto-triggers via**: `CLAUDE_CODE_IS_TEAM_LEAD=true` environment variable
+**Covers**:
+
+- Monitoring teammates and team status
+- Spawning and verifying workers
+- Handling teammate messages and questions
+- Task assignment and dependency management
+- Communication patterns (broadcast, messaging)
+- Unblocking workers
+
+**When used**: Auto-loads for spawned team-leads. Also useful for direct mode (`--no-lead`) where user is team-lead.
+
+#### 3. swarm-teammate
+
+**Purpose**: Worker coordination protocol and identity
+**Auto-triggers via**: `CLAUDE_CODE_TEAM_NAME` environment variable (workers only, not team-lead)
 **Covers**:
 
 - Teammate identity and role awareness
@@ -147,88 +165,54 @@ The plugin uses a **3-skill architecture** optimized for role-based context load
 - Coordination with team-lead and peers
 - Working within swarm context
 
-#### 3. swarm-troubleshooting (~5,500 words, ~3,500 tokens)
+#### 4. swarm-troubleshooting
 
 **Purpose**: Diagnostics, error recovery, and problem-solving
 **Auto-triggers on**: "spawn failed", "diagnose team", "fix swarm", "status mismatch", "recovery", "swarm not working"
 **Covers**:
 
+- Troubleshooting delegated teams (who diagnoses what)
 - Spawn failure diagnosis and recovery
 - Status mismatch reconciliation
 - Multiplexer troubleshooting (kitty/tmux)
 - Socket issues and connectivity problems
-- Detailed error recovery procedures
-- Advanced diagnostics reference (via references/)
 
 #### Design Rationale
 
+**Delegation Model**:
+
+- User creates team → team-lead auto-spawns
+- User briefs team-lead → team-lead coordinates everything
+- User monitors and answers escalations
+- Minimal user involvement in day-to-day coordination
+
 **Token Optimization**:
 
-- **Workers load only swarm-teammate**: Saves ~2,000 tokens per worker (no orchestration content)
-- **Team-lead loads swarm-orchestration**: Gets setup/management guidance without troubleshooting overhead
-- **Troubleshooting loads on-demand**: Heavy diagnostics (~3,500 tokens) only when needed
-
-**Expected Savings**:
-
-- 5-teammate swarm: **13,000 tokens saved** (62% reduction: from 21,000 to 8,000 tokens)
-- Workers: 3,500 → 1,200 tokens (66% reduction)
-- Team-lead: 3,500 → 2,000 tokens (43% reduction)
-- Team-lead with troubleshooting: 3,500 → 5,500 tokens (57% increase, but only when diagnosing issues)
-
-**Progressive Disclosure**:
-Each skill follows the three-tier loading pattern:
-
-1. **SKILL.md** - Core guidance, auto-loaded
-2. **references/** - Detailed reference docs, manually loaded
-3. **examples/** - Practical examples, on-demand
+- **Workers load swarm-teammate**: Only worker-relevant guidance
+- **Team-lead loads swarm-team-lead**: Coordination guidance without orchestration overhead
+- **Orchestrator loads swarm-orchestration**: Delegation workflow, not coordination details
+- **Troubleshooting loads on-demand**: Only when diagnosing issues
 
 #### Triggering Logic
 
-**Explicit trigger phrases** (case-insensitive, partial match):
+**Environment-based auto-trigger**:
+
+- swarm-team-lead: Loads when `CLAUDE_CODE_IS_TEAM_LEAD=true`
+- swarm-teammate: Loads when `CLAUDE_CODE_TEAM_NAME` is set (and not team-lead)
+
+**Explicit trigger phrases**:
 
 - swarm-orchestration: "set up", "create", "spawn", "assign", "coordinate", "swarm"
 - swarm-troubleshooting: "fail", "diagnose", "fix", "mismatch", "recovery", "not working"
 
-**Environment-based auto-trigger**:
+#### System Prompts
 
-- swarm-teammate: Automatically loads when `CLAUDE_CODE_TEAM_NAME` is set (all spawned teammates)
+`lib/core/00-globals.sh` defines system prompts for spawned agents:
 
-**No overlap**: Trigger phrases are mutually exclusive to prevent multi-skill loading
+- `SWARM_TEAMMATE_SYSTEM_PROMPT` - For workers, references swarm-teammate skill
+- `SWARM_TEAM_LEAD_SYSTEM_PROMPT` - For spawned team-leads, references swarm-team-lead skill
 
-#### SWARM_TEAMMATE_SYSTEM_PROMPT Integration
-
-`lib/core/00-globals.sh` defines the system prompt for spawned teammates:
-
-```bash
-SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm..."
-```
-
-**Integration requirement**: After skills are created, update this prompt to reference swarm-teammate skill by name, ensuring teammates load appropriate guidance automatically.
-
-**Example integration**:
-
-```bash
-SWARM_TEAMMATE_SYSTEM_PROMPT="You are a teammate in a Claude Code swarm. Follow the swarm-teammate skill guidelines..."
-```
-
-#### Cross-References
-
-Skills reference each other when appropriate:
-
-- **swarm-orchestration → swarm-troubleshooting**: "If spawn fails, see swarm-troubleshooting skill"
-- **swarm-teammate → swarm-orchestration**: "For team setup questions, ask team-lead or see swarm-orchestration"
-- **swarm-troubleshooting → swarm-orchestration**: "After recovery, return to swarm-orchestration for normal operations"
-
-#### Validation Criteria
-
-When testing the implementation, verify:
-
-1. **Triggering**: Each skill loads with appropriate phrases, no unwanted multi-loading
-2. **Content**: No unnecessary duplication (only essential overlaps like slash command lists)
-3. **Token counts**: Verify actual token usage matches estimates (±10%)
-4. **Environment integration**: `CLAUDE_CODE_TEAM_NAME` triggers swarm-teammate automatically
-5. **References**: Progressive disclosure works (references/ loads only when requested)
-6. **Cross-references**: Skills reference each other appropriately without creating dependency cycles
+Both prompts instruct the agent to load the appropriate skill first.
 
 ## Key Implementation Patterns
 
@@ -402,113 +386,3 @@ list_teams
 # Get team status (verbose)
 swarm_status "team-name"
 ```
-
-## Version 1.7.0 Enhancements
-
-**Status**: ✅ ALL FEATURES COMPLETE AND DOCUMENTED
-
-The following enhancements have been implemented for v1.7.0:
-
-### New Features
-
-#### 1. Broadcast Command (Task #1) - ✅ COMPLETED
-
-- **Purpose**: Send messages to all team members simultaneously
-- **Command**: `/claude-swarm:swarm-broadcast <message> [--exclude <agent>]`
-- **Implementation**: New command wrapping `broadcast_message()` function
-- **Files involved**: `commands/swarm-broadcast.md`, `lib/communication/`
-- **Documentation**: Updated SKILL.md with examples and use cases
-
-#### 2. Send-Text Command (Task #2) - ✅ COMPLETED
-
-- **Purpose**: Send text directly to teammate terminals (terminal input)
-- **Command**: `/claude-swarm:swarm-send-text <target> <text>`
-- **Implementation**: New command for kitty/tmux terminal control
-- **Features**: Supports "all" target, terminal escapes like `\r`, multiplexer-aware
-- **Files involved**: `commands/swarm-send-text.md`, `lib/communication/`
-- **Documentation**: Updated SKILL.md with terminal control examples
-
-#### 3. Task List Filtering (Task #3) - ✅ COMPLETED
-
-- **Purpose**: Filter tasks by status, assignee, blocker status
-- **Enhancement**: `task-list` command with filter parameters
-- **Flags**: `--status`, `--owner`/`--assignee`, `--blocked`
-- **Implementation**: Enhanced `list_tasks()` function with jq filtering
-- **Files involved**: `commands/task-list.md`, `lib/tasks/08-tasks.sh`
-- **Documentation**: Updated SKILL.md with filter examples
-
-#### 4. Custom Environment Variables (Task #4) - ✅ COMPLETED
-
-- **Purpose**: Pass custom env vars to spawned teammates
-- **Enhancement**: `swarm-spawn` accepts `KEY=VALUE` arguments after prompt
-- **Syntax**: `/claude-swarm:swarm-spawn name type model "prompt" VAR1=value1 VAR2=value2`
-- **Implementation**: Safely escaped export in tmux/kitty spawn functions
-- **Files involved**: `lib/spawn/09-spawn.sh`, `lib/spawn/10-spawn-tmux.sh`
-- **Documentation**: Updated SKILL.md with security notes and examples
-
-#### 5. Permission Mode Control (Task #5) - ✅ COMPLETED
-
-- **Purpose**: Control Claude Code capabilities teammates can access
-- **Modes**: `ask/skip` for permission_mode, `true/false` for plan_mode
-- **Tools**: Pattern-based tool restriction (regex-compatible)
-- **Implementation**: Added permission parameters to spawn functions
-- **Files involved**: `lib/spawn/09-spawn.sh`, `lib/core/00-globals.sh`
-- **Documentation**: Updated SKILL.md with security benefits
-
-#### 6. Generalize Send-Text Function (Task #6) - ✅ COMPLETED
-
-- **Purpose**: Refactor send-text for reuse across commands
-- **Implementation**: Created `send_text_to_teammate()` function in `lib/communication/`
-- **Features**: Accepts arbitrary text for both kitty and tmux, exported for reuse
-- **Refactoring**: `notify_active_teammate()` now uses generalized function
-- **Files involved**: `lib/communication/`
-- **Documentation**: Internal library refactoring (no user-facing docs needed)
-
-#### 7. Team-Lead Auto-Spawn on Team Creation (Task #7) - ✅ COMPLETED
-
-- **Purpose**: Automatically spawn team-lead window when creating team
-- **Command**: `/claude-swarm:swarm-create <team> [desc] [--no-lead] [--lead-model <model>]`
-- **Features**: Auto-spawns team-lead by default, optional flags to disable or set model
-- **Implementation**: Added to `commands/swarm-create.md`, integrated with spawn logic
-- **Files involved**: `commands/swarm-create.md`, `lib/spawn/`
-- **Documentation**: Updated SKILL.md with usage, benefits, and examples
-
-#### 8. Consult Command (Task #8) - ✅ COMPLETED
-
-- **Purpose**: Teammates ask team-lead with immediate notification
-- **Command**: `/claude-swarm:swarm-consult <message>`
-- **Implementation**: Sends message to team-lead inbox + triggers inbox check if online
-- **Features**: Prevents self-consultation, works with kitty/tmux, graceful offline fallback
-- **Files involved**: `commands/swarm-consult.md`, uses existing `send_message()` and `send_text_to_teammate()`
-- **Documentation**: Updated SKILL.md with examples and use cases
-
-### Architecture Changes
-
-_(Pending - to be documented after implementation)_
-
-### Library Extensions
-
-_(Pending - to be documented after implementation)_
-
-### Command Additions
-
-Expected new commands (may vary based on implementation):
-
-- `/claude-swarm:swarm-broadcast <message>`
-- `/claude-swarm:swarm-send-text <to> <content>`
-- `/claude-swarm:swarm-consult <query>`
-
-Expected command enhancements:
-
-- `/claude-swarm:task-list [--status=STATUS] [--assignee=NAME] [--blocked-by=ID]`
-- `/claude-swarm:swarm-spawn [--env KEY=VALUE] [--permissions=LEVEL]`
-- `/claude-swarm:swarm-create` (auto-spawns team-lead)
-
-### Documentation Updates
-
-- `plugins/claude-swarm/skills/swarm-orchestration/SKILL.md` - Updated with new features
-- `CLAUDE.md` - Updated with architecture changes (this file)
-- Command files - New command documentation
-- References - Detailed feature documentation
-
-_(Full details pending - see DOCUMENTATION_DRAFT.md)_

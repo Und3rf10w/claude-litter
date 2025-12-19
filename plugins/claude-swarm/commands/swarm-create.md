@@ -70,8 +70,8 @@ if [[ "$NO_LEAD" != "true" ]]; then
     echo ""
     echo "Spawning team-lead window..."
 
-    # Spawn team-lead with appropriate prompt
-    LEAD_PROMPT="You are the team-lead for '${TEAM_NAME}'. Use /task-list to view tasks, /swarm-spawn to spawn teammates, /swarm-status to check team status, and /swarm-message to communicate with teammates."
+    # Use the team-lead system prompt from globals (includes skill loading instruction)
+    LEAD_PROMPT="${SWARM_TEAM_LEAD_SYSTEM_PROMPT}"
 
     # Spawn team-lead with CLAUDE_CODE_IS_TEAM_LEAD environment variable and plugin directory
     if spawn_teammate "$TEAM_NAME" "team-lead" "team-lead" "$LEAD_MODEL" "$LEAD_PROMPT" "" "" "" "$CLAUDE_PLUGIN_ROOT" "CLAUDE_CODE_IS_TEAM_LEAD=true"; then
