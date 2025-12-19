@@ -1,5 +1,23 @@
 # Communication Patterns for Swarm Teammates
 
+## Choosing the Right Communication Method
+
+Use this decision tree to pick the best command:
+
+| Situation | Command | Why |
+|-----------|---------|-----|
+| Question for team-lead | `/swarm-message team-lead` | Reaches team-lead directly |
+| Blocker you can't resolve | `/swarm-message team-lead` | Team-lead can coordinate resolution |
+| Message to specific peer | `/swarm-message <peer>` | Direct peer-to-peer communication |
+| Notify someone their task completed | `/swarm-message <peer>` | Specific, targeted notification |
+| Team-wide announcement | `/swarm-broadcast` | Reaches everyone simultaneously |
+| Completing work that unblocks many | `/swarm-broadcast` | Multiple people need to know |
+
+**Quick rule:**
+- **Team-lead questions/blockers** → `/swarm-message team-lead`
+- **Peer communication** → `/swarm-message <peer>`
+- **Everyone needs to know** → `/swarm-broadcast`
+
 ## Message Types
 
 ### 1. Status Updates
@@ -36,15 +54,23 @@
 
 **When to use:** When you're blocked and need help or information.
 
-**Template:**
+**For team-lead help** (questions, escalations, coordination):
+```bash
+/claude-swarm:swarm-message team-lead "Blocked on task #<id>. Need: <what-you-need>. Can you help coordinate?"
+```
+
+**For specific peer** (you know who has what you need):
 ```bash
 /claude-swarm:swarm-message <blocking-teammate> "I'm blocked on task #<id>. Need: <what-you-need>. ETA?"
 ```
 
 **Examples:**
 ```bash
+# Message team-lead for coordination help
+/claude-swarm:swarm-message team-lead "Blocked on task #3. Waiting for design approval from external team - can you follow up?"
+
+# Message peer directly
 /claude-swarm:swarm-message backend-dev "I'm blocked on task #12. Need database migration script. ETA?"
-/claude-swarm:swarm-message team-lead "I'm blocked on task #3. Waiting for design approval from external team"
 ```
 
 ### 4. Coordination Requests
@@ -155,7 +181,9 @@
 4. **Deadline concerns** - Won't complete on time
 5. **Technical decisions** - Need architectural guidance
 
-### Escalation Template
+### Escalation Format
+
+When escalating to team-lead, include context:
 
 ```bash
 /claude-swarm:swarm-message team-lead "Escalation: <issue-summary>. Tried: <what-you-tried>. Impact: <who/what-affected>. Need: <decision/help-needed>"
@@ -166,6 +194,11 @@
 ```bash
 /claude-swarm:swarm-message team-lead "Escalation: API design conflict between tasks #5 and #8. Tried: coordinating with backend-dev, but approaches are incompatible. Impact: blocks both tasks, affects 3 dependent tasks. Need: architectural decision on REST vs GraphQL"
 ```
+
+**Tips for escalations:**
+- Be specific about what you tried
+- Explain the impact clearly
+- State what decision you need
 
 ## Response Time Expectations
 

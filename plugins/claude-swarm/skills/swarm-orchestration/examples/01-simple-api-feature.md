@@ -1,42 +1,22 @@
-# Example 1: Simple API Feature
+# Example 1: Simple API Feature (Delegated)
 
 **Complexity:** ⭐ Simple
-**Team Size:** 2 teammates
-**Duration:** ~30-60 minutes
+**Your Actions:** 5 steps
+**Team Size:** 2 workers (spawned by team-lead)
 **Prerequisites:** Express.js backend, existing API structure
 
 ## Scenario
 
-You need to add a new REST API endpoint to fetch user profile data. The endpoint should:
+You need to add a new REST API endpoint to fetch user profile data:
 
-- Accept GET requests at `/api/users/:id/profile`
+- GET `/api/users/:id/profile`
 - Return user profile with name, email, bio, avatar
 - Include error handling for missing users
 - Have unit tests with 80%+ coverage
 
-## Analysis
+## Your Workflow (Delegation Mode)
 
-This is a simple feature that divides cleanly:
-
-**Task Breakdown:**
-
-1. **Implement Profile Endpoint** (backend-developer)
-   - Dependencies: None
-   - Deliverables: Route handler, controller, validation
-   - Files: `routes/users.js`, `controllers/userController.js`
-
-2. **Write Tests** (tester)
-   - Dependencies: Task 1
-   - Deliverables: Unit tests, integration tests
-   - Files: `tests/userProfile.test.js`
-
-**Team:**
-- backend-dev (backend-developer, sonnet)
-- qa-engineer (tester, haiku) - simple tests don't need opus
-
-## Complete Workflow
-
-### 1. Create Team
+### Step 1: Create Team
 
 ```bash
 /claude-swarm:swarm-create "profile-api" "Add user profile endpoint"
@@ -45,407 +25,183 @@ This is a simple feature that divides cleanly:
 **Output:**
 ```
 Created team 'profile-api'
-  Config: ~/.claude/teams/profile-api/config.json
-  Tasks: ~/.claude/tasks/profile-api/
+Spawning team-lead window...
+Team-lead spawned successfully
 ```
 
-### 2. Create Tasks
+Team-lead now has a window open with coordination guidance.
+
+### Step 2: Brief Team-Lead
 
 ```bash
-/claude-swarm:task-create "Implement profile endpoint" "Add GET /api/users/:id/profile endpoint. Return user profile data (name, email, bio, avatar). Include 404 handling for missing users. Validate ID parameter. Add to routes/users.js and controllers/userController.js"
+/claude-swarm:swarm-message team-lead "Add GET /api/users/:id/profile endpoint.
 
-/claude-swarm:task-create "Write profile endpoint tests" "Write unit and integration tests for /api/users/:id/profile endpoint. Test success case, 404 case, invalid ID. Aim for 80%+ coverage. Use Jest. Add to tests/userProfile.test.js"
+Requirements:
+- Return user profile data (name, email, bio, avatar)
+- 404 handling for missing users
+- Unit tests with 80%+ coverage
+
+Files:
+- Route: routes/users.js
+- Controller: controllers/userController.js
+- Tests: tests/userProfile.test.js
+
+Suggested team:
+- backend-dev (sonnet) for implementation
+- qa-engineer (haiku) for tests
+
+Proceed when ready."
 ```
 
-**Output:**
-```
-Created task #1: Implement profile endpoint
-1
-Created task #2: Write profile endpoint tests
-2
-```
+### Step 3: Monitor Progress
 
-### 3. Set Dependency
-
-```bash
-/claude-swarm:task-update 2 --blocked-by 1
-```
-
-**Why:** Tests depend on implementation being complete.
-
-### 4. Spawn Teammates
-
-```bash
-/claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "You are the backend developer. Work on Task #1: Implement profile endpoint. Add GET /api/users/:id/profile route. See task list for full requirements (/claude-swarm:task-list). Message team-lead when complete."
-
-/claude-swarm:swarm-spawn "qa-engineer" "tester" "haiku" "You are the QA engineer. Work on Task #2: Write profile endpoint tests. Wait for Task #1 to complete (check task list). Once backend-dev finishes the endpoint, write comprehensive tests. Message team-lead when done."
-```
-
-**Output:**
-```
-Spawned: backend-dev
-Spawned: qa-engineer
-```
-
-### 5. Verify Spawns
-
-```bash
-/claude-swarm:swarm-verify profile-api
-```
-
-**Output:**
-```
-Verifying team 'profile-api'...
-✓ backend-dev is alive
-✓ qa-engineer is alive
-All teammates verified successfully.
-```
-
-**If verification fails:** See swarm-troubleshooting skill.
-
-### 6. Assign Tasks
-
-```bash
-/claude-swarm:task-update 1 --assign "backend-dev"
-/claude-swarm:task-update 2 --assign "qa-engineer"
-```
-
-**Output:**
-```
-Updated task #1
-Updated task #2
-```
-
-### 7. Monitor Progress
-
-```bash
-/claude-swarm:task-list
-```
-
-**Initial Output:**
-```
-Tasks for team 'profile-api':
---------------------------------
-#1 [pending] Implement profile endpoint (backend-dev)
-#2 [blocked] Write profile endpoint tests (qa-engineer) [blocked by #1]
-```
-
-Wait a few minutes for backend-dev to work...
-
-```bash
-/claude-swarm:swarm-inbox
-```
-
-**After ~15-20 minutes:**
-```
-=== Inbox for team-lead in team profile-api ===
-
-Unread messages: 1
-
-<teammate-message teammate_id="backend-dev" color="blue">
-Task #1 complete. Profile endpoint implemented at GET /api/users/:id/profile.
-Route added in routes/users.js:45-52.
-Controller logic in controllers/userController.js:89-115.
-Includes validation and 404 handling.
-Tested manually with curl - working correctly.
-</teammate-message>
-
-(Messages marked as read)
-```
-
-### 8. Unblock QA Engineer
-
-```bash
-/claude-swarm:task-update 1 --status "completed"
-
-/claude-swarm:swarm-message "qa-engineer" "Task #1 complete. Backend-dev finished the profile endpoint. Implementation in routes/users.js and controllers/userController.js. You're unblocked - start writing tests now."
-```
-
-**Check Progress:**
-
-```bash
-/claude-swarm:task-list
-```
-
-**Output:**
-```
-Tasks for team 'profile-api':
---------------------------------
-#1 [completed] Implement profile endpoint (backend-dev)
-#2 [in-progress] Write profile endpoint tests (qa-engineer)
-```
-
-### 9. Wait for Tests
-
-Check inbox periodically:
-
-```bash
-/claude-swarm:swarm-inbox
-```
-
-**After ~10-15 minutes:**
-```
-=== Inbox for team-lead in team profile-api ===
-
-Unread messages: 1
-
-<teammate-message teammate_id="qa-engineer" color="green">
-Task #2 complete. Tests written in tests/userProfile.test.js.
-Covers: success case, 404 case, invalid ID validation.
-All tests passing. Coverage: 87%.
-Run with: npm test tests/userProfile.test.js
-</teammate-message>
-
-(Messages marked as read)
-```
-
-### 10. Mark Complete
-
-```bash
-/claude-swarm:task-update 2 --status "completed"
-```
-
-### 11. Final Verification
-
-```bash
-/claude-swarm:task-list
-```
-
-**Output:**
-```
-Tasks for team 'profile-api':
---------------------------------
-#1 [completed] Implement profile endpoint (backend-dev)
-#2 [completed] Write profile endpoint tests (qa-engineer)
-```
+Wait ~20-30 minutes, then check in:
 
 ```bash
 /claude-swarm:swarm-status profile-api
+/claude-swarm:swarm-inbox
 ```
 
-**Output:**
+**Typical inbox message from team-lead:**
 ```
-=== Team: profile-api ===
-Multiplexer: kitty
-
-Description: Add user profile endpoint
-
-Members (config vs live):
-  backend-dev (backend-developer)     config: active   window exists ✓
-  qa-engineer (tester)                config: active   window exists ✓
-
-Tasks:
-  Active: 0
-  Completed: 2
+<teammate-message teammate_id="team-lead">
+Progress update: backend-dev completed endpoint, qa-engineer writing tests.
+All going smoothly. Will notify when complete.
+</teammate-message>
 ```
 
-### 12. Review and Test
+### Step 4: Handle Any Consults
 
-As team lead, review the deliverables:
+Team-lead may ask questions:
 
 ```bash
-# In your main session, check the code
-cat routes/users.js | grep -A 10 "/profile"
-cat controllers/userController.js | grep -A 25 "getProfile"
+# Check inbox
+/claude-swarm:swarm-inbox
 
-# Run the tests
-npm test tests/userProfile.test.js
+# Example consult:
+# "Should the endpoint support query params for partial profile data?"
+
+# Respond
+/claude-swarm:swarm-message team-lead "No query params needed for v1. Return full profile always."
 ```
 
-If everything looks good, proceed to cleanup.
+### Step 5: Cleanup
 
-### 13. Cleanup
+When team-lead reports completion:
 
 ```bash
-/claude-swarm:swarm-cleanup "profile-api"
+# Verify all tasks complete
+/claude-swarm:task-list
+
+# Clean up
+/claude-swarm:swarm-cleanup profile-api
 ```
 
-**Output:**
-```
-Killing sessions for team 'profile-api'...
-✓ Terminated backend-dev
-✓ Terminated qa-engineer
-Team data preserved. Use /claude-swarm:swarm-resume to restart.
-```
-
-### 14. Report to User
-
+**Report to user:**
 ```
 Completed! User profile endpoint added:
 - Endpoint: GET /api/users/:id/profile
-- Files changed: routes/users.js, controllers/userController.js
-- Tests: tests/userProfile.test.js (87% coverage, all passing)
-- Ready for code review and deployment
+- Files: routes/users.js, controllers/userController.js
+- Tests: tests/userProfile.test.js (87% coverage)
+- Ready for code review
 ```
+
+## What Team-Lead Does (Behind the Scenes)
+
+For reference, here's what team-lead handles:
+
+1. **Creates detailed tasks:**
+   - Task #1: Implement profile endpoint
+   - Task #2: Write tests (blocked by #1)
+
+2. **Spawns workers:**
+   ```bash
+   /claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "Implement profile endpoint..."
+   /claude-swarm:swarm-spawn "qa-engineer" "tester" "haiku" "Write profile tests..."
+   ```
+
+3. **Assigns tasks and monitors:**
+   - Assigns backend-dev to Task #1
+   - Monitors progress, unblocks qa-engineer when #1 completes
+   - Handles worker questions
+
+4. **Reports completion to you**
+
+You didn't need to do any of this coordination - team-lead handled it.
 
 ## Timeline
 
-**Total Time:** ~35 minutes
+**Total time:** ~35-45 minutes
 
-- Setup (create team, tasks, spawn): **5 minutes**
-- Backend implementation: **15-20 minutes**
-- Test writing: **10-15 minutes**
-- Review and cleanup: **5 minutes**
+| Phase | Time | Your involvement |
+|-------|------|------------------|
+| Create team | 2 min | `/swarm-create` |
+| Brief team-lead | 3 min | Write requirements |
+| Implementation | 20-25 min | None (team-lead coordinates) |
+| Check progress | 2 min | `/swarm-status`, `/swarm-inbox` |
+| Cleanup | 3 min | `/swarm-cleanup` |
 
-## Key Coordination Points
+**Your active time:** ~10 minutes
 
-### Point 1: After Spawn (Immediate)
+## Key Differences from Direct Mode
 
-**Action:** Verify spawns succeeded
+| Aspect | Delegation (this example) | Direct Mode |
+|--------|---------------------------|-------------|
+| You spawn workers | No | Yes |
+| You create detailed tasks | No (optional high-level) | Yes |
+| You assign tasks | No | Yes |
+| You unblock dependencies | No | Yes |
+| You message workers | No (team-lead does) | Yes |
+| Commands you run | 5-6 | 15+ |
 
-**Why:** Catch failures early before wasting time
+## When to Use Direct Mode Instead
 
-**Command:** `/claude-swarm:swarm-verify profile-api`
+Consider `--no-lead` if:
+- This is your first swarm and you want to learn
+- The task is very quick (~15 min)
+- You need fine-grained control over worker prompts
+- Team-lead overhead doesn't make sense
 
-### Point 2: Backend Completion (~20 minutes)
+For direct mode, see the **swarm-team-lead** skill.
 
-**Action:**
-1. Check inbox for completion message
-2. Mark Task #1 complete
-3. Unblock qa-engineer
+## Troubleshooting
 
-**Why:** QA is waiting for implementation
+### Team-lead doesn't respond
 
-**Commands:**
 ```bash
-/claude-swarm:task-update 1 --status "completed"
-/claude-swarm:swarm-message "qa-engineer" "Task #1 complete. Start tests now."
+# Check if team-lead is alive
+/claude-swarm:swarm-status profile-api
+
+# If not alive, diagnose
+/claude-swarm:swarm-diagnose profile-api
 ```
 
-### Point 3: Tests Complete (~35 minutes)
+See **swarm-troubleshooting** skill for recovery procedures.
 
-**Action:**
-1. Check inbox for test results
-2. Mark Task #2 complete
-3. Review deliverables
+### Want to check worker status directly
 
-**Why:** Verify everything is done before cleanup
+```bash
+# View task assignments and status
+/claude-swarm:task-list
 
-## Lessons Learned
+# Ask team-lead for details
+/claude-swarm:swarm-message team-lead "Please provide status update on worker progress"
+```
 
-### What Went Well
+### Need to add requirements mid-stream
 
-✓ **Clean dependency chain** - One task blocks the next, simple to coordinate
-✓ **Right-sized team** - 2 teammates is manageable
-✓ **Clear prompts** - Teammates knew exactly what to do
-✓ **Good communication** - Teammates messaged with specific details
-
-### What to Watch
-
-⚠️ **Waiting time** - QA engineer idle while backend works
-*Solution:* For larger projects, give QA engineer test planning work during wait
-
-⚠️ **Limited parallelism** - Sequential tasks limit speed benefit
-*Solution:* This is appropriate for small features. Larger features enable more parallelism.
-
-### Patterns to Reuse
-
-1. **Verify immediately after spawning** - Always run `swarm-verify`
-2. **Message with file paths** - backend-dev included exact files/lines
-3. **Unblock promptly** - Responded to completion immediately
-4. **Check inbox regularly** - Caught updates as they happened
-
-## Adapting This Example
-
-### For Different Features
-
-**Adding a DELETE endpoint:**
-- Same structure, change task descriptions
-- Still needs implementation + tests
-- Same 2-person team works
-
-**Adding multiple endpoints:**
-- Create separate tasks for each endpoint
-- Consider 1 backend-dev + 1 tester per endpoint pair
-- Coordinate to avoid merge conflicts
-
-**Adding middleware:**
-- Insert middleware task before endpoint task
-- Set dependency: endpoint blocked by middleware
-- Same pattern applies
-
-### For Different Tech Stacks
-
-**Django/Flask (Python):**
-- Replace `routes/users.js` with `views/users.py`
-- Replace Jest with pytest
-- Same workflow structure
-
-**Rails (Ruby):**
-- Replace with `app/controllers/users_controller.rb`
-- Use RSpec for tests
-- Same coordination pattern
-
-## Troubleshooting This Example
-
-### Backend-dev doesn't message back
-
-**Check:**
-1. Is session still alive? `/claude-swarm:swarm-status profile-api`
-2. Attach to session (tmux/kitty) and see what they're doing
-3. Did they hit an error? Check their output
-
-**Fix:**
-- If crashed: respawn with `/claude-swarm:swarm-spawn`
-- If stuck: message them with guidance
-- If confused: provide clearer instructions
-
-### Tests fail
-
-**Common causes:**
-1. Backend implementation has bugs
-2. Test expectations don't match implementation
-3. Missing dependencies (database, test data)
-
-**Fix:**
-1. Review backend-dev's code
-2. Message qa-engineer with corrections
-3. Have backend-dev fix bugs, then qa-engineer re-run tests
-
-### Want to add more work mid-stream
-
-**Example:** Realized we also need PATCH endpoint for updating profile
-
-**Solution:**
-1. Create new task: `/claude-swarm:task-create "Add profile update endpoint"`
-2. Assign to backend-dev: `/claude-swarm:task-update 3 --assign "backend-dev"`
-3. Message backend-dev: "New task #3 added. After current work, implement PATCH endpoint."
-4. Create test task: `/claude-swarm:task-create "Test profile update endpoint"`
-5. Assign to qa-engineer: `/claude-swarm:task-update 4 --assign "qa-engineer"`
-6. Set dependency: `/claude-swarm:task-update 4 --blocked-by 3`
-
-## Next Steps
-
-After completing this example:
-
-1. Try **Example 2** (Full-Stack Feature) for a more complex scenario
-2. Adapt this pattern to your own simple API features
-3. Experiment with different team sizes (try 1 backend + 2 testers)
-4. Practice your prompts to get better teammate behavior
+```bash
+/claude-swarm:swarm-message team-lead "Additional requirement: Also add input validation for ID parameter. Please coordinate with workers."
+```
 
 ## Quick Command Reference
 
 ```bash
-# Setup
+# Your complete command set for this example:
 /claude-swarm:swarm-create "profile-api" "Add user profile endpoint"
-/claude-swarm:task-create "<subject>" "<description>"
-/claude-swarm:task-update 2 --blocked-by 1
-
-# Spawn
-/claude-swarm:swarm-spawn "backend-dev" "backend-developer" "sonnet" "<prompt>"
-/claude-swarm:swarm-spawn "qa-engineer" "tester" "haiku" "<prompt>"
-/claude-swarm:swarm-verify profile-api
-
-# Coordinate
-/claude-swarm:task-update 1 --assign "backend-dev"
-/claude-swarm:swarm-inbox
-/claude-swarm:task-update 1 --status "completed"
-/claude-swarm:swarm-message "qa-engineer" "Unblocked. Start tests."
-
-# Monitor
-/claude-swarm:task-list
+/claude-swarm:swarm-message team-lead "<requirements>"
 /claude-swarm:swarm-status profile-api
-
-# Cleanup
+/claude-swarm:swarm-inbox
+/claude-swarm:task-list
 /claude-swarm:swarm-cleanup "profile-api"
 ```

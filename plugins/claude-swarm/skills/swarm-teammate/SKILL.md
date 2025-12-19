@@ -6,6 +6,8 @@ when: CLAUDE_CODE_TEAM_NAME environment variable is set (automatic)
 
 # Swarm Teammate Guide
 
+> **Are you the team-lead?** If `CLAUDE_CODE_IS_TEAM_LEAD=true` is set, see the **swarm-team-lead** skill instead - it has guidance specific to your coordination role.
+
 You are a teammate in a Claude Code swarm. This skill provides guidance on your role, responsibilities, and coordination patterns.
 
 ## Quick Start Example
@@ -41,7 +43,7 @@ Here's what a typical teammate workflow looks like:
 
 **If you're blocked:**
 ```bash
-# Mark task as blocked and notify
+# Mark task as blocked and message team-lead
 /claude-swarm:task-update 5 --status blocked --comment "Waiting on database schema"
 /claude-swarm:swarm-message team-lead "Blocked on task #5, need database schema to proceed"
 ```
@@ -161,12 +163,17 @@ If you're blocked:
    /claude-swarm:task-update <id> --status blocked --comment "Reason for blocker"
    ```
 
-2. **Message the blocking teammate**:
+2. **Message team-lead** (for guidance or escalation):
+   ```bash
+   /claude-swarm:swarm-message team-lead "Blocked on task #<id> - need <what you need>"
+   ```
+
+3. **Or message the blocking teammate directly** (if you know who):
    ```bash
    /claude-swarm:swarm-message <teammate> "I'm blocked on task #<id> waiting for <reason>"
    ```
 
-3. **Consider switching tasks** - Check task-list for other work
+4. **Consider switching tasks** - Check task-list for other work
 
 ## Communication Patterns
 
@@ -209,15 +216,35 @@ Check inbox regularly:
 
 **Respond promptly** - If a teammate messages you, reply within a reasonable timeframe. Ignoring messages breaks coordination.
 
-### Broadcasting (via team-lead)
+### Broadcasting to All Teammates
 
-If you need to reach everyone, message team-lead and ask them to broadcast:
+When you need to notify everyone (e.g., completing work that unblocks multiple teammates):
 
 ```bash
-/claude-swarm:swarm-message team-lead "Please broadcast: API breaking change, see CHANGELOG.md"
+/claude-swarm:swarm-broadcast "API schema finalized - see docs/api.json"
 ```
 
-Team-lead can broadcast to all members.
+Use sparingly - for routine updates, message specific teammates instead.
+
+### Messaging Team-Lead
+
+Use `/swarm-message team-lead` to reach team-lead:
+
+```bash
+/claude-swarm:swarm-message team-lead "Need guidance on task #5 - should I refactor or patch?"
+/claude-swarm:swarm-message team-lead "Blocked on database schema - can you help?"
+```
+
+**How it works:**
+- Sends message to team-lead's inbox
+- Team-lead checks inbox regularly
+- Team-lead responds via `/swarm-message`
+
+**Message team-lead for:**
+- Questions requiring team-lead decision
+- Blockers you can't resolve with peers
+- Scope clarifications
+- Permission for significant changes
 
 ## Task Management Workflow
 
@@ -351,7 +378,10 @@ If you're assigned as a reviewer:
 # 1. Mark task as blocked
 /claude-swarm:task-update 5 --status blocked --comment "Waiting on database schema from backend-dev"
 
-# 2. Message the blocking teammate
+# 2. Message team-lead for help
+/claude-swarm:swarm-message team-lead "Blocked on task #5, need database schema from backend-dev - can you help coordinate?"
+
+# Or message the blocking teammate directly if you know who
 /claude-swarm:swarm-message backend-dev "I'm blocked on task #5, need the database schema to proceed"
 
 # 3. Pick up different work while waiting
@@ -395,11 +425,13 @@ If you're assigned as a reviewer:
 |---------|---------|
 | `/claude-swarm:swarm-inbox` | Check messages |
 | `/claude-swarm:task-list` | View all tasks |
+| `/claude-swarm:task-list --status <status>` | Filter by status |
 | `/claude-swarm:task-update <id> --assign <name>` | Claim task |
 | `/claude-swarm:task-update <id> --status <status>` | Update status |
 | `/claude-swarm:task-update <id> --comment <text>` | Add comment |
-| `/claude-swarm:swarm-message <to> <msg>` | Send message |
-| `/claude-swarm:swarm-status <team>` | View team status |
+| `/claude-swarm:swarm-message <to> <msg>` | Send message to teammate |
+| `/claude-swarm:swarm-broadcast <msg>` | Message all teammates |
+| `/claude-swarm:swarm-status` | View team status |
 
 ## Advanced Topics
 

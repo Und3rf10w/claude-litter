@@ -20,13 +20,23 @@ if echo "$TOOL_RESULT" | grep -q '"launchSwarm".*true'; then
 
 The user approved plan mode with swarm launch (${teammate_count} teammates requested).
 
-Use these commands to set up the swarm:
-1. \`/swarm-create <team-name>\` - Create the team
-2. \`/task-create <subject>\` - Create tasks from the plan
-3. \`/swarm-spawn <name> <type>\` - Spawn ${teammate_count} teammates
-4. \`/task-update <id> --assign <name>\` - Assign tasks
+## Orchestration Options
 
-Claude Code will invoke the swarm-coordination skill automatically for guidance.
+**Delegation Mode (Recommended):**
+1. \`/swarm-create <team-name>\` - Creates team and auto-spawns team-lead
+2. \`/task-create <subject>\` - Create high-level tasks
+3. \`/swarm-message team-lead \"<brief>\"\` - Brief team-lead with requirements
+4. Team-lead handles spawning ${teammate_count} workers and coordination
+5. Monitor with \`/swarm-status\` and \`/swarm-inbox\`
+
+**Direct Mode (--no-lead):**
+1. \`/swarm-create <team-name> --no-lead\` - Creates team without team-lead
+2. \`/task-create <subject>\` - Create tasks from the plan
+3. \`/swarm-spawn <name> <type>\` - Spawn ${teammate_count} teammates yourself
+4. \`/task-update <id> --assign <name>\` - Assign tasks yourself
+5. You coordinate everything directly
+
+Claude Code will invoke the swarm-orchestration skill automatically for guidance.
 </system-reminder>"
 fi
 
