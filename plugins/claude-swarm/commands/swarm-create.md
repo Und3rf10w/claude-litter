@@ -76,10 +76,10 @@ if [[ "$NO_LEAD" != "true" ]]; then
     # Spawn team-lead with CLAUDE_CODE_IS_TEAM_LEAD environment variable
     if spawn_teammate "$TEAM_NAME" "team-lead" "team-lead" "$LEAD_MODEL" "$LEAD_PROMPT" "" "" "" "CLAUDE_CODE_IS_TEAM_LEAD=true"; then
         # Update team config to mark that team-lead has been spawned
-        local config_file="${TEAMS_DIR}/${TEAM_NAME}/config.json"
+        config_file="${TEAMS_DIR}/${TEAM_NAME}/config.json"
         if [[ -f "$config_file" ]]; then
             acquire_file_lock "$config_file"
-            local tmp_file=$(mktemp)
+            tmp_file=$(mktemp)
             if jq '.hasSpawnedLead = true' "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
                 release_file_lock
                 echo ""

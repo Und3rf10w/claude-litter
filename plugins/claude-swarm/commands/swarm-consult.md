@@ -62,7 +62,9 @@ if send_message "$TEAM" "team-lead" "$MESSAGE"; then
 
     # Try to trigger team-lead's inbox check via send-text
     # Use check_active=false to avoid failing if team-lead is inactive
-    if send_text_to_teammate "$TEAM" "team-lead" "/claude-swarm:swarm-inbox" "false"; then
+    # Note: send_text_to_teammate may fail silently if team-lead is offline
+    send_text_to_teammate "$TEAM" "team-lead" "/claude-swarm:swarm-inbox" "false" 2>/dev/null
+    if [[ $? -eq 0 ]]; then
         echo "Team-lead notified (inbox check triggered)"
     else
         echo "Team-lead will see message on next inbox check"

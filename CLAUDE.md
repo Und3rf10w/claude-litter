@@ -412,6 +412,7 @@ The following enhancements have been implemented for v1.7.0:
 ### New Features
 
 #### 1. Broadcast Command (Task #1) - ✅ COMPLETED
+
 - **Purpose**: Send messages to all team members simultaneously
 - **Command**: `/claude-swarm:swarm-broadcast <message> [--exclude <agent>]`
 - **Implementation**: New command wrapping `broadcast_message()` function
@@ -419,6 +420,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with examples and use cases
 
 #### 2. Send-Text Command (Task #2) - ✅ COMPLETED
+
 - **Purpose**: Send text directly to teammate terminals (terminal input)
 - **Command**: `/claude-swarm:swarm-send-text <target> <text>`
 - **Implementation**: New command for kitty/tmux terminal control
@@ -427,6 +429,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with terminal control examples
 
 #### 3. Task List Filtering (Task #3) - ✅ COMPLETED
+
 - **Purpose**: Filter tasks by status, assignee, blocker status
 - **Enhancement**: `task-list` command with filter parameters
 - **Flags**: `--status`, `--owner`/`--assignee`, `--blocked`
@@ -435,6 +438,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with filter examples
 
 #### 4. Custom Environment Variables (Task #4) - ✅ COMPLETED
+
 - **Purpose**: Pass custom env vars to spawned teammates
 - **Enhancement**: `swarm-spawn` accepts `KEY=VALUE` arguments after prompt
 - **Syntax**: `/claude-swarm:swarm-spawn name type model "prompt" VAR1=value1 VAR2=value2`
@@ -443,6 +447,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with security notes and examples
 
 #### 5. Permission Mode Control (Task #5) - ✅ COMPLETED
+
 - **Purpose**: Control Claude Code capabilities teammates can access
 - **Modes**: `ask/skip` for permission_mode, `true/false` for plan_mode
 - **Tools**: Pattern-based tool restriction (regex-compatible)
@@ -451,6 +456,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with security benefits
 
 #### 6. Generalize Send-Text Function (Task #6) - ✅ COMPLETED
+
 - **Purpose**: Refactor send-text for reuse across commands
 - **Implementation**: Created `send_text_to_teammate()` function in `lib/communication/`
 - **Features**: Accepts arbitrary text for both kitty and tmux, exported for reuse
@@ -459,6 +465,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Internal library refactoring (no user-facing docs needed)
 
 #### 7. Team-Lead Auto-Spawn on Team Creation (Task #7) - ✅ COMPLETED
+
 - **Purpose**: Automatically spawn team-lead window when creating team
 - **Command**: `/claude-swarm:swarm-create <team> [desc] [--no-lead] [--lead-model <model>]`
 - **Features**: Auto-spawns team-lead by default, optional flags to disable or set model
@@ -467,6 +474,7 @@ The following enhancements have been implemented for v1.7.0:
 - **Documentation**: Updated SKILL.md with usage, benefits, and examples
 
 #### 8. Consult Command (Task #8) - ✅ COMPLETED
+
 - **Purpose**: Teammates ask team-lead with immediate notification
 - **Command**: `/claude-swarm:swarm-consult <message>`
 - **Implementation**: Sends message to team-lead inbox + triggers inbox check if online
@@ -476,20 +484,22 @@ The following enhancements have been implemented for v1.7.0:
 
 ### Architecture Changes
 
-*(Pending - to be documented after implementation)*
+_(Pending - to be documented after implementation)_
 
 ### Library Extensions
 
-*(Pending - to be documented after implementation)*
+_(Pending - to be documented after implementation)_
 
 ### Command Additions
 
 Expected new commands (may vary based on implementation):
+
 - `/claude-swarm:swarm-broadcast <message>`
 - `/claude-swarm:swarm-send-text <to> <content>`
 - `/claude-swarm:swarm-consult <query>`
 
 Expected command enhancements:
+
 - `/claude-swarm:task-list [--status=STATUS] [--assignee=NAME] [--blocked-by=ID]`
 - `/claude-swarm:swarm-spawn [--env KEY=VALUE] [--permissions=LEVEL]`
 - `/claude-swarm:swarm-create` (auto-spawns team-lead)
@@ -501,4 +511,4 @@ Expected command enhancements:
 - Command files - New command documentation
 - References - Detailed feature documentation
 
-*(Full details pending - see DOCUMENTATION_DRAFT.md)*
+_(Full details pending - see DOCUMENTATION_DRAFT.md)_

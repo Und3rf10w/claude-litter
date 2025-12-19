@@ -48,8 +48,9 @@ if [[ -z "$TARGET" ]] || [[ -z "$TEXT" ]]; then
     exit 1
 fi
 
-# Function to send text to a specific teammate
-send_text_to_teammate() {
+# Function to send raw text to a specific teammate (verbose, with self-skip)
+# This is distinct from the library send_text_to_teammate which auto-appends \r
+send_raw_text() {
     local agent_name="$1"
     local text="$2"
 
@@ -69,7 +70,7 @@ send_text_to_teammate() {
     case "$SWARM_MULTIPLEXER" in
         kitty)
             local swarm_var="swarm_${TEAM}_${agent_name}"
-            if kitten_cmd send-text --match "var:${swarm_var}" "$text"; then
+            if kitten_cmd send-text --match "var:${swarm_var}" "${text}"$'\r'; then
                 echo "Text sent to '${agent_name}' (kitty)"
             else
                 echo "Failed to send text to '${agent_name}' (kitty)" >&2
@@ -80,7 +81,7 @@ send_text_to_teammate() {
             local safe_team="${TEAM//[^a-zA-Z0-9_-]/_}"
             local safe_agent="${agent_name//[^a-zA-Z0-9_-]/_}"
             local session="swarm-${safe_team}-${safe_agent}"
-            if tmux send-keys -t "$session" "$text" 2>/dev/null; then
+            if tmux send-keys -t "$session" "$text" Enter 2>/dev/null; then
                 echo "Text sent to '${agent_name}' (tmux)"
             else
                 echo "Failed to send text to '${agent_name}' (tmux)" >&2
@@ -99,19 +100,19 @@ if [[ "$TARGET" == "all" ]]; then
     echo "Sending text to all active teammates in team '${TEAM}'..."
     echo ""
 
-    local config_file="${TEAMS_DIR}/${TEAM}/config.json"
+    config_file="${TEAMS_DIR}/${TEAM}/config.json"
     if [[ ! -f "$config_file" ]]; then
         echo "Error: Team '${TEAM}' not found" >&2
         exit 1
     fi
 
-    local success_count=0
-    local fail_count=0
+    success_count=0
+    fail_count=0
 
     # Iterate through all team members
     while IFS= read -r member; do
         [[ -n "$member" ]] || continue
-        if send_text_to_teammate "$member" "$TEXT"; then
+        if send_raw_text "$member" "$TEXT"; then
             ((success_count++))
         else
             ((fail_count++))
@@ -126,7 +127,7 @@ if [[ "$TARGET" == "all" ]]; then
     fi
 else
     # Send to specific teammate
-    send_text_to_teammate "$TARGET" "$TEXT"
+    send_raw_text "$TARGET" "$TEXT"
 fi
 SCRIPT_EOF
 ```
@@ -145,18 +146,16 @@ Report:
 /swarm-send-text backend-dev "/swarm-inbox"
 ```
 
-**Send text with enter key to all teammates:**
+**Send command to all teammates:**
 
 ```
-/swarm-send-text all "/swarm-inbox\r"
+/swarm-send-text all "/swarm-inbox"
 ```
 
-Note: Use `\r` for carriage return (Enter key) in the text.
-
-**Trigger a command for a teammate:**
+**Trigger a shell command for a teammate:**
 
 ```
-/swarm-send-text frontend-dev "echo 'Starting work'\r"
+/swarm-send-text frontend-dev "echo 'Starting work'"
 ```
 
 ## Use Cases
@@ -168,7 +167,6 @@ Note: Use `\r` for carriage return (Enter key) in the text.
 
 ## Important Notes
 
-- Text is sent directly to the terminal - use carefully
+- Text is sent directly to the terminal and Enter is pressed automatically
 - Does not send to inactive teammates (they won't receive it)
 - Skips sending to self automatically
-- Use `\r` at the end to simulate pressing Enter
