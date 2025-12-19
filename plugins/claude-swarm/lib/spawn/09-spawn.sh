@@ -246,9 +246,9 @@ spawn_teammate_tmux() {
         claude_cmd+=" --dangerously-skip-permissions"
     fi
 
-    # Add plan mode flag
+    # Add plan mode flag (uses permission-mode plan)
     if [[ "$plan_mode" == "true" || "$plan_mode" == "enable" ]]; then
-        claude_cmd+=" --plan-mode"
+        claude_cmd+=" --permission-mode plan"
     fi
 
     # Add allowed tools (safely escape)
@@ -402,9 +402,9 @@ spawn_teammate_kitty() {
         claude_args+=("--dangerously-skip-permissions")
     fi
 
-    # Add plan mode flag
+    # Add plan mode flag (uses permission-mode plan)
     if [[ "$plan_mode" == "true" || "$plan_mode" == "enable" ]]; then
-        claude_args+=("--plan-mode")
+        claude_args+=("--permission-mode" "plan")
     fi
 
     # Add allowed tools
