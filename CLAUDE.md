@@ -13,7 +13,7 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.7.0)
+│   └── claude-swarm/          # Main swarm plugin (v1.8.0)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
 │       ├── commands/          # 17+ slash commands (.md files)
