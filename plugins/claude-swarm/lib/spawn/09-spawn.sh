@@ -54,6 +54,14 @@ spawn_teammate_kitty_resume() {
     # Get kitty socket for passing to teammate
     local kitty_socket=$(find_kitty_socket)
 
+    # Determine system prompt based on agent type
+    local system_prompt="$SWARM_TEAMMATE_SYSTEM_PROMPT"
+    local team_lead_env=""
+    if [[ "$agent_name" == "team-lead" ]]; then
+        system_prompt="$SWARM_TEAM_LEAD_SYSTEM_PROMPT"
+        team_lead_env="--env CLAUDE_CODE_IS_TEAM_LEAD=true"
+    fi
+
     # Launch with default allowed tools (comma-separated, quoted)
     # Pass initial_prompt as CLI argument - more reliable than send-text
     # Pass KITTY_LISTEN_ON so teammates can discover the socket
@@ -71,8 +79,9 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
+        $team_lead_env \
         claude --model "$model" --dangerously-skip-permissions \
-        --append-system-prompt "$SWARM_TEAMMATE_SYSTEM_PROMPT" -- "$initial_prompt"
+        --append-system-prompt "$system_prompt" -- "$initial_prompt"
 
     # Wait for Claude Code to be ready, then register
     if wait_for_claude_ready "$swarm_var" 10; then
@@ -134,11 +143,19 @@ spawn_teammate_tmux_resume() {
     local safe_lead_id=$(printf %q "$lead_id")
     local safe_agent_color=$(printf %q "$agent_color")
     local safe_prompt=$(printf %q "$initial_prompt")
-    local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
+
+    # Determine system prompt based on agent type
+    local system_prompt="$SWARM_TEAMMATE_SYSTEM_PROMPT"
+    local team_lead_export=""
+    if [[ "$agent_name" == "team-lead" ]]; then
+        system_prompt="$SWARM_TEAM_LEAD_SYSTEM_PROMPT"
+        team_lead_export=" CLAUDE_CODE_IS_TEAM_LEAD=true"
+    fi
+    local safe_system_prompt=$(printf %q "$system_prompt")
 
     # Set environment variables and launch claude with prompt as CLI argument
     # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color${team_lead_export} && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -231,7 +248,13 @@ spawn_teammate_tmux() {
     local safe_type_val=$(printf %q "$agent_type")
     local safe_lead_id=$(printf %q "$lead_id")
     local safe_agent_color=$(printf %q "$agent_color")
-    local safe_system_prompt=$(printf %q "$SWARM_TEAMMATE_SYSTEM_PROMPT")
+
+    # Determine system prompt based on agent type
+    local system_prompt="$SWARM_TEAMMATE_SYSTEM_PROMPT"
+    if [[ "$agent_name" == "team-lead" ]]; then
+        system_prompt="$SWARM_TEAM_LEAD_SYSTEM_PROMPT"
+    fi
+    local safe_system_prompt=$(printf %q "$system_prompt")
 
     # Build custom environment variable exports
     local custom_env_exports=""
@@ -243,6 +266,11 @@ spawn_teammate_tmux() {
             custom_env_exports+=" ${key}=${safe_value}"
         fi
     done
+
+    # Auto-add CLAUDE_CODE_IS_TEAM_LEAD for team-lead spawns
+    if [[ "$agent_name" == "team-lead" ]]; then
+        custom_env_exports+=" CLAUDE_CODE_IS_TEAM_LEAD=true"
+    fi
 
     # Set environment variables in the session
     tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color${custom_env_exports}" Enter
@@ -391,7 +419,7 @@ spawn_teammate_kitty() {
 
     # Default prompt if not provided
     if [[ -z "$initial_prompt" ]]; then
-        initial_prompt="You are ${agent_name} in team '${team_name}'. Check your mailbox at ~/.claude/teams/${team_name}/inboxes/${agent_name}.json for messages. Send updates to team-lead when tasks complete. Use /swarm-inbox to check for new messages."
+        initial_prompt="You are ${agent_name} in team '${team_name}'. Check your mailbox at ~/.claude/teams/${team_name}/inboxes/${agent_name}.json for messages. Send updates to team-lead when tasks complete. Use /claude-swarm:swarm-inbox to check for new messages."
     fi
 
     # Determine launch type based on SWARM_KITTY_MODE
@@ -424,6 +452,12 @@ spawn_teammate_kitty() {
             custom_env_args+=("--env" "$env_var")
         fi
     done
+
+    # Determine system prompt based on agent type
+    local system_prompt="$SWARM_TEAMMATE_SYSTEM_PROMPT"
+    if [[ "$agent_name" == "team-lead" ]]; then
+        system_prompt="$SWARM_TEAM_LEAD_SYSTEM_PROMPT"
+    fi
 
     # Build Claude Code permission arguments
     local claude_args=("--model" "$model")
@@ -462,7 +496,12 @@ spawn_teammate_kitty() {
     fi
 
     # Add system prompt
-    claude_args+=("--append-system-prompt" "$SWARM_TEAMMATE_SYSTEM_PROMPT")
+    claude_args+=("--append-system-prompt" "$system_prompt")
+
+    # Auto-add CLAUDE_CODE_IS_TEAM_LEAD for team-lead spawns
+    if [[ "$agent_name" == "team-lead" ]]; then
+        custom_env_args+=("--env" "CLAUDE_CODE_IS_TEAM_LEAD=true")
+    fi
 
     # Launch new kitty window/tab with env vars AND user variable for identification
     # --var sets a persistent user variable that survives title changes
