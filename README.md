@@ -17,6 +17,9 @@ Because when you're running multiple Claude instances in kitty terminal, you've 
 - **Session files** - Save and restore entire swarm configurations (kitty)
 - **Auto-detection** - Automatically detects kitty vs tmux environment
 
+> [!WARNING]
+> Swarm/Teammate support was removed in Claude Code 2.0.76. So this will no longer function if you're on Claude Code >= 2.0.76
+
 ---
 
 ## Installation & Setup
