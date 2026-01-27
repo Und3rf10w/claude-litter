@@ -177,6 +177,49 @@ When a teammate is blocked:
 /claude-swarm:swarm-message frontend-dev "API schema is ready at docs/api.json. You're unblocked."
 ```
 
+## Handling Join Requests
+
+External agents may discover and request to join your team. You'll see join requests in your inbox:
+
+```bash
+# Check inbox for join requests
+/claude-swarm:swarm-inbox
+# You'll see: "JOIN REQUEST: Agent 'external-agent' requesting to join as 'worker'. Request ID: abc123..."
+
+# Approve with custom name
+/claude-swarm:swarm-approve-join abc123 new-backend-dev blue
+
+# Or reject with reason
+/claude-swarm:swarm-reject-join abc123 "Team at capacity"
+```
+
+**When to approve:**
+- Team needs additional help
+- Agent's type matches a gap in the team
+- You can onboard them effectively
+
+**When to reject:**
+- Team is already at capacity
+- Agent type doesn't match team needs
+- Current work doesn't support onboarding
+
+## Graceful Shutdown
+
+When you need to shutdown a specific teammate:
+
+```bash
+# Request graceful shutdown (allows them to finish current work)
+/claude-swarm:swarm-request-shutdown backend-dev "Task completed, cleaning up team"
+```
+
+The teammate will receive the shutdown request in their inbox and can acknowledge before stopping.
+
+For team-wide shutdown, the orchestrator uses:
+```bash
+# Graceful team cleanup (sends shutdown requests to all)
+/claude-swarm:swarm-cleanup <team> --graceful
+```
+
 ## Best Practices
 
 ### DO
@@ -209,6 +252,9 @@ When a teammate is blocked:
 | `/claude-swarm:swarm-send-text <target> <text>` | Send to terminal |
 | `/claude-swarm:swarm-spawn <name> <type> <model> <prompt>` | Spawn teammate |
 | `/claude-swarm:swarm-verify` | Verify teammates alive |
+| `/claude-swarm:swarm-approve-join <id>` | Approve join request |
+| `/claude-swarm:swarm-reject-join <id>` | Reject join request |
+| `/claude-swarm:swarm-request-shutdown <agent>` | Request graceful shutdown |
 
 ## Environment Variables
 

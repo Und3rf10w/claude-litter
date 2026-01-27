@@ -13,7 +13,9 @@ Claude Swarm enables you to orchestrate teams of Claude Code instances working t
 - **Message Passing** - Asynchronous communication between team members
 - **Session Persistence** - Suspend and resume teams with full context preservation
 - **Health Monitoring** - Automatic heartbeat tracking and crash detection
-- **Terminal Integration** - Seamless kitty and tmux support
+- **Terminal Integration** - Seamless kitty, tmux, and in-process support
+- **Team Discovery** - External agents can discover and request to join teams
+- **Graceful Shutdown** - Coordinated shutdown with acknowledgment protocol
 
 ## Quick Start
 
@@ -103,7 +105,7 @@ listen_on unix:/tmp/kitty-${USER}
 
 ### Core Documentation
 
-- **[Commands Reference](docs/COMMANDS.md)** - Complete reference for all 17 slash commands
+- **[Commands Reference](docs/COMMANDS.md)** - Complete reference for all 24 slash commands
 - **[Hooks Documentation](docs/HOOKS.md)** - Event-driven automation and lifecycle hooks
 - **[Integration Guide](docs/INTEGRATION.md)** - Integrate with CI/CD, external systems, and custom tools
 
@@ -122,7 +124,7 @@ Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-t
 
 ## Components
 
-### Slash Commands (17)
+### Slash Commands (24)
 
 **Team Management:**
 
@@ -130,7 +132,7 @@ Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-t
 - `/claude-swarm:swarm-spawn` - Spawn teammate
 - `/claude-swarm:swarm-status` - View team status
 - `/claude-swarm:swarm-verify` - Verify teammates alive
-- `/claude-swarm:swarm-cleanup` - Suspend or delete team
+- `/claude-swarm:swarm-cleanup` - Suspend, graceful, or force delete team
 - `/claude-swarm:swarm-resume` - Resume suspended team
 - `/claude-swarm:swarm-list-teams` - List all teams
 - `/claude-swarm:swarm-onboard` - Interactive onboarding wizard
@@ -143,6 +145,17 @@ Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-t
 - `/claude-swarm:swarm-inbox` - Check your inbox
 - `/claude-swarm:swarm-broadcast` - Message all teammates
 - `/claude-swarm:swarm-send-text` - Send text to teammate terminal
+
+**Team Discovery:**
+
+- `/claude-swarm:swarm-discover` - Discover active teams available for joining
+- `/claude-swarm:swarm-join` - Request to join an existing team
+- `/claude-swarm:swarm-approve-join` - Approve a join request (team-lead only)
+- `/claude-swarm:swarm-reject-join` - Reject a join request (team-lead only)
+
+**Graceful Shutdown:**
+
+- `/claude-swarm:swarm-request-shutdown` - Request graceful shutdown of teammate
 
 **Task Management:**
 
@@ -224,29 +237,31 @@ plugins/claude-swarm/lib/
 │   ├── 01-utils.sh            # Utility functions (UUID, validation)
 │   └── 02-file-lock.sh        # Atomic file locking
 ├── multiplexer/
-│   ├── 03-multiplexer.sh      # Kitty/tmux detection and control
+│   ├── 03-multiplexer.sh      # Kitty/tmux/in-process detection and control
 │   └── 04-registry.sh         # Window registry tracking
 ├── team/
 │   ├── 05-team.sh             # Team creation and management
 │   ├── 06-status.sh           # Status management and live agents
 │   └── 10-lifecycle.sh        # Suspend/resume operations
 ├── communication/
-│   └── 07-messaging.sh        # Message inbox system
+│   └── 07-messaging.sh        # Message inbox system and join requests
 ├── tasks/
 │   └── 08-tasks.sh            # Task CRUD operations
 └── spawn/
-    ├── 09-spawn.sh            # Teammate spawning
-    ├── 11-cleanup.sh          # Team cleanup
+    ├── 09-spawn.sh            # Teammate spawning (kitty/tmux/in-process)
+    ├── 11-cleanup.sh          # Team cleanup (graceful and force)
     ├── 12-kitty-session.sh    # Session file generation
-    └── 13-diagnostics.sh      # Health checks and diagnostics
+    ├── 13-diagnostics.sh      # Health checks and diagnostics
+    └── 14-in-process.sh       # In-process teammate spawning
 ```
 
 **Key Features:**
 
-- **Modular design** - 13 specialized modules organized by functional responsibility
-- **Clear dependencies** - Numbered files ensure proper load order (00 → 13)
+- **Modular design** - 14 specialized modules organized by functional responsibility
+- **Clear dependencies** - Numbered files ensure proper load order (00 → 14)
 - **Backward compatible** - All existing code continues to work unchanged
 - **Source guards** - Prevents double-loading of modules
+- **In-process support** - Works without terminal multiplexer via Task tool
 - **Maintainable** - Each module averages ~160 lines (down from 2090 line monolith)
 
 All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh`.
@@ -260,7 +275,9 @@ All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-
 - `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
 - `CLAUDE_CODE_AGENT_TYPE` - Agent role type
 - `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller)
-- `CLAUDE_CODE_AGENT_COLOR` - Agent display color
+- `CLAUDE_CODE_TEAMMATE_MODE` - Teammate mode (kitty/tmux/in-process)
+
+**Agent colors** are passed via CLI argument `--agent-color` (not environment variable).
 
 **Team lead identification** (kitty only):
 
@@ -302,6 +319,7 @@ This ensures inbox checking, messaging, and task commands work correctly for bot
 
 ### Cleanup
 
+- Use `--graceful` flag for coordinated shutdown with acknowledgment
 - Suspend teams with `/swarm-cleanup <team>` to preserve data
 - Resume with `/swarm-resume <team>` to continue work
 - Use `--force` flag only for permanent deletion

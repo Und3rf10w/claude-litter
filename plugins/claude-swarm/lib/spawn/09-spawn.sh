@@ -65,6 +65,8 @@ spawn_teammate_kitty_resume() {
     # Launch with default allowed tools (comma-separated, quoted)
     # Pass initial_prompt as CLI argument - more reliable than send-text
     # Pass KITTY_LISTEN_ON so teammates can discover the socket
+    # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
+    # These enable Claude Code's native teammate features (prompt line, color, etc.)
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --cwd "$(pwd)" \
@@ -77,10 +79,13 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
-        --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         $team_lead_env \
         claude --model "$model" --dangerously-skip-permissions \
+        --agent-id "$agent_id" \
+        --agent-name "$agent_name" \
+        --team-name "$team_name" \
+        --agent-color "$agent_color" \
         --append-system-prompt "$system_prompt" -- "$initial_prompt"
 
     # Wait for Claude Code to be ready, then register
@@ -153,9 +158,25 @@ spawn_teammate_tmux_resume() {
     fi
     local safe_system_prompt=$(printf %q "$system_prompt")
 
-    # Set environment variables and launch claude with prompt as CLI argument
-    # Pass initial_prompt as CLI argument - more reliable than send-keys
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color${team_lead_export} && claude --model $model --dangerously-skip-permissions --append-system-prompt $safe_system_prompt -- $safe_prompt" Enter
+    # Set environment variables first (separate send-keys to avoid line length issues)
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id${team_lead_export}" Enter
+
+    # Build claude command
+    # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
+    # These enable Claude Code's native teammate features (prompt line, color, etc.)
+    local claude_cmd="claude --model $model --dangerously-skip-permissions"
+    claude_cmd+=" --agent-id $safe_id_val"
+    claude_cmd+=" --agent-name $safe_name_val"
+    claude_cmd+=" --team-name $safe_team_val"
+    claude_cmd+=" --agent-color $safe_agent_color"
+    claude_cmd+=" --append-system-prompt $safe_system_prompt"
+
+    # Write prompt to temporary file for safer passing
+    local prompt_file=$(mktemp)
+    echo "$initial_prompt" > "$prompt_file"
+
+    # Launch claude with prompt from file (safer than command line argument)
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -273,10 +294,17 @@ spawn_teammate_tmux() {
     fi
 
     # Set environment variables in the session
-    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id CLAUDE_CODE_AGENT_COLOR=$safe_agent_color${custom_env_exports}" Enter
+    # Note: Color is passed as CLI arg --agent-color, not env var
+    tmux send-keys -t "$session_name" "export CLAUDE_CODE_TEAM_NAME=$safe_team_val CLAUDE_CODE_AGENT_ID=$safe_id_val CLAUDE_CODE_AGENT_NAME=$safe_name_val CLAUDE_CODE_AGENT_TYPE=$safe_type_val CLAUDE_CODE_TEAM_LEAD_ID=$safe_lead_id${custom_env_exports}" Enter
 
     # Build Claude Code permission arguments
+    # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
+    # These enable Claude Code's native teammate features (prompt line, color, etc.)
     local claude_cmd="claude --model $model"
+    claude_cmd+=" --agent-id $safe_id_val"
+    claude_cmd+=" --agent-name $safe_name_val"
+    claude_cmd+=" --team-name $safe_team_val"
+    claude_cmd+=" --agent-color $safe_agent_color"
 
     # Add permission mode flags
     if [[ -n "$permission_mode" ]]; then
@@ -296,6 +324,11 @@ spawn_teammate_tmux() {
     # Add plan mode flag (uses permission-mode plan)
     if [[ "$plan_mode" == "true" || "$plan_mode" == "enable" ]]; then
         claude_cmd+=" --permission-mode plan"
+    fi
+
+    # Add --plan-mode-required if environment variable is set
+    if [[ "${CLAUDE_CODE_PLAN_MODE_REQUIRED:-}" == "true" ]]; then
+        claude_cmd+=" --plan-mode-required"
     fi
 
     # Add allowed tools (safely escape)
@@ -460,7 +493,15 @@ spawn_teammate_kitty() {
     fi
 
     # Build Claude Code permission arguments
-    local claude_args=("--model" "$model")
+    # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
+    # These enable Claude Code's native teammate features (prompt line, color, etc.)
+    local claude_args=(
+        "--model" "$model"
+        "--agent-id" "$agent_id"
+        "--agent-name" "$agent_name"
+        "--team-name" "$team_name"
+        "--agent-color" "$agent_color"
+    )
 
     # Add permission mode flags
     if [[ -n "$permission_mode" ]]; then
@@ -485,6 +526,11 @@ spawn_teammate_kitty() {
         claude_args+=("--permission-mode" "plan")
     fi
 
+    # Add --plan-mode-required if environment variable is set
+    if [[ "${CLAUDE_CODE_PLAN_MODE_REQUIRED:-}" == "true" ]]; then
+        claude_args+=("--plan-mode-required")
+    fi
+
     # Add allowed tools
     if [[ -n "$allowed_tools" ]]; then
         claude_args+=("--allowed-tools" "$allowed_tools")
@@ -507,6 +553,8 @@ spawn_teammate_kitty() {
     # --var sets a persistent user variable that survives title changes
     # Pass initial_prompt as CLI argument - more reliable than send-text
     # Pass KITTY_LISTEN_ON so teammates can discover the socket
+    # IMPORTANT: --agent-id, --agent-name, and --team-name are passed via claude_args
+    # These enable Claude Code's native teammate features (prompt line, color, etc.)
     # shellcheck disable=SC2086
     kitten_cmd launch --type="$launch_type" $location_arg \
         --cwd "$(pwd)" \
@@ -519,7 +567,6 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_NAME=${agent_name}" \
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
-        --env "CLAUDE_CODE_AGENT_COLOR=${agent_color}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         "${custom_env_args[@]}" \
         claude "${claude_args[@]}" -- "$initial_prompt"
@@ -571,10 +618,14 @@ spawn_teammate() {
         tmux)
             spawn_teammate_tmux "$@"
             ;;
+        in-process)
+            spawn_teammate_in_process "$@"
+            ;;
         *)
-            echo -e "${RED}No multiplexer available. Install tmux or use kitty terminal.${NC}"
-            echo "Set SWARM_MULTIPLEXER=tmux or SWARM_MULTIPLEXER=kitty to override detection."
-            return 1
+            echo -e "${YELLOW}No terminal multiplexer available, using in-process mode.${NC}"
+            echo "Set SWARM_MULTIPLEXER=tmux or SWARM_MULTIPLEXER=kitty to use terminal mode."
+            echo "Set CLAUDE_CODE_TEAMMATE_MODE=in-process to explicitly use in-process mode."
+            spawn_teammate_in_process "$@"
             ;;
     esac
 }
@@ -587,8 +638,12 @@ list_swarm_sessions() {
         tmux)
             list_swarm_sessions_tmux "$@"
             ;;
+        in-process)
+            list_in_process_teammates "$@"
+            ;;
         *)
-            echo -e "${YELLOW}No multiplexer detected${NC}"
+            echo -e "${YELLOW}No multiplexer detected, checking in-process teammates${NC}"
+            list_in_process_teammates "$@"
             ;;
     esac
 }
@@ -601,8 +656,12 @@ kill_swarm_session() {
         tmux)
             kill_swarm_session_tmux "$@"
             ;;
+        in-process)
+            kill_in_process_teammate "$@"
+            ;;
         *)
-            echo -e "${YELLOW}No multiplexer detected${NC}"
+            echo -e "${YELLOW}No multiplexer detected, checking in-process teammates${NC}"
+            kill_in_process_teammate "$@"
             ;;
     esac
 }
