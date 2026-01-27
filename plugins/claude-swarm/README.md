@@ -23,8 +23,13 @@ Claude Swarm enables you to orchestrate teams of Claude Code instances working t
 
 **Required:**
 
-- **Terminal multiplexer**: kitty (recommended) or tmux
+- **Claude Code 2.1.20+**: Required for native teammate features (prompt line theming, agent colors)
 - **jq**: JSON processor for configuration management
+
+**Optional (for terminal mode):**
+
+- **Terminal multiplexer**: kitty (recommended) or tmux
+- Without a multiplexer, teammates run in **in-process mode** (background subagents)
 
 **For kitty users** (recommended for best experience):
 
@@ -35,6 +40,26 @@ listen_on unix:/tmp/kitty-${USER}
 ```
 
 **Note on Kitty Sockets:** Kitty creates sockets like `/tmp/kitty-$USER-$PID` where `$PID` is the kitty process ID. Claude Swarm automatically discovers the correct socket by searching for the most recent one. This allows multiple kitty instances to coexist without conflicts.
+
+### In-Process Mode
+
+When no terminal multiplexer is available (or when explicitly requested), teammates spawn as **in-process background subagents**:
+
+```bash
+# Force in-process mode
+export CLAUDE_CODE_TEAMMATE_MODE=in-process
+```
+
+**How it works:**
+- Teammates run as background Task tool invocations
+- Communication uses the same file-based inbox system
+- No separate terminal windows are created
+- Useful for CI/CD environments or remote sessions
+
+**Limitations:**
+- No visual separation between teammates
+- Cannot directly interact with teammate terminals
+- Background agents may have different tool access
 
 ### Creating Your First Swarm
 
@@ -103,9 +128,19 @@ listen_on unix:/tmp/kitty-${USER}
 
 ## Documentation
 
+### Quick Reference
+
+```bash
+# Get a quick guide to common workflows
+/claude-swarm:swarm-guide
+
+# Topics: workflows, commands, tips, troubleshooting
+/claude-swarm:swarm-guide workflows
+```
+
 ### Core Documentation
 
-- **[Commands Reference](docs/COMMANDS.md)** - Complete reference for all 24 slash commands
+- **[Commands Reference](docs/COMMANDS.md)** - Complete reference for all 25 slash commands
 - **[Hooks Documentation](docs/HOOKS.md)** - Event-driven automation and lifecycle hooks
 - **[Integration Guide](docs/INTEGRATION.md)** - Integrate with CI/CD, external systems, and custom tools
 
@@ -124,7 +159,7 @@ Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-t
 
 ## Components
 
-### Slash Commands (24)
+### Slash Commands (25)
 
 **Team Management:**
 
@@ -138,6 +173,7 @@ Each skill auto-triggers based on context (e.g., spawned team-leads load swarm-t
 - `/claude-swarm:swarm-onboard` - Interactive onboarding wizard
 - `/claude-swarm:swarm-diagnose` - Diagnose team health
 - `/claude-swarm:swarm-reconcile` - Fix status mismatches
+- `/claude-swarm:swarm-guide` - Quick reference guide for workflows
 
 **Communication:**
 
@@ -267,6 +303,16 @@ plugins/claude-swarm/lib/
 All modules load automatically when you source `${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh`.
 
 ### Environment Variables & Identification
+
+**Claude Code 2.1.20+ Compatibility:**
+
+Spawned teammates use native Claude Code teammate features via CLI arguments:
+- `--agent-id` - Unique agent UUID
+- `--agent-name` - Agent name (e.g., "backend-dev")
+- `--team-name` - Team name
+- `--agent-color` - Agent display color
+
+These must be provided together and enable prompt line theming, agent identification in the UI, and native teammate features.
 
 **Spawned teammates** automatically receive these environment variables:
 

@@ -1,6 +1,6 @@
 # Claude Swarm Commands Reference
 
-Comprehensive reference for all 24 Claude Swarm slash commands.
+Comprehensive reference for all 25 Claude Swarm slash commands.
 
 ## Command Overview
 
@@ -16,6 +16,7 @@ Comprehensive reference for all 24 Claude Swarm slash commands.
 | | `/claude-swarm:swarm-diagnose` | Diagnose team health, detect crashes, check socket status |
 | | `/claude-swarm:swarm-verify` | Verify all teammates are alive and update their status |
 | | `/claude-swarm:swarm-reconcile` | Fix status mismatches between config and reality |
+| | `/claude-swarm:swarm-guide` | Quick reference guide for workflows and commands |
 | **Communication** | `/claude-swarm:swarm-message` | Send a message to another team member's inbox |
 | | `/claude-swarm:swarm-inbox` | Check your inbox for messages from teammates |
 | | `/claude-swarm:swarm-broadcast` | Message all teammates at once |
@@ -248,6 +249,30 @@ Comprehensive reference for all 24 Claude Swarm slash commands.
 
 # Auto-fix mode
 /claude-swarm:swarm-reconcile api-redesign --auto-fix
+```
+
+---
+
+#### `/claude-swarm:swarm-guide [topic]`
+**Purpose:** Quick reference guide for common workflows and commands
+
+**Arguments:**
+- `topic` (optional) - Specific topic: `workflows`, `commands`, `tips`, `troubleshooting` (default: show all)
+
+**What it shows:**
+- **workflows** - Common step-by-step workflows (starting projects, checking on team, ending sessions)
+- **commands** - Commands organized by category with brief descriptions
+- **tips** - Best practices for model selection, naming, task granularity
+- **troubleshooting** - Quick fixes for common issues
+
+**Usage:**
+```bash
+# Show all sections
+/claude-swarm:swarm-guide
+
+# Show specific topic
+/claude-swarm:swarm-guide workflows
+/claude-swarm:swarm-guide troubleshooting
 ```
 
 ---
