@@ -1,23 +1,31 @@
 # Claude Swarm Commands Reference
 
-Comprehensive reference for all 17 Claude Swarm slash commands.
+Comprehensive reference for all 25 Claude Swarm slash commands.
 
 ## Command Overview
 
 | Category | Command | Description |
 |----------|---------|-------------|
 | **Team Management** | `/claude-swarm:swarm-create` | Create a new swarm team with configuration and directories |
-| | `/claude-swarm:swarm-spawn` | Spawn a new teammate Claude Code instance in kitty or tmux |
+| | `/claude-swarm:swarm-spawn` | Spawn a new teammate Claude Code instance in kitty, tmux, or in-process |
 | | `/claude-swarm:swarm-status` | View comprehensive status of team, members, and tasks |
-| | `/claude-swarm:swarm-cleanup` | Suspend or permanently delete a team (kills sessions) |
+| | `/claude-swarm:swarm-cleanup` | Graceful, suspend, or permanently delete a team |
 | | `/claude-swarm:swarm-resume` | Resume a suspended team by respawning offline teammates |
 | | `/claude-swarm:swarm-list-teams` | List all available teams with status and member counts |
 | | `/claude-swarm:swarm-onboard` | Interactive onboarding wizard for new users |
 | | `/claude-swarm:swarm-diagnose` | Diagnose team health, detect crashes, check socket status |
 | | `/claude-swarm:swarm-verify` | Verify all teammates are alive and update their status |
 | | `/claude-swarm:swarm-reconcile` | Fix status mismatches between config and reality |
+| | `/claude-swarm:swarm-guide` | Quick reference guide for workflows and commands |
 | **Communication** | `/claude-swarm:swarm-message` | Send a message to another team member's inbox |
 | | `/claude-swarm:swarm-inbox` | Check your inbox for messages from teammates |
+| | `/claude-swarm:swarm-broadcast` | Message all teammates at once |
+| | `/claude-swarm:swarm-send-text` | Send text to a teammate's terminal |
+| **Team Discovery** | `/claude-swarm:swarm-discover` | Discover active teams available for joining |
+| | `/claude-swarm:swarm-join` | Request to join an existing team |
+| | `/claude-swarm:swarm-approve-join` | Approve a join request (team-lead only) |
+| | `/claude-swarm:swarm-reject-join` | Reject a join request (team-lead only) |
+| **Graceful Shutdown** | `/claude-swarm:swarm-request-shutdown` | Request graceful shutdown of a teammate |
 | **Task Management** | `/claude-swarm:task-create` | Create a new task in the team task list |
 | | `/claude-swarm:task-list` | List all tasks for the current team |
 | | `/claude-swarm:task-update` | Update task status, assignment, or add comments |
@@ -90,20 +98,26 @@ Comprehensive reference for all 17 Claude Swarm slash commands.
 
 ---
 
-#### `/claude-swarm:swarm-cleanup <team_name> [--force]`
-**Purpose:** Suspend or permanently delete a team
+#### `/claude-swarm:swarm-cleanup <team_name> [--graceful|--force]`
+**Purpose:** Graceful, suspend, or permanently delete a team
 
 **Arguments:**
 - `team_name` (required) - Name of the team to clean up
+- `--graceful` (optional) - Send shutdown requests and wait for acknowledgment
 - `--force` (optional) - Permanently delete all files (cannot be undone)
+- (no flag) - Immediately kills sessions, marks team as suspended, preserves data
 
 **What it does:**
-- **Without --force:** Kills all teammate sessions, marks team as suspended, preserves all data (resumable)
+- **Without flags:** Kills all teammate sessions, marks team as suspended, preserves all data (resumable)
+- **With --graceful:** Sends shutdown requests to teammates, waits for acknowledgment, then suspends
 - **With --force:** Kills sessions AND deletes team directory, task files, and all data (permanent)
 
 **Usage:**
 ```bash
-# Suspend (resumable)
+# Graceful shutdown (recommended)
+/claude-swarm:swarm-cleanup api-redesign --graceful
+
+# Suspend (resumable, immediate)
 /claude-swarm:swarm-cleanup api-redesign
 
 # Permanent deletion
@@ -235,6 +249,30 @@ Comprehensive reference for all 17 Claude Swarm slash commands.
 
 # Auto-fix mode
 /claude-swarm:swarm-reconcile api-redesign --auto-fix
+```
+
+---
+
+#### `/claude-swarm:swarm-guide [topic]`
+**Purpose:** Quick reference guide for common workflows and commands
+
+**Arguments:**
+- `topic` (optional) - Specific topic: `workflows`, `commands`, `tips`, `troubleshooting` (default: show all)
+
+**What it shows:**
+- **workflows** - Common step-by-step workflows (starting projects, checking on team, ending sessions)
+- **commands** - Commands organized by category with brief descriptions
+- **tips** - Best practices for model selection, naming, task granularity
+- **troubleshooting** - Quick fixes for common issues
+
+**Usage:**
+```bash
+# Show all sections
+/claude-swarm:swarm-guide
+
+# Show specific topic
+/claude-swarm:swarm-guide workflows
+/claude-swarm:swarm-guide troubleshooting
 ```
 
 ---
@@ -405,6 +443,125 @@ kitty --session ~/.claude/teams/api-redesign/swarm.kitty-session
 
 ---
 
+### Team Discovery Commands
+
+#### `/claude-swarm:swarm-discover [--all]`
+**Purpose:** Discover active teams available for joining
+
+**Arguments:**
+- `--all` (optional) - Show all teams including suspended ones
+
+**What it shows:**
+- Team names and descriptions
+- Team status (active/suspended)
+- Member counts
+- Creation dates
+
+**Usage:**
+```bash
+# Show active teams
+/claude-swarm:swarm-discover
+
+# Show all teams including suspended
+/claude-swarm:swarm-discover --all
+```
+
+---
+
+#### `/claude-swarm:swarm-join <team_name> [agent_type]`
+**Purpose:** Request to join an existing team
+
+**Arguments:**
+- `team_name` (required) - Team to join
+- `agent_type` (optional) - Your role type: worker, backend-developer, etc. (default: worker)
+
+**What it does:**
+- Creates a join request in the team's join-requests directory
+- Sends notification to team-lead's inbox
+- Generates a unique request ID for tracking
+
+**Usage:**
+```bash
+# Request to join as worker
+/claude-swarm:swarm-join api-redesign
+
+# Request to join as specific role
+/claude-swarm:swarm-join api-redesign backend-developer
+```
+
+---
+
+#### `/claude-swarm:swarm-approve-join <request_id> [agent_name] [color]`
+**Purpose:** Approve a join request (team-lead only)
+
+**Arguments:**
+- `request_id` (required) - Request ID from join request notification
+- `agent_name` (optional) - Name to assign the new member
+- `color` (optional) - Agent color (default: blue)
+
+**What it does:**
+- Adds the requesting agent to team config
+- Creates inbox for new member
+- Updates request status to approved
+
+**Usage:**
+```bash
+# Approve with auto-assigned name
+/claude-swarm:swarm-approve-join abc123-def456
+
+# Approve with custom name and color
+/claude-swarm:swarm-approve-join abc123-def456 data-analyst green
+```
+
+---
+
+#### `/claude-swarm:swarm-reject-join <request_id> [reason]`
+**Purpose:** Reject a join request (team-lead only)
+
+**Arguments:**
+- `request_id` (required) - Request ID from join request notification
+- `reason` (optional) - Reason for rejection
+
+**What it does:**
+- Updates request status to rejected
+- Records rejection reason
+
+**Usage:**
+```bash
+# Reject without reason
+/claude-swarm:swarm-reject-join abc123-def456
+
+# Reject with reason
+/claude-swarm:swarm-reject-join abc123-def456 "Team is at capacity"
+```
+
+---
+
+### Graceful Shutdown Commands
+
+#### `/claude-swarm:swarm-request-shutdown <agent_name> [reason]`
+**Purpose:** Request graceful shutdown of a specific teammate
+
+**Arguments:**
+- `agent_name` (required) - Agent to request shutdown from
+- `reason` (optional) - Reason for shutdown request
+
+**What it does:**
+- Sends shutdown request to agent's inbox
+- Allows agent to finish critical work before stopping
+- Includes request ID for acknowledgment
+
+**Usage:**
+```bash
+# Request shutdown
+/claude-swarm:swarm-request-shutdown backend-dev
+
+# Request with reason
+/claude-swarm:swarm-request-shutdown backend-dev "Team cleanup initiated"
+```
+
+---
+
 ## Tips and Best Practices
 
 ### Command Combinations
@@ -485,9 +642,12 @@ Commands automatically read these variables when available:
 | `CLAUDE_CODE_AGENT_ID` | Your unique agent UUID | Auto-set by spawn |
 | `CLAUDE_CODE_AGENT_NAME` | Your agent name | Auto-set by spawn, used for message sender |
 | `CLAUDE_CODE_AGENT_TYPE` | Your role type | Auto-set by spawn |
-| `SWARM_MULTIPLEXER` | Force tmux or kitty | Set by user to override auto-detection |
+| `CLAUDE_CODE_TEAMMATE_MODE` | Teammate mode | Auto-set: kitty, tmux, or in-process |
+| `SWARM_MULTIPLEXER` | Force multiplexer type | Set by user: tmux, kitty, or in-process |
 | `SWARM_KITTY_MODE` | Kitty spawn mode | Set by user: window, split, or tab |
 | `KITTY_LISTEN_ON` | Kitty socket path | Set by user to override default |
+
+**Note:** Agent colors are passed via `--agent-color` CLI argument, not environment variable.
 
 ---
 

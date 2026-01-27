@@ -70,7 +70,10 @@ send_raw_text() {
     case "$SWARM_MULTIPLEXER" in
         kitty)
             local swarm_var="swarm_${TEAM}_${agent_name}"
-            if kitten_cmd send-text --match "var:${swarm_var}" "${text}"$'\r'; then
+            # Send text first, then send Enter key separately
+            # Using send-key for Enter ensures Claude Code processes it as a key event
+            if kitten_cmd send-text --match "var:${swarm_var}" "${text}" && \
+               kitten_cmd send-key --match "var:${swarm_var}" enter; then
                 echo "Text sent to '${agent_name}' (kitty)"
             else
                 echo "Failed to send text to '${agent_name}' (kitty)" >&2

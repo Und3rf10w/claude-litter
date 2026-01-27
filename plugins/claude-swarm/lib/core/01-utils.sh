@@ -19,13 +19,25 @@ fi
 # ============================================
 
 detect_multiplexer() {
-    # Check if inside kitty and remote control is available
+    # Priority 1: Check explicit override (supports in-process mode)
+    if [[ -n "$CLAUDE_CODE_TEAMMATE_MODE" ]]; then
+        case "$CLAUDE_CODE_TEAMMATE_MODE" in
+            kitty|tmux|in-process)
+                echo "$CLAUDE_CODE_TEAMMATE_MODE"
+                return 0
+                ;;
+        esac
+    fi
+
+    # Priority 2: Check if inside kitty and remote control is available
     if [[ -n "$KITTY_PID" ]] && command -v kitten &>/dev/null; then
         echo "kitty"
+    # Priority 3: Check if tmux is available
     elif command -v tmux &>/dev/null; then
         echo "tmux"
+    # Priority 4: Fallback to in-process (uses Task tool with background mode)
     else
-        echo "none"
+        echo "in-process"
     fi
 }
 

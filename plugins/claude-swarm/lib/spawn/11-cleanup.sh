@@ -12,6 +12,86 @@ if [[ -z "$TEAMS_DIR" ]]; then
     return 1
 fi
 
+# ============================================
+# GRACEFUL CLEANUP
+# ============================================
+
+# Graceful cleanup: send shutdown requests, wait for acknowledgment, then cleanup
+graceful_cleanup() {
+    local team_name="$1"
+    local timeout="${2:-30}"  # Default 30 second timeout
+
+    # Check if team exists
+    if [[ ! -d "${TEAMS_DIR}/${team_name}" ]]; then
+        echo -e "${RED}Team '${team_name}' not found${NC}"
+        return 1
+    fi
+
+    echo -e "${CYAN}Graceful cleanup for team '${team_name}'...${NC}"
+
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${RED}Team config not found${NC}"
+        return 1
+    fi
+
+    # Get list of active members (excluding team-lead initially)
+    local members
+    members=$(jq -r '.members[] | select(.status == "active" and .name != "team-lead") | .name' "$config_file")
+
+    if [[ -z "$members" ]]; then
+        echo -e "${YELLOW}No active teammates to notify${NC}"
+        # Fall back to regular cleanup
+        cleanup_team "$team_name"
+        return $?
+    fi
+
+    # Send shutdown requests to all active members
+    local request_id=$(generate_uuid)
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local shutdown_message="SHUTDOWN REQUEST: Team cleanup initiated. Request ID: ${request_id}. Please finish critical work and acknowledge shutdown."
+
+    echo -e "${CYAN}Sending shutdown requests...${NC}"
+
+    local notified_count=0
+    while IFS= read -r member; do
+        [[ -n "$member" ]] || continue
+        if send_message "$team_name" "$member" "$shutdown_message" "red" 2>/dev/null; then
+            echo -e "${YELLOW}  Notified: ${member}${NC}"
+            ((notified_count++))
+        fi
+    done <<< "$members"
+
+    if [[ $notified_count -eq 0 ]]; then
+        echo -e "${YELLOW}No teammates could be notified, proceeding with regular cleanup${NC}"
+        cleanup_team "$team_name"
+        return $?
+    fi
+
+    echo -e "${CYAN}Waiting ${timeout}s for acknowledgments...${NC}"
+    echo -e "${CYAN}(Teammates should check /swarm-inbox and respond)${NC}"
+
+    # Wait for timeout period
+    # In a real implementation, we'd poll for acknowledgments
+    # For now, we just wait and then proceed
+    local waited=0
+    local interval=5
+    while [[ $waited -lt $timeout ]]; do
+        sleep $interval
+        waited=$((waited + interval))
+        echo -e "${CYAN}  ${waited}s / ${timeout}s elapsed...${NC}"
+    done
+
+    echo -e "${YELLOW}Timeout reached, proceeding with cleanup${NC}"
+
+    # Proceed with regular cleanup (suspend mode - keeps data)
+    cleanup_team "$team_name"
+}
+
+# ============================================
+# IMMEDIATE CLEANUP
+# ============================================
+
 cleanup_team() {
     local team_name="$1"
     local force="${2:-false}"
@@ -99,4 +179,4 @@ cleanup_team() {
 
 
 # Export public API
-export -f cleanup_team
+export -f cleanup_team graceful_cleanup

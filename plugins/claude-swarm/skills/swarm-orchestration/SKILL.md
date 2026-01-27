@@ -226,9 +226,33 @@ When work is complete:
 # Verify completion
 /claude-swarm:task-list
 
-# Clean up
-/claude-swarm:swarm-cleanup payment-system          # Kills sessions only
-/claude-swarm:swarm-cleanup payment-system --force  # Also removes files
+# Graceful cleanup (recommended - notifies teammates)
+/claude-swarm:swarm-cleanup payment-system --graceful
+
+# Or immediate cleanup (suspends without notification)
+/claude-swarm:swarm-cleanup payment-system
+
+# Or permanent deletion
+/claude-swarm:swarm-cleanup payment-system --force
+```
+
+## Team Discovery (External Agents)
+
+External Claude instances can discover and join your team:
+
+```bash
+# External agent discovers available teams
+/claude-swarm:swarm-discover
+
+# External agent requests to join
+/claude-swarm:swarm-join payment-system backend-developer
+
+# You (team-lead) see request in inbox
+/claude-swarm:swarm-inbox
+
+# Approve or reject
+/claude-swarm:swarm-approve-join <request-id> new-backend-dev blue
+/claude-swarm:swarm-reject-join <request-id> "Team at capacity"
 ```
 
 ## Communication with Team-Lead
@@ -300,7 +324,16 @@ When team-lead consults you, respond with:
 | `/claude-swarm:swarm-inbox` | Check messages from team-lead |
 | `/claude-swarm:swarm-message <to> <msg>` | Message team-lead |
 | `/claude-swarm:task-list` | View task progress |
-| `/claude-swarm:swarm-cleanup <team> [--force]` | Clean up team |
+| `/claude-swarm:swarm-cleanup <team> [--graceful\|--force]` | Clean up team |
+
+**Team discovery commands:**
+
+| Command | Purpose |
+|---------|---------|
+| `/claude-swarm:swarm-discover` | List joinable teams |
+| `/claude-swarm:swarm-join <team>` | Request to join |
+| `/claude-swarm:swarm-approve-join <id>` | Approve join (team-lead) |
+| `/claude-swarm:swarm-reject-join <id>` | Reject join (team-lead) |
 
 **Commands primarily used by team-lead:**
 
@@ -310,6 +343,7 @@ When team-lead consults you, respond with:
 | `/claude-swarm:swarm-verify` | Verify workers alive |
 | `/claude-swarm:task-update` | Assign/update tasks |
 | `/claude-swarm:swarm-broadcast` | Message all workers |
+| `/claude-swarm:swarm-request-shutdown` | Request graceful shutdown |
 
 See [Slash Commands Reference](references/slash-commands.md) for detailed options.
 

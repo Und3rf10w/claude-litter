@@ -89,8 +89,10 @@ send_text_to_teammate() {
     case "$SWARM_MULTIPLEXER" in
         kitty)
             local swarm_var="swarm_${team_name}_${agent_name}"
-            # Send text with carriage return to execute
-            kitten_cmd send-text --match "var:${swarm_var}" "${text}"$'\r'
+            # Send text first, then send Enter key separately
+            # Using send-key for Enter ensures Claude Code processes it as a key event
+            kitten_cmd send-text --match "var:${swarm_var}" "${text}"
+            kitten_cmd send-key --match "var:${swarm_var}" enter
             ;;
         tmux)
             local safe_team="${team_name//[^a-zA-Z0-9_-]/_}"
@@ -232,6 +234,137 @@ format_messages_xml() {
     echo "$messages" | jq -r '.[] | "<teammate-message teammate_id=\"\(.from)\" color=\"\(.color)\">\n\(.text)\n</teammate-message>\n"'
 }
 
+# ============================================
+# JOIN REQUEST MANAGEMENT
+# ============================================
+
+# List pending join requests for a team
+list_pending_join_requests() {
+    local team_name="$1"
+    local requests_dir="${TEAMS_DIR}/${team_name}/join-requests"
+
+    if [[ ! -d "$requests_dir" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Collect all pending requests into a JSON array
+    local result="["
+    local first=true
+
+    for request_file in "$requests_dir"/*.json; do
+        [[ -f "$request_file" ]] || continue
+
+        local status=$(jq -r '.status' "$request_file" 2>/dev/null)
+        if [[ "$status" == "pending" ]]; then
+            if [[ "$first" == "true" ]]; then
+                first=false
+            else
+                result+=","
+            fi
+            result+=$(command cat "$request_file")
+        fi
+    done
+
+    result+="]"
+    echo "$result"
+}
+
+# Get a specific join request
+get_join_request() {
+    local team_name="$1"
+    local request_id="$2"
+    local request_file="${TEAMS_DIR}/${team_name}/join-requests/${request_id}.json"
+
+    if [[ -f "$request_file" ]]; then
+        command cat "$request_file"
+    else
+        echo "{}"
+    fi
+}
+
+# Send a structured message with type
+send_typed_message() {
+    local team_name="$1"
+    local to="$2"
+    local message_type="$3"
+    local message="$4"
+    local metadata="$5"  # Optional JSON metadata
+    local from="${CLAUDE_CODE_AGENT_NAME:-$(get_current_window_var 'swarm_agent' 2>/dev/null || echo 'team-lead')}"
+    local color="${6:-blue}"
+
+    # Validate recipient name (prevent path traversal)
+    validate_name "$to" "recipient" || return 1
+
+    local inbox_file="${TEAMS_DIR}/${team_name}/inboxes/${to}.json"
+
+    if [[ ! -f "$inbox_file" ]]; then
+        echo -e "${RED}Inbox for '${to}' not found in team '${team_name}'${NC}"
+        return 1
+    fi
+
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$inbox_file"; then
+        echo -e "${RED}Failed to acquire lock for inbox${NC}" >&2
+        return 1
+    fi
+
+    local tmp_file=$(mktemp)
+    if [[ -z "$tmp_file" ]]; then
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        release_file_lock
+        return 1
+    fi
+
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Build message object with optional metadata
+    local msg_obj
+    if [[ -n "$metadata" ]] && [[ "$metadata" != "{}" ]]; then
+        msg_obj=$(jq -n \
+            --arg from "$from" \
+            --arg text "$message" \
+            --arg type "$message_type" \
+            --arg color "$color" \
+            --arg ts "$timestamp" \
+            --argjson meta "$metadata" \
+            '{from: $from, text: $text, type: $type, color: $color, read: false, timestamp: $ts, metadata: $meta}')
+    else
+        msg_obj=$(jq -n \
+            --arg from "$from" \
+            --arg text "$message" \
+            --arg type "$message_type" \
+            --arg color "$color" \
+            --arg ts "$timestamp" \
+            '{from: $from, text: $text, type: $type, color: $color, read: false, timestamp: $ts}')
+    fi
+
+    if jq --argjson msg "$msg_obj" '. += [$msg]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
+        trap - EXIT INT TERM
+        release_file_lock
+        return 0
+    else
+        trap - EXIT INT TERM
+        command rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update inbox${NC}" >&2
+        return 1
+    fi
+}
+
+# Message type constants
+MSG_TYPE_TEXT="text"
+MSG_TYPE_JOIN_REQUEST="join_request"
+MSG_TYPE_JOIN_APPROVED="join_approved"
+MSG_TYPE_JOIN_REJECTED="join_rejected"
+MSG_TYPE_SHUTDOWN_REQUEST="shutdown_request"
+MSG_TYPE_SHUTDOWN_ACK="shutdown_ack"
+MSG_TYPE_TASK_ASSIGNMENT="task_assignment"
+MSG_TYPE_TASK_UPDATE="task_update"
 
 # Export public API
 export -f send_message send_text_to_teammate notify_active_teammate read_inbox read_unread_messages mark_messages_read broadcast_message format_messages_xml
+export -f list_pending_join_requests get_join_request send_typed_message
+export MSG_TYPE_TEXT MSG_TYPE_JOIN_REQUEST MSG_TYPE_JOIN_APPROVED MSG_TYPE_JOIN_REJECTED MSG_TYPE_SHUTDOWN_REQUEST MSG_TYPE_SHUTDOWN_ACK MSG_TYPE_TASK_ASSIGNMENT MSG_TYPE_TASK_UPDATE

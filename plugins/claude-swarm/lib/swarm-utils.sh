@@ -68,3 +68,6 @@ source "${SWARM_LIB_DIR}/spawn/12-kitty-session.sh" 1>/dev/null
 # Level 7: Cleanup and Diagnostics
 source "${SWARM_LIB_DIR}/spawn/11-cleanup.sh" 1>/dev/null
 source "${SWARM_LIB_DIR}/spawn/13-diagnostics.sh" 1>/dev/null
+
+# Level 8: In-process teammates
+source "${SWARM_LIB_DIR}/spawn/14-in-process.sh" 1>/dev/null
