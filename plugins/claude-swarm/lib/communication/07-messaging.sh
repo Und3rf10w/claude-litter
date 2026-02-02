@@ -57,6 +57,9 @@ send_message() {
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
 
+        # Trigger webhook notification
+        webhook_message_sent "$team_name" "$from" "$to" "$message" 2>/dev/null || true
+
         # # Send real-time notification to active teammate
         # deprecated
         # notify_active_teammate "$team_name" "$to" "$from"

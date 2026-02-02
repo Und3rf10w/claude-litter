@@ -116,6 +116,9 @@ suspend_team() {
     echo -e "${GREEN}Team '${team_name}' suspended${NC}"
     echo "  Data preserved in: ${TEAMS_DIR}/${team_name}/"
     echo "  Resume with: /claude-swarm:swarm-resume ${team_name}"
+
+    # Trigger webhook notification
+    webhook_team_suspended "$team_name" 2>/dev/null || true
 }
 
 resume_team() {
@@ -176,8 +179,145 @@ resume_team() {
     done <<< "$offline_members"
 
     echo -e "${GREEN}Team '${team_name}' resumed${NC}"
+
+    # Trigger webhook notification
+    webhook_team_resumed "$team_name" 2>/dev/null || true
 }
 
 
+archive_team() {
+    local team_name="$1"
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+    local archives_dir="${CLAUDE_HOME}/archives"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${RED}Team '${team_name}' not found${NC}"
+        return 1
+    fi
+
+    local current_status=$(get_team_status "$team_name")
+    if [[ "$current_status" == "archived" ]]; then
+        echo -e "${YELLOW}Team '${team_name}' is already archived${NC}"
+        return 0
+    fi
+
+    echo -e "${CYAN}Archiving team '${team_name}'...${NC}"
+
+    # Create archives directory if it doesn't exist
+    if ! command mkdir -p "$archives_dir"; then
+        echo -e "${RED}Failed to create archives directory${NC}" >&2
+        return 1
+    fi
+
+    # Generate timestamp for archive
+    local timestamp=$(date -u +%Y%m%d_%H%M%S)
+    local archive_name="${team_name}_${timestamp}"
+    local archive_file="${archives_dir}/${archive_name}.tar.gz"
+
+    # Suspend team first if it's active (marks members offline, closes windows)
+    if [[ "$current_status" == "active" ]]; then
+        echo -e "${YELLOW}  Suspending active team before archiving...${NC}"
+        suspend_team "$team_name" true || {
+            echo -e "${RED}Failed to suspend team${NC}" >&2
+            return 1
+        }
+    fi
+
+    # Create archive with team data and tasks
+    local team_dir="${TEAMS_DIR}/${team_name}"
+    local tasks_dir="${TASKS_DIR}/${team_name}"
+
+    echo -e "${YELLOW}  Creating archive: ${archive_name}.tar.gz${NC}"
+
+    # Archive both team and task directories
+    local tar_status=0
+    if [[ -d "$tasks_dir" ]]; then
+        tar -czf "$archive_file" -C "${TEAMS_DIR}" "${team_name}" -C "${TASKS_DIR}" "${team_name}" 2>/dev/null || tar_status=$?
+    else
+        tar -czf "$archive_file" -C "${TEAMS_DIR}" "${team_name}" 2>/dev/null || tar_status=$?
+    fi
+
+    if [[ $tar_status -ne 0 ]]; then
+        echo -e "${RED}Failed to create archive${NC}" >&2
+        return 1
+    fi
+
+    # Update team status to archived
+    update_team_status "$team_name" "archived"
+
+    # Create metadata file for the archive
+    local metadata_file="${archives_dir}/${archive_name}.json"
+    jq -n \
+        --arg teamName "$team_name" \
+        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg archiveName "$archive_name" \
+        --arg archiveFile "$archive_file" \
+        '{
+            teamName: $teamName,
+            archivedAt: $timestamp,
+            archiveName: $archiveName,
+            archiveFile: $archiveFile
+        }' > "$metadata_file"
+
+    echo -e "${GREEN}Team '${team_name}' archived successfully${NC}"
+    echo "  Archive: ${archive_file}"
+    echo "  Metadata: ${metadata_file}"
+    echo ""
+    echo -e "${YELLOW}Note: Team directory preserved at ${team_dir}/${NC}"
+    echo "      Use swarm-list-archives to view archived teams"
+    echo "      Team cannot be resumed (status: archived)"
+}
+
+list_archives() {
+    local archives_dir="${CLAUDE_HOME}/archives"
+
+    if [[ ! -d "$archives_dir" ]]; then
+        echo -e "${YELLOW}No archives directory found${NC}"
+        echo "  Create your first archive with: /claude-swarm:swarm-archive <team_name>"
+        return 0
+    fi
+
+    # Find all archive metadata files
+    local metadata_files=()
+    while IFS= read -r -d '' file; do
+        metadata_files+=("$file")
+    done < <(find "$archives_dir" -name "*.json" -type f -print0 2>/dev/null)
+
+    if [[ ${#metadata_files[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}No archived teams found${NC}"
+        return 0
+    fi
+
+    echo -e "${CYAN}=== Archived Teams ===${NC}"
+    echo ""
+
+    # Sort by archivedAt timestamp (newest first)
+    local sorted_files=$(printf '%s\n' "${metadata_files[@]}" | xargs -I {} sh -c 'jq -r ".archivedAt" "{}" 2>/dev/null && echo "{}"' | paste -d'|' - - | sort -r | cut -d'|' -f2)
+
+    while IFS= read -r metadata_file; do
+        [[ -z "$metadata_file" ]] && continue
+
+        local team_name=$(jq -r '.teamName' "$metadata_file" 2>/dev/null)
+        local archived_at=$(jq -r '.archivedAt' "$metadata_file" 2>/dev/null)
+        local archive_file=$(jq -r '.archiveFile' "$metadata_file" 2>/dev/null)
+
+        if [[ -f "$archive_file" ]]; then
+            local size=$(du -h "$archive_file" 2>/dev/null | cut -f1)
+            echo -e "${BLUE}Team:${NC} ${team_name}"
+            echo "  Archived: ${archived_at}"
+            echo "  Size: ${size}"
+            echo "  Archive: ${archive_file}"
+            echo ""
+        else
+            echo -e "${YELLOW}Team:${NC} ${team_name} ${RED}(archive file missing)${NC}"
+            echo "  Archived: ${archived_at}"
+            echo "  Expected: ${archive_file}"
+            echo ""
+        fi
+    done <<< "$sorted_files"
+
+    echo "Total archives: ${#metadata_files[@]}"
+}
+
 # Export public API
-export -f get_member_context suspend_team resume_team
+export -f get_member_context suspend_team resume_team archive_team list_archives

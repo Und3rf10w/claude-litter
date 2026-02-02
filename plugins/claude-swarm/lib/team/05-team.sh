@@ -88,6 +88,9 @@ create_team() {
     echo -e "${GREEN}Created team '${team_name}'${NC}"
     echo "  Config: ${team_dir}/config.json"
     echo "  Tasks: ${TASKS_DIR}/${team_name}/"
+
+    # Trigger webhook notification
+    webhook_team_created "$team_name" "$description" 2>/dev/null || true
 }
 
 add_member() {
@@ -143,6 +146,9 @@ add_member() {
         echo "[]" > "${TEAMS_DIR}/${team_name}/inboxes/${agent_name}.json"
 
         echo -e "${GREEN}Added '${agent_name}' to team '${team_name}'${NC}"
+
+        # Trigger webhook notification
+        webhook_teammate_joined "$team_name" "$agent_name" "$agent_type" 2>/dev/null || true
     else
         trap - EXIT INT TERM
         command rm -f "$tmp_file"
@@ -175,6 +181,71 @@ list_team_members() {
     jq -r '.members[] | "\(.name) (\(.type)) - \(.agentId)"' "$config_file"
 }
 
+update_agent_color() {
+    local team_name="$1"
+    local agent_name="$2"
+    local new_color="$3"
+
+    # Validate names
+    validate_name "$team_name" "team" || return 1
+    validate_name "$agent_name" "agent" || return 1
+
+    # Validate color
+    case "$new_color" in
+        blue|green|yellow|red|cyan|magenta|white) ;;
+        *)
+            echo -e "${RED}Invalid color '${new_color}'. Must be one of: blue, green, yellow, red, cyan, magenta, white${NC}" >&2
+            return 1
+            ;;
+    esac
+
+    local config_file="${TEAMS_DIR}/${team_name}/config.json"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${RED}Team '${team_name}' not found${NC}" >&2
+        return 1
+    fi
+
+    # Check if agent exists
+    if ! jq -e --arg name "$agent_name" '.members[] | select(.name == $name)' "$config_file" &>/dev/null; then
+        echo -e "${RED}Agent '${agent_name}' not found in team '${team_name}'${NC}" >&2
+        return 1
+    fi
+
+    # Acquire lock for concurrent access protection
+    if ! acquire_file_lock "$config_file"; then
+        echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+        return 1
+    fi
+
+    # Update agent color in config
+    local tmp_file=$(mktemp)
+
+    if [[ -z "$tmp_file" ]]; then
+        release_file_lock
+        echo -e "${RED}Failed to create temp file${NC}" >&2
+        return 1
+    fi
+
+    # Add trap to ensure cleanup on interrupt
+    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+
+    if jq --arg name "$agent_name" \
+       --arg color "$new_color" \
+       '(.members[] | select(.name == $name) | .color) = $color' \
+       "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
+        trap - EXIT INT TERM
+        release_file_lock
+        echo -e "${GREEN}Updated color for '${agent_name}' to '${new_color}'${NC}"
+    else
+        trap - EXIT INT TERM
+        command rm -f "$tmp_file"
+        release_file_lock
+        echo -e "${RED}Failed to update agent color${NC}" >&2
+        return 1
+    fi
+}
+
 
 # Export public API
-export -f create_team add_member get_team_config list_team_members
+export -f create_team add_member get_team_config list_team_members update_agent_color

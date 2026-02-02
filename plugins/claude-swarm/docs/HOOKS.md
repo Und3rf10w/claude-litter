@@ -18,15 +18,25 @@ This document provides comprehensive documentation for all hooks implemented in 
 
 ## Overview
 
-Claude Swarm uses 5 hooks to enable seamless team coordination:
+Claude Swarm uses 8 hooks to enable seamless team coordination:
 
 1. **Notification** - Throttled heartbeat updates for team member activity tracking
 2. **SessionStart** - Auto-delivers messages and task reminders when sessions start
 3. **SessionEnd** - Handles graceful member/team shutdowns
 4. **PostToolUse:ExitPlanMode** - Provides swarm launch guidance after plan approval
 5. **PreToolUse:Task** - Injects team context into spawned subagents
+6. **PreToolUse:TaskUpdate** (prompt-based) - Validates task status changes and assignments
+7. **PreToolUse:SendMessage|Teammate** (prompt-based) - Validates team communications
+8. **SubagentStop** (prompt-based) - Ensures teammates complete work before stopping
 
 All hooks are registered in `hooks/hooks.json` and use the `${CLAUDE_PLUGIN_ROOT}` variable for portability.
+
+### Command vs Prompt-Based Hooks
+
+Claude Swarm uses two types of hooks:
+
+- **Command hooks** (1-5): Fast, deterministic operations like heartbeat tracking and message delivery
+- **Prompt-based hooks** (6-8): Context-aware validation using LLM reasoning for complex decisions
 
 ## Hook Execution Environment
 

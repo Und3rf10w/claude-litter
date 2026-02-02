@@ -1,5 +1,5 @@
 {
-  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, handle swarm launches, heartbeat tracking",
+  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, handle swarm launches, heartbeat tracking, and context-aware validation",
   "hooks": {
     "Notification": [
       {
@@ -52,6 +52,38 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/task-team-context.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "TaskUpdate",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review this task update for validity. Check if:\n1. Marking task as 'completed' - verify the description suggests work is actually done\n2. Changing task owner - ensure new owner exists and is appropriate\n3. Changing status - ensure transitions are logical (todo->in_progress->completed)\n4. Task dependencies - if completing a task, check if it would unblock other tasks\n\nTask update: $TOOL_INPUT\n\nIf valid, return 'approve'. If concerns exist, return 'deny' with specific reason. For minor issues that should proceed with a warning, return 'approve' but include a systemMessage with the warning.",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage|Teammate",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Validate this team communication for effectiveness. Check:\n1. Is the recipient valid and appropriate for the message?\n2. Is the message clear and actionable?\n3. For broadcasts - is this truly necessary for all team members?\n4. For task assignments - does the message provide sufficient context?\n5. For shutdown requests - is the work actually complete?\n\nCommunication: $TOOL_INPUT\n\nIf appropriate, return 'approve'. If this is a broadcast that could be a direct message, suggest alternatives in systemMessage but approve. If invalid recipient or critical issues, return 'deny' with reason.",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Validate if this teammate should stop. Check:\n1. Are all assigned tasks completed or properly handed off?\n2. Has the teammate reported their work status to the team lead?\n3. Are there any blocking issues that should be resolved first?\n4. Has the teammate updated task statuses appropriately?\n\nStop reason: $REASON\nAgent context: Check recent tool usage and messages to determine if work is complete.\n\nReturn 'approve' if work is complete and teammate should stop. Return 'block' with specific reason if:\n- Assigned tasks are incomplete\n- Work status not communicated\n- Tasks marked in_progress but not completed or updated\n\nProvide a systemMessage with guidance on what needs to be done before stopping.",
+            "timeout": 30
           }
         ]
       }

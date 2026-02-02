@@ -196,7 +196,8 @@ spawn_teammate_tmux() {
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
     local plugin_dir="${9:-}"
-    shift 9 2>/dev/null || true
+    local agent_color="${10:-blue}"
+    shift 10 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -244,14 +245,14 @@ spawn_teammate_tmux() {
         agent_id=$(generate_uuid)
         lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
         # Add to team config (include model for resume capability)
-        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "$agent_color" "$model"; then
             echo -e "${RED}Failed to add member to team config${NC}" >&2
             return 1
         fi
     fi
 
-    # Get agent color for InboxPoller activation
-    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+    # Get agent color for InboxPoller activation (use configured color from config)
+    agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
     if [[ -z "$initial_prompt" ]]; then
@@ -394,7 +395,8 @@ spawn_teammate_kitty() {
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
     local plugin_dir="${9:-}"
-    shift 9 2>/dev/null || true
+    local agent_color="${10:-blue}"
+    shift 10 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -441,14 +443,14 @@ spawn_teammate_kitty() {
         agent_id=$(generate_uuid)
         lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
         # Add to team config (include model for resume capability)
-        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "$agent_color" "$model"; then
             echo -e "${RED}Failed to add member to team config${NC}" >&2
             return 1
         fi
     fi
 
-    # Get agent color for InboxPoller activation
-    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+    # Get agent color for InboxPoller activation (use configured color from config)
+    agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
     if [[ -z "$initial_prompt" ]]; then

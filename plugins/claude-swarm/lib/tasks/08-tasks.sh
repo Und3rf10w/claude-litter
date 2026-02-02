@@ -72,6 +72,10 @@ create_task() {
     release_file_lock
 
     echo -e "${GREEN}Created task #${new_id}: ${subject}${NC}"
+
+    # Trigger webhook notification
+    webhook_task_created "$team_name" "$new_id" "$subject" 2>/dev/null || true
+
     echo "$new_id"
 }
 
@@ -128,6 +132,11 @@ update_task() {
         return 1
     fi
 
+    # Track if task is being marked completed for webhook
+    local task_completed=false
+    local task_owner=""
+    local new_status=""
+
     # Acquire lock for concurrent access protection
     if ! acquire_file_lock "$task_file"; then
         echo -e "${RED}Failed to acquire lock for task #${task_id}${NC}" >&2
@@ -149,6 +158,12 @@ update_task() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --status)
+                new_status="$2"
+                if [[ "$new_status" == "completed" ]]; then
+                    task_completed=true
+                    # Get current owner before status change
+                    task_owner=$(jq -r '.owner // "unknown"' "$tmp_file")
+                fi
                 if ! jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
                     trap - EXIT INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
@@ -238,6 +253,11 @@ update_task() {
     if command mv "$tmp_file" "$task_file"; then
         release_file_lock
         echo -e "${GREEN}Updated task #${task_id}${NC}"
+
+        # Trigger webhook notification if task was completed
+        if [[ "$task_completed" == "true" ]]; then
+            webhook_task_completed "$team_name" "$task_id" "$task_owner" 2>/dev/null || true
+        fi
     else
         command rm -f "$tmp_file"
         release_file_lock

@@ -9,11 +9,12 @@ This guide covers integrating Claude Swarm with external systems, tools, and wor
 3. [File-Based Integration](#file-based-integration)
 4. [Environment Variables](#environment-variables)
 5. [Hooks Integration](#hooks-integration)
-6. [Message-Based Communication](#message-based-communication)
-7. [Task System Integration](#task-system-integration)
-8. [CI/CD Integration](#cicd-integration)
-9. [Custom Tooling](#custom-tooling)
-10. [Monitoring and Observability](#monitoring-and-observability)
+6. [Webhook Notifications](#webhook-notifications)
+7. [Message-Based Communication](#message-based-communication)
+8. [Task System Integration](#task-system-integration)
+9. [CI/CD Integration](#cicd-integration)
+10. [Custom Tooling](#custom-tooling)
+11. [Monitoring and Observability](#monitoring-and-observability)
 
 ---
 
@@ -351,6 +352,422 @@ Claude Swarm provides 5 lifecycle hooks for custom automation:
 - Inject team context into subagents
 - Ensure proper coordination across nested agents
 - Track nested task execution
+
+---
+
+## Webhook Notifications
+
+Claude Swarm supports outbound webhook notifications for key team events, enabling real-time integration with external systems.
+
+### Overview
+
+Webhooks provide push-based notifications when important events occur in your swarm:
+
+- **Team lifecycle** - Team created, suspended, resumed
+- **Teammate changes** - Members joining or leaving
+- **Task updates** - Tasks created or completed
+- **Communication** - Messages sent between teammates
+
+### Configuring Webhooks
+
+Use the `/swarm-webhooks` command to manage webhook endpoints:
+
+```bash
+# Add webhook for all events
+/swarm-webhooks my-team add https://example.com/webhook
+
+# Add webhook for specific event type
+/swarm-webhooks my-team add https://example.com/tasks task.created
+
+# List configured webhooks
+/swarm-webhooks my-team list
+
+# Remove webhook
+/swarm-webhooks my-team remove https://example.com/webhook
+
+# Test webhook delivery
+/swarm-webhooks my-team test https://example.com/webhook
+```
+
+### Webhook Payload Format
+
+All webhooks receive POST requests with JSON payloads in this format:
+
+```json
+{
+  "team": "my-team",
+  "event": "task.created",
+  "timestamp": "2025-12-16T10:00:00Z",
+  "data": {
+    "teamName": "my-team",
+    "taskId": "5",
+    "subject": "Implement feature X"
+  }
+}
+```
+
+**Headers:**
+- `Content-Type: application/json`
+- `User-Agent: Claude-Swarm/1.0`
+
+### Event Types
+
+| Event Type | Description | Data Fields |
+|------------|-------------|-------------|
+| `team.created` | Team was created | `teamName`, `description` |
+| `team.suspended` | Team was suspended | `teamName` |
+| `team.resumed` | Team was resumed | `teamName` |
+| `teammate.joined` | New teammate joined | `teamName`, `teammate`, `type` |
+| `teammate.left` | Teammate left team | `teamName`, `teammate` |
+| `task.created` | New task created | `teamName`, `taskId`, `subject` |
+| `task.completed` | Task marked completed | `teamName`, `taskId`, `owner` |
+| `message.sent` | Message sent | `teamName`, `from`, `to`, `preview` |
+| `webhook.test` | Test event | `message`, `timestamp` |
+
+### Event Filtering
+
+Configure webhooks to receive only specific event types:
+
+```bash
+# Only task events
+/swarm-webhooks my-team add https://example.com/tasks task.created
+
+# Only team lifecycle events
+/swarm-webhooks my-team add https://example.com/lifecycle team.suspended
+
+# All events (default)
+/swarm-webhooks my-team add https://example.com/all "*"
+```
+
+### Webhook Handler Examples
+
+#### Node.js / Express
+
+```javascript
+const express = require('express');
+const app = express();
+
+app.use(express.json());
+
+app.post('/webhook', (req, res) => {
+  const { team, event, timestamp, data } = req.body;
+
+  console.log(`Received ${event} for team ${team}`);
+
+  switch (event) {
+    case 'task.completed':
+      console.log(`Task #${data.taskId} completed by ${data.owner}`);
+      // Trigger notification, update dashboard, etc.
+      break;
+
+    case 'teammate.joined':
+      console.log(`${data.teammate} joined as ${data.type}`);
+      // Send welcome message, update roster, etc.
+      break;
+
+    case 'team.suspended':
+      console.log(`Team ${data.teamName} suspended`);
+      // Archive data, notify stakeholders, etc.
+      break;
+  }
+
+  res.status(200).json({ received: true });
+});
+
+app.listen(3000);
+```
+
+#### Python / Flask
+
+```python
+from flask import Flask, request, jsonify
+import logging
+
+app = Flask(__name__)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    payload = request.get_json()
+    team = payload.get('team')
+    event = payload.get('event')
+    data = payload.get('data', {})
+
+    logging.info(f"Received {event} for team {team}")
+
+    if event == 'task.completed':
+        task_id = data.get('taskId')
+        owner = data.get('owner')
+        logging.info(f"Task #{task_id} completed by {owner}")
+        # Send notification, update metrics, etc.
+
+    elif event == 'teammate.joined':
+        teammate = data.get('teammate')
+        logging.info(f"{teammate} joined the team")
+        # Update roster, send welcome message, etc.
+
+    return jsonify({'received': True}), 200
+
+if __name__ == '__main__':
+    app.run(port=3000)
+```
+
+#### Bash Script
+
+```bash
+#!/bin/bash
+# Simple webhook handler using netcat
+
+PORT=3000
+
+while true; do
+  {
+    # Read HTTP request
+    read request
+    read -r headers
+
+    # Read JSON payload
+    payload=""
+    while read -r line; do
+      [[ -z "$line" ]] && break
+      payload="$payload$line"
+    done
+
+    # Extract event details
+    event=$(echo "$payload" | jq -r '.event')
+    team=$(echo "$payload" | jq -r '.team')
+
+    echo "Received event: $event for team: $team"
+
+    # Respond with 200 OK
+    echo -e "HTTP/1.1 200 OK\r"
+    echo -e "Content-Type: application/json\r"
+    echo -e "\r"
+    echo -e '{"received":true}\r'
+  } | nc -l -p $PORT
+done
+```
+
+### Integration Examples
+
+#### Slack Notifications
+
+```bash
+#!/bin/bash
+# Webhook handler that posts to Slack
+
+# Expects JSON payload from Claude Swarm
+payload=$(cat)
+
+event=$(echo "$payload" | jq -r '.event')
+team=$(echo "$payload" | jq -r '.team')
+data=$(echo "$payload" | jq -r '.data')
+
+# Build Slack message based on event
+case "$event" in
+  "task.completed")
+    task_id=$(echo "$data" | jq -r '.taskId')
+    owner=$(echo "$data" | jq -r '.owner')
+    message="✅ Task #$task_id completed by $owner in team $team"
+    ;;
+
+  "teammate.joined")
+    teammate=$(echo "$data" | jq -r '.teammate')
+    message="👋 $teammate joined team $team"
+    ;;
+
+  "team.suspended")
+    message="⏸️ Team $team suspended"
+    ;;
+
+  *)
+    message="📢 Event $event in team $team"
+    ;;
+esac
+
+# Post to Slack
+curl -X POST "$SLACK_WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d "{\"text\": \"$message\"}"
+
+# Respond to webhook
+echo '{"received": true}'
+```
+
+#### GitHub Issues Integration
+
+```bash
+#!/bin/bash
+# Create GitHub issues when tasks are completed
+
+payload=$(cat)
+event=$(echo "$payload" | jq -r '.event')
+
+if [[ "$event" == "task.completed" ]]; then
+  task_id=$(echo "$payload" | jq -r '.data.taskId')
+  subject=$(echo "$payload" | jq -r '.data.subject')
+  owner=$(echo "$payload" | jq -r '.data.owner')
+
+  # Create GitHub issue for completed task
+  gh issue create \
+    --title "Task #$task_id completed: $subject" \
+    --body "Completed by: $owner" \
+    --label "swarm-completed"
+fi
+
+echo '{"received": true}'
+```
+
+#### Prometheus Metrics
+
+```bash
+#!/bin/bash
+# Export swarm events as Prometheus metrics
+
+payload=$(cat)
+event=$(echo "$payload" | jq -r '.event')
+team=$(echo "$payload" | jq -r '.team')
+
+# Increment event counter
+echo "swarm_events_total{team=\"$team\",event=\"$event\"} 1" >> /var/lib/prometheus/swarm_metrics.prom
+
+# Update last event timestamp
+timestamp=$(date +%s)
+echo "swarm_last_event_timestamp{team=\"$team\"} $timestamp" >> /var/lib/prometheus/swarm_metrics.prom
+
+echo '{"received": true}'
+```
+
+### Webhook Security
+
+#### Authentication
+
+Add authentication to your webhook handlers:
+
+```javascript
+// Express with bearer token
+app.post('/webhook', (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (token !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Process webhook...
+});
+```
+
+**Note:** Claude Swarm currently sends webhooks without authentication headers. Consider:
+- Using HTTPS URLs
+- IP allowlisting
+- URL secrets (e.g., `https://example.com/webhook/secret-token`)
+- Network-level restrictions
+
+#### HTTPS
+
+Always use HTTPS endpoints for webhook URLs:
+
+```bash
+# Good
+/swarm-webhooks my-team add https://example.com/webhook
+
+# Avoid (insecure)
+/swarm-webhooks my-team add http://example.com/webhook
+```
+
+### Webhook Delivery
+
+**Delivery guarantees:**
+- Best-effort delivery (fire-and-forget)
+- 10-second timeout per request
+- No automatic retries
+- Asynchronous (non-blocking)
+
+**Failure handling:**
+- Failed deliveries are silently ignored
+- No delivery confirmation or status tracking
+- Implement your own retry logic if needed
+
+### Testing Webhooks
+
+Use the test command to verify webhook configuration:
+
+```bash
+# Send test event
+/swarm-webhooks my-team test https://example.com/webhook
+```
+
+Test payload:
+```json
+{
+  "team": "my-team",
+  "event": "webhook.test",
+  "timestamp": "2025-12-16T10:00:00Z",
+  "data": {
+    "message": "This is a test webhook from Claude Swarm",
+    "timestamp": "2025-12-16T10:00:00Z"
+  }
+}
+```
+
+Use tools like [webhook.site](https://webhook.site) or [RequestBin](https://requestbin.com) for testing:
+
+```bash
+# Get a test URL from webhook.site
+TEST_URL="https://webhook.site/unique-id"
+
+# Add webhook
+/swarm-webhooks my-team add "$TEST_URL"
+
+# Send test event
+/swarm-webhooks my-team test "$TEST_URL"
+
+# Check webhook.site to see the payload
+```
+
+### Configuration Storage
+
+Webhooks are stored in the team configuration file:
+
+**Location:** `~/.claude/teams/<team>/config.json`
+
+```json
+{
+  "teamName": "my-team",
+  "webhooks": [
+    {
+      "url": "https://example.com/webhook",
+      "events": "*",
+      "enabled": true,
+      "addedAt": "2025-12-16T10:00:00Z"
+    },
+    {
+      "url": "https://example.com/tasks",
+      "events": "task.created",
+      "enabled": true,
+      "addedAt": "2025-12-16T10:05:00Z"
+    }
+  ]
+}
+```
+
+### Programmatic Webhook Management
+
+Manage webhooks via file editing:
+
+```bash
+#!/bin/bash
+# Add webhook programmatically
+
+team="my-team"
+config="$HOME/.claude/teams/$team/config.json"
+webhook_url="https://example.com/webhook"
+
+# Add webhook using jq
+jq --arg url "$webhook_url" \
+   --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+   '.webhooks += [{url: $url, events: "*", enabled: true, addedAt: $timestamp}]' \
+   "$config" > "$config.tmp" && mv "$config.tmp" "$config"
+```
 
 ---
 
