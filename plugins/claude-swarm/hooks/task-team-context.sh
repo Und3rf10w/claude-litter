@@ -3,6 +3,7 @@
 # When in a team, ensures spawned agents know about the team
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../lib/swarm-utils.sh" 1>/dev/null
 
 # Only inject if we're part of a team
 if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then

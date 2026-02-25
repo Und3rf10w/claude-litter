@@ -151,7 +151,7 @@ update_task() {
     fi
 
     # Add trap to ensure cleanup on interrupt/error
-    trap "rm -f '$tmp_file' '${tmp_file}.new'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file' '${tmp_file}.new'" INT TERM
 
     command cp "$task_file" "$tmp_file"
 
@@ -165,7 +165,7 @@ update_task() {
                     task_owner=$(jq -r '.owner // "unknown"' "$tmp_file")
                 fi
                 if ! jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Failed to update task status${NC}" >&2
@@ -176,7 +176,7 @@ update_task() {
                 ;;
             --owner|--assign)
                 if ! jq --arg val "$2" '.owner = $val' "$tmp_file" > "${tmp_file}.new"; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Failed to update task owner${NC}" >&2
@@ -191,7 +191,7 @@ update_task() {
                 if ! jq --arg author "$author" --arg content "$2" --arg ts "$timestamp" \
                    '.comments += [{"author": $author, "text": $content, "timestamp": $ts}]' \
                    "$tmp_file" > "${tmp_file}.new"; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Failed to add task comment${NC}" >&2
@@ -205,7 +205,7 @@ update_task() {
 
                 # Validate target task ID (must be numeric to prevent path traversal)
                 if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Error: Invalid target task ID '${target_id}' (must be numeric)${NC}" >&2
@@ -214,7 +214,7 @@ update_task() {
 
                 # Check for self-blocking
                 if [[ "$task_id" == "$target_id" ]]; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Error: Task #${task_id} cannot be blocked by itself${NC}" >&2
@@ -223,7 +223,7 @@ update_task() {
 
                 # Check for direct cycle
                 if check_direct_cycle "$team_name" "$task_id" "$target_id"; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Error: Adding dependency would create a cycle (task #${target_id} is already blocked by task #${task_id})${NC}" >&2
@@ -232,7 +232,7 @@ update_task() {
 
                 # Add dependency and remove duplicates
                 if ! jq --arg val "$target_id" '.blockedBy += [$val] | .blockedBy |= unique' "$tmp_file" > "${tmp_file}.new"; then
-                    trap - EXIT INT TERM
+                    trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock
                     echo -e "${RED}Failed to update task dependencies${NC}" >&2
@@ -248,7 +248,7 @@ update_task() {
     done
 
     # Clear trap before final operations
-    trap - EXIT INT TERM
+    trap - INT TERM
 
     if command mv "$tmp_file" "$task_file"; then
         release_file_lock
@@ -356,11 +356,11 @@ list_tasks() {
         local status_color="${NC}"
         if [[ "$task_status" == "pending" ]]; then
             status_color="${NC}"  # white/default
-        elif [[ "$task_status" == "in-progress" ]]; then
+        elif [[ "$task_status" == "in_progress" || "$task_status" == "in-progress" ]]; then
             status_color="${BLUE}"
         elif [[ "$task_status" == "blocked" ]]; then
             status_color="${RED}"
-        elif [[ "$task_status" == "in-review" ]]; then
+        elif [[ "$task_status" == "in_review" || "$task_status" == "in-review" ]]; then
             status_color="${YELLOW}"
         elif [[ "$task_status" == "completed" ]]; then
             status_color="${GREEN}"

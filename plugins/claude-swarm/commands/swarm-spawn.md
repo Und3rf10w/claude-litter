@@ -110,7 +110,7 @@ case "$COLOR" in
 esac
 
 if [[ -z "$TEAM" ]]; then
-    echo "Error: No team set. Create a team first with /swarm-create"
+    echo "Error: Cannot determine team. Create a team first with /swarm-create or set CLAUDE_CODE_TEAM_NAME" >&2
     exit 1
 fi
 

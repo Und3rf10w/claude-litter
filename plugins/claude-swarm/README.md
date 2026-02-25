@@ -119,7 +119,7 @@ export CLAUDE_CODE_TEAMMATE_MODE=in-process
 /claude-swarm:swarm-inbox
 
 # Update task progress
-/claude-swarm:task-update 1 --status in-progress
+/claude-swarm:task-update 1 --status in_progress
 /claude-swarm:task-update 1 --comment "Completed authentication middleware"
 
 # Message team-lead when done or blocked

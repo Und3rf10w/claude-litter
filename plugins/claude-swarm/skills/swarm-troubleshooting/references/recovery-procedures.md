@@ -271,7 +271,7 @@ cat ~/.claude/teams/<team-name>/inboxes/<agent>.json
 cp ~/.claude/tasks/<team-name>/<id>.json ~/.claude/tasks/<team-name>/<id>.json.bak
 
 # Fix manually with jq
-jq '.status = "in-progress"' ~/.claude/tasks/<team-name>/<id>.json > /tmp/task-fixed.json
+jq '.status = "in_progress"' ~/.claude/tasks/<team-name>/<id>.json > /tmp/task-fixed.json
 mv /tmp/task-fixed.json ~/.claude/tasks/<team-name>/<id>.json
 
 # Or edit directly
@@ -536,7 +536,7 @@ tar -czf ~/swarm-backup-$(date +%Y%m%d-%H%M%S).tar.gz ~/.claude/teams/ ~/.claude
 
 # 2. Document current state
 /claude-swarm:swarm-list-teams > ~/teams-backup.txt
-for team in $(cat ~/teams-backup.txt); do
+for team in $(ls ~/.claude/teams/); do
     /claude-swarm:swarm-status "$team" > ~/${team}-status.txt
     /claude-swarm:task-list >> ~/${team}-tasks.txt
 done
@@ -603,7 +603,7 @@ ls -la ~/.claude/sockets/
 cat ~/.claude/teams/<team-name>/config.json
 
 # View raw tasks
-cat ~/.claude/tasks/<team-name>/tasks.json
+ls ~/.claude/tasks/<team-name>/*.json
 
 # View raw inbox
 cat ~/.claude/teams/<team-name>/inboxes/<agent>.json

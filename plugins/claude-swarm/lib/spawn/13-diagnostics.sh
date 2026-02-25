@@ -181,13 +181,20 @@ list_teams() {
 delete_task() {
     local team_name="${1:-${CLAUDE_CODE_TEAM_NAME:-default}}"
     local task_id="$2"
-    local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
 
     if [[ -z "$task_id" ]]; then
         echo -e "${RED}Error: task_id is required${NC}"
         echo "Usage: delete_task [team_name] <task_id>"
         return 1
     fi
+
+    # Validate task ID (must be numeric to prevent path traversal)
+    if [[ ! "$task_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid task ID '${task_id}' (must be numeric)${NC}" >&2
+        return 1
+    fi
+
+    local task_file="${TASKS_DIR}/${team_name}/${task_id}.json"
 
     if [[ ! -f "$task_file" ]]; then
         echo -e "${RED}Task #${task_id} not found in team '${team_name}'${NC}"

@@ -106,7 +106,7 @@ brew install --cask kitty
 
 ```bash
 # Using installer script (recommended)
-curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/in/stdin
+curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin
 
 # Or via package manager
 # Ubuntu

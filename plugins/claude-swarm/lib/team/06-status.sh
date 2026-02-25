@@ -37,7 +37,7 @@ update_team_status() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local result=0
@@ -60,7 +60,7 @@ update_team_status() {
             ;;
     esac
 
-    trap - EXIT INT TERM
+    trap - INT TERM
 
     if [[ $result -eq 0 ]]; then
         release_file_lock
@@ -98,17 +98,17 @@ update_member_status() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     if jq --arg name "$member_name" --arg status "$new_status" --arg ts "$timestamp" \
        '(.members[] | select(.name == $name)) |= (.status = $status | .lastSeen = $ts)' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         return 1
@@ -205,7 +205,7 @@ format_member_status() {
 
 # Get task summary for a team
 # Returns: active_count|completed_count
-# Active = pending, in-progress, blocked, in-review
+# Active = pending, in_progress (or in-progress), blocked, in_review (or in-review)
 # Completed = completed
 get_task_summary() {
     local team_name="$1"
@@ -231,7 +231,7 @@ get_task_summary() {
 
         local status=$(jq -r '.status // ""' "$task_file" 2>/dev/null)
         case "$status" in
-            pending|in-progress|blocked|in-review)
+            pending|in_progress|in-progress|blocked|in_review|in-review)
                 ((active++))
                 ;;
             completed)
@@ -282,7 +282,7 @@ swarm_status() {
 
         echo "$display_line"
         mismatch_count=$((mismatch_count + is_mismatch))
-    done < <(jq -r '.members[] | "\(.name)|\(.type)|\(.status)"' "$config_file")
+    done < <(jq -r '.members[] | "\(.name)|\(.agentType // .type)|\(.status)"' "$config_file")
 
     # Mismatch warning
     if [[ $mismatch_count -gt 0 ]]; then

@@ -146,7 +146,7 @@ resume_team() {
     update_member_status "$team_name" "$current_agent" "active"
 
     # Get offline members (excluding current agent)
-    local offline_members=$(jq -r --arg current "$current_agent" '.members[] | select(.status == "offline" and .name != $current) | "\(.name)\t\(.type)\t\(.model // "sonnet")"' "$config_file")
+    local offline_members=$(jq -r --arg current "$current_agent" '.members[] | select(.status == "offline" and .name != $current) | "\(.name)\t\(.agentType // .type)\t\(.model // "sonnet")"' "$config_file")
 
     if [[ -z "$offline_members" ]]; then
         echo -e "${GREEN}Team '${team_name}' resumed (no teammates to respawn)${NC}"
@@ -253,6 +253,7 @@ archive_team() {
         --arg archiveName "$archive_name" \
         --arg archiveFile "$archive_file" \
         '{
+            name: $teamName,
             teamName: $teamName,
             archivedAt: $timestamp,
             archiveName: $archiveName,
@@ -297,7 +298,7 @@ list_archives() {
     while IFS= read -r metadata_file; do
         [[ -z "$metadata_file" ]] && continue
 
-        local team_name=$(jq -r '.teamName' "$metadata_file" 2>/dev/null)
+        local team_name=$(jq -r '.name // .teamName' "$metadata_file" 2>/dev/null)
         local archived_at=$(jq -r '.archivedAt' "$metadata_file" 2>/dev/null)
         local archive_file=$(jq -r '.archiveFile' "$metadata_file" 2>/dev/null)
 

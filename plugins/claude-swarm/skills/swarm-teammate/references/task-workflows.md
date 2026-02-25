@@ -3,11 +3,11 @@
 ## Basic Task Lifecycle
 
 ```
-pending → in-progress → completed
+pending → in_progress → completed
                 ↓
               blocked
                 ↓
-            in-progress
+            in_progress
 ```
 
 ## Detailed Workflows
@@ -25,7 +25,7 @@ pending → in-progress → completed
 
 # 3. Select and claim task
 /claude-swarm:task-update 7 --assign backend-dev
-/claude-swarm:task-update 7 --status in-progress --comment "Starting API endpoint implementation"
+/claude-swarm:task-update 7 --status in_progress --comment "Starting API endpoint implementation"
 
 # 4. Do the work
 # (implement feature)
@@ -58,7 +58,7 @@ pending → in-progress → completed
 # See: Task #10 depends on #8 (API schema needed)
 
 # 2. Check if dependency is complete
-# Task #8 shows "in-progress"
+# Task #8 shows "in_progress"
 
 # 3. Mark your task with dependency
 /claude-swarm:task-update 10 --blocked-by 8
@@ -77,7 +77,7 @@ pending → in-progress → completed
 # Message from backend-dev: "Task #8 done, schema at docs/api.json"
 
 # 7. Unblock and proceed
-/claude-swarm:task-update 10 --status in-progress --comment "Unblocked, starting UI implementation with schema"
+/claude-swarm:task-update 10 --status in_progress --comment "Unblocked, starting UI implementation with schema"
 ```
 
 **As the blocking teammate:**
@@ -102,7 +102,7 @@ pending → in-progress → completed
 ```bash
 # Teammate A (backend-dev) - Task #5
 /claude-swarm:task-update 5 --assign backend-dev
-/claude-swarm:task-update 5 --status in-progress --comment "Starting auth API implementation"
+/claude-swarm:task-update 5 --status in_progress --comment "Starting auth API implementation"
 
 # Proactively reach out to frontend teammate
 /claude-swarm:swarm-message frontend-dev "I'm starting auth API (task #5). I see you have login UI (task #6). Want to coordinate on token format and error handling?"
@@ -145,13 +145,13 @@ pending → in-progress → completed
 
 ```bash
 # 1. Complete implementation
-/claude-swarm:task-update 12 --status in-progress --comment "Implementation complete, running final tests"
+/claude-swarm:task-update 12 --status in_progress --comment "Implementation complete, running final tests"
 
 # 2. Verify quality
 # (run tests, check code quality, update docs)
 
 # 3. Request review
-/claude-swarm:task-update 12 --status in-review --comment "Ready for review. Focus areas: error handling (lines 45-60), async logic (lines 100-120)"
+/claude-swarm:task-update 12 --status in_review --comment "Ready for review. Focus areas: error handling (lines 45-60), async logic (lines 100-120)"
 /claude-swarm:swarm-message reviewer "Task #12 ready for code review. Files: src/services/payment.ts, tests in __tests__/payment.test.ts. Main concerns: error handling and race conditions"
 
 # 4. Wait for review
@@ -162,12 +162,12 @@ pending → in-progress → completed
 # Message from reviewer: "Task #12 feedback: error handling good, but need null check on line 55, and add test for concurrent requests"
 
 # 6. Address feedback
-/claude-swarm:task-update 12 --status in-progress --comment "Addressing review feedback: adding null check and concurrency test"
+/claude-swarm:task-update 12 --status in_progress --comment "Addressing review feedback: adding null check and concurrency test"
 
 # (make changes)
 
 # 7. Re-request review
-/claude-swarm:task-update 12 --status in-review --comment "Review feedback addressed. Added null check (line 55) and concurrency test (test line 89)"
+/claude-swarm:task-update 12 --status in_review --comment "Review feedback addressed. Added null check (line 55) and concurrency test (test line 89)"
 /claude-swarm:swarm-message reviewer "Task #12 updated per your feedback. Please re-review"
 
 # 8. Approved
@@ -212,7 +212,7 @@ pending → in-progress → completed
 
 ```bash
 # 1. Working on task, discover blocker
-/claude-swarm:task-update 15 --status in-progress --comment "50% complete, implementing data layer"
+/claude-swarm:task-update 15 --status in_progress --comment "50% complete, implementing data layer"
 
 # (realize: need database migration that doesn't exist)
 
@@ -231,14 +231,14 @@ pending → in-progress → completed
 # Find another unblocked task
 
 /claude-swarm:task-update 16 --assign frontend-dev
-/claude-swarm:task-update 16 --status in-progress --comment "Working on this while task #15 is blocked"
+/claude-swarm:task-update 16 --status in_progress --comment "Working on this while task #15 is blocked"
 
 # 6. Get notified blocker is resolved
 /claude-swarm:swarm-inbox
 # Message from backend-dev: "Migration created: migrations/003_user_preferences.sql. Run with: npm run migrate"
 
 # 7. Unblock and resume
-/claude-swarm:task-update 15 --status in-progress --comment "Unblocked. Migration available, resuming data layer implementation"
+/claude-swarm:task-update 15 --status in_progress --comment "Unblocked. Migration available, resuming data layer implementation"
 
 # Complete work on task #15...
 
@@ -260,7 +260,7 @@ pending → in-progress → completed
 
 ```bash
 # You're working on task #20
-/claude-swarm:task-update 20 --status in-progress --comment "60% complete, implementing feature X"
+/claude-swarm:task-update 20 --status in_progress --comment "60% complete, implementing feature X"
 
 # Receive urgent message
 /claude-swarm:swarm-inbox
@@ -276,7 +276,7 @@ pending → in-progress → completed
 /claude-swarm:swarm-message team-lead "Acknowledged. Pausing task #20, starting task #25 immediately"
 
 /claude-swarm:task-update 25 --assign backend-dev
-/claude-swarm:task-update 25 --status in-progress --comment "Starting urgent auth bug fix"
+/claude-swarm:task-update 25 --status in_progress --comment "Starting urgent auth bug fix"
 
 # 4. Work on urgent task
 # (fix the bug quickly)
@@ -286,7 +286,7 @@ pending → in-progress → completed
 /claude-swarm:swarm-message team-lead "Task #25 completed. Auth bug fixed and deployed"
 
 # 6. Resume original work
-/claude-swarm:task-update 20 --status in-progress --comment "Resuming work after urgent task #25. Continuing from 60% (branch feature-x-wip)"
+/claude-swarm:task-update 20 --status in_progress --comment "Resuming work after urgent task #25. Continuing from 60% (branch feature-x-wip)"
 ```
 
 ## Task Assignment Patterns
@@ -298,7 +298,7 @@ pending → in-progress → completed
 # Review tasks, select one that matches your skills
 
 /claude-swarm:task-update 8 --assign backend-dev
-/claude-swarm:task-update 8 --status in-progress
+/claude-swarm:task-update 8 --status in_progress
 ```
 
 ### Suggested Assignment (from team-lead)
@@ -309,7 +309,7 @@ pending → in-progress → completed
 
 /claude-swarm:swarm-message team-lead "Sounds good, taking task #9"
 /claude-swarm:task-update 9 --assign backend-dev
-/claude-swarm:task-update 9 --status in-progress
+/claude-swarm:task-update 9 --status in_progress
 ```
 
 ### Reassignment (when stuck)

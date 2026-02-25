@@ -207,6 +207,7 @@ Issue Detected
 └─ Task commands failing?
    └─ Run: /claude-swarm:task-list
       └─ Verify task ID exists, check status values
+````
 
 ## Common Issues
 
@@ -236,7 +237,7 @@ Spawn failures are the most common issue when creating swarm teams. Understandin
 2. **Run diagnostics**:
 ```bash
 /claude-swarm:swarm-diagnose <team-name>
-````
+```
 
 3. **Check system state**:
 
@@ -617,8 +618,8 @@ echo '[]' > ~/.claude/teams/<team-name>/inboxes/<agent>.json
 # View current tasks
 /claude-swarm:task-list
 
-# Check task file directly
-cat ~/.claude/tasks/<team-name>/tasks.json
+# Check task files directly
+ls ~/.claude/tasks/<team-name>/*.json
 ```
 
 **Common Causes:**
@@ -638,7 +639,7 @@ Error: Task #99 not found
 /claude-swarm:task-list
 
 # Use correct ID from list
-/claude-swarm:task-update 3 --status "in-progress"
+/claude-swarm:task-update 3 --status "in_progress"
 ```
 
 #### 2. Invalid Status Value
@@ -654,9 +655,9 @@ Error: Invalid status 'done'
 ```bash
 # Use valid status values:
 # - pending
-# - in-progress
+# - in_progress
 # - blocked
-# - in-review
+# - in_review
 # - completed
 
 /claude-swarm:task-update 3 --status "completed"  # Not "done"
@@ -769,7 +770,7 @@ When issues are diagnosed, choose the appropriate recovery approach. Three main 
 echo '[]' > ~/.claude/teams/<team-name>/inboxes/<agent>.json
 
 # Fix specific task with jq
-jq '.status = "in-progress"' ~/.claude/tasks/<team-name>/<id>.json > /tmp/task-fixed.json
+jq '.status = "in_progress"' ~/.claude/tasks/<team-name>/<id>.json > /tmp/task-fixed.json
 ```
 
 **Hard Recovery** - For complete team failure (corrupted config, non-functional team):

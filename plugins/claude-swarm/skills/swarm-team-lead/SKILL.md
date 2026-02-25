@@ -1,7 +1,6 @@
 ---
 name: swarm-team-lead
 description: Auto-loads when CLAUDE_CODE_IS_TEAM_LEAD environment variable is set. Provides guidance for spawned team-leads on monitoring teammates, handling consults, assigning tasks, and coordinating the team. Use this when you are a spawned team-lead (not the original orchestrator who created the swarm).
-when: CLAUDE_CODE_IS_TEAM_LEAD environment variable is set
 ---
 
 # Swarm Team-Lead Guide
@@ -75,7 +74,7 @@ Filter to focus on what matters:
 
 ```bash
 # In-progress work
-/claude-swarm:task-list --status in-progress
+/claude-swarm:task-list --status in_progress
 
 # Blocked tasks (need attention!)
 /claude-swarm:task-list --blocked

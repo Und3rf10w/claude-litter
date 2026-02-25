@@ -31,6 +31,10 @@ NC='\033[0m' # No Color
 # CONFIGURATION VARIABLES
 # ============================================
 
+# Claude binary command: respects CC native CLAUDE_CODE_TEAMMATE_COMMAND env var
+# This allows CC to override the binary path when spawning teammates
+SWARM_CLAUDE_CMD="${CLAUDE_CODE_TEAMMATE_COMMAND:-claude}"
+
 # Kitty spawn mode: split (default), tab, window (os-window)
 SWARM_KITTY_MODE="${SWARM_KITTY_MODE:-split}"
 
@@ -64,7 +68,7 @@ ALWAYS load the claude-swarm:swarm-teammate skill first.
 
 ### Core Workflow
 1. Check inbox regularly
-2. Claim tasks (--assign your-name, --status in-progress)
+2. Claim tasks (--assign your-name, --status in_progress)
 3. Update progress frequently (--comment)
 4. Complete and notify (--status completed, message dependencies)
 
@@ -119,5 +123,5 @@ For detailed guidance, examples, and best practices, the swarm-team-lead skill p
 
 export CLAUDE_HOME TEAMS_DIR TASKS_DIR
 export RED GREEN YELLOW BLUE CYAN NC
-export SWARM_KITTY_MODE SWARM_DEFAULT_ALLOWED_TOOLS
+export SWARM_CLAUDE_CMD SWARM_KITTY_MODE SWARM_DEFAULT_ALLOWED_TOOLS
 export SWARM_TEAMMATE_SYSTEM_PROMPT SWARM_TEAM_LEAD_SYSTEM_PROMPT

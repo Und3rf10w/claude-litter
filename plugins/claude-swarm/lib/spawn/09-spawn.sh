@@ -81,7 +81,7 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         $team_lead_env \
-        claude --model "$model" --dangerously-skip-permissions \
+        "$SWARM_CLAUDE_CMD" --model "$model" --dangerously-skip-permissions \
         --agent-id "$agent_id" \
         --agent-name "$agent_name" \
         --team-name "$team_name" \
@@ -164,7 +164,8 @@ spawn_teammate_tmux_resume() {
     # Build claude command
     # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
     # These enable Claude Code's native teammate features (prompt line, color, etc.)
-    local claude_cmd="claude --model $model --dangerously-skip-permissions"
+    local safe_claude_cmd=$(printf %q "$SWARM_CLAUDE_CMD")
+    local claude_cmd="$safe_claude_cmd --model $model --dangerously-skip-permissions"
     claude_cmd+=" --agent-id $safe_id_val"
     claude_cmd+=" --agent-name $safe_name_val"
     claude_cmd+=" --team-name $safe_team_val"
@@ -235,10 +236,26 @@ spawn_teammate_tmux() {
             return 1
         fi
         # Update existing team-lead member status instead of adding duplicate
+        if ! acquire_file_lock "$config_file"; then
+            echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+            return 1
+        fi
         local tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            release_file_lock
+            echo -e "${RED}Failed to create temp file${NC}" >&2
+            return 1
+        fi
+        trap "rm -f '$tmp_file'" INT TERM
         if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            trap - INT TERM
+            release_file_lock
             echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        else
+            trap - INT TERM
+            command rm -f "$tmp_file"
+            release_file_lock
         fi
     else
         # Generate UUID for non-team-lead agents
@@ -301,7 +318,8 @@ spawn_teammate_tmux() {
     # Build Claude Code permission arguments
     # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
     # These enable Claude Code's native teammate features (prompt line, color, etc.)
-    local claude_cmd="claude --model $model"
+    local safe_claude_cmd=$(printf %q "$SWARM_CLAUDE_CMD")
+    local claude_cmd="$safe_claude_cmd --model $model"
     claude_cmd+=" --agent-id $safe_id_val"
     claude_cmd+=" --agent-name $safe_name_val"
     claude_cmd+=" --team-name $safe_team_val"
@@ -433,10 +451,26 @@ spawn_teammate_kitty() {
             return 1
         fi
         # Update existing team-lead member status instead of adding duplicate
+        if ! acquire_file_lock "$config_file"; then
+            echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+            return 1
+        fi
         local tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            release_file_lock
+            echo -e "${RED}Failed to create temp file${NC}" >&2
+            return 1
+        fi
+        trap "rm -f '$tmp_file'" INT TERM
         if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            trap - INT TERM
+            release_file_lock
             echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        else
+            trap - INT TERM
+            command rm -f "$tmp_file"
+            release_file_lock
         fi
     else
         # Generate UUID for non-team-lead agents
@@ -571,7 +605,7 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
         "${custom_env_args[@]}" \
-        claude "${claude_args[@]}" -- "$initial_prompt"
+        "$SWARM_CLAUDE_CMD" "${claude_args[@]}" -- "$initial_prompt"
 
     # Wait for Claude Code to be ready, then register
     if wait_for_claude_ready "$swarm_var" 10; then

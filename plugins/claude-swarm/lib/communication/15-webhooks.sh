@@ -48,7 +48,7 @@ configure_webhooks() {
         return 1
     fi
 
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     # Add webhook configuration to team config
     if jq --arg url "$webhook_url" \
@@ -56,14 +56,14 @@ configure_webhooks() {
           --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           '.webhooks = (.webhooks // []) + [{url: $url, events: $filter, enabled: true, addedAt: $timestamp}]' \
           "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         echo -e "${GREEN}Webhook configured for team '${team_name}'${NC}"
         echo "  URL: ${webhook_url}"
         echo "  Events: ${event_filter}"
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to configure webhook${NC}" >&2
@@ -121,18 +121,18 @@ remove_webhook() {
         return 1
     fi
 
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     # Remove webhook from configuration
     if jq --arg url "$webhook_url" \
           '.webhooks = (.webhooks // [] | map(select(.url != $url)))' \
           "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         echo -e "${GREEN}Webhook removed from team '${team_name}'${NC}"
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to remove webhook${NC}" >&2

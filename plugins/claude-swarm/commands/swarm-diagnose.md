@@ -131,7 +131,7 @@ echo ""
 # 5. Directory structure check
 echo "## 5. Directory Structure"
 TEAM_DIR="${TEAMS_DIR}/${TEAM_NAME}"
-TASKS_DIR="${TASKS_DIR}/${TEAM_NAME}"
+TEAM_TASKS_DIR="${TASKS_DIR}/${TEAM_NAME}"
 
 if [[ -d "$TEAM_DIR" ]]; then
     echo "✓ Team directory exists: ${TEAM_DIR}"
@@ -146,8 +146,8 @@ else
     echo "❌ Team directory missing"
 fi
 
-if [[ -d "$TASKS_DIR" ]]; then
-    TASK_COUNT=$(ls -1 "${TASKS_DIR}"/*.json 2>/dev/null | wc -l)
+if [[ -d "$TEAM_TASKS_DIR" ]]; then
+    TASK_COUNT=$(ls -1 "${TEAM_TASKS_DIR}"/*.json 2>/dev/null | wc -l)
     echo "✓ Tasks directory exists (${TASK_COUNT} task files)"
 else
     echo "⚠️  No tasks directory (will be created when first task is added)"

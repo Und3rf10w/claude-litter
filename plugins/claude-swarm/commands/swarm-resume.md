@@ -26,6 +26,13 @@ bash << 'SCRIPT_EOF'
 source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
 
 TEAM_NAME="$1"
+
+if [[ -z "$TEAM_NAME" ]]; then
+    echo "Error: Team name required" >&2
+    echo "Usage: /swarm-resume <team_name>" >&2
+    exit 1
+fi
+
 resume_team "$TEAM_NAME"
 
 # Set user vars on current window so team-lead can use commands

@@ -165,17 +165,22 @@ trap cleanup EXIT
 # Set up environment variables
 export CLAUDE_PLUGIN_ROOT="${SCRIPT_DIR}/../.."
 
+# Build stdin payload (CC sends JSON hook input via stdin)
+STDIN_PAYLOAD=""
 if [[ -n "$TOOL_INPUT" ]]; then
     # Validate JSON if tool input provided
     if ! echo "$TOOL_INPUT" | jq empty 2>/dev/null; then
         echo -e "${RED}Error: Invalid JSON in --tool-input${NC}" >&2
         exit 1
     fi
-    export TOOL_INPUT
+    STDIN_PAYLOAD="$TOOL_INPUT"
 fi
 
 if [[ -n "$REASON" ]]; then
-    export REASON
+    # If we have a reason but no tool input, wrap it in a basic JSON payload
+    if [[ -z "$STDIN_PAYLOAD" ]]; then
+        STDIN_PAYLOAD=$(jq -n --arg reason "$REASON" '{reason: $reason}')
+    fi
 fi
 
 if [[ -n "$TEAM_NAME" ]]; then
@@ -187,6 +192,7 @@ if [[ -n "$AGENT_NAME" ]]; then
 fi
 
 # Execute hook and measure time
+# Note: CC delivers hook data via stdin, so we pipe the payload
 echo -e "${YELLOW}Running hook...${NC}"
 echo ""
 
@@ -194,7 +200,7 @@ START_TIME=$(date +%s%N)
 
 if [[ "$ASYNC_MODE" == true ]]; then
     # Run in background, capture PID
-    bash "$HOOK_SCRIPT" >"$TEMP_STDOUT" 2>"$TEMP_STDERR" &
+    echo "$STDIN_PAYLOAD" | bash "$HOOK_SCRIPT" >"$TEMP_STDOUT" 2>"$TEMP_STDERR" &
     HOOK_PID=$!
 
     echo -e "${BLUE}Started hook in background (PID: $HOOK_PID)${NC}"
@@ -205,7 +211,7 @@ if [[ "$ASYNC_MODE" == true ]]; then
 else
     # Run synchronously
     set +e
-    bash "$HOOK_SCRIPT" >"$TEMP_STDOUT" 2>"$TEMP_STDERR"
+    echo "$STDIN_PAYLOAD" | bash "$HOOK_SCRIPT" >"$TEMP_STDOUT" 2>"$TEMP_STDERR"
     EXIT_CODE=$?
     set -e
 

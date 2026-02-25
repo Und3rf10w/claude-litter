@@ -31,7 +31,7 @@ AGENT_NAME="$1"
 NEW_COLOR="$2"
 
 if [[ -z "$TEAM" ]]; then
-    echo "Error: No team set. You must be in a swarm team context."
+    echo "Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME" >&2
     exit 1
 fi
 

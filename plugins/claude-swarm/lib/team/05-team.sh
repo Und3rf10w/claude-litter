@@ -50,12 +50,18 @@ create_team() {
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # Use jq to properly escape values and prevent JSON injection
+    # Write both swarm and CC native field names for compatibility:
+    #   - "name" (CC native) + "teamName" (swarm legacy)
+    #   - "agentType" (CC native) + "type" (swarm legacy)
+    #   - "createdAt" as ISO string (swarm) - CC uses epoch ms but reads JSON generically
+    #   - "joinedAt" (CC native) + "lastSeen" (swarm-only)
     if ! jq -n \
         --arg teamName "$team_name" \
         --arg description "$description" \
         --arg leadId "$lead_id" \
         --arg timestamp "$timestamp" \
         '{
+            name: $teamName,
             teamName: $teamName,
             description: $description,
             status: "active",
@@ -63,10 +69,12 @@ create_team() {
             members: [{
                 agentId: $leadId,
                 name: "team-lead",
+                agentType: "team-lead",
                 type: "team-lead",
                 color: "cyan",
                 model: "sonnet",
                 status: "active",
+                joinedAt: $timestamp,
                 lastSeen: $timestamp
             }],
             createdAt: $timestamp,
@@ -128,18 +136,19 @@ add_member() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Write both swarm and CC native field names for compatibility
     if jq --arg id "$agent_id" \
        --arg name "$agent_name" \
        --arg type "$agent_type" \
        --arg color "$agent_color" \
        --arg model "$agent_model" \
        --arg ts "$timestamp" \
-       '.members += [{"agentId": $id, "name": $name, "type": $type, "color": $color, "model": $model, "status": "active", "lastSeen": $ts}]' \
+       '.members += [{"agentId": $id, "name": $name, "agentType": $type, "type": $type, "color": $color, "model": $model, "status": "active", "joinedAt": $ts, "lastSeen": $ts}]' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
 
         # Initialize inbox for new member
@@ -150,7 +159,7 @@ add_member() {
         # Trigger webhook notification
         webhook_teammate_joined "$team_name" "$agent_name" "$agent_type" 2>/dev/null || true
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to add member to team config${NC}" >&2
@@ -178,7 +187,7 @@ list_team_members() {
         return 1
     fi
 
-    jq -r '.members[] | "\(.name) (\(.type)) - \(.agentId)"' "$config_file"
+    jq -r '.members[] | "\(.name) (\(.agentType // .type)) - \(.agentId)"' "$config_file"
 }
 
 update_agent_color() {
@@ -228,17 +237,17 @@ update_agent_color() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     if jq --arg name "$agent_name" \
        --arg color "$new_color" \
        '(.members[] | select(.name == $name) | .color) = $color' \
        "$config_file" >| "$tmp_file" && command mv "$tmp_file" "$config_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         echo -e "${GREEN}Updated color for '${agent_name}' to '${new_color}'${NC}"
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update agent color${NC}" >&2

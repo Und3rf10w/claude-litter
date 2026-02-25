@@ -75,8 +75,8 @@ echo ""
 echo "Validating hook definitions..."
 echo "=============================================="
 
-# Valid hook event types
-VALID_EVENTS=("Notification" "SessionStart" "SessionEnd" "PostToolUse" "PreToolUse" "SubagentStop")
+# Valid hook event types (Claude Code v2.1.39)
+VALID_EVENTS=("PreToolUse" "PostToolUse" "PostToolUseFailure" "Notification" "UserPromptSubmit" "SessionStart" "SessionEnd" "Stop" "SubagentStart" "SubagentStop" "PreCompact" "PermissionRequest" "Setup" "TeammateIdle" "TaskCompleted")
 
 # Get all hook events
 events=$(jq -r '.hooks | keys[]' "$HOOKS_FILE")
@@ -181,8 +181,8 @@ for event in $events; do
                     fi
                     ;;
 
-                "prompt")
-                    # Check prompt field
+                "prompt"|"agent")
+                    # Check prompt field (used by both prompt and agent types)
                     prompt=$(jq -r ".hooks.${event}[$i].hooks[$j].prompt // \"null\"" "$HOOKS_FILE")
                     if [[ "$prompt" == "null" ]]; then
                         echo -e "      ${RED}✗ Missing 'prompt' field for prompt type${NC}"
@@ -191,9 +191,12 @@ for event in $events; do
                         prompt_preview=$(echo "$prompt" | head -c 60)
                         echo "      Prompt: ${prompt_preview}..."
 
-                        # Check for common placeholders
-                        if [[ "$prompt" =~ \$TOOL_INPUT ]] || [[ "$prompt" =~ \$REASON ]]; then
-                            echo -e "      ${GREEN}✓ Uses expected placeholders${NC}"
+                        # Check for $ARGUMENTS placeholder (CC's replacement variable)
+                        if [[ "$prompt" =~ \$ARGUMENTS ]]; then
+                            echo -e "      ${GREEN}✓ Uses \$ARGUMENTS placeholder${NC}"
+                        else
+                            echo -e "      ${YELLOW}⚠ Warning: Prompt does not use \$ARGUMENTS placeholder - CC will append input automatically${NC}"
+                            ((warnings++))
                         fi
                     fi
 

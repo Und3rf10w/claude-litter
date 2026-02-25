@@ -43,7 +43,7 @@ send_message() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -53,7 +53,7 @@ send_message() {
           --arg ts "$timestamp" \
           '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
           "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
 
@@ -64,7 +64,7 @@ send_message() {
         # deprecated
         # notify_active_teammate "$team_name" "$to" "$from"
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2
@@ -177,14 +177,14 @@ mark_messages_read() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     if jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         return 1
@@ -319,7 +319,7 @@ send_typed_message() {
         return 1
     fi
 
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -345,11 +345,11 @@ send_typed_message() {
     fi
 
     if jq --argjson msg "$msg_obj" '. += [$msg]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
         release_file_lock
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2

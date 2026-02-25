@@ -58,6 +58,7 @@ show_available_commands
 # Use AskUserQuestion here
 # If yes, get team name and description, then run:
 # /claude-swarm:swarm-create <team-name> <description>
+SCRIPT_EOF
 ```
 
 ---
@@ -71,7 +72,10 @@ Use AskUserQuestion to ask: "Would you like help configuring kitty for Claude Sw
 If yes:
 
 ```bash
+bash << 'PHASE2_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 guide_kitty_configuration
+PHASE2_EOF
 ```
 
 Then ask: "Have you added the configuration and restarted kitty?"
@@ -79,12 +83,15 @@ Then ask: "Have you added the configuration and restarted kitty?"
 If yes, verify:
 
 ```bash
+bash << 'VERIFY_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 SOCKET=$(find_kitty_socket)
 if [[ -n "$SOCKET" ]] && validate_kitty_socket "$SOCKET" 2>/dev/null; then
     echo -e "${GREEN}✓ Kitty socket is now working!${NC}"
 else
     echo -e "${RED}✗ Socket still not detected. Please ensure you completely restarted kitty.${NC}"
 fi
+VERIFY_EOF
 ```
 
 ---
@@ -98,7 +105,10 @@ Use AskUserQuestion to ask: "Would you like a guided walkthrough creating a test
 If yes:
 
 ```bash
+bash << 'DEMO_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 run_onboarding_demo
+DEMO_EOF
 ```
 
 ---
@@ -109,10 +119,9 @@ After showing available commands, use AskUserQuestion to ask: "Would you like me
 
 If yes, ask for team name and description, then run:
 
-```bash
+```
 /claude-swarm:swarm-create <team-name> <description>
 ```
-SCRIPT_EOF
 
 ---
 

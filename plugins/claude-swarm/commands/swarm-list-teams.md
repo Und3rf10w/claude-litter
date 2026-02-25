@@ -1,5 +1,6 @@
 ---
-description: List all teams using list_teams() from swarm-utils.sh
+description: List all available swarm teams with their status and member counts
+argument-hint:
 ---
 
 # List Teams

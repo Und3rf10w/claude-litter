@@ -13,7 +13,7 @@ You're `frontend-dev` assigned to implement the user profile UI (task #10). This
 /claude-swarm:task-list
 
 # Output shows:
-# #8 [in-progress] Create user profile API (backend-dev)
+# #8 [in_progress] Create user profile API (backend-dev)
 # #10 [pending] Create user profile UI (unassigned)
 
 # You read task #10 description:
@@ -63,7 +63,7 @@ You're `frontend-dev` assigned to implement the user profile UI (task #10). This
 
 # See task #11 (style updates) is unblocked
 /claude-swarm:task-update 11 --assign frontend-dev
-/claude-swarm:task-update 11 --status in-progress --comment "Working on this while task #10 is blocked"
+/claude-swarm:task-update 11 --status in_progress --comment "Working on this while task #10 is blocked"
 
 # Work on task #11...
 ```
@@ -89,7 +89,7 @@ You're `frontend-dev` assigned to implement the user profile UI (task #10). This
 /claude-swarm:task-update 11 --status completed --comment "Style updates complete"
 
 # Now switch to task #10
-/claude-swarm:task-update 10 --status in-progress --comment "Unblocked! backend-dev completed task #8. Starting UI implementation with API schema from docs/api-schema.json"
+/claude-swarm:task-update 10 --status in_progress --comment "Unblocked! backend-dev completed task #8. Starting UI implementation with API schema from docs/api-schema.json"
 
 # Confirm with backend-dev
 /claude-swarm:swarm-message backend-dev "Perfect timing! Just finished task #11. Starting task #10 now with your API. Thanks!"
@@ -122,7 +122,7 @@ You're `frontend-dev` assigned to implement the user profile UI (task #10). This
 ❌ **Don't start work without the dependency**
 ```bash
 # Bad: Trying to implement without the API
-/claude-swarm:task-update 10 --status in-progress --comment "Starting UI with mock data"
+/claude-swarm:task-update 10 --status in_progress --comment "Starting UI with mock data"
 # Problem: You'll have to rewrite everything when the real API is ready
 ```
 
@@ -152,7 +152,7 @@ You're `frontend-dev` assigned to implement the user profile UI (task #10). This
 ```bash
 # backend-dev messages: "Task #8 is 90% done. API schema is stable, but deployment pending. You can start coding now, just can't test until tonight"
 
-/claude-swarm:task-update 10 --status in-progress --comment "Partially unblocked. API schema stable, starting implementation. Will test when task #8 deploys tonight"
+/claude-swarm:task-update 10 --status in_progress --comment "Partially unblocked. API schema stable, starting implementation. Will test when task #8 deploys tonight"
 ```
 
 ### Variation 2: Blocker Takes Longer Than Expected

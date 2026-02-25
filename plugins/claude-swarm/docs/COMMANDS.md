@@ -88,7 +88,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 **What it shows:**
 - Team name, description, and status (active/suspended)
 - List of all members with their status (active/offline/crashed)
-- Task summary (total, open, in-progress, resolved, blocked)
+- Task summary (total, open, in_progress, resolved, blocked)
 - Recent activity and heartbeats
 
 **Usage:**
@@ -365,7 +365,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 
 **Arguments:**
 - `task_id` (required) - Task ID to update
-- `--status <status>` (optional) - New status: pending, in-progress, blocked, in-review, completed
+- `--status <status>` (optional) - New status: pending, in_progress, blocked, in_review, completed
 - `--assign <agent>` (optional) - Assign task to agent (e.g., "backend-dev")
 - `--blocked-by <id>` (optional) - Mark task as blocked by another task ID
 - `--comment <text>` (optional) - Add comment to task activity log
@@ -381,7 +381,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 /claude-swarm:task-update 1 --assign backend-dev
 
 # Update status
-/claude-swarm:task-update 1 --status in-progress
+/claude-swarm:task-update 1 --status in_progress
 
 # Add comment
 /claude-swarm:task-update 1 --comment "Completed OAuth flow, testing now"
@@ -598,7 +598,7 @@ kitty --session ~/.claude/teams/api-redesign/swarm.kitty-session
 /claude-swarm:task-list
 /claude-swarm:swarm-message backend-dev "Check task #3, changed priority"
 /claude-swarm:swarm-inbox
-/claude-swarm:task-update 3 --status in-progress --comment "Working on this now"
+/claude-swarm:task-update 3 --status in_progress --comment "Working on this now"
 ```
 
 ### Command Frequency

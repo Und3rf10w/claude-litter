@@ -71,7 +71,8 @@ generate_uuid() {
 # INPUT VALIDATION
 # ============================================
 
-# Validate team/agent names to prevent path traversal and other issues
+# Validate team/agent names to prevent path traversal, injection, and other issues
+# Only allows alphanumeric characters, hyphens, and underscores
 # Returns 0 if valid, 1 if invalid (prints error message)
 validate_name() {
     local name="$1"
@@ -83,21 +84,17 @@ validate_name() {
         return 1
     fi
 
-    # Check for path traversal attempts
-    if [[ "$name" == *".."* ]] || [[ "$name" == *"/"* ]] || [[ "$name" == *"\\"* ]]; then
-        echo -e "${RED}Error: ${type} name cannot contain '..' or path separators${NC}" >&2
-        return 1
-    fi
-
-    # Check for names that start with dash (could be interpreted as flags)
-    if [[ "$name" == -* ]]; then
-        echo -e "${RED}Error: ${type} name cannot start with '-'${NC}" >&2
-        return 1
-    fi
-
     # Check for overly long names (filesystem limit)
     if [[ ${#name} -gt 100 ]]; then
         echo -e "${RED}Error: ${type} name too long (max 100 characters)${NC}" >&2
+        return 1
+    fi
+
+    # Restrict to safe characters only: letters, numbers, hyphens, underscores
+    # This prevents path traversal (..), shell metacharacters (spaces, quotes, backticks,
+    # $, |, ;, &), and flag injection (leading dash blocked by requiring [a-zA-Z0-9] first)
+    if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        echo -e "${RED}Error: ${type} name must start with a letter or number and contain only letters, numbers, hyphens, and underscores${NC}" >&2
         return 1
     fi
 

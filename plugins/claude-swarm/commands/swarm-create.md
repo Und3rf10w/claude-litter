@@ -33,6 +33,12 @@ TEAM_NAME="$1"
 DESCRIPTION="$2"
 shift 2 2>/dev/null || shift $# 2>/dev/null
 
+if [[ -z "$TEAM_NAME" ]]; then
+    echo "Error: Team name required" >&2
+    echo "Usage: /swarm-create <team_name> [description] [--no-lead] [--lead-model <model>]" >&2
+    exit 1
+fi
+
 # Parse optional flags
 while [[ $# -gt 0 ]]; do
     case "$1" in

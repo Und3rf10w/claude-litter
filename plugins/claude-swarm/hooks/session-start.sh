@@ -28,7 +28,7 @@ update_member_status "$TEAM_NAME" "${AGENT_NAME:-team-lead}" "active"
 
 # If team-lead, reconcile team status (detect crashed agents)
 if [[ "${AGENT_NAME:-team-lead}" == "team-lead" ]]; then
-    local config_file="${TEAMS_DIR}/${TEAM_NAME}/config.json"
+    config_file="${TEAMS_DIR}/${TEAM_NAME}/config.json"
     if acquire_file_lock "$config_file" 5 30; then
         reconcile_team_status "$TEAM_NAME" "false"
         release_file_lock

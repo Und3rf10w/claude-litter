@@ -38,11 +38,25 @@ fi
 # Update throttle marker (creates file or updates mtime)
 touch "$THROTTLE_FILE"
 
-# Lightweight config update (no library sourcing for performance)
+# Lightweight config update with atomic locking
+# Uses mkdir-based lock (same pattern as lib/core/02-file-lock.sh) to prevent
+# race conditions when multiple agents update heartbeats simultaneously
 CONFIG="${HOME}/.claude/teams/${TEAM_NAME}/config.json"
 [[ ! -f "$CONFIG" ]] && exit 0
 
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LOCK_DIR="${CONFIG}.lock"
+
+# Try to acquire lock (non-blocking, skip if contended)
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # Lock held by another process - skip this heartbeat cycle silently
+    # Next 60-second cycle will retry
+    exit 0
+fi
+
+# Ensure lock is released on exit
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
 TMP=$(mktemp)
 
 if [[ -z "$TMP" ]]; then
@@ -54,7 +68,7 @@ if jq --arg name "$AGENT_NAME" --arg ts "$TIMESTAMP" \
    '(.members[] | select(.name == $name)) |= (.lastSeen = $ts)' \
    "$CONFIG" > "$TMP" 2>/dev/null; then
     if ! /bin/mv -f "$TMP" "$CONFIG" 2>/dev/null; then
-        echo "swarm-heartbeat: mv failed for $AGENT_NAME" >> "/tmp/swarm-heartbeat-errors.log" 2>/dev/null
+        echo "swarm-heartbeat: mv failed for $AGENT_NAME in $TEAM_NAME" >> "/tmp/swarm-heartbeat-errors-${TEAM_NAME}.log" 2>/dev/null
         command rm -f "$TMP" 2>/dev/null
     fi
 else

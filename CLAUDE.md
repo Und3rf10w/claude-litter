@@ -118,6 +118,7 @@ User-configurable:
 - `SWARM_MULTIPLEXER` - Force "tmux" or "kitty"
 - `SWARM_KITTY_MODE` - split (default), tab, or window (os-window)
 - `KITTY_LISTEN_ON` - Override kitty socket path
+- `CLAUDE_CODE_TEAMMATE_COMMAND` - Override claude binary path for spawning (CC native)
 
 ### Skills Architecture
 
