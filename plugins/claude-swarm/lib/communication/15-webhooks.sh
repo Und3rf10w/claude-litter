@@ -35,6 +35,25 @@ configure_webhooks() {
         return 1
     fi
 
+    # Extract hostname from URL for SSRF protection
+    local url_host
+    url_host=$(echo "$webhook_url" | sed -E 's|^https?://([^/:]+).*|\1|')
+
+    # Reject private/link-local IP ranges to prevent SSRF
+    if [[ "$url_host" =~ ^127\. ]] || \
+       [[ "$url_host" == "localhost" ]] || \
+       [[ "$url_host" =~ ^10\. ]] || \
+       [[ "$url_host" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] || \
+       [[ "$url_host" =~ ^192\.168\. ]] || \
+       [[ "$url_host" =~ ^169\.254\. ]] || \
+       [[ "$url_host" == "::1" ]] || \
+       [[ "$url_host" =~ ^fc ]] || \
+       [[ "$url_host" =~ ^fd ]] || \
+       [[ "$url_host" == "0.0.0.0" ]]; then
+        echo -e "${RED}Error: Webhook URL must not point to private/link-local addresses (SSRF protection)${NC}" >&2
+        return 1
+    fi
+
     # Acquire lock for concurrent access protection
     if ! acquire_file_lock "$config_file"; then
         echo -e "${RED}Failed to acquire lock for config${NC}" >&2
@@ -185,22 +204,32 @@ send_webhook() {
             data: $data
         }')
 
-    # Send to each webhook endpoint
-    echo "$webhooks" | jq -r '.[] | .url' | while IFS= read -r webhook_url; do
+    # Send to each webhook endpoint (limit concurrent webhooks)
+    # Uses process substitution to avoid subshell variable scoping issue with piped while loops
+    local _webhook_count=0
+    local _max_concurrent_webhooks=10
+    while IFS= read -r webhook_url; do
         [[ -z "$webhook_url" ]] && continue
 
-        # Send webhook asynchronously (background)
+        # Enforce concurrency limit to prevent background process leaks
+        if [[ $_webhook_count -ge $_max_concurrent_webhooks ]]; then
+            wait 2>/dev/null || true
+            _webhook_count=0
+        fi
+
+        # Send webhook asynchronously; pipe payload via stdin to avoid ps exposure
         (
-            curl -X POST \
+            echo "$payload" | curl -X POST \
                 -H "Content-Type: application/json" \
-                -H "User-Agent: Claude-Swarm/1.0" \
-                -d "$payload" \
+                -H "User-Agent: Claude-Swarm/2.0" \
+                --data-binary @- \
                 --max-time 10 \
                 --silent \
                 --show-error \
                 "$webhook_url" &>/dev/null
         ) &
-    done
+        ((_webhook_count++))
+    done < <(echo "$webhooks" | jq -r '.[] | .url')
 }
 
 # ============================================
@@ -214,22 +243,17 @@ trigger_webhook_event() {
     local event_type="$2"
     shift 2
 
-    # Build event data from key-value pairs
-    local event_data_pairs=""
+    # Build event data from key-value pairs using jq for safe JSON construction
+    local event_data="{}"
     while [[ $# -gt 0 ]]; do
         local key="$1"
         local value="$2"
         if [[ -n "$key" ]] && [[ -n "$value" ]]; then
-            if [[ -n "$event_data_pairs" ]]; then
-                event_data_pairs+=","
-            fi
-            # Properly escape and quote values
-            event_data_pairs+="\"${key}\": $(echo "$value" | jq -R .)"
+            # Use jq --arg for both key and value to prevent injection
+            event_data=$(echo "$event_data" | jq --arg k "$key" --arg v "$value" '. + {($k): $v}')
         fi
         shift 2
     done
-
-    local event_data="{${event_data_pairs}}"
 
     # Validate JSON
     if ! echo "$event_data" | jq empty 2>/dev/null; then

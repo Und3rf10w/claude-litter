@@ -38,12 +38,41 @@ fi
 # Global lock stack array
 declare -a _SWARM_LOCK_STACK=()
 
+# Global temp file tracking for cleanup on exit
+declare -a _SWARM_TEMP_FILES=()
+
 # Legacy compatibility: ACQUIRED_LOCK_FILE always reflects the top of the stack
 ACQUIRED_LOCK_FILE=""
 
-# Global EXIT trap to release all locks on unexpected exit
+# Register a temp file for cleanup on exit
+# Usage: register_temp_file "/path/to/tmpfile"
+register_temp_file() {
+    _SWARM_TEMP_FILES+=("$1")
+}
+
+# Unregister a temp file (after successful move/cleanup)
+# Usage: unregister_temp_file "/path/to/tmpfile"
+unregister_temp_file() {
+    local target="$1"
+    local new_list=()
+    local i
+    for (( i=0; i<${#_SWARM_TEMP_FILES[@]}; i++ )); do
+        if [[ "${_SWARM_TEMP_FILES[$i]}" != "$target" ]]; then
+            new_list+=("${_SWARM_TEMP_FILES[$i]}")
+        fi
+    done
+    _SWARM_TEMP_FILES=("${new_list[@]}")
+}
+
+# Global EXIT trap to release all locks and clean temp files on unexpected exit
 _swarm_lock_cleanup() {
     local i
+    # Clean up temp files
+    for (( i=${#_SWARM_TEMP_FILES[@]}-1; i>=0; i-- )); do
+        command rm -f "${_SWARM_TEMP_FILES[$i]}" 2>/dev/null || true
+    done
+    _SWARM_TEMP_FILES=()
+    # Release all locks
     for (( i=${#_SWARM_LOCK_STACK[@]}-1; i>=0; i-- )); do
         rmdir "${_SWARM_LOCK_STACK[$i]}" 2>/dev/null || true
     done
@@ -72,10 +101,16 @@ acquire_file_lock() {
         if [[ $lock_age -gt $stale_threshold ]]; then
             if ! rmdir "$lock_file" 2>/dev/null; then
                 # rmdir failed (permissions or not empty), try more aggressive cleanup
-                echo -e "${YELLOW}Warning: Stale lock exists but rmdir failed, attempting rm -rf${NC}" >&2
-                if ! command rm -rf "$lock_file" 2>/dev/null; then
-                    echo -e "${RED}Error: Cannot remove stale lock ${lock_file} (check permissions)${NC}" >&2
-                    # Continue anyway - maybe the lock will be released by its owner
+                # Safety: only rm -rf paths under TEAMS_DIR or TASKS_DIR to prevent accidental deletion
+                local resolved_lock
+                resolved_lock=$(cd "$(dirname "$lock_file")" 2>/dev/null && echo "$(pwd -P)/$(basename "$lock_file")")
+                if [[ -n "$resolved_lock" ]] && { [[ "$resolved_lock" == "${TEAMS_DIR}"/* ]] || [[ "$resolved_lock" == "${TASKS_DIR}"/* ]]; }; then
+                    echo -e "${YELLOW}Warning: Stale lock exists but rmdir failed, attempting rm -rf${NC}" >&2
+                    if ! command rm -rf "$lock_file" 2>/dev/null; then
+                        echo -e "${RED}Error: Cannot remove stale lock ${lock_file} (check permissions)${NC}" >&2
+                    fi
+                else
+                    echo -e "${RED}Error: Stale lock ${lock_file} is outside safe directories, refusing rm -rf${NC}" >&2
                 fi
             fi
         fi
@@ -123,8 +158,8 @@ release_file_lock() {
         if [[ $stack_len -gt 0 ]]; then
             local top_lock="${_SWARM_LOCK_STACK[$((stack_len - 1))]}"
             rmdir "$top_lock" 2>/dev/null || true
-            # Pop from stack
-            unset '_SWARM_LOCK_STACK[-1]'
+            # Pop from stack (compatible with bash < 4.3 where negative subscripts fail)
+            _SWARM_LOCK_STACK=("${_SWARM_LOCK_STACK[@]:0:$((stack_len - 1))}")
         fi
     fi
 
@@ -149,4 +184,4 @@ release_all_locks() {
 }
 
 # Export public API
-export -f acquire_file_lock release_file_lock release_all_locks
+export -f acquire_file_lock release_file_lock release_all_locks register_temp_file unregister_temp_file

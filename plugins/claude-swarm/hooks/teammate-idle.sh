@@ -35,7 +35,8 @@ if [[ -e "${task_files[0]}" ]]; then
             id=$(jq -r '.id // ""' "$task_file" 2>/dev/null)
             subject=$(jq -r '.subject // ""' "$task_file" 2>/dev/null)
 
-            if [[ "$owner" == "$TEAMMATE_NAME" ]] && [[ "$status" == "in-progress" || "$status" == "in_progress" ]]; then
+            # Accept both forms for backward compatibility with pre-normalization data
+            if [[ "$owner" == "$TEAMMATE_NAME" ]] && [[ "$status" == "in_progress" || "$status" == "in-progress" ]]; then
                 incomplete_tasks+="- Task #${id} [${status}]: ${subject}\n"
             fi
         fi
@@ -82,13 +83,17 @@ if [[ -d "$INBOX_DIR" ]]; then
 
     # Append message to team-lead inbox
     if [[ -f "$INBOX_FILE" ]]; then
-        TMP=$(mktemp)
-        if jq --arg from "$TEAMMATE_NAME" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" \
-           '. += [{"id": $id, "from": $from, "content": "\($from) is going idle.", "timestamp": $ts, "read": false}]' \
-           "$INBOX_FILE" > "$TMP" 2>/dev/null; then
-            /bin/mv -f "$TMP" "$INBOX_FILE" 2>/dev/null || rm -f "$TMP"
-        else
-            rm -f "$TMP"
+        LOCK_DIR="${INBOX_FILE}.lock"
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            TMP=$(mktemp)
+            if jq --arg from "$TEAMMATE_NAME" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" \
+               '. += [{"id": $id, "from": $from, "content": "\($from) is going idle.", "timestamp": $ts, "read": false}]' \
+               "$INBOX_FILE" > "$TMP" 2>/dev/null; then
+                /bin/mv -f "$TMP" "$INBOX_FILE" 2>/dev/null || rm -f "$TMP"
+            else
+                rm -f "$TMP"
+            fi
+            rmdir "$LOCK_DIR" 2>/dev/null
         fi
     fi
 fi

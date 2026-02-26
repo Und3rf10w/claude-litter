@@ -196,7 +196,15 @@ fi
 echo -e "${YELLOW}Running hook...${NC}"
 echo ""
 
-START_TIME=$(date +%s%N)
+# Portable millisecond timing (macOS date does not support %N)
+if date +%s%N &>/dev/null && [[ "$(date +%s%N)" != *"N"* ]]; then
+    _get_time_ns() { date +%s%N; }
+else
+    # Fallback: seconds only (milliseconds will be approximate)
+    _get_time_ns() { echo "$(date +%s)000000000"; }
+fi
+
+START_TIME=$(_get_time_ns)
 
 if [[ "$ASYNC_MODE" == true ]]; then
     # Run in background, capture PID
@@ -215,7 +223,7 @@ else
     EXIT_CODE=$?
     set -e
 
-    END_TIME=$(date +%s%N)
+    END_TIME=$(_get_time_ns)
     ELAPSED_TIME=$(( (END_TIME - START_TIME) / 1000000 )) # Convert to milliseconds
 fi
 

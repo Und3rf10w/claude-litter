@@ -34,13 +34,17 @@ if [[ -d "$INBOX_DIR" ]]; then
     fi
 
     if [[ -f "$INBOX_FILE" ]]; then
-        TMP=$(mktemp)
-        if jq --arg from "${TEAMMATE_NAME:-system}" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" --arg content "$msg_content" \
-           '. += [{"id": $id, "from": $from, "content": $content, "timestamp": $ts, "read": false}]' \
-           "$INBOX_FILE" > "$TMP" 2>/dev/null; then
-            /bin/mv -f "$TMP" "$INBOX_FILE" 2>/dev/null || rm -f "$TMP"
-        else
-            rm -f "$TMP"
+        LOCK_DIR="${INBOX_FILE}.lock"
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            TMP=$(mktemp)
+            if jq --arg from "${TEAMMATE_NAME:-system}" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" --arg content "$msg_content" \
+               '. += [{"id": $id, "from": $from, "content": $content, "timestamp": $ts, "read": false}]' \
+               "$INBOX_FILE" > "$TMP" 2>/dev/null; then
+                /bin/mv -f "$TMP" "$INBOX_FILE" 2>/dev/null || rm -f "$TMP"
+            else
+                rm -f "$TMP"
+            fi
+            rmdir "$LOCK_DIR" 2>/dev/null
         fi
     fi
 fi
@@ -64,14 +68,19 @@ if [[ -d "$tasks_dir" ]]; then
                     if [[ -n "$blocked_owner" ]] && [[ -f "${INBOX_DIR}/${blocked_owner}.json" ]]; then
                         TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                         MSG_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "msg-$(date +%s)")
-                        TMP=$(mktemp)
-                        if jq --arg from "system" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" \
-                           --arg content "Task #${TASK_ID} (${TASK_SUBJECT}) is now completed. Your task #${blocked_id} (${blocked_subject}) may be unblocked." \
-                           '. += [{"id": $id, "from": $from, "content": $content, "timestamp": $ts, "read": false}]' \
-                           "${INBOX_DIR}/${blocked_owner}.json" > "$TMP" 2>/dev/null; then
-                            /bin/mv -f "$TMP" "${INBOX_DIR}/${blocked_owner}.json" 2>/dev/null || rm -f "$TMP"
-                        else
-                            rm -f "$TMP"
+                        OWNER_INBOX="${INBOX_DIR}/${blocked_owner}.json"
+                        LOCK_DIR="${OWNER_INBOX}.lock"
+                        if mkdir "$LOCK_DIR" 2>/dev/null; then
+                            TMP=$(mktemp)
+                            if jq --arg from "system" --arg ts "$TIMESTAMP" --arg id "$MSG_ID" \
+                               --arg content "Task #${TASK_ID} (${TASK_SUBJECT}) is now completed. Your task #${blocked_id} (${blocked_subject}) may be unblocked." \
+                               '. += [{"id": $id, "from": $from, "content": $content, "timestamp": $ts, "read": false}]' \
+                               "$OWNER_INBOX" > "$TMP" 2>/dev/null; then
+                                /bin/mv -f "$TMP" "$OWNER_INBOX" 2>/dev/null || rm -f "$TMP"
+                            else
+                                rm -f "$TMP"
+                            fi
+                            rmdir "$LOCK_DIR" 2>/dev/null
                         fi
                     fi
                 fi

@@ -14,8 +14,8 @@ This guide covers integrating Claude Swarm with external systems, tools, and wor
 8. [Message-Based Communication](#message-based-communication)
 9. [Task System Integration](#task-system-integration)
 10. [CI/CD Integration](#cicd-integration)
-10. [Custom Tooling](#custom-tooling)
-11. [Monitoring and Observability](#monitoring-and-observability)
+11. [Custom Tooling](#custom-tooling)
+12. [Monitoring and Observability](#monitoring-and-observability)
 
 ---
 
@@ -76,9 +76,9 @@ Task files are largely compatible between systems:
 | `subject` | Yes | Yes | Yes |
 | `description` | Yes | Yes | Yes |
 | `status` | Yes | Yes | Yes (see status table above) |
-| `owner` | Yes | `assigned_to` | Swarm uses `owner` in jq, `assigned_to` in JSON |
+| `owner` | Yes | `owner` | Yes |
 | `blocks` | Yes | Yes | Yes |
-| `blockedBy` | Yes | `blocked_by` | Both field names supported |
+| `blockedBy` | Yes | `blockedBy` | Yes |
 | `comments` | No | Yes | Swarm extension |
 
 ### CC-Only Fields (Not Written by Swarm)
@@ -148,9 +148,9 @@ cat > ~/.claude/tasks/my-team/5.json <<EOF
   "subject": "Deploy to staging",
   "description": "Deploy latest changes to staging environment",
   "status": "pending",
-  "assigned_to": null,
+  "owner": null,
   "created_at": "2025-12-16T10:00:00Z",
-  "blocked_by": [4],
+  "blockedBy": [4],
   "comments": []
 }
 EOF
@@ -292,10 +292,10 @@ team_name=$3
   "subject": "Implement login endpoint",
   "description": "Create POST /auth/login with JWT support",
   "status": "in_progress",
-  "assigned_to": "backend-dev",
+  "owner": "backend-dev",
   "created_at": "2025-12-16T10:00:00Z",
   "updated_at": "2025-12-16T10:15:00Z",
-  "blocked_by": [],
+  "blockedBy": [],
   "blocked_by_tasks": [],
   "comments": [
     {
@@ -364,9 +364,10 @@ echo $CLAUDE_CODE_AGENT_ID         # "uuid-2"
 echo $CLAUDE_CODE_AGENT_NAME       # "backend-dev"
 echo $CLAUDE_CODE_AGENT_TYPE       # "backend-developer"
 echo $CLAUDE_CODE_TEAM_LEAD_ID     # "uuid-1" (team lead's UUID)
-echo $CLAUDE_CODE_AGENT_COLOR      # "blue"
 echo $KITTY_LISTEN_ON              # "unix:/tmp/kitty-user-12345" (kitty only)
 ```
+
+> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
 
 **Use these to:**
 - Access team context in custom commands
@@ -401,7 +402,7 @@ The spawned teammate will have this context in their initial session and can acc
 
 ## Hooks Integration
 
-Claude Swarm provides 5 lifecycle hooks for custom automation:
+Claude Swarm provides 9 lifecycle hooks for custom automation:
 
 ### SessionStart Hook
 
@@ -1048,7 +1049,7 @@ done; \
 echo \"\\n=== Recent Tasks ===\"; \
 for task in ~/.claude/tasks/*/\* .json 2>/dev/null | head -5; do
   echo \"\$task:\"; \
-  cat \"\$task\" 2>/dev/null | jq '{subject, status, assigned_to}'; \
+  cat \"\$task\" 2>/dev/null | jq '{subject, status, owner}'; \
 done
 "
 ```
@@ -1146,7 +1147,7 @@ echo "" >> "$report_file"
 
 echo "=== Task Activity ===" >> "$report_file"
 for task in ~/.claude/tasks/$team/*.json; do
-  cat "$task" | jq '{id, subject, status, assigned_to, updated_at}' >> "$report_file"
+  cat "$task" | jq '{id, subject, status, owner, updated_at}' >> "$report_file"
 done
 
 echo "" >> "$report_file"

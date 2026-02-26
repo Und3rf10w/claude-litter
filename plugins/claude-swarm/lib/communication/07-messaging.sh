@@ -42,7 +42,8 @@ send_message() {
         return 1
     fi
 
-    # Add trap to ensure cleanup on interrupt
+    # Register temp file for cleanup on abnormal exit; trap handles INT/TERM
+    register_temp_file "$tmp_file"
     trap "rm -f '$tmp_file'" INT TERM
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -54,6 +55,7 @@ send_message() {
           '. += [{"from": $from, "text": $text, "color": $color, "read": false, "timestamp": $ts}]' \
           "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         echo -e "${GREEN}Message sent to '${to}'${NC}"
 
@@ -65,6 +67,7 @@ send_message() {
         # notify_active_teammate "$team_name" "$to" "$from"
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2
@@ -176,15 +179,18 @@ mark_messages_read() {
         return 1
     fi
 
-    # Add trap to ensure cleanup on interrupt
+    # Register temp file for cleanup on abnormal exit; trap handles INT/TERM
+    register_temp_file "$tmp_file"
     trap "rm -f '$tmp_file'" INT TERM
 
     if jq '[.[] | .read = true]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         return 1
@@ -320,6 +326,7 @@ send_typed_message() {
     fi
 
     trap "rm -f '$tmp_file'" INT TERM
+    register_temp_file "$tmp_file"
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -346,10 +353,12 @@ send_typed_message() {
 
     if jq --argjson msg "$msg_obj" '. += [$msg]' "$inbox_file" >| "$tmp_file" && command mv "$tmp_file" "$inbox_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update inbox${NC}" >&2

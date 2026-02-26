@@ -230,12 +230,25 @@ archive_team() {
     echo -e "${YELLOW}  Creating archive: ${archive_name}.tar.gz${NC}"
 
     # Archive both team and task directories
+    # Use a temp staging directory to avoid portability issues with multiple -C flags
+    # (BSD tar on macOS handles multiple -C differently than GNU tar)
     local tar_status=0
-    if [[ -d "$tasks_dir" ]]; then
-        tar -czf "$archive_file" -C "${TEAMS_DIR}" "${team_name}" -C "${TASKS_DIR}" "${team_name}" 2>/dev/null || tar_status=$?
-    else
-        tar -czf "$archive_file" -C "${TEAMS_DIR}" "${team_name}" 2>/dev/null || tar_status=$?
+    local staging_dir=$(mktemp -d)
+    if [[ -z "$staging_dir" ]]; then
+        echo -e "${RED}Failed to create staging directory${NC}" >&2
+        return 1
     fi
+    trap "rm -rf '$staging_dir'" INT TERM
+
+    command mkdir -p "${staging_dir}/team" "${staging_dir}/tasks"
+    cp -R "${TEAMS_DIR}/${team_name}" "${staging_dir}/team/${team_name}"
+    if [[ -d "$tasks_dir" ]]; then
+        cp -R "$tasks_dir" "${staging_dir}/tasks/${team_name}"
+    fi
+
+    tar -czf "$archive_file" -C "$staging_dir" . 2>/dev/null || tar_status=$?
+    trap - INT TERM
+    rm -rf "$staging_dir"
 
     if [[ $tar_status -ne 0 ]]; then
         echo -e "${RED}Failed to create archive${NC}" >&2
@@ -293,7 +306,13 @@ list_archives() {
     echo ""
 
     # Sort by archivedAt timestamp (newest first)
-    local sorted_files=$(printf '%s\n' "${metadata_files[@]}" | xargs -I {} sh -c 'jq -r ".archivedAt" "{}" 2>/dev/null && echo "{}"' | paste -d'|' - - | sort -r | cut -d'|' -f2)
+    # Build a sortable list without xargs -I {} sh -c (injection risk)
+    local -a sort_entries=()
+    for mf in "${metadata_files[@]}"; do
+        local ts=$(jq -r '.archivedAt // ""' "$mf" 2>/dev/null)
+        sort_entries+=("${ts}|${mf}")
+    done
+    local sorted_files=$(printf '%s\n' "${sort_entries[@]}" | sort -r | cut -d'|' -f2-)
 
     while IFS= read -r metadata_file; do
         [[ -z "$metadata_file" ]] && continue

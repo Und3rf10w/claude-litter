@@ -73,7 +73,13 @@ generate_uuid() {
 
 # Validate team/agent names to prevent path traversal, injection, and other issues
 # Only allows alphanumeric characters, hyphens, and underscores
+# Must start with a letter or number (prevents flag injection via leading dash)
 # Returns 0 if valid, 1 if invalid (prints error message)
+#
+# Note: Names created before v2.0 may contain characters now disallowed (e.g., dots,
+# spaces). Existing team/agent data is not affected, but new names must comply.
+# If you need to work with legacy names, access the files directly rather than
+# going through validate_name.
 validate_name() {
     local name="$1"
     local type="${2:-name}"  # "team" or "agent" for error messages

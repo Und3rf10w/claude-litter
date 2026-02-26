@@ -61,20 +61,20 @@ TEAM_NAME="$1"
 ACTION="$2"
 
 if [[ -z "$TEAM_NAME" ]]; then
-    echo "Error: Team name required"
-    echo "Usage: /swarm-webhooks <team_name> <action> [args...]"
-    echo ""
-    echo "Actions:"
-    echo "  add <url> [event_filter]  - Add webhook endpoint"
-    echo "  remove <url>              - Remove webhook endpoint"
-    echo "  list                      - List configured webhooks"
-    echo "  test <url>                - Send test webhook"
+    echo "Error: Team name required" >&2
+    echo "Usage: /swarm-webhooks <team_name> <action> [args...]" >&2
+    echo "" >&2
+    echo "Actions:" >&2
+    echo "  add <url> [event_filter]  - Add webhook endpoint" >&2
+    echo "  remove <url>              - Remove webhook endpoint" >&2
+    echo "  list                      - List configured webhooks" >&2
+    echo "  test <url>                - Send test webhook" >&2
     exit 1
 fi
 
 if [[ -z "$ACTION" ]]; then
-    echo "Error: Action required (add, remove, list, test)"
-    echo "Usage: /swarm-webhooks <team_name> <action> [args...]"
+    echo "Error: Action required (add, remove, list, test)" >&2
+    echo "Usage: /swarm-webhooks <team_name> <action> [args...]" >&2
     exit 1
 fi
 
@@ -84,8 +84,8 @@ case "$ACTION" in
         EVENT_FILTER="${4:-*}"
 
         if [[ -z "$WEBHOOK_URL" ]]; then
-            echo "Error: Webhook URL required"
-            echo "Usage: /swarm-webhooks <team> add <url> [event_filter]"
+            echo "Error: Webhook URL required" >&2
+            echo "Usage: /swarm-webhooks <team> add <url> [event_filter]" >&2
             exit 1
         fi
 
@@ -96,8 +96,8 @@ case "$ACTION" in
         WEBHOOK_URL="$3"
 
         if [[ -z "$WEBHOOK_URL" ]]; then
-            echo "Error: Webhook URL required"
-            echo "Usage: /swarm-webhooks <team> remove <url>"
+            echo "Error: Webhook URL required" >&2
+            echo "Usage: /swarm-webhooks <team> remove <url>" >&2
             exit 1
         fi
 
@@ -112,8 +112,8 @@ case "$ACTION" in
         WEBHOOK_URL="$3"
 
         if [[ -z "$WEBHOOK_URL" ]]; then
-            echo "Error: Webhook URL required"
-            echo "Usage: /swarm-webhooks <team> test <url>"
+            echo "Error: Webhook URL required" >&2
+            echo "Usage: /swarm-webhooks <team> test <url>" >&2
             exit 1
         fi
 
@@ -128,8 +128,8 @@ case "$ACTION" in
         ;;
 
     *)
-        echo "Error: Unknown action '$ACTION'"
-        echo "Valid actions: add, remove, list, test"
+        echo "Error: Unknown action '$ACTION'" >&2
+        echo "Valid actions: add, remove, list, test" >&2
         exit 1
         ;;
 esac

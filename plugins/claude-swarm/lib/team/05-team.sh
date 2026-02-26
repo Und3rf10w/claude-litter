@@ -215,15 +215,16 @@ update_agent_color() {
         return 1
     fi
 
-    # Check if agent exists
-    if ! jq -e --arg name "$agent_name" '.members[] | select(.name == $name)' "$config_file" &>/dev/null; then
-        echo -e "${RED}Agent '${agent_name}' not found in team '${team_name}'${NC}" >&2
-        return 1
-    fi
-
     # Acquire lock for concurrent access protection
     if ! acquire_file_lock "$config_file"; then
         echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+        return 1
+    fi
+
+    # Check if agent exists (inside lock to prevent TOCTOU race)
+    if ! jq -e --arg name "$agent_name" '.members[] | select(.name == $name)' "$config_file" &>/dev/null; then
+        release_file_lock
+        echo -e "${RED}Agent '${agent_name}' not found in team '${team_name}'${NC}" >&2
         return 1
     fi
 

@@ -12,22 +12,27 @@ This document provides comprehensive documentation for all hooks implemented in 
   - [SessionEnd Hook](#sessionend-hook)
   - [PostToolUse Hook (ExitPlanMode)](#posttooluse-hook-exitplanmode)
   - [PreToolUse Hook (Task)](#pretooluse-hook-task)
+  - [PreToolUse Hook (TaskUpdate)](#pretooluse-hook-taskupdate)
+  - [PreToolUse Hook (SendMessage)](#pretooluse-hook-sendmessage)
+  - [SubagentStart Hook](#subagentstart-hook)
+  - [SubagentStop Hook](#subagentstop-hook)
 - [Output Format](#output-format)
 - [Exit Codes](#exit-codes)
 - [Debugging Hooks](#debugging-hooks)
 
 ## Overview
 
-Claude Swarm uses 8 hooks to enable seamless team coordination:
+Claude Swarm uses 9 hooks to enable seamless team coordination:
 
 1. **Notification** - Throttled heartbeat updates for team member activity tracking
 2. **SessionStart** - Auto-delivers messages and task reminders when sessions start
 3. **SessionEnd** - Handles graceful member/team shutdowns
-4. **PostToolUse:ExitPlanMode** - Provides swarm launch guidance after plan approval
+4. **PostToolUse:ExitPlanMode** - Detects swarm launch requests from approved plans
 5. **PreToolUse:Task** - Injects team context into spawned subagents
 6. **PreToolUse:TaskUpdate** (prompt-based) - Validates task status changes and assignments
-7. **PreToolUse:SendMessage|Teammate** (prompt-based) - Validates team communications
-8. **SubagentStop** (prompt-based) - Ensures teammates complete work before stopping
+7. **PreToolUse:SendMessage** (prompt-based) - Validates team communications
+8. **SubagentStart** - Injects team context into spawned subagents
+9. **SubagentStop** (prompt-based) - Ensures teammates complete work before stopping
 
 All hooks are registered in `hooks/hooks.json` and use the `${CLAUDE_PLUGIN_ROOT}` variable for portability.
 
@@ -35,8 +40,8 @@ All hooks are registered in `hooks/hooks.json` and use the `${CLAUDE_PLUGIN_ROOT
 
 Claude Swarm uses two types of hooks:
 
-- **Command hooks** (1-5): Fast, deterministic operations like heartbeat tracking and message delivery
-- **Prompt-based hooks** (6-8): Context-aware validation using LLM reasoning for complex decisions
+- **Command hooks** (1-5, 8): Fast, deterministic operations like heartbeat tracking and message delivery
+- **Prompt-based hooks** (6-7, 9): Context-aware validation using LLM reasoning for complex decisions
 
 ## Hook Execution Environment
 
@@ -49,7 +54,6 @@ Hooks have access to the following environment variables:
 - `CLAUDE_CODE_AGENT_NAME` - Current agent name (e.g., "team-lead", "doc-reviewer")
 - `CLAUDE_CODE_AGENT_TYPE` - Agent type (e.g., "team-lead", "reviewer", "developer")
 - `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent UUID (for InboxPoller activation)
-- `CLAUDE_CODE_AGENT_COLOR` - Agent's display color (e.g., "blue", "cyan")
 - `CLAUDE_PLUGIN_ROOT` - Plugin root directory path
 - `SWARM_KEEP_ALIVE` - If "true", keeps teammates running when team-lead exits
 - `KITTY_LISTEN_ON` - Kitty socket path (passed to spawned teammates)
@@ -242,54 +246,21 @@ None (silent operation, but messages are sent via swarm-utils functions).
 
 **Event:** `PostToolUse` (matcher: `ExitPlanMode`)
 
-**Purpose:** Detects when a user approves plan mode with swarm launch enabled and provides guidance for setting up the swarm.
+**Purpose:** Detects swarm launch requests in approved plans and coordinates team creation and teammate spawning.
 
 #### Trigger Condition
 
-This hook runs after `ExitPlanMode` is called and checks if the tool result contains:
-
-```json
-{
-  "launchSwarm": true,
-  "teammateCount": 3
-}
-```
+This hook runs after the `ExitPlanMode` tool is used (i.e., when Claude exits plan mode after user approval).
 
 #### Behavior
 
-1. Reads tool result from stdin
-2. Searches for `"launchSwarm".*true` pattern
-3. Extracts `teammateCount` value (defaults to 3)
-4. Outputs swarm setup instructions
+1. Reads the tool result from stdin
+2. Checks for swarm launch indicators (e.g., `launchSwarm: true`)
+3. If a swarm launch is detected, coordinates team creation and teammate spawning
 
 #### Example Output
 
-```xml
-<system-reminder>
-# Swarm Launch Detected
-
-The user approved plan mode with swarm launch (3 teammates requested).
-
-Use these commands to set up the swarm:
-1. `/swarm-create <team-name>` - Create the team
-2. `/task-create <subject>` - Create tasks from the plan
-3. `/swarm-spawn <name> <type>` - Spawn 3 teammates
-4. `/task-update <id> --assign <name>` - Assign tasks
-
-Claude Code will invoke the swarm-orchestration skill automatically for guidance.
-</system-reminder>
-```
-
-#### Input Format (stdin)
-
-The hook receives the tool result as JSON:
-
-```json
-{
-  "launchSwarm": true,
-  "teammateCount": 5
-}
-```
+None (coordinates spawning silently).
 
 #### Exit Codes
 
@@ -338,6 +309,133 @@ The hook receives the tool input as JSON (not currently used).
 #### Exit Codes
 
 - `0` - Always exits successfully
+
+---
+
+### PreToolUse Hook (TaskUpdate)
+
+**Type:** Prompt-based
+
+**Event:** `PreToolUse` (matcher: `TaskUpdate`)
+
+**Purpose:** Validates task status changes and assignments before they are applied, ensuring logical status transitions and valid owners.
+
+#### Trigger Condition
+
+This hook runs before any `TaskUpdate` tool use.
+
+#### Behavior
+
+1. Reviews the task update for validity
+2. Checks if status transitions are logical (pending → in_progress → completed)
+3. Verifies new task owners exist and are appropriate
+4. Checks if completing a task would unblock dependent tasks
+
+#### Prompt Logic
+
+The prompt-based hook asks the LLM to validate the update and respond with JSON:
+- `{"ok": true}` if the update is valid
+- `{"ok": false, "reason": "specific reason"}` if concerns exist
+
+#### Exit Codes
+
+- `0` - Update is valid, proceed
+- Non-zero - Update has concerns
+
+---
+
+### PreToolUse Hook (SendMessage)
+
+**Type:** Prompt-based
+
+**Event:** `PreToolUse` (matcher: `SendMessage`)
+
+**Purpose:** Validates team communications for effectiveness, checking recipient validity, message clarity, and broadcast necessity.
+
+#### Trigger Condition
+
+This hook runs before any `SendMessage` tool use.
+
+#### Behavior
+
+1. Checks if the recipient is valid and appropriate
+2. Validates that the message is clear and actionable
+3. For broadcasts, checks if team-wide notification is truly necessary
+4. For task assignments, verifies sufficient context is provided
+5. For shutdown requests, checks if work is actually complete
+
+#### Prompt Logic
+
+The prompt-based hook asks the LLM to validate the communication and respond with JSON:
+- `{"ok": true}` if the communication is appropriate
+- `{"ok": false, "reason": "specific reason"}` if the recipient is invalid or critical issues exist
+
+#### Exit Codes
+
+- `0` - Communication is valid, proceed
+- Non-zero - Communication has issues
+
+---
+
+### SubagentStart Hook
+
+**Script:** `hooks/subagent-start-context.sh`
+
+**Event:** `SubagentStart`
+
+**Purpose:** Injects team context into spawned subagents so they inherit awareness of the team, tasks, and communication channels.
+
+#### Trigger Condition
+
+This hook runs when a Task tool subagent is launched. It only outputs if the parent agent is part of a team (i.e., `CLAUDE_CODE_TEAM_NAME` is set or detectable via window variables).
+
+#### Behavior
+
+1. Determines team context from environment variables or kitty window variables
+2. Gathers team config, member list, and task summary
+3. Outputs JSON with `additionalContext` to inject into the subagent's initial context
+
+#### Output Format
+
+Returns JSON with `hookSpecificOutput.additionalContext` that is injected as the subagent's first message context.
+
+#### Exit Codes
+
+- `0` - Always exits successfully (no output means no injection)
+
+---
+
+### SubagentStop Hook
+
+**Type:** Prompt-based
+
+**Event:** `SubagentStop` (matcher: `*`)
+
+**Purpose:** Ensures teammates complete their work before stopping, checking for incomplete tasks, unreported status, and unresolved blocking issues.
+
+#### Trigger Condition
+
+This hook runs when any subagent is about to stop.
+
+#### Behavior
+
+1. Checks if all assigned tasks are completed or properly handed off
+2. Verifies the teammate has reported work status to team-lead
+3. Checks for blocking issues that should be resolved first
+4. Validates that task statuses have been updated appropriately
+
+#### Prompt Logic
+
+The prompt-based hook asks the LLM to validate and respond with JSON:
+- `{"ok": true}` if work is complete and teammate should stop
+- `{"ok": false, "reason": "specific reason why work is incomplete"}` if teammate should NOT stop
+
+#### Exit Codes
+
+- `0` - Teammate can stop
+- Non-zero - Teammate should continue working
+
+---
 
 ## Output Format
 

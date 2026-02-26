@@ -76,7 +76,7 @@ echo "Validating hook definitions..."
 echo "=============================================="
 
 # Valid hook event types (Claude Code v2.1.39)
-VALID_EVENTS=("PreToolUse" "PostToolUse" "PostToolUseFailure" "Notification" "UserPromptSubmit" "SessionStart" "SessionEnd" "Stop" "SubagentStart" "SubagentStop" "PreCompact" "PermissionRequest" "Setup" "TeammateIdle" "TaskCompleted")
+VALID_EVENTS=("PreToolUse" "PostToolUse" "PostToolUseFailure" "Notification" "UserPromptSubmit" "SessionStart" "SessionEnd" "Stop" "SubagentStart" "SubagentStop" "PreCompact" "PermissionRequest" "Setup")
 
 # Get all hook events
 events=$(jq -r '.hooks | keys[]' "$HOOKS_FILE")
@@ -149,12 +149,13 @@ for event in $events; do
                     else
                         echo "      Command: $command"
 
-                        # Expand environment variables if present
+                        # Expand environment variables safely (no eval)
                         # Set CLAUDE_PLUGIN_ROOT if not set (for validation purposes)
                         if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
                             export CLAUDE_PLUGIN_ROOT="${SCRIPT_DIR}/../.."
                         fi
-                        expanded_command=$(eval echo "$command")
+                        expanded_command="${command//\$\{CLAUDE_PLUGIN_ROOT\}/$CLAUDE_PLUGIN_ROOT}"
+                        expanded_command="${expanded_command//\$CLAUDE_PLUGIN_ROOT/$CLAUDE_PLUGIN_ROOT}"
 
                         # Check if command file exists (basic check)
                         if [[ "$expanded_command" =~ ^/ ]] || [[ "$expanded_command" =~ ^\. ]]; then

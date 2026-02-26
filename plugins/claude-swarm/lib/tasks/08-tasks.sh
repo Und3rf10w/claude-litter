@@ -159,12 +159,17 @@ update_task() {
         case "$1" in
             --status)
                 new_status="$2"
+                # Normalize status: accept both in-progress and in_progress, store canonical form
+                case "$new_status" in
+                    in-progress) new_status="in_progress" ;;
+                    in-review) new_status="in_review" ;;
+                esac
                 if [[ "$new_status" == "completed" ]]; then
                     task_completed=true
                     # Get current owner before status change
                     task_owner=$(jq -r '.owner // "unknown"' "$tmp_file")
                 fi
-                if ! jq --arg val "$2" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
+                if ! jq --arg val "$new_status" '.status = $val' "$tmp_file" > "${tmp_file}.new"; then
                     trap - INT TERM
                     command rm -f "$tmp_file" "${tmp_file}.new"
                     release_file_lock

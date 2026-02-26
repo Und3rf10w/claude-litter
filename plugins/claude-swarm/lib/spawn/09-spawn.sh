@@ -80,6 +80,7 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
+        --env "PATH=${PATH}" \
         $team_lead_env \
         "$SWARM_CLAUDE_CMD" --model "$model" --dangerously-skip-permissions \
         --agent-id "$agent_id" \
@@ -174,10 +175,20 @@ spawn_teammate_tmux_resume() {
 
     # Write prompt to temporary file for safer passing
     local prompt_file=$(mktemp)
+    if [[ -z "$prompt_file" ]]; then
+        echo -e "${RED}Failed to create prompt temp file${NC}" >&2
+        tmux kill-session -t "$session_name" 2>/dev/null
+        return 1
+    fi
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
+    # Ensure prompt file is cleaned up even if tmux send-keys fails
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter || {
+        rm -f "$prompt_file"
+        echo -e "${RED}Failed to send command to tmux session${NC}" >&2
+        return 1
+    }
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -367,10 +378,20 @@ spawn_teammate_tmux() {
 
     # Write prompt to temporary file for safer passing (defense-in-depth against command injection)
     local prompt_file=$(mktemp)
+    if [[ -z "$prompt_file" ]]; then
+        echo -e "${RED}Failed to create prompt temp file${NC}" >&2
+        tmux kill-session -t "$session_name" 2>/dev/null
+        return 1
+    fi
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
+    # Ensure prompt file is cleaned up even if tmux send-keys fails
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter || {
+        rm -f "$prompt_file"
+        echo -e "${RED}Failed to send command to tmux session${NC}" >&2
+        return 1
+    }
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -604,6 +625,7 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
+        --env "PATH=${PATH}" \
         "${custom_env_args[@]}" \
         "$SWARM_CLAUDE_CMD" "${claude_args[@]}" -- "$initial_prompt"
 

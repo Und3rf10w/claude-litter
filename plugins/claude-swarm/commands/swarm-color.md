@@ -36,15 +36,15 @@ if [[ -z "$TEAM" ]]; then
 fi
 
 if [[ -z "$AGENT_NAME" ]]; then
-    echo "Error: Agent name required"
-    echo "Usage: /swarm-color <agent_name> <color>"
+    echo "Error: Agent name required" >&2
+    echo "Usage: /swarm-color <agent_name> <color>" >&2
     exit 1
 fi
 
 if [[ -z "$NEW_COLOR" ]]; then
-    echo "Error: Color required"
-    echo "Usage: /swarm-color <agent_name> <color>"
-    echo "Valid colors: blue, green, yellow, red, cyan, magenta, white"
+    echo "Error: Color required" >&2
+    echo "Usage: /swarm-color <agent_name> <color>" >&2
+    echo "Valid colors: blue, green, yellow, red, cyan, magenta, white" >&2
     exit 1
 fi
 

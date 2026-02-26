@@ -13,22 +13,22 @@ claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
 ├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v1.8.1)
+│   └── claude-swarm/          # Main swarm plugin (v2.0.0)
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # Plugin manifest
-│       ├── commands/          # 17+ slash commands (.md files)
+│       ├── commands/          # 27 slash commands (.md files)
 │       ├── hooks/
 │       │   ├── hooks.json     # Hook configuration
 │       │   └── *.sh           # Hook scripts
-│       ├── lib/               # Modular library (13 modules)
+│       ├── lib/               # Modular library (16 modules)
 │       │   ├── swarm-utils.sh # Entry point (sources all modules)
 │       │   ├── swarm-onboarding.sh # Onboarding wizard
 │       │   ├── core/          # 00-globals, 01-utils, 02-file-lock
 │       │   ├── multiplexer/   # 03-multiplexer, 04-registry
 │       │   ├── team/          # 05-team, 06-status, 10-lifecycle
-│       │   ├── communication/ # 07-messaging
+│       │   ├── communication/ # 07-messaging, 15-webhooks
 │       │   ├── tasks/         # 08-tasks
-│       │   └── spawn/         # 09-spawn, 11-cleanup, 12-kitty-session, 13-diagnostics
+│       │   └── spawn/         # 09-spawn, 11-cleanup, 12-kitty-session, 13-diagnostics, 14-in-process
 │       ├── skills/
 │       │   ├── swarm-orchestration/    # User/orchestrator delegation workflow
 │       │   ├── swarm-team-lead/        # Spawned team-lead coordination
@@ -42,16 +42,16 @@ claude-litter/
 
 ### Core Library: `plugins/claude-swarm/lib/`
 
-The library uses a modular architecture with 13 modules loaded in dependency order:
+The library uses a modular architecture with 16 modules loaded in dependency order:
 
 | Level | Module                          | Functions                                                               |
 | ----- | ------------------------------- | ----------------------------------------------------------------------- |
 | 0     | `core/00-globals.sh`            | Global vars, colors, `SWARM_KITTY_MODE`, `SWARM_TEAMMATE_SYSTEM_PROMPT` |
-| 1     | `core/01-utils.sh`              | `generate_uuid`, `validate_name`, `kitten_cmd`                          |
+| 1     | `core/01-utils.sh`              | `generate_uuid`, `validate_name`, `detect_multiplexer`                  |
 | 1     | `core/02-file-lock.sh`          | `acquire_file_lock`, `release_file_lock`                                |
-| 2     | `multiplexer/03-multiplexer.sh` | `detect_multiplexer`, `find_kitty_socket`, `validate_kitty_socket`      |
+| 2     | `multiplexer/03-multiplexer.sh` | `find_kitty_socket`, `validate_kitty_socket`, `kitten_cmd`              |
 | 3     | `multiplexer/04-registry.sh`    | `register_window`, `unregister_window`, `get_registered_windows`        |
-| 3     | `team/05-team.sh`               | `create_team`, `add_member`, `get_team_config`, `list_teams`            |
+| 3     | `team/05-team.sh`               | `create_team`, `add_member`, `get_team_config`, `list_team_members`, `update_agent_color` |
 | 4     | `team/06-status.sh`             | `update_member_status`, `get_live_agents`, `swarm_status`               |
 | 4     | `communication/07-messaging.sh` | `send_message`, `read_inbox`, `broadcast_message`                       |
 | 5     | `tasks/08-tasks.sh`             | `create_task`, `get_task`, `update_task`, `list_tasks`                  |
@@ -59,7 +59,9 @@ The library uses a modular architecture with 13 modules loaded in dependency ord
 | 6     | `team/10-lifecycle.sh`          | `suspend_team`, `resume_team`                                           |
 | 6     | `spawn/12-kitty-session.sh`     | `generate_kitty_session`, `launch_kitty_session`                        |
 | 7     | `spawn/11-cleanup.sh`           | `cleanup_team`                                                          |
-| 7     | `spawn/13-diagnostics.sh`       | `diagnose_team`, `verify_teammates`                                     |
+| 7     | `spawn/13-diagnostics.sh`       | `check_heartbeats`, `detect_crashed_agents`, `reconcile_team_status`, `list_teams`, `delete_task` |
+| 7     | `spawn/14-in-process.sh`        | `spawn_teammate_in_process`, `list_in_process_teammates`, `kill_in_process_teammate` |
+| 8     | `communication/15-webhooks.sh`  | `configure_webhooks`, `send_webhook`, `validate_webhook_config`, `trigger_webhook_event` |
 
 Each module has source guards to prevent double-loading:
 
@@ -92,15 +94,19 @@ All state stored as JSON files under `~/.claude/`:
 
 ### Hooks System
 
-5 hooks defined in `hooks/hooks.json`:
+9 hooks defined in `hooks/hooks.json`:
 
-| Event                    | Script                    | Purpose                              |
-| ------------------------ | ------------------------- | ------------------------------------ |
-| SessionStart             | session-start.sh          | Auto-deliver unread messages         |
-| SessionEnd               | session-stop.sh           | Notify team-lead when teammate exits |
-| Notification             | notification-heartbeat.sh | Update `lastSeen` timestamps         |
-| PostToolUse:ExitPlanMode | exit-plan-swarm.sh        | Handle swarm launches from plan mode |
-| PreToolUse:Task          | task-team-context.sh      | Inject team context into subagents   |
+| Event                    | Script / Type             | Purpose                                           |
+| ------------------------ | ------------------------- | ------------------------------------------------- |
+| Notification             | notification-heartbeat.sh | Update `lastSeen` timestamps                      |
+| SessionStart             | session-start.sh          | Auto-deliver unread messages                       |
+| SessionEnd               | session-stop.sh           | Notify team-lead when teammate exits               |
+| PostToolUse:ExitPlanMode | exit-plan-swarm.sh        | Detect swarm launch requests from approved plans   |
+| PreToolUse:Task          | task-team-context.sh      | Inject team context into subagents                 |
+| PreToolUse:TaskUpdate    | prompt-based              | Validate task status changes and assignments       |
+| PreToolUse:SendMessage   | prompt-based              | Validate team communications                       |
+| SubagentStart            | subagent-start-context.sh | Inject team context into spawned subagents         |
+| SubagentStop             | prompt-based              | Ensure teammates complete work before stopping     |
 
 ### Environment Variables
 
@@ -111,7 +117,8 @@ Set automatically for spawned teammates:
 - `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
 - `CLAUDE_CODE_AGENT_TYPE` - Role type (worker, backend-developer, etc.)
 - `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent ID
-- `CLAUDE_CODE_AGENT_COLOR` - Agent color for display
+
+> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
 
 User-configurable:
 

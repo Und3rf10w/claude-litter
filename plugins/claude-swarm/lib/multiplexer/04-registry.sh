@@ -39,6 +39,7 @@ register_window() {
     fi
 
     # Add trap to ensure cleanup on interrupt
+    register_temp_file "$tmp_file"
     trap "rm -f '$tmp_file'" INT TERM
 
     if jq --arg agent "$agent_name" \
@@ -47,10 +48,12 @@ register_window() {
        '. += [{"agent": $agent, "swarm_var": $var, "registered_at": $ts}]' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -83,16 +86,19 @@ unregister_window() {
     fi
 
     # Add trap to ensure cleanup on interrupt
+    register_temp_file "$tmp_file"
     trap "rm -f '$tmp_file'" INT TERM
 
     if jq --arg agent "$agent_name" \
        'map(select(.agent != $agent))' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -133,6 +139,7 @@ clean_window_registry() {
     fi
 
     # Add trap to ensure cleanup on interrupt
+    register_temp_file "$tmp_file"
     trap "rm -f '$tmp_file'" INT TERM
 
     # Build live windows JSON array with validation
@@ -142,6 +149,7 @@ clean_window_registry() {
     elif ! live_json=$(echo "$live_windows" | jq -R . 2>/dev/null | jq -s . 2>/dev/null); then
         echo -e "${YELLOW}Warning: Failed to parse live windows list${NC}" >&2
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         return 1
     fi
@@ -152,15 +160,18 @@ clean_window_registry() {
        "$registry_file" > "$tmp_file" 2>/dev/null; then
         echo -e "${RED}Error: Registry cleanup jq filter failed${NC}" >&2
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         return 1
     fi
 
     if command mv "$tmp_file" "$registry_file"; then
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         return 0
     else
         trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         echo -e "${RED}Failed to update window registry${NC}" >&2
         return 1

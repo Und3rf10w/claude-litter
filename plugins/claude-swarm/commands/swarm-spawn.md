@@ -78,15 +78,9 @@ else
     TEAM="$(get_current_window_var 'swarm_team')"
 fi
 
-# Parse positional arguments
-NAME="$1"
-TYPE="${2:-worker}"
-MODEL="${3:-sonnet}"
-PROMPT="${4:-}"
-shift 4 2>/dev/null || shift $# 2>/dev/null
-
-# Parse optional flags
+# Parse arguments: extract flags first, then positional args
 COLOR="blue"  # default color
+POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --color)
@@ -94,11 +88,17 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Unknown option: $1" >&2
-            exit 1
+            POSITIONAL+=("$1")
+            shift
             ;;
     esac
 done
+
+# Assign positional args
+NAME="${POSITIONAL[0]:-}"
+TYPE="${POSITIONAL[1]:-worker}"
+MODEL="${POSITIONAL[2]:-sonnet}"
+PROMPT="${POSITIONAL[3]:-}"
 
 # Validate color
 case "$COLOR" in
