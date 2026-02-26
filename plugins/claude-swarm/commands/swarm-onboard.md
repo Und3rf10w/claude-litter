@@ -100,7 +100,7 @@ VERIFY_EOF
 
 **If `SKIP_DEMO` is false:**
 
-Use AskUserQuestion to ask: "Would you like a guided walkthrough creating a test team?"
+Use AskUserQuestion to ask: "Would you like a guided walkthrough of the full delegation workflow? This will spawn a team-lead and let it autonomously create a worker."
 
 If yes:
 
@@ -110,6 +110,11 @@ source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 run_onboarding_demo
 DEMO_EOF
 ```
+
+**Important:** The demo does NOT auto-cleanup. After the demo completes:
+1. Let the user observe the team-lead and demo-buddy interacting in their terminal windows
+2. When the user is ready, offer to clean up with: `/claude-swarm:swarm-cleanup <team-name>`
+3. The demo exports `ONBOARD_DEMO_TEAM` with the test team name for cleanup
 
 ---
 
@@ -131,5 +136,6 @@ After completing onboarding, summarize:
 
 1. Prerequisites status (all met / issues found)
 2. Whether kitty was configured (if applicable)
-3. Whether the demo walkthrough was completed
-4. Suggest next steps based on their response to creating a real team
+3. Whether the demo walkthrough was completed (and if team-lead successfully spawned a worker)
+4. Whether the demo team is still running (remind to cleanup)
+5. Suggest next steps based on their response to creating a real team
