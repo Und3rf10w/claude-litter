@@ -1,5 +1,5 @@
 {
-  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, handle swarm launches, heartbeat tracking",
+  "description": "Claude Swarm hooks - auto-deliver messages, notify on session end, heartbeat tracking, context-aware validation, and subagent context injection",
   "hooks": {
     "Notification": [
       {
@@ -54,7 +54,50 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/task-team-context.sh"
           }
         ]
+      },
+      {
+        "matcher": "TaskUpdate",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "IMPORTANT: If the environment variable CLAUDE_CODE_TEAM_NAME is not set (i.e., this session is not part of a swarm team), respond immediately with {\"ok\": true} and skip all checks.\n\nReview this task update for validity. Check if:\n1. Marking task as 'completed' - verify the description suggests work is actually done\n2. Changing task owner - ensure new owner exists and is appropriate\n3. Changing status - ensure transitions are logical (pending->in_progress->completed)\n4. Task dependencies - if completing a task, check if it would unblock other tasks\n\nTask update: $ARGUMENTS\n\nRespond with JSON only. If valid: {\"ok\": true}. If concerns exist: {\"ok\": false, \"reason\": \"specific reason\"}.",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "IMPORTANT: If the environment variable CLAUDE_CODE_TEAM_NAME is not set (i.e., this session is not part of a swarm team), respond immediately with {\"ok\": true} and skip all checks.\n\nValidate this team communication for effectiveness. Check:\n1. Is the recipient valid and appropriate for the message?\n2. Is the message clear and actionable?\n3. For broadcasts - is this truly necessary for all team members?\n4. For task assignments - does the message provide sufficient context?\n5. For shutdown requests - is the work actually complete?\n\nCommunication: $ARGUMENTS\n\nRespond with JSON only. If appropriate: {\"ok\": true}. If invalid recipient or critical issues: {\"ok\": false, \"reason\": \"specific reason\"}.",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start-context.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "IMPORTANT: If the environment variable CLAUDE_CODE_TEAM_NAME is not set (i.e., this session is not part of a swarm team), respond immediately with {\"ok\": true} and skip all checks.\n\nOtherwise, validate if this teammate should stop. Check:\n1. Are all assigned tasks completed or properly handed off?\n2. Has the teammate reported their work status to the team lead?\n3. Are there any blocking issues that should be resolved first?\n4. Has the teammate updated task statuses appropriately?\n\nAgent stop context: $ARGUMENTS\n\nRespond with JSON only. If work is complete and teammate should stop: {\"ok\": true}. If teammate should NOT stop: {\"ok\": false, \"reason\": \"specific reason why work is incomplete\"}.",
+            "timeout": 30
+          }
+        ]
       }
     ]
-  }
+  },
+  "_comment": "TeammateIdle and TaskCompleted were removed because they are not valid Claude Code hook events. The scripts teammate-idle.sh and task-completed.sh remain available but are not auto-triggered."
 }

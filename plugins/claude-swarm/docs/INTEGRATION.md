@@ -5,15 +5,17 @@ This guide covers integrating Claude Swarm with external systems, tools, and wor
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Integration Patterns](#integration-patterns)
-3. [File-Based Integration](#file-based-integration)
-4. [Environment Variables](#environment-variables)
-5. [Hooks Integration](#hooks-integration)
-6. [Message-Based Communication](#message-based-communication)
-7. [Task System Integration](#task-system-integration)
-8. [CI/CD Integration](#cicd-integration)
-9. [Custom Tooling](#custom-tooling)
-10. [Monitoring and Observability](#monitoring-and-observability)
+2. [CC Native Compatibility](#cc-native-compatibility)
+3. [Integration Patterns](#integration-patterns)
+4. [File-Based Integration](#file-based-integration)
+5. [Environment Variables](#environment-variables)
+6. [Hooks Integration](#hooks-integration)
+7. [Webhook Notifications](#webhook-notifications)
+8. [Message-Based Communication](#message-based-communication)
+9. [Task System Integration](#task-system-integration)
+10. [CI/CD Integration](#cicd-integration)
+11. [Custom Tooling](#custom-tooling)
+12. [Monitoring and Observability](#monitoring-and-observability)
 
 ---
 
@@ -36,6 +38,102 @@ This flexibility allows you to:
 
 ---
 
+## CC Native Compatibility
+
+Claude Code 2.1.39+ includes native team and task tools (`TeamCreate`, `TaskCreate`, `SendMessage`, etc.). Claude Swarm writes config and task files that are compatible with both systems by using dual field names.
+
+### Team Config Field Mapping
+
+| Field | CC Native | Swarm Legacy | Read Pattern |
+|-------|-----------|--------------|--------------|
+| Team name | `name` | `teamName` | `(.name // .teamName)` |
+| Member type | `agentType` | `type` | `(.agentType // .type)` |
+| Join timestamp | `joinedAt` | `lastSeen` | Both written |
+| Team creation | `createdAt` (ISO string) | `createdAt` (ISO string) | Same format |
+| Team lead | `leadAgentId` | `leadAgentId` | Same field |
+
+**Swarm writes both field names** in `create_team()` and `add_member()` so configs are readable by both CC native tools and swarm commands.
+
+### Task Status Values
+
+| Status | CC Native | Swarm | Notes |
+|--------|-----------|-------|-------|
+| `pending` | Yes | Yes | Identical |
+| `in_progress` | Yes | Yes | Swarm also accepts `in-progress` on read |
+| `completed` | Yes | Yes | Identical |
+| `blocked` | No | Yes | Swarm extension |
+| `in_review` | No | Yes | Swarm extension; also accepts `in-review` on read |
+
+CC native only uses `pending`, `in_progress`, and `completed`. Swarm extends this with `blocked` and `in_review` for richer workflow tracking. The core library (`08-tasks.sh`, `06-status.sh`) accepts both hyphenated and underscored formats for backwards compatibility.
+
+### Task File Schema
+
+Task files are largely compatible between systems:
+
+| Field | CC Native | Swarm | Compatible |
+|-------|-----------|-------|------------|
+| `id` | Yes | Yes | Yes |
+| `subject` | Yes | Yes | Yes |
+| `description` | Yes | Yes | Yes |
+| `status` | Yes | Yes | Yes (see status table above) |
+| `owner` | Yes | `owner` | Yes |
+| `blocks` | Yes | Yes | Yes |
+| `blockedBy` | Yes | `blockedBy` | Yes |
+| `comments` | No | Yes | Swarm extension |
+
+### CC-Only Fields (Not Written by Swarm)
+
+These fields exist in CC native team configs but are not written by swarm. CC reads configs generically with `JSON.parse` so their absence does not cause errors:
+
+- `leadSessionId` - CC session ID for the team lead
+- `tmuxPaneId` - Tmux pane identifier (CC uses tmux internally)
+- `cwd` - Working directory per member
+- `subscriptions` - CC notification subscriptions
+- `backendType` - CC backend type identifier
+
+### Reading Configs Safely
+
+When writing integrations that read swarm config files, always use fallback patterns:
+
+```bash
+# Team name - use CC native first, fall back to swarm legacy
+team_name=$(jq -r '.name // .teamName' config.json)
+
+# Member type - use CC native first, fall back to swarm legacy
+jq -r '.members[] | "\(.name) (\(.agentType // .type))"' config.json
+
+# Archive metadata
+jq -r '.name // .teamName' archive_metadata.json
+```
+
+### Teammate Spawn Command
+
+Swarm respects the `CLAUDE_CODE_TEAMMATE_COMMAND` environment variable (introduced in CC 2.1.20). When set, swarm uses this as the binary path instead of `claude`:
+
+```bash
+# Default behavior (uses 'claude')
+export CLAUDE_CODE_TEAMMATE_COMMAND=""
+
+# Custom binary path
+export CLAUDE_CODE_TEAMMATE_COMMAND="/usr/local/bin/claude-dev"
+```
+
+The resolved command is available as `SWARM_CLAUDE_CMD` in the library (defined in `00-globals.sh`).
+
+### Spawn Mechanism Differences
+
+CC native and swarm use different mechanisms to pass team context to spawned teammates:
+
+| Mechanism | CC Native | Swarm |
+|-----------|-----------|-------|
+| Team context | CLI args (`--agent-id`, `--agent-name`, `--team-name`, `--agent-color`) | Both CLI args AND env vars (`CLAUDE_CODE_TEAM_NAME`, etc.) |
+| Binary command | `CLAUDE_CODE_TEAMMATE_COMMAND` or `process.execPath` | `SWARM_CLAUDE_CMD` (reads `CLAUDE_CODE_TEAMMATE_COMMAND`, falls back to `claude`) |
+| Backend | tmux panes (internal `PaneBackendExecutor`) | kitty windows/tabs/splits OR tmux sessions |
+
+Swarm passes team context via both CLI args (for CC native features like the prompt line and agent color) and environment variables (for bash scripts and hooks that read `$CLAUDE_CODE_TEAM_NAME` etc.). This dual approach ensures compatibility with both systems.
+
+---
+
 ## Integration Patterns
 
 ### Pattern 1: External Task Creation
@@ -50,9 +148,9 @@ cat > ~/.claude/tasks/my-team/5.json <<EOF
   "subject": "Deploy to staging",
   "description": "Deploy latest changes to staging environment",
   "status": "pending",
-  "assigned_to": null,
+  "owner": null,
   "created_at": "2025-12-16T10:00:00Z",
-  "blocked_by": [4],
+  "blockedBy": [4],
   "comments": []
 }
 EOF
@@ -129,8 +227,11 @@ team_name=$3
 
 **Location:** `~/.claude/teams/<team>/config.json`
 
+**CC Native Compatibility:** Config files include both CC native and swarm field names for cross-compatibility. When reading, use `(.name // .teamName)` for team name and `(.agentType // .type)` for member type.
+
 ```json
 {
+  "name": "my-team",
   "teamName": "my-team",
   "description": "Building authentication system",
   "status": "active",
@@ -139,19 +240,23 @@ team_name=$3
     {
       "agentId": "uuid-1",
       "name": "team-lead",
+      "agentType": "team-lead",
       "type": "team-lead",
       "color": "cyan",
       "model": "sonnet",
       "status": "active",
+      "joinedAt": "2025-12-16T10:00:00Z",
       "lastSeen": "2025-12-16T10:05:00Z"
     },
     {
       "agentId": "uuid-2",
       "name": "backend-dev",
+      "agentType": "backend-developer",
       "type": "backend-developer",
       "color": "blue",
       "model": "sonnet",
       "status": "active",
+      "joinedAt": "2025-12-16T10:01:00Z",
       "lastSeen": "2025-12-16T10:05:00Z"
     },
     {
@@ -186,11 +291,11 @@ team_name=$3
   "id": 1,
   "subject": "Implement login endpoint",
   "description": "Create POST /auth/login with JWT support",
-  "status": "in-progress",
-  "assigned_to": "backend-dev",
+  "status": "in_progress",
+  "owner": "backend-dev",
   "created_at": "2025-12-16T10:00:00Z",
   "updated_at": "2025-12-16T10:15:00Z",
-  "blocked_by": [],
+  "blockedBy": [],
   "blocked_by_tasks": [],
   "comments": [
     {
@@ -259,9 +364,10 @@ echo $CLAUDE_CODE_AGENT_ID         # "uuid-2"
 echo $CLAUDE_CODE_AGENT_NAME       # "backend-dev"
 echo $CLAUDE_CODE_AGENT_TYPE       # "backend-developer"
 echo $CLAUDE_CODE_TEAM_LEAD_ID     # "uuid-1" (team lead's UUID)
-echo $CLAUDE_CODE_AGENT_COLOR      # "blue"
 echo $KITTY_LISTEN_ON              # "unix:/tmp/kitty-user-12345" (kitty only)
 ```
+
+> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
 
 **Use these to:**
 - Access team context in custom commands
@@ -278,6 +384,7 @@ echo $KITTY_LISTEN_ON              # "unix:/tmp/kitty-user-12345" (kitty only)
 | `SWARM_KITTY_MODE` | Kitty spawn mode: split, tab, window | `split` |
 | `KITTY_LISTEN_ON` | Override kitty socket path | Auto-discovered |
 | `SWARM_KEEP_ALIVE` | Keep teammates running when team-lead exits | `false` |
+| `CLAUDE_CODE_TEAMMATE_COMMAND` | Override claude binary path for spawning | `claude` |
 
 ### Setting Custom Variables
 
@@ -295,7 +402,7 @@ The spawned teammate will have this context in their initial session and can acc
 
 ## Hooks Integration
 
-Claude Swarm provides 5 lifecycle hooks for custom automation:
+Claude Swarm provides 9 lifecycle hooks for custom automation:
 
 ### SessionStart Hook
 
@@ -351,6 +458,422 @@ Claude Swarm provides 5 lifecycle hooks for custom automation:
 - Inject team context into subagents
 - Ensure proper coordination across nested agents
 - Track nested task execution
+
+---
+
+## Webhook Notifications
+
+Claude Swarm supports outbound webhook notifications for key team events, enabling real-time integration with external systems.
+
+### Overview
+
+Webhooks provide push-based notifications when important events occur in your swarm:
+
+- **Team lifecycle** - Team created, suspended, resumed
+- **Teammate changes** - Members joining or leaving
+- **Task updates** - Tasks created or completed
+- **Communication** - Messages sent between teammates
+
+### Configuring Webhooks
+
+Use the `/swarm-webhooks` command to manage webhook endpoints:
+
+```bash
+# Add webhook for all events
+/swarm-webhooks my-team add https://example.com/webhook
+
+# Add webhook for specific event type
+/swarm-webhooks my-team add https://example.com/tasks task.created
+
+# List configured webhooks
+/swarm-webhooks my-team list
+
+# Remove webhook
+/swarm-webhooks my-team remove https://example.com/webhook
+
+# Test webhook delivery
+/swarm-webhooks my-team test https://example.com/webhook
+```
+
+### Webhook Payload Format
+
+All webhooks receive POST requests with JSON payloads in this format:
+
+```json
+{
+  "team": "my-team",
+  "event": "task.created",
+  "timestamp": "2025-12-16T10:00:00Z",
+  "data": {
+    "teamName": "my-team",
+    "taskId": "5",
+    "subject": "Implement feature X"
+  }
+}
+```
+
+**Headers:**
+- `Content-Type: application/json`
+- `User-Agent: Claude-Swarm/1.0`
+
+### Event Types
+
+| Event Type | Description | Data Fields |
+|------------|-------------|-------------|
+| `team.created` | Team was created | `teamName`, `description` |
+| `team.suspended` | Team was suspended | `teamName` |
+| `team.resumed` | Team was resumed | `teamName` |
+| `teammate.joined` | New teammate joined | `teamName`, `teammate`, `type` |
+| `teammate.left` | Teammate left team | `teamName`, `teammate` |
+| `task.created` | New task created | `teamName`, `taskId`, `subject` |
+| `task.completed` | Task marked completed | `teamName`, `taskId`, `owner` |
+| `message.sent` | Message sent | `teamName`, `from`, `to`, `preview` |
+| `webhook.test` | Test event | `message`, `timestamp` |
+
+### Event Filtering
+
+Configure webhooks to receive only specific event types:
+
+```bash
+# Only task events
+/swarm-webhooks my-team add https://example.com/tasks task.created
+
+# Only team lifecycle events
+/swarm-webhooks my-team add https://example.com/lifecycle team.suspended
+
+# All events (default)
+/swarm-webhooks my-team add https://example.com/all "*"
+```
+
+### Webhook Handler Examples
+
+#### Node.js / Express
+
+```javascript
+const express = require('express');
+const app = express();
+
+app.use(express.json());
+
+app.post('/webhook', (req, res) => {
+  const { team, event, timestamp, data } = req.body;
+
+  console.log(`Received ${event} for team ${team}`);
+
+  switch (event) {
+    case 'task.completed':
+      console.log(`Task #${data.taskId} completed by ${data.owner}`);
+      // Trigger notification, update dashboard, etc.
+      break;
+
+    case 'teammate.joined':
+      console.log(`${data.teammate} joined as ${data.type}`);
+      // Send welcome message, update roster, etc.
+      break;
+
+    case 'team.suspended':
+      console.log(`Team ${data.teamName} suspended`);
+      // Archive data, notify stakeholders, etc.
+      break;
+  }
+
+  res.status(200).json({ received: true });
+});
+
+app.listen(3000);
+```
+
+#### Python / Flask
+
+```python
+from flask import Flask, request, jsonify
+import logging
+
+app = Flask(__name__)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    payload = request.get_json()
+    team = payload.get('team')
+    event = payload.get('event')
+    data = payload.get('data', {})
+
+    logging.info(f"Received {event} for team {team}")
+
+    if event == 'task.completed':
+        task_id = data.get('taskId')
+        owner = data.get('owner')
+        logging.info(f"Task #{task_id} completed by {owner}")
+        # Send notification, update metrics, etc.
+
+    elif event == 'teammate.joined':
+        teammate = data.get('teammate')
+        logging.info(f"{teammate} joined the team")
+        # Update roster, send welcome message, etc.
+
+    return jsonify({'received': True}), 200
+
+if __name__ == '__main__':
+    app.run(port=3000)
+```
+
+#### Bash Script
+
+```bash
+#!/bin/bash
+# Simple webhook handler using netcat
+
+PORT=3000
+
+while true; do
+  {
+    # Read HTTP request
+    read request
+    read -r headers
+
+    # Read JSON payload
+    payload=""
+    while read -r line; do
+      [[ -z "$line" ]] && break
+      payload="$payload$line"
+    done
+
+    # Extract event details
+    event=$(echo "$payload" | jq -r '.event')
+    team=$(echo "$payload" | jq -r '.team')
+
+    echo "Received event: $event for team: $team"
+
+    # Respond with 200 OK
+    echo -e "HTTP/1.1 200 OK\r"
+    echo -e "Content-Type: application/json\r"
+    echo -e "\r"
+    echo -e '{"received":true}\r'
+  } | nc -l -p $PORT
+done
+```
+
+### Integration Examples
+
+#### Slack Notifications
+
+```bash
+#!/bin/bash
+# Webhook handler that posts to Slack
+
+# Expects JSON payload from Claude Swarm
+payload=$(cat)
+
+event=$(echo "$payload" | jq -r '.event')
+team=$(echo "$payload" | jq -r '.team')
+data=$(echo "$payload" | jq -r '.data')
+
+# Build Slack message based on event
+case "$event" in
+  "task.completed")
+    task_id=$(echo "$data" | jq -r '.taskId')
+    owner=$(echo "$data" | jq -r '.owner')
+    message="✅ Task #$task_id completed by $owner in team $team"
+    ;;
+
+  "teammate.joined")
+    teammate=$(echo "$data" | jq -r '.teammate')
+    message="👋 $teammate joined team $team"
+    ;;
+
+  "team.suspended")
+    message="⏸️ Team $team suspended"
+    ;;
+
+  *)
+    message="📢 Event $event in team $team"
+    ;;
+esac
+
+# Post to Slack
+curl -X POST "$SLACK_WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d "{\"text\": \"$message\"}"
+
+# Respond to webhook
+echo '{"received": true}'
+```
+
+#### GitHub Issues Integration
+
+```bash
+#!/bin/bash
+# Create GitHub issues when tasks are completed
+
+payload=$(cat)
+event=$(echo "$payload" | jq -r '.event')
+
+if [[ "$event" == "task.completed" ]]; then
+  task_id=$(echo "$payload" | jq -r '.data.taskId')
+  subject=$(echo "$payload" | jq -r '.data.subject')
+  owner=$(echo "$payload" | jq -r '.data.owner')
+
+  # Create GitHub issue for completed task
+  gh issue create \
+    --title "Task #$task_id completed: $subject" \
+    --body "Completed by: $owner" \
+    --label "swarm-completed"
+fi
+
+echo '{"received": true}'
+```
+
+#### Prometheus Metrics
+
+```bash
+#!/bin/bash
+# Export swarm events as Prometheus metrics
+
+payload=$(cat)
+event=$(echo "$payload" | jq -r '.event')
+team=$(echo "$payload" | jq -r '.team')
+
+# Increment event counter
+echo "swarm_events_total{team=\"$team\",event=\"$event\"} 1" >> /var/lib/prometheus/swarm_metrics.prom
+
+# Update last event timestamp
+timestamp=$(date +%s)
+echo "swarm_last_event_timestamp{team=\"$team\"} $timestamp" >> /var/lib/prometheus/swarm_metrics.prom
+
+echo '{"received": true}'
+```
+
+### Webhook Security
+
+#### Authentication
+
+Add authentication to your webhook handlers:
+
+```javascript
+// Express with bearer token
+app.post('/webhook', (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (token !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Process webhook...
+});
+```
+
+**Note:** Claude Swarm currently sends webhooks without authentication headers. Consider:
+- Using HTTPS URLs
+- IP allowlisting
+- URL secrets (e.g., `https://example.com/webhook/secret-token`)
+- Network-level restrictions
+
+#### HTTPS
+
+Always use HTTPS endpoints for webhook URLs:
+
+```bash
+# Good
+/swarm-webhooks my-team add https://example.com/webhook
+
+# Avoid (insecure)
+/swarm-webhooks my-team add http://example.com/webhook
+```
+
+### Webhook Delivery
+
+**Delivery guarantees:**
+- Best-effort delivery (fire-and-forget)
+- 10-second timeout per request
+- No automatic retries
+- Asynchronous (non-blocking)
+
+**Failure handling:**
+- Failed deliveries are silently ignored
+- No delivery confirmation or status tracking
+- Implement your own retry logic if needed
+
+### Testing Webhooks
+
+Use the test command to verify webhook configuration:
+
+```bash
+# Send test event
+/swarm-webhooks my-team test https://example.com/webhook
+```
+
+Test payload:
+```json
+{
+  "team": "my-team",
+  "event": "webhook.test",
+  "timestamp": "2025-12-16T10:00:00Z",
+  "data": {
+    "message": "This is a test webhook from Claude Swarm",
+    "timestamp": "2025-12-16T10:00:00Z"
+  }
+}
+```
+
+Use tools like [webhook.site](https://webhook.site) or [RequestBin](https://requestbin.com) for testing:
+
+```bash
+# Get a test URL from webhook.site
+TEST_URL="https://webhook.site/unique-id"
+
+# Add webhook
+/swarm-webhooks my-team add "$TEST_URL"
+
+# Send test event
+/swarm-webhooks my-team test "$TEST_URL"
+
+# Check webhook.site to see the payload
+```
+
+### Configuration Storage
+
+Webhooks are stored in the team configuration file:
+
+**Location:** `~/.claude/teams/<team>/config.json`
+
+```json
+{
+  "teamName": "my-team",
+  "webhooks": [
+    {
+      "url": "https://example.com/webhook",
+      "events": "*",
+      "enabled": true,
+      "addedAt": "2025-12-16T10:00:00Z"
+    },
+    {
+      "url": "https://example.com/tasks",
+      "events": "task.created",
+      "enabled": true,
+      "addedAt": "2025-12-16T10:05:00Z"
+    }
+  ]
+}
+```
+
+### Programmatic Webhook Management
+
+Manage webhooks via file editing:
+
+```bash
+#!/bin/bash
+# Add webhook programmatically
+
+team="my-team"
+config="$HOME/.claude/teams/$team/config.json"
+webhook_url="https://example.com/webhook"
+
+# Add webhook using jq
+jq --arg url "$webhook_url" \
+   --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+   '.webhooks += [{url: $url, events: "*", enabled: true, addedAt: $timestamp}]' \
+   "$config" > "$config.tmp" && mv "$config.tmp" "$config"
+```
 
 ---
 
@@ -526,7 +1049,7 @@ done; \
 echo \"\\n=== Recent Tasks ===\"; \
 for task in ~/.claude/tasks/*/\* .json 2>/dev/null | head -5; do
   echo \"\$task:\"; \
-  cat \"\$task\" 2>/dev/null | jq '{subject, status, assigned_to}'; \
+  cat \"\$task\" 2>/dev/null | jq '{subject, status, owner}'; \
 done
 "
 ```
@@ -624,7 +1147,7 @@ echo "" >> "$report_file"
 
 echo "=== Task Activity ===" >> "$report_file"
 for task in ~/.claude/tasks/$team/*.json; do
-  cat "$task" | jq '{id, subject, status, assigned_to, updated_at}' >> "$report_file"
+  cat "$task" | jq '{id, subject, status, owner, updated_at}' >> "$report_file"
 done
 
 echo "" >> "$report_file"
@@ -655,7 +1178,7 @@ offline_members=$(cat "$config" | jq '[.members[] | select(.status=="offline")] 
 
 # Task metrics
 open_tasks=$(ls ~/.claude/tasks/$team/ 2>/dev/null | wc -l)
-in_progress=$(grep -l '"status":"in-progress"' ~/.claude/tasks/$team/*.json 2>/dev/null | wc -l)
+in_progress=$(grep -l '"status":"in_progress"' ~/.claude/tasks/$team/*.json 2>/dev/null | wc -l)
 resolved=$(grep -l '"status":"resolved"' ~/.claude/tasks/$team/*.json 2>/dev/null | wc -l)
 
 # Output metrics (Prometheus format)

@@ -1,5 +1,5 @@
 ---
-description: Delete a task using delete_task() from swarm-utils.sh
+description: Delete a task from the team task list
 argument-hint: <task_id>
 ---
 

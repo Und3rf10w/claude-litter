@@ -80,8 +80,9 @@ spawn_teammate_kitty_resume() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
+        --env "PATH=${PATH}" \
         $team_lead_env \
-        claude --model "$model" --dangerously-skip-permissions \
+        "$SWARM_CLAUDE_CMD" --model "$model" --dangerously-skip-permissions \
         --agent-id "$agent_id" \
         --agent-name "$agent_name" \
         --team-name "$team_name" \
@@ -164,7 +165,8 @@ spawn_teammate_tmux_resume() {
     # Build claude command
     # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
     # These enable Claude Code's native teammate features (prompt line, color, etc.)
-    local claude_cmd="claude --model $model --dangerously-skip-permissions"
+    local safe_claude_cmd=$(printf %q "$SWARM_CLAUDE_CMD")
+    local claude_cmd="$safe_claude_cmd --model $model --dangerously-skip-permissions"
     claude_cmd+=" --agent-id $safe_id_val"
     claude_cmd+=" --agent-name $safe_name_val"
     claude_cmd+=" --team-name $safe_team_val"
@@ -173,10 +175,20 @@ spawn_teammate_tmux_resume() {
 
     # Write prompt to temporary file for safer passing
     local prompt_file=$(mktemp)
+    if [[ -z "$prompt_file" ]]; then
+        echo -e "${RED}Failed to create prompt temp file${NC}" >&2
+        tmux kill-session -t "$session_name" 2>/dev/null
+        return 1
+    fi
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
+    # Ensure prompt file is cleaned up even if tmux send-keys fails
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter || {
+        rm -f "$prompt_file"
+        echo -e "${RED}Failed to send command to tmux session${NC}" >&2
+        return 1
+    }
 
     # Update status
     update_member_status "$team_name" "$agent_name" "active"
@@ -196,7 +208,8 @@ spawn_teammate_tmux() {
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
     local plugin_dir="${9:-}"
-    shift 9 2>/dev/null || true
+    local agent_color="${10:-blue}"
+    shift 10 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -234,24 +247,40 @@ spawn_teammate_tmux() {
             return 1
         fi
         # Update existing team-lead member status instead of adding duplicate
+        if ! acquire_file_lock "$config_file"; then
+            echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+            return 1
+        fi
         local tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            release_file_lock
+            echo -e "${RED}Failed to create temp file${NC}" >&2
+            return 1
+        fi
+        trap "rm -f '$tmp_file'" INT TERM
         if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            trap - INT TERM
+            release_file_lock
             echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        else
+            trap - INT TERM
+            command rm -f "$tmp_file"
+            release_file_lock
         fi
     else
         # Generate UUID for non-team-lead agents
         agent_id=$(generate_uuid)
         lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
         # Add to team config (include model for resume capability)
-        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "$agent_color" "$model"; then
             echo -e "${RED}Failed to add member to team config${NC}" >&2
             return 1
         fi
     fi
 
-    # Get agent color for InboxPoller activation
-    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+    # Get agent color for InboxPoller activation (use configured color from config)
+    agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
     if [[ -z "$initial_prompt" ]]; then
@@ -300,7 +329,8 @@ spawn_teammate_tmux() {
     # Build Claude Code permission arguments
     # IMPORTANT: --agent-id, --agent-name, and --team-name must ALL be provided together
     # These enable Claude Code's native teammate features (prompt line, color, etc.)
-    local claude_cmd="claude --model $model"
+    local safe_claude_cmd=$(printf %q "$SWARM_CLAUDE_CMD")
+    local claude_cmd="$safe_claude_cmd --model $model"
     claude_cmd+=" --agent-id $safe_id_val"
     claude_cmd+=" --agent-name $safe_name_val"
     claude_cmd+=" --team-name $safe_team_val"
@@ -348,10 +378,20 @@ spawn_teammate_tmux() {
 
     # Write prompt to temporary file for safer passing (defense-in-depth against command injection)
     local prompt_file=$(mktemp)
+    if [[ -z "$prompt_file" ]]; then
+        echo -e "${RED}Failed to create prompt temp file${NC}" >&2
+        tmux kill-session -t "$session_name" 2>/dev/null
+        return 1
+    fi
     echo "$initial_prompt" > "$prompt_file"
 
     # Launch claude with prompt from file (safer than command line argument)
-    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter
+    # Ensure prompt file is cleaned up even if tmux send-keys fails
+    tmux send-keys -t "$session_name" "$claude_cmd < $prompt_file; rm -f $prompt_file" Enter || {
+        rm -f "$prompt_file"
+        echo -e "${RED}Failed to send command to tmux session${NC}" >&2
+        return 1
+    }
 
     echo -e "${GREEN}Spawned teammate '${agent_name}' in tmux session '${session_name}'${NC}"
     echo "  Agent ID: ${agent_id}"
@@ -394,7 +434,8 @@ spawn_teammate_kitty() {
     local plan_mode="${7:-}"
     local allowed_tools="${8:-}"
     local plugin_dir="${9:-}"
-    shift 9 2>/dev/null || true
+    local agent_color="${10:-blue}"
+    shift 10 2>/dev/null || true
     # Remaining arguments are custom environment variables in KEY=VALUE format
     local custom_env_vars=("$@")
 
@@ -431,24 +472,40 @@ spawn_teammate_kitty() {
             return 1
         fi
         # Update existing team-lead member status instead of adding duplicate
+        if ! acquire_file_lock "$config_file"; then
+            echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+            return 1
+        fi
         local tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            release_file_lock
+            echo -e "${RED}Failed to create temp file${NC}" >&2
+            return 1
+        fi
+        trap "rm -f '$tmp_file'" INT TERM
         if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            trap - INT TERM
+            release_file_lock
             echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        else
+            trap - INT TERM
+            command rm -f "$tmp_file"
+            release_file_lock
         fi
     else
         # Generate UUID for non-team-lead agents
         agent_id=$(generate_uuid)
         lead_id=$(jq -r '.leadAgentId // ""' "$config_file")
         # Add to team config (include model for resume capability)
-        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "blue" "$model"; then
+        if ! add_member "$team_name" "$agent_id" "$agent_name" "$agent_type" "$agent_color" "$model"; then
             echo -e "${RED}Failed to add member to team config${NC}" >&2
             return 1
         fi
     fi
 
-    # Get agent color for InboxPoller activation
-    local agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
+    # Get agent color for InboxPoller activation (use configured color from config)
+    agent_color=$(jq -r --arg name "$agent_name" '.members[] | select(.name == $name) | .color // "blue"' "$config_file")
 
     # Default prompt if not provided
     if [[ -z "$initial_prompt" ]]; then
@@ -568,8 +625,9 @@ spawn_teammate_kitty() {
         --env "CLAUDE_CODE_AGENT_TYPE=${agent_type}" \
         --env "CLAUDE_CODE_TEAM_LEAD_ID=${lead_id}" \
         --env "KITTY_LISTEN_ON=${kitty_socket}" \
+        --env "PATH=${PATH}" \
         "${custom_env_args[@]}" \
-        claude "${claude_args[@]}" -- "$initial_prompt"
+        "$SWARM_CLAUDE_CMD" "${claude_args[@]}" -- "$initial_prompt"
 
     # Wait for Claude Code to be ready, then register
     if wait_for_claude_ready "$swarm_var" 10; then

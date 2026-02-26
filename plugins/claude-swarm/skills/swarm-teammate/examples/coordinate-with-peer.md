@@ -24,7 +24,7 @@ You're `backend-dev` working on authentication API (task #5). Another teammate `
 ```bash
 # Claim task #5
 /claude-swarm:task-update 5 --assign backend-dev
-/claude-swarm:task-update 5 --status in-progress --comment "Starting auth API implementation"
+/claude-swarm:task-update 5 --status in_progress --comment "Starting auth API implementation"
 ```
 
 ### T+2: Proactively Reach Out
@@ -169,7 +169,7 @@ I'll document this in docs/auth-api.md before I start coding. Check it out and l
 ❌ **Don't implement in isolation**
 ```bash
 # Bad: Just start coding without talking to frontend-dev
-/claude-swarm:task-update 5 --status in-progress --comment "Starting auth API"
+/claude-swarm:task-update 5 --status in_progress --comment "Starting auth API"
 # Problem: You might make assumptions that don't work for the UI
 ```
 

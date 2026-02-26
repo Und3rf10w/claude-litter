@@ -1,6 +1,6 @@
 # Claude Swarm Commands Reference
 
-Comprehensive reference for all 25 Claude Swarm slash commands.
+Comprehensive reference for all 27 Claude Swarm slash commands.
 
 ## Command Overview
 
@@ -31,6 +31,8 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 | | `/claude-swarm:task-update` | Update task status, assignment, or add comments |
 | | `/claude-swarm:task-delete` | Delete a task from the task list (permanent) |
 | **Kitty-Specific** | `/claude-swarm:swarm-session` | Generate, launch, or save kitty session files |
+| **Customization** | `/claude-swarm:swarm-color` | Change the display color of a team member |
+| **Webhooks** | `/claude-swarm:swarm-webhooks` | Configure webhook notifications for team events |
 
 ## Detailed Command Reference
 
@@ -88,7 +90,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 **What it shows:**
 - Team name, description, and status (active/suspended)
 - List of all members with their status (active/offline/crashed)
-- Task summary (total, open, in-progress, resolved, blocked)
+- Task summary (total, open, in_progress, resolved, blocked)
 - Recent activity and heartbeats
 
 **Usage:**
@@ -321,6 +323,53 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 
 ---
 
+#### `/claude-swarm:swarm-broadcast <message> [--exclude <agent-name>]`
+**Purpose:** Broadcast a message to all teammates in the team
+
+**Arguments:**
+- `message` (required) - Message to broadcast to all teammates
+- `--exclude <agent-name>` (optional) - Agent name to exclude from broadcast (defaults to sender)
+
+**What it does:**
+- Sends the message to every teammate's inbox (excluding the sender by default)
+- Recipients see the message on next `/swarm-inbox` check or session start
+- Reports how many teammates received the message
+
+**Usage:**
+```bash
+# Broadcast to all teammates
+/claude-swarm:swarm-broadcast "Team meeting in 5 minutes"
+
+# Broadcast excluding a specific teammate
+/claude-swarm:swarm-broadcast "API v2 is deployed" --exclude backend-dev
+```
+
+---
+
+#### `/claude-swarm:swarm-send-text <target> <text>`
+**Purpose:** Send text directly to a teammate's terminal
+
+**Arguments:**
+- `target` (required) - Teammate name or "all" to send to all active teammates
+- `text` (required) - Text to send (typed into their terminal with Enter)
+
+**What it does:**
+- Sends text directly to the teammate's terminal as if they typed it
+- Automatically presses Enter after the text
+- Works via kitty send-text/send-key or tmux send-keys
+- Skips inactive teammates and self
+
+**Usage:**
+```bash
+# Send a command to a specific teammate
+/claude-swarm:swarm-send-text backend-dev "/swarm-inbox"
+
+# Send to all teammates
+/claude-swarm:swarm-send-text all "/swarm-inbox"
+```
+
+---
+
 ### Task Management Commands
 
 #### `/claude-swarm:task-create <subject> [description]`
@@ -365,7 +414,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 
 **Arguments:**
 - `task_id` (required) - Task ID to update
-- `--status <status>` (optional) - New status: pending, in-progress, blocked, in-review, completed
+- `--status <status>` (optional) - New status: pending, in_progress, blocked, in_review, completed
 - `--assign <agent>` (optional) - Assign task to agent (e.g., "backend-dev")
 - `--blocked-by <id>` (optional) - Mark task as blocked by another task ID
 - `--comment <text>` (optional) - Add comment to task activity log
@@ -381,7 +430,7 @@ Comprehensive reference for all 25 Claude Swarm slash commands.
 /claude-swarm:task-update 1 --assign backend-dev
 
 # Update status
-/claude-swarm:task-update 1 --status in-progress
+/claude-swarm:task-update 1 --status in_progress
 
 # Add comment
 /claude-swarm:task-update 1 --comment "Completed OAuth flow, testing now"
@@ -562,6 +611,62 @@ kitty --session ~/.claude/teams/api-redesign/swarm.kitty-session
 
 ---
 
+### Customization Commands
+
+#### `/claude-swarm:swarm-color <agent_name> <color>`
+**Purpose:** Change the display color of an agent in a swarm team
+
+**Arguments:**
+- `agent_name` (required) - Name of the agent to change color for
+- `color` (required) - New color: blue, green, yellow, red, cyan, magenta, white
+
+**What it does:**
+- Updates the agent's color in the team config
+- Affects display in status views and messages
+
+**Usage:**
+```bash
+/claude-swarm:swarm-color backend-dev green
+```
+
+---
+
+### Webhook Commands
+
+#### `/claude-swarm:swarm-webhooks <team_name> <action> [args...]`
+**Purpose:** Configure outbound webhook notifications for team events
+
+**Arguments:**
+- `team_name` (required) - Team to configure webhooks for
+- `action` (required) - Action to perform: add, remove, list, test
+- Additional arguments depend on the action
+
+**Actions:**
+- **add** `<url> [event_filter]` - Add a webhook endpoint (default: all events)
+- **remove** `<url>` - Remove a webhook endpoint
+- **list** - Show all configured webhooks
+- **test** `<url>` - Send a test event to verify connectivity
+
+**Usage:**
+```bash
+# Add webhook for all events
+/claude-swarm:swarm-webhooks my-team add https://example.com/webhook
+
+# Add webhook for specific event type
+/claude-swarm:swarm-webhooks my-team add https://example.com/tasks task.created
+
+# List configured webhooks
+/claude-swarm:swarm-webhooks my-team list
+
+# Remove a webhook
+/claude-swarm:swarm-webhooks my-team remove https://example.com/webhook
+
+# Test webhook delivery
+/claude-swarm:swarm-webhooks my-team test https://example.com/webhook
+```
+
+---
+
 ## Tips and Best Practices
 
 ### Command Combinations
@@ -598,7 +703,7 @@ kitty --session ~/.claude/teams/api-redesign/swarm.kitty-session
 /claude-swarm:task-list
 /claude-swarm:swarm-message backend-dev "Check task #3, changed priority"
 /claude-swarm:swarm-inbox
-/claude-swarm:task-update 3 --status in-progress --comment "Working on this now"
+/claude-swarm:task-update 3 --status in_progress --comment "Working on this now"
 ```
 
 ### Command Frequency

@@ -26,8 +26,8 @@ ASSIGNED_NAME="$2"
 AGENT_COLOR="${3:-blue}"
 
 if [[ -z "$REQUEST_ID" ]]; then
-    echo "Error: Request ID is required"
-    echo "Usage: /swarm-approve-join <request-id> [agent-name] [color]"
+    echo "Error: Request ID is required" >&2
+    echo "Usage: /swarm-approve-join <request-id> [agent-name] [color]" >&2
     exit 1
 fi
 

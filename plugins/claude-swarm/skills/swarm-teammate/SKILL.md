@@ -1,7 +1,6 @@
 ---
 name: swarm-teammate
 description: Auto-loads when CLAUDE_CODE_TEAM_NAME environment variable is set. Provides guidance for Claude Code teammates working in swarms - identity awareness, communication patterns, task management, and coordination protocols. Use when you are a spawned teammate (not the team lead).
-when: CLAUDE_CODE_TEAM_NAME environment variable is set (automatic)
 ---
 
 # Swarm Teammate Guide
@@ -23,7 +22,7 @@ Here's what a typical teammate workflow looks like:
 
 # 3. Claim and start a task (e.g., task #5)
 /claude-swarm:task-update 5 --assign backend-dev
-/claude-swarm:task-update 5 --status in-progress --comment "Starting API implementation"
+/claude-swarm:task-update 5 --status in_progress --comment "Starting API implementation"
 
 # 4. Work on the task...
 # (write code, run tests, etc.)
@@ -116,13 +115,13 @@ When you're ready to work on a task:
 
 ```bash
 /claude-swarm:task-update <id> --assign <your-name>
-/claude-swarm:task-update <id> --status in-progress
+/claude-swarm:task-update <id> --status in_progress
 ```
 
 Example:
 ```bash
 /claude-swarm:task-update 5 --assign backend-dev
-/claude-swarm:task-update 5 --status in-progress
+/claude-swarm:task-update 5 --status in_progress
 ```
 
 ### 4. Update Task Progress
@@ -255,7 +254,7 @@ Use `/swarm-message team-lead` to reach team-lead:
 2. View tasks (/claude-swarm:task-list)
 3. Select unassigned task
 4. Assign to self (--assign your-name)
-5. Mark in-progress (--status in-progress)
+5. Mark in_progress (--status in_progress)
 6. Do the work
 7. Add progress comments (--comment)
 8. Mark completed (--status completed)
@@ -266,9 +265,9 @@ Use `/swarm-message team-lead` to reach team-lead:
 ### Task Status Values
 
 - `pending` - Not started, available to claim
-- `in-progress` - Actively being worked on
+- `in_progress` - Actively being worked on
 - `blocked` - Waiting on dependency or external factor
-- `in-review` - Work complete, awaiting review
+- `in_review` - Work complete, awaiting review
 - `completed` - Done
 
 ### Task Dependencies
@@ -304,7 +303,7 @@ If you discover a conflict (e.g., two people editing the same code):
 When your work needs review:
 
 ```bash
-/claude-swarm:task-update <id> --status in-review --comment "Ready for review"
+/claude-swarm:task-update <id> --status in_review --comment "Ready for review"
 /claude-swarm:swarm-message reviewer "Task #<id> ready for review"
 ```
 
@@ -358,7 +357,7 @@ If you're assigned as a reviewer:
 
 # 3. Claim a task (e.g., task #3)
 /claude-swarm:task-update 3 --assign backend-dev
-/claude-swarm:task-update 3 --status in-progress --comment "Starting implementation"
+/claude-swarm:task-update 3 --status in_progress --comment "Starting implementation"
 
 # 4. Do the work...
 

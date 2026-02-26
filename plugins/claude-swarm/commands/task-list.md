@@ -9,7 +9,7 @@ List all tasks for the current team, with optional filtering.
 
 ## Arguments
 
-- `--status <status>` - Filter by status (pending, in-progress, blocked, in-review, completed)
+- `--status <status>` - Filter by status (pending, in_progress, blocked, in_review, completed)
 - `--owner <name>` - Filter by owner/assignee name
 - `--assignee <name>` - Alias for --owner
 - `--blocked` - Show only tasks with blocking dependencies
@@ -74,5 +74,5 @@ Present the task list clearly, organizing by:
 **Combine filters:**
 
 ```
-/task-list --status in-progress --owner frontend-dev
+/task-list --status in_progress --owner frontend-dev
 ```

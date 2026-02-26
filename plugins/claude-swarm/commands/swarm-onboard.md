@@ -58,6 +58,7 @@ show_available_commands
 # Use AskUserQuestion here
 # If yes, get team name and description, then run:
 # /claude-swarm:swarm-create <team-name> <description>
+SCRIPT_EOF
 ```
 
 ---
@@ -71,7 +72,10 @@ Use AskUserQuestion to ask: "Would you like help configuring kitty for Claude Sw
 If yes:
 
 ```bash
+bash << 'PHASE2_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 guide_kitty_configuration
+PHASE2_EOF
 ```
 
 Then ask: "Have you added the configuration and restarted kitty?"
@@ -79,12 +83,15 @@ Then ask: "Have you added the configuration and restarted kitty?"
 If yes, verify:
 
 ```bash
+bash << 'VERIFY_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 SOCKET=$(find_kitty_socket)
 if [[ -n "$SOCKET" ]] && validate_kitty_socket "$SOCKET" 2>/dev/null; then
     echo -e "${GREEN}✓ Kitty socket is now working!${NC}"
 else
     echo -e "${RED}✗ Socket still not detected. Please ensure you completely restarted kitty.${NC}"
 fi
+VERIFY_EOF
 ```
 
 ---
@@ -93,13 +100,21 @@ fi
 
 **If `SKIP_DEMO` is false:**
 
-Use AskUserQuestion to ask: "Would you like a guided walkthrough creating a test team?"
+Use AskUserQuestion to ask: "Would you like a guided walkthrough of the full delegation workflow? This will spawn a team-lead and let it autonomously create a worker."
 
 If yes:
 
 ```bash
+bash << 'DEMO_EOF'
+source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-onboarding.sh" 1>/dev/null
 run_onboarding_demo
+DEMO_EOF
 ```
+
+**Important:** The demo does NOT auto-cleanup. After the demo completes:
+1. Let the user observe the team-lead and demo-buddy interacting in their terminal windows
+2. When the user is ready, offer to clean up with: `/claude-swarm:swarm-cleanup <team-name>`
+3. The demo exports `ONBOARD_DEMO_TEAM` with the test team name for cleanup
 
 ---
 
@@ -109,10 +124,9 @@ After showing available commands, use AskUserQuestion to ask: "Would you like me
 
 If yes, ask for team name and description, then run:
 
-```bash
+```
 /claude-swarm:swarm-create <team-name> <description>
 ```
-SCRIPT_EOF
 
 ---
 
@@ -122,5 +136,6 @@ After completing onboarding, summarize:
 
 1. Prerequisites status (all met / issues found)
 2. Whether kitty was configured (if applicable)
-3. Whether the demo walkthrough was completed
-4. Suggest next steps based on their response to creating a real team
+3. Whether the demo walkthrough was completed (and if team-lead successfully spawned a worker)
+4. Whether the demo team is still running (remind to cleanup)
+5. Suggest next steps based on their response to creating a real team

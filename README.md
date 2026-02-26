@@ -52,9 +52,9 @@ This adds the Claude Litter marketplace from GitHub. Claude Code will:
 
 This installs the swarm plugin, which includes:
 
-- 17 slash commands for team/task management
-- 3 skills (swarm-orchestration, swarm-teammate, swarm-troubleshooting)
-- 5 hooks for session lifecycle events
+- 27 slash commands for team/task management
+- 4 skills (swarm-orchestration, swarm-team-lead, swarm-teammate, swarm-troubleshooting)
+- 9 hooks for session lifecycle events
 
 ### Step 3: Configure Your Terminal
 
@@ -492,7 +492,8 @@ When inside a swarm session, these are automatically set:
 | `CLAUDE_CODE_AGENT_NAME`   | Your agent name                      |
 | `CLAUDE_CODE_AGENT_TYPE`   | Your role type                       |
 | `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's agent UUID               |
-| `CLAUDE_CODE_AGENT_COLOR`  | Your display color                   |
+
+> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
 
 ### User Configuration
 
@@ -618,7 +619,7 @@ export SWARM_MULTIPLEXER=tmux
 
 ## Hooks
 
-Claude Swarm includes 5 lifecycle hooks that automate coordination and monitoring:
+Claude Swarm includes 9 lifecycle hooks that automate coordination and monitoring:
 
 ### SessionStart Hook
 
@@ -655,32 +656,84 @@ When you approve a plan that includes creating a swarm team, this hook automatic
 
 When teammates spawn their own subagents, those subagents automatically inherit the team context, ensuring proper coordination across nested agents.
 
+### PreToolUse:TaskUpdate Hook (prompt-based)
+
+**Trigger:** Before any TaskUpdate tool use
+**Action:** Validates task status changes, owner changes, and logical status transitions
+
+Ensures task updates follow logical workflows (pending → in_progress → completed) and that owners are valid team members.
+
+### PreToolUse:SendMessage Hook (prompt-based)
+
+**Trigger:** Before any SendMessage tool use
+**Action:** Validates recipient, message clarity, and broadcast necessity
+
+Checks that communications are directed to valid recipients and that broadcasts are truly necessary for all team members.
+
+### SubagentStart Hook
+
+**Trigger:** When a Task tool subagent is launched
+**Action:** Injects team context (team name, members, tasks) into the subagent
+
+Spawned subagents inherit full team awareness, enabling them to coordinate with team resources.
+
+### SubagentStop Hook (prompt-based)
+
+**Trigger:** When a subagent is about to stop
+**Action:** Validates work completion before allowing shutdown
+
+Checks that all assigned tasks are completed, statuses are updated, and work has been reported to team-lead before allowing a teammate to stop.
+
+> **Note:** The `TeammateIdle` and `TaskCompleted` hooks were removed in v2.0.0 because they are not valid Claude Code hook events. The corresponding scripts (`teammate-idle.sh`, `task-completed.sh`) remain available but are not auto-triggered.
+
 ---
 
 ## Plugin Contents
 
-### Commands (17)
+### Commands (27)
 
 **Team Management:**
 
 - swarm-create, swarm-spawn, swarm-status, swarm-cleanup, swarm-resume
 - swarm-onboard, swarm-diagnose, swarm-verify, swarm-reconcile
-- swarm-list-teams, swarm-message, swarm-inbox, swarm-session
+- swarm-list-teams, swarm-message, swarm-inbox, swarm-broadcast
+- swarm-send-text, swarm-session, swarm-color
 
 **Task Management:**
 
 - task-create, task-list, task-update, task-delete
 
-### Skills (3)
+**Team Discovery:**
+
+- swarm-discover, swarm-join, swarm-approve-join, swarm-reject-join
+
+**Graceful Shutdown:**
+
+- swarm-request-shutdown
+
+**Webhooks:**
+
+- swarm-webhooks
+
+**Quick Reference:**
+
+- swarm-guide
+
+### Skills (4)
 
 - **swarm-orchestration** - Team-lead operations and management (~2,000 tokens)
+- **swarm-team-lead** - Spawned team-lead coordination
 - **swarm-teammate** - Worker coordination protocol (~1,200 tokens)
 - **swarm-troubleshooting** - Diagnostics and recovery (~3,500 tokens)
 
-### Hooks (5)
+### Hooks (9)
 
 - **SessionStart** - Auto-deliver unread messages on session start
 - **SessionEnd** - Notify team-lead when teammate ends session
 - **Notification** - Heartbeat tracking for agent health monitoring
-- **PostToolUse:ExitPlanMode** - Handle swarm launch requests from plan mode
+- **PostToolUse:ExitPlanMode** - Detect swarm launch requests from approved plans
 - **PreToolUse:Task** - Inject team context into subagents before task execution
+- **PreToolUse:TaskUpdate** - Validate task status changes and assignments (prompt-based)
+- **PreToolUse:SendMessage** - Validate team communications (prompt-based)
+- **SubagentStart** - Inject team context into spawned subagents
+- **SubagentStop** - Ensure teammates complete work before stopping (prompt-based)

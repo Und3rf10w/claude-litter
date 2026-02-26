@@ -3,16 +3,14 @@
 # When in a team, ensures spawned agents know about the team
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# TODO: Replace 14:15 with the following block
-# if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
-#     TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
-# else
-#     TEAM_NAME="$(get_current_window_var 'swarm_team' 2>/dev/null || echo '')"
-# fi
+source "${SCRIPT_DIR}/../lib/swarm-utils.sh" 1>/dev/null
 
 # Only inject if we're part of a team
-TEAM_NAME="${CLAUDE_CODE_TEAM_NAME:-}"
+if [[ -n "$CLAUDE_CODE_TEAM_NAME" ]]; then
+    TEAM_NAME="$CLAUDE_CODE_TEAM_NAME"
+else
+    TEAM_NAME="$(get_current_window_var 'swarm_team' 2>/dev/null || echo '')"
+fi
 
 if [[ -z "$TEAM_NAME" ]]; then
     exit 0

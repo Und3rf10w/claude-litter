@@ -52,4 +52,4 @@ After creating, report:
 2. Initial status is `pending`
 3. Suggest assigning with `/task-update <id> --assign <teammate>`
 4. Or setting dependencies with `/task-update <id> --blocked-by <other-id>`
-5. Update status as work progresses: `pending` → `in-progress` → `in-review` → `completed`
+5. Update status as work progresses: `pending` → `in_progress` → `in_review` → `completed`

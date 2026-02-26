@@ -567,7 +567,7 @@ Update task properties (status, assignment, comments, dependencies).
 
 | Option         | Value                                                 | Description             |
 | -------------- | ----------------------------------------------------- | ----------------------- |
-| `--status`     | `pending\|in-progress\|blocked\|in-review\|completed` | Change task status      |
+| `--status`     | `pending\|in_progress\|blocked\|in_review\|completed` | Change task status      |
 | `--assign`     | `<agent-name>`                                        | Assign to teammate      |
 | `--comment`    | `<text>`                                              | Add progress comment    |
 | `--blocked-by` | `<task-id>`                                           | Add blocking dependency |
@@ -579,7 +579,7 @@ Update task properties (status, assignment, comments, dependencies).
 /claude-swarm:task-update 1 --assign "backend-dev"
 
 # Update status
-/claude-swarm:task-update 1 --status "in-progress"
+/claude-swarm:task-update 1 --status "in_progress"
 
 # Add progress comment
 /claude-swarm:task-update 1 --comment "API endpoints implemented, working on webhook handling"
@@ -599,9 +599,9 @@ Update task properties (status, assignment, comments, dependencies).
 | Status        | Meaning                     | When to Use                                      |
 | ------------- | --------------------------- | ------------------------------------------------ |
 | `pending`     | Not started                 | Initial state, waiting for assignment            |
-| `in-progress` | Actively working            | Teammate is currently working on it              |
+| `in_progress` | Actively working            | Teammate is currently working on it              |
 | `blocked`     | Cannot proceed              | Waiting for dependency, information, or resource |
-| `in-review`   | Work complete, needs review | Implementation done, awaiting approval           |
+| `in_review`   | Work complete, needs review | Implementation done, awaiting approval           |
 | `completed`   | Fully done                  | Work finished and approved                       |
 
 **Notes:**
@@ -627,7 +627,7 @@ List all tasks for the current team with optional filtering.
 
 | Parameter   | Required | Description                                                    |
 | ----------- | -------- | -------------------------------------------------------------- |
-| `--status`  | No       | Filter by status: pending, in-progress, blocked, in-review, completed |
+| `--status`  | No       | Filter by status: pending, in_progress, blocked, in_review, completed |
 | `--owner`   | No       | Filter by assigned teammate (also accepts `--assignee`)        |
 | `--blocked` | No       | Show only tasks with blocking dependencies                     |
 
@@ -638,7 +638,7 @@ List all tasks for the current team with optional filtering.
 /claude-swarm:task-list
 
 # Filter by status
-/claude-swarm:task-list --status in-progress
+/claude-swarm:task-list --status in_progress
 
 # Filter by owner
 /claude-swarm:task-list --owner backend-dev
@@ -656,7 +656,7 @@ List all tasks for the current team with optional filtering.
 Tasks for team 'payment-system':
 --------------------------------
 #1 [completed] Design payment API (api-designer)
-#2 [in-progress] Implement Stripe integration (backend-dev)
+#2 [in_progress] Implement Stripe integration (backend-dev)
 #3 [pending] Build payment UI (unassigned)
 #4 [blocked] Write integration tests (qa-engineer) [blocked by #2, #3]
 ```
@@ -672,7 +672,7 @@ Tasks for team 'payment-system':
 **When to Check:**
 
 - To see what's available (pending/unassigned)
-- To monitor progress (in-progress)
+- To monitor progress (in_progress)
 - To identify blockers (blocked)
 - Before assigning new work
 
@@ -753,7 +753,7 @@ Then call functions directly: `create_team`, `spawn_teammate`, `send_message`, e
 # 5. Monitor
 /claude-swarm:swarm-status "<team>"
 /claude-swarm:task-list
-/claude-swarm:task-list --status in-progress --owner "<name>"  # with filters
+/claude-swarm:task-list --status in_progress --owner "<name>"  # with filters
 /claude-swarm:swarm-inbox
 
 # 6. Communicate

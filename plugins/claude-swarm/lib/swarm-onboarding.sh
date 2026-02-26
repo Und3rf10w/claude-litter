@@ -124,23 +124,23 @@ Claude Swarm enables you to run multiple Claude Code instances working together:
 
 🎯 WHAT IT DOES:
   • Spawn parallel Claude instances in separate terminal windows
-  • Assign different tasks to specialized teammates
-  • Coordinate work through messages and task tracking
+  • Delegate coordination to an auto-spawned team-lead
+  • Track tasks and communicate via file-based inboxes
   • Suspend and resume teams across sessions
 
 📦 CORE CONCEPTS:
   • Team: A group of Claude instances with shared tasks and messages
-  • Team-lead: Your current session (you coordinate the work)
-  • Teammates: Spawned Claude instances with specific roles
+  • Team-lead: A spawned Claude instance that coordinates workers
+  • Teammates: Spawned Claude instances with specific roles (workers)
   • Tasks: Work items that can be assigned and tracked
   • Messages: File-based inbox system for coordination
 
-🔄 TYPICAL WORKFLOW:
-  1. Create a team for your project
-  2. Break down work into tasks
-  3. Spawn teammates (backend-dev, frontend-dev, tester, etc.)
-  4. Assign tasks to teammates
-  5. Teammates work in parallel, report progress
+🔄 DELEGATION WORKFLOW (default):
+  1. You create a team (a team-lead is auto-spawned)
+  2. You brief the team-lead with your requirements
+  3. Team-lead spawns workers and assigns tasks
+  4. Workers execute in parallel, reporting to team-lead
+  5. Team-lead coordinates, unblocks, and reports back to you
   6. Suspend team when done, resume later if needed
 
 💡 WHEN TO USE:
@@ -158,69 +158,153 @@ CONCEPTS
 # ============================================
 
 run_onboarding_demo() {
-    echo -e "${BLUE}=== Phase 4: Guided Walkthrough ===${NC}"
+    echo -e "${BLUE}=== Phase 4: Guided Walkthrough (Full Delegation Demo) ===${NC}"
     echo ""
 
     # Use PID to create unique test team name
     TEST_TEAM="onboarding-test-$$"
 
-    echo "Creating a test team to demonstrate swarm features..."
+    echo "This demo shows the full delegation workflow:"
+    echo "  You → create team → team-lead spawns → brief team-lead → team-lead spawns worker"
     echo ""
 
-    # Step 1: Create team
-    echo -e "${CYAN}[1/6] Creating test team...${NC}"
-    create_team "$TEST_TEAM" "Test team for onboarding walkthrough"
+    # Step 1: Create team (creates config, directories, pre-seeds team-lead member)
+    echo -e "${CYAN}[1/8] Creating test team...${NC}"
+    create_team "$TEST_TEAM" "Onboarding walkthrough demo team"
     echo -e "  ${GREEN}✓${NC} Team created at ~/.claude/teams/${TEST_TEAM}/"
     echo ""
     sleep 1
 
-    # Step 2: Create task
-    echo -e "${CYAN}[2/6] Creating a test task...${NC}"
-    TASK_ID=$(create_task "$TEST_TEAM" "Test Task" "This is a demonstration task")
+    # Step 2: Create a task for the team-lead to delegate
+    echo -e "${CYAN}[2/8] Creating a demo task...${NC}"
+    TASK_ID=$(create_task "$TEST_TEAM" "Say hello" "A simple test task: print a friendly greeting. This demonstrates the task lifecycle.")
     echo -e "  ${GREEN}✓${NC} Created task #${TASK_ID}"
     echo ""
     sleep 1
 
-    # Step 3: Spawn teammate
-    echo -e "${CYAN}[3/6] Spawning a test teammate...${NC}"
-    echo "  This will open a new ${SWARM_MULTIPLEXER} window/session"
-    echo "  Look for a new Claude Code instance starting up..."
+    # Step 3: Spawn team-lead (mirrors /swarm-create default behavior)
+    echo -e "${CYAN}[3/8] Spawning team-lead...${NC}"
+    echo "  This will open a new ${SWARM_MULTIPLEXER:-kitty} window with a Claude Code team-lead."
+    echo "  The team-lead will coordinate workers autonomously."
     echo ""
 
-    spawn_teammate "$TEST_TEAM" "demo-buddy" "worker" "haiku" \
-      "You are a test teammate for the onboarding walkthrough. Please respond with: Hello from demo-buddy! I am ready to work. Then wait for further instructions."
+    # Use haiku for the demo to keep it fast and cheap
+    LEAD_PROMPT="You are the team-lead for an onboarding demo team called '${TEST_TEAM}'.
 
-    echo -e "  ${GREEN}✓${NC} Spawned 'demo-buddy'"
-    echo ""
+This is a quick onboarding demo to show the user how swarm delegation works.
 
-    # Step 4: Wait and verify
-    echo -e "${CYAN}[4/6] Verifying teammate is alive...${NC}"
-    echo "  Waiting for teammate to initialize..."
-    sleep 4
+Your instructions:
+1. First, load the swarm-team-lead skill: /claude-swarm:swarm-team-lead
+2. Check your inbox: /claude-swarm:swarm-inbox
+3. Follow the briefing message you receive there.
 
-    LIVE_AGENTS=$(get_live_agents "$TEST_TEAM")
-    if echo "$LIVE_AGENTS" | grep -q "demo-buddy"; then
-        echo -e "  ${GREEN}✓${NC} demo-buddy is alive and ready!"
+Keep responses brief - this is a demo."
+
+    if spawn_teammate "$TEST_TEAM" "team-lead" "team-lead" "haiku" "$LEAD_PROMPT" "" "" "" "${CLAUDE_PLUGIN_ROOT:-}" "CLAUDE_CODE_IS_TEAM_LEAD=true"; then
+        echo -e "  ${GREEN}✓${NC} Team-lead spawned"
     else
-        echo -e "  ${YELLOW}⚠️${NC}  demo-buddy not detected yet (might still be starting)"
-        echo "     Check your ${SWARM_MULTIPLEXER} for the new session"
+        echo -e "  ${RED}✗${NC} Failed to spawn team-lead"
+        echo "  Cleaning up..."
+        cleanup_team "$TEST_TEAM" "force"
+        return 1
     fi
     echo ""
 
-    # Step 5: Show status
-    echo -e "${CYAN}[5/6] Team status:${NC}"
+    # Step 4: Wait for team-lead to initialize
+    echo -e "${CYAN}[4/8] Waiting for team-lead to initialize...${NC}"
+    sleep 5
+
+    LIVE_AGENTS=$(get_live_agents "$TEST_TEAM")
+    if echo "$LIVE_AGENTS" | grep -q "team-lead"; then
+        echo -e "  ${GREEN}✓${NC} Team-lead is alive"
+    else
+        echo -e "  ${YELLOW}⚠️${NC}  Team-lead not detected yet (might still be starting)"
+        echo "     Check your ${SWARM_MULTIPLEXER:-kitty} for the new window"
+        sleep 5
+    fi
+    echo ""
+
+    # Step 5: Brief the team-lead via message (this is what the user does in real workflows)
+    echo -e "${CYAN}[5/8] Briefing team-lead via inbox message...${NC}"
+    echo "  In real use, you brief the team-lead with your requirements."
+    echo "  The team-lead then autonomously spawns workers and assigns tasks."
+    echo ""
+
+    BRIEFING="ONBOARDING DEMO BRIEFING:
+
+This is a quick demo. Please do the following:
+1. Spawn one worker named 'demo-buddy' using: /claude-swarm:swarm-spawn demo-buddy worker haiku
+2. Once demo-buddy is spawned, assign task #${TASK_ID} to demo-buddy using: /claude-swarm:task-update ${TASK_ID} --assign demo-buddy --status in_progress
+3. Send demo-buddy a message telling them to complete task #${TASK_ID} using: /claude-swarm:swarm-message demo-buddy Please complete task #${TASK_ID} - just say hello!
+4. After sending the message, report back your status using: /claude-swarm:swarm-message team-lead Demo delegation complete
+
+Keep it fast and brief - this is just a demo walkthrough."
+
+    # Export CLAUDE_CODE_AGENT_NAME temporarily so send_message uses 'orchestrator' as sender
+    local old_agent_name="${CLAUDE_CODE_AGENT_NAME:-}"
+    export CLAUDE_CODE_AGENT_NAME="orchestrator"
+    send_message "$TEST_TEAM" "team-lead" "$BRIEFING"
+    export CLAUDE_CODE_AGENT_NAME="$old_agent_name"
+
+    echo ""
+
+    # Step 6: Wait for team-lead to process and spawn demo-buddy
+    echo -e "${CYAN}[6/8] Waiting for team-lead to spawn demo-buddy...${NC}"
+    echo "  Watch the team-lead window - it should read the briefing and spawn a worker."
+    echo "  This may take 30-60 seconds as the team-lead processes the request."
+    echo ""
+
+    local max_wait=90
+    local waited=0
+    local interval=5
+    local buddy_found=false
+
+    while [[ $waited -lt $max_wait ]]; do
+        sleep $interval
+        waited=$((waited + interval))
+
+        LIVE_AGENTS=$(get_live_agents "$TEST_TEAM")
+        if echo "$LIVE_AGENTS" | grep -q "demo-buddy"; then
+            buddy_found=true
+            echo -e "  ${GREEN}✓${NC} demo-buddy spawned by team-lead! (${waited}s)"
+            break
+        fi
+
+        # Show progress every 15 seconds
+        if (( waited % 15 == 0 )); then
+            echo -e "  ${CYAN}...${waited}s elapsed, still waiting for demo-buddy${NC}"
+        fi
+    done
+
+    if [[ "$buddy_found" != "true" ]]; then
+        echo -e "  ${YELLOW}⚠️${NC}  demo-buddy not detected after ${max_wait}s"
+        echo "     The team-lead may still be processing. Check the team-lead window."
+    fi
+    echo ""
+
+    # Step 7: Show team status
+    echo -e "${CYAN}[7/8] Team status:${NC}"
     echo ""
     swarm_status "$TEST_TEAM"
     echo ""
 
-    # Step 6: Cleanup
-    echo -e "${CYAN}[6/6] Cleanup${NC}"
+    # Step 8: Return team name for cleanup (don't auto-cleanup - let user observe)
+    echo -e "${CYAN}[8/8] Demo complete!${NC}"
     echo ""
-    echo "The test is complete! Cleaning up the test team..."
+    echo "The demo team '${TEST_TEAM}' is still running so you can observe the agents."
     echo ""
-    cleanup_team "$TEST_TEAM" "force"
-    echo -e "${GREEN}✓ Test team cleaned up${NC}"
+    echo "Things to try:"
+    echo "  • Watch the team-lead and demo-buddy windows interact"
+    echo "  • Run /claude-swarm:swarm-status ${TEST_TEAM} to check status"
+    echo "  • Run /claude-swarm:task-list to see task assignments"
+    echo "  • Run /claude-swarm:swarm-inbox to check messages"
     echo ""
+    echo "When done observing, clean up with:"
+    echo "  /claude-swarm:swarm-cleanup ${TEST_TEAM}"
+    echo ""
+
+    # Export team name so the command can reference it
+    export ONBOARD_DEMO_TEAM="$TEST_TEAM"
 }
 
 # ============================================
@@ -232,14 +316,18 @@ show_available_commands() {
     echo ""
     echo -e "${GREEN}🎉 You're all set to use Claude Swarm!${NC}"
     echo ""
+    echo "Quick Start (delegation mode - recommended):"
+    echo "  /claude-swarm:swarm-create <team> [desc]     Create team + auto-spawn team-lead"
+    echo "  → Brief the team-lead via message, then let it coordinate!"
+    echo ""
     echo "Available Commands:"
     echo ""
     echo "  Team Management:"
-    echo "    /claude-swarm:swarm-create <team> [desc]     Create a new team"
+    echo "    /claude-swarm:swarm-create <team> [desc]     Create a new team (auto-spawns lead)"
     echo "    /claude-swarm:swarm-spawn <name> [type]      Spawn a teammate"
-    echo "    /claude-swarm:swarm-status <team>            View team status"
-    echo "    /claude-swarm:swarm-cleanup <team>           Suspend/delete team"
-    echo "    /claude-swarm:swarm-resume <team>            Resume suspended team"
+    echo "    /claude-swarm:swarm-status [team]            View team status"
+    echo "    /claude-swarm:swarm-cleanup [team]           Suspend/delete team"
+    echo "    /claude-swarm:swarm-resume [team]            Resume suspended team"
     echo ""
     echo "  Task Management:"
     echo "    /claude-swarm:task-create <subject>          Create a task"
@@ -249,11 +337,12 @@ show_available_commands() {
     echo "  Communication:"
     echo "    /claude-swarm:swarm-message <to> <msg>       Send a message"
     echo "    /claude-swarm:swarm-inbox                    Check your inbox"
+    echo "    /claude-swarm:swarm-broadcast <msg>          Message all teammates"
     echo ""
     echo "  Diagnostics:"
-    echo "    /claude-swarm:swarm-diagnose <team>          Diagnose issues"
-    echo "    /claude-swarm:swarm-verify <team>            Verify teammates"
-    echo "    /claude-swarm:swarm-reconcile <team>         Fix mismatches"
+    echo "    /claude-swarm:swarm-diagnose [team]          Diagnose issues"
+    echo "    /claude-swarm:swarm-verify [team]            Verify teammates"
+    echo "    /claude-swarm:swarm-reconcile [team]         Fix mismatches"
     echo ""
     echo "For detailed guidance anytime, use: /claude-swarm:swarm-guide"
     echo ""

@@ -37,7 +37,7 @@ for team_dir in "$TEAMS_DIR"/*/; do
     config_file="${team_dir}config.json"
     [[ -f "$config_file" ]] || continue
 
-    team_name=$(jq -r '.teamName' "$config_file")
+    team_name=$(jq -r '.name // .teamName' "$config_file")
     description=$(jq -r '.description // "No description"' "$config_file")
     status=$(jq -r '.status // "unknown"' "$config_file")
     member_count=$(jq -r '.members | length' "$config_file")

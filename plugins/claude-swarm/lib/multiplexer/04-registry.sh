@@ -39,18 +39,21 @@ register_window() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    register_temp_file "$tmp_file"
+    trap "rm -f '$tmp_file'" INT TERM
 
     if jq --arg agent "$agent_name" \
        --arg var "$swarm_var" \
        --arg ts "$timestamp" \
        '. += [{"agent": $agent, "swarm_var": $var, "registered_at": $ts}]' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -83,16 +86,19 @@ unregister_window() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'; release_file_lock" EXIT INT TERM
+    register_temp_file "$tmp_file"
+    trap "rm -f '$tmp_file'" INT TERM
 
     if jq --arg agent "$agent_name" \
        'map(select(.agent != $agent))' \
        "$registry_file" >| "$tmp_file" && command mv "$tmp_file" "$registry_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         release_file_lock
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         release_file_lock
         echo -e "${RED}Failed to update window registry${NC}" >&2
@@ -133,7 +139,8 @@ clean_window_registry() {
     fi
 
     # Add trap to ensure cleanup on interrupt
-    trap "rm -f '$tmp_file'" EXIT INT TERM
+    register_temp_file "$tmp_file"
+    trap "rm -f '$tmp_file'" INT TERM
 
     # Build live windows JSON array with validation
     local live_json
@@ -141,7 +148,8 @@ clean_window_registry() {
         live_json="[]"
     elif ! live_json=$(echo "$live_windows" | jq -R . 2>/dev/null | jq -s . 2>/dev/null); then
         echo -e "${YELLOW}Warning: Failed to parse live windows list${NC}" >&2
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         return 1
     fi
@@ -151,16 +159,19 @@ clean_window_registry() {
        '[.[] | select(.swarm_var as $var | $live | index($var) != null)]' \
        "$registry_file" > "$tmp_file" 2>/dev/null; then
         echo -e "${RED}Error: Registry cleanup jq filter failed${NC}" >&2
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         return 1
     fi
 
     if command mv "$tmp_file" "$registry_file"; then
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         return 0
     else
-        trap - EXIT INT TERM
+        trap - INT TERM
+        unregister_temp_file "$tmp_file"
         command rm -f "$tmp_file"
         echo -e "${RED}Failed to update window registry${NC}" >&2
         return 1

@@ -238,7 +238,7 @@ When escalating to team-lead, include context:
 
 **Solution:** Batch related updates, focus on milestones
 
-### 3. The Assumpt Coordinator
+### 3. The Assuming Coordinator
 
 **Problem:** Assumes others know what they're doing, doesn't communicate
 

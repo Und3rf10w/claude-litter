@@ -57,10 +57,26 @@ spawn_teammate_in_process() {
             return 1
         fi
         # Update existing team-lead member status
+        if ! acquire_file_lock "$config_file"; then
+            echo -e "${RED}Failed to acquire lock for team config${NC}" >&2
+            return 1
+        fi
         local tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            release_file_lock
+            echo -e "${RED}Failed to create temp file${NC}" >&2
+            return 1
+        fi
+        trap "rm -f '$tmp_file'" INT TERM
         if jq --arg model "$model" '.members = [.members[] | if .name == "team-lead" then .model = $model | .status = "active" else . end]' \
            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"; then
+            trap - INT TERM
+            release_file_lock
             echo -e "${GREEN}Updated 'team-lead' in team '${team_name}'${NC}"
+        else
+            trap - INT TERM
+            command rm -f "$tmp_file"
+            release_file_lock
         fi
     else
         agent_id=$(generate_uuid)
@@ -120,19 +136,27 @@ ${initial_prompt}
 - Communicate via /claude-swarm:swarm-message
 - Update task status via /claude-swarm:task-update"
 
-    # Store tracking info
-    cat > "$tracking_file" << EOF
-{
-  "team_name": "${team_name}",
-  "agent_name": "${agent_name}",
-  "agent_id": "${agent_id}",
-  "agent_type": "${agent_type}",
-  "model": "${model}",
-  "status": "pending",
-  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "mode": "in-process"
-}
-EOF
+    # Store tracking info (use jq to properly escape values and prevent JSON injection)
+    if ! jq -n \
+        --arg team_name "$team_name" \
+        --arg agent_name "$agent_name" \
+        --arg agent_id "$agent_id" \
+        --arg agent_type "$agent_type" \
+        --arg model "$model" \
+        --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{
+            team_name: $team_name,
+            agent_name: $agent_name,
+            agent_id: $agent_id,
+            agent_type: $agent_type,
+            model: $model,
+            status: "pending",
+            started_at: $started_at,
+            mode: "in-process"
+        }' > "$tracking_file"; then
+        echo -e "${RED}Failed to create tracking file${NC}" >&2
+        return 1
+    fi
 
     echo -e "${GREEN}Prepared in-process teammate '${agent_name}' for team '${team_name}'${NC}"
     echo "  Agent ID: ${agent_id}"

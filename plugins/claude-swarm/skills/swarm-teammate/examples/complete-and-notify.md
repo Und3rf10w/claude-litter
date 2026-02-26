@@ -8,7 +8,7 @@ You're `backend-dev` completing task #8 (user profile API). Multiple tasks and t
 
 **Your Task:**
 - Task #8: Implement user profile API
-- Status: in-progress → completing
+- Status: in_progress → completing
 
 **Dependencies:**
 - Task #10: User profile UI (frontend-dev) - BLOCKED by task #8

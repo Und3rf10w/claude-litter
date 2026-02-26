@@ -56,6 +56,7 @@ source "${SWARM_LIB_DIR}/team/05-team.sh" 1>/dev/null
 # Level 4: Status and Messaging
 source "${SWARM_LIB_DIR}/team/06-status.sh" 1>/dev/null
 source "${SWARM_LIB_DIR}/communication/07-messaging.sh" 1>/dev/null
+source "${SWARM_LIB_DIR}/communication/15-webhooks.sh" 1>/dev/null
 
 # Level 5: Tasks and Spawn
 source "${SWARM_LIB_DIR}/tasks/08-tasks.sh" 1>/dev/null
