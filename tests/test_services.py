@@ -168,9 +168,8 @@ class TestMessaging:
 
 class TestFileLocking:
     def test_no_corruption_under_concurrent_access(self, svc: TeamService) -> None:
-        """Concurrent task creates should not corrupt state."""
+        """Concurrent member adds should not corrupt state."""
         svc.create_team("concurrent")
-        svc.create_task("concurrent", "seed")  # create initial task so dir/file exists
 
         def add_member(i: int) -> None:
             member = {"name": f"worker-{i}", "agentId": f"uuid-{i}", "agentType": "worker"}
