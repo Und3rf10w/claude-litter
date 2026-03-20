@@ -77,6 +77,7 @@ class SessionView(Widget):
         self._streaming = False
         self._user_scrolled_up = False
         self._stream_buffer: list[str] = []
+        self._output_history: list[str] = []
 
     def compose(self) -> ComposeResult:
         header_text = self._make_header_text()
@@ -98,6 +99,68 @@ class SessionView(Widget):
         if self._model:
             parts.append(f"model: {self._model}")
         return "  |  ".join(parts) if parts else "Session"
+
+    def update_header(
+        self,
+        agent_name: str = "",
+        team: str = "",
+        model: str = "",
+        cwd: str = "",
+        agent_type: str = "",
+        color: str = "",
+    ) -> None:
+        """Update the header bar with agent metadata."""
+        # Map color names to Rich color names
+        _color_map = {
+            "blue": "dodger_blue1",
+            "green": "green3",
+            "yellow": "yellow3",
+            "purple": "medium_purple",
+            "orange": "dark_orange",
+            "pink": "hot_pink",
+            "red": "red1",
+            "cyan": "cyan",
+        }
+        rich_color = _color_map.get(color, "")
+
+        parts: list[str] = []
+        if agent_name:
+            if rich_color:
+                parts.append(f"[bold {rich_color}]{agent_name}[/bold {rich_color}]")
+            else:
+                parts.append(f"[bold]{agent_name}[/bold]")
+        if team:
+            parts.append(f"[dim]team:[/dim] {team}")
+
+        # Model badge
+        if model:
+            low = model.lower()
+            if "opus" in low:
+                badge = "O"
+            elif "haiku" in low:
+                badge = "H"
+            else:
+                badge = "S"
+            parts.append(f"[dim]model:[/dim] {badge}")
+
+        # Agent type badge
+        if agent_type and agent_type not in ("general-purpose",):
+            if rich_color:
+                parts.append(f"[{rich_color}]{agent_type}[/{rich_color}]")
+            else:
+                parts.append(f"[dim]{agent_type}[/dim]")
+
+        # CWD / project path (shortened)
+        if cwd:
+            home = str(__import__("pathlib").Path.home())
+            display_cwd = cwd.replace(home, "~") if cwd.startswith(home) else cwd
+            parts.append(f"[dim]{display_cwd}[/dim]")
+
+        header = "  |  ".join(parts) if parts else "Session"
+        try:
+            self.query_one(".session-header", Static).update(header)
+        except Exception:
+            pass
 
     def _set_idle(self) -> None:
         """Switch UI to idle state."""
@@ -141,12 +204,17 @@ class SessionView(Widget):
     def append_output(self, text: str) -> None:
         """Add *text* to the display as a complete block (one RichLog.write call)."""
         try:
+            self._output_history.append(text)
             log = self.query_one(RichLog)
             log.write(text)
             if not self._user_scrolled_up:
                 log.scroll_end(animate=False)
         except Exception:
             pass
+
+    def get_output_history(self) -> list[str]:
+        """Return a copy of all output written to this view."""
+        return list(self._output_history)
 
     def _flush_stream_buffer(self) -> None:
         """Flush accumulated streaming text to the RichLog as a single block."""
@@ -159,6 +227,7 @@ class SessionView(Widget):
 
     def clear_output(self) -> None:
         """Clear all displayed text."""
+        self._output_history.clear()
         try:
             self.query_one(RichLog).clear()
         except Exception:

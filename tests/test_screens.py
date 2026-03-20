@@ -240,3 +240,59 @@ async def test_settings_vim_toggle():
         await pilot.click(switch)
         await pilot.pause()
         assert switch.value != initial
+
+
+# ---------------------------------------------------------------------------
+# MainScreen._build_team_context
+# ---------------------------------------------------------------------------
+
+
+def test_build_team_context_no_teams(tmp_path):
+    """_build_team_context returns empty string when no teams exist."""
+    from litter_tui.screens.main import MainScreen
+    from litter_tui.services.team_service import TeamService
+
+    ts = TeamService(base_path=tmp_path)
+    screen = MainScreen.__new__(MainScreen)
+    screen._team_service = ts
+    assert screen._build_team_context() == ""
+
+
+def test_build_team_context_with_teams(tmp_path):
+    """_build_team_context returns formatted team/agent info."""
+    from litter_tui.screens.main import MainScreen
+    from litter_tui.services.team_service import TeamService
+
+    ts = TeamService(base_path=tmp_path)
+    ts.create_team("alpha", "Test team")
+    ts.add_member("alpha", {
+        "agentId": "a1",
+        "name": "backend",
+        "model": "sonnet",
+        "status": "active",
+        "agentType": "worker",
+        "cwd": "/tmp/project",
+    })
+    ts.add_member("alpha", {
+        "agentId": "a2",
+        "name": "frontend",
+        "model": "haiku",
+        "status": "idle",
+    })
+
+    # Add a task
+    ts.create_task("alpha", "Fix bug", "Fix the login bug")
+
+    screen = MainScreen.__new__(MainScreen)
+    screen._team_service = ts
+
+    ctx = screen._build_team_context()
+    assert "<team-context>" in ctx
+    assert "</team-context>" in ctx
+    assert "Team: alpha" in ctx
+    assert "backend" in ctx
+    assert "frontend" in ctx
+    assert "model=sonnet" in ctx
+    assert "model=haiku" in ctx
+    assert "type=worker" in ctx
+    assert "pending" in ctx.lower()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import events
 from textual.app import ComposeResult
 from textual.message import Message
 from textual.widget import Widget
@@ -9,17 +10,57 @@ from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
 
-_MODEL_BADGE = {
-    "haiku": "H",
-    "sonnet": "S",
-    "opus": "O",
-}
-
 _STATUS_COLOR = {
     "active": "green",
     "partial": "yellow",
     "inactive": "gray",
 }
+
+# Map agent color names to Rich/Textual color names
+_AGENT_COLORS = {
+    "blue": "dodger_blue1",
+    "green": "green3",
+    "yellow": "yellow3",
+    "purple": "medium_purple",
+    "orange": "dark_orange",
+    "pink": "hot_pink",
+    "red": "red1",
+    "cyan": "cyan",
+}
+
+
+def _short_model(model: str) -> str:
+    """Extract a short model badge from a full model string."""
+    low = model.lower()
+    if "opus" in low:
+        return "O"
+    if "haiku" in low:
+        return "H"
+    # Default to sonnet
+    return "S"
+
+
+class _SidebarTree(Tree):
+    """Tree subclass that intercepts right-clicks before default handling."""
+
+    async def _on_click(self, event: events.Click) -> None:
+        if event.button == 3:
+            meta = event.style.meta
+            if "line" in meta:
+                node = self.get_node_at_line(meta["line"])
+                if node and node.data and node.data.get("type") == "agent":
+                    self.post_message(
+                        TeamSidebar.AgentContextMenuRequested(
+                            team=node.data["team"],
+                            agent=node.data["agent"],
+                            screen_x=event.screen_x,
+                            screen_y=event.screen_y,
+                        )
+                    )
+            event.stop()
+            event.prevent_default()
+            return
+        await super()._on_click(event)
 
 
 class TeamSidebar(Widget):
@@ -41,12 +82,25 @@ class TeamSidebar(Widget):
             self.team = team
             self.agent = agent
 
+    class MainChatSelected(Message):
+        """Emitted when the Main Chat node is clicked."""
+
     class TeamSelected(Message):
         """Emitted when a team root node is clicked."""
 
         def __init__(self, team: str) -> None:
             super().__init__()
             self.team = team
+
+    class AgentContextMenuRequested(Message):
+        """Emitted when an agent node is right-clicked."""
+
+        def __init__(self, team: str, agent: str, screen_x: int, screen_y: int) -> None:
+            super().__init__()
+            self.team = team
+            self.agent = agent
+            self.screen_x = screen_x
+            self.screen_y = screen_y
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -55,7 +109,7 @@ class TeamSidebar(Widget):
         self._agent_data: dict[tuple[str, str], dict] = {}
 
     def compose(self) -> ComposeResult:
-        tree: Tree[dict] = Tree("Teams", id="sidebar-tree")
+        tree: _SidebarTree = _SidebarTree("Teams", id="sidebar-tree")
         tree.root.expand()
         yield tree
 
@@ -67,6 +121,12 @@ class TeamSidebar(Widget):
         self._team_nodes.clear()
         self._agent_nodes.clear()
         self._agent_data.clear()
+
+        # Add "Main Chat" entry at the top
+        tree.root.add_leaf(
+            "[bold]> Main Chat[/bold]",
+            data={"type": "main_chat"},
+        )
 
         for team in teams:
             team_name = team["name"]
@@ -104,7 +164,11 @@ class TeamSidebar(Widget):
         node_data = event.node.data
         if node_data is None:
             return
-        if node_data.get("type") == "team":
+        if node_data.get("type") == "main_chat":
+            self.post_message(self.MainChatSelected())
+        elif node_data.get("type") == "team":
+            # Toggle collapse/expand on team nodes
+            event.node.toggle()
             self.post_message(self.TeamSelected(team=node_data["team"]))
         elif node_data.get("type") == "agent":
             self.post_message(
@@ -113,12 +177,19 @@ class TeamSidebar(Widget):
 
     @staticmethod
     def _agent_label(agent: dict) -> str:
-        model_key = agent.get("model", "sonnet").lower()
-        badge = _MODEL_BADGE.get(model_key, "?")
+        model_raw = agent.get("model", "sonnet")
+        badge = _short_model(model_raw)
         unread = agent.get("unread", 0)
         task_id = agent.get("task_id")
+        agent_type = agent.get("agentType", "")
+        color = agent.get("color", "")
 
-        parts = [f"[dim]{badge}[/dim]", agent.get("name", "?")]
+        # Color the badge using the agent's assigned color
+        color_name = _AGENT_COLORS.get(color, "dim")
+        parts = [f"[{color_name}]{badge}[/{color_name}]", agent.get("name", "?")]
+
+        if agent_type and agent_type not in ("general-purpose", "teammate"):
+            parts.append(f"[dim]({agent_type})[/dim]")
         if unread:
             parts.append(f"[bold yellow]({unread})[/bold yellow]")
         if task_id:

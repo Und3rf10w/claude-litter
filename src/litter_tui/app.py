@@ -3,10 +3,55 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Static
+from textual.containers import Center, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Label, Static
 
 from litter_tui.config import Config
 from litter_tui.services.agent_manager import AgentManager
+
+
+class QuitScreen(ModalScreen[bool]):
+    """Centered quit confirmation dialog."""
+
+    DEFAULT_CSS = """
+    QuitScreen {
+        align: center middle;
+    }
+    QuitScreen > Vertical {
+        width: 40;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary;
+    }
+    QuitScreen Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    QuitScreen .buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: center;
+    }
+    QuitScreen Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Do you want to quit?")
+            with Center(classes="buttons"):
+                yield Button("Quit", variant="error", id="quit-yes")
+                yield Button("Cancel", variant="default", id="quit-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "quit-yes":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
 
 
 class LitterTuiApp(App):
@@ -16,7 +61,7 @@ class LitterTuiApp(App):
     TITLE = "litter-tui"
 
     BINDINGS = [
-        Binding("ctrl+q", "quit", "Quit"),
+        Binding("ctrl+q", "request_quit", "Quit"),
         Binding("ctrl+t", "toggle_tasks", "Tasks"),
         Binding("ctrl+n", "new_team", "New Team"),
         Binding("ctrl+s", "spawn_agent", "Spawn Agent"),
@@ -72,12 +117,20 @@ class LitterTuiApp(App):
         from litter_tui.screens.spawn_agent import SpawnAgentScreen
         self.push_screen(SpawnAgentScreen())
 
+    def action_request_quit(self) -> None:
+        """Show centered quit confirmation dialog."""
+        def _on_quit(confirmed: bool | None) -> None:
+            if confirmed:
+                self.exit()
+
+        self.push_screen(QuitScreen(), callback=_on_quit)
+
     def action_maybe_quit(self) -> None:
-        """Escape: pop screen if in a dialog, otherwise quit."""
+        """Escape: pop screen if in a dialog, otherwise show quit confirmation."""
         if len(self.screen_stack) > 2:
             self.pop_screen()
         else:
-            self.exit()
+            self.action_request_quit()
 
     def action_detach(self) -> None:
         """Detach current session."""

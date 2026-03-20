@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Tree, Static, TabbedContent
+from textual.widgets import Tree, Static, TabbedContent, Tabs
 
 from litter_tui.widgets.sidebar import TeamSidebar
-from litter_tui.widgets.tab_bar import SessionTabBar
+from litter_tui.widgets.tab_bar import SessionTabBar, _tab_label, _tab_id
 from litter_tui.widgets.status_bar import StatusBar
+from litter_tui.widgets.context_menu import ContextMenu
 
 
 # ------------------------------------------------------------------ #
@@ -225,9 +226,304 @@ async def test_tabbar_tab_activated_message():
         tabbar.post_message(SessionTabBar.TabActivated(team="alpha", agent="backend"))
         await pilot.pause()
 
+    # add_tab activates the tab (firing an event) + we manually post one
+    assert len(received) >= 1
+    matching = [e for e in received if e.team == "alpha" and e.agent == "backend"]
+    assert len(matching) >= 1
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_active_tab():
+    """close_active_tab should remove the currently active tab."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("alpha", "a1")
+        tabbar.add_tab("alpha", "a2")
+        await pilot.pause()
+
+        tabbar.close_active_tab()
+        await pilot.pause()
+
+        # One tab should remain
+        assert len(tabbar._tabs) == 1
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_others():
+    """close_others should remove all tabs except the specified one."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("t", "a1")
+        tabbar.add_tab("t", "a2")
+        tabbar.add_tab("t", "a3")
+        await pilot.pause()
+
+        tabbar.close_others("t", "a2")
+        await pilot.pause()
+
+        assert tabbar._tabs == [("t", "a2")]
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_to_right():
+    """close_to_right should remove tabs after the specified one."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("t", "a1")
+        tabbar.add_tab("t", "a2")
+        tabbar.add_tab("t", "a3")
+        await pilot.pause()
+
+        tabbar.close_to_right("t", "a1")
+        await pilot.pause()
+
+        assert tabbar._tabs == [("t", "a1")]
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_all():
+    """close_all should remove every tab."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("t", "a1")
+        tabbar.add_tab("t", "a2")
+        await pilot.pause()
+
+        tabbar.close_all()
+        await pilot.pause()
+
+        assert tabbar._tabs == []
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_label_has_x():
+    """Tab labels should include ✕ close button."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("team", "agent")
+        await pilot.pause()
+
+        tabs = tabbar.query_one(Tabs)
+        tab_widgets = list(tabs.query("Tab"))
+        assert len(tab_widgets) == 1
+        label_text = str(tab_widgets[0].label)
+        assert "✕" in label_text
+
+
+def test_tab_label_active_has_red():
+    """_tab_label with active=True should produce red markup for ✕."""
+    label = _tab_label("team", "agent", active=True)
+    assert "[red]✕[/red]" in label
+
+
+def test_tab_label_inactive_has_dim():
+    """_tab_label with active=False should produce dim markup for ✕."""
+    label = _tab_label("team", "agent", active=False)
+    assert "[dim]✕[/dim]" in label
+
+
+@pytest.mark.anyio
+async def test_tabbar_close_colors_update_on_switch():
+    """Active tab ✕ should be red; inactive should be dim after switching."""
+    async with TabBarApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("t", "a1")
+        tabbar.add_tab("t", "a2")
+        await pilot.pause()
+
+        # Manually trigger color update for a1
+        tabbar._update_close_colors(_tab_id("t", "a1"))
+        await pilot.pause()
+
+        tabs = tabbar.query_one(Tabs)
+        tab1 = tabs.query_one(f"#--content-tab-{_tab_id('t', 'a1')}")
+        tab2 = tabs.query_one(f"#--content-tab-{_tab_id('t', 'a2')}")
+        # Content stores style info in spans; check that styles differ
+        tab1_spans = tab1.label.spans
+        tab2_spans = tab2.label.spans
+        # Active tab (a1) should have 'red' style on ✕
+        assert any("red" in str(s.style) for s in tab1_spans)
+        # Inactive tab (a2) should have 'dim' style on ✕
+        assert any("dim" in str(s.style) for s in tab2_spans)
+
+
+@pytest.mark.anyio
+async def test_tabbar_right_click_emits_context_menu():
+    """Right-clicking on a tab should emit TabContextMenuRequested."""
+    received: list[SessionTabBar.TabContextMenuRequested] = []
+
+    class WatchApp(App):
+        def compose(self) -> ComposeResult:
+            yield SessionTabBar(id="tabbar")
+
+        def on_session_tab_bar_tab_context_menu_requested(
+            self, msg: SessionTabBar.TabContextMenuRequested
+        ):
+            received.append(msg)
+
+    async with WatchApp().run_test(size=(80, 24)) as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("team", "agent")
+        await pilot.pause()
+
+        # Right-click on the tab area (x=5, y=0)
+        await pilot.click(offset=(5, 0), button=3)
+        await pilot.pause()
+
     assert len(received) == 1
-    assert received[0].team == "alpha"
-    assert received[0].agent == "backend"
+    assert received[0].team == "team"
+    assert received[0].agent == "agent"
+
+
+@pytest.mark.anyio
+async def test_tabbar_tab_closed_message():
+    """TabClosed message should fire when a tab is removed."""
+    received: list[SessionTabBar.TabClosed] = []
+
+    class WatchApp(App):
+        def compose(self) -> ComposeResult:
+            yield SessionTabBar(id="tabbar")
+
+        def on_session_tab_bar_tab_closed(self, msg: SessionTabBar.TabClosed):
+            received.append(msg)
+
+    async with WatchApp().run_test() as pilot:
+        tabbar = pilot.app.query_one(SessionTabBar)
+        tabbar.add_tab("t", "a1")
+        await pilot.pause()
+
+        tabbar.remove_tab("t", "a1")
+        await pilot.pause()
+
+    assert len(received) == 1
+    assert received[0].team == "t"
+    assert received[0].agent == "a1"
+
+
+# ------------------------------------------------------------------ #
+# Sidebar tree collapse tests
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.anyio
+async def test_sidebar_team_node_toggles():
+    """Clicking a team node should toggle its expanded state."""
+    async with SidebarApp().run_test() as pilot:
+        sidebar = pilot.app.query_one(TeamSidebar)
+        sidebar.update_teams(SAMPLE_TEAMS)
+        await pilot.pause()
+
+        # Team nodes start expanded
+        team_node = sidebar._team_nodes["alpha"]
+        assert team_node.is_expanded
+
+        # Directly call toggle to verify the mechanism works
+        team_node.toggle()
+        await pilot.pause()
+        assert not team_node.is_expanded
+
+        team_node.toggle()
+        await pilot.pause()
+        assert team_node.is_expanded
+
+
+# ------------------------------------------------------------------ #
+# ContextMenu tests
+# ------------------------------------------------------------------ #
+
+
+class ContextMenuApp(App):
+    def compose(self) -> ComposeResult:
+        yield ContextMenu(id="ctx")
+
+
+@pytest.mark.anyio
+async def test_context_menu_show_at_becomes_visible():
+    """show_at should add the -visible class."""
+    async with ContextMenuApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        assert not menu.has_class("-visible")
+
+        menu.show_at("team", "agent", 10, 5)
+        await pilot.pause()
+
+        assert menu.has_class("-visible")
+
+
+@pytest.mark.anyio
+async def test_context_menu_show_at_populates_options():
+    """show_at should populate agent action options."""
+    async with ContextMenuApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        menu.show_at("team", "agent", 10, 5)
+        await pilot.pause()
+
+        assert menu.option_count == 5  # view, message, kill, detach, duplicate
+
+
+@pytest.mark.anyio
+async def test_context_menu_tab_menu_options():
+    """show_tab_menu_at should populate tab-specific options."""
+    async with ContextMenuApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        menu.show_tab_menu_at("team", "agent", 10, 5)
+        await pilot.pause()
+
+        assert menu.option_count == 4  # close, close others, close right, close all
+
+
+@pytest.mark.anyio
+async def test_context_menu_dismiss_on_escape():
+    """Pressing Escape should hide the context menu."""
+    async with ContextMenuApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        menu.show_at("team", "agent", 10, 5)
+        await pilot.pause()
+
+        assert menu.has_class("-visible")
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not menu.has_class("-visible")
+
+
+@pytest.mark.anyio
+async def test_context_menu_action_selected_message():
+    """Selecting an option should emit ActionSelected."""
+    received: list[ContextMenu.ActionSelected] = []
+
+    class WatchApp(App):
+        def compose(self) -> ComposeResult:
+            yield ContextMenu(id="ctx")
+
+        def on_context_menu_action_selected(self, msg: ContextMenu.ActionSelected):
+            received.append(msg)
+
+    async with WatchApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        menu.show_at("team", "agent", 10, 5)
+        await pilot.pause()
+
+        menu.post_message(ContextMenu.ActionSelected("kill", "team", "agent"))
+        await pilot.pause()
+
+    assert len(received) == 1
+    assert received[0].action == "kill"
+    assert received[0].team == "team"
+    assert received[0].agent == "agent"
+
+
+@pytest.mark.anyio
+async def test_context_menu_positions_with_absolute_offset():
+    """show_at should set absolute_offset for cursor-relative positioning."""
+    async with ContextMenuApp().run_test() as pilot:
+        menu = pilot.app.query_one(ContextMenu)
+        menu.show_at("team", "agent", 15, 8)
+        await pilot.pause()
+
+        assert menu.absolute_offset is not None
+        assert menu.absolute_offset.x == 15
+        assert menu.absolute_offset.y == 8
 
 
 # ------------------------------------------------------------------ #
