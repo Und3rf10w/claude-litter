@@ -1,7 +1,7 @@
 [project]
 name = "litter-tui"
 version = "0.1.0"
-description = "A Textual TUI for managing Claude swarm teams"
+description = "A TUI for managing Claude Agent Teams"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -10,6 +10,16 @@ dependencies = [
     "anyio",
     "watchfiles",
 ]
+authors = [
+    {name = "Und3rf10w"}
+]
+maintainers = [
+    {name = "Und3rf10w"}
+]
+keywords = ["claude", "claude code", "agent teams", "agent swarms", "swarms"]
+
+[project.urls]
+Repository = "https://github.com/Und3rf10w/claude-litter"
 
 [project.scripts]
 litter-tui = "litter_tui.__main__:main"
