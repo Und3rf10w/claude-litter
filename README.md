@@ -16,6 +16,7 @@ Because when you're running multiple Claude instances in kitty terminal, you've 
 - **Message passing** - File-based inbox system for inter-agent communication
 - **Session files** - Save and restore entire swarm configurations (kitty)
 - **Auto-detection** - Automatically detects kitty vs tmux environment
+- **Textual TUI** - Full terminal UI for managing teams, tasks, and agent sessions (`litter-tui`)
 
 > [!IMPORTANT]
 > Any code related to Swarm/Teammate support was removed in `Claude Code 2.0.76`. Claude Litter (this project) functions essentially as a reimplementation of the removed functionality largely via hooks and skills. As a result, Claude Litter continues to work with Claude Code >= `2.0.76`, but it may result in some unexpected behaviour.
@@ -685,6 +686,115 @@ Spawned subagents inherit full team awareness, enabling them to coordinate with 
 Checks that all assigned tasks are completed, statuses are updated, and work has been reported to team-lead before allowing a teammate to stop.
 
 > **Note:** The `TeammateIdle` and `TaskCompleted` hooks were removed in v2.0.0 because they are not valid Claude Code hook events. The corresponding scripts (`teammate-idle.sh`, `task-completed.sh`) remain available but are not auto-triggered.
+
+---
+
+## litter-tui (Textual TUI)
+
+**litter-tui** is a standalone terminal UI for managing Claude Code agent teams, built with [Textual](https://textual.textualize.io/) and the [claude-agent-sdk](https://pypi.org/project/claude-agent-sdk/).
+
+### Requirements
+
+- Python 3.14+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+### Installation
+
+```bash
+# From the repo root
+uv sync
+
+# Run the TUI
+uv run litter-tui
+
+# Or directly
+uv run python -m litter_tui
+```
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+N` | Create new team |
+| `Ctrl+S` | Spawn agent |
+| `Ctrl+T` | Toggle task panel |
+| `Ctrl+M` | Toggle message panel |
+| `Ctrl+D` | Detach session |
+| `Ctrl+Q` | Quit |
+| `q` | Quit (when not focused on an input) |
+| `Escape` | Close dialog / quit |
+| `F1` | Help |
+| `Tab` | Focus next widget |
+
+### Command Mode
+
+Type `:` in the input bar to enter command mode:
+
+| Command | Action |
+|---------|--------|
+| `:spawn` | Spawn a new agent |
+| `:kill` | Kill an agent |
+| `:msg <to> <text>` | Send a message |
+| `:broadcast <text>` | Broadcast to team |
+| `:task` | Task operations |
+| `:team` | Team operations |
+| `:kitty` | Kitty pop-out |
+| `:detach` | Detach session |
+| `:vim` | Toggle vim mode |
+
+### TUI Architecture
+
+```
+src/litter_tui/
+├── app.py                  # Main App class, keybindings
+├── config.py               # Config (persisted to ~/.claude/litter-tui/config.json)
+├── __main__.py             # CLI entry point (argparse)
+├── models/
+│   ├── team.py             # Team, TeamMember frozen dataclasses
+│   ├── task.py             # Task, TaskStatus enum
+│   └── message.py          # Message dataclass (from_agent ↔ "from" aliasing)
+├── services/
+│   ├── state.py            # StateManager — file watching, reads from ~/.claude/
+│   ├── team_service.py     # TeamService — JSON CRUD with file locking
+│   ├── agent_manager.py    # AgentManager — claude-agent-sdk session management
+│   └── kitty.py            # KittyService — kitty terminal integration
+├── screens/
+│   ├── main.py             # MainScreen (sidebar + tabs + session + input)
+│   ├── create_team.py      # CreateTeamScreen (modal dialog)
+│   ├── spawn_agent.py      # SpawnAgentScreen (modal dialog)
+│   ├── task_detail.py      # TaskDetailScreen (modal dialog)
+│   └── settings.py         # SettingsScreen
+├── widgets/
+│   ├── sidebar.py          # TeamSidebar (Tree widget)
+│   ├── tab_bar.py          # SessionTabBar (TabbedContent)
+│   ├── status_bar.py       # StatusBar (team/task summary)
+│   ├── session_view.py     # SessionView (RichLog streaming output)
+│   ├── input_bar.py        # InputBar (prompt + command mode)
+│   ├── task_panel.py       # TaskPanel (slide-out, filterable)
+│   └── message_panel.py    # MessagePanel (slide-out, compose)
+└── styles/
+    └── app.tcss            # Dark theme CSS
+```
+
+### Testing
+
+```bash
+# Run all 207 tests
+uv run pytest tests/ -v
+
+# Headless screenshot test
+uv run python -c "
+import anyio
+from litter_tui.app import LitterTuiApp
+async def main():
+    app = LitterTuiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(delay=0.5)
+        app.save_screenshot('screenshot.svg')
+        print('Screenshot saved')
+anyio.run(main)
+"
+```
 
 ---
 

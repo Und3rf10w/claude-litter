@@ -8,4 +8,3 @@ build/
 .pytest_cache/
 screenshot.svg
 test_*.svg
-CC_INTERNALS_ANALYSIS_2.1.39.md

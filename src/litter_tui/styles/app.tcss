@@ -4,29 +4,9 @@ Screen {
     background: $surface;
 }
 
-#sidebar {
-    width: 25;
-    dock: left;
-    background: $panel;
-    border-right: solid $accent;
-}
-
+/* Main layout */
 #main-content {
     width: 1fr;
-}
-
-#tab-bar {
-    height: 3;
-    dock: top;
-}
-
-#session-view {
-    height: 1fr;
-}
-
-#input-bar {
-    height: 3;
-    dock: bottom;
 }
 
 /* Slide-out panels */

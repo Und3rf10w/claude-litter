@@ -12,6 +12,8 @@ Claude Litter is a Claude Code plugin marketplace that enables multi-agent coord
 claude-litter/
 ├── .claude-plugin/
 │   └── marketplace.json       # Marketplace manifest
+├── src/
+│   └── litter_tui/            # Textual TUI application (see litter-tui section below)
 ├── plugins/
 │   └── claude-swarm/          # Main swarm plugin (v2.0.0)
 │       ├── .claude-plugin/
@@ -35,6 +37,8 @@ claude-litter/
 │       │   ├── swarm-teammate/         # Worker coordination
 │       │   └── swarm-troubleshooting/  # Diagnostics & recovery
 │       └── docs/
+├── pyproject.toml             # TUI project config (Python 3.14+, textual, claude-agent-sdk)
+├── tests/                     # 207 pytest tests for the TUI
 └── README.md
 ```
 
@@ -394,3 +398,78 @@ list_teams
 # Get team status (verbose)
 swarm_status "team-name"
 ```
+
+## litter-tui (Textual TUI)
+
+The `src/litter_tui/` package is a standalone Textual TUI for managing Claude Code agent teams visually.
+
+### Tech Stack
+
+- **Python 3.14+**, `uv` for deps
+- **Textual 3.x** (App > Screen > Widget hierarchy)
+- **claude-agent-sdk** for agent sessions
+- **anyio** for async, **watchfiles** for filesystem watching
+
+### Package Structure
+
+```
+src/litter_tui/
+├── app.py              # LitterTuiApp — main App, keybindings
+├── config.py           # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
+├── __main__.py         # CLI entry point, argparse
+├── models/             # Frozen dataclasses: Team, TeamMember, Task, TaskStatus, Message
+├── services/
+│   ├── state.py        # StateManager — watchfiles.awatch for ~/.claude/ JSON changes
+│   ├── team_service.py # TeamService — JSON CRUD with mkdir-based file locking
+│   ├── agent_manager.py# AgentManager — ClaudeSDKClient session management
+│   └── kitty.py        # KittyService — kitty terminal pop-out/import
+├── screens/            # MainScreen, CreateTeamScreen, SpawnAgentScreen, TaskDetailScreen, SettingsScreen
+├── widgets/            # TeamSidebar, SessionTabBar, StatusBar, SessionView, InputBar, TaskPanel, MessagePanel
+└── styles/app.tcss     # Dark theme CSS (sidebar 25 cols, slide panels via offset transitions)
+```
+
+### Key Patterns
+
+- **Textual CSS** in `.tcss` files, not inline — slide panels use `offset-x: -100%` + `transition: offset 300ms` + `toggle_class("-visible")`
+- **Textual markup** (not Rich markup) in widget content
+- Use `self.screen.query()` not `self.app.query()` for active screen queries
+- `ModalScreen[T]` for typed dismiss dialogs
+- `@work(exclusive=True)` for async streaming, `post_message()` for thread-safe messaging
+- State reads from `~/.claude/teams/` and `~/.claude/tasks/` JSON
+- State writes via direct JSON file operations with file locking (not bash subprocess)
+
+### Running & Testing
+
+```bash
+# Install deps and run
+uv sync && uv run litter-tui
+
+# Run all 207 tests
+uv run pytest tests/ -v
+
+# Headless screenshot test (for widget/screen changes)
+uv run python -c "
+import anyio
+from litter_tui.app import LitterTuiApp
+async def main():
+    app = LitterTuiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(delay=0.5)
+        app.save_screenshot('screenshot.svg')
+anyio.run(main)
+"
+```
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+N` | Create new team |
+| `Ctrl+S` | Spawn agent |
+| `Ctrl+T` | Toggle task panel |
+| `Ctrl+M` | Toggle message panel |
+| `Ctrl+D` | Detach session |
+| `Ctrl+Q` / `q` | Quit |
+| `Escape` | Close dialog / quit |
+| `F1` | Help |
+| `Tab` | Focus next |
