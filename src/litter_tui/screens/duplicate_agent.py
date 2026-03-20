@@ -8,7 +8,7 @@ from textual.widgets import Button, Input, Label, Select, Static, Switch
 from textual.containers import Horizontal, Vertical
 
 from .create_team import validate_team_name
-from .configure_agent import _normalize_model, _VALID_COLORS, _VALID_TYPES
+from .configure_agent import _normalize_model, _VALID_COLORS, _VALID_TYPES, _color_options
 
 
 class DuplicateAgentScreen(ModalScreen[dict | None]):
@@ -85,17 +85,7 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
 
             yield Label("Color", classes="field-label")
             yield Select(
-                [
-                    ("Blue", "blue"),
-                    ("Green", "green"),
-                    ("Yellow", "yellow"),
-                    ("Purple", "purple"),
-                    ("Orange", "orange"),
-                    ("Pink", "pink"),
-                    ("Red", "red"),
-                    ("Cyan", "cyan"),
-                    ("None", ""),
-                ],
+                _color_options(),
                 value=color_value,
                 id="color",
             )

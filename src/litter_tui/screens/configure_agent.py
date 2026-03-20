@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rich.text import Text
+
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static
@@ -12,6 +14,40 @@ from .create_team import validate_team_name
 
 _VALID_COLORS = {"blue", "green", "yellow", "purple", "orange", "pink", "red", "cyan", ""}
 _VALID_TYPES = {"worker", "backend-dev", "frontend-dev", "tester", "researcher"}
+
+# Map color values to Rich style names for the swatch block
+_COLOR_RICH_STYLES: dict[str, str] = {
+    "blue": "dodger_blue1",
+    "green": "green3",
+    "yellow": "yellow3",
+    "purple": "medium_purple",
+    "orange": "dark_orange",
+    "pink": "hot_pink",
+    "red": "red1",
+    "cyan": "cyan",
+}
+
+
+def _color_options() -> list[tuple[Text | str, str]]:
+    """Build color Select options with colored swatch blocks."""
+    options: list[tuple[Text | str, str]] = []
+    for name, value in [
+        ("Blue", "blue"),
+        ("Green", "green"),
+        ("Yellow", "yellow"),
+        ("Purple", "purple"),
+        ("Orange", "orange"),
+        ("Pink", "pink"),
+        ("Red", "red"),
+        ("Cyan", "cyan"),
+    ]:
+        rich_color = _COLOR_RICH_STYLES[value]
+        label = Text("██ ")
+        label.stylize(f"{rich_color}", 0, 2)
+        label.append(name)
+        options.append((label, value))
+    options.append(("None", ""))
+    return options
 
 
 def _normalize_model(raw: str) -> str:
@@ -75,17 +111,7 @@ class ConfigureAgentScreen(ModalScreen[dict | None]):
 
             yield Label("Color", classes="field-label")
             yield Select(
-                [
-                    ("Blue", "blue"),
-                    ("Green", "green"),
-                    ("Yellow", "yellow"),
-                    ("Purple", "purple"),
-                    ("Orange", "orange"),
-                    ("Pink", "pink"),
-                    ("Red", "red"),
-                    ("Cyan", "cyan"),
-                    ("None", ""),
-                ],
+                _color_options(),
                 value=color_value,
                 id="color",
             )
