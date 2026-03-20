@@ -1,8 +1,8 @@
-"""Tests for litter_tui data models."""
+"""Tests for claude_litter data models."""
 from __future__ import annotations
 
 import pytest
-from litter_tui.models import Team, TeamMember, Task, TaskStatus, Message
+from claude_litter.models import Team, TeamMember, Task, TaskStatus, Message
 
 
 # ── Fixtures: real-world JSON samples ──────────────────────────────────────

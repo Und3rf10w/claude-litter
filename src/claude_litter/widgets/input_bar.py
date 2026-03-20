@@ -14,7 +14,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Label, OptionList, TextArea
 from textual.widgets.option_list import Option
 
-_log = logging.getLogger("litter_tui.input_bar")
+_log = logging.getLogger("claude_litter.input_bar")
 
 
 # ---------------------------------------------------------------------------

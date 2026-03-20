@@ -1,4 +1,4 @@
-/* Dark theme for litter-tui */
+/* Dark theme for claude-litter */
 
 Screen {
     background: $surface;

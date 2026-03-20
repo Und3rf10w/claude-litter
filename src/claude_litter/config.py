@@ -1,4 +1,4 @@
-"""Configuration dataclass for litter-tui."""
+"""Configuration dataclass for claude-litter."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
-_DEFAULT_CONFIG_PATH = Path.home() / ".claude" / "litter-tui" / "config.json"
+_DEFAULT_CONFIG_PATH = Path.home() / ".claude" / "claude-litter" / "config.json"
 
 
 @dataclass

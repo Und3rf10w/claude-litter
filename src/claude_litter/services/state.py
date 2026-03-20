@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 import anyio
 import anyio.abc
 
-from litter_tui.models.message import Message
-from litter_tui.models.task import Task
-from litter_tui.models.team import Team
+from claude_litter.models.message import Message
+from claude_litter.models.task import Task
+from claude_litter.models.team import Team
 
 try:
     from textual.message import Message as TextualMessage

@@ -12,10 +12,10 @@ from typing import AsyncIterator
 
 import anyio
 
-_log = logging.getLogger("litter_tui.agent_manager")
+_log = logging.getLogger("claude_litter.agent_manager")
 
 
-from litter_tui.services.claude_settings import ClaudeSettings
+from claude_litter.services.claude_settings import ClaudeSettings
 
 
 def _read_user_model() -> str | None:
@@ -262,7 +262,7 @@ class AgentManager:
 
     def __init__(self) -> None:
         self.sessions: dict[tuple[str, str], AgentSession] = {}
-        self._detach_dir = Path.home() / ".claude" / "litter-tui"
+        self._detach_dir = Path.home() / ".claude" / "claude-litter"
         self._default_model: str | None = _read_user_model()
 
     async def spawn_agent(

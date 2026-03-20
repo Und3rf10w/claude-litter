@@ -120,7 +120,7 @@ sys.modules.setdefault("claude_agent_sdk", _fake_sdk)
 sys.modules.setdefault("claude_agent_sdk.types", _fake_types)
 
 # Now we can safely import production code
-from litter_tui.services.agent_manager import AgentManager, AgentSession, AgentStatus  # noqa: E402
+from claude_litter.services.agent_manager import AgentManager, AgentSession, AgentStatus  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def _make_manager() -> AgentManager:
 
 
 @pytest.mark.anyio
-@patch("litter_tui.services.agent_manager._read_user_model", return_value=None)
+@patch("claude_litter.services.agent_manager._read_user_model", return_value=None)
 async def test_spawn_agent_creates_session(_mock_model) -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
@@ -235,7 +235,7 @@ async def test_duplicate_agent_inherits_model() -> None:
 
 
 @pytest.mark.anyio
-@patch("litter_tui.services.agent_manager._read_user_model", return_value=None)
+@patch("claude_litter.services.agent_manager._read_user_model", return_value=None)
 async def test_duplicate_agent_missing_source_uses_default(_mock_model) -> None:
     mgr = _make_manager()
     dup = await mgr.duplicate_agent("team-x", "ghost", "team-y", "clone")

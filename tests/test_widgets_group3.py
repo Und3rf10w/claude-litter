@@ -6,8 +6,8 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Label, ListView, Select, Static
 
-from litter_tui.widgets.task_panel import TaskPanel, TaskSelected
-from litter_tui.widgets.message_panel import MessagePanel, MessageComposed
+from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
+from claude_litter.widgets.message_panel import MessagePanel, MessageComposed
 
 
 # ---------------------------------------------------------------------------

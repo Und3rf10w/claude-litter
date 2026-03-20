@@ -1,4 +1,4 @@
-"""Tests for LitterTuiApp, MainScreen, and Config."""
+"""Tests for ClaudeLitterApp, MainScreen, and Config."""
 from __future__ import annotations
 
 import json
@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from litter_tui.app import LitterTuiApp
-from litter_tui.config import Config
-from litter_tui.screens.main import MainScreen
-from litter_tui.services.agent_manager import AgentStatus
-from litter_tui.widgets.session_view import SessionView
-from litter_tui.widgets.task_panel import TaskPanel
-from litter_tui.widgets.message_panel import MessagePanel
+from claude_litter.app import ClaudeLitterApp
+from claude_litter.config import Config
+from claude_litter.screens.main import MainScreen
+from claude_litter.services.agent_manager import AgentStatus
+from claude_litter.widgets.session_view import SessionView
+from claude_litter.widgets.task_panel import TaskPanel
+from claude_litter.widgets.message_panel import MessagePanel
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ def test_config_claude_home_roundtrip():
 @pytest.mark.anyio
 async def test_app_mounts_successfully():
     """App should mount without errors."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         assert app.is_running
@@ -100,16 +100,16 @@ async def test_app_mounts_successfully():
 @pytest.mark.anyio
 async def test_app_title():
     """App title should be set correctly."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.1)
-        assert app.TITLE == "litter-tui"
+        assert app.TITLE == "claude-litter"
 
 
 @pytest.mark.anyio
 async def test_app_pushes_main_screen():
     """App should push MainScreen on mount."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         assert isinstance(app.screen, MainScreen)
@@ -118,7 +118,7 @@ async def test_app_pushes_main_screen():
 @pytest.mark.anyio
 async def test_app_has_bindings():
     """App should declare expected key bindings."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     binding_keys = {b.key for b in app.BINDINGS}
     assert "ctrl+q" in binding_keys
     assert "ctrl+t" in binding_keys
@@ -136,7 +136,7 @@ async def test_app_has_bindings():
 @pytest.mark.anyio
 async def test_main_screen_composes_sidebar():
     """MainScreen should compose a sidebar element."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         sidebar = app.screen.query("#sidebar")
@@ -146,7 +146,7 @@ async def test_main_screen_composes_sidebar():
 @pytest.mark.anyio
 async def test_main_screen_composes_session_view():
     """MainScreen should compose a session view element."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         session_view = app.screen.query("#session-view")
@@ -156,7 +156,7 @@ async def test_main_screen_composes_session_view():
 @pytest.mark.anyio
 async def test_main_screen_composes_input_bar():
     """MainScreen should compose an input bar element."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         input_bar = app.screen.query("#input-bar")
@@ -166,7 +166,7 @@ async def test_main_screen_composes_input_bar():
 @pytest.mark.anyio
 async def test_main_screen_composes_tab_bar():
     """MainScreen should compose a tab bar element."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         tab_bar = app.screen.query("#tab-bar")
@@ -176,7 +176,7 @@ async def test_main_screen_composes_tab_bar():
 @pytest.mark.anyio
 async def test_main_screen_has_task_panel():
     """MainScreen should include a TaskPanel widget."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         panels = app.screen.query(TaskPanel)
@@ -186,7 +186,7 @@ async def test_main_screen_has_task_panel():
 @pytest.mark.anyio
 async def test_main_screen_has_message_panel():
     """MainScreen should include a MessagePanel widget."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         panels = app.screen.query(MessagePanel)
@@ -196,7 +196,7 @@ async def test_main_screen_has_message_panel():
 @pytest.mark.anyio
 async def test_ctrl_t_binding_fires():
     """ctrl+t should toggle the task panel."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         task_panel = app.screen.query_one(TaskPanel)
@@ -211,7 +211,7 @@ async def test_ctrl_t_binding_fires():
 @pytest.mark.anyio
 async def test_f2_binding_fires():
     """F2 should toggle the message panel."""
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.2)
         msg_panel = app.screen.query_one(MessagePanel)
@@ -269,11 +269,11 @@ async def test_prompt_e2e_type_submit_receive():
     fake_session = _FakeAgentSession()
 
     with patch(
-        "litter_tui.services.agent_manager.AgentManager.spawn_agent",
+        "claude_litter.services.agent_manager.AgentManager.spawn_agent",
         new_callable=AsyncMock,
         return_value=fake_session,
     ):
-        app = LitterTuiApp()
+        app = ClaudeLitterApp()
         async with app.run_test(size=(120, 40)) as pilot:
             # Wait for _connect_default_agent to complete
             await pilot.pause(delay=1.0)
@@ -281,7 +281,7 @@ async def test_prompt_e2e_type_submit_receive():
 
             sv = app.screen.query_one("#session-view", SessionView)
 
-            from litter_tui.widgets.session_view import SelectableLog
+            from claude_litter.widgets.session_view import SelectableLog
             log = sv.query_one(SelectableLog)
 
             # Verify "Agent ready." appeared

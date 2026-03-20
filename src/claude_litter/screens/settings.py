@@ -14,9 +14,9 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 
 import anyio
 
-from litter_tui.services.claude_settings import ClaudeSettings
+from claude_litter.services.claude_settings import ClaudeSettings
 
-_CONFIG_PATH = Path.home() / ".claude" / "litter-tui" / "config.json"
+_CONFIG_PATH = Path.home() / ".claude" / "claude-litter" / "config.json"
 
 
 def _load_config() -> dict[str, Any]:

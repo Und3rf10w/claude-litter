@@ -6,10 +6,10 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Tree, Static, TabbedContent, Tabs
 
-from litter_tui.widgets.sidebar import TeamSidebar
-from litter_tui.widgets.tab_bar import SessionTabBar, _tab_label, _tab_id
-from litter_tui.widgets.status_bar import StatusBar
-from litter_tui.widgets.context_menu import ContextMenu
+from claude_litter.widgets.sidebar import TeamSidebar
+from claude_litter.widgets.tab_bar import SessionTabBar, _tab_label, _tab_id
+from claude_litter.widgets.status_bar import StatusBar
+from claude_litter.widgets.context_menu import ContextMenu
 
 
 # ------------------------------------------------------------------ #
@@ -611,7 +611,7 @@ async def test_statusbar_no_team():
 
 def test_widget_imports():
     """All three widget classes should be importable from the package."""
-    from litter_tui.widgets import TeamSidebar, SessionTabBar, StatusBar
+    from claude_litter.widgets import TeamSidebar, SessionTabBar, StatusBar
 
     assert TeamSidebar is not None
     assert SessionTabBar is not None

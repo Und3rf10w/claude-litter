@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from litter_tui.services.state import StateManager
+from claude_litter.services.state import StateManager
 
 
 # ---------------------------------------------------------------------------

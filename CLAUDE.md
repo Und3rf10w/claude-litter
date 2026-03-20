@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Litter is a standalone Textual TUI (`litter-tui`) for managing Claude Code agent teams visually. It reads/writes the native Claude Code team/task JSON files under `~/.claude/` and provides a dashboard with sidebar navigation, tabbed sessions with transcript history, task management, and messaging.
+Claude Litter is a standalone Textual TUI (`claude-litter`) for managing Claude Code agent teams visually. It reads/writes the native Claude Code team/task JSON files under `~/.claude/` and provides a dashboard with sidebar navigation, tabbed sessions with transcript history, task management, and messaging.
 
 ## Repository Structure
 
 ```
 claude-litter/
-├── src/litter_tui/       # Textual TUI application (Python 3.14+)
+├── src/claude_litter/       # Textual TUI application (Python 3.14+)
 ├── tests/                # 310 pytest tests
 ├── dev/                  # Ad-hoc developer scripts (live SDK testing)
 ├── pyproject.toml        # Project config (hatchling, textual>=3.0, claude-agent-sdk, anyio, watchfiles)
@@ -40,7 +40,7 @@ All state stored as JSON under `~/.claude/`:
 ├── tasks/<team-name>/
 │   └── <id>.json                # Task: id, subject, description, status, owner?, blocks[], blockedBy[], activeForm?, metadata?
 ├── settings.json                # Claude Code settings (model, env vars — read by ClaudeSettings service)
-└── litter-tui/
+└── claude-litter/
     ├── config.json              # TUI config: claude_home, vim_mode, theme
     ├── debug.log                # Debug log (when --debug is used)
     └── detached-sessions.json   # Detached agent sessions (session_id + model, for reattach)
@@ -105,9 +105,9 @@ Agent matching strategies (in priority order):
 ## Package Structure
 
 ```
-src/litter_tui/
-├── app.py                  # LitterTuiApp — main App, keybindings, QuitScreen
-├── config.py               # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
+src/claude_litter/
+├── app.py                  # ClaudeLitterApp — main App, keybindings, QuitScreen
+├── config.py               # Config dataclass (persisted to ~/.claude/claude-litter/config.json)
 ├── __main__.py             # CLI entry point (argparse: --vim, --theme, --debug, --version)
 ├── models/
 │   ├── team.py             # Team, TeamMember frozen dataclasses
@@ -191,10 +191,10 @@ src/litter_tui/
 
 ```bash
 # Install deps and run
-uv sync && uv run litter-tui
+uv sync && uv run claude-litter
 
 # CLI flags
-uv run litter-tui --vim --theme light --debug
+uv run claude-litter --vim --theme light --debug
 
 # Run all tests
 uv run pytest tests/ -v
@@ -202,9 +202,9 @@ uv run pytest tests/ -v
 # Headless screenshot test (for widget/screen changes)
 uv run python -c "
 import anyio
-from litter_tui.app import LitterTuiApp
+from claude_litter.app import ClaudeLitterApp
 async def main():
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.5)
         app.save_screenshot('screenshot.svg')

@@ -12,23 +12,23 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 from textual.containers import Horizontal, Vertical
 
-from litter_tui.models.task import TodoItem
-from litter_tui.services.agent_manager import AgentManager, AgentSession
-from litter_tui.services.team_service import TeamService
-from litter_tui.widgets.sidebar import TeamSidebar
-from litter_tui.widgets.tab_bar import SessionTabBar
-from litter_tui.widgets.session_view import SessionView, TodoWriteDetected
-from litter_tui.widgets.input_bar import InputBar, PromptSubmitted
-from litter_tui.widgets.task_panel import TaskPanel
-from litter_tui.widgets.message_panel import MessageComposed, MessagePanel
-from litter_tui.widgets.context_menu import ContextMenu
-from litter_tui.screens.configure_agent import _normalize_model
+from claude_litter.models.task import TodoItem
+from claude_litter.services.agent_manager import AgentManager, AgentSession
+from claude_litter.services.team_service import TeamService
+from claude_litter.widgets.sidebar import TeamSidebar
+from claude_litter.widgets.tab_bar import SessionTabBar
+from claude_litter.widgets.session_view import SessionView, TodoWriteDetected
+from claude_litter.widgets.input_bar import InputBar, PromptSubmitted
+from claude_litter.widgets.task_panel import TaskPanel
+from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
+from claude_litter.widgets.context_menu import ContextMenu
+from claude_litter.screens.configure_agent import _normalize_model
 
-_log = logging.getLogger("litter_tui.main_screen")
+_log = logging.getLogger("claude_litter.main_screen")
 
 
 _WELCOME_TEXT = """\
-[bold]Welcome to litter-tui[/bold]
+[bold]Welcome to claude-litter[/bold]
 
 No teams found. Get started:
 
@@ -803,7 +803,7 @@ class MainScreen(Screen):
 
     def _duplicate_agent(self, team: str, agent: str) -> None:
         """Open the DuplicateAgentScreen dialog."""
-        from litter_tui.screens.duplicate_agent import DuplicateAgentScreen
+        from claude_litter.screens.duplicate_agent import DuplicateAgentScreen
 
         all_teams = self._team_service.list_teams()
         member = self._member_info.get((team, agent), {})
@@ -952,7 +952,7 @@ class MainScreen(Screen):
 
     def _configure_agent(self, team: str, agent: str) -> None:
         """Open the ConfigureAgentScreen dialog."""
-        from litter_tui.screens.configure_agent import ConfigureAgentScreen
+        from claude_litter.screens.configure_agent import ConfigureAgentScreen
 
         member = self._member_info.get((team, agent), {})
 
@@ -998,7 +998,7 @@ class MainScreen(Screen):
 
     def _team_spawn_agent(self, team: str) -> None:
         """Open SpawnAgentScreen pre-targeted to this team."""
-        from litter_tui.screens.spawn_agent import SpawnAgentScreen
+        from claude_litter.screens.spawn_agent import SpawnAgentScreen
 
         def _on_result(result: dict | None) -> None:
             if result is not None:
@@ -1025,7 +1025,7 @@ class MainScreen(Screen):
 
     def _team_broadcast(self, team: str) -> None:
         """Open BroadcastMessageScreen for this team."""
-        from litter_tui.screens.broadcast_message import BroadcastMessageScreen
+        from claude_litter.screens.broadcast_message import BroadcastMessageScreen
 
         def _on_result(text: str | None) -> None:
             if text is not None:
@@ -1036,7 +1036,7 @@ class MainScreen(Screen):
 
     def _team_rename(self, team: str) -> None:
         """Open RenameTeamScreen for this team."""
-        from litter_tui.screens.rename_team import RenameTeamScreen
+        from claude_litter.screens.rename_team import RenameTeamScreen
 
         def _on_result(new_name: str | None) -> None:
             if new_name is not None:
@@ -1090,7 +1090,7 @@ class MainScreen(Screen):
 
     def _team_kill_all(self, team: str) -> None:
         """Confirm and kill all agents in a team."""
-        from litter_tui.screens.confirm import ConfirmScreen
+        from claude_litter.screens.confirm import ConfirmScreen
 
         def _on_result(confirmed: bool) -> None:
             if confirmed:
@@ -1110,7 +1110,7 @@ class MainScreen(Screen):
 
     def _team_delete(self, team: str) -> None:
         """Confirm and delete a team."""
-        from litter_tui.screens.confirm import ConfirmScreen
+        from claude_litter.screens.confirm import ConfirmScreen
 
         def _on_result(confirmed: bool) -> None:
             if confirmed:

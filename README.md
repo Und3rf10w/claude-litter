@@ -2,7 +2,7 @@
 
 > A Textual TUI for managing Claude Code agent teams
 
-**Claude Litter** is a terminal manager (`litter-tui`) for [Claude Code's agent teams](https://code.claude.com/docs/en/agent-teams).
+**Claude Litter** is a terminal manager (`claude-litter`) for [Claude Code's agent teams](https://code.claude.com/docs/en/agent-teams).
 
 It gives you a sidebar tree of teams and agents, tabbed sessions with full transcript history, a task panel with filtering and sorting, a message panel with inbox and compose, and live filesystem watching so the UI updates automatically as agents work.
 
@@ -21,7 +21,7 @@ It gives you a sidebar tree of teams and agents, tabbed sessions with full trans
 - **Text selection** with Cmd+C / right-click copy support
 - **10 built-in themes**: textual-dark/light, nord, gruvbox, dracula, tokyo-night, monokai, catppuccin-mocha, solarized-dark/light
 - **Vim mode** (`--vim` flag)
-- **Debug logging** (`--debug` flag, writes to `~/.claude/litter-tui/debug.log`)
+- **Debug logging** (`--debug` flag, writes to `~/.claude/claude-litter/debug.log`)
 
 ## Requirements
 
@@ -38,11 +38,11 @@ cd claude-litter
 uv sync
 
 # Run the TUI
-uv run litter-tui
+uv run claude-litter
 
 # Or install in editable mode
 pip install -e .
-litter-tui
+claude-litter
 ```
 
 ## CLI Options
@@ -51,7 +51,7 @@ litter-tui
 |------|---------|-------------|
 | `--vim` | false | Enable vim keybindings |
 | `--theme` | dark | Color theme (dark, light) |
-| `--debug` | false | Debug logging to `~/.claude/litter-tui/debug.log` |
+| `--debug` | false | Debug logging to `~/.claude/claude-litter/debug.log` |
 | `--version` | — | Print version and exit |
 
 ## Keybindings
@@ -97,7 +97,7 @@ All state stored as JSON files under `~/.claude/`:
 │       └── <agent-name>.json    # Message inbox per agent
 ├── tasks/<team-name>/
 │   └── <id>.json                # Individual task files (auto-incrementing numeric IDs)
-└── litter-tui/
+└── claude-litter/
     ├── config.json              # TUI preferences (vim_mode, theme)
     └── debug.log                # Debug log (when --debug is used)
 ```
@@ -105,9 +105,9 @@ All state stored as JSON files under `~/.claude/`:
 ## Architecture
 
 ```
-src/litter_tui/
-├── app.py                  # LitterTuiApp — main App, keybindings, QuitScreen
-├── config.py               # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
+src/claude_litter/
+├── app.py                  # ClaudeLitterApp — main App, keybindings, QuitScreen
+├── config.py               # Config dataclass (persisted to ~/.claude/claude-litter/config.json)
 ├── __main__.py             # CLI entry point (argparse: --vim, --theme, --debug, --version)
 ├── models/
 │   ├── team.py             # Team, TeamMember frozen dataclasses
@@ -169,9 +169,9 @@ uv run pytest tests/ -v
 ```bash
 uv run python -c "
 import anyio
-from litter_tui.app import LitterTuiApp
+from claude_litter.app import ClaudeLitterApp
 async def main():
-    app = LitterTuiApp()
+    app = ClaudeLitterApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(delay=0.5)
         app.save_screenshot('screenshot.svg')

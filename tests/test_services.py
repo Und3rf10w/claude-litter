@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from litter_tui.services.team_service import TeamService
-from litter_tui.services.kitty import KittyService
+from claude_litter.services.team_service import TeamService
+from claude_litter.services.kitty import KittyService
 
 
 # ------------------------------------------------------------------ #

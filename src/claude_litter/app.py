@@ -1,4 +1,4 @@
-"""Main application class for litter-tui."""
+"""Main application class for claude-litter."""
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
@@ -7,9 +7,9 @@ from textual.containers import Center, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
-from litter_tui.config import Config
-from litter_tui.services.agent_manager import AgentManager
-from litter_tui.widgets.session_view import _copy_to_system_clipboard
+from claude_litter.config import Config
+from claude_litter.services.agent_manager import AgentManager
+from claude_litter.widgets.session_view import _copy_to_system_clipboard
 
 
 class QuitScreen(ModalScreen[bool]):
@@ -55,11 +55,11 @@ class QuitScreen(ModalScreen[bool]):
             self.dismiss(False)
 
 
-class LitterTuiApp(App):
+class ClaudeLitterApp(App):
     """A Textual TUI for managing Claude swarm teams."""
 
     CSS_PATH = "styles/app.tcss"
-    TITLE = "litter-tui"
+    TITLE = "claude-litter"
 
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "Quit"),
@@ -82,33 +82,33 @@ class LitterTuiApp(App):
 
     def on_mount(self) -> None:
         """Push the main screen on startup."""
-        from litter_tui.screens.main import MainScreen
+        from claude_litter.screens.main import MainScreen
         self.push_screen(MainScreen(agent_manager=self.agent_manager))
 
     def compose(self) -> ComposeResult:
         """Compose the initial UI (placeholder; MainScreen replaces this)."""
-        yield Static("litter-tui loading...")
+        yield Static("claude-litter loading...")
 
     def action_toggle_tasks(self) -> None:
         """Toggle the task panel."""
-        from litter_tui.screens.main import MainScreen
+        from claude_litter.screens.main import MainScreen
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_tasks()
 
     def action_toggle_messages(self) -> None:
         """Toggle the message panel."""
-        from litter_tui.screens.main import MainScreen
+        from claude_litter.screens.main import MainScreen
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_messages()
 
     def action_new_team(self) -> None:
         """Open the create-team dialog."""
-        from litter_tui.screens.create_team import CreateTeamScreen
+        from claude_litter.screens.create_team import CreateTeamScreen
 
         def _on_result(result: dict | None) -> None:
             if result is None:
                 return
-            from litter_tui.screens.main import MainScreen
+            from claude_litter.screens.main import MainScreen
             if isinstance(self.screen, MainScreen):
                 self.screen.create_team(result)
 
@@ -116,7 +116,7 @@ class LitterTuiApp(App):
 
     def action_spawn_agent(self) -> None:
         """Open the spawn-agent dialog."""
-        from litter_tui.screens.spawn_agent import SpawnAgentScreen
+        from claude_litter.screens.spawn_agent import SpawnAgentScreen
         self.push_screen(SpawnAgentScreen())
 
     def action_request_quit(self) -> None:
@@ -139,12 +139,12 @@ class LitterTuiApp(App):
 
     def action_about(self) -> None:
         """Show about dialog."""
-        from litter_tui.screens.about import AboutScreen
+        from claude_litter.screens.about import AboutScreen
         self.push_screen(AboutScreen())
 
     def action_settings(self) -> None:
         """Open the settings screen."""
-        from litter_tui.screens.settings import SettingsScreen
+        from claude_litter.screens.settings import SettingsScreen
         self.push_screen(SettingsScreen())
 
     def copy_to_clipboard(self, text: str) -> None:

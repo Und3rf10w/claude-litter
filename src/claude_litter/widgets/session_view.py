@@ -18,7 +18,7 @@ from textual.widget import Widget
 from textual.widgets import RichLog, LoadingIndicator, Static
 from textual import work
 
-_log = logging.getLogger("litter_tui.session_view")
+_log = logging.getLogger("claude_litter.session_view")
 
 
 class SelectableLog(RichLog):

@@ -6,9 +6,9 @@ import pytest
 
 from textual.app import App, ComposeResult
 
-from litter_tui.widgets.session_view import SessionView
-from litter_tui.widgets.session_view import _format_tool_input, _truncate_tool_output
-from litter_tui.widgets.input_bar import (
+from claude_litter.widgets.session_view import SessionView
+from claude_litter.widgets.session_view import _format_tool_input, _truncate_tool_output
+from claude_litter.widgets.input_bar import (
     InputBar,
     PromptSubmitted,
     PromptTextArea,
@@ -80,7 +80,7 @@ class TestSessionView:
             sv = app.query_one(SessionView)
             sv.append_output("Hello world")
             await pilot.pause()
-            from litter_tui.widgets.session_view import SelectableLog
+            from claude_litter.widgets.session_view import SelectableLog
             log = sv.query_one(SelectableLog)
             assert log is not None
 
@@ -93,7 +93,7 @@ class TestSessionView:
             await pilot.pause()
             sv.clear_output()
             await pilot.pause()
-            from litter_tui.widgets.session_view import SelectableLog
+            from claude_litter.widgets.session_view import SelectableLog
             log = sv.query_one(SelectableLog)
             assert log is not None  # log still exists after clear
 

@@ -5,15 +5,15 @@ from __future__ import annotations
 import pytest
 from textual.app import App
 
-from litter_tui.screens.create_team import CreateTeamScreen, validate_team_name
-from litter_tui.screens.spawn_agent import SpawnAgentScreen
-from litter_tui.screens.task_detail import TaskDetailScreen
-from litter_tui.screens.settings import SettingsScreen
-from litter_tui.screens.duplicate_agent import DuplicateAgentScreen
-from litter_tui.screens.configure_agent import ConfigureAgentScreen, _normalize_model
-from litter_tui.screens.confirm import ConfirmScreen
-from litter_tui.screens.rename_team import RenameTeamScreen
-from litter_tui.screens.broadcast_message import BroadcastMessageScreen
+from claude_litter.screens.create_team import CreateTeamScreen, validate_team_name
+from claude_litter.screens.spawn_agent import SpawnAgentScreen
+from claude_litter.screens.task_detail import TaskDetailScreen
+from claude_litter.screens.settings import SettingsScreen
+from claude_litter.screens.duplicate_agent import DuplicateAgentScreen
+from claude_litter.screens.configure_agent import ConfigureAgentScreen, _normalize_model
+from claude_litter.screens.confirm import ConfirmScreen
+from claude_litter.screens.rename_team import RenameTeamScreen
+from claude_litter.screens.broadcast_message import BroadcastMessageScreen
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +282,8 @@ async def test_settings_vim_toggle():
 
 def test_build_team_context_no_teams(tmp_path):
     """_build_team_context returns empty string when no teams exist."""
-    from litter_tui.screens.main import MainScreen
-    from litter_tui.services.team_service import TeamService
+    from claude_litter.screens.main import MainScreen
+    from claude_litter.services.team_service import TeamService
 
     ts = TeamService(base_path=tmp_path)
     screen = MainScreen.__new__(MainScreen)
@@ -293,8 +293,8 @@ def test_build_team_context_no_teams(tmp_path):
 
 def test_build_team_context_with_teams(tmp_path):
     """_build_team_context returns formatted team/agent info."""
-    from litter_tui.screens.main import MainScreen
-    from litter_tui.services.team_service import TeamService
+    from claude_litter.screens.main import MainScreen
+    from claude_litter.services.team_service import TeamService
 
     ts = TeamService(base_path=tmp_path)
     ts.create_team("alpha", "Test team")
@@ -736,7 +736,7 @@ class TestFormatInboxText:
 
     @staticmethod
     def _fmt(text: str) -> str:
-        from litter_tui.screens.main import MainScreen
+        from claude_litter.screens.main import MainScreen
         return MainScreen._format_inbox_text(text)
 
     def test_plain_text_passthrough(self) -> None:

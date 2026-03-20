@@ -1,4 +1,4 @@
-"""Command-line entry point for litter-tui."""
+"""Command-line entry point for claude-litter."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ from pathlib import Path
 def _setup_logging(debug: bool = False) -> None:
     """Configure logging. Only writes to file when *debug* is True."""
     if debug:
-        log_path = Path.home() / ".claude" / "litter-tui" / "debug.log"
+        log_path = Path.home() / ".claude" / "claude-litter" / "debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             filename=str(log_path),
@@ -17,16 +17,16 @@ def _setup_logging(debug: bool = False) -> None:
             format="%(asctime)s %(name)s %(levelname)s %(message)s",
             force=True,
         )
-        logging.getLogger("litter_tui").setLevel(logging.DEBUG)
+        logging.getLogger("claude_litter").setLevel(logging.DEBUG)
     else:
         logging.basicConfig(level=logging.WARNING, force=True)
-        logging.getLogger("litter_tui").setLevel(logging.WARNING)
+        logging.getLogger("claude_litter").setLevel(logging.WARNING)
 
 
 def main() -> None:
-    """Parse arguments and launch the litter-tui app."""
+    """Parse arguments and launch the claude-litter app."""
     parser = argparse.ArgumentParser(
-        prog="litter-tui",
+        prog="claude-litter",
         description="A Textual TUI for managing Claude swarm teams",
     )
     parser.add_argument(
@@ -50,17 +50,17 @@ def main() -> None:
         "--debug",
         action="store_true",
         default=False,
-        help="Enable debug logging to ~/.claude/litter-tui/debug.log",
+        help="Enable debug logging to ~/.claude/claude-litter/debug.log",
     )
     args = parser.parse_args()
 
     _setup_logging(debug=args.debug)
 
-    from litter_tui.app import LitterTuiApp
-    from litter_tui.config import Config
+    from claude_litter.app import ClaudeLitterApp
+    from claude_litter.config import Config
 
     config = Config(vim_mode=args.vim, theme=args.theme)
-    app = LitterTuiApp(config=config)
+    app = ClaudeLitterApp(config=config)
     app.run()
 
 
