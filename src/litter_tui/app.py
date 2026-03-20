@@ -16,11 +16,13 @@ class LitterTuiApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
+        Binding("q", "quit", "Quit", show=False, priority=False),
         Binding("ctrl+t", "toggle_tasks", "Tasks"),
         Binding("ctrl+m", "toggle_messages", "Messages"),
         Binding("ctrl+n", "new_team", "New Team"),
         Binding("ctrl+s", "spawn_agent", "Spawn Agent"),
         Binding("ctrl+d", "detach", "Detach"),
+        Binding("escape", "maybe_quit", "Back/Quit"),
         Binding("f1", "help", "Help"),
         Binding("tab", "focus_next", "Focus Next"),
     ]
@@ -60,6 +62,13 @@ class LitterTuiApp(App):
         """Open the spawn-agent dialog."""
         from litter_tui.screens.spawn_agent import SpawnAgentScreen
         self.push_screen(SpawnAgentScreen())
+
+    def action_maybe_quit(self) -> None:
+        """Escape: pop screen if in a dialog, otherwise quit."""
+        if len(self.screen_stack) > 2:
+            self.pop_screen()
+        else:
+            self.exit()
 
     def action_detach(self) -> None:
         """Detach current session."""
