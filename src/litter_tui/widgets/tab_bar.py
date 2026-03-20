@@ -23,10 +23,6 @@ class SessionTabBar(Widget):
     }
     """
 
-    # ------------------------------------------------------------------ #
-    # Custom messages
-    # ------------------------------------------------------------------ #
-
     class TabActivated(Message):
         """Emitted when the active tab changes."""
 
@@ -35,25 +31,12 @@ class SessionTabBar(Widget):
             self.team = team
             self.agent = agent
 
-    # ------------------------------------------------------------------ #
-    # Internal state
-    # ------------------------------------------------------------------ #
-
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        # ordered list of (team, agent) for tracking
         self._tabs: list[tuple[str, str]] = []
-
-    # ------------------------------------------------------------------ #
-    # Composition
-    # ------------------------------------------------------------------ #
 
     def compose(self) -> ComposeResult:
         yield TabbedContent(id="session-tabs")
-
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
 
     def add_tab(self, team: str, agent: str) -> None:
         """Add a new tab for team/agent. No-op if already present."""
@@ -78,18 +61,13 @@ class SessionTabBar(Widget):
         tabbed = self.query_one(TabbedContent)
         tabbed.remove_pane(tab_id)
 
-    # ------------------------------------------------------------------ #
-    # Event handling
-    # ------------------------------------------------------------------ #
-
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
     ) -> None:
         event.stop()
         if event.tab is None:
             return
-        pane_id = event.tab.id  # e.g. "tab-myteam-myagent"
-        # reverse-lookup from pane id
+        pane_id = event.tab.id
         for team, agent in self._tabs:
             if _tab_id(team, agent) == pane_id:
                 self.post_message(self.TabActivated(team=team, agent=agent))
