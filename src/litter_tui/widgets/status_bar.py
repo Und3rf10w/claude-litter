@@ -23,16 +23,8 @@ class StatusBar(Widget):
     }
     """
 
-    # ------------------------------------------------------------------ #
-    # Composition
-    # ------------------------------------------------------------------ #
-
     def compose(self) -> ComposeResult:
         yield Static("", id="status-text")
-
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
 
     def update_status(
         self,
@@ -43,18 +35,8 @@ class StatusBar(Widget):
         task_done: int,
         vim_mode: bool = False,
     ) -> None:
-        """Refresh the status bar text.
-
-        Args:
-            team_name:    Current team name (empty string = no team).
-            agent_count:  Total number of agents in the team.
-            active_count: Number of currently active agents.
-            task_total:   Total tasks (all statuses).
-            task_done:    Completed tasks.
-            vim_mode:     True -> shows "VIM", False -> shows "STD".
-        """
+        """Refresh the status bar text."""
         mode = "VIM" if vim_mode else "STD"
-
         team_part = team_name if team_name else "\u2014"
         agents_part = f"{active_count}/{agent_count}"
         tasks_part = f"{task_done}/{task_total}"

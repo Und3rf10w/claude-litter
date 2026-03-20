@@ -33,10 +33,6 @@ class TeamSidebar(Widget):
     }
     """
 
-    # ------------------------------------------------------------------ #
-    # Custom messages
-    # ------------------------------------------------------------------ #
-
     class AgentSelected(Message):
         """Emitted when an agent node is clicked."""
 
@@ -52,48 +48,19 @@ class TeamSidebar(Widget):
             super().__init__()
             self.team = team
 
-    # ------------------------------------------------------------------ #
-    # Internal state
-    # ------------------------------------------------------------------ #
-
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        # team_name -> TreeNode
         self._team_nodes: dict[str, TreeNode] = {}
-        # (team_name, agent_name) -> TreeNode
         self._agent_nodes: dict[tuple[str, str], TreeNode] = {}
-        # raw data store for refresh
         self._agent_data: dict[tuple[str, str], dict] = {}
-
-    # ------------------------------------------------------------------ #
-    # Composition
-    # ------------------------------------------------------------------ #
 
     def compose(self) -> ComposeResult:
         tree: Tree[dict] = Tree("Teams", id="sidebar-tree")
         tree.root.expand()
         yield tree
 
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
-
     def update_teams(self, teams: list[dict]) -> None:
-        """Rebuild the tree from a list of team dicts.
-
-        Each team dict: {
-            "name": str,
-            "status": "active" | "partial" | "inactive",
-            "agents": [
-                {
-                    "name": str,
-                    "model": "haiku" | "sonnet" | "opus",
-                    "unread": int,
-                    "task_id": str | None,
-                }
-            ]
-        }
-        """
+        """Rebuild the tree from a list of team dicts."""
         tree = self.query_one(Tree)
         tree.clear()
         tree.root.expand()
@@ -105,7 +72,7 @@ class TeamSidebar(Widget):
             team_name = team["name"]
             status = team.get("status", "inactive")
             color = _STATUS_COLOR.get(status, "gray")
-            label = f"[@{color}]●[/@{color}] {team_name}"
+            label = f"[@{color}]\u25cf[/@{color}] {team_name}"
             team_node: TreeNode[dict] = tree.root.add(
                 label, data={"type": "team", "team": team_name}, expand=True
             )
@@ -132,10 +99,6 @@ class TeamSidebar(Widget):
         if node is not None:
             node.set_label(self._agent_label(self._agent_data[key]))
 
-    # ------------------------------------------------------------------ #
-    # Event handling
-    # ------------------------------------------------------------------ #
-
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         event.stop()
         node_data = event.node.data
@@ -147,10 +110,6 @@ class TeamSidebar(Widget):
             self.post_message(
                 self.AgentSelected(team=node_data["team"], agent=node_data["agent"])
             )
-
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _agent_label(agent: dict) -> str:
