@@ -3,14 +3,52 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from textual.app import ComposeResult
 from textual.message import Message
+from textual.selection import Selection
 from textual.widget import Widget
 from textual.widgets import RichLog, LoadingIndicator, Static
 from textual import work
 
 _log = logging.getLogger("litter_tui.session_view")
+
+# Regex to strip Rich markup tags like [bold], [/bold], [dim], [red], etc.
+_MARKUP_RE = re.compile(r"\[/?[a-zA-Z0-9_ #=,.\-]+\]")
+
+
+class SelectableLog(RichLog):
+    """RichLog subclass that supports text selection and copying.
+
+    The stock RichLog's ``get_selection`` returns ``None`` because
+    ``_render()`` yields a ``RichVisual`` (not ``Text``/``Content``).
+
+    This subclass maintains a parallel plain-text buffer and overrides
+    ``get_selection`` to extract from it, enabling ``Ctrl+C`` / ``Cmd+C``
+    copy via the Screen's ``action_copy_text`` binding.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._plain_lines: list[str] = []
+
+    def write_with_text(self, markup_text: str) -> None:
+        """Write *markup_text* to the log and store its plain-text form."""
+        plain = _MARKUP_RE.sub("", markup_text).replace("\\[", "[")
+        self._plain_lines.extend(plain.splitlines() or [""])
+        self.write(markup_text)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Extract selected text from the plain-text buffer."""
+        if not self._plain_lines:
+            return None
+        text = "\n".join(self._plain_lines)
+        return selection.extract(text), "\n"
+
+    def clear(self) -> None:  # type: ignore[override]
+        self._plain_lines.clear()
+        return super().clear()
 
 
 # ------------------------------------------------------------------
@@ -126,7 +164,7 @@ class SessionView(Widget):
     def compose(self) -> ComposeResult:
         header_text = self._make_header_text()
         yield Static(header_text, classes="session-header")
-        yield RichLog(highlight=True, markup=True, classes="session-output")
+        yield SelectableLog(highlight=True, markup=True, classes="session-output")
         yield LoadingIndicator()
         yield Static("Agent idle", classes="session-status")
 
@@ -249,8 +287,8 @@ class SessionView(Widget):
         """Add *text* to the display as a complete block (one RichLog.write call)."""
         try:
             self._output_history.append(text)
-            log = self.query_one(RichLog)
-            log.write(text)
+            log = self.query_one(SelectableLog)
+            log.write_with_text(text)
             if not self._user_scrolled_up:
                 log.scroll_end(animate=False)
         except Exception:
@@ -273,7 +311,7 @@ class SessionView(Widget):
         """Clear all displayed text."""
         self._output_history.clear()
         try:
-            self.query_one(RichLog).clear()
+            self.query_one(SelectableLog).clear()
         except Exception:
             pass
 
@@ -384,7 +422,7 @@ class SessionView(Widget):
     def on_rich_log_scroll(self) -> None:
         """Track whether the user has scrolled up."""
         try:
-            log = self.query_one(RichLog)
+            log = self.query_one(SelectableLog)
             self._user_scrolled_up = not log.is_vertical_scroll_end
         except Exception:
             pass

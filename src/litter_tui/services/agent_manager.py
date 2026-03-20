@@ -307,14 +307,20 @@ class AgentManager:
 
     async def duplicate_agent(
         self,
-        team_name: str,
-        agent_name: str,
+        source_team: str,
+        source_agent: str,
+        target_team: str,
         new_name: str,
+        model: str | None = None,
+        initial_prompt: str = "",
     ) -> AgentSession:
-        """Create a new agent session with the same model as an existing one."""
-        source = self.sessions.get((team_name, agent_name))
-        model = source.model if source is not None else self._default_model
-        return await self.spawn_agent(team_name, new_name, model=model)
+        """Create a new agent session, optionally inheriting model from source."""
+        if model is None:
+            source = self.sessions.get((source_team, source_agent))
+            model = source.model if source is not None else self._default_model
+        return await self.spawn_agent(
+            target_team, new_name, model=model, initial_prompt=initial_prompt,
+        )
 
     async def move_agent(
         self,

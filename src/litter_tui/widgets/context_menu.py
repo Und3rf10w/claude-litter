@@ -52,6 +52,7 @@ class ContextMenu(OptionList):
         self.clear_options()
         self.add_option(Option("View Chat Log", id="view"))
         self.add_option(Option("Send Message", id="message"))
+        self.add_option(Option("Configure", id="configure"))
         self.add_option(Option("Kill Agent", id="kill"))
         self.add_option(Option("Detach Session", id="detach"))
         self.add_option(Option("Duplicate Agent", id="duplicate"))

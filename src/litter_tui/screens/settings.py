@@ -25,7 +25,16 @@ def _load_config() -> dict[str, Any]:
             return json.loads(_CONFIG_PATH.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {"vim_mode": False, "theme": "dark"}
+    return {"vim_mode": False, "theme": "textual-dark"}
+
+
+# Map legacy short names to valid Textual theme names
+_THEME_ALIASES = {"dark": "textual-dark", "light": "textual-light"}
+
+
+def _resolve_theme(name: str) -> str:
+    """Resolve a theme name, mapping legacy short names to valid Textual themes."""
+    return _THEME_ALIASES.get(name, name)
 
 
 async def _save_config_async(config: dict[str, Any]) -> None:
@@ -62,15 +71,17 @@ class SettingsScreen(Screen):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._config: dict[str, Any] = {"vim_mode": False, "theme": "dark"}
+        self._config: dict[str, Any] = {"vim_mode": False, "theme": "textual-dark"}
         self._claude_settings: ClaudeSettings | None = None
 
     def on_mount(self) -> None:
         self._config = _load_config()
+        # Migrate legacy theme names
+        self._config["theme"] = _resolve_theme(self._config.get("theme", "textual-dark"))
         self._claude_settings = ClaudeSettings.load()
         try:
             self.query_one("#vim-mode", Switch).value = self._config.get("vim_mode", False)
-            self.query_one("#theme", Select).value = self._config.get("theme", "dark")
+            self.query_one("#theme", Select).value = self._config["theme"]
         except Exception:
             pass
         self._populate_claude_settings()
@@ -88,8 +99,19 @@ class SettingsScreen(Screen):
             with Horizontal(classes="setting-row"):
                 yield Label("Theme", classes="setting-label")
                 yield Select(
-                    [("Dark", "dark"), ("Light", "light")],
-                    value=self._config.get("theme", "dark"),
+                    [
+                        ("Dark", "textual-dark"),
+                        ("Light", "textual-light"),
+                        ("Nord", "nord"),
+                        ("Gruvbox", "gruvbox"),
+                        ("Dracula", "dracula"),
+                        ("Tokyo Night", "tokyo-night"),
+                        ("Monokai", "monokai"),
+                        ("Catppuccin Mocha", "catppuccin-mocha"),
+                        ("Solarized Dark", "solarized-dark"),
+                        ("Solarized Light", "solarized-light"),
+                    ],
+                    value=self._config.get("theme", "textual-dark"),
                     id="theme",
                     classes="setting-control",
                 )

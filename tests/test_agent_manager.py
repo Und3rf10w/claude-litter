@@ -227,18 +227,40 @@ async def test_stop_team_removes_all_members() -> None:
 async def test_duplicate_agent_inherits_model() -> None:
     mgr = _make_manager()
     await mgr.spawn_agent("team-a", "worker-1", model="opus")
-    dup = await mgr.duplicate_agent("team-a", "worker-1", "worker-2")
+    dup = await mgr.duplicate_agent("team-a", "worker-1", "team-b", "worker-2")
     assert dup.model == "opus"
     assert dup.agent_name == "worker-2"
-    assert ("team-a", "worker-2") in mgr.sessions
+    assert dup.team_name == "team-b"
+    assert ("team-b", "worker-2") in mgr.sessions
 
 
 @pytest.mark.anyio
 @patch("litter_tui.services.agent_manager._read_user_model", return_value=None)
 async def test_duplicate_agent_missing_source_uses_default(_mock_model) -> None:
     mgr = _make_manager()
-    dup = await mgr.duplicate_agent("team-x", "ghost", "clone")
+    dup = await mgr.duplicate_agent("team-x", "ghost", "team-y", "clone")
     assert dup.model is None  # no source → inherits from settings.json
+
+
+@pytest.mark.anyio
+async def test_duplicate_agent_cross_team() -> None:
+    mgr = _make_manager()
+    await mgr.spawn_agent("team-a", "worker-1", model="sonnet")
+    dup = await mgr.duplicate_agent("team-a", "worker-1", "team-b", "worker-dup")
+    assert dup.team_name == "team-b"
+    assert dup.agent_name == "worker-dup"
+    assert dup.model == "sonnet"
+    assert ("team-b", "worker-dup") in mgr.sessions
+    # Source still exists
+    assert ("team-a", "worker-1") in mgr.sessions
+
+
+@pytest.mark.anyio
+async def test_duplicate_agent_model_override() -> None:
+    mgr = _make_manager()
+    await mgr.spawn_agent("team-a", "worker-1", model="sonnet")
+    dup = await mgr.duplicate_agent("team-a", "worker-1", "team-b", "w2", model="opus")
+    assert dup.model == "opus"
 
 
 @pytest.mark.anyio

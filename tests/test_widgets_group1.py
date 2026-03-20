@@ -458,7 +458,7 @@ async def test_context_menu_show_at_populates_options():
         menu.show_at("team", "agent", 10, 5)
         await pilot.pause()
 
-        assert menu.option_count == 5  # view, message, kill, detach, duplicate
+        assert menu.option_count == 6  # view, message, configure, kill, detach, duplicate
 
 
 @pytest.mark.anyio

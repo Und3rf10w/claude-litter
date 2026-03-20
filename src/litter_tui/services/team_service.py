@@ -162,6 +162,71 @@ class TeamService:
 
         self._locked_update(config_path, _remove)
 
+    def update_member(self, team_name: str, agent_id: str, **fields) -> None:
+        """Update fields on an existing member identified by *agent_id*.
+
+        If *name* is changed, the ``agentId`` is updated to
+        ``"{new_name}@{team_name}"`` and the inbox file is renamed.
+        """
+        config_path = self.teams_path / team_name / "config.json"
+        old_name: str | None = None
+        new_name: str | None = fields.get("name")
+
+        def _update(data: dict) -> dict:
+            nonlocal old_name
+            for member in data.get("members", []):
+                if member.get("agentId") == agent_id:
+                    old_name = member.get("name")
+                    member.update(fields)
+                    if new_name and new_name != old_name:
+                        member["agentId"] = f"{new_name}@{team_name}"
+                    break
+            return data
+
+        self._locked_update(config_path, _update)
+
+        # Rename inbox file when the agent name changes
+        if new_name and old_name and new_name != old_name:
+            inboxes_dir = self.teams_path / team_name / "inboxes"
+            old_inbox = inboxes_dir / f"{old_name}.json"
+            new_inbox = inboxes_dir / f"{new_name}.json"
+            if old_inbox.exists():
+                old_inbox.rename(new_inbox)
+
+    def copy_inbox(
+        self,
+        src_team: str,
+        src_agent: str,
+        dst_team: str,
+        dst_agent: str,
+    ) -> int:
+        """Copy all inbox messages from one agent to another.
+
+        Returns the number of messages copied.
+        """
+        src_path = self.teams_path / src_team / "inboxes" / f"{src_agent}.json"
+        if not src_path.exists():
+            return 0
+
+        messages = self._read_json(src_path)
+        if not isinstance(messages, list) or not messages:
+            return 0
+
+        dst_path = self.teams_path / dst_team / "inboxes" / f"{dst_agent}.json"
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not dst_path.exists():
+            self._write_json(dst_path, [])
+
+        def _append(data) -> list:
+            if not isinstance(data, list):
+                data = []
+            data.extend(messages)
+            return data
+
+        self._locked_update(dst_path, _append)
+        return len(messages)
+
     # ------------------------------------------------------------------ #
     #  Tasks
     # ------------------------------------------------------------------ #

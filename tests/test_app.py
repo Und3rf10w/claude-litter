@@ -281,8 +281,8 @@ async def test_prompt_e2e_type_submit_receive():
 
             sv = app.screen.query_one("#session-view", SessionView)
 
-            from textual.widgets import RichLog
-            log = sv.query_one(RichLog)
+            from litter_tui.widgets.session_view import SelectableLog
+            log = sv.query_one(SelectableLog)
 
             # Verify "Agent ready." appeared
             initial_text = "\n".join(str(line) for line in log.lines)

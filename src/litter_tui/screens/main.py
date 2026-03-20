@@ -609,6 +609,8 @@ class MainScreen(Screen):
             self._detach_agent(event.team, event.agent)
         elif event.action == "duplicate":
             self._duplicate_agent(event.team, event.agent)
+        elif event.action == "configure":
+            self._configure_agent(event.team, event.agent)
         # Tab context menu actions
         elif event.action == "tab_close":
             tab_bar = self.query_one("#tab-bar", SessionTabBar)
@@ -634,9 +636,190 @@ class MainScreen(Screen):
         await self._agent_manager.detach(team, agent)
         self.notify(f"Detached agent {agent}")
 
+    def _duplicate_agent(self, team: str, agent: str) -> None:
+        """Open the DuplicateAgentScreen dialog."""
+        from litter_tui.screens.duplicate_agent import DuplicateAgentScreen
+
+        all_teams = self._team_service.list_teams()
+        member = self._member_info.get((team, agent), {})
+        source_model = member.get("model", "sonnet")
+
+        def _on_result(result: dict | None) -> None:
+            if result is not None:
+                self._execute_duplicate(team, agent, result)
+
+        self.app.push_screen(
+            DuplicateAgentScreen(
+                source_team=team,
+                source_agent=agent,
+                all_teams=all_teams,
+                source_model=source_model,
+            ),
+            _on_result,
+        )
+
     @work(exclusive=True, group="agent-action")
-    async def _duplicate_agent(self, team: str, agent: str) -> None:
-        new_name = f"{agent}-copy"
-        await self._agent_manager.duplicate_agent(team, agent, new_name)
+    async def _execute_duplicate(
+        self, source_team: str, source_agent: str, opts: dict,
+    ) -> None:
+        """Perform the cross-team duplication after dialog confirms."""
+        target_team = opts["target_team"]
+        new_name = opts["new_name"]
+        model = opts["model"]
+        copy_inbox = opts.get("copy_inbox", False)
+        copy_context = opts.get("copy_context", False)
+
+        # Build context summary if requested
+        initial_prompt = ""
+        if copy_context:
+            initial_prompt = self._build_context_summary(source_team, source_agent)
+
+        # Register the new member in the target team
+        member_dict = {
+            "agentId": f"{new_name}@{target_team}",
+            "name": new_name,
+            "model": model,
+            "agentType": self._member_info.get(
+                (source_team, source_agent), {},
+            ).get("agentType", "worker"),
+            "status": "active",
+        }
+        self._team_service.add_member(target_team, member_dict)
+
+        # Copy inbox if requested
+        if copy_inbox:
+            self._team_service.copy_inbox(
+                source_team, source_agent, target_team, new_name,
+            )
+
+        # Spawn the agent session
+        await self._agent_manager.duplicate_agent(
+            source_team, source_agent, target_team, new_name,
+            model=model, initial_prompt=initial_prompt,
+        )
+
         self._refresh_sidebar()
-        self.notify(f"Duplicated {agent} -> {new_name}")
+        self.notify(f"Duplicated {source_agent} -> {new_name} in {target_team}")
+
+    def _build_context_summary(self, team: str, agent: str) -> str:
+        """Extract recent assistant text from JSONL transcript for context."""
+        member = self._member_info.get((team, agent), {})
+        cwd = member.get("cwd", "")
+        if not cwd:
+            return ""
+
+        projects_dir = Path.home() / ".claude" / "projects"
+        sanitized_cwd = "".join(c if c.isalnum() else "-" for c in cwd)
+        if len(sanitized_cwd) > 200:
+            sanitized_cwd = sanitized_cwd[:200]
+        project_dir = projects_dir / sanitized_cwd
+        if not project_dir.exists():
+            return ""
+
+        config = self._team_service.get_team(team)
+        if not config:
+            return ""
+        lead_session_id = config.get("leadSessionId", "")
+        if not lead_session_id:
+            return ""
+
+        subagents_dir = project_dir / lead_session_id / "subagents"
+        if not subagents_dir.exists():
+            return ""
+
+        target_jsonl = None
+        for jsonl_path in subagents_dir.glob("agent-*.jsonl"):
+            try:
+                with open(jsonl_path) as f:
+                    first_line = f.readline().strip()
+                    if not first_line:
+                        continue
+                    entry = json.loads(first_line)
+                    content = entry.get("message", {}).get("content", "")
+                    if isinstance(content, str) and f'teammate_id="{agent}"' in content:
+                        target_jsonl = jsonl_path
+                        break
+            except Exception:
+                continue
+
+        if not target_jsonl:
+            return ""
+
+        # Collect recent assistant text blocks
+        summaries: list[str] = []
+        try:
+            with open(target_jsonl) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = entry.get("message", {})
+                    if msg.get("role") != "assistant":
+                        continue
+                    blocks = msg.get("content", [])
+                    if not isinstance(blocks, list):
+                        continue
+                    for block in blocks:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block["text"]
+                            if len(text) > 500:
+                                text = text[:500] + "..."
+                            summaries.append(text)
+        except Exception:
+            return ""
+
+        if not summaries:
+            return ""
+
+        # Take last 5 assistant messages as context
+        recent = summaries[-5:]
+        return (
+            "Context from the source agent's recent work:\n\n"
+            + "\n---\n".join(recent)
+        )
+
+    def _configure_agent(self, team: str, agent: str) -> None:
+        """Open the ConfigureAgentScreen dialog."""
+        from litter_tui.screens.configure_agent import ConfigureAgentScreen
+
+        member = self._member_info.get((team, agent), {})
+
+        def _on_result(result: dict | None) -> None:
+            if result is not None:
+                agent_id = member.get("agentId", f"{agent}@{team}")
+                self._execute_configure(team, agent_id, agent, result)
+
+        self.app.push_screen(
+            ConfigureAgentScreen(
+                team=team,
+                agent_name=agent,
+                current=member,
+            ),
+            _on_result,
+        )
+
+    @work(exclusive=True, group="agent-action")
+    async def _execute_configure(
+        self, team: str, agent_id: str, old_name: str, opts: dict,
+    ) -> None:
+        """Apply configuration changes to the member."""
+        self._team_service.update_member(team, agent_id, **opts)
+        self._refresh_sidebar()
+
+        # Update session header if currently viewing this agent
+        new_name = opts.get("name", old_name)
+        if self._active_agent_key == (team, old_name):
+            sv = self.query_one("#session-view", SessionView)
+            sv.update_header(
+                agent_name=new_name,
+                team=team,
+                model=opts.get("model", ""),
+                agent_type=opts.get("agentType", ""),
+                color=opts.get("color", ""),
+            )
+
+        self.notify(f"Updated configuration for {new_name}")

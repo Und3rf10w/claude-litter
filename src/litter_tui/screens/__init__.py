@@ -5,6 +5,8 @@ from .create_team import CreateTeamScreen
 from .spawn_agent import SpawnAgentScreen
 from .task_detail import TaskDetailScreen
 from .settings import SettingsScreen
+from .duplicate_agent import DuplicateAgentScreen
+from .configure_agent import ConfigureAgentScreen
 
 __all__ = [
     "MainScreen",
@@ -12,4 +14,6 @@ __all__ = [
     "SpawnAgentScreen",
     "TaskDetailScreen",
     "SettingsScreen",
+    "DuplicateAgentScreen",
+    "ConfigureAgentScreen",
 ]

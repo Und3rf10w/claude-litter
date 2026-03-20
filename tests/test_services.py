@@ -185,6 +185,80 @@ class TestFileLocking:
         assert len(team["members"]) == 20
 
 
+class TestUpdateMember:
+    def test_update_member_changes_fields(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "w1", "agentId": "uid-1", "model": "sonnet"})
+        svc.update_member("alpha", "uid-1", model="opus", color="blue")
+        team = svc.get_team("alpha")
+        assert team is not None
+        m = team["members"][0]
+        assert m["model"] == "opus"
+        assert m["color"] == "blue"
+
+    def test_update_member_name_changes_agent_id(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "old-name", "agentId": "old-name@alpha"})
+        svc.update_member("alpha", "old-name@alpha", name="new-name")
+        team = svc.get_team("alpha")
+        assert team is not None
+        m = team["members"][0]
+        assert m["name"] == "new-name"
+        assert m["agentId"] == "new-name@alpha"
+
+    def test_update_member_name_renames_inbox(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "old-name", "agentId": "old-name@alpha"})
+        svc.send_message("alpha", "old-name", "lead", "hello")
+        svc.update_member("alpha", "old-name@alpha", name="new-name")
+        # Old inbox gone, new inbox has the messages
+        assert svc.read_inbox("alpha", "old-name") == []
+        inbox = svc.read_inbox("alpha", "new-name")
+        assert len(inbox) == 1
+        assert inbox[0]["text"] == "hello"
+
+    def test_update_member_noop_when_not_found(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "w1", "agentId": "uid-1"})
+        # Should not raise, member not found
+        svc.update_member("alpha", "uid-nonexistent", model="opus")
+        team = svc.get_team("alpha")
+        assert team is not None
+        assert team["members"][0].get("model") is None  # unchanged
+
+
+class TestCopyInbox:
+    def test_copy_inbox_copies_all_messages(self, svc: TeamService) -> None:
+        svc.create_team("src-team")
+        svc.create_team("dst-team")
+        svc.send_message("src-team", "agent-a", "lead", "msg1")
+        svc.send_message("src-team", "agent-a", "lead", "msg2")
+        count = svc.copy_inbox("src-team", "agent-a", "dst-team", "agent-b")
+        assert count == 2
+        inbox = svc.read_inbox("dst-team", "agent-b")
+        assert len(inbox) == 2
+        assert inbox[0]["text"] == "msg1"
+        assert inbox[1]["text"] == "msg2"
+
+    def test_copy_inbox_returns_zero_when_empty(self, svc: TeamService) -> None:
+        svc.create_team("src-team")
+        svc.create_team("dst-team")
+        count = svc.copy_inbox("src-team", "nobody", "dst-team", "agent-b")
+        assert count == 0
+
+    def test_copy_inbox_appends_to_existing(self, svc: TeamService) -> None:
+        svc.create_team("src-team")
+        svc.create_team("dst-team")
+        svc.send_message("src-team", "agent-a", "lead", "copied")
+        svc.send_message("dst-team", "agent-b", "other", "existing")
+        count = svc.copy_inbox("src-team", "agent-a", "dst-team", "agent-b")
+        assert count == 1
+        inbox = svc.read_inbox("dst-team", "agent-b")
+        assert len(inbox) == 2
+        assert inbox[0]["text"] == "existing"
+        assert inbox[1]["text"] == "copied"
+
+
 # ------------------------------------------------------------------ #
 #  KittyService tests
 # ------------------------------------------------------------------ #

@@ -356,6 +356,13 @@ class InputBar(Widget):
         key = event.key
 
         if key == "ctrl+c":
+            # If there's selected text on screen, let the Screen's copy binding handle it
+            try:
+                selected = self.screen.get_selected_text()
+                if selected:
+                    return  # don't consume — Screen will copy to clipboard
+            except Exception:
+                pass
             event.prevent_default()
             event.stop()
             self.post_message(InterruptRequested())

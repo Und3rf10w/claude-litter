@@ -80,8 +80,8 @@ class TestSessionView:
             sv = app.query_one(SessionView)
             sv.append_output("Hello world")
             await pilot.pause()
-            from textual.widgets import RichLog
-            log = sv.query_one(RichLog)
+            from litter_tui.widgets.session_view import SelectableLog
+            log = sv.query_one(SelectableLog)
             assert log is not None
 
     @pytest.mark.anyio
@@ -93,8 +93,8 @@ class TestSessionView:
             await pilot.pause()
             sv.clear_output()
             await pilot.pause()
-            from textual.widgets import RichLog
-            log = sv.query_one(RichLog)
+            from litter_tui.widgets.session_view import SelectableLog
+            log = sv.query_one(SelectableLog)
             assert log is not None  # log still exists after clear
 
     @pytest.mark.anyio

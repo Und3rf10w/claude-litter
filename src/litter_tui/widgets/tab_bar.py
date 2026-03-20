@@ -195,34 +195,19 @@ class SessionTabBar(Widget):
             return False
 
         from textual.widgets._tabs import Tab
-        node = widget
-        while node is not None:
-            if isinstance(node, Tab):
-                # ✕ is in the last 2 columns of the tab (space + ✕)
-                # region.x is parent-relative; we need to compute how far
-                # screen_x is from the right edge of the tab.
-                # Use the widget's own coordinate system.
-                # node.region gives position within parent.
-                # We can compute offset from right edge using
-                # the fact that get_widget_at found this tab at screen_x.
-                # The local x within the tab = screen_x mapped to tab-local coords.
-                # Textual resolves this via the compositor, but we can approximate:
-                # The tab's content width matches region.width, and the ✕ is at the end.
-                # We just need: is screen_x in the last 2 cols of the tab?
-                # Use get_widget_at's _meta or just offset math:
-                # Simpler: walk to screen and compute tab screen bounds.
-                tab_screen_x = node.region.x
-                p = node.parent
-                while p is not None and p is not self.screen:
-                    tab_screen_x += p.region.x
-                    if hasattr(p, 'scroll_offset'):
-                        tab_screen_x -= p.scroll_offset.x
-                    p = p.parent
-                local_x = screen_x - tab_screen_x
-                if local_x >= node.region.width - 2:
-                    return True
-                return False
-            node = node.parent
+        tab = widget
+        while tab is not None:
+            if isinstance(tab, Tab):
+                break
+            tab = tab.parent
+        else:
+            return False
+
+        # tab.region is relative to the screen, so we can directly compare
+        local_x = screen_x - tab.region.x
+        # ✕ is the last visible character — check the last 3 columns of the tab
+        if local_x >= tab.region.width - 3:
+            return True
         return False
 
     async def on_click(self, event: events.Click) -> None:
