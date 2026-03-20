@@ -23,9 +23,14 @@ class SpawnAgentScreen(ModalScreen[dict | None]):
     Button { margin-right: 1; }
     """
 
+    def __init__(self, *, team_name: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._team_name = team_name
+
     def compose(self) -> ComposeResult:
+        title = f"Spawn Agent in [bold]{self._team_name}[/bold]" if self._team_name else "Spawn Agent"
         with Vertical(id="dialog"):
-            yield Static("Spawn Agent", id="title")
+            yield Static(title, id="title")
             yield Label("Agent Name", classes="field-label")
             yield Input(placeholder="backend-dev-1", id="agent-name")
             yield Static("", id="name-error")

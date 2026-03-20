@@ -11,6 +11,9 @@ from litter_tui.screens.task_detail import TaskDetailScreen
 from litter_tui.screens.settings import SettingsScreen
 from litter_tui.screens.duplicate_agent import DuplicateAgentScreen
 from litter_tui.screens.configure_agent import ConfigureAgentScreen, _normalize_model
+from litter_tui.screens.confirm import ConfirmScreen
+from litter_tui.screens.rename_team import RenameTeamScreen
+from litter_tui.screens.broadcast_message import BroadcastMessageScreen
 
 
 # ---------------------------------------------------------------------------
@@ -579,3 +582,184 @@ async def test_configure_agent_unknown_type_defaults_to_worker():
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#agent-type").value == "worker"
+
+
+# ---------------------------------------------------------------------------
+# ConfirmScreen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_confirm_screen_yes():
+    app = _ModalApp(lambda: ConfirmScreen("Delete everything?"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#yes"))
+        await pilot.pause()
+    assert app.dismissed_values == [True]
+
+
+@pytest.mark.anyio
+async def test_confirm_screen_no():
+    app = _ModalApp(lambda: ConfirmScreen("Delete everything?"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#no"))
+        await pilot.pause()
+    assert app.dismissed_values == [False]
+
+
+@pytest.mark.anyio
+async def test_confirm_screen_custom_labels():
+    app = _ModalApp(lambda: ConfirmScreen("Sure?", yes_label="Do it", no_label="Nope"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        yes_btn = _sq(app, "#yes")
+        assert "Do it" in str(yes_btn.label)
+
+
+# ---------------------------------------------------------------------------
+# RenameTeamScreen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_rename_team_cancel_returns_none():
+    app = _ModalApp(lambda: RenameTeamScreen("old-team"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#cancel"))
+        await pilot.pause()
+    assert app.dismissed_values == [None]
+
+
+@pytest.mark.anyio
+async def test_rename_team_same_name_returns_none():
+    """Submitting the same name should dismiss with None."""
+    app = _ModalApp(lambda: RenameTeamScreen("old-team"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#ok"))
+        await pilot.pause()
+    assert app.dismissed_values == [None]
+
+
+@pytest.mark.anyio
+async def test_rename_team_valid_new_name():
+    app = _ModalApp(lambda: RenameTeamScreen("old-team"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        name_input = _sq(app, "#team-name")
+        name_input.value = ""
+        await pilot.pause()
+        await pilot.click(name_input)
+        await pilot.press("n", "e", "w")
+        await pilot.click(_sq(app, "#ok"))
+        await pilot.pause()
+    assert len(app.dismissed_values) == 1
+    assert app.dismissed_values[0] == "new"
+
+
+@pytest.mark.anyio
+async def test_rename_team_invalid_name_shows_error():
+    app = _ModalApp(lambda: RenameTeamScreen("old-team"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        name_input = _sq(app, "#team-name")
+        name_input.value = ""
+        await pilot.pause()
+        await pilot.click(name_input)
+        await pilot.press(".", ".", "b", "a", "d")
+        await pilot.click(_sq(app, "#ok"))
+        await pilot.pause()
+        error_text = str(_sq(app, "#name-error").content)
+        assert error_text
+    assert app.dismissed_values == []
+
+
+@pytest.mark.anyio
+async def test_rename_team_prefilled():
+    app = _ModalApp(lambda: RenameTeamScreen("my-team"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        assert _sq(app, "#team-name").value == "my-team"
+
+
+# ---------------------------------------------------------------------------
+# BroadcastMessageScreen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_broadcast_cancel_returns_none():
+    app = _ModalApp(lambda: BroadcastMessageScreen("alpha"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#cancel"))
+        await pilot.pause()
+    assert app.dismissed_values == [None]
+
+
+@pytest.mark.anyio
+async def test_broadcast_empty_shows_error():
+    app = _ModalApp(lambda: BroadcastMessageScreen("alpha"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click(_sq(app, "#ok"))
+        await pilot.pause()
+        error_text = str(_sq(app, "#msg-error").content)
+        assert error_text
+    assert app.dismissed_values == []
+
+
+@pytest.mark.anyio
+async def test_broadcast_with_text():
+    app = _ModalApp(lambda: BroadcastMessageScreen("alpha"))
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        ta = _sq(app, "#broadcast-text")
+        await pilot.click(ta)
+        await pilot.press("H", "i", " ", "a", "l", "l")
+        await pilot.click(_sq(app, "#ok"))
+        await pilot.pause()
+    assert len(app.dismissed_values) == 1
+    assert app.dismissed_values[0] == "Hi all"
+
+
+# ------------------------------------------------------------------ #
+#  _format_inbox_text (MainScreen static method)
+# ------------------------------------------------------------------ #
+
+
+class TestFormatInboxText:
+    """Test structured message formatting."""
+
+    @staticmethod
+    def _fmt(text: str) -> str:
+        from litter_tui.screens.main import MainScreen
+        return MainScreen._format_inbox_text(text)
+
+    def test_plain_text_passthrough(self) -> None:
+        assert self._fmt("Hello world") == "Hello world"
+
+    def test_idle_notification_returns_empty(self) -> None:
+        assert self._fmt('{"type":"idle_notification","from":"w1"}') == ""
+
+    def test_task_assignment_formatted(self) -> None:
+        msg = '{"type":"task_assignment","taskId":"10","subject":"Explore Jobs","description":"Deep exploration of Jobs system"}'
+        result = self._fmt(msg)
+        assert "[Task #10]" in result
+        assert "Explore Jobs" in result
+        assert "Deep exploration" in result
+
+    def test_task_completed_formatted(self) -> None:
+        msg = '{"type":"task_completed","taskId":"5","subject":"Done"}'
+        result = self._fmt(msg)
+        assert "Task #5 completed" in result
+
+    def test_invalid_json_passthrough(self) -> None:
+        assert self._fmt("{not json") == "{not json"
+
+    def test_unknown_type_shows_json(self) -> None:
+        result = self._fmt('{"type":"custom","data":"hello"}')
+        assert "[custom]" in result

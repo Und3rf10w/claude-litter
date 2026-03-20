@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from textual import work
@@ -19,8 +20,9 @@ from litter_tui.widgets.tab_bar import SessionTabBar
 from litter_tui.widgets.session_view import SessionView, TodoWriteDetected
 from litter_tui.widgets.input_bar import InputBar, PromptSubmitted
 from litter_tui.widgets.task_panel import TaskPanel
-from litter_tui.widgets.message_panel import MessagePanel
+from litter_tui.widgets.message_panel import MessageComposed, MessagePanel
 from litter_tui.widgets.context_menu import ContextMenu
+from litter_tui.screens.configure_agent import _normalize_model
 
 _log = logging.getLogger("litter_tui.main_screen")
 
@@ -272,11 +274,54 @@ class MainScreen(Screen):
 
     def toggle_tasks(self) -> None:
         """Show/hide the task panel."""
-        self.query_one("#task-panel", TaskPanel).toggle()
+        panel = self.query_one("#task-panel", TaskPanel)
+        panel.toggle()
+        # Populate on open if we have an active agent
+        if panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            team = self._active_agent_key[0]
+            tasks = self._team_service.list_tasks(team)
+            panel.update_tasks(tasks)
 
     def toggle_messages(self) -> None:
         """Show/hide the message panel."""
-        self.query_one("#message-panel", MessagePanel).toggle()
+        panel = self.query_one("#message-panel", MessagePanel)
+        panel.toggle()
+        # Populate on open if we have an active agent
+        if panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            team, agent = self._active_agent_key
+            self._update_message_panel(team, agent)
+
+    def _update_message_panel(self, team: str, agent: str) -> None:
+        """Populate the message panel with the agent's inbox messages."""
+        panel = self.query_one("#message-panel", MessagePanel)
+        panel.set_agent(team, agent)
+
+        # Set known agents from the team config
+        config = self._team_service.get_team(team)
+        if config:
+            agent_names = [m.get("name", "") for m in config.get("members", []) if m.get("name")]
+            panel.set_known_agents(agent_names)
+
+        # Load all inbox messages (including read ones)
+        messages = self._team_service.read_inbox(team, agent)
+        # Format structured JSON messages for display
+        formatted: list[dict] = []
+        for msg in messages:
+            text = msg.get("text", "")
+            display_text = self._format_inbox_text(text)
+            if display_text == "":  # skip idle notifications
+                continue
+            formatted.append({**msg, "text": display_text})
+        panel.update_messages(formatted)
+
+    def on_message_composed(self, event: MessageComposed) -> None:
+        """Handle message sent from the message panel compose form."""
+        if not self._active_agent_key or self._active_agent_key == _MAIN_CHAT_KEY:
+            return
+        team, agent = self._active_agent_key
+        self._team_service.send_message(team, event.to, agent, event.text)
+        # Refresh the panel to show the sent message
+        self._update_message_panel(team, agent)
 
     # ------------------------------------------------------------------
     # Team management
@@ -302,7 +347,7 @@ class MainScreen(Screen):
                 for m in config.get("members", []):
                     agent_dict = {
                         "name": m.get("name", "?"),
-                        "model": m.get("model", "sonnet"),
+                        "model": _normalize_model(m.get("model", "sonnet")),
                         "agentType": m.get("agentType", ""),
                         "color": m.get("color", ""),
                         "cwd": m.get("cwd", ""),
@@ -311,9 +356,19 @@ class MainScreen(Screen):
                     # Cache full member info for header display
                     self._member_info[(name, m.get("name", "?"))] = m
                 has_active = any(m.get("status") == "active" for m in config.get("members", []))
+                # If no member has an explicit status, infer from team-level status
+                # or treat as active when members exist (swarm-spawned agents
+                # don't always write a per-member status field).
+                if not has_active and config.get("members"):
+                    all_missing_status = all(
+                        "status" not in m for m in config.get("members", [])
+                    )
+                    if all_missing_status:
+                        has_active = True
+                team_status = config.get("status", "active" if has_active else "inactive")
                 teams.append({
                     "name": config["name"],
-                    "status": "active" if has_active else "inactive",
+                    "status": team_status,
                     "agents": agents,
                 })
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
@@ -416,6 +471,13 @@ class MainScreen(Screen):
 
         self.show_session()
 
+        # Update message panel with this agent's inbox
+        self._update_message_panel(team, agent)
+
+        # Update task panel with this team's tasks
+        tasks = self._team_service.list_tasks(team)
+        self.query_one("#task-panel", TaskPanel).update_tasks(tasks)
+
     @work(exclusive=True, group="history")
     async def _load_agent_history(self, team: str, agent: str) -> None:
         """Load chat history from inbox messages and JSONL transcripts."""
@@ -429,6 +491,37 @@ class MainScreen(Screen):
 
         if not inbox_loaded and not transcript_loaded:
             sv.append_output(f"[dim]No history found for {agent}[/dim]\n")
+
+    @staticmethod
+    def _format_inbox_text(text: str) -> str:
+        """Parse structured JSON messages into readable text; pass plain text through."""
+        if not text.startswith("{"):
+            return text
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return text
+        msg_type = parsed.get("type", "")
+        if msg_type == "idle_notification":
+            return ""  # sentinel: skip entirely
+        if msg_type == "task_assignment":
+            subj = parsed.get("subject", "")
+            desc = parsed.get("description", "")
+            tid = parsed.get("taskId", "")
+            preview = (desc[:200] + "...") if len(desc) > 200 else desc
+            return f"[Task #{tid}] {subj}\n  {preview}"
+        if msg_type == "task_completed":
+            return f"Task #{parsed.get('taskId', '?')} completed: {parsed.get('subject', '')}"
+        if msg_type == "shutdown_request":
+            return f"Shutdown requested: {parsed.get('reason', '')}"
+        if msg_type == "shutdown_response":
+            approved = parsed.get("approve", False)
+            return f"Shutdown {'approved' if approved else 'rejected'}: {parsed.get('reason', '')}"
+        # Fallback: show type + truncated content
+        content = json.dumps(parsed, indent=2)
+        if len(content) > 300:
+            content = content[:300] + "..."
+        return f"[{msg_type or 'json'}] {content}"
 
     def _load_inbox_history(self, sv: SessionView, team: str, agent: str) -> bool:
         """Load inbox messages for the agent. Returns True if any were loaded."""
@@ -456,14 +549,10 @@ class MainScreen(Screen):
                 summary = msg.get("summary", "")
                 read = msg.get("read", False)
 
-                # Skip idle notifications
-                if text.startswith("{"):
-                    try:
-                        parsed = json.loads(text)
-                        if parsed.get("type") == "idle_notification":
-                            continue
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                # Format structured JSON messages into readable text
+                display_text = self._format_inbox_text(text)
+                if display_text == "":  # skip idle notifications
+                    continue
 
                 rich_color = _color_map.get(color, "dim")
                 read_marker = "" if read else " [bold yellow]*[/bold yellow]"
@@ -473,14 +562,51 @@ class MainScreen(Screen):
                     f"[{rich_color}]{sender}[/{rich_color}]{read_marker}\n"
                 )
 
-                # Show summary if available, else truncated text
-                display = summary or (text[:200] + "..." if len(text) > 200 else text)
+                # Show summary if available, else formatted text
+                display = summary or (display_text[:200] + "..." if len(display_text) > 200 else display_text)
                 sv.append_output(f"  {display}\n\n")
 
             return True
         except Exception as exc:
             _log.debug("Failed to load inbox for %s/%s: %s", team, agent, exc)
             return False
+
+    def _find_agent_transcript(self, subagents_dir: Path, agent: str) -> Path | None:
+        """Find the most recent JSONL transcript for an agent in the subagents dir."""
+        target_jsonl = None
+        best_mtime = 0.0
+        for jsonl_path in subagents_dir.glob("agent-*.jsonl"):
+            try:
+                # Strategy 1: .meta.json sidecar (agentType == agent name)
+                meta_path = jsonl_path.with_suffix(".meta.json")
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text())
+                    if meta.get("agentType") == agent:
+                        mtime = jsonl_path.stat().st_mtime
+                        if mtime > best_mtime:
+                            target_jsonl = jsonl_path
+                            best_mtime = mtime
+                    continue
+
+                # Strategy 2: check first line content for agent name patterns
+                with open(jsonl_path) as f:
+                    first_line = f.readline().strip()
+                    if not first_line:
+                        continue
+                    entry = json.loads(first_line)
+                    content = entry.get("message", {}).get("content", "")
+                    if isinstance(content, str) and (
+                        f'You are "{agent}"' in content
+                        or f"You are the {agent} agent" in content
+                        or f'teammate_id="{agent}"' in content
+                    ):
+                        mtime = jsonl_path.stat().st_mtime
+                        if mtime > best_mtime:
+                            target_jsonl = jsonl_path
+                            best_mtime = mtime
+            except Exception:
+                continue
+        return target_jsonl
 
     def _load_transcript_history(self, sv: SessionView, team: str, agent: str) -> bool:
         """Try to find and load JSONL transcript. Returns True if loaded."""
@@ -509,25 +635,16 @@ class MainScreen(Screen):
             return False
 
         subagents_dir = project_dir / lead_session_id / "subagents"
-        if not subagents_dir.exists():
-            return False
 
-        # Scan subagent JSONLs to find the one matching this agent
-        # Match by teammate_id in the first user message
         target_jsonl = None
-        for jsonl_path in subagents_dir.glob("agent-*.jsonl"):
-            try:
-                with open(jsonl_path) as f:
-                    first_line = f.readline().strip()
-                    if not first_line:
-                        continue
-                    entry = json.loads(first_line)
-                    content = entry.get("message", {}).get("content", "")
-                    if isinstance(content, str) and f'teammate_id="{agent}"' in content:
-                        target_jsonl = jsonl_path
-                        break
-            except Exception:
-                continue
+        if subagents_dir.exists():
+            target_jsonl = self._find_agent_transcript(subagents_dir, agent)
+
+        # Fallback for team-lead: use the main session JSONL
+        if not target_jsonl:
+            lead_jsonl = project_dir / f"{lead_session_id}.jsonl"
+            if lead_jsonl.exists() and agent in ("team-lead", config.get("leadAgentId", "").split("@")[0]):
+                target_jsonl = lead_jsonl
 
         if not target_jsonl:
             return False
@@ -551,11 +668,23 @@ class MainScreen(Screen):
                     content = msg.get("content", "")
 
                     if role == "user" and isinstance(content, str):
-                        # Show user prompts (skip very long system prompts)
-                        if len(content) > 500:
-                            content = content[:200] + "..."
-                        sv.append_output(f"[bold cyan]> {content}[/bold cyan]\n")
+                        # Strip <teammate-message> wrapper if present
+                        stripped = re.sub(
+                            r"<teammate-message[^>]*>\s*", "", content
+                        )
+                        stripped = stripped.replace("</teammate-message>", "").strip()
+                        if not stripped:
+                            continue
+                        # Truncate long prompts
+                        if len(stripped) > 500:
+                            stripped = stripped[:300] + "\n..."
+                        # Use markup=False via escaping brackets to avoid Rich parse errors
+                        safe = stripped.replace("[", "\\[")
+                        sv.append_output(f"[bold cyan]> {safe}[/bold cyan]\n\n")
                         msg_count += 1
+                    elif role == "user" and isinstance(content, list):
+                        # Skip tool_result blocks
+                        continue
                     elif role == "assistant":
                         blocks = content if isinstance(content, list) else []
                         for block in blocks:
@@ -563,18 +692,30 @@ class MainScreen(Screen):
                                 continue
                             if block.get("type") == "text":
                                 text = block["text"]
-                                if len(text) > 1000:
-                                    text = text[:500] + "\n[dim]... (truncated)[/dim]"
-                                sv.append_output(text + "\n")
+                                if len(text) > 2000:
+                                    text = text[:1000] + "\n[dim]... (truncated)[/dim]"
+                                safe = text.replace("[", "\\[")
+                                sv.append_output(safe + "\n")
                                 msg_count += 1
                             elif block.get("type") == "tool_use":
+                                name = block.get("name", "?")
+                                inp = block.get("input", {})
+                                # Show a brief summary of tool input
+                                summary = ""
+                                if isinstance(inp, dict):
+                                    if "command" in inp:
+                                        summary = f": {inp['command'][:80]}"
+                                    elif "file_path" in inp:
+                                        summary = f": {inp['file_path']}"
+                                    elif "pattern" in inp:
+                                        summary = f": {inp['pattern']}"
                                 sv.append_output(
-                                    f"[dim][Used {block.get('name', '?')}][/dim]\n"
+                                    f"[dim]\\[{name}{summary}][/dim]\n"
                                 )
 
                     # Limit to avoid flooding
-                    if msg_count > 100:
-                        sv.append_output("[dim]... (showing last 100 messages)[/dim]\n")
+                    if msg_count > 200:
+                        sv.append_output("[dim]... (truncated at 200 messages)[/dim]\n")
                         break
 
             return msg_count > 0
@@ -591,6 +732,17 @@ class MainScreen(Screen):
     ) -> None:
         menu = self.query_one("#context-menu", ContextMenu)
         menu.show_at(event.team, event.agent, event.screen_x, event.screen_y)
+
+    def on_team_sidebar_team_context_menu_requested(
+        self, event: TeamSidebar.TeamContextMenuRequested
+    ) -> None:
+        config = self._team_service.get_team(event.team)
+        is_suspended = config.get("status") == "suspended" if config else False
+        menu = self.query_one("#context-menu", ContextMenu)
+        menu.show_team_menu_at(
+            event.team, event.screen_x, event.screen_y,
+            is_suspended=is_suspended,
+        )
 
     def on_session_tab_bar_tab_context_menu_requested(
         self, event: SessionTabBar.TabContextMenuRequested
@@ -624,6 +776,19 @@ class MainScreen(Screen):
         elif event.action == "tab_close_all":
             tab_bar = self.query_one("#tab-bar", SessionTabBar)
             tab_bar.close_all()
+        # Team context menu actions
+        elif event.action == "team_spawn":
+            self._team_spawn_agent(event.team)
+        elif event.action == "team_broadcast":
+            self._team_broadcast(event.team)
+        elif event.action == "team_rename":
+            self._team_rename(event.team)
+        elif event.action == "team_suspend":
+            self._team_suspend(event.team)
+        elif event.action == "team_kill_all":
+            self._team_kill_all(event.team)
+        elif event.action == "team_delete":
+            self._team_delete(event.team)
 
     @work(exclusive=True, group="agent-action")
     async def _kill_agent(self, team: str, agent: str) -> None:
@@ -826,3 +991,156 @@ class MainScreen(Screen):
             )
 
         self.notify(f"Updated configuration for {new_name}")
+
+    # ------------------------------------------------------------------
+    # Team context menu actions
+    # ------------------------------------------------------------------
+
+    def _team_spawn_agent(self, team: str) -> None:
+        """Open SpawnAgentScreen pre-targeted to this team."""
+        from litter_tui.screens.spawn_agent import SpawnAgentScreen
+
+        def _on_result(result: dict | None) -> None:
+            if result is not None:
+                self._execute_team_spawn(team, result)
+
+        self.app.push_screen(SpawnAgentScreen(team_name=team), _on_result)
+
+    @work(exclusive=True, group="team-action")
+    async def _execute_team_spawn(self, team: str, opts: dict) -> None:
+        """Add member to team and spawn agent session."""
+        name = opts["name"]
+        model = opts.get("model", "sonnet")
+        member_dict = {
+            "agentId": f"{name}@{team}",
+            "name": name,
+            "model": model,
+            "agentType": opts.get("type", "worker"),
+            "status": "active",
+        }
+        self._team_service.add_member(team, member_dict)
+        await self._agent_manager.spawn_agent(team, name, model=model)
+        self._refresh_sidebar()
+        self.notify(f"Spawned {name} in {team}")
+
+    def _team_broadcast(self, team: str) -> None:
+        """Open BroadcastMessageScreen for this team."""
+        from litter_tui.screens.broadcast_message import BroadcastMessageScreen
+
+        def _on_result(text: str | None) -> None:
+            if text is not None:
+                count = self._team_service.broadcast_message(team, "tui", text)
+                self.notify(f"Broadcast sent to {count} agent(s) in {team}")
+
+        self.app.push_screen(BroadcastMessageScreen(team), _on_result)
+
+    def _team_rename(self, team: str) -> None:
+        """Open RenameTeamScreen for this team."""
+        from litter_tui.screens.rename_team import RenameTeamScreen
+
+        def _on_result(new_name: str | None) -> None:
+            if new_name is not None:
+                self._execute_team_rename(team, new_name)
+
+        self.app.push_screen(RenameTeamScreen(team), _on_result)
+
+    @work(exclusive=True, group="team-action")
+    async def _execute_team_rename(self, old_name: str, new_name: str) -> None:
+        """Rename team on disk and update references."""
+        self._team_service.rename_team(old_name, new_name)
+        # Update AgentManager session keys
+        self._agent_manager.rename_team(old_name, new_name)
+        # Update active key if viewing an agent in the renamed team
+        if self._active_agent_key and self._active_agent_key[0] == old_name:
+            agent = self._active_agent_key[1]
+            self._active_agent_key = (new_name, agent)
+        # Re-key saved outputs
+        for key in list(self._agent_outputs):
+            if key[0] == old_name:
+                self._agent_outputs[(new_name, key[1])] = self._agent_outputs.pop(key)
+        # Re-key member info cache
+        for key in list(self._member_info):
+            if key[0] == old_name:
+                self._member_info[(new_name, key[1])] = self._member_info.pop(key)
+        self._refresh_sidebar()
+        self.notify(f"Renamed {old_name} -> {new_name}")
+
+    def _team_suspend(self, team: str) -> None:
+        """Toggle suspend/resume for a team."""
+        config = self._team_service.get_team(team)
+        if not config:
+            return
+        is_suspended = config.get("status") == "suspended"
+        if is_suspended:
+            # Resume
+            self._team_service.update_team_status(team, "active")
+            self._refresh_sidebar()
+            self.notify(f"Resumed team {team}")
+        else:
+            # Suspend
+            self._execute_team_suspend(team)
+
+    @work(exclusive=True, group="team-action")
+    async def _execute_team_suspend(self, team: str) -> None:
+        """Suspend team: stop all agents and mark as suspended."""
+        await self._agent_manager.stop_team(team)
+        self._team_service.update_team_status(team, "suspended")
+        self._refresh_sidebar()
+        self.notify(f"Suspended team {team}")
+
+    def _team_kill_all(self, team: str) -> None:
+        """Confirm and kill all agents in a team."""
+        from litter_tui.screens.confirm import ConfirmScreen
+
+        def _on_result(confirmed: bool) -> None:
+            if confirmed:
+                self._execute_team_kill_all(team)
+
+        self.app.push_screen(
+            ConfirmScreen(f"Kill all agents in [bold]{team}[/bold]?"),
+            _on_result,
+        )
+
+    @work(exclusive=True, group="team-action")
+    async def _execute_team_kill_all(self, team: str) -> None:
+        """Stop all agent sessions for a team."""
+        await self._agent_manager.stop_team(team)
+        self._refresh_sidebar()
+        self.notify(f"Killed all agents in {team}")
+
+    def _team_delete(self, team: str) -> None:
+        """Confirm and delete a team."""
+        from litter_tui.screens.confirm import ConfirmScreen
+
+        def _on_result(confirmed: bool) -> None:
+            if confirmed:
+                self._execute_team_delete(team)
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Delete team [bold]{team}[/bold]? This cannot be undone.",
+                yes_label="Delete",
+            ),
+            _on_result,
+        )
+
+    @work(exclusive=True, group="team-action")
+    async def _execute_team_delete(self, team: str) -> None:
+        """Stop agents, delete team data, close affected tabs."""
+        await self._agent_manager.stop_team(team)
+        self._team_service.delete_team(team)
+        # Close tabs belonging to deleted team
+        tab_bar = self.query_one("#tab-bar", SessionTabBar)
+        for key in list(self._agent_outputs):
+            if key[0] == team:
+                tab_bar.remove_tab(key[0], key[1])
+                self._agent_outputs.pop(key, None)
+        # If currently viewing an agent from this team, go back to main chat
+        if self._active_agent_key and self._active_agent_key[0] == team:
+            self._switch_to_main_chat()
+        # Clean member info cache
+        for key in list(self._member_info):
+            if key[0] == team:
+                del self._member_info[key]
+        self._refresh_sidebar()
+        self.notify(f"Deleted team {team}")

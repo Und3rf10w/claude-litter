@@ -259,6 +259,92 @@ class TestCopyInbox:
         assert inbox[1]["text"] == "copied"
 
 
+class TestRenameTeam:
+    def test_rename_team(self, svc: TeamService) -> None:
+        svc.create_team("old-name")
+        svc.add_member("old-name", {"name": "w1", "agentId": "w1@old-name"})
+        svc.create_task("old-name", "Task 1")
+        svc.rename_team("old-name", "new-name")
+
+        # Old dirs gone
+        assert not (svc.teams_path / "old-name").exists()
+        assert not (svc.tasks_path / "old-name").exists()
+
+        # New dirs exist
+        assert (svc.teams_path / "new-name" / "config.json").exists()
+        assert (svc.tasks_path / "new-name").exists()
+
+        # Config updated
+        config = svc.get_team("new-name")
+        assert config is not None
+        assert config["name"] == "new-name"
+        assert config["members"][0]["agentId"] == "w1@new-name"
+
+    def test_rename_team_nonexistent(self, svc: TeamService) -> None:
+        svc.rename_team("ghost", "new")  # should not raise
+
+    def test_rename_team_preserves_tasks(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.create_task("alpha", "T1")
+        svc.create_task("alpha", "T2")
+        svc.rename_team("alpha", "beta")
+        tasks = svc.list_tasks("beta")
+        assert len(tasks) == 2
+
+
+class TestUpdateTeamStatus:
+    def test_update_team_status_active(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.update_team_status("alpha", "active")
+        config = svc.get_team("alpha")
+        assert config is not None
+        assert config["status"] == "active"
+
+    def test_suspend_sets_members_offline(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "w1", "agentId": "w1@alpha", "status": "active"})
+        svc.add_member("alpha", {"name": "w2", "agentId": "w2@alpha", "status": "active"})
+        svc.update_team_status("alpha", "suspended")
+        config = svc.get_team("alpha")
+        assert config is not None
+        assert config["status"] == "suspended"
+        for m in config["members"]:
+            assert m["status"] == "offline"
+
+    def test_resume_does_not_change_member_status(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "w1", "agentId": "w1@alpha", "status": "offline"})
+        svc.update_team_status("alpha", "active")
+        config = svc.get_team("alpha")
+        assert config is not None
+        assert config["status"] == "active"
+        # Members remain offline — caller is responsible for restarting them
+        assert config["members"][0]["status"] == "offline"
+
+
+class TestBroadcastMessage:
+    def test_broadcast_sends_to_all_except_sender(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        svc.add_member("alpha", {"name": "lead", "agentId": "lead@alpha"})
+        svc.add_member("alpha", {"name": "w1", "agentId": "w1@alpha"})
+        svc.add_member("alpha", {"name": "w2", "agentId": "w2@alpha"})
+        count = svc.broadcast_message("alpha", "lead", "Hello everyone!")
+        assert count == 2
+        assert len(svc.read_inbox("alpha", "w1")) == 1
+        assert len(svc.read_inbox("alpha", "w2")) == 1
+        assert svc.read_inbox("alpha", "lead") == []
+        assert svc.read_inbox("alpha", "w1")[0]["text"] == "Hello everyone!"
+
+    def test_broadcast_returns_zero_for_empty_team(self, svc: TeamService) -> None:
+        svc.create_team("alpha")
+        count = svc.broadcast_message("alpha", "lead", "Hello!")
+        assert count == 0
+
+    def test_broadcast_returns_zero_for_nonexistent_team(self, svc: TeamService) -> None:
+        count = svc.broadcast_message("ghost", "lead", "Hello!")
+        assert count == 0
+
+
 # ------------------------------------------------------------------ #
 #  KittyService tests
 # ------------------------------------------------------------------ #

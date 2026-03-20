@@ -305,6 +305,14 @@ class AgentManager:
             await self.sessions[key].stop()
             del self.sessions[key]
 
+    def rename_team(self, old_name: str, new_name: str) -> None:
+        """Re-key all sessions from *old_name* to *new_name*."""
+        for key in list(self.sessions):
+            if key[0] == old_name:
+                session = self.sessions.pop(key)
+                session.team_name = new_name
+                self.sessions[(new_name, key[1])] = session
+
     async def duplicate_agent(
         self,
         source_team: str,

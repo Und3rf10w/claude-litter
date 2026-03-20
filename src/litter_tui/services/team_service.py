@@ -293,16 +293,23 @@ class TeamService:
         to_agent: str,
         from_agent: str,
         text: str,
+        *,
+        summary: str = "",
+        color: str = "",
     ) -> None:
         inbox_path = self.teams_path / team_name / "inboxes" / f"{to_agent}.json"
         inbox_path.parent.mkdir(parents=True, exist_ok=True)
 
-        message = {
+        message: dict = {
             "from": from_agent,
             "text": text,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "read": False,
         }
+        if summary:
+            message["summary"] = summary
+        if color:
+            message["color"] = color
 
         def _append(data) -> list:
             if not isinstance(data, list):
@@ -321,3 +328,74 @@ class TeamService:
             return []
         data = self._read_json(inbox_path)
         return data if isinstance(data, list) else []
+
+    # ------------------------------------------------------------------ #
+    #  Team-level operations
+    # ------------------------------------------------------------------ #
+
+    def rename_team(self, old_name: str, new_name: str) -> None:
+        """Rename a team directory, task directory, and internal references."""
+        old_team_dir = self.teams_path / old_name
+        new_team_dir = self.teams_path / new_name
+        old_tasks_dir = self.tasks_path / old_name
+        new_tasks_dir = self.tasks_path / new_name
+
+        if not old_team_dir.exists():
+            return
+
+        # Rename directories
+        old_team_dir.rename(new_team_dir)
+        if old_tasks_dir.exists():
+            old_tasks_dir.rename(new_tasks_dir)
+
+        # Update config.json internals
+        config_path = new_team_dir / "config.json"
+        if config_path.exists():
+            def _update(data: dict) -> dict:
+                data["name"] = new_name
+                # Update leadAgentId if it references the old team name
+                lead_id = data.get("leadAgentId", "")
+                if "@" in lead_id:
+                    lead_name = lead_id.rsplit("@", 1)[0]
+                    data["leadAgentId"] = f"{lead_name}@{new_name}"
+                for member in data.get("members", []):
+                    agent_id = member.get("agentId", "")
+                    if "@" in agent_id:
+                        name_part = agent_id.rsplit("@", 1)[0]
+                        member["agentId"] = f"{name_part}@{new_name}"
+                return data
+
+            self._locked_update(config_path, _update)
+
+    def update_team_status(self, team_name: str, status: str) -> None:
+        """Update the team's top-level status. If 'suspended', set all members offline."""
+        config_path = self.teams_path / team_name / "config.json"
+
+        def _update(data: dict) -> dict:
+            data["status"] = status
+            if status == "suspended":
+                for member in data.get("members", []):
+                    member["status"] = "offline"
+            return data
+
+        self._locked_update(config_path, _update)
+
+    def broadcast_message(
+        self, team_name: str, from_agent: str, text: str,
+    ) -> int:
+        """Send a message to all team members except *from_agent*. Returns count sent."""
+        config = self.get_team(team_name)
+        if not config:
+            return 0
+        # Generate a short summary for inbox previews
+        summary = text[:100] + ("..." if len(text) > 100 else "")
+        count = 0
+        for member in config.get("members", []):
+            name = member.get("name", "")
+            if name and name != from_agent:
+                self.send_message(
+                    team_name, name, from_agent, text,
+                    summary=f"[broadcast] {summary}",
+                )
+                count += 1
+        return count

@@ -57,6 +57,14 @@ class _SidebarTree(Tree):
                             screen_y=event.screen_y,
                         )
                     )
+                elif node and node.data and node.data.get("type") == "team":
+                    self.post_message(
+                        TeamSidebar.TeamContextMenuRequested(
+                            team=node.data["team"],
+                            screen_x=event.screen_x,
+                            screen_y=event.screen_y,
+                        )
+                    )
             event.stop()
             event.prevent_default()
             return
@@ -99,6 +107,15 @@ class TeamSidebar(Widget):
             super().__init__()
             self.team = team
             self.agent = agent
+            self.screen_x = screen_x
+            self.screen_y = screen_y
+
+    class TeamContextMenuRequested(Message):
+        """Emitted when a team node is right-clicked."""
+
+        def __init__(self, team: str, screen_x: int, screen_y: int) -> None:
+            super().__init__()
+            self.team = team
             self.screen_x = screen_x
             self.screen_y = screen_y
 

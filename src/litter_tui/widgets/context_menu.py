@@ -73,6 +73,24 @@ class ContextMenu(OptionList):
         self.add_class("-visible")
         self.focus()
 
+    def show_team_menu_at(
+        self, team: str, x: int, y: int, *, is_suspended: bool = False,
+    ) -> None:
+        """Populate and display team context menu near *x*, *y*."""
+        self._team = team
+        self._agent = ""
+        self.clear_options()
+        self.add_option(Option("Spawn Agent", id="team_spawn"))
+        self.add_option(Option("Send Broadcast", id="team_broadcast"))
+        self.add_option(Option("Rename Team", id="team_rename"))
+        suspend_label = "Resume Team" if is_suspended else "Suspend Team"
+        self.add_option(Option(suspend_label, id="team_suspend"))
+        self.add_option(Option("Kill All Agents", id="team_kill_all"))
+        self.add_option(Option("Delete Team", id="team_delete"))
+        self.absolute_offset = Offset(x, y)
+        self.add_class("-visible")
+        self.focus()
+
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         self.remove_class("-visible")
