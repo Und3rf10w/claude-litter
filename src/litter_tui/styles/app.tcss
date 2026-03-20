@@ -47,6 +47,16 @@ Input:focus {
     border: solid $accent;
 }
 
+/* TextArea (PromptTextArea) styling */
+TextArea {
+    background: $surface;
+    border: solid $primary;
+}
+
+TextArea:focus {
+    border: solid $accent;
+}
+
 /* Button styling */
 Button {
     margin: 0 1;

@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,6 +42,13 @@ class _ResultMessage:
         self.result = result
 
 
+class _StreamEvent:
+    """Stub for StreamEvent used in the new streaming API."""
+
+    def __init__(self, event: dict) -> None:
+        self.event = event
+
+
 class _ClaudeAgentOptions:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -53,11 +60,25 @@ class _ClaudeSDKClient:
         self._queued: str | None = None
         self._messages: list = []
 
-    def query(self, prompt: str) -> None:
-        self._queued = prompt
-
-    def interrupt(self) -> None:
+    async def connect(self) -> None:
         pass
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def query(self, prompt) -> None:
+        if isinstance(prompt, str):
+            self._queued = prompt
+        else:
+            # Async iterable — consume it
+            async for msg in prompt:
+                self._queued = str(msg)
+
+    async def interrupt(self) -> None:
+        pass
+
+    async def get_server_info(self) -> dict:
+        return {"commands": []}
 
     async def receive_response(self) -> AsyncIterator:
         for msg in self._messages:
@@ -73,7 +94,16 @@ _fake_sdk.AssistantMessage = _AssistantMessage
 _fake_sdk.ResultMessage = _ResultMessage
 _fake_sdk.TextBlock = _TextBlock
 _fake_sdk.ToolUseBlock = _ToolUseBlock
+
+# Also inject types submodule for StreamEvent and content block types
+_fake_types = MagicMock()
+_fake_types.StreamEvent = _StreamEvent
+_fake_types.AssistantMessage = _AssistantMessage
+_fake_types.TextBlock = _TextBlock
+_fake_types.ToolUseBlock = _ToolUseBlock
+_fake_sdk.types = _fake_types
 sys.modules.setdefault("claude_agent_sdk", _fake_sdk)
+sys.modules.setdefault("claude_agent_sdk.types", _fake_types)
 
 # Now we can safely import production code
 from litter_tui.services.agent_manager import AgentManager, AgentSession, AgentStatus  # noqa: E402
@@ -94,13 +124,14 @@ def _make_manager() -> AgentManager:
 
 
 @pytest.mark.anyio
-async def test_spawn_agent_creates_session() -> None:
+@patch("litter_tui.services.agent_manager._read_user_model", return_value=None)
+async def test_spawn_agent_creates_session(_mock_model) -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     assert isinstance(session, AgentSession)
     assert session.team_name == "team-a"
     assert session.agent_name == "worker-1"
-    assert session.model == "sonnet"
+    assert session.model is None  # defaults to None when no settings.json
     assert session.status == AgentStatus.idle
 
 
@@ -189,10 +220,11 @@ async def test_duplicate_agent_inherits_model() -> None:
 
 
 @pytest.mark.anyio
-async def test_duplicate_agent_missing_source_uses_sonnet() -> None:
+@patch("litter_tui.services.agent_manager._read_user_model", return_value=None)
+async def test_duplicate_agent_missing_source_uses_default(_mock_model) -> None:
     mgr = _make_manager()
     dup = await mgr.duplicate_agent("team-x", "ghost", "clone")
-    assert dup.model == "sonnet"
+    assert dup.model is None  # no source → inherits from settings.json
 
 
 @pytest.mark.anyio
@@ -301,102 +333,137 @@ async def test_reattach_returns_none_when_not_in_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# stream_output — message type processing
+# stream_response — streaming message type processing
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_stream_output_text_block() -> None:
+async def test_stream_response_text_delta() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     session._client._messages = [  # type: ignore[union-attr]
-        _AssistantMessage([_TextBlock("Hello, world!")])
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello!"}}),
+        _ResultMessage(),
     ]
 
-    chunks: list[str] = []
-    async for chunk in session.stream_output():
+    chunks = []
+    async for chunk in session.stream_response():
         chunks.append(chunk)
 
-    assert chunks == ["Hello, world!"]
-    assert "Hello, world!" in session.output_buffer
+    assert "Hello!" in chunks
+    assert "Hello!" in session.output_buffer
 
 
 @pytest.mark.anyio
-async def test_stream_output_tool_use_block() -> None:
+async def test_stream_response_tool_use() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     session._client._messages = [  # type: ignore[union-attr]
-        _AssistantMessage([_ToolUseBlock("bash", {"command": "ls"})])
+        _StreamEvent({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "bash"}}),
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"command":'}}),
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": ' "ls"}'}}),
+        _StreamEvent({"type": "content_block_stop"}),
+        _ResultMessage(),
     ]
 
-    chunks: list[str] = []
-    async for chunk in session.stream_output():
+    chunks = []
+    async for chunk in session.stream_response():
         chunks.append(chunk)
 
-    assert len(chunks) == 1
-    assert "bash" in chunks[0]
-    assert "ls" in chunks[0]
+    # Should have tool_start, tool_done events
+    tool_starts = [c for c in chunks if isinstance(c, dict) and c.get("type") == "tool_start"]
+    tool_dones = [c for c in chunks if isinstance(c, dict) and c.get("type") == "tool_done"]
+    assert len(tool_starts) == 1
+    assert tool_starts[0]["name"] == "bash"
+    assert len(tool_dones) == 1
+    assert tool_dones[0]["input"] == {"command": "ls"}
 
 
 @pytest.mark.anyio
-async def test_stream_output_result_message_sets_idle() -> None:
+async def test_stream_response_result_message_sets_idle() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     session.status = AgentStatus.active
     session._client._messages = [  # type: ignore[union-attr]
-        _ResultMessage("Task complete.")
+        _ResultMessage()
     ]
 
-    chunks: list[str] = []
-    async for chunk in session.stream_output():
-        chunks.append(chunk)
+    async for _ in session.stream_response():
+        pass
 
-    assert "Task complete." in chunks
     assert session.status == AgentStatus.idle
 
 
 @pytest.mark.anyio
-async def test_stream_output_system_message_captures_session_id() -> None:
+async def test_stream_response_system_message_captures_session_id() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     session._client._messages = [  # type: ignore[union-attr]
-        _SystemMessage(subtype="init", session_id="sess-xyz-999")
+        _SystemMessage(subtype="init", session_id="sess-xyz-999"),
+        _ResultMessage(),
     ]
 
-    async for _ in session.stream_output():
+    async for _ in session.stream_response():
         pass
 
     assert session.session_id == "sess-xyz-999"
 
 
 @pytest.mark.anyio
-async def test_stream_output_no_client_yields_nothing() -> None:
+async def test_stream_response_no_client_yields_nothing() -> None:
     session = AgentSession(team_name="team-a", agent_name="worker-1")
     session._client = None
 
-    chunks: list[str] = []
-    async for chunk in session.stream_output():
+    chunks = []
+    async for chunk in session.stream_response():
         chunks.append(chunk)
 
     assert chunks == []
 
 
 @pytest.mark.anyio
-async def test_stream_output_mixed_messages() -> None:
+async def test_stream_response_mixed_messages() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1")
     session._client._messages = [  # type: ignore[union-attr]
         _SystemMessage(subtype="init", session_id="s-1"),
-        _AssistantMessage([_TextBlock("Step 1"), _ToolUseBlock("read_file", {"path": "/x"})]),
-        _ResultMessage("Done"),
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Step 1"}}),
+        _StreamEvent({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "read_file"}}),
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"path": "/x"}'}}),
+        _StreamEvent({"type": "content_block_stop"}),
+        _ResultMessage(),
     ]
 
-    chunks: list[str] = []
-    async for chunk in session.stream_output():
+    chunks = []
+    async for chunk in session.stream_response():
         chunks.append(chunk)
 
     assert session.session_id == "s-1"
-    assert any("Step 1" in c for c in chunks)
-    assert any("read_file" in c for c in chunks)
-    assert "Done" in chunks
+    assert any(c == "Step 1" for c in chunks if isinstance(c, str))
+    tool_dones = [c for c in chunks if isinstance(c, dict) and c.get("type") == "tool_done"]
+    assert len(tool_dones) == 1
+    assert tool_dones[0]["name"] == "read_file"
     assert session.status == AgentStatus.idle
+
+
+@pytest.mark.anyio
+async def test_stream_response_todo_write_detection() -> None:
+    """Verify TodoWrite tool calls are captured with correct input."""
+    mgr = _make_manager()
+    session = await mgr.spawn_agent("team-a", "worker-1")
+    todo_json = json.dumps({"todos": [{"id": "1", "content": "Fix bug", "status": "pending"}]})
+    session._client._messages = [  # type: ignore[union-attr]
+        _StreamEvent({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "TodoWrite"}}),
+        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": todo_json}}),
+        _StreamEvent({"type": "content_block_stop"}),
+        _ResultMessage(),
+    ]
+
+    chunks = []
+    async for chunk in session.stream_response():
+        chunks.append(chunk)
+
+    tool_dones = [c for c in chunks if isinstance(c, dict) and c.get("type") == "tool_done"]
+    assert len(tool_dones) == 1
+    assert tool_dones[0]["name"] == "TodoWrite"
+    assert tool_dones[0]["input"]["todos"][0]["content"] == "Fix bug"

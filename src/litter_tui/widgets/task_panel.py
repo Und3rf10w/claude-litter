@@ -136,11 +136,42 @@ class _TaskItem(ListItem):
         self.post_message(TaskSelected(task_id))
 
 
+_PRIORITY_ICONS = {
+    "high": "\u2191",     # ↑
+    "medium": "\u2192",   # →
+    "low": "\u2193",      # ↓
+}
+
+
+class _TodoItem(ListItem):
+    """A single todo item row."""
+
+    def __init__(self, todo: object) -> None:
+        super().__init__()
+        self._todo = todo
+
+    def compose(self) -> ComposeResult:
+        todo = self._todo
+        status = getattr(todo, "status", None)
+        status_val = status.value if status else "pending"
+        priority = getattr(todo, "priority", "medium")
+        content = getattr(todo, "content", "")
+        todo_id = getattr(todo, "id", "")
+
+        icon = _ICONS.get(status_val, "○")
+        priority_icon = _PRIORITY_ICONS.get(priority, "→")
+        css_class = _STATUS_CLASSES.get(status_val, "")
+
+        label_text = f"{icon} {priority_icon} [{todo_id}] {content}"
+        yield Label(label_text, classes=f"task-item {css_class}", markup=False)
+
+
 class TaskPanel(Widget):
     """Slide-out task panel from the right side of the screen.
 
     Shows tasks with status icons, supports filtering and sorting.
     Posts TaskSelected messages on task click.
+    Also displays agent todo items captured from TodoWrite tool calls.
     """
 
     DEFAULT_CSS = DEFAULT_CSS
@@ -148,6 +179,7 @@ class TaskPanel(Widget):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._all_tasks: list[dict] = []
+        self._all_todos: list = []
         self._filter: str | None = None
         self._sort_by: str = "id"
         self._visible: bool = False
@@ -202,10 +234,20 @@ class TaskPanel(Widget):
         task_list.clear()
         for task in self._get_filtered_sorted_tasks():
             task_list.append(_TaskItem(task))
+        # Append agent todos if present
+        if self._all_todos:
+            task_list.append(ListItem(Label("── Agent Todos ──", classes="task-panel-title")))
+            for todo in self._all_todos:
+                task_list.append(_TodoItem(todo))
 
     def update_tasks(self, tasks: list) -> None:
         """Refresh the task list with new data."""
         self._all_tasks = tasks
+        self._refresh_list()
+
+    def update_todos(self, todos: list) -> None:
+        """Update the agent todo items (from TodoWrite tool calls)."""
+        self._all_todos = todos
         self._refresh_list()
 
     def toggle(self) -> None:

@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import AsyncIterator
 
-if TYPE_CHECKING:
-    pass
+import anyio
+
+_log = logging.getLogger("litter_tui.agent_manager")
+
+
+from litter_tui.services.claude_settings import ClaudeSettings
+
+
+def _read_user_model() -> str | None:
+    """Read the ``model`` field from ``~/.claude/settings.json``.
+
+    Returns the raw value (e.g. ``"opus[1m]"``, ``"sonnet"``) or *None*
+    if the file is missing / unreadable / has no model key.
+    """
+    return ClaudeSettings.load().model
 
 
 class AgentStatus(Enum):
@@ -23,82 +38,201 @@ class AgentStatus(Enum):
 class AgentSession:
     team_name: str
     agent_name: str
-    model: str = "sonnet"
+    model: str | None = None
     session_id: str | None = None
     status: AgentStatus = AgentStatus.starting
     output_buffer: list[str] = field(default_factory=list)
+    server_info: dict | None = field(default=None, repr=False)
     _client: object | None = field(default=None, repr=False)
+    _connected: bool = field(default=False, repr=False)
 
     async def start(self) -> None:
-        """Initialize ClaudeSDKClient for this session."""
+        """Initialize and connect ClaudeSDKClient for this session."""
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
-        options = ClaudeAgentOptions(model=self.model)
+        # Load env vars from settings.json so the CLI subprocess gets
+        # ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, model aliases, etc.
+        settings = ClaudeSettings.load()
+
+        opts: dict = {
+            "include_partial_messages": True,
+            "env": settings.env,
+        }
+        if self.model:
+            opts["model"] = self.model
+        options = ClaudeAgentOptions(**opts)
         self._client = ClaudeSDKClient(options)
+
+        # Log the exact CLI command for debugging
+        _log.info("start: connecting with options model=%r, include_partial=%r",
+                  self.model, getattr(options, 'include_partial_messages', None))
+
+        await self._client.connect()
+        self._connected = True
+
+        # Log the command that was actually run
+        try:
+            query = getattr(self._client, '_query', None)
+            if query:
+                tp = getattr(query, 'transport', None)
+                if tp and hasattr(tp, '_build_command'):
+                    cmd = tp._build_command()
+                    _log.info("start: CLI command = %s", ' '.join(cmd))
+        except Exception:
+            pass
+
+        # Fetch available commands for autocomplete
+        self.server_info = await self._client.get_server_info()
         self.status = AgentStatus.idle
 
-    async def send_prompt(self, prompt: str) -> None:
-        """Send a prompt to the agent."""
-        if self._client is None:
-            await self.start()
+    async def send_prompt(self, prompt: str, images: list[tuple[str, bytes]] | None = None) -> None:
+        """Send a prompt (with optional images) and start a new turn."""
+        if not self._connected:
+                await self.start()
+
+        if images:
+            content: list[dict] = [{"type": "text", "text": prompt}]
+            for media_type, data in images:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.b64encode(data).decode(),
+                    },
+                })
+
+            async def _single_message():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": content},
+                }
+
+            await self._client.query(_single_message())
+        else:
+            await self._client.query(prompt)
+
+        _log.info("send_prompt: query() returned")
         self.status = AgentStatus.active
-        self._client.query(prompt)  # type: ignore[union-attr]
+
+    async def stream_response(self) -> AsyncIterator[str | dict]:
+        """Stream ONE turn's response.
+
+        Yields:
+            str — text deltas (token-by-token)
+            dict — tool events: {"type": "tool_start", "name": ...}
+                                {"type": "tool_done", "name": ..., "input": ...}
+
+        Handles both streaming mode (StreamEvent messages with deltas) and
+        non-streaming fallback (complete AssistantMessage with content blocks).
+
+        Terminates after ResultMessage for this turn.
+        """
+        if self._client is None:
+            _log.warning("stream_response: _client is None, returning immediately")
+            return
+
+        from claude_agent_sdk import ResultMessage, SystemMessage
+        from claude_agent_sdk.types import (
+            AssistantMessage,
+            StreamEvent,
+            TextBlock,
+            ToolUseBlock,
+        )
+
+        current_tool: str | None = None
+        tool_input = ""
+        got_stream_events = False  # Track whether we received streaming deltas
+
+        _log.debug("stream_response: entering receive_response loop")
+        _log.debug("stream_response: client=%r, connected=%s", self._client, self._connected)
+
+        # Yield control to allow the event loop to process pending I/O
+        # (ensures _read_messages background task has a chance to buffer messages)
+        await anyio.sleep(0)
+
+        async for msg in self._client.receive_response():
+            _log.debug("stream_response: got msg type=%s repr=%.200s", type(msg).__name__, repr(msg))
+            if isinstance(msg, SystemMessage):
+                subtype = getattr(msg, "subtype", None)
+                if subtype == "init":
+                    self.session_id = getattr(msg, "session_id", self.session_id)
+                elif subtype == "api_retry":
+                    data = getattr(msg, "data", {})
+                    attempt = data.get("attempt", "?")
+                    error = data.get("error", "unknown")
+                    status = data.get("error_status", "?")
+                    _log.warning("stream_response: API retry #%s (HTTP %s: %s)", attempt, status, error)
+                    yield {"type": "api_retry", "attempt": attempt, "error": error, "status": status}
+
+            elif isinstance(msg, StreamEvent):
+                event = msg.event
+                etype = event.get("type")
+
+                if etype == "content_block_start":
+                    cb = event.get("content_block", {})
+                    if cb.get("type") == "tool_use":
+                        current_tool = cb.get("name")
+                        tool_input = ""
+                        yield {"type": "tool_start", "name": current_tool}
+
+                elif etype == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        got_stream_events = True
+                        text = delta.get("text", "")
+                        self.output_buffer.append(text)
+                        yield text
+                    elif delta.get("type") == "input_json_delta":
+                        got_stream_events = True
+                        tool_input += delta.get("partial_json", "")
+
+                elif etype == "content_block_stop":
+                    if current_tool:
+                        parsed = {}
+                        try:
+                            parsed = json.loads(tool_input)
+                        except Exception:
+                            pass
+                        yield {"type": "tool_done", "name": current_tool, "input": parsed}
+                        current_tool = None
+                        tool_input = ""
+
+            elif isinstance(msg, AssistantMessage):
+                # The CLI sends a complete AssistantMessage after the streaming
+                # deltas. Only use it as fallback if we got NO stream events.
+                if got_stream_events:
+                    _log.debug("stream_response: skipping AssistantMessage (already streamed)")
+                else:
+                    _log.info("stream_response: got AssistantMessage (non-streaming fallback), %d content blocks", len(msg.content))
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text:
+                            self.output_buffer.append(block.text)
+                            yield block.text
+                        elif isinstance(block, ToolUseBlock):
+                            yield {"type": "tool_start", "name": block.name}
+                            yield {"type": "tool_done", "name": block.name, "input": block.input}
+
+            elif isinstance(msg, ResultMessage):
+                self.status = AgentStatus.idle
+                _log.debug("stream_response: got ResultMessage, turn complete")
 
     async def interrupt(self) -> None:
         """Interrupt the current agent operation."""
         if self._client is not None:
-            self._client.interrupt()  # type: ignore[union-attr]
+            await self._client.interrupt()
         self.status = AgentStatus.idle
 
     async def stop(self) -> None:
-        """Stop the agent session."""
+        """Stop the agent session and disconnect."""
         if self._client is not None:
             try:
-                self._client.interrupt()  # type: ignore[union-attr]
+                await self._client.disconnect()
             except Exception:
                 pass
             self._client = None
+        self._connected = False
         self.status = AgentStatus.stopped
-
-    async def stream_output(self) -> AsyncIterator[str]:
-        """Stream output messages from the agent.
-
-        Yields text content from AssistantMessages and result summaries from ResultMessages.
-        Captures session_id from SystemMessage init events.
-        Sets status to idle when a ResultMessage is received.
-        """
-        if self._client is None:
-            return
-
-        from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolUseBlock
-
-        async for msg in self._client.receive_response():  # type: ignore[union-attr]
-            if isinstance(msg, SystemMessage):
-                if getattr(msg, "subtype", None) == "init":
-                    sid = getattr(msg, "session_id", None)
-                    if sid is not None:
-                        self.session_id = sid
-
-            elif isinstance(msg, AssistantMessage):
-                content = getattr(msg, "content", [])
-                for block in content:
-                    if isinstance(block, TextBlock):
-                        text = block.text
-                        self.output_buffer.append(text)
-                        yield text
-                    elif isinstance(block, ToolUseBlock):
-                        tool_name = getattr(block, "name", "unknown")
-                        tool_input = getattr(block, "input", {})
-                        formatted = f"[Tool: {tool_name}] {json.dumps(tool_input)}"
-                        self.output_buffer.append(formatted)
-                        yield formatted
-
-            elif isinstance(msg, ResultMessage):
-                result_text = getattr(msg, "result", "")
-                if result_text:
-                    self.output_buffer.append(result_text)
-                    yield result_text
-                self.status = AgentStatus.idle
 
 
 class AgentManager:
@@ -107,19 +241,20 @@ class AgentManager:
     def __init__(self) -> None:
         self.sessions: dict[tuple[str, str], AgentSession] = {}
         self._detach_dir = Path.home() / ".claude" / "litter-tui"
+        self._default_model: str | None = _read_user_model()
 
     async def spawn_agent(
         self,
         team_name: str,
         agent_name: str,
-        model: str = "sonnet",
+        model: str | None = None,
         initial_prompt: str = "",
     ) -> AgentSession:
         """Spawn a new agent session, optionally sending an initial prompt."""
         session = AgentSession(
             team_name=team_name,
             agent_name=agent_name,
-            model=model,
+            model=model or self._default_model,
         )
         await session.start()
         self.sessions[(team_name, agent_name)] = session
@@ -156,7 +291,7 @@ class AgentManager:
     ) -> AgentSession:
         """Create a new agent session with the same model as an existing one."""
         source = self.sessions.get((team_name, agent_name))
-        model = source.model if source is not None else "sonnet"
+        model = source.model if source is not None else self._default_model
         return await self.spawn_agent(team_name, new_name, model=model)
 
     async def move_agent(
@@ -165,16 +300,11 @@ class AgentManager:
         agent_name: str,
         to_team: str,
     ) -> AgentSession:
-        """Move an agent session from one team to another.
-
-        Updates the session's team_name and re-registers it under the new key.
-        The old key is removed from the registry.
-        """
+        """Move an agent session from one team to another."""
         key = (from_team, agent_name)
         session = self.sessions.pop(key, None)
 
         if session is None:
-            # Spawn fresh if no existing session
             return await self.spawn_agent(to_team, agent_name)
 
         session.team_name = to_team
@@ -182,22 +312,20 @@ class AgentManager:
         return session
 
     async def detach(self, team_name: str, agent_name: str) -> None:
-        """Detach an agent: save its session_id to disk then stop tracking it in memory.
-
-        Persists to ~/.claude/litter-tui/detached-sessions.json.
-        """
+        """Detach an agent: save its session_id to disk then stop tracking it in memory."""
         key = (team_name, agent_name)
         session = self.sessions.get(key)
         if session is None:
             return
 
-        self._detach_dir.mkdir(parents=True, exist_ok=True)
-        detach_file = self._detach_dir / "detached-sessions.json"
+        detach_dir = anyio.Path(self._detach_dir)
+        await detach_dir.mkdir(parents=True, exist_ok=True)
+        detach_file = detach_dir / "detached-sessions.json"
 
         data: dict = {}
-        if detach_file.exists():
+        if await detach_file.exists():
             try:
-                data = json.loads(detach_file.read_text())
+                data = json.loads(await detach_file.read_text())
             except (json.JSONDecodeError, OSError):
                 data = {}
 
@@ -205,25 +333,19 @@ class AgentManager:
             "session_id": session.session_id,
             "model": session.model,
         }
-        detach_file.write_text(json.dumps(data, indent=2))
+        await detach_file.write_text(json.dumps(data, indent=2))
 
-        # Stop the session but don't destroy persisted data
         await session.stop()
         del self.sessions[key]
 
     async def reattach(self, team_name: str, agent_name: str) -> AgentSession | None:
-        """Reattach a previously detached agent using its saved session_id.
-
-        Reads ~/.claude/litter-tui/detached-sessions.json to find stored metadata,
-        spawns a new session, and sets the session_id so the SDK can resume it.
-        Returns None if no detached record is found.
-        """
-        detach_file = self._detach_dir / "detached-sessions.json"
-        if not detach_file.exists():
+        """Reattach a previously detached agent using its saved session_id."""
+        detach_file = anyio.Path(self._detach_dir / "detached-sessions.json")
+        if not await detach_file.exists():
             return None
 
         try:
-            data = json.loads(detach_file.read_text())
+            data = json.loads(await detach_file.read_text())
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -232,16 +354,23 @@ class AgentManager:
             return None
 
         session_id: str | None = entry.get("session_id")
-        model: str = entry.get("model", "sonnet")
+        model: str | None = entry.get("model") or self._default_model
 
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
-        resume_opts: dict = {"model": model}
+        settings = ClaudeSettings.load()
+        resume_opts: dict = {
+            "include_partial_messages": True,
+            "env": settings.env,
+        }
+        if model:
+            resume_opts["model"] = model
         if session_id:
             resume_opts["resume"] = session_id
 
         options = ClaudeAgentOptions(**resume_opts)
         client = ClaudeSDKClient(options)
+        await client.connect()
 
         session = AgentSession(
             team_name=team_name,
@@ -250,6 +379,7 @@ class AgentManager:
             session_id=session_id,
             status=AgentStatus.idle,
             _client=client,
+            _connected=True,
         )
         self.sessions[(team_name, agent_name)] = session
 
@@ -257,6 +387,6 @@ class AgentManager:
         del data[team_name][agent_name]
         if not data[team_name]:
             del data[team_name]
-        detach_file.write_text(json.dumps(data, indent=2))
+        await detach_file.write_text(json.dumps(data, indent=2))
 
         return session

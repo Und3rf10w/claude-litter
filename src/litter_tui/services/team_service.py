@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import anyio
+
 
 class TeamService:
     def __init__(self, base_path: Path | None = None) -> None:
@@ -30,6 +32,19 @@ class TeamService:
                     raise TimeoutError(f"Could not acquire lock: {lock_dir}")
                 time.sleep(0.05)
 
+    async def _acquire_lock_async(self, path: Path, timeout: float = 5.0) -> Path:
+        """Async version of _acquire_lock that yields to the event loop while waiting."""
+        lock_dir = path.with_suffix(".lock")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                os.mkdir(lock_dir)
+                return lock_dir
+            except FileExistsError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Could not acquire lock: {lock_dir}")
+                await anyio.sleep(0.05)
+
     def _release_lock(self, lock_dir: Path) -> None:
         try:
             os.rmdir(lock_dir)
@@ -50,6 +65,17 @@ class TeamService:
     def _locked_update(self, path: Path, update_fn) -> dict | list:
         """Read → transform → write under a lock."""
         lock = self._acquire_lock(path)
+        try:
+            data = self._read_json(path) if path.exists() else {}
+            result = update_fn(data)
+            self._write_json(path, result if result is not None else data)
+            return result if result is not None else data
+        finally:
+            self._release_lock(lock)
+
+    async def _locked_update_async(self, path: Path, update_fn) -> dict | list:
+        """Async version: read → transform → write under a lock without blocking the event loop."""
+        lock = await self._acquire_lock_async(path)
         try:
             data = self._read_json(path) if path.exists() else {}
             result = update_fn(data)

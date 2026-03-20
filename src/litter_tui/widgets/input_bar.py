@@ -1,31 +1,38 @@
-"""InputBar widget — prompt/command input with history and mode indicator."""
+"""InputBar widget — prompt/command input with history, autocomplete, and mode indicator."""
 
 from __future__ import annotations
 
+import logging
+import mimetypes
 from collections import deque
+from pathlib import Path
 
+from textual import events, on, work
 from textual.app import ComposeResult
-from textual.widget import Widget
-from textual.widgets import Input, Button, Label
-from textual.containers import Horizontal
 from textual.message import Message
-from textual import on
+from textual.widget import Widget
+from textual.widgets import Button, Label, OptionList, TextArea
+from textual.widgets.option_list import Option
+
+_log = logging.getLogger("litter_tui.input_bar")
 
 
 # ---------------------------------------------------------------------------
 # Custom messages
 # ---------------------------------------------------------------------------
 
+
 class PromptSubmitted(Message):
     """Fired when the user submits a plain (non-command) prompt."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, images: list[tuple[str, bytes]] | None = None) -> None:
         super().__init__()
         self.text = text
+        self.images = images
 
 
 class CommandSubmitted(Message):
-    """Fired when the user submits a :-prefixed command."""
+    """Fired when the user submits a /-prefixed command."""
 
     def __init__(self, command: str, args: str) -> None:
         super().__init__()
@@ -38,30 +45,95 @@ class InterruptRequested(Message):
 
 
 # ---------------------------------------------------------------------------
-# InputBar widget
+# PromptTextArea — TextArea subclass with submit + conditional Up/Down
 # ---------------------------------------------------------------------------
 
-_KNOWN_COMMANDS = {
-    "spawn", "kill", "msg", "broadcast", "task", "team",
-    "kitty", "detach", "vim",
+
+class PromptTextArea(TextArea):
+    """TextArea subclass that delegates Up/Down to parent when appropriate."""
+
+    class SubmitRequested(Message):
+        """Fired on Ctrl+Enter or Enter (when single-line)."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        key = event.key
+
+        # Ctrl+Enter → always submit
+        if key in ("ctrl+enter", "ctrl+j"):
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.SubmitRequested())
+            return
+
+        # Shift+Enter or Alt+Enter → always insert newline.
+        # Note: Most terminals don't distinguish Shift+Enter from Enter
+        # (same escape sequence), so Alt+Enter is the reliable alternative.
+        if key in ("shift+enter", "alt+enter"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+
+        # Enter on single-line content → submit
+        if key == "enter" and "\n" not in self.text:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.SubmitRequested())
+            return
+
+        # Up/Down: if single-line content, let parent handle (history / autocomplete)
+        if key in ("up", "down") and "\n" not in self.text:
+            return  # don't consume — bubbles to InputBar.on_key()
+
+        await super()._on_key(event)
+
+
+# ---------------------------------------------------------------------------
+# Non-focusable completion list
+# ---------------------------------------------------------------------------
+
+
+class _CompletionList(OptionList, can_focus=False):
+    """Non-focusable completion list — focus stays in PromptTextArea."""
+
+
+# ---------------------------------------------------------------------------
+# TUI commands (always available)
+# ---------------------------------------------------------------------------
+
+_TUI_COMMANDS: dict[str, str] = {
+    "spawn": "Spawn a new agent",
+    "kill": "Kill an agent session",
+    "msg": "Send a message to an agent",
+    "broadcast": "Broadcast to all agents",
+    "task": "Create or manage tasks",
+    "team": "Team management commands",
+    "kitty": "Kitty terminal integration",
+    "detach": "Detach current session",
+    "attach": "Attach image file to next prompt",
 }
 
 _MAX_HISTORY = 50
 
 
+# ---------------------------------------------------------------------------
+# InputBar widget
+# ---------------------------------------------------------------------------
+
+
 class InputBar(Widget):
-    """Horizontal prompt/command input bar with history and mode indicator.
+    """Horizontal prompt/command input bar with history, autocomplete, and mode indicator.
 
     Emits:
         PromptSubmitted  — plain text submitted
-        CommandSubmitted — :command [args] submitted
+        CommandSubmitted — /command [args] submitted
         InterruptRequested — Ctrl+C pressed
     """
 
     DEFAULT_CSS = """
     InputBar {
         height: auto;
-        max-height: 5;
+        max-height: 8;
         layout: horizontal;
         background: $surface;
         border-top: solid $primary-darken-2;
@@ -81,12 +153,28 @@ class InputBar(Widget):
         text-style: bold;
     }
 
-    InputBar Input {
+    InputBar PromptTextArea {
         width: 1fr;
+        height: auto;
+        max-height: 6;
     }
 
     InputBar Button {
         min-width: 8;
+    }
+
+    InputBar #cmd-completions {
+        display: none;
+        overlay: screen;
+        width: 1fr;
+        height: auto;
+        max-height: 10;
+        background: $surface;
+        border: tall $border;
+    }
+
+    InputBar #cmd-completions.-visible {
+        display: block;
     }
     """
 
@@ -96,14 +184,17 @@ class InputBar(Widget):
         self._history_index: int = -1  # -1 means not navigating history
         self._pending_input: str = ""  # saved draft while navigating history
         self._command_mode: bool = False
+        self._all_commands: dict[str, str] = dict(_TUI_COMMANDS)
+        self._pending_images: list[tuple[str, bytes]] = []
 
     # ------------------------------------------------------------------
     # Composition
     # ------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
+        yield _CompletionList(id="cmd-completions")
         yield Label(">", classes="mode-indicator")
-        yield Input(placeholder="Enter prompt or :command …", id="prompt-input")
+        yield PromptTextArea("", id="prompt-input")
         yield Button("Send", id="send-btn", variant="primary")
 
     # ------------------------------------------------------------------
@@ -111,8 +202,8 @@ class InputBar(Widget):
     # ------------------------------------------------------------------
 
     @property
-    def _input(self) -> Input:
-        return self.query_one("#prompt-input", Input)
+    def _input(self) -> PromptTextArea:
+        return self.query_one("#prompt-input", PromptTextArea)
 
     @property
     def _indicator(self) -> Label:
@@ -124,7 +215,7 @@ class InputBar(Widget):
         self._command_mode = active
         indicator = self._indicator
         if active:
-            indicator.update(":")
+            indicator.update("/")
             indicator.add_class("command-mode")
         else:
             indicator.update(">")
@@ -133,7 +224,9 @@ class InputBar(Widget):
     def _submit(self, value: str) -> None:
         """Parse and post the appropriate message for *value*."""
         text = value.strip()
+        _log.info("_submit called, text=%r", text)
         if not text:
+            _log.info("_submit: empty text, returning")
             return
 
         # Save to history
@@ -143,38 +236,123 @@ class InputBar(Widget):
         self._pending_input = ""
 
         # Clear input
-        self._input.value = ""
+        self._input.load_text("")
         self._set_command_mode(False)
+        self._hide_completions()
 
-        if text.startswith(":"):
+        if text.startswith("/"):
             parts = text[1:].split(None, 1)
             command = parts[0] if parts else ""
             args = parts[1] if len(parts) > 1 else ""
+
+            # Handle /attach locally
+            if command == "attach":
+                self._handle_attach(args)
+                return
+
             self.post_message(CommandSubmitted(command=command, args=args))
         else:
-            self.post_message(PromptSubmitted(text=text))
+            images = self._pending_images if self._pending_images else None
+            _log.info("Posting PromptSubmitted(text=%r, images=%s)", text, images is not None)
+            self.post_message(PromptSubmitted(text=text, images=images))
+            self._pending_images = []
+
+    def _handle_attach(self, path_str: str) -> None:
+        """Attach an image file for the next prompt."""
+        path_str = path_str.strip()
+        if not path_str:
+            self.notify("Usage: /attach <file-path>", severity="warning")
+            return
+        p = Path(path_str).expanduser()
+        if not p.is_file():
+            self.notify(f"File not found: {p}", severity="error")
+            return
+        media_type, _ = mimetypes.guess_type(str(p))
+        if not media_type or not media_type.startswith("image/"):
+            self.notify(f"Not an image file: {p}", severity="error")
+            return
+        self._read_and_attach(p, media_type)
+
+    @work(exclusive=True, group="attach")
+    async def _read_and_attach(self, path: Path, media_type: str) -> None:
+        """Read image bytes in a background worker to avoid blocking the event loop."""
+        import anyio
+
+        try:
+            data = await anyio.Path(path).read_bytes()
+            self._pending_images.append((media_type, data))
+            self.notify(f"Attached: {path.name} ({len(self._pending_images)} image(s) pending)")
+        except Exception as exc:
+            self.notify(f"Failed to read {path.name}: {exc}", severity="error")
+
+    # ------------------------------------------------------------------
+    # Autocomplete
+    # ------------------------------------------------------------------
+
+    def update_commands(self, commands: dict[str, str]) -> None:
+        """Merge in additional commands (e.g., from Claude Code server_info)."""
+        self._all_commands.update(commands)
+
+    def _update_completions(self, text: str) -> None:
+        """Show/hide autocomplete based on current first-line text."""
+        completions = self.query_one("#cmd-completions", _CompletionList)
+        if text.startswith("/") and " " not in text and "\n" not in text and len(text) > 0:
+            partial = text[1:].lower()
+            matches = [
+                (n, d)
+                for n, d in self._all_commands.items()
+                if not partial or n.lower().startswith(partial)
+            ]
+            if matches:
+                completions.clear_options()
+                for name, desc in sorted(matches):
+                    completions.add_option(Option(f"/{name}  {desc}", id=name))
+                completions.add_class("-visible")
+                completions.highlighted = 0
+                return
+        completions.remove_class("-visible")
+
+    def _hide_completions(self) -> None:
+        try:
+            self.query_one("#cmd-completions", _CompletionList).remove_class("-visible")
+        except Exception:
+            pass
+
+    def _accept_completion(self, completions: _CompletionList) -> None:
+        """Accept the highlighted completion."""
+        idx = completions.highlighted
+        if idx is not None and idx >= 0:
+            option = completions.get_option_at_index(idx)
+            if option and option.id:
+                self._input.load_text(f"/{option.id} ")
+                self._input.move_cursor(self._input.document.end)
+        completions.remove_class("-visible")
 
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
 
-    @on(Input.Changed, "#prompt-input")
-    def _on_input_changed(self, event: Input.Changed) -> None:
-        """Update command-mode indicator as user types."""
-        self._set_command_mode(event.value.startswith(":"))
+    @on(TextArea.Changed, "#prompt-input")
+    def _on_input_changed(self, event: TextArea.Changed) -> None:
+        """Update command-mode indicator and autocomplete as user types."""
+        text = event.text_area.text
+        first_line = text.split("\n", 1)[0]
+        self._set_command_mode(first_line.startswith("/"))
         # Reset history navigation when user types manually
         self._history_index = -1
+        self._update_completions(first_line)
 
-    @on(Input.Submitted, "#prompt-input")
-    def _on_input_submitted(self, event: Input.Submitted) -> None:
-        self._submit(event.value)
+    @on(PromptTextArea.SubmitRequested)
+    def _on_submit_requested(self) -> None:
+        _log.info("SubmitRequested received, text=%r", self._input.text)
+        self._submit(self._input.text)
 
     @on(Button.Pressed, "#send-btn")
     def _on_send_pressed(self, event: Button.Pressed) -> None:
-        self._submit(self._input.value)
+        self._submit(self._input.text)
 
-    def on_key(self, event) -> None:
-        """Handle Up/Down history navigation and Ctrl+C interrupt."""
+    def on_key(self, event: events.Key) -> None:
+        """Handle autocomplete navigation, history, and Ctrl+C interrupt."""
         key = event.key
 
         if key == "ctrl+c":
@@ -183,6 +361,36 @@ class InputBar(Widget):
             self.post_message(InterruptRequested())
             return
 
+        # Autocomplete takes priority
+        try:
+            completions = self.query_one("#cmd-completions", _CompletionList)
+            is_completing = completions.has_class("-visible")
+        except Exception:
+            is_completing = False
+
+        if is_completing:
+            if key == "up":
+                event.prevent_default()
+                event.stop()
+                completions.action_cursor_up()
+                return
+            if key == "down":
+                event.prevent_default()
+                event.stop()
+                completions.action_cursor_down()
+                return
+            if key in ("tab",):
+                event.prevent_default()
+                event.stop()
+                self._accept_completion(completions)
+                return
+            if key == "escape":
+                event.prevent_default()
+                event.stop()
+                completions.remove_class("-visible")
+                return
+
+        # History navigation (only when not completing)
         if key == "up":
             event.prevent_default()
             event.stop()
@@ -196,13 +404,13 @@ class InputBar(Widget):
             return
 
     def _navigate_history(self, direction: int) -> None:
-        """Move through history.  direction=-1 → older, +1 → newer."""
+        """Move through history.  direction=-1 -> older, +1 -> newer."""
         if not self._history:
             return
 
         if self._history_index == -1:
             # Starting navigation — save current draft
-            self._pending_input = self._input.value
+            self._pending_input = self._input.text
             if direction == -1:
                 self._history_index = len(self._history) - 1
             else:
@@ -214,13 +422,14 @@ class InputBar(Widget):
             if new_index >= len(self._history):
                 # Past newest — restore the draft
                 self._history_index = -1
-                self._input.value = self._pending_input
-                self._set_command_mode(self._pending_input.startswith(":"))
+                self._input.load_text(self._pending_input)
+                self._set_command_mode(self._pending_input.startswith("/"))
+                self._input.move_cursor(self._input.document.end)
                 return
             self._history_index = new_index
 
         entry = self._history[self._history_index]
-        self._input.value = entry
-        self._set_command_mode(entry.startswith(":"))
+        self._input.load_text(entry)
+        self._set_command_mode(entry.startswith("/"))
         # Move cursor to end
-        self._input.cursor_position = len(entry)
+        self._input.move_cursor(self._input.document.end)

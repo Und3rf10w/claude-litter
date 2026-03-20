@@ -143,7 +143,7 @@ class StateManager:
                     tg.start_soon(self._watch_loop)
 
         # Fire and forget — run in background
-        asyncio.get_event_loop().create_task(_runner())
+        asyncio.get_running_loop().create_task(_runner())
 
     async def stop(self) -> None:
         """Cancel the background watcher."""

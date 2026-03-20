@@ -6,6 +6,7 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from litter_tui.config import Config
+from litter_tui.services.agent_manager import AgentManager
 
 
 class LitterTuiApp(App):
@@ -16,26 +17,26 @@ class LitterTuiApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
-        Binding("q", "quit", "Quit", show=False, priority=False),
         Binding("ctrl+t", "toggle_tasks", "Tasks"),
-        Binding("ctrl+m", "toggle_messages", "Messages"),
         Binding("ctrl+n", "new_team", "New Team"),
         Binding("ctrl+s", "spawn_agent", "Spawn Agent"),
         Binding("ctrl+d", "detach", "Detach"),
         Binding("escape", "maybe_quit", "Back/Quit"),
         Binding("f1", "help", "Help"),
-        Binding("tab", "focus_next", "Focus Next"),
+        Binding("f2", "toggle_messages", "Messages"),
+        Binding("f3", "settings", "Settings"),
     ]
 
     def __init__(self, config: Config | None = None, **kwargs: object) -> None:
         """Initialize the app with optional config."""
         super().__init__(**kwargs)
         self.config = config or Config()
+        self.agent_manager = AgentManager()
 
     def on_mount(self) -> None:
         """Push the main screen on startup."""
         from litter_tui.screens.main import MainScreen
-        self.push_screen(MainScreen())
+        self.push_screen(MainScreen(agent_manager=self.agent_manager))
 
     def compose(self) -> ComposeResult:
         """Compose the initial UI (placeholder; MainScreen replaces this)."""
@@ -75,3 +76,8 @@ class LitterTuiApp(App):
 
     def action_help(self) -> None:
         """Show help."""
+
+    def action_settings(self) -> None:
+        """Open the settings screen."""
+        from litter_tui.screens.settings import SettingsScreen
+        self.push_screen(SettingsScreen())

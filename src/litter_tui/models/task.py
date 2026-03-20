@@ -60,3 +60,27 @@ class Task:
         if self.metadata is not None:
             d["metadata"] = self.metadata
         return d
+
+
+@dataclass(frozen=True)
+class TodoItem:
+    """A todo item captured from agent TodoWrite tool_use blocks."""
+
+    id: str
+    content: str
+    status: TaskStatus
+    priority: str = "medium"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TodoItem":
+        raw_status = data.get("status", "pending")
+        try:
+            status = TaskStatus(raw_status)
+        except ValueError:
+            status = TaskStatus.pending
+        return cls(
+            id=str(data.get("id", "")),
+            content=data.get("content", ""),
+            status=status,
+            priority=data.get("priority", "medium"),
+        )

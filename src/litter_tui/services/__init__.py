@@ -3,5 +3,6 @@ from .state import StateManager
 from .agent_manager import AgentManager, AgentSession
 from .team_service import TeamService
 from .kitty import KittyService
+from .claude_settings import ClaudeSettings
 
-__all__ = ["StateManager", "AgentManager", "AgentSession", "TeamService", "KittyService"]
+__all__ = ["StateManager", "AgentManager", "AgentSession", "TeamService", "KittyService", "ClaudeSettings"]

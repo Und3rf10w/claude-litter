@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 
 from textual.app import App, ComposeResult
-from textual.widgets import Input
 
 from litter_tui.widgets.session_view import SessionView
 from litter_tui.widgets.input_bar import (
     InputBar,
     PromptSubmitted,
+    PromptTextArea,
     CommandSubmitted,
     InterruptRequested,
 )
@@ -50,11 +50,12 @@ class InputApp(App):
 
 async def _set_input(pilot, app: InputApp, text: str) -> None:
     """Set the input value directly and sync the InputBar state."""
-    input_widget = app.query_one("#prompt-input", Input)
-    input_widget.value = text
-    # Manually sync command-mode since setting .value directly skips Input.Changed
+    input_widget = app.query_one("#prompt-input", PromptTextArea)
+    input_widget.load_text(text)
+    input_widget.move_cursor(input_widget.document.end)
+    # Manually sync command-mode since setting text directly skips TextArea.Changed
     ib = app.query_one(InputBar)
-    ib._set_command_mode(text.startswith(":"))
+    ib._set_command_mode(text.startswith("/"))
     await pilot.pause()
 
 
@@ -124,13 +125,23 @@ class TestInputBar:
             assert ib is not None
 
     @pytest.mark.anyio
-    async def test_submit_on_enter_fires_prompt_submitted(self):
+    async def test_submit_fires_prompt_submitted(self):
         app = InputApp()
         async with app.run_test() as pilot:
             await _set_input(pilot, app, "hello there")
+            # Single-line enter triggers submit via PromptTextArea
             await pilot.press("enter")
             await pilot.pause()
         assert "hello there" in app.submitted
+
+    @pytest.mark.anyio
+    async def test_submit_via_ctrl_enter(self):
+        app = InputApp()
+        async with app.run_test() as pilot:
+            await _set_input(pilot, app, "ctrl enter test")
+            await pilot.press("ctrl+j")
+            await pilot.pause()
+        assert "ctrl enter test" in app.submitted
 
     @pytest.mark.anyio
     async def test_submit_via_send_button(self):
@@ -145,7 +156,7 @@ class TestInputBar:
     async def test_command_mode_detection(self):
         app = InputApp()
         async with app.run_test() as pilot:
-            await _set_input(pilot, app, ":spawn researcher sonnet")
+            await _set_input(pilot, app, "/spawn researcher sonnet")
             await pilot.press("enter")
             await pilot.pause()
         assert len(app.commands) == 1
@@ -157,7 +168,7 @@ class TestInputBar:
     async def test_command_no_args(self):
         app = InputApp()
         async with app.run_test() as pilot:
-            await _set_input(pilot, app, ":team")
+            await _set_input(pilot, app, "/team")
             await pilot.press("enter")
             await pilot.pause()
         assert len(app.commands) == 1
@@ -170,7 +181,7 @@ class TestInputBar:
         app = InputApp()
         async with app.run_test() as pilot:
             ib = app.query_one(InputBar)
-            await _set_input(pilot, app, ":")
+            await _set_input(pilot, app, "/")
             assert ib._command_mode is True
 
     @pytest.mark.anyio
@@ -193,11 +204,10 @@ class TestInputBar:
             await _set_input(pilot, app, "second entry")
             await pilot.press("enter")
             await pilot.pause()
-            # Focus the input and navigate up once
-            await pilot.click("#prompt-input")
-            await pilot.press("up")
+            # Navigate up once via internal method
+            ib._navigate_history(-1)
             await pilot.pause()
-            assert ib._input.value == "second entry"
+            assert ib._input.text == "second entry"
 
     @pytest.mark.anyio
     async def test_history_navigation_up_twice(self):
@@ -210,11 +220,11 @@ class TestInputBar:
             await _set_input(pilot, app, "beta")
             await pilot.press("enter")
             await pilot.pause()
-            # Navigate via internal method (avoids key routing through Input widget)
-            ib._navigate_history(-1)  # → beta
-            ib._navigate_history(-1)  # → alpha
+            # Navigate via internal method
+            ib._navigate_history(-1)  # -> beta
+            ib._navigate_history(-1)  # -> alpha
             await pilot.pause()
-            assert ib._input.value == "alpha"
+            assert ib._input.text == "alpha"
 
     @pytest.mark.anyio
     async def test_history_down_restores_draft(self):
@@ -226,10 +236,10 @@ class TestInputBar:
             await pilot.pause()
             await _set_input(pilot, app, "draft")
             # Navigate up then back down via internal method
-            ib._navigate_history(-1)  # → old
-            ib._navigate_history(1)   # → restore draft
+            ib._navigate_history(-1)  # -> old
+            ib._navigate_history(1)   # -> restore draft
             await pilot.pause()
-            assert ib._input.value == "draft"
+            assert ib._input.text == "draft"
 
     @pytest.mark.anyio
     async def test_empty_input_does_not_fire(self):
@@ -248,4 +258,4 @@ class TestInputBar:
             await pilot.press("enter")
             await pilot.pause()
             ib = app.query_one(InputBar)
-            assert ib._input.value == ""
+            assert ib._input.text == ""

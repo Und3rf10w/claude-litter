@@ -2,6 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import logging
+from pathlib import Path
+
+
+def _setup_logging() -> None:
+    """Configure file-based logging for debugging."""
+    log_path = Path.home() / ".claude" / "litter-tui" / "debug.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.DEBUG,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        force=True,
+    )
+    logging.getLogger("litter_tui").setLevel(logging.DEBUG)
 
 
 def main() -> None:
@@ -28,6 +43,8 @@ def main() -> None:
         help="Color theme (default: dark)",
     )
     args = parser.parse_args()
+
+    _setup_logging()
 
     from litter_tui.app import LitterTuiApp
     from litter_tui.config import Config
