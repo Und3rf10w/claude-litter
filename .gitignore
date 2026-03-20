@@ -6,5 +6,6 @@ dist/
 build/
 .venv/
 .pytest_cache/
+dev/
 screenshot.svg
 test_*.svg

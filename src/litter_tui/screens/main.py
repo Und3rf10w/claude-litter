@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical
 
 from litter_tui.models.task import TodoItem
 from litter_tui.services.agent_manager import AgentManager, AgentSession
+from litter_tui.services.team_service import TeamService
 from litter_tui.widgets.sidebar import TeamSidebar
 from litter_tui.widgets.tab_bar import SessionTabBar
 from litter_tui.widgets.session_view import SessionView, TodoWriteDetected
@@ -65,6 +66,7 @@ class MainScreen(Screen):
     def __init__(self, agent_manager: AgentManager | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._agent_manager = agent_manager or AgentManager()
+        self._team_service = TeamService()
         self._current_session: AgentSession | None = None
 
     def compose(self) -> ComposeResult:
@@ -88,6 +90,8 @@ class MainScreen(Screen):
         self._connect_default_agent()
         # Focus the input bar so the user can start typing immediately
         self.query_one("#prompt-input").focus()
+        # Populate the sidebar with any existing teams
+        self._refresh_sidebar()
 
     # ------------------------------------------------------------------
     # Prompt handling
@@ -233,3 +237,35 @@ class MainScreen(Screen):
     def toggle_messages(self) -> None:
         """Show/hide the message panel."""
         self.query_one("#message-panel", MessagePanel).toggle()
+
+    # ------------------------------------------------------------------
+    # Team management
+    # ------------------------------------------------------------------
+
+    def create_team(self, result: dict) -> None:
+        """Create a team from the dialog result and refresh the sidebar."""
+        name = result["name"]
+        description = result.get("description", "")
+        self._team_service.create_team(name, description)
+        _log.info("create_team: created team %r", name)
+        self._refresh_sidebar()
+
+    def _refresh_sidebar(self) -> None:
+        """Reload all teams from disk and update the sidebar widget."""
+        team_names = self._team_service.list_teams()
+        teams: list[dict] = []
+        for name in team_names:
+            config = self._team_service.get_team(name)
+            if config is not None:
+                # Map config.json format to what TeamSidebar.update_teams expects
+                agents = [
+                    {"name": m.get("name", "?"), "model": m.get("model", "sonnet")}
+                    for m in config.get("members", [])
+                ]
+                has_active = any(m.get("status") == "active" for m in config.get("members", []))
+                teams.append({
+                    "name": config["name"],
+                    "status": "active" if has_active else "inactive",
+                    "agents": agents,
+                })
+        self.query_one("#sidebar", TeamSidebar).update_teams(teams)

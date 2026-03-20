@@ -57,7 +57,15 @@ class LitterTuiApp(App):
     def action_new_team(self) -> None:
         """Open the create-team dialog."""
         from litter_tui.screens.create_team import CreateTeamScreen
-        self.push_screen(CreateTeamScreen())
+
+        def _on_result(result: dict | None) -> None:
+            if result is None:
+                return
+            from litter_tui.screens.main import MainScreen
+            if isinstance(self.screen, MainScreen):
+                self.screen.create_team(result)
+
+        self.push_screen(CreateTeamScreen(), callback=_on_result)
 
     def action_spawn_agent(self) -> None:
         """Open the spawn-agent dialog."""
