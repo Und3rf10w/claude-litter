@@ -3,52 +3,185 @@
 from __future__ import annotations
 
 import logging
-import re
+import subprocess
+import sys
+
+from rich.segment import Segment
+from rich.style import Style as RichStyle
 
 from textual.app import ComposeResult
+from textual.events import MouseDown
 from textual.message import Message
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import RichLog, LoadingIndicator, Static
 from textual import work
 
 _log = logging.getLogger("litter_tui.session_view")
 
-# Regex to strip Rich markup tags like [bold], [/bold], [dim], [red], etc.
-_MARKUP_RE = re.compile(r"\[/?[a-zA-Z0-9_ #=,.\-]+\]")
-
 
 class SelectableLog(RichLog):
-    """RichLog subclass that supports text selection and copying.
+    """RichLog subclass with full mouse-drag text selection and copy support.
 
-    The stock RichLog's ``get_selection`` returns ``None`` because
-    ``_render()`` yields a ``RichVisual`` (not ``Text``/``Content``).
+    Stock RichLog cannot:
+    - visually highlight selected text (render_line skips selection styling)
+    - map mouse coordinates to text positions (missing apply_offsets)
+    - extract selected text for clipboard (get_selection returns None)
 
-    This subclass maintains a parallel plain-text buffer and overrides
-    ``get_selection`` to extract from it, enabling ``Ctrl+C`` / ``Cmd+C``
-    copy via the Screen's ``action_copy_text`` binding.
+    This subclass fixes all three by maintaining a parallel plain-text buffer
+    and overriding the render pipeline to apply selection highlights and offsets.
     """
 
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._plain_lines: list[str] = []
+    ALLOW_SELECT = True
+
+    @property
+    def allow_select(self) -> bool:
+        return True
 
     def write_with_text(self, markup_text: str) -> None:
-        """Write *markup_text* to the log and store its plain-text form."""
-        plain = _MARKUP_RE.sub("", markup_text).replace("\\[", "[")
-        self._plain_lines.extend(plain.splitlines() or [""])
+        """Write *markup_text* to the log (kept for API compat)."""
         self.write(markup_text)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Extract selected text from the plain-text buffer."""
-        if not self._plain_lines:
+        """Extract selected plain text from the rendered strips."""
+        if not self.lines:
             return None
-        text = "\n".join(self._plain_lines)
+        text = "\n".join(strip.text for strip in self.lines)
         return selection.extract(text), "\n"
 
+    def selection_updated(self, selection: Selection | None) -> None:
+        """Clear render cache and repaint when selection changes."""
+        self._line_cache.clear()
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        """Render a line with selection highlighting and coordinate offsets."""
+        scroll_x, scroll_y = self.scroll_offset
+        abs_y = scroll_y + y
+        width = self.scrollable_content_region.width
+
+        if abs_y >= len(self.lines):
+            return Strip.blank(width, self.rich_style)
+
+        selection = self.text_selection
+
+        # Check cache only when no active selection
+        cache_key = (abs_y + self._start_line, scroll_x, width, self._widest_line_width)
+        if selection is None and cache_key in self._line_cache:
+            strip = self._line_cache[cache_key]
+            strip = strip.apply_style(self.rich_style)
+            strip = strip.apply_offsets(scroll_x, abs_y)
+            return strip
+
+        strip = self.lines[abs_y]
+        strip = strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
+
+        # Apply selection highlight over the cropped strip
+        if selection is not None:
+            span = selection.get_span(abs_y)
+            if span is not None:
+                sel_start, sel_end = span
+                # Adjust for horizontal scroll
+                sel_start = max(0, sel_start - scroll_x)
+                if sel_end == -1:
+                    sel_end = width
+                else:
+                    sel_end = max(0, sel_end - scroll_x)
+                if sel_start < sel_end:
+                    sel_style = self.screen.get_component_rich_style(
+                        "screen--selection"
+                    )
+                    strip = _apply_selection_to_strip(strip, sel_start, sel_end, sel_style)
+
+        if selection is None:
+            self._line_cache[cache_key] = strip
+
+        strip = strip.apply_style(self.rich_style)
+        strip = strip.apply_offsets(scroll_x, abs_y)
+        return strip
+
     def clear(self) -> None:  # type: ignore[override]
-        self._plain_lines.clear()
         return super().clear()
+
+    def on_mouse_down(self, event: MouseDown) -> None:
+        """Right-click copies selected text to clipboard."""
+        if event.button == 3:
+            event.stop()
+            event.prevent_default()
+            selected = self.screen.get_selected_text()
+            if selected:
+                self.app.copy_to_clipboard(selected)
+                _copy_to_system_clipboard(selected)
+                self.app.notify("Copied to clipboard", timeout=2)
+            else:
+                # Copy all visible text as fallback
+                all_text = "\n".join(strip.text for strip in self.lines)
+                if all_text.strip():
+                    self.app.copy_to_clipboard(all_text)
+                    _copy_to_system_clipboard(all_text)
+                    self.app.notify("Copied all text to clipboard", timeout=2)
+
+
+def _copy_to_system_clipboard(text: str) -> None:
+    """Copy text to the system clipboard using platform-native tools."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["pbcopy"], input=text.encode("utf-8"), check=True, timeout=2
+            )
+        elif sys.platform == "linux":
+            # Try xclip first, then xsel
+            try:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=text.encode("utf-8"),
+                    check=True,
+                    timeout=2,
+                )
+            except FileNotFoundError:
+                subprocess.run(
+                    ["xsel", "--clipboard", "--input"],
+                    input=text.encode("utf-8"),
+                    check=True,
+                    timeout=2,
+                )
+    except Exception:
+        pass  # Silently fail — OSC 52 is the primary mechanism
+
+
+def _apply_selection_to_strip(
+    strip: Strip, start: int, end: int, style: RichStyle
+) -> Strip:
+    """Apply a highlight style to a character range within a Strip."""
+    new_segments: list[Segment] = []
+    col = 0
+    for segment in strip._segments:
+        text = segment.text
+        seg_len = segment.cell_length
+        seg_end = col + seg_len
+
+        if seg_end <= start or col >= end:
+            # Entirely outside selection
+            new_segments.append(segment)
+        elif col >= start and seg_end <= end:
+            # Entirely inside selection
+            new_segments.append(
+                Segment(text, (segment.style or RichStyle()) + style, segment.control)
+            )
+        else:
+            # Partial overlap — split character by character
+            for i, ch in enumerate(text):
+                ch_col = col + i
+                if start <= ch_col < end:
+                    new_segments.append(
+                        Segment(ch, (segment.style or RichStyle()) + style, segment.control)
+                    )
+                else:
+                    new_segments.append(Segment(ch, segment.style, segment.control))
+        col = seg_end
+
+    return Strip(new_segments, strip.cell_length)
 
 
 # ------------------------------------------------------------------

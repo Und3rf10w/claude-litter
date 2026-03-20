@@ -34,7 +34,7 @@ No teams found. Get started:
   [bold cyan]Ctrl+S[/bold cyan]  Spawn an agent
   [bold cyan]Ctrl+T[/bold cyan]  Toggle task panel
   [bold cyan]F2[/bold cyan]      Toggle message panel
-  [bold cyan]F1[/bold cyan]      Help
+  [bold cyan]F1[/bold cyan]      About
 
 Teams are read from [dim]~/.claude/teams/[/dim]
 """

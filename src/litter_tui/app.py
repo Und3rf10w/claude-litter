@@ -9,6 +9,7 @@ from textual.widgets import Button, Label, Static
 
 from litter_tui.config import Config
 from litter_tui.services.agent_manager import AgentManager
+from litter_tui.widgets.session_view import _copy_to_system_clipboard
 
 
 class QuitScreen(ModalScreen[bool]):
@@ -66,8 +67,9 @@ class LitterTuiApp(App):
         Binding("ctrl+n", "new_team", "New Team"),
         Binding("ctrl+s", "spawn_agent", "Spawn Agent"),
         Binding("ctrl+d", "detach", "Detach"),
+        Binding("super+c", "copy_selection", "Copy", show=False),
         Binding("escape", "maybe_quit", "Back/Quit"),
-        Binding("f1", "help", "Help"),
+        Binding("f1", "about", "About"),
         Binding("f2", "toggle_messages", "Messages"),
         Binding("f3", "settings", "Settings"),
     ]
@@ -135,10 +137,23 @@ class LitterTuiApp(App):
     def action_detach(self) -> None:
         """Detach current session."""
 
-    def action_help(self) -> None:
-        """Show help."""
+    def action_about(self) -> None:
+        """Show about dialog."""
+        from litter_tui.screens.about import AboutScreen
+        self.push_screen(AboutScreen())
 
     def action_settings(self) -> None:
         """Open the settings screen."""
         from litter_tui.screens.settings import SettingsScreen
         self.push_screen(SettingsScreen())
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Copy text to clipboard via OSC 52 and system clipboard."""
+        super().copy_to_clipboard(text)
+        _copy_to_system_clipboard(text)
+
+    def action_copy_selection(self) -> None:
+        """Copy selected text to clipboard (Cmd+C handler)."""
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.copy_to_clipboard(selected)
