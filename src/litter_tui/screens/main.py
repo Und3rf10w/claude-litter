@@ -10,7 +10,6 @@ from litter_tui.widgets.sidebar import TeamSidebar
 from litter_tui.widgets.tab_bar import SessionTabBar
 from litter_tui.widgets.session_view import SessionView
 from litter_tui.widgets.input_bar import InputBar
-from litter_tui.widgets.status_bar import StatusBar
 from litter_tui.widgets.task_panel import TaskPanel
 from litter_tui.widgets.message_panel import MessagePanel
 
@@ -42,11 +41,23 @@ class MainScreen(Screen):
         color: $text-muted;
         padding: 2 4;
     }
+
+    MainScreen #layout {
+        height: 1fr;
+    }
+
+    MainScreen #main-content {
+        width: 1fr;
+    }
+
+    MainScreen #input-bar {
+        dock: bottom;
+    }
     """
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal():
+        with Horizontal(id="layout"):
             yield TeamSidebar(id="sidebar")
             with Vertical(id="main-content"):
                 yield SessionTabBar(id="tab-bar")
@@ -55,37 +66,21 @@ class MainScreen(Screen):
                 yield InputBar(id="input-bar")
         yield TaskPanel(id="task-panel", classes="slide-panel")
         yield MessagePanel(id="message-panel", classes="slide-panel")
-        yield StatusBar()
         yield Footer()
 
     def on_mount(self) -> None:
         # Start with the welcome message visible and session view hidden
         self.query_one("#session-view", SessionView).display = False
-        self._update_status_bar()
-
-    def _update_status_bar(self) -> None:
-        """Refresh the status bar with current counts."""
-        self.query_one(StatusBar).update_status(
-            team_name="",
-            agent_count=0,
-            active_count=0,
-            task_total=0,
-            task_done=0,
-        )
 
     def show_session(self, agent_name: str = "", team: str = "", model: str = "") -> None:
         """Switch from welcome message to a session view."""
-        welcome = self.query_one("#welcome-message", Static)
-        session = self.query_one("#session-view", SessionView)
-        welcome.display = False
-        session.display = True
+        self.query_one("#welcome-message", Static).display = False
+        self.query_one("#session-view", SessionView).display = True
 
     def show_welcome(self) -> None:
         """Switch back to the welcome message."""
-        welcome = self.query_one("#welcome-message", Static)
-        session = self.query_one("#session-view", SessionView)
-        welcome.display = True
-        session.display = False
+        self.query_one("#welcome-message", Static).display = True
+        self.query_one("#session-view", SessionView).display = False
 
     def toggle_tasks(self) -> None:
         """Show/hide the task panel."""

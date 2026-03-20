@@ -60,7 +60,8 @@ class InputBar(Widget):
 
     DEFAULT_CSS = """
     InputBar {
-        height: 3;
+        height: auto;
+        max-height: 5;
         layout: horizontal;
         background: $surface;
         border-top: solid $primary-darken-2;
@@ -81,13 +82,10 @@ class InputBar(Widget):
     }
 
     InputBar Input {
-        height: 3;
         width: 1fr;
-        border: none;
     }
 
     InputBar Button {
-        height: 3;
         min-width: 8;
     }
     """
