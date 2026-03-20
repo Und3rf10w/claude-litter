@@ -42,16 +42,14 @@ class LitterTuiApp(App):
     def action_toggle_tasks(self) -> None:
         """Toggle the task panel."""
         from litter_tui.screens.main import MainScreen
-        screen = self.query("MainScreen")
-        if screen:
-            self.query_one(MainScreen).toggle_tasks()
+        if isinstance(self.screen, MainScreen):
+            self.screen.toggle_tasks()
 
     def action_toggle_messages(self) -> None:
         """Toggle the message panel."""
         from litter_tui.screens.main import MainScreen
-        screen = self.query("MainScreen")
-        if screen:
-            self.query_one(MainScreen).toggle_messages()
+        if isinstance(self.screen, MainScreen):
+            self.screen.toggle_messages()
 
     def action_new_team(self) -> None:
         """Open the create-team dialog."""
