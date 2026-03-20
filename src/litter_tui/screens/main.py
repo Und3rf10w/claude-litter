@@ -643,6 +643,8 @@ class MainScreen(Screen):
         all_teams = self._team_service.list_teams()
         member = self._member_info.get((team, agent), {})
         source_model = member.get("model", "sonnet")
+        source_color = member.get("color", "")
+        source_type = member.get("agentType", "worker")
 
         def _on_result(result: dict | None) -> None:
             if result is not None:
@@ -654,6 +656,8 @@ class MainScreen(Screen):
                 source_agent=agent,
                 all_teams=all_teams,
                 source_model=source_model,
+                source_color=source_color,
+                source_type=source_type,
             ),
             _on_result,
         )
@@ -679,9 +683,8 @@ class MainScreen(Screen):
             "agentId": f"{new_name}@{target_team}",
             "name": new_name,
             "model": model,
-            "agentType": self._member_info.get(
-                (source_team, source_agent), {},
-            ).get("agentType", "worker"),
+            "agentType": opts.get("agentType", "worker"),
+            "color": opts.get("color", ""),
             "status": "active",
         }
         self._team_service.add_member(target_team, member_dict)

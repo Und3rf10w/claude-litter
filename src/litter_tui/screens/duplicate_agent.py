@@ -8,7 +8,7 @@ from textual.widgets import Button, Input, Label, Select, Static, Switch
 from textual.containers import Horizontal, Vertical
 
 from .create_team import validate_team_name
-from .configure_agent import _normalize_model
+from .configure_agent import _normalize_model, _VALID_COLORS, _VALID_TYPES
 
 
 class DuplicateAgentScreen(ModalScreen[dict | None]):
@@ -32,15 +32,22 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
         source_agent: str,
         all_teams: list[str],
         source_model: str = "sonnet",
+        source_color: str = "",
+        source_type: str = "worker",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._source_team = source_team
         self._source_agent = source_agent
         self._source_model = source_model
+        self._source_color = source_color
+        self._source_type = source_type
         self._other_teams = [t for t in all_teams if t != source_team]
 
     def compose(self) -> ComposeResult:
+        color_value = self._source_color if self._source_color in _VALID_COLORS else ""
+        type_value = self._source_type if self._source_type in _VALID_TYPES else "worker"
+
         with Vertical(id="dialog"):
             yield Static("Duplicate Agent", id="title")
             yield Label("Source", classes="field-label")
@@ -76,6 +83,36 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
                 id="model",
             )
 
+            yield Label("Color", classes="field-label")
+            yield Select(
+                [
+                    ("Blue", "blue"),
+                    ("Green", "green"),
+                    ("Yellow", "yellow"),
+                    ("Purple", "purple"),
+                    ("Orange", "orange"),
+                    ("Pink", "pink"),
+                    ("Red", "red"),
+                    ("Cyan", "cyan"),
+                    ("None", ""),
+                ],
+                value=color_value,
+                id="color",
+            )
+
+            yield Label("Agent Type", classes="field-label")
+            yield Select(
+                [
+                    ("Worker", "worker"),
+                    ("Backend Dev", "backend-dev"),
+                    ("Frontend Dev", "frontend-dev"),
+                    ("Tester", "tester"),
+                    ("Researcher", "researcher"),
+                ],
+                value=type_value,
+                id="agent-type",
+            )
+
             yield Label("Copy inbox messages", classes="field-label")
             yield Switch(value=False, id="copy-inbox")
 
@@ -106,6 +143,8 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
             "target_team": target_team,
             "new_name": name,
             "model": self.query_one("#model", Select).value,
+            "color": self.query_one("#color", Select).value,
+            "agentType": self.query_one("#agent-type", Select).value,
             "copy_inbox": self.query_one("#copy-inbox", Switch).value,
             "copy_context": self.query_one("#copy-context", Switch).value,
         })

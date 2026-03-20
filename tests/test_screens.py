@@ -374,6 +374,8 @@ async def test_duplicate_agent_ok_returns_dict():
     assert result["target_team"] == "beta"
     assert result["new_name"] == "worker-1-copy"
     assert result["model"] == "sonnet"
+    assert result["color"] == ""  # default when no source_color
+    assert result["agentType"] == "worker"  # default when no source_type
     assert result["copy_inbox"] is False
     assert result["copy_context"] is False
 
@@ -433,6 +435,46 @@ async def test_duplicate_agent_bedrock_model_string():
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#model").value == "sonnet"
+
+
+@pytest.mark.anyio
+async def test_duplicate_agent_inherits_color_and_type():
+    """DuplicateAgentScreen should pre-fill color and agentType from source."""
+    app = _ModalApp(lambda: DuplicateAgentScreen(
+        source_team="alpha", source_agent="worker-1",
+        all_teams=["alpha", "beta"], source_model="sonnet",
+        source_color="green", source_type="tester",
+    ))
+    async with app.run_test(size=(120, 60)) as pilot:
+        await pilot.pause()
+        assert _sq(app, "#color").value == "green"
+        assert _sq(app, "#agent-type").value == "tester"
+
+
+@pytest.mark.anyio
+async def test_duplicate_agent_unknown_color_defaults_to_none():
+    """DuplicateAgentScreen should handle unknown color values."""
+    app = _ModalApp(lambda: DuplicateAgentScreen(
+        source_team="alpha", source_agent="worker-1",
+        all_teams=["alpha", "beta"], source_model="sonnet",
+        source_color="magenta",
+    ))
+    async with app.run_test(size=(120, 60)) as pilot:
+        await pilot.pause()
+        assert _sq(app, "#color").value == ""
+
+
+@pytest.mark.anyio
+async def test_duplicate_agent_unknown_type_defaults_to_worker():
+    """DuplicateAgentScreen should handle unknown agentType values."""
+    app = _ModalApp(lambda: DuplicateAgentScreen(
+        source_team="alpha", source_agent="worker-1",
+        all_teams=["alpha", "beta"], source_model="sonnet",
+        source_type="custom-role",
+    ))
+    async with app.run_test(size=(120, 60)) as pilot:
+        await pilot.pause()
+        assert _sq(app, "#agent-type").value == "worker"
 
 
 # ---------------------------------------------------------------------------
