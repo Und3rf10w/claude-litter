@@ -7,6 +7,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from litter_tui.widgets.session_view import SessionView
+from litter_tui.widgets.session_view import _format_tool_input, _truncate_tool_output
 from litter_tui.widgets.input_bar import (
     InputBar,
     PromptSubmitted,
@@ -259,3 +260,170 @@ class TestInputBar:
             await pilot.pause()
             ib = app.query_one(InputBar)
             assert ib._input.text == ""
+
+
+# ---------------------------------------------------------------------------
+# Tool rendering helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatToolInput:
+    def test_bash_command(self):
+        assert _format_tool_input("Bash", {"command": "ls -la"}) == "ls -la"
+
+    def test_bash_truncates_long_command(self):
+        long_cmd = "x" * 100
+        result = _format_tool_input("Bash", {"command": long_cmd})
+        assert len(result) == 83  # 80 + "..."
+        assert result.endswith("...")
+
+    def test_read_file_path(self):
+        assert _format_tool_input("Read", {"file_path": "/src/app.py"}) == "/src/app.py"
+
+    def test_write_file_path(self):
+        assert _format_tool_input("Write", {"file_path": "/out.txt"}) == "/out.txt"
+
+    def test_edit_file_path(self):
+        assert _format_tool_input("Edit", {"file_path": "/foo.py"}) == "/foo.py"
+
+    def test_grep_pattern_and_path(self):
+        result = _format_tool_input("Grep", {"pattern": "TODO", "path": "src/"})
+        assert result == "TODO src/"
+
+    def test_grep_pattern_only(self):
+        assert _format_tool_input("Grep", {"pattern": "TODO"}) == "TODO"
+
+    def test_glob_pattern(self):
+        assert _format_tool_input("Glob", {"pattern": "**/*.py"}) == "**/*.py"
+
+    def test_agent_description(self):
+        assert _format_tool_input("Agent", {"description": "find tests"}) == "find tests"
+
+    def test_unknown_tool(self):
+        assert _format_tool_input("SomethingElse", {"foo": "bar"}) == ""
+
+    def test_empty_input(self):
+        assert _format_tool_input("Bash", {}) == ""
+
+    def test_case_insensitive(self):
+        assert _format_tool_input("bash", {"command": "echo hi"}) == "echo hi"
+        assert _format_tool_input("READ", {"file_path": "/a.py"}) == "/a.py"
+
+
+class TestTruncateToolOutput:
+    def test_short_output_unchanged(self):
+        text = "line1\nline2\nline3"
+        assert _truncate_tool_output(text) == text
+
+    def test_four_lines_unchanged(self):
+        text = "a\nb\nc\nd"
+        assert _truncate_tool_output(text) == text
+
+    def test_long_output_collapsed(self):
+        lines = [f"line{i}" for i in range(10)]
+        result = _truncate_tool_output("\n".join(lines))
+        result_lines = result.splitlines()
+        assert result_lines[0] == "line0"
+        assert result_lines[1] == "line1"
+        assert "+7 lines" in result_lines[2]
+        assert result_lines[3] == "line9"
+        assert len(result_lines) == 4
+
+    def test_empty_content(self):
+        assert _truncate_tool_output("") == ""
+
+    def test_single_line(self):
+        assert _truncate_tool_output("hello") == "hello"
+
+    def test_custom_max_lines(self):
+        text = "a\nb\nc\nd\ne"
+        result = _truncate_tool_output(text, max_lines=5)
+        assert result == text  # 5 lines, max_lines=5, no truncation
+
+
+class TestRenderToolChunk:
+    @pytest.mark.anyio
+    async def test_tool_start(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            sv.render_tool_chunk({"type": "tool_start", "name": "Bash"})
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("Bash" in h for h in history)
+
+    @pytest.mark.anyio
+    async def test_tool_done_with_summary(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            sv.render_tool_chunk({"type": "tool_start", "name": "Read"})
+            sv.render_tool_chunk({
+                "type": "tool_done",
+                "name": "Read",
+                "input": {"file_path": "/src/app.py"},
+            })
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("/src/app.py" in h for h in history)
+
+    @pytest.mark.anyio
+    async def test_tool_result_shows_output(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            sv.render_tool_chunk({
+                "type": "tool_result",
+                "tool_use_id": "abc",
+                "content": "test output line",
+                "is_error": False,
+            })
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("test output line" in h for h in history)
+
+    @pytest.mark.anyio
+    async def test_tool_result_error_in_red(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            sv.render_tool_chunk({
+                "type": "tool_result",
+                "tool_use_id": "abc",
+                "content": "something failed",
+                "is_error": True,
+            })
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("red" in h and "something failed" in h for h in history)
+
+    @pytest.mark.anyio
+    async def test_tool_result_truncated(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            long_output = "\n".join(f"line{i}" for i in range(20))
+            sv.render_tool_chunk({
+                "type": "tool_result",
+                "tool_use_id": "abc",
+                "content": long_output,
+                "is_error": False,
+            })
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("+17 lines" in h for h in history)
+
+    @pytest.mark.anyio
+    async def test_api_retry(self):
+        app = SessionApp()
+        async with app.run_test() as pilot:
+            sv = app.query_one(SessionView)
+            sv.render_tool_chunk({
+                "type": "api_retry",
+                "attempt": 2,
+                "error": "rate limited",
+                "status": 429,
+            })
+            await pilot.pause()
+            history = sv.get_output_history()
+            assert any("retry" in h and "429" in str(h) for h in history)

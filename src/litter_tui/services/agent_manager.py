@@ -137,7 +137,9 @@ class AgentSession:
             AssistantMessage,
             StreamEvent,
             TextBlock,
+            ToolResultBlock,
             ToolUseBlock,
+            UserMessage,
         )
 
         current_tool: str | None = None
@@ -212,6 +214,26 @@ class AgentSession:
                         elif isinstance(block, ToolUseBlock):
                             yield {"type": "tool_start", "name": block.name}
                             yield {"type": "tool_done", "name": block.name, "input": block.input}
+
+            elif isinstance(msg, UserMessage):
+                # Tool results come back as UserMessage with ToolResultBlock content
+                if isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock):
+                            content = block.content
+                            if isinstance(content, list):
+                                text_parts = [
+                                    b["text"]
+                                    for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                ]
+                                content = "\n".join(text_parts)
+                            yield {
+                                "type": "tool_result",
+                                "tool_use_id": block.tool_use_id,
+                                "content": content or "",
+                                "is_error": block.is_error or False,
+                            }
 
             elif isinstance(msg, ResultMessage):
                 self.status = AgentStatus.idle

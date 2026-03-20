@@ -13,6 +13,48 @@ from textual import work
 _log = logging.getLogger("litter_tui.session_view")
 
 
+# ------------------------------------------------------------------
+# Module-level helpers for tool rendering
+# ------------------------------------------------------------------
+
+
+def _format_tool_input(tool_name: str, input_dict: dict) -> str:
+    """Return a one-line summary of the tool's input arguments."""
+    if not input_dict:
+        return ""
+    name = tool_name.lower()
+    if name == "bash":
+        cmd = input_dict.get("command", "")
+        return cmd[:80] + ("..." if len(cmd) > 80 else "")
+    if name == "read":
+        return input_dict.get("file_path", "")
+    if name in ("write", "edit"):
+        return input_dict.get("file_path", "")
+    if name == "grep":
+        pattern = input_dict.get("pattern", "")
+        path = input_dict.get("path", "")
+        return f"{pattern} {path}".strip()
+    if name == "glob":
+        return input_dict.get("pattern", "")
+    if name == "agent":
+        return input_dict.get("description", "")
+    return ""
+
+
+def _truncate_tool_output(content: str, max_lines: int = 4) -> str:
+    """Truncate long tool output, showing first 2 + last 1 lines with a collapse indicator."""
+    if not content:
+        return ""
+    lines = content.splitlines()
+    if len(lines) <= max_lines:
+        return content
+    # Show first 2 lines and last 1 line
+    head = lines[:2]
+    tail = lines[-1:]
+    hidden = len(lines) - 3
+    return "\n".join(head + [f"  ... +{hidden} lines ..."] + tail)
+
+
 class TodoWriteDetected(Message):
     """Fired when a TodoWrite tool_use block is detected in the stream."""
 
@@ -78,6 +120,8 @@ class SessionView(Widget):
         self._user_scrolled_up = False
         self._stream_buffer: list[str] = []
         self._output_history: list[str] = []
+        self._last_tool_name: str = ""
+        self._last_tool_input: dict = {}
 
     def compose(self) -> ComposeResult:
         header_text = self._make_header_text()
@@ -234,6 +278,56 @@ class SessionView(Widget):
             pass
 
     # ------------------------------------------------------------------
+    # Tool rendering
+    # ------------------------------------------------------------------
+
+    def render_tool_chunk(self, chunk: dict) -> None:
+        """Centralized rendering for tool_start, tool_done, tool_result, and api_retry chunks."""
+        chunk_type = chunk.get("type")
+
+        if chunk_type == "tool_start":
+            name = chunk.get("name", "?")
+            self._last_tool_name = name
+            self._last_tool_input = {}
+            self.append_output(f"\n[bold dim]{name}[/bold dim]")
+
+        elif chunk_type == "tool_done":
+            name = chunk.get("name", self._last_tool_name)
+            input_dict = chunk.get("input", {})
+            self._last_tool_input = input_dict
+            summary = _format_tool_input(name, input_dict)
+            if summary:
+                # Escape Rich markup in user content
+                safe = summary.replace("[", "\\[")
+                self.append_output(f"[dim]({safe})[/dim]")
+            # Detect TodoWrite tool calls
+            if name == "TodoWrite":
+                todos = input_dict.get("todos", [])
+                if todos:
+                    self.post_message(TodoWriteDetected(todos))
+
+        elif chunk_type == "tool_result":
+            content = chunk.get("content", "")
+            is_error = chunk.get("is_error", False)
+            if content:
+                truncated = _truncate_tool_output(str(content))
+                if is_error:
+                    self.append_output(f"\n[red]{truncated}[/red]")
+                else:
+                    # Indent and dim the output snippet
+                    indented = "\n".join(f"  {line}" for line in truncated.splitlines())
+                    self.append_output(f"\n[dim]{indented}[/dim]")
+            self.append_output("")  # blank line after tool output
+
+        elif chunk_type == "api_retry":
+            attempt = chunk.get("attempt", "?")
+            error = chunk.get("error", "unknown")
+            status = chunk.get("status", "?")
+            self.append_output(
+                f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]"
+            )
+
+    # ------------------------------------------------------------------
     # Internal streaming worker
     # ------------------------------------------------------------------
 
@@ -271,16 +365,7 @@ class SessionView(Widget):
                 elif isinstance(chunk, dict):
                     # Flush any pending text before tool output
                     self._flush_stream_buffer()
-                    chunk_type = chunk.get("type")
-                    if chunk_type == "tool_start":
-                        self.append_output(f"\n[dim][Using {chunk['name']}...][/dim]")
-                    elif chunk_type == "tool_done":
-                        self.append_output(" [dim]done[/dim]\n")
-                        # Detect TodoWrite tool calls
-                        if chunk.get("name") == "TodoWrite":
-                            todos = chunk.get("input", {}).get("todos", [])
-                            if todos:
-                                self.post_message(TodoWriteDetected(todos))
+                    self.render_tool_chunk(chunk)
             _log.info("_stream_session: stream ended, total chunks=%d", chunk_count)
         except Exception as exc:
             _log.exception("_stream_session: exception: %s", exc)

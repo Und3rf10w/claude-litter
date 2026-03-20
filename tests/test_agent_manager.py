@@ -42,6 +42,18 @@ class _ResultMessage:
         self.result = result
 
 
+class _ToolResultBlock:
+    def __init__(self, tool_use_id: str, content=None, is_error=None) -> None:
+        self.tool_use_id = tool_use_id
+        self.content = content
+        self.is_error = is_error
+
+
+class _UserMessage:
+    def __init__(self, content=None) -> None:
+        self.content = content or []
+
+
 class _StreamEvent:
     """Stub for StreamEvent used in the new streaming API."""
 
@@ -100,7 +112,9 @@ _fake_types = MagicMock()
 _fake_types.StreamEvent = _StreamEvent
 _fake_types.AssistantMessage = _AssistantMessage
 _fake_types.TextBlock = _TextBlock
+_fake_types.ToolResultBlock = _ToolResultBlock
 _fake_types.ToolUseBlock = _ToolUseBlock
+_fake_types.UserMessage = _UserMessage
 _fake_sdk.types = _fake_types
 sys.modules.setdefault("claude_agent_sdk", _fake_sdk)
 sys.modules.setdefault("claude_agent_sdk.types", _fake_types)

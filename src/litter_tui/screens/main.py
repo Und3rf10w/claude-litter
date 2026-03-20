@@ -234,22 +234,7 @@ class MainScreen(Screen):
                             sv._flush_stream_buffer()
                     elif isinstance(chunk, dict):
                         sv._flush_stream_buffer()
-                        chunk_type = chunk.get("type")
-                        if chunk_type == "tool_start":
-                            sv.append_output(f"\n[dim][Using {chunk['name']}...][/dim]")
-                        elif chunk_type == "tool_done":
-                            sv.append_output(" [dim]done[/dim]\n")
-                            if chunk.get("name") == "TodoWrite":
-                                todos = chunk.get("input", {}).get("todos", [])
-                                if todos:
-                                    sv.post_message(TodoWriteDetected(todos))
-                        elif chunk_type == "api_retry":
-                            attempt = chunk.get("attempt", "?")
-                            error = chunk.get("error", "unknown")
-                            status = chunk.get("status", "?")
-                            sv.append_output(
-                                f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]"
-                            )
+                        sv.render_tool_chunk(chunk)
                 _log.info("_run_prompt: stream ended, total chunks=%d", chunk_count)
             finally:
                 sv._flush_stream_buffer()
