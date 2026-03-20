@@ -4,447 +4,199 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Litter is a Claude Code plugin marketplace that enables multi-agent coordination. The primary plugin is **claude-swarm**, which spawns parallel Claude Code teammates in kitty or tmux terminals, manages tasks, and coordinates work across multiple instances.
+Claude Litter is a standalone Textual TUI (`litter-tui`) for managing Claude Code agent teams visually. It reads/writes the native Claude Code team/task JSON files under `~/.claude/` and provides a dashboard with sidebar navigation, tabbed sessions with transcript history, task management, and messaging.
 
 ## Repository Structure
 
 ```
 claude-litter/
-├── .claude-plugin/
-│   └── marketplace.json       # Marketplace manifest
-├── src/
-│   └── litter_tui/            # Textual TUI application (see litter-tui section below)
-├── plugins/
-│   └── claude-swarm/          # Main swarm plugin (v2.0.0)
-│       ├── .claude-plugin/
-│       │   └── plugin.json    # Plugin manifest
-│       ├── commands/          # 27 slash commands (.md files)
-│       ├── hooks/
-│       │   ├── hooks.json     # Hook configuration
-│       │   └── *.sh           # Hook scripts
-│       ├── lib/               # Modular library (16 modules)
-│       │   ├── swarm-utils.sh # Entry point (sources all modules)
-│       │   ├── swarm-onboarding.sh # Onboarding wizard
-│       │   ├── core/          # 00-globals, 01-utils, 02-file-lock
-│       │   ├── multiplexer/   # 03-multiplexer, 04-registry
-│       │   ├── team/          # 05-team, 06-status, 10-lifecycle
-│       │   ├── communication/ # 07-messaging, 15-webhooks
-│       │   ├── tasks/         # 08-tasks
-│       │   └── spawn/         # 09-spawn, 11-cleanup, 12-kitty-session, 13-diagnostics, 14-in-process
-│       ├── skills/
-│       │   ├── swarm-orchestration/    # User/orchestrator delegation workflow
-│       │   ├── swarm-team-lead/        # Spawned team-lead coordination
-│       │   ├── swarm-teammate/         # Worker coordination
-│       │   └── swarm-troubleshooting/  # Diagnostics & recovery
-│       └── docs/
-├── pyproject.toml             # TUI project config (Python 3.14+, textual, claude-agent-sdk)
-├── tests/                     # 207 pytest tests for the TUI
-└── README.md
+├── src/litter_tui/       # Textual TUI application (Python 3.14+)
+├── tests/                # 310 pytest tests
+├── dev/                  # Ad-hoc developer scripts (live SDK testing)
+├── pyproject.toml        # Project config (hatchling, textual>=3.0, claude-agent-sdk, anyio, watchfiles)
+├── uv.lock               # Dependency lockfile
+├── README.md             # User-facing documentation
+└── CLAUDE.md             # This file (guidance for Claude Code)
 ```
 
-## Architecture
+## Dependencies
 
-### Core Library: `plugins/claude-swarm/lib/`
+- `textual>=3.0` — TUI framework (App > Screen > Widget hierarchy)
+- `claude-agent-sdk` — Claude Code agent session management (ClaudeSDKClient)
+- `anyio` — async primitives
+- `watchfiles` — filesystem watching for live JSON change detection
+- Dev: `pytest`, `pytest-anyio`
 
-The library uses a modular architecture with 16 modules loaded in dependency order:
+## Data Storage
 
-| Level | Module                          | Functions                                                               |
-| ----- | ------------------------------- | ----------------------------------------------------------------------- |
-| 0     | `core/00-globals.sh`            | Global vars, colors, `SWARM_KITTY_MODE`, `SWARM_TEAMMATE_SYSTEM_PROMPT` |
-| 1     | `core/01-utils.sh`              | `generate_uuid`, `validate_name`, `detect_multiplexer`                  |
-| 1     | `core/02-file-lock.sh`          | `acquire_file_lock`, `release_file_lock`                                |
-| 2     | `multiplexer/03-multiplexer.sh` | `find_kitty_socket`, `validate_kitty_socket`, `kitten_cmd`              |
-| 3     | `multiplexer/04-registry.sh`    | `register_window`, `unregister_window`, `get_registered_windows`        |
-| 3     | `team/05-team.sh`               | `create_team`, `add_member`, `get_team_config`, `list_team_members`, `update_agent_color` |
-| 4     | `team/06-status.sh`             | `update_member_status`, `get_live_agents`, `swarm_status`               |
-| 4     | `communication/07-messaging.sh` | `send_message`, `read_inbox`, `broadcast_message`                       |
-| 5     | `tasks/08-tasks.sh`             | `create_task`, `get_task`, `update_task`, `list_tasks`                  |
-| 5     | `spawn/09-spawn.sh`             | `spawn_teammate`, `spawn_teammate_kitty`, `spawn_teammate_tmux`         |
-| 6     | `team/10-lifecycle.sh`          | `suspend_team`, `resume_team`                                           |
-| 6     | `spawn/12-kitty-session.sh`     | `generate_kitty_session`, `launch_kitty_session`                        |
-| 7     | `spawn/11-cleanup.sh`           | `cleanup_team`                                                          |
-| 7     | `spawn/13-diagnostics.sh`       | `check_heartbeats`, `detect_crashed_agents`, `reconcile_team_status`, `list_teams`, `delete_task` |
-| 7     | `spawn/14-in-process.sh`        | `spawn_teammate_in_process`, `list_in_process_teammates`, `kill_in_process_teammate` |
-| 8     | `communication/15-webhooks.sh`  | `configure_webhooks`, `send_webhook`, `validate_webhook_config`, `trigger_webhook_event` |
-
-Each module has source guards to prevent double-loading:
-
-```bash
-[[ -n "${SWARM_MODULE_LOADED}" ]] && return 0
-SWARM_MODULE_LOADED=1
-```
-
-Commands source the entry point:
-
-```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
-```
-
-### Data Storage
-
-All state stored as JSON files under `~/.claude/`:
+All state stored as JSON under `~/.claude/`:
 
 ```
 ~/.claude/
 ├── teams/<team-name>/
-│   ├── config.json              # Team config, member list, status
-│   ├── .window_registry.json    # Kitty window tracking
-│   ├── swarm.kitty-session      # Generated session file
+│   ├── config.json              # Team config: name, description, createdAt, leadAgentId, leadSessionId, members[]
 │   └── inboxes/
-│       └── <agent-name>.json    # Message inbox per agent
-└── tasks/<team-name>/
-    └── <id>.json                # Individual task files
+│       └── <agent-name>.json    # Message inbox per agent (array of {from, text, timestamp, read, color?, summary?})
+├── tasks/<team-name>/
+│   └── <id>.json                # Task: id, subject, description, status, owner?, blocks[], blockedBy[], activeForm?, metadata?
+├── settings.json                # Claude Code settings (model, env vars — read by ClaudeSettings service)
+└── litter-tui/
+    ├── config.json              # TUI config: claude_home, vim_mode, theme
+    ├── debug.log                # Debug log (when --debug is used)
+    └── detached-sessions.json   # Detached agent sessions (session_id + model, for reattach)
 ```
 
-### Hooks System
+### Team config.json schema
 
-9 hooks defined in `hooks/hooks.json`:
-
-| Event                    | Script / Type             | Purpose                                           |
-| ------------------------ | ------------------------- | ------------------------------------------------- |
-| Notification             | notification-heartbeat.sh | Update `lastSeen` timestamps                      |
-| SessionStart             | session-start.sh          | Auto-deliver unread messages                       |
-| SessionEnd               | session-stop.sh           | Notify team-lead when teammate exits               |
-| PostToolUse:ExitPlanMode | exit-plan-swarm.sh        | Detect swarm launch requests from approved plans   |
-| PreToolUse:Task          | task-team-context.sh      | Inject team context into subagents                 |
-| PreToolUse:TaskUpdate    | prompt-based              | Validate task status changes and assignments       |
-| PreToolUse:SendMessage   | prompt-based              | Validate team communications                       |
-| SubagentStart            | subagent-start-context.sh | Inject team context into spawned subagents         |
-| SubagentStop             | prompt-based              | Ensure teammates complete work before stopping     |
-
-### Environment Variables
-
-Set automatically for spawned teammates:
-
-- `CLAUDE_CODE_TEAM_NAME` - Current team name
-- `CLAUDE_CODE_AGENT_ID` - Unique agent UUID
-- `CLAUDE_CODE_AGENT_NAME` - Agent name (e.g., "backend-dev")
-- `CLAUDE_CODE_AGENT_TYPE` - Role type (worker, backend-developer, etc.)
-- `CLAUDE_CODE_TEAM_LEAD_ID` - Team lead's agent ID
-
-> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
-
-User-configurable:
-
-- `SWARM_MULTIPLEXER` - Force "tmux" or "kitty"
-- `SWARM_KITTY_MODE` - split (default), tab, or window (os-window)
-- `KITTY_LISTEN_ON` - Override kitty socket path
-- `CLAUDE_CODE_TEAMMATE_COMMAND` - Override claude binary path for spawning (CC native)
-
-### Skills Architecture
-
-The plugin uses a **4-skill architecture** optimized for role-based context loading:
-
-#### 1. swarm-orchestration
-
-**Purpose**: User/orchestrator workflow for creating and delegating to teams
-**Auto-triggers on**: "set up team", "create swarm", "spawn teammates", "assign tasks", "coordinate agents", "swarm this task"
-**Covers**:
-
-- Delegation mode vs direct mode
-- Creating teams (auto-spawns team-lead by default)
-- Briefing team-lead with requirements
-- Monitoring progress and responding to escalations
-- High-level task creation
-- Slash command reference for orchestrators
-
-**Key concept**: By default, users DELEGATE to a spawned team-lead who handles coordination. Users set direction, monitor, and answer escalations.
-
-#### 2. swarm-team-lead
-
-**Purpose**: Guidance for spawned team-leads on coordination
-**Auto-triggers via**: `CLAUDE_CODE_IS_TEAM_LEAD=true` environment variable
-**Covers**:
-
-- Monitoring teammates and team status
-- Spawning and verifying workers
-- Handling teammate messages and questions
-- Task assignment and dependency management
-- Communication patterns (broadcast, messaging)
-- Unblocking workers
-
-**When used**: Auto-loads for spawned team-leads. Also useful for direct mode (`--no-lead`) where user is team-lead.
-
-#### 3. swarm-teammate
-
-**Purpose**: Worker coordination protocol and identity
-**Auto-triggers via**: `CLAUDE_CODE_TEAM_NAME` environment variable (workers only, not team-lead)
-**Covers**:
-
-- Teammate identity and role awareness
-- Communication protocol (inbox checking, messaging)
-- Task update procedures
-- Coordination with team-lead and peers
-- Working within swarm context
-
-#### 4. swarm-troubleshooting
-
-**Purpose**: Diagnostics, error recovery, and problem-solving
-**Auto-triggers on**: "spawn failed", "diagnose team", "fix swarm", "status mismatch", "recovery", "swarm not working"
-**Covers**:
-
-- Troubleshooting delegated teams (who diagnoses what)
-- Spawn failure diagnosis and recovery
-- Status mismatch reconciliation
-- Multiplexer troubleshooting (kitty/tmux)
-- Socket issues and connectivity problems
-
-#### Design Rationale
-
-**Delegation Model**:
-
-- User creates team → team-lead auto-spawns
-- User briefs team-lead → team-lead coordinates everything
-- User monitors and answers escalations
-- Minimal user involvement in day-to-day coordination
-
-**Token Optimization**:
-
-- **Workers load swarm-teammate**: Only worker-relevant guidance
-- **Team-lead loads swarm-team-lead**: Coordination guidance without orchestration overhead
-- **Orchestrator loads swarm-orchestration**: Delegation workflow, not coordination details
-- **Troubleshooting loads on-demand**: Only when diagnosing issues
-
-#### Triggering Logic
-
-**Environment-based auto-trigger**:
-
-- swarm-team-lead: Loads when `CLAUDE_CODE_IS_TEAM_LEAD=true`
-- swarm-teammate: Loads when `CLAUDE_CODE_TEAM_NAME` is set (and not team-lead)
-
-**Explicit trigger phrases**:
-
-- swarm-orchestration: "set up", "create", "spawn", "assign", "coordinate", "swarm"
-- swarm-troubleshooting: "fail", "diagnose", "fix", "mismatch", "recovery", "not working"
-
-#### System Prompts
-
-`lib/core/00-globals.sh` defines system prompts for spawned agents:
-
-- `SWARM_TEAMMATE_SYSTEM_PROMPT` - For workers, references swarm-teammate skill
-- `SWARM_TEAM_LEAD_SYSTEM_PROMPT` - For spawned team-leads, references swarm-team-lead skill
-
-Both prompts instruct the agent to load the appropriate skill first.
-
-## Key Implementation Patterns
-
-### Concurrent Access Protection
-
-All JSON file updates use mkdir-based atomic locking:
-
-```bash
-acquire_file_lock "$config_file"
-# ... modify file ...
-release_file_lock
+```json
+{
+  "name": "team-name",
+  "description": "",
+  "createdAt": 1710000000000,
+  "leadAgentId": "name@team",
+  "leadSessionId": "uuid",
+  "members": [
+    {
+      "agentId": "name@team",
+      "name": "agent-name",
+      "agentType": "worker",
+      "model": "sonnet",
+      "joinedAt": 1710000000000,
+      "color": "blue",
+      "cwd": "/path/to/project"
+    }
+  ]
+}
 ```
 
-### Input Validation
+### Task JSON schema
 
-`validate_name()` prevents path traversal and injection:
-
-- No ".." or "/" in names
-- No names starting with "-"
-- Max 100 characters
-
-### Kitty Window Identification
-
-Uses user variables (`--var`) for reliable window matching even after title changes:
-
-```bash
-kitten_cmd launch --var "swarm_${team}_${agent}=true" ...
-kitten_cmd close-window --match "var:swarm_${team}_${agent}"
+```json
+{
+  "id": "1",
+  "subject": "Task title",
+  "description": "Detailed description",
+  "status": "pending|in_progress|completed",
+  "owner": "agent-name",
+  "blocks": ["2"],
+  "blockedBy": [],
+  "activeForm": "Working on task",
+  "metadata": {}
+}
 ```
 
-### Model Validation
+## Transcript Loading
 
-All spawn functions validate model parameter:
-
-```bash
-case "$model" in
-    haiku|sonnet|opus) ;;
-    *) model="sonnet" ;;
-esac
-```
-
-## Shell Requirements
-
-### Bash Dependency
-
-**All swarm commands and library functions require bash:**
-
-- Command files use bash-specific syntax (`[[ ]]`, arrays, `printf %q`)
-- Hook scripts have `#!/bin/bash` shebangs
-- Library modules use bash features throughout (process substitution, associative arrays, regex matching)
-- Entry point (`swarm-utils.sh`) validates bash availability before loading modules
-
-**Commands execute with explicit bash invocation:**
-
-All command files wrap their scripts in bash heredocs:
-
-```bash
-bash << 'SCRIPT_EOF'
-source "${CLAUDE_PLUGIN_ROOT}/lib/swarm-utils.sh" 1>/dev/null
-# ... command logic ...
-SCRIPT_EOF
-```
-
-This ensures commands execute in bash regardless of user's default shell (zsh on macOS).
-
-### Multiplexer Requirements and Limitations
-
-#### Kitty (Full Support)
-
-**Features available:**
-
-- Window variables (`swarm_team`, `swarm_agent`) for context detection
-- Automatic team/agent detection for team-leads
-- Split, tab, and window spawn modes
-- Session file generation and launching
-- All commands work seamlessly
-
-**Setup requirements:**
-
-- Running inside kitty terminal
-- Remote control enabled in `~/.config/kitty/kitty.conf`:
-  ```
-  allow_remote_control yes
-  listen_on unix:/tmp/kitty-$USER
-  ```
-
-#### Tmux (Partial Support)
-
-**Features available:**
-
-- Spawning teammates in separate sessions
-- Task management and messaging
-- All core swarm functionality
-
-**Limitations:**
-
-- No window variables (tmux has no equivalent to kitty user vars)
-- Team-leads cannot rely on automatic team detection
-- Commands will error instead of silently defaulting to "default" team
-
-**Workaround for team-leads in tmux:**
-
-Set team context manually in your shell:
-
-```bash
-export CLAUDE_CODE_TEAM_NAME="your-team-name"
-```
-
-Or always provide explicit team names when running commands:
-
-- `/swarm-status your-team-name`
-- `/swarm-verify your-team-name`
-
-**Note**: Spawned teammates (in both kitty and tmux) always have correct environment variables and work identically.
-
-### Error Messages
-
-When commands cannot determine team context, they now error with:
+The TUI loads conversation history from Claude Code's JSONL transcript files:
 
 ```
-Error: Cannot determine team. Run this command from a swarm window or set CLAUDE_CODE_TEAM_NAME
+~/.claude/projects/<sanitized-cwd>/<leadSessionId>/
+├── <leadSessionId>.jsonl          # Team lead's transcript
+└── subagents/
+    ├── agent-<uuid>.jsonl         # Subagent transcript
+    └── agent-<uuid>.meta.json     # Sidecar with agentType field (agent name)
 ```
 
-**Previous behavior (v1.6.2 and earlier)**: Commands silently defaulted to "default" team, causing operations to affect the wrong team.
+Agent matching strategies (in priority order):
+1. `.meta.json` sidecar — `agentType` field matches agent name (newer teams)
+2. First-line content heuristic — looks for `You are "<agent>"` or `teammate_id="<agent>"` patterns
+3. Team lead fallback — `<leadSessionId>.jsonl` for the team-lead agent
 
-**New behavior**: Commands fail explicitly, preventing data corruption.
-
-### Known Limitations
-
-1. **Team-leads in tmux** cannot rely on automatic team detection via window variables
-2. **Window variables** (`swarm_team`, `swarm_agent`) only work in kitty
-3. **Commands require explicit team names** or environment variables when window vars unavailable
-4. **Hook changes** require Claude Code restart (hooks load at session start only)
-5. **Non-bash shells** will fail with clear error message when sourcing swarm-utils.sh
-
-## Command Development
-
-Commands are markdown files in `plugins/claude-swarm/commands/`. They use bash execution syntax to call swarm-utils functions:
-
-```markdown
----
-description: Brief description shown in /help
-argument-hint: <required> [optional]
----
-
-Command instructions that Claude follows...
-```
-
-## Testing Changes
-
-1. **Library changes**: Test functions directly in bash
-2. **Command changes**: Use `/claude-swarm:<command>` in Claude Code
-3. **Hook changes**: Restart Claude Code (hooks load at session start)
-4. **Full integration**: Create test team, spawn teammates, verify status
-
-## Common Operations
-
-```bash
-# Source library for testing
-source plugins/claude-swarm/lib/swarm-utils.sh 1>/dev/null
-
-# Check multiplexer detection
-detect_multiplexer
-
-# Find kitty socket
-find_kitty_socket
-
-# List teams
-list_teams
-
-# Get team status (verbose)
-swarm_status "team-name"
-```
-
-## litter-tui (Textual TUI)
-
-The `src/litter_tui/` package is a standalone Textual TUI for managing Claude Code agent teams visually.
-
-### Tech Stack
-
-- **Python 3.14+**, `uv` for deps
-- **Textual 3.x** (App > Screen > Widget hierarchy)
-- **claude-agent-sdk** for agent sessions
-- **anyio** for async, **watchfiles** for filesystem watching
-
-### Package Structure
+## Package Structure
 
 ```
 src/litter_tui/
-├── app.py              # LitterTuiApp — main App, keybindings
-├── config.py           # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
-├── __main__.py         # CLI entry point, argparse
-├── models/             # Frozen dataclasses: Team, TeamMember, Task, TaskStatus, Message
+├── app.py                  # LitterTuiApp — main App, keybindings, QuitScreen
+├── config.py               # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
+├── __main__.py             # CLI entry point (argparse: --vim, --theme, --debug, --version)
+├── models/
+│   ├── team.py             # Team, TeamMember frozen dataclasses
+│   ├── task.py             # Task, TaskStatus enum, TodoItem
+│   └── message.py          # Message dataclass (from_agent ↔ "from" key aliasing)
 ├── services/
-│   ├── state.py        # StateManager — watchfiles.awatch for ~/.claude/ JSON changes
-│   ├── team_service.py # TeamService — JSON CRUD with mkdir-based file locking
-│   ├── agent_manager.py# AgentManager — ClaudeSDKClient session management
-│   └── kitty.py        # KittyService — kitty terminal pop-out/import
-├── screens/            # MainScreen, CreateTeamScreen, SpawnAgentScreen, TaskDetailScreen, SettingsScreen
-├── widgets/            # TeamSidebar, SessionTabBar, StatusBar, SessionView, InputBar, TaskPanel, MessagePanel
-└── styles/app.tcss     # Dark theme CSS (sidebar 25 cols, slide panels via offset transitions)
+│   ├── state.py            # StateManager — watchfiles.awatch on ~/.claude/ for live updates
+│   ├── team_service.py     # TeamService — JSON CRUD with mkdir-based atomic file locking
+│   ├── agent_manager.py    # AgentManager — claude-agent-sdk session management, detach/reattach
+│   ├── kitty.py            # KittyService — kitty terminal pop-out/import
+│   └── claude_settings.py  # ClaudeSettings — reads ~/.claude/settings.json (model, env vars)
+├── screens/
+│   ├── main.py             # MainScreen — primary layout (sidebar + tabs + session + input + panels)
+│   ├── create_team.py      # CreateTeamScreen (modal)
+│   ├── spawn_agent.py      # SpawnAgentScreen (modal)
+│   ├── task_detail.py      # TaskDetailScreen (modal, view/edit toggle)
+│   ├── settings.py         # SettingsScreen (full-page, theme picker, Claude Code settings display)
+│   ├── about.py            # AboutScreen (modal, ASCII art)
+│   ├── confirm.py          # ConfirmScreen (reusable yes/no modal)
+│   ├── rename_team.py      # RenameTeamScreen (modal)
+│   ├── broadcast_message.py# BroadcastMessageScreen (modal)
+│   ├── configure_agent.py  # ConfigureAgentScreen (modal, model/color/type)
+│   └── duplicate_agent.py  # DuplicateAgentScreen (modal, cross-team with inbox/context copy)
+├── widgets/
+│   ├── sidebar.py          # TeamSidebar — Tree widget with colored agent badges and status dots
+│   ├── tab_bar.py          # SessionTabBar — TabbedContent with close buttons, right-click menus
+│   ├── session_view.py     # SessionView — RichLog with text selection, streaming, tool rendering
+│   ├── input_bar.py        # InputBar — multi-line input with history, autocomplete, /command mode
+│   ├── task_panel.py       # TaskPanel — slide-out panel with filter/sort, task + todo items
+│   ├── message_panel.py    # MessagePanel — slide-out panel with inbox/broadcast/compose
+│   ├── context_menu.py     # ContextMenu — floating right-click menus for agents/tabs/teams
+│   └── status_bar.py       # StatusBar — team/agent/task summary line
+└── styles/
+    └── app.tcss            # Textual CSS — dark theme, slide-panel transitions, widget styling
 ```
 
-### Key Patterns
+## Key Patterns
 
-- **Textual CSS** in `.tcss` files, not inline — slide panels use `offset-x: -100%` + `transition: offset 300ms` + `toggle_class("-visible")`
-- **Textual markup** (not Rich markup) in widget content
+- **Textual CSS** in `.tcss` files, not inline — slide panels use `offset-x: 100%` + `transition: offset 300ms` + `toggle_class("-visible")`
+- **Textual markup** (not Rich markup) in widget content — escape `[` brackets with `\[` when rendering external text
 - Use `self.screen.query()` not `self.app.query()` for active screen queries
-- `ModalScreen[T]` for typed dismiss dialogs
+- `ModalScreen[T]` for typed dismiss dialogs — constructor params, `.dismiss(value)` returns T
 - `@work(exclusive=True)` for async streaming, `post_message()` for thread-safe messaging
-- State reads from `~/.claude/teams/` and `~/.claude/tasks/` JSON
-- State writes via direct JSON file operations with file locking (not bash subprocess)
+- State reads from `~/.claude/teams/` and `~/.claude/tasks/` JSON via `StateManager` (watchfiles)
+- State writes via `TeamService` — direct JSON file operations with mkdir-based atomic file locking
+- Agent sessions via `AgentManager` → `AgentSession` → `ClaudeSDKClient` from claude-agent-sdk
+- Structured inbox messages: parse JSON `type` field (`task_assignment`, `task_completed`, `idle_notification`, `shutdown_request`, `shutdown_response`) in `MainScreen._format_inbox_text()`
+- Strip `<teammate-message>` XML wrappers from transcript user prompts
+- Context menus: `ContextMenu` widget with `show_at()` / `show_tab_menu_at()` / `show_team_menu_at()`, action routing in `MainScreen.on_context_menu_action_selected()`
 
-### Running & Testing
+## Screens Reference
+
+| Screen | Type | Purpose |
+|--------|------|---------|
+| `MainScreen` | Screen | Primary layout: sidebar + tabs + session view + input bar + slide panels |
+| `CreateTeamScreen` | ModalScreen[dict\|None] | Create team: name, description, auto-lead toggle, model |
+| `SpawnAgentScreen` | ModalScreen[dict\|None] | Spawn agent: name, type, model, initial prompt |
+| `TaskDetailScreen` | ModalScreen[dict\|None] | View/edit task: subject, description, status, owner |
+| `SettingsScreen` | Screen | Full-page settings: vim mode, theme, Claude Code settings display |
+| `AboutScreen` | ModalScreen[None] | About dialog with ASCII art, repo link |
+| `ConfirmScreen` | ModalScreen[bool] | Reusable yes/no confirmation |
+| `RenameTeamScreen` | ModalScreen[str\|None] | Rename team with validation |
+| `BroadcastMessageScreen` | ModalScreen[str\|None] | Compose broadcast message |
+| `ConfigureAgentScreen` | ModalScreen[dict\|None] | Edit agent: name, model, color, type |
+| `DuplicateAgentScreen` | ModalScreen[dict\|None] | Cross-team duplication with inbox/context copy options |
+
+## Widgets Reference
+
+| Widget | Purpose | Key Messages |
+|--------|---------|-------------|
+| `TeamSidebar` | Tree of teams/agents with badges | `AgentSelected`, `TeamSelected`, `MainChatSelected`, `*ContextMenuRequested` |
+| `SessionTabBar` | Tabbed agent sessions with close buttons | `TabActivated`, `TabClosed`, `TabContextMenuRequested` |
+| `SessionView` | Scrollable output with text selection + streaming | `TodoWriteDetected` |
+| `InputBar` | Multi-line input with history + autocomplete | `PromptSubmitted`, `CommandSubmitted`, `InterruptRequested` |
+| `TaskPanel` | Slide-out task list with filter/sort | `TaskSelected` |
+| `MessagePanel` | Slide-out inbox/broadcast/compose | `MessageComposed` |
+| `ContextMenu` | Floating right-click menus | `ActionSelected` |
+| `StatusBar` | Team/agent/task summary | (none) |
+
+## Running & Testing
 
 ```bash
 # Install deps and run
 uv sync && uv run litter-tui
 
-# Run all 207 tests
+# CLI flags
+uv run litter-tui --vim --theme light --debug
+
+# Run all tests
 uv run pytest tests/ -v
 
 # Headless screenshot test (for widget/screen changes)
@@ -460,16 +212,17 @@ anyio.run(main)
 "
 ```
 
-### Keybindings
+## Keybindings
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+N` | Create new team |
 | `Ctrl+S` | Spawn agent |
 | `Ctrl+T` | Toggle task panel |
-| `Ctrl+M` | Toggle message panel |
-| `Ctrl+D` | Detach session |
 | `Ctrl+Q` / `q` | Quit |
+| `F1` | About |
+| `F2` | Toggle message panel |
+| `F3` | Settings |
 | `Escape` | Close dialog / quit |
-| `F1` | Help |
 | `Tab` | Focus next |
+| `Cmd+C` / `Ctrl+C` | Copy selected text |

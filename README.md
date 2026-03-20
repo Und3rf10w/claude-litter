@@ -1,788 +1,172 @@
-# Claude Litter 🐱
+# Claude Litter
 
-> A swarm of Claude Code instances working together like a litter of kittens
+> A Textual TUI for managing Claude Code agent teams
 
-**Claude Litter** is a plugin marketplace for Claude Code that enables multi-agent coordination. Spawn parallel Claude Code teammates in **kitty** or **tmux**, assign tasks, and coordinate work across multiple instances.
+**Claude Litter** is a terminal manager (`litter-tui`) for [Claude Code's agent teams](https://code.claude.com/docs/en/agent-teams).
 
-## Why "Litter"?
-
-Because when you're running multiple Claude instances in kitty terminal, you've got yourself a _litter_ of kittens! 🐱🐱🐱
+It gives you a sidebar tree of teams and agents, tabbed sessions with full transcript history, a task panel with filtering and sorting, a message panel with inbox and compose, and live filesystem watching so the UI updates automatically as agents work.
 
 ## Features
 
-- **Multi-agent swarms** - Spawn multiple Claude Code instances working in parallel
-- **Kitty & tmux support** - Native support for both terminal multiplexers
-- **Task management** - Create, assign, and track tasks across teammates
-- **Message passing** - File-based inbox system for inter-agent communication
-- **Session files** - Save and restore entire swarm configurations (kitty)
-- **Auto-detection** - Automatically detects kitty vs tmux environment
-- **Textual TUI** - Full terminal UI for managing teams, tasks, and agent sessions (`litter-tui`)
-
-> [!IMPORTANT]
-> Any code related to Swarm/Teammate support was removed in `Claude Code 2.0.76`. Claude Litter (this project) functions essentially as a reimplementation of the removed functionality largely via hooks and skills. As a result, Claude Litter continues to work with Claude Code >= `2.0.76`, but it may result in some unexpected behaviour.
-
----
-
-## Installation & Setup
-
-### Prerequisites
-
-- **Claude Code** installed and running ([installation guide](https://docs.anthropic.com/en/docs/claude-code))
-- **Terminal multiplexer**: Either kitty (recommended) or tmux
-- **jq** for JSON processing: `brew install jq` (macOS) or `apt install jq` (Linux)
-
-### Step 1: Add the Claude Litter Marketplace
-
-Open Claude Code and run:
-
-```
-/plugin marketplace add Und3rf10w/claude-litter
-```
-
-This adds the Claude Litter marketplace from GitHub. Claude Code will:
-
-1. Clone the repository to `~/.claude/plugins/marketplaces/claude-litter/`
-2. Register the marketplace for plugin discovery
-3. Make the `claude-swarm` plugin available for installation
-
-### Step 2: Install the Claude Swarm Plugin
-
-```
-/plugin install claude-swarm@claude-litter
-```
-
-This installs the swarm plugin, which includes:
-
-- 27 slash commands for team/task management
-- 4 skills (swarm-orchestration, swarm-team-lead, swarm-teammate, swarm-troubleshooting)
-- 9 hooks for session lifecycle events
-
-### Step 3: Configure Your Terminal
-
-#### For Kitty Users (Recommended)
-
-Kitty requires remote control and socket listener enabled for Claude Code to spawn teammates.
-
-**1. Edit your kitty config:**
-
-```bash
-# Open kitty.conf
-vim ~/.config/kitty/kitty.conf
-```
-
-**2. Add these lines:**
-
-```conf
-# Required for Claude Litter swarm functionality
-allow_remote_control yes
-listen_on unix:/tmp/kitty-$USER
-```
-
-> **Note:** Kitty automatically appends `-PID` to the socket path. So with the config above, the actual socket will be `/tmp/kitty-username-12345` (where 12345 is kitty's PID). The plugin handles this automatically.
-
-I would generally recommend you add this line too so that you can use SHIFT + Enter to insert a new line in Claude Code:
-
-```conf
-map shift+enter send_text all \n
-```
-
-**3. Restart kitty completely** (not just reload config):
-
-- macOS: `Cmd+Q` then reopen kitty
-- Linux: Close all kitty windows and reopen
-
-**4. Verify the socket exists:**
-
-```bash
-# Should show the socket file (may have a PID suffix like kitty-username-12345)
-ls -la /tmp/kitty-$USER*
-```
-
-**5. Test remote control:**
-
-```bash
-# Should return JSON with window information
-kitten @ ls
-```
-
-If `kitten @ ls` works, you're ready to go!
-
-#### For tmux Users
-
-tmux works out of the box - no additional configuration needed. Just ensure tmux is installed:
-
-```bash
-# macOS
-brew install tmux
-
-# Linux
-apt install tmux
-```
-
-### Step 4: Verify Installation
-
-In Claude Code, run:
-
-```
-/plugin
-```
-
-You should see `claude-swarm` listed under installed plugins. You can also verify the commands are available:
-
-```
-/claude-swarm:swarm-create test-team "Testing installation"
-/claude-swarm:swarm-status test-team
-/claude-swarm:swarm-cleanup test-team --force
-```
-
-### Alternative: Install from Local Clone
-
-If you prefer to clone the repository manually:
-
-```bash
-# Clone to the marketplaces directory
-git clone https://github.com/Und3rf10w/claude-litter.git ~/.claude/plugins/marketplaces/claude-litter
-
-# In Claude Code, add the local marketplace
-/plugin marketplace add ~/.claude/plugins/marketplaces/claude-litter
-
-# Install the plugin
-/plugin install claude-swarm@claude-litter
-```
-
-### Alternative: Team/Project Installation
-
-To automatically install Claude Litter for all team members working on a project, add to your project's `.claude/settings.json`:
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "claude-litter": {
-      "source": {
-        "source": "github",
-        "repo": "Und3rf10w/claude-litter"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "claude-litter": {
-      "claude-swarm": true
-    }
-  }
-}
-```
-
-When team members trust the repository folder, Claude Code automatically:
-
-1. Installs the Claude Litter marketplace
-2. Installs and enables the claude-swarm plugin
-
-### Updating the Plugin
-
-To update to the latest version:
-
-```
-/plugin marketplace update claude-litter
-```
-
-Or enable auto-updates:
-
-1. Run `/plugin` to open the plugin manager
-2. Select **Marketplaces**
-3. Choose **claude-litter**
-4. Select **Enable auto-update**
-
----
-
-## Kitty Advanced Configuration
-
-> Basic kitty setup is covered in [Installation & Setup](#installation--setup). This section covers additional options.
-
-### Spawn Modes
-
-Control how teammates spawn in kitty by setting `SWARM_KITTY_MODE`:
-
-```bash
-# In your shell profile (~/.zshrc or ~/.bashrc)
-export SWARM_KITTY_MODE=split   # Options: window, split, tab
-```
-
-| Mode     | Behavior                                         |
-| -------- | ------------------------------------------------ |
-| `split`  | Teammates in splits within current tab (default) |
-| `tab`    | Each teammate in separate tab                    |
-| `window` | Each teammate in separate kitty window           |
-
-### Socket Path Override
-
-If your kitty socket is in a non-standard location:
-
-```bash
-export KITTY_LISTEN_ON=unix:/path/to/your/socket
-```
-
-The plugin automatically detects sockets matching `/tmp/kitty-$USER-*` (kitty appends a PID).
-
----
-
-## Quick Start
-
-Just describe your task - Claude Code will auto-invoke the appropriate swarm skill:
-
-```
-"Set up a team to implement user authentication with login, signup, and password reset"
-```
-
-Claude will guide you through:
-
-1. Creating a team
-2. Breaking down the task
-3. Spawning teammates
-4. Assigning work
-
-Or use commands directly:
-
-```bash
-# Create a team
-/claude-swarm:swarm-create my-feature "Implementing new feature"
-
-# Create tasks
-/claude-swarm:task-create "Build API endpoints" "REST API for user management"
-/claude-swarm:task-create "Create UI components" "React forms and pages"
-/claude-swarm:task-create "Write tests" "Unit and integration tests"
-
-# Spawn teammates
-/claude-swarm:swarm-spawn backend-dev backend-developer sonnet
-/claude-swarm:swarm-spawn frontend-dev frontend-developer sonnet
-/claude-swarm:swarm-spawn tester tester haiku
-
-# Assign tasks
-/claude-swarm:task-update 1 --assign backend-dev
-/claude-swarm:task-update 2 --assign frontend-dev
-/claude-swarm:task-update 3 --assign tester --blocked-by 1
-
-# Check status
-/claude-swarm:swarm-status my-feature
-```
-
----
-
-## Team Lifecycle
-
-Teams support suspend and resume functionality, allowing you to pause work and continue later.
-
-### Team States
-
-| State       | Description                                |
-| ----------- | ------------------------------------------ |
-| `active`    | Team is running, members are working       |
-| `suspended` | Sessions closed, data preserved, resumable |
-| `archived`  | Permanently stored (future feature)        |
-
-### Suspending a Team
-
-When you're done working (or need to take a break):
-
-```bash
-# Soft cleanup: Kill sessions, preserve data
-/claude-swarm:swarm-cleanup my-team
-
-# Hard cleanup: Delete everything permanently
-/claude-swarm:swarm-cleanup my-team --force
-```
-
-**What happens on suspend:**
-
-- All teammate sessions are closed
-- Team and member status set to "suspended"/"offline"
-- All data preserved (config, tasks, messages)
-
-### Resuming a Team
-
-To continue where you left off:
-
-```bash
-/claude-swarm:swarm-resume my-team
-```
-
-**What happens on resume:**
-
-- Team status changes to "active"
-- Each offline teammate is respawned with:
-  - Their original model (haiku/sonnet/opus)
-  - Context about assigned tasks
-  - Notification of unread messages
-- Teammates can pick up where they left off
-
-### Automatic Behavior
-
-**When team-lead exits:**
-
-- By default: All teammates are killed, team is suspended
-- With `SWARM_KEEP_ALIVE=true`: Teammates keep running
-
-**When a teammate exits:**
-
-- Team-lead is notified via inbox
-- Teammate marked as offline
-
-### Example Workflow
-
-```bash
-# Day 1: Start working
-/claude-swarm:swarm-create feature-x "New dashboard"
-/claude-swarm:swarm-spawn api-dev backend-developer sonnet
-/claude-swarm:task-create "Build API" "REST endpoints for dashboard"
-/claude-swarm:task-update 1 --assign api-dev
-
-# End of day: Suspend (or just close Claude Code)
-/claude-swarm:swarm-cleanup feature-x
-
-# Day 2: Resume work
-/claude-swarm:swarm-resume feature-x
-# api-dev respawns with context about Task #1
-```
-
----
-
-## Commands Reference
-
-### Team Management
-
-| Command                       | Description       | Usage                                                      |
-| ----------------------------- | ----------------- | ---------------------------------------------------------- |
-| `/claude-swarm:swarm-create`  | Create a new team | `/claude-swarm:swarm-create <team> [description]`          |
-| `/claude-swarm:swarm-spawn`   | Spawn a teammate  | `/claude-swarm:swarm-spawn <name> [type] [model] [prompt]` |
-| `/claude-swarm:swarm-status`  | View team status  | `/claude-swarm:swarm-status <team>`                        |
-| `/claude-swarm:swarm-cleanup` | Suspend/delete    | `/claude-swarm:swarm-cleanup <team> [--force]`             |
-| `/claude-swarm:swarm-resume`  | Resume suspended  | `/claude-swarm:swarm-resume <team>`                        |
-
-### Task Management
-
-| Command                     | Description    | Usage                                                           |
-| --------------------------- | -------------- | --------------------------------------------------------------- |
-| `/claude-swarm:task-create` | Create a task  | `/claude-swarm:task-create <subject> [description]`             |
-| `/claude-swarm:task-list`   | List all tasks | `/claude-swarm:task-list`                                       |
-| `/claude-swarm:task-update` | Update a task  | `/claude-swarm:task-update <id> [--status] [--assign] [--comment]` |
-
-### Communication
-
-| Command                       | Description      | Usage                                         |
-| ----------------------------- | ---------------- | --------------------------------------------- |
-| `/claude-swarm:swarm-message` | Send a message   | `/claude-swarm:swarm-message <to> <message>` |
-| `/claude-swarm:swarm-inbox`   | Check your inbox | `/claude-swarm:swarm-inbox [mark_read]`      |
-
-### Kitty-Specific
-
-| Command                       | Description          | Usage                                                    |
-| ----------------------------- | -------------------- | -------------------------------------------------------- |
-| `/claude-swarm:swarm-session` | Manage session files | `/claude-swarm:swarm-session <generate\|launch\|save> <team>` |
-
----
-
-## Agent Types
-
-When spawning teammates, choose an appropriate type:
-
-| Type                 | Best For                     |
-| -------------------- | ---------------------------- |
-| `worker`             | General purpose tasks        |
-| `backend-developer`  | APIs, databases, server code |
-| `frontend-developer` | UI, React, CSS, UX           |
-| `reviewer`           | Code review, quality checks  |
-| `researcher`         | Documentation, investigation |
-| `tester`             | Writing and running tests    |
-
-## Model Selection
-
-| Model    | Use Case                                  |
-| -------- | ----------------------------------------- |
-| `haiku`  | Simple, well-defined tasks (fast & cheap) |
-| `sonnet` | Balanced complexity (default)             |
-| `opus`   | Complex reasoning, architecture decisions |
-
----
-
-## Kitty Session Files
-
-Save and restore entire swarm configurations:
-
-```bash
-# Generate session file from current team
-/claude-swarm:swarm-session generate my-team
-
-# Launch a new kitty instance with all teammates
-/claude-swarm:swarm-session launch my-team
-
-# Or launch manually
-kitty --session ~/.claude/teams/my-team/swarm.kitty-session
-```
-
-### Session File Location
-
-```
-~/.claude/teams/<team>/swarm.kitty-session
-```
-
-### Window Identification
-
-Kitty windows use user variables (`--var`) for reliable identification:
-
-- Windows survive title changes by Claude
-- Pattern: `var:swarm_<team>_<agent>`
-- Commands can target windows even after Claude renames them
-
----
-
-## Communication Patterns
-
-### team-lead → Teammates
-
-```bash
-/claude-swarm:swarm-message backend-dev "Priority change: implement OAuth first"
-```
-
-### Teammates → team-lead
-
-```bash
-/claude-swarm:swarm-message team-lead "Task #1 complete. PR ready for review."
-```
-
-### Check Messages
-
-```bash
-/claude-swarm:swarm-inbox
-```
-
-Messages are delivered:
-
-- Automatically on session start (via hook)
-- Manually via `/swarm-inbox`
-
----
-
-## File Structure
-
-```
-~/.claude/
-├── teams/<team>/
-│   ├── config.json              # Team configuration
-│   ├── swarm.kitty-session      # Kitty session file (if generated)
-│   └── inboxes/
-│       ├── team-lead.json       # Message inboxes
-│       ├── backend-dev.json
-│       └── ...
-└── tasks/<team>/
-    ├── 1.json                   # Task files
-    ├── 2.json
-    └── ...
-```
-
----
-
-## Environment Variables
-
-### Set by the Plugin
-
-When inside a swarm session, these are automatically set:
-
-| Variable                   | Description                          |
-| -------------------------- | ------------------------------------ |
-| `CLAUDE_CODE_TEAM_NAME`    | Current team name                    |
-| `CLAUDE_CODE_AGENT_ID`     | Your unique agent UUID               |
-| `CLAUDE_CODE_AGENT_NAME`   | Your agent name                      |
-| `CLAUDE_CODE_AGENT_TYPE`   | Your role type                       |
-| `CLAUDE_CODE_TEAM_LEAD_ID` | Team lead's agent UUID               |
-
-> **Note:** Agent color is passed via `--agent-color` CLI argument, not as an environment variable.
-
-### User Configuration
-
-| Variable            | Description                    | Default                 |
-| ------------------- | ------------------------------ | ----------------------- |
-| `SWARM_MULTIPLEXER` | Force `tmux` or `kitty`        | Auto-detect             |
-| `SWARM_KITTY_MODE`  | Kitty spawn mode               | `split`                 |
-| `KITTY_LISTEN_ON`   | Kitty socket path override     | `unix:/tmp/kitty-$USER` |
-| `SWARM_KEEP_ALIVE`  | Keep teammates when lead exits | `false`                 |
-
----
-
-## Best Practices
-
-### 1. Right-Size Your Team
-
-| Team Size | Use Case                                    |
-| --------- | ------------------------------------------- |
-| 2-3       | Small features, bug fixes                   |
-| 4-5       | Medium features                             |
-| 6+        | Large projects (more coordination overhead) |
-
-### 2. Clear Task Descriptions
-
-Give teammates specific, actionable instructions:
-
-```bash
-/claude-swarm:swarm-spawn api-dev backend-developer sonnet "You handle the REST API. Focus on /api/auth endpoints. Check task #1 for requirements. Report to team-lead when done."
-```
-
-### 3. Use Dependencies
-
-Prevent work on tasks that depend on others:
-
-```bash
-/claude-swarm:task-update 3 --blocked-by 1
-/claude-swarm:task-update 3 --blocked-by 2
-```
-
-### 4. Regular Check-ins
-
-Teammates should periodically:
-
-```bash
-/claude-swarm:swarm-inbox    # Check for messages
-/claude-swarm:task-list      # See task updates
-```
-
-### 5. Clear Completion Signals
-
-When done with a task:
-
-```bash
-/claude-swarm:task-update 1 --status resolved --comment "Done. See commit abc123"
-/claude-swarm:swarm-message team-lead "Task #1 complete"
-```
-
----
-
-## Troubleshooting
-
-### Kitty Remote Control Not Working
-
-1. Verify config:
-
-   ```bash
-   grep -E 'allow_remote_control|listen_on' ~/.config/kitty/kitty.conf
-   ```
-
-2. Test connection:
-
-   ```bash
-   kitten @ ls
-   ```
-
-3. Restart kitty after config changes (full restart, not just reload)
-
-### "device not configured" Error from Claude Code
-
-If you see `Error: open /dev/tty: device not configured` when spawning teammates:
-
-1. Ensure `listen_on unix:/tmp/kitty-$USER` is in your kitty.conf
-2. Restart kitty completely
-3. Verify socket exists (note: kitty appends `-PID` to the path):
-
-   ```bash
-   ls -la /tmp/kitty-$USER*
-   ```
-
-4. Test socket connection:
-
-   ```bash
-   kitten @ --to unix:/tmp/kitty-$USER ls
-   ```
-
-### Messages Not Delivered
-
-Messages are file-based. Recipients must:
-
-- Run `/swarm-inbox` manually, OR
-- Start a new session (auto-delivered via hook)
-
-### Teammate Not Responding
-
-```bash
-# Check status
-/claude-swarm:swarm-status my-team
-
-# List kitty windows
-kitten @ ls | jq '.[] | .tabs[].windows[] | select(.user_vars.swarm_team)'
-
-# Respawn if needed
-/claude-swarm:swarm-spawn <name> <type>
-```
-
-### Force tmux Instead of Kitty
-
-```bash
-export SWARM_MULTIPLEXER=tmux
-```
-
----
-
-## Hooks
-
-Claude Swarm includes 9 lifecycle hooks that automate coordination and monitoring:
-
-### SessionStart Hook
-
-**Trigger:** When a teammate Claude Code session starts
-**Action:** Automatically delivers unread inbox messages
-
-This ensures teammates see important messages from team-lead immediately upon starting their session, without needing to manually run `/swarm-inbox`.
-
-### SessionEnd Hook
-
-**Trigger:** When a teammate Claude Code session ends
-**Action:** Notifies team-lead via inbox message
-
-When a teammate exits, team-lead is informed so they can reassign work or respawn the teammate if needed.
-
-### Notification Hook
-
-**Trigger:** Periodic notifications during Claude Code operation
-**Action:** Updates heartbeat timestamp for health monitoring
-
-Each active teammate periodically updates their heartbeat file. Use `/swarm-diagnose` to detect stale agents that may be hung or idle.
-
-### PostToolUse:ExitPlanMode Hook
-
-**Trigger:** When Claude exits plan mode
-**Action:** Detects swarm launch requests and coordinates spawning
-
-When you approve a plan that includes creating a swarm team, this hook automatically handles the team creation and teammate spawning process.
-
-### PreToolUse:Task Hook
-
-**Trigger:** Before spawning a subagent with the Task tool
-**Action:** Injects team context (team name, agent ID, agent name, role)
-
-When teammates spawn their own subagents, those subagents automatically inherit the team context, ensuring proper coordination across nested agents.
-
-### PreToolUse:TaskUpdate Hook (prompt-based)
-
-**Trigger:** Before any TaskUpdate tool use
-**Action:** Validates task status changes, owner changes, and logical status transitions
-
-Ensures task updates follow logical workflows (pending → in_progress → completed) and that owners are valid team members.
-
-### PreToolUse:SendMessage Hook (prompt-based)
-
-**Trigger:** Before any SendMessage tool use
-**Action:** Validates recipient, message clarity, and broadcast necessity
-
-Checks that communications are directed to valid recipients and that broadcasts are truly necessary for all team members.
-
-### SubagentStart Hook
-
-**Trigger:** When a Task tool subagent is launched
-**Action:** Injects team context (team name, members, tasks) into the subagent
-
-Spawned subagents inherit full team awareness, enabling them to coordinate with team resources.
-
-### SubagentStop Hook (prompt-based)
-
-**Trigger:** When a subagent is about to stop
-**Action:** Validates work completion before allowing shutdown
-
-Checks that all assigned tasks are completed, statuses are updated, and work has been reported to team-lead before allowing a teammate to stop.
-
-> **Note:** The `TeammateIdle` and `TaskCompleted` hooks were removed in v2.0.0 because they are not valid Claude Code hook events. The corresponding scripts (`teammate-idle.sh`, `task-completed.sh`) remain available but are not auto-triggered.
-
----
-
-## litter-tui (Textual TUI)
-
-**litter-tui** is a standalone terminal UI for managing Claude Code agent teams, built with [Textual](https://textual.textualize.io/) and the [claude-agent-sdk](https://pypi.org/project/claude-agent-sdk/).
-
-### Requirements
+- **Team sidebar** with live status indicators (active/partial/inactive) and colored agent badges
+- **Tabbed sessions** with full conversation transcript loading from JSONL files
+- **Task panel** with filtering (pending/in-progress/completed/blocked), sorting (ID/status/owner), and inline editing
+- **Message panel** with inbox view, broadcast view, and compose form
+- **Agent spawning** with model selection (Haiku/Sonnet/Opus) and type assignment
+- **Right-click context menus** on agents, tabs, and teams
+- **Team management**: create, rename, suspend/resume, broadcast, delete
+- **Agent management**: spawn, configure, duplicate (cross-team), kill, detach/reattach
+- **Kitty terminal integration** (pop-out agents to splits/tabs/windows)
+- **Live filesystem watching** — changes to team/task/inbox JSON files refresh the UI automatically
+- **Text selection** with Cmd+C / right-click copy support
+- **10 built-in themes**: textual-dark/light, nord, gruvbox, dracula, tokyo-night, monokai, catppuccin-mocha, solarized-dark/light
+- **Vim mode** (`--vim` flag)
+- **Debug logging** (`--debug` flag, writes to `~/.claude/litter-tui/debug.log`)
+
+## Requirements
 
 - Python 3.14+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- A running Claude Code environment with teams under `~/.claude/teams/`
 
-### Installation
+## Installation
 
 ```bash
-# From the repo root
+# Clone and install
+git clone <repo-url>
+cd claude-litter
 uv sync
 
 # Run the TUI
 uv run litter-tui
 
-# Or directly
-uv run python -m litter_tui
+# Or install in editable mode
+pip install -e .
+litter-tui
 ```
 
-### Keybindings
+## CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--vim` | false | Enable vim keybindings |
+| `--theme` | dark | Color theme (dark, light) |
+| `--debug` | false | Debug logging to `~/.claude/litter-tui/debug.log` |
+| `--version` | — | Print version and exit |
+
+## Keybindings
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+N` | Create new team |
 | `Ctrl+S` | Spawn agent |
 | `Ctrl+T` | Toggle task panel |
-| `Ctrl+M` | Toggle message panel |
-| `Ctrl+D` | Detach session |
 | `Ctrl+Q` | Quit |
-| `q` | Quit (when not focused on an input) |
+| `F1` | About |
+| `F2` | Toggle message panel |
+| `F3` | Settings |
 | `Escape` | Close dialog / quit |
-| `F1` | Help |
 | `Tab` | Focus next widget |
+| `Cmd+C` / `Ctrl+C` | Copy selected text |
 
-### Command Mode
+## Command Mode
 
-Type `:` in the input bar to enter command mode:
+Type `/` in the input bar to enter command mode (autocomplete with Tab):
 
 | Command | Action |
 |---------|--------|
-| `:spawn` | Spawn a new agent |
-| `:kill` | Kill an agent |
-| `:msg <to> <text>` | Send a message |
-| `:broadcast <text>` | Broadcast to team |
-| `:task` | Task operations |
-| `:team` | Team operations |
-| `:kitty` | Kitty pop-out |
-| `:detach` | Detach session |
-| `:vim` | Toggle vim mode |
+| `/spawn` | Spawn a new agent |
+| `/kill` | Kill an agent |
+| `/msg <to> <text>` | Send a message |
+| `/broadcast <text>` | Broadcast to team |
+| `/task` | Task operations |
+| `/team` | Team operations |
+| `/kitty` | Kitty pop-out |
+| `/detach` | Detach session |
+| `/vim` | Toggle vim mode |
 
-### TUI Architecture
+## Data Storage
+
+All state stored as JSON files under `~/.claude/`:
+
+```
+~/.claude/
+├── teams/<team-name>/
+│   ├── config.json              # Team config: name, members, leadAgentId, leadSessionId
+│   └── inboxes/
+│       └── <agent-name>.json    # Message inbox per agent
+├── tasks/<team-name>/
+│   └── <id>.json                # Individual task files (auto-incrementing numeric IDs)
+└── litter-tui/
+    ├── config.json              # TUI preferences (vim_mode, theme)
+    └── debug.log                # Debug log (when --debug is used)
+```
+
+## Architecture
 
 ```
 src/litter_tui/
-├── app.py                  # Main App class, keybindings
-├── config.py               # Config (persisted to ~/.claude/litter-tui/config.json)
-├── __main__.py             # CLI entry point (argparse)
+├── app.py                  # LitterTuiApp — main App, keybindings, QuitScreen
+├── config.py               # Config dataclass (persisted to ~/.claude/litter-tui/config.json)
+├── __main__.py             # CLI entry point (argparse: --vim, --theme, --debug, --version)
 ├── models/
 │   ├── team.py             # Team, TeamMember frozen dataclasses
-│   ├── task.py             # Task, TaskStatus enum
-│   └── message.py          # Message dataclass (from_agent ↔ "from" aliasing)
+│   ├── task.py             # Task, TaskStatus enum, TodoItem
+│   └── message.py          # Message dataclass (from_agent ↔ "from" key aliasing)
 ├── services/
-│   ├── state.py            # StateManager — file watching, reads from ~/.claude/
-│   ├── team_service.py     # TeamService — JSON CRUD with file locking
+│   ├── state.py            # StateManager — watchfiles.awatch on ~/.claude/ for live updates
+│   ├── team_service.py     # TeamService — JSON CRUD with mkdir-based atomic file locking
 │   ├── agent_manager.py    # AgentManager — claude-agent-sdk session management
-│   └── kitty.py            # KittyService — kitty terminal integration
+│   ├── kitty.py            # KittyService — kitty terminal pop-out/import
+│   └── claude_settings.py  # ClaudeSettings — reads ~/.claude/settings.json (model, env vars)
 ├── screens/
-│   ├── main.py             # MainScreen (sidebar + tabs + session + input)
-│   ├── create_team.py      # CreateTeamScreen (modal dialog)
-│   ├── spawn_agent.py      # SpawnAgentScreen (modal dialog)
-│   ├── task_detail.py      # TaskDetailScreen (modal dialog)
-│   └── settings.py         # SettingsScreen
+│   ├── main.py             # MainScreen — primary layout (sidebar + tabs + session + input + panels)
+│   ├── create_team.py      # CreateTeamScreen (modal)
+│   ├── spawn_agent.py      # SpawnAgentScreen (modal)
+│   ├── task_detail.py      # TaskDetailScreen (modal, view/edit toggle)
+│   ├── settings.py         # SettingsScreen (full-page, theme picker, Claude Code settings display)
+│   ├── about.py            # AboutScreen (modal, ASCII art)
+│   ├── confirm.py          # ConfirmScreen (reusable yes/no modal)
+│   ├── rename_team.py      # RenameTeamScreen (modal)
+│   ├── broadcast_message.py# BroadcastMessageScreen (modal)
+│   ├── configure_agent.py  # ConfigureAgentScreen (modal, model/color/type)
+│   └── duplicate_agent.py  # DuplicateAgentScreen (modal, cross-team with inbox/context copy)
 ├── widgets/
-│   ├── sidebar.py          # TeamSidebar (Tree widget)
-│   ├── tab_bar.py          # SessionTabBar (TabbedContent)
-│   ├── status_bar.py       # StatusBar (team/task summary)
-│   ├── session_view.py     # SessionView (RichLog streaming output)
-│   ├── input_bar.py        # InputBar (prompt + command mode)
-│   ├── task_panel.py       # TaskPanel (slide-out, filterable)
-│   └── message_panel.py    # MessagePanel (slide-out, compose)
+│   ├── sidebar.py          # TeamSidebar — Tree widget with colored agent badges and status dots
+│   ├── tab_bar.py          # SessionTabBar — TabbedContent with close buttons, right-click menus
+│   ├── session_view.py     # SessionView — RichLog with text selection, streaming, tool rendering
+│   ├── input_bar.py        # InputBar — multi-line input with history, autocomplete, /command mode
+│   ├── task_panel.py       # TaskPanel — slide-out panel with filter/sort, task + todo items
+│   ├── message_panel.py    # MessagePanel — slide-out panel with inbox/broadcast/compose
+│   ├── context_menu.py     # ContextMenu — floating right-click menus for agents/tabs/teams
+│   └── status_bar.py       # StatusBar — team/agent/task summary line
 └── styles/
-    └── app.tcss            # Dark theme CSS
+    └── app.tcss            # Textual CSS — dark theme, slide-panel transitions, widget styling
 ```
 
-### Testing
+## Development
+
+### Running tests
 
 ```bash
-# Run all 207 tests
+# Run all tests
 uv run pytest tests/ -v
+```
 
-# Headless screenshot test
+### Test coverage
+
+10 test files covering:
+
+- Models (team, task, message dataclasses, serialization round-trips)
+- Services (TeamService CRUD, file locking under concurrency, StateManager, AgentManager, KittyService)
+- App (initialization, keybindings, MainScreen composition)
+- Screens (all 11 screen classes — modal dismiss values, validation, edit modes)
+- Widgets (all 8 widget classes — rendering, messages, interactions, filtering, sorting)
+- Scaffold (package structure and import verification)
+
+### Headless screenshot test
+
+```bash
 uv run python -c "
 import anyio
 from litter_tui.app import LitterTuiApp
@@ -796,54 +180,6 @@ anyio.run(main)
 "
 ```
 
----
+### Dev scripts
 
-## Plugin Contents
-
-### Commands (27)
-
-**Team Management:**
-
-- swarm-create, swarm-spawn, swarm-status, swarm-cleanup, swarm-resume
-- swarm-onboard, swarm-diagnose, swarm-verify, swarm-reconcile
-- swarm-list-teams, swarm-message, swarm-inbox, swarm-broadcast
-- swarm-send-text, swarm-session, swarm-color
-
-**Task Management:**
-
-- task-create, task-list, task-update, task-delete
-
-**Team Discovery:**
-
-- swarm-discover, swarm-join, swarm-approve-join, swarm-reject-join
-
-**Graceful Shutdown:**
-
-- swarm-request-shutdown
-
-**Webhooks:**
-
-- swarm-webhooks
-
-**Quick Reference:**
-
-- swarm-guide
-
-### Skills (4)
-
-- **swarm-orchestration** - Team-lead operations and management (~2,000 tokens)
-- **swarm-team-lead** - Spawned team-lead coordination
-- **swarm-teammate** - Worker coordination protocol (~1,200 tokens)
-- **swarm-troubleshooting** - Diagnostics and recovery (~3,500 tokens)
-
-### Hooks (9)
-
-- **SessionStart** - Auto-deliver unread messages on session start
-- **SessionEnd** - Notify team-lead when teammate ends session
-- **Notification** - Heartbeat tracking for agent health monitoring
-- **PostToolUse:ExitPlanMode** - Detect swarm launch requests from approved plans
-- **PreToolUse:Task** - Inject team context into subagents before task execution
-- **PreToolUse:TaskUpdate** - Validate task status changes and assignments (prompt-based)
-- **PreToolUse:SendMessage** - Validate team communications (prompt-based)
-- **SubagentStart** - Inject team context into spawned subagents
-- **SubagentStop** - Ensure teammates complete work before stopping (prompt-based)
+The `dev/` directory contains ad-hoc developer scripts for live SDK testing and debugging (not part of the test suite).
