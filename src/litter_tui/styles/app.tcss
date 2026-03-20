@@ -1,0 +1,92 @@
+/* Dark theme for litter-tui */
+
+Screen {
+    background: $surface;
+}
+
+#sidebar {
+    width: 25;
+    dock: left;
+    background: $panel;
+    border-right: solid $accent;
+}
+
+#main-content {
+    width: 1fr;
+}
+
+#tab-bar {
+    height: 3;
+    dock: top;
+}
+
+#session-view {
+    height: 1fr;
+}
+
+#input-bar {
+    height: 3;
+    dock: bottom;
+}
+
+/* Slide-out panels */
+.slide-panel {
+    offset-x: 100%;
+    transition: offset 300ms;
+    width: 35%;
+    dock: right;
+}
+
+.slide-panel.-visible {
+    offset-x: 0;
+}
+
+/* Header / footer */
+Header {
+    background: $primary;
+    color: $text;
+}
+
+Footer {
+    background: $panel;
+    color: $text-muted;
+}
+
+/* Generic label styles */
+Label {
+    padding: 0 1;
+}
+
+/* Input styling */
+Input {
+    background: $surface;
+    border: solid $primary;
+}
+
+Input:focus {
+    border: solid $accent;
+}
+
+/* Button styling */
+Button {
+    margin: 0 1;
+}
+
+/* ListView */
+ListView {
+    background: $surface;
+}
+
+ListItem {
+    padding: 0 1;
+}
+
+ListItem:hover {
+    background: $boost;
+}
+
+/* Overlay panels */
+.overlay-panel {
+    background: $panel;
+    border: solid $primary;
+}
