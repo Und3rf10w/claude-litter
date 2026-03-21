@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-import time
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -17,7 +16,6 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import RichLog, LoadingIndicator, Static
-from textual import work
 
 _log = logging.getLogger("claude_litter.session_view")
 
@@ -306,7 +304,6 @@ class SessionView(Widget):
         self._agent_name = agent_name
         self._team = team
         self._model = model
-        self._session = None
         self._streaming = False
         self._user_scrolled_up = False
         self._stream_buffer: list[str] = []
@@ -425,24 +422,6 @@ class SessionView(Widget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def connect_session(self, session) -> None:
-        """Start streaming output from an AgentSession.
-
-        The session object is expected to have a ``stream_response()``
-        async iterator method.
-        """
-        _log.info("connect_session called, session=%r", session)
-        self._session = session
-        self._streaming = True
-        self._set_active()
-        self._stream_session()
-
-    def disconnect_session(self) -> None:
-        """Stop streaming from the current session."""
-        self._streaming = False
-        self._session = None
-        self._set_idle()
 
     def append_output(self, text: str) -> None:
         """Add *text* to the display as a complete block (one RichLog.write call)."""
@@ -564,61 +543,6 @@ class SessionView(Widget):
             self.append_output(
                 f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]"
             )
-
-    # ------------------------------------------------------------------
-    # Internal streaming worker
-    # ------------------------------------------------------------------
-
-    @work(exclusive=True)
-    async def _stream_session(self) -> None:
-        """Background worker that reads from the session and appends output.
-
-        Buffers text chunks and flushes them periodically so the RichLog
-        gets complete paragraphs instead of one-word-per-line entries.
-        """
-        session = self._session
-        if session is None:
-            _log.warning("_stream_session: session is None, returning")
-            return
-
-        _log.info(
-            "_stream_session: starting to stream, session.status=%s, "
-            "session._connected=%s, session._client=%r",
-            session.status, session._connected, session._client,
-        )
-        try:
-            chunk_count = 0
-            last_flush = time.monotonic()
-            async for chunk in session.stream_response():
-                if not self._streaming:
-                    _log.info("_stream_session: streaming stopped by flag")
-                    break
-                chunk_count += 1
-                if chunk_count <= 3:
-                    _log.info("_stream_session: chunk #%d type=%s", chunk_count, type(chunk).__name__)
-                if isinstance(chunk, str) and chunk:
-                    self._stream_buffer.append(chunk)
-                    now = time.monotonic()
-                    if now - last_flush >= self._FLUSH_INTERVAL:
-                        self._flush_stream_buffer()
-                        last_flush = now
-                elif isinstance(chunk, dict):
-                    # Flush and finalize any pending text before tool output
-                    self._flush_stream_buffer()
-                    self._finalize_stream()
-                    self.render_tool_chunk(chunk)
-            _log.info("_stream_session: stream ended, total chunks=%d", chunk_count)
-        except Exception as exc:
-            _log.exception("_stream_session: exception: %s", exc)
-            self._flush_stream_buffer()
-            self._finalize_stream()
-            self.append_output(f"\n[red]Stream error: {exc}[/red]\n")
-        finally:
-            # Flush any remaining buffered text
-            self._flush_stream_buffer()
-            self._finalize_stream()
-            self._set_idle()
-            self._streaming = False
 
     # ------------------------------------------------------------------
     # Scroll tracking

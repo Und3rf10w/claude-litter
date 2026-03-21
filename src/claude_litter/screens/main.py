@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from textual import work
@@ -50,6 +51,18 @@ _PLUGIN_PATH = str(Path(__file__).resolve().parents[3] / "plugins" / "team-overl
 _PLUGIN_CONFIG: list[dict] = [{"type": "local", "path": _PLUGIN_PATH}]
 
 
+@dataclass
+class AgentBuffer:
+    """Per-agent output accumulator. Source of truth for an agent's display history."""
+
+    history: list = field(default_factory=list)  # str (text) or dict (tool chunk)
+    stream_accumulator: list[str] = field(default_factory=list)
+    stream_buffer: list[str] = field(default_factory=list)
+    streaming_block_count: int = 0
+    streaming: bool = False
+    sv_line_count: int = 0  # RichLog lines occupied by current streaming block
+
+
 class MainScreen(Screen):
     """The main application screen with sidebar, session view, and panels."""
 
@@ -81,10 +94,105 @@ class MainScreen(Screen):
         self._agent_manager = agent_manager or AgentManager()
         self._team_service = TeamService()
         self._current_session: AgentSession | None = None
-        self._agent_outputs: dict[tuple[str, str], list[str]] = {}
+        self._agent_outputs: dict[tuple[str, str], AgentBuffer] = {}
         self._active_agent_key: tuple[str, str] | None = _MAIN_CHAT_KEY
         # Cache of full member dicts from config.json, keyed by (team, agent)
         self._member_info: dict[tuple[str, str], dict] = {}
+
+    # ------------------------------------------------------------------
+    # Per-agent buffer helpers
+    # ------------------------------------------------------------------
+
+    def _get_buf(self, key: tuple[str, str] | None = None) -> AgentBuffer:
+        """Get or create the AgentBuffer for the given key (default: active agent)."""
+        if key is None:
+            key = self._active_agent_key or _MAIN_CHAT_KEY
+        return self._agent_outputs.setdefault(key, AgentBuffer())
+
+    def _buf_flush(self, buf: AgentBuffer, sv: SessionView | None) -> None:
+        """Flush buf.stream_buffer into the accumulator and update the view.
+
+        On the view, the entire streaming turn is shown as a single block
+        that gets replaced in-place on each flush, so text renders at full width.
+        """
+        if not buf.stream_buffer:
+            return
+        buf.stream_accumulator.extend(buf.stream_buffer)
+        buf.stream_buffer.clear()
+        if sv is None:
+            return
+        # Render the full accumulated text as one block on the view
+        full_text = "".join(buf.stream_accumulator)
+        if not full_text:
+            return
+        try:
+            from claude_litter.widgets.session_view import SelectableLog
+            log = sv.query_one(SelectableLog)
+            if buf.streaming_block_count > 0:
+                # Replace: remove previous streaming lines, rewrite
+                if buf.sv_line_count > 0:
+                    del log.lines[-buf.sv_line_count:]
+                if sv._output_history:
+                    sv._output_history.pop()
+            else:
+                buf.streaming_block_count = 1
+            old_count = len(log.lines)
+            log.write(full_text, expand=True)
+            buf.sv_line_count = len(log.lines) - old_count
+            # Keep a single history entry for the streaming block
+            sv._output_history.append(full_text)
+            log.virtual_size = log.virtual_size.with_height(len(log.lines))
+            if not sv._user_scrolled_up:
+                log.scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def _buf_finalize(self, buf: AgentBuffer, sv: SessionView | None) -> None:
+        """Consolidate streaming turn: commit accumulated text to buf.history."""
+        if not buf.stream_accumulator:
+            buf.streaming_block_count = 0
+            buf.sv_line_count = 0
+            return
+        full_text = "".join(buf.stream_accumulator)
+        buf.stream_accumulator.clear()
+        buf.history.append(full_text)
+        buf.streaming_block_count = 0
+        buf.sv_line_count = 0
+
+    def _buf_append_tool(self, buf: AgentBuffer, chunk: dict, sv: SessionView | None) -> None:
+        """Record a tool event in buf.history and optionally render to sv."""
+        buf.history.append(chunk)
+        if sv is not None:
+            sv.render_tool_chunk(chunk)
+
+    def _replay_buffer_to_sv(self, buf: AgentBuffer, sv: SessionView) -> None:
+        """Replay a buffer into a freshly-cleared SessionView."""
+        sv.clear_output()
+        for entry in buf.history:
+            if isinstance(entry, str):
+                sv.append_output(entry)
+            elif isinstance(entry, dict):
+                sv.render_tool_chunk(entry)
+        # If there's an in-progress streaming turn, render it too
+        if buf.stream_accumulator:
+            partial = "".join(buf.stream_accumulator)
+            if partial:
+                from claude_litter.widgets.session_view import SelectableLog
+                try:
+                    log = sv.query_one(SelectableLog)
+                    old_count = len(log.lines)
+                    log.write(partial, expand=True)
+                    buf.sv_line_count = len(log.lines) - old_count
+                    buf.streaming_block_count = 1
+                    sv._output_history.append(partial)
+                    log.virtual_size = log.virtual_size.with_height(len(log.lines))
+                    log.scroll_end(animate=False)
+                except Exception:
+                    pass
+        else:
+            # Reset so next flush starts clean
+            buf.sv_line_count = 0
+            buf.streaming_block_count = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -147,8 +255,11 @@ class MainScreen(Screen):
         _log.info("on_prompt_submitted fired, text=%r", event.text)
         self.show_session()
         sv = self.query_one("#session-view", SessionView)
-        sv.append_output(f"\n[bold cyan]> {event.text}[/bold cyan]\n")
-        self._run_prompt(event.text, event.images)
+        line = f"\n[bold cyan]> {event.text}[/bold cyan]\n"
+        buf = self._get_buf()
+        buf.history.append(line)
+        sv.append_output(line)
+        self._dispatch_prompt(event.text, event.images)
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle /command submissions from InputBar."""
@@ -181,8 +292,11 @@ class MainScreen(Screen):
         full_cmd = f"/{cmd} {args}".strip() if args else f"/{cmd}"
         self.show_session()
         sv = self.query_one("#session-view", SessionView)
-        sv.append_output(f"\n[bold cyan]{full_cmd}[/bold cyan]\n")
-        self._run_prompt(full_cmd, None)
+        line = f"\n[bold cyan]{full_cmd}[/bold cyan]\n"
+        buf = self._get_buf()
+        buf.history.append(line)
+        sv.append_output(line)
+        self._dispatch_prompt(full_cmd, None)
 
     def _build_team_context(self) -> str:
         """Build a context block describing active teams and agents for Main Chat."""
@@ -224,107 +338,91 @@ class MainScreen(Screen):
         lines.append("</team-context>")
         return "\n".join(lines)
 
-    @work(exclusive=True, group="prompt")
-    async def _run_prompt(self, text: str, images: list[tuple[str, bytes]] | None) -> None:
+    def _dispatch_prompt(self, text: str, images: list[tuple[str, bytes]] | None) -> None:
+        """Dispatch a prompt to a per-agent worker so concurrent agents don't cancel each other."""
+        key = self._active_agent_key or _MAIN_CHAT_KEY
+        group = f"prompt-{key[0]}-{key[1]}"
+        self.run_worker(
+            self._run_prompt_async(text, images, key),
+            exclusive=True,
+            group=group,
+        )
+
+    async def _run_prompt_async(self, text: str, images: list[tuple[str, bytes]] | None, key: tuple[str, str]) -> None:
         """Background worker: send prompt to session, then stream response inline."""
         _log.info("_run_prompt worker started, text=%r", text)
         sv = self.query_one("#session-view", SessionView)
+        streaming_key = key
+        buf = self._get_buf(streaming_key)
         try:
             # Inject team context for Main Chat prompts
-            if self._active_agent_key == _MAIN_CHAT_KEY:
+            if streaming_key == _MAIN_CHAT_KEY:
                 context = self._build_team_context()
                 if context:
                     text = f"{context}\n\n{text}"
 
-            session = self._current_session
-            _log.info("_run_prompt: current_session=%r", session)
-            if session is None:
-                sv.append_output("[dim]Connecting to agent...[/dim]\n")
-                if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
-                    # Viewing a specific agent — connect to that agent's session
-                    team, agent = self._active_agent_key
-                    session = self._agent_manager.get_session(team, agent)
-                    if session is None:
-                        member = self._member_info.get(self._active_agent_key, {})
-                        model = member.get("model", "sonnet")
-                        session = await self._agent_manager.spawn_agent(
-                            team, agent, model=model,
-                        )
-                else:
-                    # Main Chat — use the default overseer session
-                    session = self._agent_manager.get_session("", "default")
-                    if session is None:
-                        session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
-                        if session.server_info:
-                            cc_commands = {
-                                c["name"]: c.get("description", "")
-                                for c in session.server_info.get("commands", [])
-                            }
-                            self.query_one("#input-bar", InputBar).update_commands(cc_commands)
-                self._current_session = session
+            # Resolve session for this specific agent
+            if streaming_key != _MAIN_CHAT_KEY:
+                team, agent = streaming_key
+                session = self._agent_manager.get_session(team, agent)
+                if session is None:
+                    member = self._member_info.get(streaming_key, {})
+                    model = member.get("model", "sonnet")
+                    session = await self._agent_manager.spawn_agent(
+                        team, agent, model=model,
+                    )
+            else:
+                session = self._agent_manager.get_session("", "default")
+                if session is None:
+                    session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
+                    if session.server_info:
+                        cc_commands = {
+                            c["name"]: c.get("description", "")
+                            for c in session.server_info.get("commands", [])
+                        }
+                        self.query_one("#input-bar", InputBar).update_commands(cc_commands)
 
             _log.info("_run_prompt: calling send_prompt")
             await session.send_prompt(text, images=images)
             _log.info("_run_prompt: send_prompt done, starting inline stream")
 
-            # Stream the response directly in this worker
-            streaming_key = self._active_agent_key
+            buf.streaming = True
             sv._set_active()
             sv._streaming = True
-            sv._session = session
-            chunk_count = 0
             last_flush = time.monotonic()
-            detached = False  # True once user switches away from this agent
             try:
                 async for chunk in session.stream_response():
-                    if not sv._streaming and not detached:
-                        _log.info("_run_prompt: streaming stopped by flag")
-                        break
+                    # Determine if the view is still showing this agent
+                    active_sv = sv if self._active_agent_key == streaming_key else None
 
-                    # Check if user switched away from this agent's view
-                    if not detached and self._active_agent_key != streaming_key:
-                        # Flush what we have, save it, and detach from the view
-                        sv._flush_stream_buffer()
-                        sv._finalize_stream()
-                        sv._set_idle()
-                        sv._streaming = False
-                        self._agent_outputs[streaming_key] = sv.get_output_history()
-                        detached = True
-
-                    if detached:
-                        # Accumulate to the saved output buffer silently
-                        if isinstance(chunk, str) and chunk:
-                            buf = self._agent_outputs.setdefault(streaming_key, [])
-                            buf.append(chunk)
-                        # Skip dict chunks (tool rendering) when detached
-                        continue
-
-                    chunk_count += 1
-                    if chunk_count <= 3:
-                        _log.info("_run_prompt: chunk #%d type=%s", chunk_count, type(chunk).__name__)
                     if isinstance(chunk, str) and chunk:
-                        sv._stream_buffer.append(chunk)
+                        buf.stream_buffer.append(chunk)
                         now = time.monotonic()
-                        if now - last_flush >= sv._FLUSH_INTERVAL:
-                            sv._flush_stream_buffer()
+                        if now - last_flush >= SessionView._FLUSH_INTERVAL:
+                            self._buf_flush(buf, active_sv)
                             last_flush = now
                     elif isinstance(chunk, dict):
-                        sv._flush_stream_buffer()
-                        sv._finalize_stream()
-                        sv.render_tool_chunk(chunk)
-                _log.info("_run_prompt: stream ended, total chunks=%d", chunk_count)
+                        self._buf_flush(buf, active_sv)
+                        self._buf_finalize(buf, active_sv)
+                        self._buf_append_tool(buf, chunk, active_sv)
+                _log.info("_run_prompt: stream ended")
             finally:
-                if not detached:
-                    sv._flush_stream_buffer()
-                    sv._finalize_stream()
+                active_sv = sv if self._active_agent_key == streaming_key else None
+                self._buf_flush(buf, active_sv)
+                self._buf_finalize(buf, active_sv)
+                buf.streaming = False
+                if active_sv is not None:
                     sv._set_idle()
                     sv._streaming = False
         except Exception as exc:
             _log.exception("_run_prompt: exception: %s", exc)
-            sv.append_output(
+            err = (
                 f"\n[red]Failed to connect to agent: {exc}[/red]\n"
                 "[dim]Make sure Claude Code is available and claude-agent-sdk is installed.[/dim]\n"
             )
+            buf.history.append(err)
+            if self._active_agent_key == streaming_key:
+                sv.append_output(err)
 
     # ------------------------------------------------------------------
     # Todo handling
@@ -486,21 +584,25 @@ class MainScreen(Screen):
         if self._active_agent_key == key:
             return
 
-        # Save current output
-        if self._active_agent_key:
-            self._agent_outputs[self._active_agent_key] = sv.get_output_history()
+        # Detach the view from any streaming agent (loop will see active_sv=None)
+        if sv._streaming:
+            sv._streaming = False
+            sv._set_idle()
 
         # Activate the Main Chat tab
         tab_bar.add_tab("", "Main Chat")
         self._current_session = self._agent_manager.get_session("", "default")
         self._active_agent_key = key
 
-        # Restore main chat output
-        sv.clear_output()
+        # Replay main chat buffer
         sv.update_header()  # Reset to default "Session" header
         if key in self._agent_outputs:
-            for line in self._agent_outputs[key]:
-                sv.append_output(line)
+            self._replay_buffer_to_sv(self._agent_outputs[key], sv)
+            if self._agent_outputs[key].streaming:
+                sv._set_active()
+                sv._streaming = True
+        else:
+            sv.clear_output()
 
         self.show_session()
 
@@ -528,7 +630,7 @@ class MainScreen(Screen):
             self._switch_to_main_chat()
 
     def _switch_to_agent(self, team: str, agent: str) -> None:
-        """Save current output, swap to *agent*'s view, restore/load history."""
+        """Swap to *agent*'s view by replaying from its buffer."""
         sv = self.query_one("#session-view", SessionView)
         tab_bar = self.query_one("#tab-bar", SessionTabBar)
         key = (team, agent)
@@ -537,9 +639,10 @@ class MainScreen(Screen):
         if self._active_agent_key == key:
             return
 
-        # Save current output before switching
-        if self._active_agent_key:
-            self._agent_outputs[self._active_agent_key] = sv.get_output_history()
+        # Detach the view from any streaming agent (loop will see active_sv=None)
+        if sv._streaming:
+            sv._streaming = False
+            sv._set_idle()
 
         # Add tab (no-op if already exists), switch session reference
         tab_bar.add_tab(team, agent)
@@ -557,12 +660,14 @@ class MainScreen(Screen):
             color=member.get("color", ""),
         )
 
-        # Restore saved output or load history
-        sv.clear_output()
+        # Replay from buffer or load history from disk
         if key in self._agent_outputs:
-            for line in self._agent_outputs[key]:
-                sv.append_output(line)
+            self._replay_buffer_to_sv(self._agent_outputs[key], sv)
+            if self._agent_outputs[key].streaming:
+                sv._set_active()
+                sv._streaming = True
         else:
+            sv.clear_output()
             self._load_agent_history(team, agent)
 
         self.show_session()
@@ -1128,43 +1233,34 @@ class MainScreen(Screen):
             self._switch_to_agent(team, name)
             self._current_session = session
             sv = self.query_one("#session-view", SessionView)
-            sv.append_output(f"\n[bold cyan]> {initial_prompt[:200]}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n")
             streaming_key = (team, name)
+            buf = self._get_buf(streaming_key)
+            prompt_line = f"\n[bold cyan]> {initial_prompt[:200]}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n"
+            buf.history.append(prompt_line)
+            sv.append_output(prompt_line)
+            buf.streaming = True
             sv._set_active()
             sv._streaming = True
-            sv._session = session
             last_flush = time.monotonic()
-            detached = False
             try:
                 async for chunk in session.stream_response():
-                    if not sv._streaming and not detached:
-                        break
-                    if not detached and self._active_agent_key != streaming_key:
-                        sv._flush_stream_buffer()
-                        sv._finalize_stream()
-                        sv._set_idle()
-                        sv._streaming = False
-                        self._agent_outputs[streaming_key] = sv.get_output_history()
-                        detached = True
-                    if detached:
-                        if isinstance(chunk, str) and chunk:
-                            buf = self._agent_outputs.setdefault(streaming_key, [])
-                            buf.append(chunk)
-                        continue
+                    active_sv = sv if self._active_agent_key == streaming_key else None
                     if isinstance(chunk, str) and chunk:
-                        sv._stream_buffer.append(chunk)
+                        buf.stream_buffer.append(chunk)
                         now = time.monotonic()
-                        if now - last_flush >= sv._FLUSH_INTERVAL:
-                            sv._flush_stream_buffer()
+                        if now - last_flush >= SessionView._FLUSH_INTERVAL:
+                            self._buf_flush(buf, active_sv)
                             last_flush = now
                     elif isinstance(chunk, dict):
-                        sv._flush_stream_buffer()
-                        sv._finalize_stream()
-                        sv.render_tool_chunk(chunk)
+                        self._buf_flush(buf, active_sv)
+                        self._buf_finalize(buf, active_sv)
+                        self._buf_append_tool(buf, chunk, active_sv)
             finally:
-                if not detached:
-                    sv._flush_stream_buffer()
-                    sv._finalize_stream()
+                active_sv = sv if self._active_agent_key == streaming_key else None
+                self._buf_flush(buf, active_sv)
+                self._buf_finalize(buf, active_sv)
+                buf.streaming = False
+                if active_sv is not None:
                     sv._set_idle()
                     sv._streaming = False
 

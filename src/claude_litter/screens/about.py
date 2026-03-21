@@ -93,4 +93,6 @@ class AboutScreen(ModalScreen[None]):
             yield Static("Press any key to dismiss", id="about-dismiss")
 
     def on_key(self, event) -> None:
+        event.stop()
+        event.prevent_default()
         self.dismiss(None)

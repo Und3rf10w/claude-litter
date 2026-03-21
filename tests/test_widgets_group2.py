@@ -102,10 +102,11 @@ class TestSessionView:
         app = SessionApp()
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
-            # connect then disconnect
+            # activate then set idle
             sv._set_active()
             await pilot.pause()
-            sv.disconnect_session()
+            sv._streaming = False
+            sv._set_idle()
             await pilot.pause()
             from textual.widgets import LoadingIndicator
             spinner = sv.query_one(LoadingIndicator)
