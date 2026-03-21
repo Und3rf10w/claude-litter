@@ -9,6 +9,7 @@ from .task_panel import TaskPanel
 from .message_panel import MessagePanel
 from .context_menu import ContextMenu
 
+
 __all__ = [
     "TeamSidebar",
     "SessionTabBar",

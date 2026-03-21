@@ -44,10 +44,6 @@ class SelectableLog(RichLog):
     def allow_select(self) -> bool:
         return True
 
-    def write_with_text(self, markup_text: str) -> None:
-        """Write *markup_text* to the log (kept for API compat)."""
-        self.write(markup_text, expand=True)
-
     def on_resize(self, event) -> None:
         """Re-render all content when width changes so text reflows correctly."""
         super().on_resize(event)
@@ -306,12 +302,8 @@ class SessionView(Widget):
         self._model = model
         self._streaming = False
         self._user_scrolled_up = False
-        self._stream_buffer: list[str] = []
-        self._stream_accumulator: list[str] = []  # all text chunks for current streaming turn
-        self._streaming_block_count: int = 0  # how many append_output calls for this turn
         self._output_history: list[str] = []
         self._last_tool_name: str = ""
-        self._last_tool_input: dict = {}
 
     def compose(self) -> ComposeResult:
         header_text = self._make_header_text()
@@ -428,7 +420,7 @@ class SessionView(Widget):
         try:
             self._output_history.append(text)
             log = self.query_one(SelectableLog)
-            log.write_with_text(text)
+            log.write(text, expand=True)
             if not self._user_scrolled_up:
                 log.scroll_end(animate=False)
         except Exception:
@@ -437,54 +429,6 @@ class SessionView(Widget):
     def get_output_history(self) -> list[str]:
         """Return a copy of all output written to this view."""
         return list(self._output_history)
-
-    def _flush_stream_buffer(self) -> None:
-        """Flush new streaming text to the RichLog as an incremental append.
-
-        Each flush appends just the new text. _finalize_stream() later
-        consolidates all streaming blocks into a single reflow-friendly entry.
-        """
-        if not self._stream_buffer:
-            return
-        new_text = "".join(self._stream_buffer)
-        self._stream_accumulator.extend(self._stream_buffer)
-        self._stream_buffer.clear()
-        if not new_text:
-            return
-        # Track how many history entries belong to this streaming turn
-        self._streaming_block_count += 1
-        self.append_output(new_text)
-
-    def _finalize_stream(self) -> None:
-        """Consolidate all streaming blocks into a single history entry and rewrite."""
-        if not self._stream_accumulator:
-            self._streaming_block_count = 0
-            return
-        full_text = "".join(self._stream_accumulator)
-        self._stream_accumulator.clear()
-        count = self._streaming_block_count
-        self._streaming_block_count = 0
-        if count <= 1:
-            # Only one block — already correct in history
-            return
-        try:
-            log = self.query_one(SelectableLog)
-            # Remove the individual streaming entries from history
-            del self._output_history[-count:]
-            # Add consolidated text and rewrite the entire log
-            self._output_history.append(full_text)
-            was_at_end = not self._user_scrolled_up
-            log.clear()
-            for item in self._output_history:
-                log.write(item, expand=True)
-            log.virtual_size = log.virtual_size.with_height(len(log.lines))
-            if was_at_end:
-                log.scroll_end(animate=False)
-        except Exception:
-            # Fallback: just replace in history without log rewrite
-            if count > 0 and len(self._output_history) >= count:
-                del self._output_history[-count:]
-            self._output_history.append(full_text)
 
     def clear_output(self) -> None:
         """Clear all displayed text."""
@@ -505,13 +449,11 @@ class SessionView(Widget):
         if chunk_type == "tool_start":
             name = chunk.get("name", "?")
             self._last_tool_name = name
-            self._last_tool_input = {}
             self.append_output(f"\n[bold dim]{name}[/bold dim]")
 
         elif chunk_type == "tool_done":
             name = chunk.get("name", self._last_tool_name)
             input_dict = chunk.get("input", {})
-            self._last_tool_input = input_dict
             summary = _format_tool_input(name, input_dict)
             if summary:
                 # Escape Rich markup in user content
@@ -527,7 +469,7 @@ class SessionView(Widget):
             content = chunk.get("content", "")
             is_error = chunk.get("is_error", False)
             if content:
-                truncated = _truncate_tool_output(str(content))
+                truncated = _truncate_tool_output(str(content)).replace("[", "\\[")
                 if is_error:
                     self.append_output(f"\n[red]{truncated}[/red]")
                 else:
@@ -538,7 +480,7 @@ class SessionView(Widget):
 
         elif chunk_type == "api_retry":
             attempt = chunk.get("attempt", "?")
-            error = chunk.get("error", "unknown")
+            error = str(chunk.get("error", "unknown")).replace("[", "\\[")
             status = chunk.get("status", "?")
             self.append_output(
                 f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]"

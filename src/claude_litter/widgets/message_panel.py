@@ -159,9 +159,14 @@ class MessagePanel(Widget):
         for msg in messages:
             msg_list.append(_MessageItem(msg))
 
-    def update_messages(self, messages: list) -> None:
-        """Refresh the inbox with new messages."""
-        if self._show_broadcasts:
+    def update_messages(self, messages: list, *, broadcast: bool = False) -> None:
+        """Refresh the inbox or broadcast list with new messages.
+
+        Args:
+            messages: The list of message dicts to store.
+            broadcast: When True, update the broadcast feed; otherwise update inbox.
+        """
+        if broadcast:
             self._broadcast_messages = messages
         else:
             self._all_messages = messages

@@ -7,12 +7,18 @@ from textual.app import ComposeResult
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import TabbedContent, TabPane, Tabs
+from textual.widgets import Tab, TabbedContent, TabPane, Tabs
 
 
 def _tab_id(team: str, agent: str) -> str:
-    """Stable DOM id for a team/agent tab pane."""
-    return f"tab-{team}-{agent}".replace("/", "-").replace(" ", "_")
+    """Stable DOM id for a team/agent tab pane.
+
+    Uses a length-prefix encoding to prevent collisions between team/agent
+    names that contain hyphens: ``tab-{len(team):04d}-{team}-{agent}``.
+    """
+    safe_team = team.replace("/", "-").replace(" ", "_")
+    safe_agent = agent.replace("/", "-").replace(" ", "_")
+    return f"tab-{len(safe_team):04d}-{safe_team}-{safe_agent}"
 
 
 def _tab_label(team: str, agent: str, *, active: bool = False) -> str:
@@ -141,7 +147,7 @@ class SessionTabBar(Widget):
             return
         pane_id = event.pane.id if event.pane else ""
         # Update ✕ colors: red on active, dim on others
-        self._update_close_colors(pane_id)
+        self._update_close_colors(pane_id or "")
         for team, agent in self._tabs:
             if _tab_id(team, agent) == pane_id:
                 self.post_message(self.TabActivated(team=team, agent=agent))
@@ -158,7 +164,7 @@ class SessionTabBar(Widget):
             is_active = pane_id == active_pane_id
             # Tab DOM id is "--content-tab-" + pane_id
             try:
-                tab = tabs_widget.query_one(f"#--content-tab-{pane_id}")
+                tab = tabs_widget.query_one(f"#--content-tab-{pane_id}", Tab)
                 tab.label = _tab_label(team, agent, active=is_active)
             except NoMatches:
                 pass

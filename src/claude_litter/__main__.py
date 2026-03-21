@@ -59,7 +59,12 @@ def main() -> None:
     from claude_litter.app import ClaudeLitterApp
     from claude_litter.config import Config
 
-    config = Config(vim_mode=args.vim, theme=args.theme)
+    config = Config.load()
+    # Override with explicitly-provided CLI flags only
+    if args.vim:
+        config.vim_mode = True
+    if args.theme != "dark":  # "dark" is the argparse default, not an explicit override
+        config.theme = args.theme
     app = ClaudeLitterApp(config=config)
     app.run()
 

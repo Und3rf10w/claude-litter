@@ -219,12 +219,18 @@ class TaskPanel(Widget):
         # Apply sort
         def sort_key(t: dict):
             if self._sort_by == "id":
-                return str(t.get("id", ""))
+                try:
+                    return int(t.get("id", 0))
+                except (ValueError, TypeError):
+                    return 0
             elif self._sort_by == "status":
                 return t.get("status", "")
             elif self._sort_by == "owner":
                 return t.get("owner", "")
-            return str(t.get("id", ""))
+            try:
+                return int(t.get("id", 0))
+            except (ValueError, TypeError):
+                return 0
 
         tasks.sort(key=sort_key)
         return tasks

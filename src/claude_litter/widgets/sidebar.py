@@ -149,7 +149,7 @@ class TeamSidebar(Widget):
             team_name = team["name"]
             status = team.get("status", "inactive")
             color = _STATUS_COLOR.get(status, "gray")
-            label = f"[@{color}]\u25cf[/@{color}] {team_name}"
+            label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
             team_node: TreeNode[dict] = tree.root.add(
                 label, data={"type": "team", "team": team_name}, expand=True
             )
@@ -203,7 +203,8 @@ class TeamSidebar(Widget):
 
         # Color the badge using the agent's assigned color
         color_name = _AGENT_COLORS.get(color, "dim")
-        parts = [f"[{color_name}]{badge}[/{color_name}]", agent.get("name", "?")]
+        safe_name = agent.get("name", "?").replace("[", "\\[")
+        parts = [f"[{color_name}]{badge}[/{color_name}]", safe_name]
 
         if agent_type and agent_type not in ("general-purpose", "teammate"):
             parts.append(f"[dim]({agent_type})[/dim]")

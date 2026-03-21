@@ -26,6 +26,14 @@ _DEFAULT_BASE = Path.home() / ".claude"
 _DEBOUNCE_SECONDS = 0.1
 
 
+def _safe_path(root: Path, *parts: str) -> Path:
+    """Resolve a path under *root*, raising ValueError on traversal attempts."""
+    result = root.joinpath(*parts).resolve()
+    if not result.is_relative_to(root.resolve()):
+        raise ValueError(f"Path traversal attempt: {parts!r}")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Textual messages
 # ---------------------------------------------------------------------------
@@ -172,7 +180,10 @@ class StateManager:
         return teams
 
     def get_team(self, name: str) -> Team | None:
-        config_path = self._teams_dir / name / "config.json"
+        try:
+            config_path = _safe_path(self._teams_dir, name, "config.json")
+        except ValueError:
+            return None
         data = _read_json(config_path)
         if isinstance(data, dict):
             try:
@@ -182,7 +193,10 @@ class StateManager:
         return None
 
     def get_tasks(self, team_name: str) -> list[Task]:
-        task_dir = self._tasks_dir / team_name
+        try:
+            task_dir = _safe_path(self._tasks_dir, team_name)
+        except ValueError:
+            return []
         if not task_dir.is_dir():
             return []
         tasks: list[Task] = []
@@ -198,7 +212,10 @@ class StateManager:
         return tasks
 
     def get_task(self, team_name: str, task_id: str) -> Task | None:
-        task_path = self._tasks_dir / team_name / f"{task_id}.json"
+        try:
+            task_path = _safe_path(self._tasks_dir, team_name, f"{task_id}.json")
+        except ValueError:
+            return None
         data = _read_json(task_path)
         if isinstance(data, dict):
             try:
@@ -208,7 +225,10 @@ class StateManager:
         return None
 
     def get_inbox(self, team_name: str, agent_name: str) -> list[Message]:
-        inbox_path = self._teams_dir / team_name / "inboxes" / f"{agent_name}.json"
+        try:
+            inbox_path = _safe_path(self._teams_dir, team_name, "inboxes", f"{agent_name}.json")
+        except ValueError:
+            return []
         data = _read_json(inbox_path)
         if not isinstance(data, list):
             return []

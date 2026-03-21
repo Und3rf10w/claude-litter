@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,20 +18,48 @@ CLAUDE_HOME = Path(os.environ.get("CLAUDE_HOME", str(Path.home() / ".claude")))
 TEAMS = CLAUDE_HOME / "teams"
 TASKS = CLAUDE_HOME / "tasks"
 
+_TEAM_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,100}$")
+_VALID_STATUSES = {"pending", "in_progress", "completed"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers — mirror TeamService patterns (mkdir-based atomic file locking)
 # ---------------------------------------------------------------------------
 
 
+def _safe_path(root: Path, *parts: str) -> Path:
+    """Resolve a path under *root*, raising ValueError on traversal attempts."""
+    result = root.joinpath(*parts).resolve()
+    if not result.is_relative_to(root.resolve()):
+        raise ValueError(f"Path traversal attempt: {parts!r}")
+    return result
+
+
 def _acquire_lock(path: Path, timeout: float = 5.0) -> Path:
     lock_dir = path.with_suffix(".lock")
+    pid_file = lock_dir / "pid"
     deadline = time.monotonic() + timeout
     while True:
         try:
             os.mkdir(lock_dir)
+            # Write our PID so stale locks can be detected
+            pid_file.write_text(str(os.getpid()))
             return lock_dir
         except FileExistsError:
+            # Check if the owning process is still alive
+            try:
+                owner_pid = int(pid_file.read_text())
+                try:
+                    os.kill(owner_pid, 0)  # signal 0 = existence check
+                except ProcessLookupError:
+                    # Owning process is dead — steal the lock
+                    try:
+                        pid_file.write_text(str(os.getpid()))
+                    except OSError:
+                        pass
+                    return lock_dir
+            except (OSError, ValueError):
+                pass
             if time.monotonic() > deadline:
                 raise TimeoutError(f"Could not acquire lock: {lock_dir}")
             time.sleep(0.05)
@@ -38,6 +67,12 @@ def _acquire_lock(path: Path, timeout: float = 5.0) -> Path:
 
 def _release_lock(lock_dir: Path) -> None:
     try:
+        # Remove PID file first, then the directory
+        pid_file = lock_dir / "pid"
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
         os.rmdir(lock_dir)
     except OSError:
         pass
@@ -50,17 +85,19 @@ def _read_json(path: Path) -> dict | list:  # type: ignore[type-arg]
 
 def _write_json(path: Path, data: dict | list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{int(time.monotonic() * 1e6)}")
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     tmp.replace(path)
 
 
-def _locked_update(path: Path, update_fn) -> dict | list:
+def _locked_update(path: Path, update_fn, default_data=None) -> dict | list:
     """Read -> transform -> write under a lock."""
     lock = _acquire_lock(path)
     try:
-        data = _read_json(path) if path.exists() else {}
+        if default_data is None:
+            default_data = {}
+        data = _read_json(path) if path.exists() else default_data
         result = update_fn(data)
         _write_json(path, result if result is not None else data)
         return result if result is not None else data
@@ -68,9 +105,8 @@ def _locked_update(path: Path, update_fn) -> dict | list:
         _release_lock(lock)
 
 
-def _next_task_id(team_name: str) -> str:
-    tasks_dir = TASKS / team_name
-    tasks_dir.mkdir(parents=True, exist_ok=True)
+def _next_task_id(tasks_dir: Path) -> str:
+    """Generate next task ID. Must be called while holding a directory-level lock."""
     existing = [
         int(f.stem) for f in tasks_dir.glob("*.json") if f.stem.isdigit()
     ]
@@ -118,7 +154,10 @@ def get_team(team: str) -> str:
     Args:
         team: Team name
     """
-    config_path = TEAMS / team / "config.json"
+    try:
+        config_path = _safe_path(TEAMS, team, "config.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not config_path.exists():
         return json.dumps({"error": f"Team '{team}' not found"})
     return json.dumps(_read_json(config_path), indent=2)
@@ -132,7 +171,10 @@ def list_tasks(team: str, status: str = "") -> str:
         team: Team name
         status: Filter by status (pending, in_progress, completed). Empty string means all.
     """
-    tasks_dir = TASKS / team
+    try:
+        tasks_dir = _safe_path(TASKS, team)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not tasks_dir.exists():
         return "[]"
     results = []
@@ -155,7 +197,10 @@ def get_task(team: str, task_id: str) -> str:
         team: Team name
         task_id: Task ID
     """
-    task_path = TASKS / team / f"{task_id}.json"
+    try:
+        task_path = _safe_path(TASKS, team, f"{task_id}.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not task_path.exists():
         return json.dumps({"error": f"Task '{task_id}' not found in team '{team}'"})
     return json.dumps(_read_json(task_path), indent=2)
@@ -169,7 +214,10 @@ def read_inbox(team: str, agent: str) -> str:
         team: Team name
         agent: Agent name
     """
-    inbox_path = TEAMS / team / "inboxes" / f"{agent}.json"
+    try:
+        inbox_path = _safe_path(TEAMS, team, "inboxes", f"{agent}.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not inbox_path.exists():
         return "[]"
     data = _read_json(inbox_path)
@@ -189,7 +237,12 @@ def create_team(name: str, description: str = "") -> str:
         name: Team name (no spaces, use hyphens)
         description: Optional team description
     """
-    team_dir = TEAMS / name
+    if not _TEAM_NAME_RE.match(name):
+        return json.dumps({"error": f"Invalid team name '{name}': must match ^[a-zA-Z0-9_-]{{1,100}}$"})
+    try:
+        team_dir = _safe_path(TEAMS, name)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     team_dir.mkdir(parents=True, exist_ok=True)
     (team_dir / "inboxes").mkdir(exist_ok=True)
 
@@ -218,19 +271,28 @@ def create_task(team: str, subject: str, description: str = "") -> str:
         subject: Brief task title
         description: Detailed description of what needs to be done
     """
-    tasks_dir = TASKS / team
+    try:
+        tasks_dir = _safe_path(TASKS, team)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
-    task_id = _next_task_id(team)
-    task = {
-        "id": task_id,
-        "subject": subject,
-        "description": description,
-        "status": "pending",
-        "blocks": [],
-        "blockedBy": [],
-    }
-    _write_json(tasks_dir / f"{task_id}.json", task)
+    # Acquire a lock on the tasks directory to prevent ID race conditions
+    lock_sentinel = tasks_dir / ".id_lock.json"
+    lock = _acquire_lock(lock_sentinel)
+    try:
+        task_id = _next_task_id(tasks_dir)
+        task = {
+            "id": task_id,
+            "subject": subject,
+            "description": description,
+            "status": "pending",
+            "blocks": [],
+            "blockedBy": [],
+        }
+        _write_json(tasks_dir / f"{task_id}.json", task)
+    finally:
+        _release_lock(lock)
     return json.dumps(task, indent=2)
 
 
@@ -253,9 +315,15 @@ def update_task(
         subject: New subject. Empty = no change.
         description: New description. Empty = no change.
     """
-    task_path = TASKS / team / f"{task_id}.json"
+    try:
+        task_path = _safe_path(TASKS, team, f"{task_id}.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not task_path.exists():
         return json.dumps({"error": f"Task '{task_id}' not found in team '{team}'"})
+
+    if status and status not in _VALID_STATUSES:
+        return json.dumps({"error": f"Invalid status '{status}': must be one of {sorted(_VALID_STATUSES)}"})
 
     fields = {}
     if status:
@@ -279,19 +347,23 @@ def update_task(
 
 
 @mcp.tool()
-def send_message(team: str, to: str, text: str) -> str:
+def send_message(team: str, to: str, text: str, from_agent: str = "tui") -> str:
     """Send a message to a specific agent in a team.
 
     Args:
         team: Team name
         to: Agent name to send the message to
         text: Message text
+        from_agent: Sender name (default "tui")
     """
-    inbox_path = TEAMS / team / "inboxes" / f"{to}.json"
+    try:
+        inbox_path = _safe_path(TEAMS, team, "inboxes", f"{to}.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
 
     message = {
-        "from": "tui",
+        "from": from_agent,
         "text": text,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "read": False,
@@ -306,19 +378,23 @@ def send_message(team: str, to: str, text: str) -> str:
         data.append(message)
         return data
 
-    _locked_update(inbox_path, _append)
+    _locked_update(inbox_path, _append, default_data=[])
     return f"Message sent to {to} in team {team}"
 
 
 @mcp.tool()
-def broadcast_message(team: str, text: str) -> str:
+def broadcast_message(team: str, text: str, from_agent: str = "tui") -> str:
     """Broadcast a message to all agents in a team.
 
     Args:
         team: Team name
         text: Message text to broadcast
+        from_agent: Sender name (default "tui")
     """
-    config_path = TEAMS / team / "config.json"
+    try:
+        config_path = _safe_path(TEAMS, team, "config.json")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not config_path.exists():
         return json.dumps({"error": f"Team '{team}' not found"})
 
@@ -329,12 +405,15 @@ def broadcast_message(team: str, text: str) -> str:
 
     for member in members:
         name = member.get("name", "")
-        if name and name != "tui":
-            inbox_path = TEAMS / team / "inboxes" / f"{name}.json"
+        if name and name != from_agent:
+            try:
+                inbox_path = _safe_path(TEAMS, team, "inboxes", f"{name}.json")
+            except ValueError:
+                continue
             inbox_path.parent.mkdir(parents=True, exist_ok=True)
 
             message = {
-                "from": "tui",
+                "from": from_agent,
                 "text": text,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "read": False,
@@ -350,7 +429,7 @@ def broadcast_message(team: str, text: str) -> str:
                 data.append(msg)
                 return data
 
-            _locked_update(inbox_path, _append)
+            _locked_update(inbox_path, _append, default_data=[])
             count += 1
 
     return f"Broadcast sent to {count} agent(s) in team {team}"

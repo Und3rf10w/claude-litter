@@ -12,7 +12,7 @@ from textual.reactive import reactive
 
 _STATUS_OPTIONS = [
     ("Pending", "pending"), ("In Progress", "in_progress"),
-    ("Completed", "completed"), ("Deleted", "deleted"),
+    ("Completed", "completed"),
 ]
 
 

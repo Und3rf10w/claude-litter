@@ -15,7 +15,7 @@ from textual.widgets import Footer, Header, Static
 from textual.containers import Horizontal, Vertical
 
 from claude_litter.models.task import TodoItem
-from claude_litter.services.agent_manager import AgentManager, AgentSession
+from claude_litter.services.agent_manager import AgentManager
 from claude_litter.services.team_service import TeamService
 from claude_litter.widgets.sidebar import TeamSidebar
 from claude_litter.widgets.tab_bar import SessionTabBar
@@ -49,6 +49,17 @@ _MAIN_CHAT_KEY = ("", "Main Chat")
 # Team-overlord plugin path and config
 _PLUGIN_PATH = str(Path(__file__).resolve().parents[3] / "plugins" / "team-overlord")
 _PLUGIN_CONFIG: list[dict] = [{"type": "local", "path": _PLUGIN_PATH}]
+
+# Color name -> Rich color name mapping (used for inbox sender badges and session headers)
+_COLOR_MAP = {
+    "blue": "dodger_blue1",
+    "green": "green3",
+    "yellow": "yellow3",
+    "purple": "medium_purple",
+    "orange": "dark_orange",
+    "pink": "hot_pink",
+    "red": "red1",
+}
 
 
 @dataclass
@@ -93,7 +104,6 @@ class MainScreen(Screen):
         super().__init__(**kwargs)
         self._agent_manager = agent_manager or AgentManager()
         self._team_service = TeamService()
-        self._current_session: AgentSession | None = None
         self._agent_outputs: dict[tuple[str, str], AgentBuffer] = {}
         self._active_agent_key: tuple[str, str] | None = _MAIN_CHAT_KEY
         # Cache of full member dicts from config.json, keyed by (team, agent)
@@ -194,6 +204,24 @@ class MainScreen(Screen):
             buf.sv_line_count = 0
             buf.streaming_block_count = 0
 
+    def get_selected_text(self) -> str:
+        """Return the currently selected text from the active SessionView, or empty string."""
+        try:
+            from claude_litter.widgets.session_view import SelectableLog
+            sv = self.query_one("#session-view", SessionView)
+            if not sv.display:
+                return ""
+            log = sv.query_one(SelectableLog)
+            selection = log.text_selection
+            if selection is None:
+                return ""
+            result = log.get_selection(selection)
+            if result is None:
+                return ""
+            return result[0]
+        except Exception:
+            return ""
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="layout"):
@@ -232,7 +260,6 @@ class MainScreen(Screen):
         sv = self.query_one("#session-view", SessionView)
         try:
             session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
-            self._current_session = session
             # Populate autocomplete with CC commands from server_info
             if session.server_info:
                 cc_commands = {
@@ -255,7 +282,7 @@ class MainScreen(Screen):
         _log.info("on_prompt_submitted fired, text=%r", event.text)
         self.show_session()
         sv = self.query_one("#session-view", SessionView)
-        line = f"\n[bold cyan]> {event.text}[/bold cyan]\n"
+        line = f"\n[bold cyan]> {event.text.replace('[', '\\[')}[/bold cyan]\n"
         buf = self._get_buf()
         buf.history.append(line)
         sv.append_output(line)
@@ -292,7 +319,7 @@ class MainScreen(Screen):
         full_cmd = f"/{cmd} {args}".strip() if args else f"/{cmd}"
         self.show_session()
         sv = self.query_one("#session-view", SessionView)
-        line = f"\n[bold cyan]{full_cmd}[/bold cyan]\n"
+        line = f"\n[bold cyan]{full_cmd.replace('[', '\\[')}[/bold cyan]\n"
         buf = self._get_buf()
         buf.history.append(line)
         sv.append_output(line)
@@ -437,7 +464,7 @@ class MainScreen(Screen):
     # View switching
     # ------------------------------------------------------------------
 
-    def show_session(self, agent_name: str = "", team: str = "", model: str = "") -> None:
+    def show_session(self) -> None:
         """Switch from welcome message to a session view."""
         self.query_one("#welcome-message", Static).display = False
         self.query_one("#session-view", SessionView).display = True
@@ -591,7 +618,6 @@ class MainScreen(Screen):
 
         # Activate the Main Chat tab
         tab_bar.add_tab("", "Main Chat")
-        self._current_session = self._agent_manager.get_session("", "default")
         self._active_agent_key = key
 
         # Replay main chat buffer
@@ -646,7 +672,6 @@ class MainScreen(Screen):
 
         # Add tab (no-op if already exists), switch session reference
         tab_bar.add_tab(team, agent)
-        self._current_session = self._agent_manager.get_session(team, agent)
         self._active_agent_key = key
 
         # Update session header with agent metadata
@@ -679,8 +704,16 @@ class MainScreen(Screen):
         tasks = self._team_service.list_tasks(team)
         self.query_one("#task-panel", TaskPanel).update_tasks(tasks)
 
-    @work(exclusive=True, group="history")
-    async def _load_agent_history(self, team: str, agent: str) -> None:
+    def _load_agent_history(self, team: str, agent: str) -> None:
+        """Schedule loading chat history from inbox messages and JSONL transcripts."""
+        agent_key = f"{team}-{agent}"
+        self.run_worker(
+            self._load_agent_history_async(team, agent),
+            exclusive=True,
+            group=f"history-{agent_key}",
+        )
+
+    async def _load_agent_history_async(self, team: str, agent: str) -> None:
         """Load chat history from inbox messages and JSONL transcripts."""
         sv = self.query_one("#session-view", SessionView)
 
@@ -722,7 +755,9 @@ class MainScreen(Screen):
         content = json.dumps(parsed, indent=2)
         if len(content) > 300:
             content = content[:300] + "..."
-        return f"[{msg_type or 'json'}] {content}"
+        safe_type = (msg_type or "json").replace("[", "\\[")
+        safe_content = content.replace("[", "\\[")
+        return f"[{safe_type}] {safe_content}"
 
     def _load_inbox_history(self, sv: SessionView, team: str, agent: str) -> bool:
         """Load inbox messages for the agent. Returns True if any were loaded."""
@@ -730,17 +765,6 @@ class MainScreen(Screen):
             messages = self._team_service.read_inbox(team, agent)
             if not messages:
                 return False
-
-            # Color map for sender badges
-            _color_map = {
-                "blue": "dodger_blue1",
-                "green": "green3",
-                "yellow": "yellow3",
-                "purple": "medium_purple",
-                "orange": "dark_orange",
-                "pink": "hot_pink",
-                "red": "red1",
-            }
 
             sv.append_output(f"[bold]Inbox ({len(messages)} messages)[/bold]\n")
             for msg in messages:
@@ -755,17 +779,18 @@ class MainScreen(Screen):
                 if display_text == "":  # skip idle notifications
                     continue
 
-                rich_color = _color_map.get(color, "dim")
+                rich_color = _COLOR_MAP.get(color, "dim")
                 read_marker = "" if read else " [bold yellow]*[/bold yellow]"
 
                 # Show sender with color badge
+                safe_sender = sender.replace("[", "\\[")
                 sv.append_output(
-                    f"[{rich_color}]{sender}[/{rich_color}]{read_marker}\n"
+                    f"[{rich_color}]{safe_sender}[/{rich_color}]{read_marker}\n"
                 )
 
                 # Show summary if available, else formatted text
-                display = summary or (display_text[:200] + "..." if len(display_text) > 200 else display_text)
-                sv.append_output(f"  {display}\n\n")
+                safe_display = (summary or (display_text[:200] + "..." if len(display_text) > 200 else display_text)).replace("[", "\\[")
+                sv.append_output(f"  {safe_display}\n\n")
 
             return True
         except Exception as exc:
@@ -853,7 +878,7 @@ class MainScreen(Screen):
         # Parse the JSONL transcript
         try:
             msg_count = 0
-            sv.append_output(f"[bold]Transcript[/bold]\n")
+            sv.append_output("[bold]Transcript[/bold]\n")
             with open(target_jsonl) as f:
                 for line in f:
                     line = line.strip()
@@ -1231,11 +1256,11 @@ class MainScreen(Screen):
         # If there was an initial prompt, switch to the agent and stream the response
         if initial_prompt and session:
             self._switch_to_agent(team, name)
-            self._current_session = session
             sv = self.query_one("#session-view", SessionView)
             streaming_key = (team, name)
             buf = self._get_buf(streaming_key)
-            prompt_line = f"\n[bold cyan]> {initial_prompt[:200]}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n"
+            safe_preview = initial_prompt[:200].replace("[", "\\[")
+            prompt_line = f"\n[bold cyan]> {safe_preview}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n"
             buf.history.append(prompt_line)
             sv.append_output(prompt_line)
             buf.streaming = True
@@ -1333,7 +1358,7 @@ class MainScreen(Screen):
         """Confirm and kill all agents in a team."""
         from claude_litter.screens.confirm import ConfirmScreen
 
-        def _on_result(confirmed: bool) -> None:
+        def _on_result(confirmed: bool | None) -> None:
             if confirmed:
                 self._execute_team_kill_all(team)
 
@@ -1353,7 +1378,7 @@ class MainScreen(Screen):
         """Confirm and delete a team."""
         from claude_litter.screens.confirm import ConfirmScreen
 
-        def _on_result(confirmed: bool) -> None:
+        def _on_result(confirmed: bool | None) -> None:
             if confirmed:
                 self._execute_team_delete(team)
 

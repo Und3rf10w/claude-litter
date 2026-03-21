@@ -47,6 +47,8 @@ def _mask_token(token: str | None) -> str:
     """Show first 8 and last 4 chars of a token, mask the rest."""
     if not token:
         return "(not set)"
+    if len(token) <= 8:
+        return "****"
     if len(token) <= 16:
         return token[:4] + "..." + token[-4:]
     return token[:8] + "..." + token[-4:]
@@ -188,7 +190,7 @@ class SettingsScreen(Screen):
             await row.mount(Label("(no env vars configured)", classes="config-value-muted"))
         else:
             for k, v in sorted(env.items()):
-                display_val = _mask_token(v) if "TOKEN" in k or "SECRET" in k or "KEY" in k else v
+                display_val = _mask_token(v) if "TOKEN" in k or "SECRET" in k or "KEY" in k or "PASS" in k or "CRED" in k else v
                 row = Horizontal(classes="setting-row")
                 await env_grid.mount(row)
                 await row.mount(Label(k, classes="config-key"))
