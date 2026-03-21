@@ -166,6 +166,7 @@ class InputBar(Widget):
     InputBar #cmd-completions {
         display: none;
         overlay: screen;
+        constrain: none inflect;
         width: 1fr;
         height: auto;
         max-height: 10;
