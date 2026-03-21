@@ -18,7 +18,7 @@ from claude_litter.services.team_service import TeamService
 from claude_litter.widgets.sidebar import TeamSidebar
 from claude_litter.widgets.tab_bar import SessionTabBar
 from claude_litter.widgets.session_view import SessionView, TodoWriteDetected
-from claude_litter.widgets.input_bar import InputBar, PromptSubmitted
+from claude_litter.widgets.input_bar import InputBar, PromptSubmitted, CommandSubmitted
 from claude_litter.widgets.task_panel import TaskPanel
 from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
 from claude_litter.widgets.context_menu import ContextMenu
@@ -43,6 +43,10 @@ Teams are read from [dim]~/.claude/teams/[/dim]
 
 # Key used for the main (default) chat session
 _MAIN_CHAT_KEY = ("", "Main Chat")
+
+# Team-overlord plugin path and config
+_PLUGIN_PATH = str(Path(__file__).resolve().parents[3] / "plugins" / "team-overlord")
+_PLUGIN_CONFIG: list[dict] = [{"type": "local", "path": _PLUGIN_PATH}]
 
 
 class MainScreen(Screen):
@@ -118,7 +122,7 @@ class MainScreen(Screen):
         """Pre-spawn the default agent session so it's ready when the user types."""
         sv = self.query_one("#session-view", SessionView)
         try:
-            session = await self._agent_manager.spawn_agent("", "default")
+            session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
             self._current_session = session
             # Populate autocomplete with CC commands from server_info
             if session.server_info:
@@ -144,6 +148,40 @@ class MainScreen(Screen):
         sv = self.query_one("#session-view", SessionView)
         sv.append_output(f"\n[bold cyan]> {event.text}[/bold cyan]\n")
         self._run_prompt(event.text, event.images)
+
+    def on_command_submitted(self, event: CommandSubmitted) -> None:
+        """Handle /command submissions from InputBar."""
+        cmd = event.command
+        args = event.args
+
+        # TUI-native commands that need AgentManager (not in MCP)
+        if cmd == "spawn":
+            if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+                self._team_spawn_agent(self._active_agent_key[0])
+            else:
+                from claude_litter.screens.spawn_agent import SpawnAgentScreen
+                self.app.push_screen(SpawnAgentScreen(), lambda r: None)
+            return
+
+        if cmd == "kill" and args:
+            parts = args.split(None, 1)
+            if len(parts) >= 2:
+                self._kill_agent(parts[0], parts[1])
+                return
+
+        if cmd == "detach":
+            if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+                self._detach_agent(*self._active_agent_key)
+            return
+
+        # Everything else -> forward as slash command to the agent session.
+        # This includes plugin commands (/team, /task, /msg, /broadcast)
+        # and CC native commands (/help, /compact, /config, etc.)
+        full_cmd = f"/{cmd} {args}".strip() if args else f"/{cmd}"
+        self.show_session()
+        sv = self.query_one("#session-view", SessionView)
+        sv.append_output(f"\n[bold cyan]{full_cmd}[/bold cyan]\n")
+        self._run_prompt(full_cmd, None)
 
     def _build_team_context(self) -> str:
         """Build a context block describing active teams and agents for Main Chat."""
@@ -204,7 +242,7 @@ class MainScreen(Screen):
                 sv.append_output("[dim]Connecting to agent...[/dim]\n")
                 session = self._agent_manager.get_session("", "default")
                 if session is None:
-                    session = await self._agent_manager.spawn_agent("", "default")
+                    session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
                     if session.server_info:
                         cc_commands = {
                             c["name"]: c.get("description", "")
@@ -232,14 +270,15 @@ class MainScreen(Screen):
                         _log.info("_run_prompt: chunk #%d type=%s", chunk_count, type(chunk).__name__)
                     if isinstance(chunk, str) and chunk:
                         sv._stream_buffer.append(chunk)
-                        if "\n" in chunk or len(sv._stream_buffer) > 50:
-                            sv._flush_stream_buffer()
+                        sv._schedule_flush()
                     elif isinstance(chunk, dict):
                         sv._flush_stream_buffer()
+                        sv._finalize_stream()
                         sv.render_tool_chunk(chunk)
                 _log.info("_run_prompt: stream ended, total chunks=%d", chunk_count)
             finally:
                 sv._flush_stream_buffer()
+                sv._finalize_stream()
                 sv._set_idle()
                 sv._streaming = False
         except Exception as exc:

@@ -11,14 +11,13 @@ Screen {
 
 /* Slide-out panels */
 .slide-panel {
-    offset-x: 100%;
-    transition: offset 300ms;
+    display: none;
     width: 35%;
     dock: right;
 }
 
 .slide-panel.-visible {
-    offset-x: 0;
+    display: block;
 }
 
 /* Header / footer */

@@ -35,13 +35,32 @@ class SelectableLog(RichLog):
 
     ALLOW_SELECT = True
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_width: int = 0
+        # Set by SessionView to enable reactive reflow on resize.
+        self._output_history: list[str] | None = None
+
     @property
     def allow_select(self) -> bool:
         return True
 
     def write_with_text(self, markup_text: str) -> None:
         """Write *markup_text* to the log (kept for API compat)."""
-        self.write(markup_text)
+        self.write(markup_text, expand=True)
+
+    def on_resize(self, event) -> None:
+        """Re-render all content when width changes so text reflows correctly."""
+        super().on_resize(event)
+        new_width = event.size.width
+        if self._last_width and new_width != self._last_width and self._output_history is not None:
+            was_at_end = self.is_vertical_scroll_end
+            self.clear()
+            for item in self._output_history:
+                self.write(item, expand=True)
+            if was_at_end:
+                self.scroll_end(animate=False)
+        self._last_width = new_width
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Extract selected plain text from the rendered strips."""
@@ -290,6 +309,10 @@ class SessionView(Widget):
         self._streaming = False
         self._user_scrolled_up = False
         self._stream_buffer: list[str] = []
+        self._stream_accumulator: list[str] = []  # all text chunks for current streaming turn
+        self._streaming_sentinel = None  # identity marker for the current streaming history entry
+        self._streaming_line_count: int = 0  # how many RichLog lines the current streaming block occupies
+        self._flush_timer = None  # Timer | None — pending flush timer
         self._output_history: list[str] = []
         self._last_tool_name: str = ""
         self._last_tool_input: dict = {}
@@ -297,13 +320,19 @@ class SessionView(Widget):
     def compose(self) -> ComposeResult:
         header_text = self._make_header_text()
         yield Static(header_text, classes="session-header")
-        yield SelectableLog(highlight=True, markup=True, classes="session-output")
+        yield SelectableLog(highlight=True, markup=True, wrap=True, classes="session-output")
         yield LoadingIndicator()
         yield Static("Agent idle", classes="session-status")
 
     def on_mount(self) -> None:
         # Start in idle state
         self._set_idle()
+        # Wire up the output history for reactive reflow on resize
+        try:
+            log = self.query_one(SelectableLog)
+            log._output_history = self._output_history
+        except Exception:
+            pass
 
     def _make_header_text(self) -> str:
         parts = []
@@ -432,13 +461,70 @@ class SessionView(Widget):
         return list(self._output_history)
 
     def _flush_stream_buffer(self) -> None:
-        """Flush accumulated streaming text to the RichLog as a single block."""
+        """Flush accumulated streaming text to the RichLog.
+
+        Replaces the current streaming block in-place so all streamed text
+        for one turn appears as a single visual block (not one block per flush).
+        """
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
         if not self._stream_buffer:
             return
-        text = "".join(self._stream_buffer)
+        # Move new chunks into the accumulator
+        self._stream_accumulator.extend(self._stream_buffer)
         self._stream_buffer.clear()
-        if text:
-            self.append_output(text)
+        text = "".join(self._stream_accumulator)
+        if not text:
+            return
+        try:
+            log = self.query_one(SelectableLog)
+            if self._output_history and self._output_history[-1] is self._streaming_sentinel:
+                # Replace the last entry (the streaming block)
+                self._streaming_sentinel = text
+                self._output_history[-1] = self._streaming_sentinel
+                # Remove the last set of lines from the log and rewrite
+                # We stored how many lines the previous render produced
+                if self._streaming_line_count > 0:
+                    del log.lines[-self._streaming_line_count:]
+                old_count = len(log.lines)
+                log.write(text, expand=True)
+                self._streaming_line_count = len(log.lines) - old_count
+            else:
+                # First flush for this streaming turn — append new entry
+                self._streaming_sentinel = text
+                self._output_history.append(self._streaming_sentinel)
+                old_count = len(log.lines)
+                log.write(text, expand=True)
+                self._streaming_line_count = len(log.lines) - old_count
+            log.virtual_size = log.virtual_size.with_height(len(log.lines))
+            if not self._user_scrolled_up:
+                log.scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def _finalize_stream(self) -> None:
+        """End the current streaming turn — subsequent writes start a new block."""
+        if self._stream_accumulator:
+            text = "".join(self._stream_accumulator)
+            # Update the last history entry with final text
+            if self._output_history and self._output_history[-1] is self._streaming_sentinel:
+                self._output_history[-1] = text
+        self._stream_accumulator.clear()
+        self._streaming_sentinel = None
+        self._streaming_line_count = 0
+
+    def _schedule_flush(self) -> None:
+        """Schedule a timer-based flush if one isn't already pending."""
+        if self._flush_timer is None:
+            self._flush_timer = self.set_timer(
+                self._FLUSH_INTERVAL, self._do_timed_flush
+            )
+
+    def _do_timed_flush(self) -> None:
+        """Timer callback: flush the buffer and clear the timer reference."""
+        self._flush_timer = None
+        self._flush_stream_buffer()
 
     def clear_output(self) -> None:
         """Clear all displayed text."""
@@ -530,21 +616,22 @@ class SessionView(Widget):
                     _log.info("_stream_session: chunk #%d type=%s", chunk_count, type(chunk).__name__)
                 if isinstance(chunk, str) and chunk:
                     self._stream_buffer.append(chunk)
-                    # Flush on newlines or when buffer gets large
-                    if "\n" in chunk or len(self._stream_buffer) > 50:
-                        self._flush_stream_buffer()
+                    self._schedule_flush()
                 elif isinstance(chunk, dict):
-                    # Flush any pending text before tool output
+                    # Flush and finalize any pending text before tool output
                     self._flush_stream_buffer()
+                    self._finalize_stream()
                     self.render_tool_chunk(chunk)
             _log.info("_stream_session: stream ended, total chunks=%d", chunk_count)
         except Exception as exc:
             _log.exception("_stream_session: exception: %s", exc)
             self._flush_stream_buffer()
+            self._finalize_stream()
             self.append_output(f"\n[red]Stream error: {exc}[/red]\n")
         finally:
             # Flush any remaining buffered text
             self._flush_stream_buffer()
+            self._finalize_stream()
             self._set_idle()
             self._streaming = False
 
