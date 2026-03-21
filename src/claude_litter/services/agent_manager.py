@@ -45,6 +45,7 @@ class AgentSession:
     server_info: dict | None = field(default=None, repr=False)
     _client: object | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
+    _plugins: list[dict] | None = field(default=None, repr=False)
 
     async def start(self) -> None:
         """Initialize and connect ClaudeSDKClient for this session."""
@@ -60,6 +61,8 @@ class AgentSession:
         }
         if self.model:
             opts["model"] = self.model
+        if self._plugins:
+            opts["plugins"] = self._plugins
         options = ClaudeAgentOptions(**opts)
         self._client = ClaudeSDKClient(options)
 
@@ -271,12 +274,14 @@ class AgentManager:
         agent_name: str,
         model: str | None = None,
         initial_prompt: str = "",
+        plugins: list[dict] | None = None,
     ) -> AgentSession:
         """Spawn a new agent session, optionally sending an initial prompt."""
         session = AgentSession(
             team_name=team_name,
             agent_name=agent_name,
             model=model or self._default_model,
+            _plugins=plugins,
         )
         await session.start()
         self.sessions[(team_name, agent_name)] = session

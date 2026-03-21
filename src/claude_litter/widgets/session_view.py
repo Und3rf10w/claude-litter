@@ -311,8 +311,7 @@ class SessionView(Widget):
         self._user_scrolled_up = False
         self._stream_buffer: list[str] = []
         self._stream_accumulator: list[str] = []  # all text chunks for current streaming turn
-        self._streaming_sentinel = None  # identity marker for the current streaming history entry
-        self._streaming_line_count: int = 0  # how many RichLog lines the current streaming block occupies
+        self._streaming_block_count: int = 0  # how many append_output calls for this turn
         self._output_history: list[str] = []
         self._last_tool_name: str = ""
         self._last_tool_input: dict = {}
@@ -461,55 +460,52 @@ class SessionView(Widget):
         return list(self._output_history)
 
     def _flush_stream_buffer(self) -> None:
-        """Flush accumulated streaming text to the RichLog.
+        """Flush new streaming text to the RichLog as an incremental append.
 
-        Replaces the current streaming block in-place so all streamed text
-        for one turn appears as a single visual block (not one block per flush).
+        Each flush appends just the new text. _finalize_stream() later
+        consolidates all streaming blocks into a single reflow-friendly entry.
         """
         if not self._stream_buffer:
             return
-        # Move new chunks into the accumulator
+        new_text = "".join(self._stream_buffer)
         self._stream_accumulator.extend(self._stream_buffer)
         self._stream_buffer.clear()
-        text = "".join(self._stream_accumulator)
-        if not text:
+        if not new_text:
+            return
+        # Track how many history entries belong to this streaming turn
+        self._streaming_block_count += 1
+        self.append_output(new_text)
+
+    def _finalize_stream(self) -> None:
+        """Consolidate all streaming blocks into a single history entry and rewrite."""
+        if not self._stream_accumulator:
+            self._streaming_block_count = 0
+            return
+        full_text = "".join(self._stream_accumulator)
+        self._stream_accumulator.clear()
+        count = self._streaming_block_count
+        self._streaming_block_count = 0
+        if count <= 1:
+            # Only one block — already correct in history
             return
         try:
             log = self.query_one(SelectableLog)
-            if self._output_history and self._output_history[-1] is self._streaming_sentinel:
-                # Replace the last entry (the streaming block)
-                self._streaming_sentinel = text
-                self._output_history[-1] = self._streaming_sentinel
-                # Remove the last set of lines from the log and rewrite
-                # We stored how many lines the previous render produced
-                if self._streaming_line_count > 0:
-                    del log.lines[-self._streaming_line_count:]
-                old_count = len(log.lines)
-                log.write(text, expand=True)
-                self._streaming_line_count = len(log.lines) - old_count
-            else:
-                # First flush for this streaming turn — append new entry
-                self._streaming_sentinel = text
-                self._output_history.append(self._streaming_sentinel)
-                old_count = len(log.lines)
-                log.write(text, expand=True)
-                self._streaming_line_count = len(log.lines) - old_count
+            # Remove the individual streaming entries from history
+            del self._output_history[-count:]
+            # Add consolidated text and rewrite the entire log
+            self._output_history.append(full_text)
+            was_at_end = not self._user_scrolled_up
+            log.clear()
+            for item in self._output_history:
+                log.write(item, expand=True)
             log.virtual_size = log.virtual_size.with_height(len(log.lines))
-            if not self._user_scrolled_up:
+            if was_at_end:
                 log.scroll_end(animate=False)
         except Exception:
-            pass
-
-    def _finalize_stream(self) -> None:
-        """End the current streaming turn — subsequent writes start a new block."""
-        if self._stream_accumulator:
-            text = "".join(self._stream_accumulator)
-            # Update the last history entry with final text
-            if self._output_history and self._output_history[-1] is self._streaming_sentinel:
-                self._output_history[-1] = text
-        self._stream_accumulator.clear()
-        self._streaming_sentinel = None
-        self._streaming_line_count = 0
+            # Fallback: just replace in history without log rewrite
+            if count > 0 and len(self._output_history) >= count:
+                del self._output_history[-count:]
+            self._output_history.append(full_text)
 
     def clear_output(self) -> None:
         """Clear all displayed text."""

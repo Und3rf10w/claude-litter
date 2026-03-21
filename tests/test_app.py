@@ -284,9 +284,9 @@ async def test_prompt_e2e_type_submit_receive():
             from claude_litter.widgets.session_view import SelectableLog
             log = sv.query_one(SelectableLog)
 
-            # Verify "Agent ready." appeared
+            # Verify connecting message was cleared after agent ready
             initial_text = "\n".join(str(line) for line in log.lines)
-            assert "Agent ready" in initial_text
+            assert "Connecting to agent" not in initial_text
 
             # Type "hello" and submit with Ctrl+J
             await pilot.press("h", "e", "l", "l", "o")

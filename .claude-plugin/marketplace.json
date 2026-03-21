@@ -1,0 +1,32 @@
+{
+  "name": "claude-litter",
+  "owner": {
+    "name": "Und3rf10w",
+    "email": "noemail@example.com"
+  },
+  "metadata": {
+    "version": "2.0.0",
+    "description": "Claude Code Agent Team/Swarm Management Layer"
+  },
+  "plugins": [
+    {
+      "name": "team-overlord",
+      "source": "./plugins/team-overlord",
+      "description": "Multi-agent swarm management",
+      "version": "1.0.0",
+      "author": {
+        "name": "Und3rf10w"
+      },
+      "homepage": "https://github.com/Und3rf10w/claude-litter",
+      "repository": "https://github.com/Und3rf10w/claude-litter",
+      "tags": [
+        "swarm",
+        "multi-agent",
+        "tmux",
+        "kitty",
+        "coordination",
+        "tasks"
+      ]
+    }
+  ]
+}

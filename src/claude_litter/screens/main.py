@@ -132,7 +132,7 @@ class MainScreen(Screen):
                     for c in session.server_info.get("commands", [])
                 }
                 self.query_one("#input-bar", InputBar).update_commands(cc_commands)
-            sv.append_output("[green]Agent ready.[/green]\n")
+            sv.clear_output()
         except Exception as exc:
             sv.append_output(
                 f"\n[red]Failed to connect to agent: {exc}[/red]\n"
@@ -239,17 +239,28 @@ class MainScreen(Screen):
             session = self._current_session
             _log.info("_run_prompt: current_session=%r", session)
             if session is None:
-                # Agent not connected yet — connect now
                 sv.append_output("[dim]Connecting to agent...[/dim]\n")
-                session = self._agent_manager.get_session("", "default")
-                if session is None:
-                    session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
-                    if session.server_info:
-                        cc_commands = {
-                            c["name"]: c.get("description", "")
-                            for c in session.server_info.get("commands", [])
-                        }
-                        self.query_one("#input-bar", InputBar).update_commands(cc_commands)
+                if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+                    # Viewing a specific agent — connect to that agent's session
+                    team, agent = self._active_agent_key
+                    session = self._agent_manager.get_session(team, agent)
+                    if session is None:
+                        member = self._member_info.get(self._active_agent_key, {})
+                        model = member.get("model", "sonnet")
+                        session = await self._agent_manager.spawn_agent(
+                            team, agent, model=model,
+                        )
+                else:
+                    # Main Chat — use the default overseer session
+                    session = self._agent_manager.get_session("", "default")
+                    if session is None:
+                        session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
+                        if session.server_info:
+                            cc_commands = {
+                                c["name"]: c.get("description", "")
+                                for c in session.server_info.get("commands", [])
+                            }
+                            self.query_one("#input-bar", InputBar).update_commands(cc_commands)
                 self._current_session = session
 
             _log.info("_run_prompt: calling send_prompt")
@@ -257,16 +268,37 @@ class MainScreen(Screen):
             _log.info("_run_prompt: send_prompt done, starting inline stream")
 
             # Stream the response directly in this worker
+            streaming_key = self._active_agent_key
             sv._set_active()
             sv._streaming = True
             sv._session = session
             chunk_count = 0
             last_flush = time.monotonic()
+            detached = False  # True once user switches away from this agent
             try:
                 async for chunk in session.stream_response():
-                    if not sv._streaming:
+                    if not sv._streaming and not detached:
                         _log.info("_run_prompt: streaming stopped by flag")
                         break
+
+                    # Check if user switched away from this agent's view
+                    if not detached and self._active_agent_key != streaming_key:
+                        # Flush what we have, save it, and detach from the view
+                        sv._flush_stream_buffer()
+                        sv._finalize_stream()
+                        sv._set_idle()
+                        sv._streaming = False
+                        self._agent_outputs[streaming_key] = sv.get_output_history()
+                        detached = True
+
+                    if detached:
+                        # Accumulate to the saved output buffer silently
+                        if isinstance(chunk, str) and chunk:
+                            buf = self._agent_outputs.setdefault(streaming_key, [])
+                            buf.append(chunk)
+                        # Skip dict chunks (tool rendering) when detached
+                        continue
+
                     chunk_count += 1
                     if chunk_count <= 3:
                         _log.info("_run_prompt: chunk #%d type=%s", chunk_count, type(chunk).__name__)
@@ -282,10 +314,11 @@ class MainScreen(Screen):
                         sv.render_tool_chunk(chunk)
                 _log.info("_run_prompt: stream ended, total chunks=%d", chunk_count)
             finally:
-                sv._flush_stream_buffer()
-                sv._finalize_stream()
-                sv._set_idle()
-                sv._streaming = False
+                if not detached:
+                    sv._flush_stream_buffer()
+                    sv._finalize_stream()
+                    sv._set_idle()
+                    sv._streaming = False
         except Exception as exc:
             _log.exception("_run_prompt: exception: %s", exc)
             sv.append_output(
@@ -378,6 +411,25 @@ class MainScreen(Screen):
         self._team_service.create_team(name, description)
         _log.info("create_team: created team %r", name)
         self._refresh_sidebar()
+
+        if result.get("auto_lead"):
+            model = result.get("model", "sonnet")
+            brief = (
+                f"You are the team lead for team \"{name}\"."
+            )
+            if description:
+                brief += f"\n\nTeam description:\n{description}"
+            brief += (
+                "\n\nYou have access to team management tools via the team-overlord MCP plugin. "
+                "Use these to create tasks, spawn agents, assign work, and coordinate the team. "
+                "Start by breaking down the work into tasks and spawning the agents you need."
+            )
+            self._execute_team_spawn(name, {
+                "name": "team-lead",
+                "model": model,
+                "type": "team-lead",
+                "initial_prompt": brief,
+            })
 
     def _refresh_sidebar(self) -> None:
         """Reload all teams from disk and update the sidebar widget."""
@@ -1055,6 +1107,7 @@ class MainScreen(Screen):
         """Add member to team and spawn agent session."""
         name = opts["name"]
         model = opts.get("model", "sonnet")
+        initial_prompt = opts.get("initial_prompt", "")
         member_dict = {
             "agentId": f"{name}@{team}",
             "name": name,
@@ -1063,9 +1116,57 @@ class MainScreen(Screen):
             "status": "active",
         }
         self._team_service.add_member(team, member_dict)
-        await self._agent_manager.spawn_agent(team, name, model=model)
+        session = await self._agent_manager.spawn_agent(
+            team, name, model=model,
+            initial_prompt=initial_prompt,
+        )
         self._refresh_sidebar()
         self.notify(f"Spawned {name} in {team}")
+
+        # If there was an initial prompt, switch to the agent and stream the response
+        if initial_prompt and session:
+            self._switch_to_agent(team, name)
+            self._current_session = session
+            sv = self.query_one("#session-view", SessionView)
+            sv.append_output(f"\n[bold cyan]> {initial_prompt[:200]}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n")
+            streaming_key = (team, name)
+            sv._set_active()
+            sv._streaming = True
+            sv._session = session
+            last_flush = time.monotonic()
+            detached = False
+            try:
+                async for chunk in session.stream_response():
+                    if not sv._streaming and not detached:
+                        break
+                    if not detached and self._active_agent_key != streaming_key:
+                        sv._flush_stream_buffer()
+                        sv._finalize_stream()
+                        sv._set_idle()
+                        sv._streaming = False
+                        self._agent_outputs[streaming_key] = sv.get_output_history()
+                        detached = True
+                    if detached:
+                        if isinstance(chunk, str) and chunk:
+                            buf = self._agent_outputs.setdefault(streaming_key, [])
+                            buf.append(chunk)
+                        continue
+                    if isinstance(chunk, str) and chunk:
+                        sv._stream_buffer.append(chunk)
+                        now = time.monotonic()
+                        if now - last_flush >= sv._FLUSH_INTERVAL:
+                            sv._flush_stream_buffer()
+                            last_flush = now
+                    elif isinstance(chunk, dict):
+                        sv._flush_stream_buffer()
+                        sv._finalize_stream()
+                        sv.render_tool_chunk(chunk)
+            finally:
+                if not detached:
+                    sv._flush_stream_buffer()
+                    sv._finalize_stream()
+                    sv._set_idle()
+                    sv._streaming = False
 
     def _team_broadcast(self, team: str) -> None:
         """Open BroadcastMessageScreen for this team."""

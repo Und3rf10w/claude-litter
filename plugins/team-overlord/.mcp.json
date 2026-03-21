@@ -1,0 +1,6 @@
+{
+  "team-overlord": {
+    "command": "python3",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/servers/team_tools.py"]
+  }
+}
