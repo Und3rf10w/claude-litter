@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import time
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -312,7 +313,6 @@ class SessionView(Widget):
         self._stream_accumulator: list[str] = []  # all text chunks for current streaming turn
         self._streaming_sentinel = None  # identity marker for the current streaming history entry
         self._streaming_line_count: int = 0  # how many RichLog lines the current streaming block occupies
-        self._flush_timer = None  # Timer | None — pending flush timer
         self._output_history: list[str] = []
         self._last_tool_name: str = ""
         self._last_tool_input: dict = {}
@@ -466,9 +466,6 @@ class SessionView(Widget):
         Replaces the current streaming block in-place so all streamed text
         for one turn appears as a single visual block (not one block per flush).
         """
-        if self._flush_timer is not None:
-            self._flush_timer.stop()
-            self._flush_timer = None
         if not self._stream_buffer:
             return
         # Move new chunks into the accumulator
@@ -513,18 +510,6 @@ class SessionView(Widget):
         self._stream_accumulator.clear()
         self._streaming_sentinel = None
         self._streaming_line_count = 0
-
-    def _schedule_flush(self) -> None:
-        """Schedule a timer-based flush if one isn't already pending."""
-        if self._flush_timer is None:
-            self._flush_timer = self.set_timer(
-                self._FLUSH_INTERVAL, self._do_timed_flush
-            )
-
-    def _do_timed_flush(self) -> None:
-        """Timer callback: flush the buffer and clear the timer reference."""
-        self._flush_timer = None
-        self._flush_stream_buffer()
 
     def clear_output(self) -> None:
         """Clear all displayed text."""
@@ -607,6 +592,7 @@ class SessionView(Widget):
         )
         try:
             chunk_count = 0
+            last_flush = time.monotonic()
             async for chunk in session.stream_response():
                 if not self._streaming:
                     _log.info("_stream_session: streaming stopped by flag")
@@ -616,7 +602,10 @@ class SessionView(Widget):
                     _log.info("_stream_session: chunk #%d type=%s", chunk_count, type(chunk).__name__)
                 if isinstance(chunk, str) and chunk:
                     self._stream_buffer.append(chunk)
-                    self._schedule_flush()
+                    now = time.monotonic()
+                    if now - last_flush >= self._FLUSH_INTERVAL:
+                        self._flush_stream_buffer()
+                        last_flush = now
                 elif isinstance(chunk, dict):
                     # Flush and finalize any pending text before tool output
                     self._flush_stream_buffer()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 from textual import work
@@ -260,6 +261,7 @@ class MainScreen(Screen):
             sv._streaming = True
             sv._session = session
             chunk_count = 0
+            last_flush = time.monotonic()
             try:
                 async for chunk in session.stream_response():
                     if not sv._streaming:
@@ -270,7 +272,10 @@ class MainScreen(Screen):
                         _log.info("_run_prompt: chunk #%d type=%s", chunk_count, type(chunk).__name__)
                     if isinstance(chunk, str) and chunk:
                         sv._stream_buffer.append(chunk)
-                        sv._schedule_flush()
+                        now = time.monotonic()
+                        if now - last_flush >= sv._FLUSH_INTERVAL:
+                            sv._flush_stream_buffer()
+                            last_flush = now
                     elif isinstance(chunk, dict):
                         sv._flush_stream_buffer()
                         sv._finalize_stream()
