@@ -134,7 +134,7 @@ async def test_create_team_ok_without_name_shows_error():
 
 
 @pytest.mark.anyio
-async def test_create_team_invalid_name_shows_error():
+async def test_create_team_valid_name_submits():
     app = _ModalApp(CreateTeamScreen)
     async with app.run_test(size=(120, 50)) as pilot:
         await pilot.pause()
