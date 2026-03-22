@@ -9,17 +9,6 @@ Screen {
     width: 1fr;
 }
 
-/* Slide-out panels */
-.slide-panel {
-    display: none;
-    width: 35%;
-    dock: right;
-}
-
-.slide-panel.-visible {
-    display: block;
-}
-
 /* Header / footer */
 Header {
     background: $primary;
