@@ -16,14 +16,16 @@ from textual.containers import Horizontal, Vertical
 
 from claude_litter.models.task import TodoItem
 from claude_litter.services.agent_manager import AgentManager
+from claude_litter.services.state import InboxUpdated, StateManager, TaskUpdated, TeamUpdated
 from claude_litter.services.team_service import TeamService
 from claude_litter.widgets.sidebar import TeamSidebar
 from claude_litter.widgets.tab_bar import SessionTabBar
 from claude_litter.widgets.session_view import SessionView, TodoWriteDetected
 from claude_litter.widgets.input_bar import InputBar, PromptSubmitted, CommandSubmitted
-from claude_litter.widgets.task_panel import TaskPanel
+from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
 from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
 from claude_litter.widgets.context_menu import ContextMenu
+from claude_litter.widgets.status_bar import StatusBar
 from claude_litter.screens.configure_agent import _normalize_model
 
 _log = logging.getLogger("claude_litter.main_screen")
@@ -144,13 +146,16 @@ class MainScreen(Screen):
                     del log.lines[-buf.sv_line_count:]
                 if sv._output_history:
                     sv._output_history.pop()
+                if sv._render_items:
+                    sv._render_items.pop()
             else:
                 buf.streaming_block_count = 1
+            renderable = sv._render_markdown(full_text)
             old_count = len(log.lines)
-            log.write(full_text, expand=True)
+            log.write(renderable, expand=True)
             buf.sv_line_count = len(log.lines) - old_count
-            # Keep a single history entry for the streaming block
             sv._output_history.append(full_text)
+            sv._render_items.append(renderable)
             log.virtual_size = log.virtual_size.with_height(len(log.lines))
             if not sv._user_scrolled_up:
                 log.scroll_end(animate=False)
@@ -190,11 +195,13 @@ class MainScreen(Screen):
                 from claude_litter.widgets.session_view import SelectableLog
                 try:
                     log = sv.query_one(SelectableLog)
+                    renderable = sv._render_markdown(partial)
                     old_count = len(log.lines)
-                    log.write(partial, expand=True)
+                    log.write(renderable, expand=True)
                     buf.sv_line_count = len(log.lines) - old_count
                     buf.streaming_block_count = 1
                     sv._output_history.append(partial)
+                    sv._render_items.append(renderable)
                     log.virtual_size = log.virtual_size.with_height(len(log.lines))
                     log.scroll_end(animate=False)
                 except Exception:
@@ -231,12 +238,18 @@ class MainScreen(Screen):
                 yield Static(_WELCOME_TEXT, id="welcome-message", markup=True)
                 yield SessionView(id="session-view")
                 yield InputBar(id="input-bar")
+                yield StatusBar(id="status-bar")
         yield TaskPanel(id="task-panel", classes="slide-panel")
         yield MessagePanel(id="message-panel", classes="slide-panel")
         yield ContextMenu(id="context-menu")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        # Start the filesystem watcher for live updates
+        self._state_manager = StateManager()
+        self._state_manager.set_app(self.app)
+        await self._state_manager.start()
+
         # Skip the welcome screen — go straight to a live session
         self.show_session()
         sv = self.query_one("#session-view", SessionView)
@@ -508,15 +521,22 @@ class MainScreen(Screen):
 
         # Load all inbox messages (including read ones)
         messages = self._team_service.read_inbox(team, agent)
-        # Format structured JSON messages for display
+        # Format structured JSON messages; split into inbox vs broadcast
         formatted: list[dict] = []
+        broadcast: list[dict] = []
         for msg in messages:
             text = msg.get("text", "")
             display_text = self._format_inbox_text(text)
             if display_text == "":  # skip idle notifications
                 continue
-            formatted.append({**msg, "text": display_text})
+            entry = {**msg, "text": display_text}
+            summary = msg.get("summary", "")
+            if summary.startswith("[broadcast]"):
+                broadcast.append(entry)
+            else:
+                formatted.append(entry)
         panel.update_messages(formatted)
+        panel.update_messages(broadcast, broadcast=True)
 
     def on_message_composed(self, event: MessageComposed) -> None:
         """Handle message sent from the message panel compose form."""
@@ -562,7 +582,7 @@ class MainScreen(Screen):
 
     def _refresh_sidebar(self) -> None:
         """Reload all teams from disk and update the sidebar widget."""
-        self.run_worker(self._refresh_sidebar_worker, exclusive=True, group="sidebar-refresh")
+        self._refresh_sidebar_worker()
 
     @work(exclusive=True, group="sidebar-refresh")
     async def _refresh_sidebar_worker(self) -> None:
@@ -575,16 +595,23 @@ class MainScreen(Screen):
             if config is not None:
                 agents = []
                 for m in config.get("members", []):
+                    agent_name = m.get("name", "?")
+                    try:
+                        inbox = self._team_service.read_inbox(name, agent_name)
+                        unread = sum(1 for msg in inbox if not msg.get("read", False))
+                    except Exception:
+                        unread = 0
                     agent_dict = {
-                        "name": m.get("name", "?"),
+                        "name": agent_name,
                         "model": _normalize_model(m.get("model", "sonnet")),
                         "agentType": m.get("agentType", ""),
                         "color": m.get("color", ""),
                         "cwd": m.get("cwd", ""),
+                        "unread": unread,
                     }
                     agents.append(agent_dict)
                     # Cache full member info for header display
-                    member_info[(name, m.get("name", "?"))] = m
+                    member_info[(name, agent_name)] = m
                 has_active = any(m.get("status") == "active" for m in config.get("members", []))
                 # If no member has an explicit status, infer from team-level status
                 # or treat as active when members exist (swarm-spawned agents
@@ -601,13 +628,52 @@ class MainScreen(Screen):
                     "status": team_status,
                     "agents": agents,
                 })
-        self.call_from_thread(self._apply_sidebar_data, teams, member_info)
+        # Compute task counts while still in the worker (avoids extra disk read in apply)
+        task_counts: dict[str, tuple[int, int]] = {}
+        for t_name in {t["name"] for t in teams}:
+            t_tasks = self._team_service.list_tasks(t_name)
+            task_counts[t_name] = (len(t_tasks), sum(1 for t in t_tasks if t.get("status") == "completed"))
+        self._apply_sidebar_data(teams, member_info, task_counts)
 
-    def _apply_sidebar_data(self, teams: list[dict], member_info: dict) -> None:
+    def _apply_sidebar_data(self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]] | None = None) -> None:
         """Apply the sidebar data computed by the worker to the UI."""
         self._member_info.clear()
         self._member_info.update(member_info)
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
+        self._update_status_bar(teams, task_counts or {})
+
+    def _update_status_bar(self, teams: list[dict], task_counts: dict[str, tuple[int, int]] | None = None) -> None:
+        """Refresh the StatusBar with current team/task summary."""
+        active_team = ""
+        if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            active_team = self._active_agent_key[0]
+        elif teams:
+            active_team = teams[0]["name"]
+
+        agent_count = 0
+        active_count = 0
+        for t in teams:
+            if not active_team or t["name"] == active_team:
+                agent_count += len(t.get("agents", []))
+                for ag in t.get("agents", []):
+                    if self._agent_manager.get_session(t["name"], ag["name"]) is not None:
+                        active_count += 1
+
+        task_total, task_done = (task_counts or {}).get(active_team, (0, 0))
+        vim_mode = getattr(self.app.config, "vim_mode", False) if hasattr(self, "app") else False
+
+        try:
+            sb = self.query_one(StatusBar)
+            sb.update_status(
+                team_name=active_team,
+                agent_count=agent_count,
+                active_count=active_count,
+                task_total=task_total,
+                task_done=task_done,
+                vim_mode=vim_mode,
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Main Chat navigation
@@ -1030,6 +1096,11 @@ class MainScreen(Screen):
             self._team_kill_all(event.team)
         elif event.action == "team_delete":
             self._team_delete(event.team)
+        elif event.action == "message":
+            self._switch_to_agent(event.team, event.agent)
+            panel = self.query_one("#message-panel", MessagePanel)
+            if not panel._visible:
+                self.toggle_messages()
 
     @work(exclusive=True, group="agent-action")
     async def _kill_agent(self, team: str, agent: str) -> None:
@@ -1408,3 +1479,80 @@ class MainScreen(Screen):
                 del self._member_info[key]
         self._refresh_sidebar()
         self.notify(f"Deleted team {team}")
+
+    # ------------------------------------------------------------------
+    # Task detail
+    # ------------------------------------------------------------------
+
+    def on_task_panel_task_selected(self, message: TaskSelected) -> None:
+        """Handle task click: open TaskDetailScreen for view/edit."""
+        from claude_litter.screens.task_detail import TaskDetailScreen
+        team = (
+            self._active_agent_key[0]
+            if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY
+            else None
+        )
+        if team:
+            task = self._team_service.get_task(team, message.task_id)
+            if task:
+                self.app.push_screen(TaskDetailScreen(task), callback=self._on_task_detail_dismiss)
+
+    def _on_task_detail_dismiss(self, result: dict | None) -> None:
+        """Apply edits from TaskDetailScreen and refresh the task panel."""
+        if result and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            team = self._active_agent_key[0]
+            self._team_service.update_task(team, result["id"], **result)
+            self._update_task_panel()
+
+    def _update_task_panel(self) -> None:
+        """Refresh the task panel with the current team's tasks."""
+        if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            team = self._active_agent_key[0]
+            tasks = self._team_service.list_tasks(team)
+            self.query_one("#task-panel", TaskPanel).update_tasks(tasks)
+
+    # ------------------------------------------------------------------
+    # Interrupt handling
+    # ------------------------------------------------------------------
+
+    def on_input_bar_interrupt_requested(self, _message: object) -> None:
+        """Handle Ctrl+C interrupt from InputBar: cancel the active stream."""
+        key = self._active_agent_key
+        if key is None:
+            return
+        buf = self._agent_outputs.get(key)
+        if buf and buf.streaming:
+            buf.streaming = False
+            try:
+                sv = self.query_one(SessionView)
+                sv._set_idle()
+                sv._streaming = False
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # StateManager live-update handlers
+    # ------------------------------------------------------------------
+
+    def on_team_updated(self, message: TeamUpdated) -> None:
+        """Refresh the sidebar when a team config changes on disk."""
+        self._refresh_sidebar()
+
+    def on_task_updated(self, message: TaskUpdated) -> None:
+        """Refresh the task panel when a task file changes on disk."""
+        task_panel = self.query_one("#task-panel", TaskPanel)
+        if task_panel._visible:
+            tasks = self._team_service.list_tasks(message.team_name)
+            task_panel.update_tasks(tasks)
+
+    def on_inbox_updated(self, message: InboxUpdated) -> None:
+        """Refresh the message panel when an agent inbox changes on disk."""
+        msg_panel = self.query_one("#message-panel", MessagePanel)
+        if msg_panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            team, agent = self._active_agent_key
+            self._update_message_panel(team, agent)
+
+    async def on_unmount(self) -> None:
+        """Stop the filesystem watcher on screen teardown."""
+        if hasattr(self, "_state_manager"):
+            await self._state_manager.stop()
