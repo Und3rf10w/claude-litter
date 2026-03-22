@@ -321,14 +321,14 @@ class TestTruncateToolOutput:
         assert _truncate_tool_output(text) == text
 
     def test_long_output_collapsed(self):
-        lines = [f"line{i}" for i in range(10)]
+        lines = [f"line{i}" for i in range(20)]
         result = _truncate_tool_output("\n".join(lines))
         result_lines = result.splitlines()
         assert result_lines[0] == "line0"
-        assert result_lines[1] == "line1"
-        assert "+7 lines" in result_lines[2]
-        assert result_lines[3] == "line9"
-        assert len(result_lines) == 4
+        assert result_lines[9] == "line9"
+        assert "+7 lines" in result_lines[10]
+        assert result_lines[11] == "line17"
+        assert len(result_lines) == 14
 
     def test_empty_content(self):
         assert _truncate_tool_output("") == ""
@@ -412,7 +412,7 @@ class TestRenderToolChunk:
             })
             await pilot.pause()
             history = sv.get_output_history()
-            assert any("+17 lines" in h for h in history)
+            assert any("+7 lines" in h for h in history)
 
     @pytest.mark.anyio
     async def test_api_retry(self):

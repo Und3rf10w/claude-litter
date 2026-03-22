@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import subprocess
 import sys
 from typing import Union
 
@@ -168,40 +168,41 @@ class SelectableLog(RichLog):
             selected = self.screen.get_selected_text()
             if selected:
                 self.app.copy_to_clipboard(selected)
-                _copy_to_system_clipboard(selected)
+                self.run_worker(_copy_to_system_clipboard(selected))
                 self.app.notify("Copied to clipboard", timeout=2)
             else:
                 # Copy all visible text as fallback
                 all_text = "\n".join(strip.text for strip in self.lines)
                 if all_text.strip():
                     self.app.copy_to_clipboard(all_text)
-                    _copy_to_system_clipboard(all_text)
+                    self.run_worker(_copy_to_system_clipboard(all_text))
                     self.app.notify("Copied all text to clipboard", timeout=2)
 
 
-def _copy_to_system_clipboard(text: str) -> None:
+async def _copy_to_system_clipboard(text: str) -> None:
     """Copy text to the system clipboard using platform-native tools."""
+    encoded = text.encode("utf-8")
     try:
         if sys.platform == "darwin":
-            subprocess.run(
-                ["pbcopy"], input=text.encode("utf-8"), check=True, timeout=2
+            proc = await asyncio.create_subprocess_exec(
+                "pbcopy",
+                stdin=asyncio.subprocess.PIPE,
             )
+            await asyncio.wait_for(proc.communicate(encoded), timeout=2)
         elif sys.platform == "linux":
             # Try xclip first, then xsel
             try:
-                subprocess.run(
-                    ["xclip", "-selection", "clipboard"],
-                    input=text.encode("utf-8"),
-                    check=True,
-                    timeout=2,
+                proc = await asyncio.create_subprocess_exec(
+                    "xclip", "-selection", "clipboard",
+                    stdin=asyncio.subprocess.PIPE,
                 )
+                await asyncio.wait_for(proc.communicate(encoded), timeout=2)
             except FileNotFoundError:
-                subprocess.run(
-                    ["xsel", "--clipboard", "--input"],
-                    input=text.encode("utf-8"),
-                    check=True,
-                    timeout=2,
+                proc = await asyncio.create_subprocess_exec(
+                    "xsel", "--clipboard", "--input",
+                    stdin=asyncio.subprocess.PIPE,
                 )
+                await asyncio.wait_for(proc.communicate(encoded), timeout=2)
     except Exception:
         pass  # Silently fail — OSC 52 is the primary mechanism
 
@@ -462,7 +463,7 @@ class SessionView(Widget):
 
     def _render_markdown(self, text: str) -> _RenderItem:
         """Return a Rich Markdown renderable for *text*, or fall back to plain text."""
-        if not text or not text.strip():
+        if not text.strip():
             return text
         try:
             return Markdown(text)
@@ -476,22 +477,12 @@ class SessionView(Widget):
     def append_output(self, text: str, *, as_markup: bool = False) -> None:
         """Add *text* to the display as a complete block (one RichLog.write call).
 
-        Args:
-            text: The text to display.
-            as_markup: If True, treat *text* as Rich markup and write it verbatim
-                       (used for tool chunks with colour/style markup). If False,
-                       render as Markdown for assistant prose output.
+        Pass ``as_markup=True`` to write Rich markup strings verbatim (tool chunks).
+        Plain text is rendered as Markdown by default.
         """
         try:
-            # Always store raw text for get_output_history() / tests
             self._output_history.append(text)
-
-            if as_markup or not text.strip():
-                # Tool chunks and blank lines: write as-is (Rich markup string)
-                renderable: _RenderItem = text
-            else:
-                renderable = self._render_markdown(text)
-
+            renderable: _RenderItem = text if (as_markup or not text.strip()) else self._render_markdown(text)
             self._render_items.append(renderable)
 
             log = self.query_one(SelectableLog)
@@ -511,6 +502,18 @@ class SessionView(Widget):
         self._render_items.clear()
         try:
             self.query_one(SelectableLog).clear()
+        except Exception:
+            pass
+
+    def _write_renderable(self, raw_text: str, renderable: _RenderItem) -> None:
+        """Append a pre-built renderable, keeping history in sync."""
+        self._output_history.append(raw_text)
+        self._render_items.append(renderable)
+        try:
+            log = self.query_one(SelectableLog)
+            log.write(renderable, expand=True)
+            if not self._user_scrolled_up:
+                log.scroll_end(animate=False)
         except Exception:
             pass
 
@@ -554,16 +557,7 @@ class SessionView(Widget):
                     tool_input = chunk.get("tool_input", {})
                     rendered = self._render_tool_result(tool_name, tool_input, str(content))
                     if rendered is not None:
-                        # Write a syntax-highlighted block directly
-                        self._output_history.append(str(content))
-                        self._render_items.append(rendered)
-                        try:
-                            log = self.query_one(SelectableLog)
-                            log.write(rendered, expand=True)
-                            if not self._user_scrolled_up:
-                                log.scroll_end(animate=False)
-                        except Exception:
-                            pass
+                        self._write_renderable(str(content), rendered)
                     else:
                         indented = "\n".join(f"  {line}" for line in truncated.splitlines())
                         self.append_output(f"\n[dim]{indented}[/dim]", as_markup=True)
