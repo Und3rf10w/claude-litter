@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 from collections import deque
@@ -15,6 +16,9 @@ from textual.widgets import Button, Label, OptionList, TextArea
 from textual.widgets.option_list import Option
 
 _log = logging.getLogger("claude_litter.input_bar")
+
+_HISTORY_PATH = Path("~/.claude/claude-litter/input_history.json").expanduser()
+_MAX_HISTORY = 500
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +117,6 @@ _TUI_COMMANDS: dict[str, str] = {
     "attach": "Attach image file to next prompt",
 }
 
-_MAX_HISTORY = 50
-
 
 # ---------------------------------------------------------------------------
 # InputBar widget
@@ -198,9 +200,25 @@ class InputBar(Widget):
         yield PromptTextArea("", id="prompt-input")
         yield Button("Send", id="send-btn", variant="primary")
 
+    def on_mount(self) -> None:
+        """Load input history from disk on startup."""
+        try:
+            items = json.loads(_HISTORY_PATH.read_text())
+            self._history = deque(items, maxlen=_MAX_HISTORY)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _save_history(self) -> None:
+        """Persist input history to disk."""
+        try:
+            _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _HISTORY_PATH.write_text(json.dumps(list(self._history)))
+        except Exception:
+            pass
 
     @property
     def _input(self) -> PromptTextArea:
@@ -233,6 +251,7 @@ class InputBar(Widget):
         # Save to history
         if not self._history or self._history[-1] != text:
             self._history.append(text)
+            self.call_later(self._save_history)
         self._history_index = -1
         self._pending_input = ""
 
