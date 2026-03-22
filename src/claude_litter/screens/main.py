@@ -416,31 +416,8 @@ class MainScreen(Screen):
             buf.streaming = True
             sv._set_active()
             sv._streaming = True
-            last_flush = time.monotonic()
-            try:
-                async for chunk in session.stream_response():
-                    # Determine if the view is still showing this agent
-                    active_sv = sv if self._active_agent_key == streaming_key else None
-
-                    if isinstance(chunk, str) and chunk:
-                        buf.stream_buffer.append(chunk)
-                        now = time.monotonic()
-                        if now - last_flush >= SessionView._FLUSH_INTERVAL:
-                            self._buf_flush(buf, active_sv)
-                            last_flush = now
-                    elif isinstance(chunk, dict):
-                        self._buf_flush(buf, active_sv)
-                        self._buf_finalize(buf, active_sv)
-                        self._buf_append_tool(buf, chunk, active_sv)
-                _log.info("_run_prompt: stream ended")
-            finally:
-                active_sv = sv if self._active_agent_key == streaming_key else None
-                self._buf_flush(buf, active_sv)
-                self._buf_finalize(buf, active_sv)
-                buf.streaming = False
-                if active_sv is not None:
-                    sv._set_idle()
-                    sv._streaming = False
+            await self._stream_to_buffer(session, buf, sv, streaming_key)
+            _log.info("_run_prompt: stream ended")
         except Exception as exc:
             _log.exception("_run_prompt: exception: %s", exc)
             err = (
@@ -450,6 +427,31 @@ class MainScreen(Screen):
             buf.history.append(err)
             if self._active_agent_key == streaming_key:
                 sv.append_output(err)
+
+    async def _stream_to_buffer(self, session, buf: AgentBuffer, sv: SessionView, streaming_key: tuple[str, str]) -> None:
+        """Stream response chunks from an agent session into the buffer and view."""
+        last_flush = time.monotonic()
+        try:
+            async for chunk in session.stream_response():
+                active_sv = sv if self._active_agent_key == streaming_key else None
+                if isinstance(chunk, str) and chunk:
+                    buf.stream_buffer.append(chunk)
+                    now = time.monotonic()
+                    if now - last_flush >= SessionView._FLUSH_INTERVAL:
+                        self._buf_flush(buf, active_sv)
+                        last_flush = now
+                elif isinstance(chunk, dict):
+                    self._buf_flush(buf, active_sv)
+                    self._buf_finalize(buf, active_sv)
+                    self._buf_append_tool(buf, chunk, active_sv)
+        finally:
+            active_sv = sv if self._active_agent_key == streaming_key else None
+            self._buf_flush(buf, active_sv)
+            self._buf_finalize(buf, active_sv)
+            buf.streaming = False
+            if active_sv is not None:
+                sv._set_idle()
+                sv._streaming = False
 
     # ------------------------------------------------------------------
     # Todo handling
@@ -521,6 +523,8 @@ class MainScreen(Screen):
         if not self._active_agent_key or self._active_agent_key == _MAIN_CHAT_KEY:
             return
         team, agent = self._active_agent_key
+        # RISK: send_message() calls _acquire_lock() which uses time.sleep().
+        # This runs on the main event loop thread. Should be moved to a @work worker.
         self._team_service.send_message(team, event.to, agent, event.text)
         # Refresh the panel to show the sent message
         self._update_message_panel(team, agent)
@@ -558,9 +562,14 @@ class MainScreen(Screen):
 
     def _refresh_sidebar(self) -> None:
         """Reload all teams from disk and update the sidebar widget."""
+        self.run_worker(self._refresh_sidebar_worker, exclusive=True, group="sidebar-refresh")
+
+    @work(exclusive=True, group="sidebar-refresh")
+    async def _refresh_sidebar_worker(self) -> None:
+        """Background worker: read team data from disk and push to the sidebar."""
         team_names = self._team_service.list_teams()
         teams: list[dict] = []
-        self._member_info.clear()
+        member_info: dict = {}
         for name in team_names:
             config = self._team_service.get_team(name)
             if config is not None:
@@ -575,7 +584,7 @@ class MainScreen(Screen):
                     }
                     agents.append(agent_dict)
                     # Cache full member info for header display
-                    self._member_info[(name, m.get("name", "?"))] = m
+                    member_info[(name, m.get("name", "?"))] = m
                 has_active = any(m.get("status") == "active" for m in config.get("members", []))
                 # If no member has an explicit status, infer from team-level status
                 # or treat as active when members exist (swarm-spawned agents
@@ -592,6 +601,12 @@ class MainScreen(Screen):
                     "status": team_status,
                     "agents": agents,
                 })
+        self.call_from_thread(self._apply_sidebar_data, teams, member_info)
+
+    def _apply_sidebar_data(self, teams: list[dict], member_info: dict) -> None:
+        """Apply the sidebar data computed by the worker to the UI."""
+        self._member_info.clear()
+        self._member_info.update(member_info)
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
 
     # ------------------------------------------------------------------
@@ -1266,28 +1281,7 @@ class MainScreen(Screen):
             buf.streaming = True
             sv._set_active()
             sv._streaming = True
-            last_flush = time.monotonic()
-            try:
-                async for chunk in session.stream_response():
-                    active_sv = sv if self._active_agent_key == streaming_key else None
-                    if isinstance(chunk, str) and chunk:
-                        buf.stream_buffer.append(chunk)
-                        now = time.monotonic()
-                        if now - last_flush >= SessionView._FLUSH_INTERVAL:
-                            self._buf_flush(buf, active_sv)
-                            last_flush = now
-                    elif isinstance(chunk, dict):
-                        self._buf_flush(buf, active_sv)
-                        self._buf_finalize(buf, active_sv)
-                        self._buf_append_tool(buf, chunk, active_sv)
-            finally:
-                active_sv = sv if self._active_agent_key == streaming_key else None
-                self._buf_flush(buf, active_sv)
-                self._buf_finalize(buf, active_sv)
-                buf.streaming = False
-                if active_sv is not None:
-                    sv._set_idle()
-                    sv._streaming = False
+            await self._stream_to_buffer(session, buf, sv, streaming_key)
 
     def _team_broadcast(self, team: str) -> None:
         """Open BroadcastMessageScreen for this team."""
@@ -1295,6 +1289,8 @@ class MainScreen(Screen):
 
         def _on_result(text: str | None) -> None:
             if text is not None:
+                # RISK: broadcast_message() calls _acquire_lock() which uses time.sleep().
+                # This callback runs on the main event loop thread. Should be moved to a @work worker.
                 count = self._team_service.broadcast_message(team, "tui", text)
                 self.notify(f"Broadcast sent to {count} agent(s) in {team}")
 
@@ -1339,6 +1335,8 @@ class MainScreen(Screen):
         is_suspended = config.get("status") == "suspended"
         if is_suspended:
             # Resume
+            # RISK: update_team_status() calls _acquire_lock() which uses time.sleep().
+            # This runs on the main event loop thread. Should be moved to a @work worker.
             self._team_service.update_team_status(team, "active")
             self._refresh_sidebar()
             self.notify(f"Resumed team {team}")

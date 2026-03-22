@@ -27,6 +27,12 @@ class TeamService:
     # ------------------------------------------------------------------ #
 
     def _acquire_lock(self, path: Path, timeout: float = 5.0) -> Path:
+        """Acquire a filesystem-based lock.
+
+        Uses time.sleep() for polling, so this MUST only be called from worker
+        threads, never from the main Textual event loop.  All callers should be
+        invoked from a ``@work``-decorated method or via ``run_worker()``.
+        """
         lock_dir = path.with_suffix(".lock")
         pid_file = lock_dir / "pid"
         deadline = time.monotonic() + timeout
