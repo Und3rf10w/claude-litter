@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
+from typing import Union
 
+from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.style import Style as RichStyle
+from rich.syntax import Syntax
 
 from textual.app import ComposeResult
 from textual.events import MouseDown
@@ -19,6 +23,42 @@ from textual.widgets import RichLog, LoadingIndicator, Static
 
 _log = logging.getLogger("claude_litter.session_view")
 
+# Type alias for items that can be written to the RichLog
+_RenderItem = Union[str, Markdown, Syntax]
+
+# File-extension to Pygments lexer name mapping for syntax highlighting
+_EXT_TO_LEXER: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".jsx": "jsx",
+    ".tsx": "tsx",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".html": "html",
+    ".css": "css",
+    ".md": "markdown",
+    ".rs": "rust",
+    ".go": "go",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".rb": "ruby",
+    ".sql": "sql",
+    ".xml": "xml",
+}
+
+
+def _lexer_for_path(file_path: str) -> str:
+    """Return a Pygments lexer name for the given file path, or 'text' as fallback."""
+    ext = os.path.splitext(file_path)[1].lower()
+    return _EXT_TO_LEXER.get(ext, "text")
 
 class SelectableLog(RichLog):
     """RichLog subclass with full mouse-drag text selection and copy support.
@@ -37,8 +77,10 @@ class SelectableLog(RichLog):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._last_width: int = 0
-        # Set by SessionView to enable reactive reflow on resize.
+        # Set by SessionView: raw text strings (for backward-compat get_output_history)
         self._output_history: list[str] | None = None
+        # Set by SessionView: renderables (str | Markdown | Syntax) for reflow
+        self._render_items: list[_RenderItem] | None = None
 
     @property
     def allow_select(self) -> bool:
@@ -48,10 +90,10 @@ class SelectableLog(RichLog):
         """Re-render all content when width changes so text reflows correctly."""
         super().on_resize(event)
         new_width = event.size.width
-        if self._last_width and new_width != self._last_width and self._output_history is not None:
+        if self._last_width and new_width != self._last_width and self._render_items is not None:
             was_at_end = self.is_vertical_scroll_end
             self.clear()
-            for item in self._output_history:
+            for item in self._render_items:
                 self.write(item, expand=True)
             if was_at_end:
                 self.scroll_end(animate=False)
@@ -226,17 +268,16 @@ def _format_tool_input(tool_name: str, input_dict: dict) -> str:
     return ""
 
 
-def _truncate_tool_output(content: str, max_lines: int = 4) -> str:
-    """Truncate long tool output, showing first 2 + last 1 lines with a collapse indicator."""
+def _truncate_tool_output(content: str, max_lines: int = 13) -> str:
+    """Truncate long tool output, showing first 10 + last 3 lines with a collapse indicator."""
     if not content:
         return ""
     lines = content.splitlines()
     if len(lines) <= max_lines:
         return content
-    # Show first 2 lines and last 1 line
-    head = lines[:2]
-    tail = lines[-1:]
-    hidden = len(lines) - 3
+    head = lines[:10]
+    tail = lines[-3:]
+    hidden = len(lines) - len(head) - len(tail)
     return "\n".join(head + [f"  ... +{hidden} lines ..."] + tail)
 
 
@@ -302,7 +343,10 @@ class SessionView(Widget):
         self._model = model
         self._streaming = False
         self._user_scrolled_up = False
+        # Raw text history — used by get_output_history() and tests
         self._output_history: list[str] = []
+        # Renderables history — used by on_resize reflow (str | Markdown | Syntax)
+        self._render_items: list[_RenderItem] = []
         self._last_tool_name: str = ""
 
     def compose(self) -> ComposeResult:
@@ -319,6 +363,7 @@ class SessionView(Widget):
         try:
             log = self.query_one(SelectableLog)
             log._output_history = self._output_history
+            log._render_items = self._render_items
         except Exception:
             pass
 
@@ -412,15 +457,45 @@ class SessionView(Widget):
             pass
 
     # ------------------------------------------------------------------
+    # Markdown rendering
+    # ------------------------------------------------------------------
+
+    def _render_markdown(self, text: str) -> _RenderItem:
+        """Return a Rich Markdown renderable for *text*, or fall back to plain text."""
+        if not text or not text.strip():
+            return text
+        try:
+            return Markdown(text)
+        except Exception:
+            return text
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def append_output(self, text: str) -> None:
-        """Add *text* to the display as a complete block (one RichLog.write call)."""
+    def append_output(self, text: str, *, as_markup: bool = False) -> None:
+        """Add *text* to the display as a complete block (one RichLog.write call).
+
+        Args:
+            text: The text to display.
+            as_markup: If True, treat *text* as Rich markup and write it verbatim
+                       (used for tool chunks with colour/style markup). If False,
+                       render as Markdown for assistant prose output.
+        """
         try:
+            # Always store raw text for get_output_history() / tests
             self._output_history.append(text)
+
+            if as_markup or not text.strip():
+                # Tool chunks and blank lines: write as-is (Rich markup string)
+                renderable: _RenderItem = text
+            else:
+                renderable = self._render_markdown(text)
+
+            self._render_items.append(renderable)
+
             log = self.query_one(SelectableLog)
-            log.write(text, expand=True)
+            log.write(renderable, expand=True)
             if not self._user_scrolled_up:
                 log.scroll_end(animate=False)
         except Exception:
@@ -433,6 +508,7 @@ class SessionView(Widget):
     def clear_output(self) -> None:
         """Clear all displayed text."""
         self._output_history.clear()
+        self._render_items.clear()
         try:
             self.query_one(SelectableLog).clear()
         except Exception:
@@ -449,7 +525,7 @@ class SessionView(Widget):
         if chunk_type == "tool_start":
             name = chunk.get("name", "?")
             self._last_tool_name = name
-            self.append_output(f"\n[bold dim]{name}[/bold dim]")
+            self.append_output(f"\n[bold dim]{name}[/bold dim]", as_markup=True)
 
         elif chunk_type == "tool_done":
             name = chunk.get("name", self._last_tool_name)
@@ -458,7 +534,7 @@ class SessionView(Widget):
             if summary:
                 # Escape Rich markup in user content
                 safe = summary.replace("[", "\\[")
-                self.append_output(f"[dim]({safe})[/dim]")
+                self.append_output(f"[dim]({safe})[/dim]", as_markup=True)
             # Detect TodoWrite tool calls
             if name == "TodoWrite":
                 todos = input_dict.get("todos", [])
@@ -471,20 +547,65 @@ class SessionView(Widget):
             if content:
                 truncated = _truncate_tool_output(str(content)).replace("[", "\\[")
                 if is_error:
-                    self.append_output(f"\n[red]{truncated}[/red]")
+                    self.append_output(f"\n[red]{truncated}[/red]", as_markup=True)
                 else:
-                    # Indent and dim the output snippet
-                    indented = "\n".join(f"  {line}" for line in truncated.splitlines())
-                    self.append_output(f"\n[dim]{indented}[/dim]")
-            self.append_output("")  # blank line after tool output
+                    # For file-reading tools, try syntax highlighting
+                    tool_name = chunk.get("tool_name", self._last_tool_name)
+                    tool_input = chunk.get("tool_input", {})
+                    rendered = self._render_tool_result(tool_name, tool_input, str(content))
+                    if rendered is not None:
+                        # Write a syntax-highlighted block directly
+                        self._output_history.append(str(content))
+                        self._render_items.append(rendered)
+                        try:
+                            log = self.query_one(SelectableLog)
+                            log.write(rendered, expand=True)
+                            if not self._user_scrolled_up:
+                                log.scroll_end(animate=False)
+                        except Exception:
+                            pass
+                    else:
+                        indented = "\n".join(f"  {line}" for line in truncated.splitlines())
+                        self.append_output(f"\n[dim]{indented}[/dim]", as_markup=True)
+            self.append_output("", as_markup=True)  # blank line after tool output
 
         elif chunk_type == "api_retry":
             attempt = chunk.get("attempt", "?")
             error = str(chunk.get("error", "unknown")).replace("[", "\\[")
             status = chunk.get("status", "?")
             self.append_output(
-                f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]"
+                f"\n[yellow]API retry #{attempt} (HTTP {status}: {error})[/yellow]",
+                as_markup=True,
             )
+
+    def _render_tool_result(
+        self, tool_name: str, tool_input: dict, content: str
+    ) -> "Syntax | None":
+        """Return a Syntax renderable for tool result content, or None to fall back."""
+        name_lower = tool_name.lower() if tool_name else ""
+        file_path = ""
+
+        if name_lower in ("read", "write", "edit"):
+            file_path = tool_input.get("file_path", "")
+
+        if not file_path:
+            return None
+
+        lexer = _lexer_for_path(file_path)
+        if lexer == "text":
+            return None  # Don't syntax-highlight generic text output
+
+        truncated = _truncate_tool_output(content)
+        try:
+            return Syntax(
+                truncated,
+                lexer,
+                theme="monokai",
+                line_numbers=False,
+                word_wrap=True,
+            )
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Scroll tracking

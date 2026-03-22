@@ -387,7 +387,7 @@ async def test_stream_response_text_delta() -> None:
         chunks.append(chunk)
 
     assert "Hello!" in chunks
-    assert "Hello!" in session.output_buffer
+    assert session.output_buffer == []  # cleared in finally block after streaming
 
 
 @pytest.mark.anyio

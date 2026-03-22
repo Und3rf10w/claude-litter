@@ -156,91 +156,94 @@ class AgentSession:
         # (ensures _read_messages background task has a chance to buffer messages)
         await anyio.sleep(0)
 
-        async for msg in self._client.receive_response():
-            _log.debug("stream_response: got msg type=%s repr=%.200s", type(msg).__name__, repr(msg))
-            if isinstance(msg, SystemMessage):
-                subtype = getattr(msg, "subtype", None)
-                if subtype == "init":
-                    self.session_id = getattr(msg, "session_id", self.session_id)
-                elif subtype == "api_retry":
-                    data = getattr(msg, "data", {})
-                    attempt = data.get("attempt", "?")
-                    error = data.get("error", "unknown")
-                    status = data.get("error_status", "?")
-                    _log.warning("stream_response: API retry #%s (HTTP %s: %s)", attempt, status, error)
-                    yield {"type": "api_retry", "attempt": attempt, "error": error, "status": status}
+        try:
+            async for msg in self._client.receive_response():
+                _log.debug("stream_response: got msg type=%s repr=%.200s", type(msg).__name__, repr(msg))
+                if isinstance(msg, SystemMessage):
+                    subtype = getattr(msg, "subtype", None)
+                    if subtype == "init":
+                        self.session_id = getattr(msg, "session_id", self.session_id)
+                    elif subtype == "api_retry":
+                        data = getattr(msg, "data", {})
+                        attempt = data.get("attempt", "?")
+                        error = data.get("error", "unknown")
+                        status = data.get("error_status", "?")
+                        _log.warning("stream_response: API retry #%s (HTTP %s: %s)", attempt, status, error)
+                        yield {"type": "api_retry", "attempt": attempt, "error": error, "status": status}
 
-            elif isinstance(msg, StreamEvent):
-                event = msg.event
-                etype = event.get("type")
+                elif isinstance(msg, StreamEvent):
+                    event = msg.event
+                    etype = event.get("type")
 
-                if etype == "content_block_start":
-                    cb = event.get("content_block", {})
-                    if cb.get("type") == "tool_use":
-                        current_tool = cb.get("name")
-                        tool_input = ""
-                        yield {"type": "tool_start", "name": current_tool}
+                    if etype == "content_block_start":
+                        cb = event.get("content_block", {})
+                        if cb.get("type") == "tool_use":
+                            current_tool = cb.get("name")
+                            tool_input = ""
+                            yield {"type": "tool_start", "name": current_tool}
 
-                elif etype == "content_block_delta":
-                    delta = event.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        got_stream_events = True
-                        text = delta.get("text", "")
-                        self.output_buffer.append(text)
-                        yield text
-                    elif delta.get("type") == "input_json_delta":
-                        got_stream_events = True
-                        tool_input += delta.get("partial_json", "")
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            got_stream_events = True
+                            text = delta.get("text", "")
+                            self.output_buffer.append(text)
+                            yield text
+                        elif delta.get("type") == "input_json_delta":
+                            got_stream_events = True
+                            tool_input += delta.get("partial_json", "")
 
-                elif etype == "content_block_stop":
-                    if current_tool:
-                        parsed = {}
-                        try:
-                            parsed = json.loads(tool_input)
-                        except Exception:
-                            pass
-                        yield {"type": "tool_done", "name": current_tool, "input": parsed}
-                        current_tool = None
-                        tool_input = ""
+                    elif etype == "content_block_stop":
+                        if current_tool:
+                            parsed = {}
+                            try:
+                                parsed = json.loads(tool_input)
+                            except Exception:
+                                pass
+                            yield {"type": "tool_done", "name": current_tool, "input": parsed}
+                            current_tool = None
+                            tool_input = ""
 
-            elif isinstance(msg, AssistantMessage):
-                # The CLI sends a complete AssistantMessage after the streaming
-                # deltas. Only use it as fallback if we got NO stream events.
-                if got_stream_events:
-                    _log.debug("stream_response: skipping AssistantMessage (already streamed)")
-                else:
-                    _log.info("stream_response: got AssistantMessage (non-streaming fallback), %d content blocks", len(msg.content))
-                    for block in msg.content:
-                        if isinstance(block, TextBlock) and block.text:
-                            self.output_buffer.append(block.text)
-                            yield block.text
-                        elif isinstance(block, ToolUseBlock):
-                            yield {"type": "tool_start", "name": block.name}
-                            yield {"type": "tool_done", "name": block.name, "input": block.input}
+                elif isinstance(msg, AssistantMessage):
+                    # The CLI sends a complete AssistantMessage after the streaming
+                    # deltas. Only use it as fallback if we got NO stream events.
+                    if got_stream_events:
+                        _log.debug("stream_response: skipping AssistantMessage (already streamed)")
+                    else:
+                        _log.info("stream_response: got AssistantMessage (non-streaming fallback), %d content blocks", len(msg.content))
+                        for block in msg.content:
+                            if isinstance(block, TextBlock) and block.text:
+                                self.output_buffer.append(block.text)
+                                yield block.text
+                            elif isinstance(block, ToolUseBlock):
+                                yield {"type": "tool_start", "name": block.name}
+                                yield {"type": "tool_done", "name": block.name, "input": block.input}
 
-            elif isinstance(msg, UserMessage):
-                # Tool results come back as UserMessage with ToolResultBlock content
-                if isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, ToolResultBlock):
-                            content = block.content
-                            if isinstance(content, list):
-                                text_parts = [
-                                    b["text"]
-                                    for b in content
-                                    if isinstance(b, dict) and b.get("type") == "text"
-                                ]
-                                content = "\n".join(text_parts)
-                            yield {
-                                "type": "tool_result",
-                                "tool_use_id": block.tool_use_id,
-                                "content": content or "",
-                                "is_error": block.is_error or False,
-                            }
+                elif isinstance(msg, UserMessage):
+                    # Tool results come back as UserMessage with ToolResultBlock content
+                    if isinstance(msg.content, list):
+                        for block in msg.content:
+                            if isinstance(block, ToolResultBlock):
+                                content = block.content
+                                if isinstance(content, list):
+                                    text_parts = [
+                                        b["text"]
+                                        for b in content
+                                        if isinstance(b, dict) and b.get("type") == "text"
+                                    ]
+                                    content = "\n".join(text_parts)
+                                yield {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.tool_use_id,
+                                    "content": content or "",
+                                    "is_error": block.is_error or False,
+                                }
 
-            elif isinstance(msg, ResultMessage):
-                self.status = AgentStatus.idle
-                _log.debug("stream_response: got ResultMessage, turn complete")
+                elif isinstance(msg, ResultMessage):
+                    self.status = AgentStatus.idle
+                    _log.debug("stream_response: got ResultMessage, turn complete")
+        finally:
+            self.output_buffer.clear()
 
     async def interrupt(self) -> None:
         """Interrupt the current agent operation."""
