@@ -489,24 +489,39 @@ class MainScreen(Screen):
         self.query_one("#welcome-message", Static).display = True
         self.query_one("#session-view", SessionView).display = False
 
+    def _resolve_active_team(self) -> str | None:
+        """Return the team name for the currently selected agent, or the first available team."""
+        if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+            return self._active_agent_key[0]
+        teams = self._team_service.list_teams()
+        return teams[0] if teams else None
+
     def toggle_tasks(self) -> None:
         """Show/hide the task panel."""
         panel = self.query_one("#task-panel", TaskPanel)
         panel.toggle()
-        # Populate on open if we have an active agent
-        if panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
-            team = self._active_agent_key[0]
-            tasks = self._team_service.list_tasks(team)
-            panel.update_tasks(tasks)
+        if panel._visible:
+            team = self._resolve_active_team()
+            if team:
+                tasks = self._team_service.list_tasks(team)
+                panel.update_tasks(tasks)
 
     def toggle_messages(self) -> None:
         """Show/hide the message panel."""
         panel = self.query_one("#message-panel", MessagePanel)
         panel.toggle()
-        # Populate on open if we have an active agent
-        if panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
-            team, agent = self._active_agent_key
-            self._update_message_panel(team, agent)
+        if panel._visible:
+            if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
+                team, agent = self._active_agent_key
+                self._update_message_panel(team, agent)
+            else:
+                team = self._resolve_active_team()
+                if team:
+                    config = self._team_service.get_team(team)
+                    if config and config.get("members"):
+                        agent = config["members"][0].get("name", "")
+                        if agent:
+                            self._update_message_panel(team, agent)
 
     def _update_message_panel(self, team: str, agent: str) -> None:
         """Populate the message panel with the agent's inbox messages."""
@@ -682,6 +697,26 @@ class MainScreen(Screen):
     def on_team_sidebar_main_chat_selected(self, event: TeamSidebar.MainChatSelected) -> None:
         """Switch back to the main default chat."""
         self._switch_to_main_chat()
+
+    def on_team_sidebar_team_selected(self, event: TeamSidebar.TeamSelected) -> None:
+        """Team node clicked — refresh task and message panels for this team."""
+        team = event.team
+        # Update task panel with this team's tasks
+        task_panel = self.query_one("#task-panel", TaskPanel)
+        tasks = self._team_service.list_tasks(team)
+        task_panel.update_tasks(tasks)
+
+        # Update message panel — if we have an active agent in this team, use it;
+        # otherwise pick the first member
+        agent = None
+        if self._active_agent_key and self._active_agent_key[0] == team:
+            agent = self._active_agent_key[1]
+        else:
+            config = self._team_service.get_team(team)
+            if config and config.get("members"):
+                agent = config["members"][0].get("name")
+        if agent:
+            self._update_message_panel(team, agent)
 
     def _switch_to_main_chat(self) -> None:
         """Restore the main chat session view."""
