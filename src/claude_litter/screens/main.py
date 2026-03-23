@@ -298,7 +298,7 @@ class MainScreen(Screen):
         line = f"\n[bold cyan]> {event.text.replace('[', '\\[')}[/bold cyan]\n"
         buf = self._get_buf()
         buf.history.append(line)
-        sv.append_output(line)
+        sv.append_output(line, as_markup=True)
         self._dispatch_prompt(event.text, event.images)
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
@@ -987,7 +987,7 @@ class MainScreen(Screen):
                             stripped = stripped[:300] + "\n..."
                         # Use markup=False via escaping brackets to avoid Rich parse errors
                         safe = stripped.replace("[", "\\[")
-                        sv.append_output(f"[bold cyan]> {safe}[/bold cyan]\n\n")
+                        sv.append_output(f"[bold cyan]> {safe}[/bold cyan]\n\n", as_markup=True)
                         msg_count += 1
                     elif role == "user" and isinstance(content, list):
                         # Skip tool_result blocks
@@ -1348,7 +1348,7 @@ class MainScreen(Screen):
             safe_preview = initial_prompt[:200].replace("[", "\\[")
             prompt_line = f"\n[bold cyan]> {safe_preview}{'...' if len(initial_prompt) > 200 else ''}[/bold cyan]\n"
             buf.history.append(prompt_line)
-            sv.append_output(prompt_line)
+            sv.append_output(prompt_line, as_markup=True)
             buf.streaming = True
             sv._set_active()
             sv._streaming = True

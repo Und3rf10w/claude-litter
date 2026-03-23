@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from typing import Union
 
@@ -474,15 +475,23 @@ class SessionView(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    _MARKUP_RE = re.compile(r"\[/?(?:bold|dim|italic|red|green|yellow|cyan|blue|magenta|white|/)")
+
+    def _looks_like_markup(self, text: str) -> bool:
+        """Return True if *text* contains Rich markup tags."""
+        return bool(self._MARKUP_RE.search(text))
+
     def append_output(self, text: str, *, as_markup: bool = False) -> None:
         """Add *text* to the display as a complete block (one RichLog.write call).
 
         Pass ``as_markup=True`` to write Rich markup strings verbatim (tool chunks).
+        Text containing Rich markup tags is auto-detected and rendered as markup.
         Plain text is rendered as Markdown by default.
         """
         try:
             self._output_history.append(text)
-            renderable: _RenderItem = text if (as_markup or not text.strip()) else self._render_markdown(text)
+            use_markup = as_markup or self._looks_like_markup(text)
+            renderable: _RenderItem = text if (use_markup or not text.strip()) else self._render_markdown(text)
             self._render_items.append(renderable)
 
             log = self.query_one(SelectableLog)
