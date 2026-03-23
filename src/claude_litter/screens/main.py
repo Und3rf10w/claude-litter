@@ -543,7 +543,7 @@ class MainScreen(Screen):
         if not self._active_agent_key or self._active_agent_key == _MAIN_CHAT_KEY:
             return
         team, agent = self._active_agent_key
-        # RISK: send_message() calls _acquire_lock() which uses time.sleep().
+        # TODO: send_message() calls _acquire_lock() which uses time.sleep().
         # This runs on the main event loop thread. Should be moved to a @work worker.
         self._team_service.send_message(team, event.to, agent, event.text)
         # Refresh the panel to show the sent message
@@ -635,14 +635,14 @@ class MainScreen(Screen):
             task_counts[t_name] = (len(t_tasks), sum(1 for t in t_tasks if t.get("status") == "completed"))
         self._apply_sidebar_data(teams, member_info, task_counts)
 
-    def _apply_sidebar_data(self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]] | None = None) -> None:
+    def _apply_sidebar_data(self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]]) -> None:
         """Apply the sidebar data computed by the worker to the UI."""
         self._member_info.clear()
         self._member_info.update(member_info)
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
-        self._update_status_bar(teams, task_counts or {})
+        self._update_status_bar(teams, task_counts)
 
-    def _update_status_bar(self, teams: list[dict], task_counts: dict[str, tuple[int, int]] | None = None) -> None:
+    def _update_status_bar(self, teams: list[dict], task_counts: dict[str, tuple[int, int]]) -> None:
         """Refresh the StatusBar with current team/task summary."""
         active_team = ""
         if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
@@ -659,8 +659,8 @@ class MainScreen(Screen):
                     if self._agent_manager.get_session(t["name"], ag["name"]) is not None:
                         active_count += 1
 
-        task_total, task_done = (task_counts or {}).get(active_team, (0, 0))
-        vim_mode = getattr(self.app.config, "vim_mode", False) if hasattr(self, "app") else False
+        task_total, task_done = task_counts.get(active_team, (0, 0))
+        vim_mode = getattr(self.app.config, "vim_mode", False)
 
         try:
             sb = self.query_one(StatusBar)
@@ -1360,7 +1360,7 @@ class MainScreen(Screen):
 
         def _on_result(text: str | None) -> None:
             if text is not None:
-                # RISK: broadcast_message() calls _acquire_lock() which uses time.sleep().
+                # TODO: broadcast_message() calls _acquire_lock() which uses time.sleep().
                 # This callback runs on the main event loop thread. Should be moved to a @work worker.
                 count = self._team_service.broadcast_message(team, "tui", text)
                 self.notify(f"Broadcast sent to {count} agent(s) in {team}")
@@ -1406,7 +1406,7 @@ class MainScreen(Screen):
         is_suspended = config.get("status") == "suspended"
         if is_suspended:
             # Resume
-            # RISK: update_team_status() calls _acquire_lock() which uses time.sleep().
+            # TODO: update_team_status() calls _acquire_lock() which uses time.sleep().
             # This runs on the main event loop thread. Should be moved to a @work worker.
             self._team_service.update_team_status(team, "active")
             self._refresh_sidebar()
