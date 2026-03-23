@@ -97,7 +97,7 @@ class _MessageItem(ListItem):
         sender = self._msg_data.get("from", self._msg_data.get("sender", "unknown"))
         text = self._msg_data.get("text", self._msg_data.get("message", ""))
         timestamp = self._msg_data.get("timestamp", self._msg_data.get("time", ""))
-        read = self._msg_data.get("read", True)
+        read = self._msg_data.get("read", False)
 
         item_class = "msg-item"
         if not read:

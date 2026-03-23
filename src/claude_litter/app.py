@@ -135,7 +135,14 @@ class ClaudeLitterApp(App):
             self.action_request_quit()
 
     def action_detach(self) -> None:
-        """Detach current session."""
+        """Detach the active agent session."""
+        from claude_litter.screens.main import MainScreen, _MAIN_CHAT_KEY
+        screen = self.screen
+        if not isinstance(screen, MainScreen):
+            return
+        key = screen._active_agent_key
+        if key and key != _MAIN_CHAT_KEY:
+            screen._detach_agent(*key)
 
     def action_about(self) -> None:
         """Show about dialog."""
