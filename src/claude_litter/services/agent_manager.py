@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import anyio
 
@@ -35,6 +35,31 @@ class AgentStatus(Enum):
 
 
 @dataclass
+class PermissionRequest:
+    """Bridges the SDK's async can_use_tool callback with the TUI event loop.
+
+    The SDK calls can_use_tool from its internal task; the TUI resolves
+    the request after the user clicks Allow/Deny.
+    """
+
+    tool_name: str
+    tool_input: dict[str, Any]
+    suggestions: list = field(default_factory=list)
+    _response_event: anyio.Event = field(default_factory=anyio.Event)
+    _result: Any = field(default=None, repr=False)
+
+    def resolve(self, result: Any) -> None:
+        """Set the permission result and unblock the SDK callback."""
+        self._result = result
+        self._response_event.set()
+
+    async def wait(self) -> Any:
+        """Block until the TUI resolves this request."""
+        await self._response_event.wait()
+        return self._result
+
+
+@dataclass
 class AgentSession:
     team_name: str
     agent_name: str
@@ -43,9 +68,13 @@ class AgentSession:
     status: AgentStatus = AgentStatus.starting
     output_buffer: list[str] = field(default_factory=list)
     server_info: dict | None = field(default=None, repr=False)
+    pending_permission: PermissionRequest | None = field(default=None, repr=False)
     _client: object | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
     _plugins: list[dict] | None = field(default=None, repr=False)
+    _permission_callback: Callable[[Any, PermissionRequest], None] | None = field(
+        default=None, repr=False
+    )
 
     async def start(self) -> None:
         """Initialize and connect ClaudeSDKClient for this session."""
@@ -58,6 +87,7 @@ class AgentSession:
         opts: dict = {
             "include_partial_messages": True,
             "env": settings.env,
+            "can_use_tool": self._can_use_tool,
         }
         if self.model:
             opts["model"] = self.model
@@ -88,8 +118,34 @@ class AgentSession:
         self.server_info = await self._client.get_server_info()
         self.status = AgentStatus.idle
 
+    async def _can_use_tool(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: Any,
+    ) -> Any:
+        """SDK permission callback — blocks until TUI resolves the request."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        req = PermissionRequest(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            suggestions=getattr(context, "suggestions", []) or [],
+        )
+        self.pending_permission = req
+        _log.info("_can_use_tool: requesting permission for %s", tool_name)
+        if self._permission_callback is not None:
+            self._permission_callback(self, req)
+        result = await req.wait()
+        self.pending_permission = None
+        _log.info("_can_use_tool: got result %s for %s", result, tool_name)
+        return result if result is not None else PermissionResultAllow()
+
     async def send_prompt(self, prompt: str, images: list[tuple[str, bytes]] | None = None) -> None:
-        """Send a prompt (with optional images) and start a new turn."""
+        """Send a prompt (with optional images) and start a new turn.
+
+        Always uses AsyncIterable format (required by can_use_tool).
+        """
         if not self._connected:
                 await self.start()
 
@@ -104,16 +160,16 @@ class AgentSession:
                         "data": base64.b64encode(data).decode(),
                     },
                 })
-
-            async def _single_message():
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": content},
-                }
-
-            await self._client.query(_single_message())
         else:
-            await self._client.query(prompt)
+            content = prompt  # type: ignore[assignment]
+
+        async def _prompt_iter():
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+            }
+
+        await self._client.query(_prompt_iter())
 
         _log.info("send_prompt: query() returned")
         self.status = AgentStatus.active
@@ -412,19 +468,24 @@ class AgentManager:
         if session_id:
             resume_opts["resume"] = session_id
 
-        options = ClaudeAgentOptions(**resume_opts)
-        client = ClaudeSDKClient(options)
-        await client.connect()
-
         session = AgentSession(
             team_name=team_name,
             agent_name=agent_name,
             model=model,
             session_id=session_id,
             status=AgentStatus.idle,
-            _client=client,
-            _connected=True,
         )
+        # Set can_use_tool before connecting so the session has permission support
+        resume_opts["can_use_tool"] = session._can_use_tool
+
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+        options = ClaudeAgentOptions(**resume_opts)
+        client = ClaudeSDKClient(options)
+        await client.connect()
+
+        session._client = client
+        session._connected = True
         self.sessions[(team_name, agent_name)] = session
 
         # Remove from detached records

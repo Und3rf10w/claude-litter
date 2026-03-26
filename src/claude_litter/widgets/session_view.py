@@ -611,6 +611,48 @@ class SessionView(Widget):
             return None
 
     # ------------------------------------------------------------------
+    # Permission prompt rendering
+    # ------------------------------------------------------------------
+
+    def render_permission_request(self, tool_name: str, tool_input: dict) -> None:
+        """Render an inline permission request block for tool approval."""
+        summary = _format_tool_input(tool_name, tool_input)
+        safe_name = tool_name.replace("[", "\\[")
+
+        lines: list[str] = [
+            "",
+            "[bold yellow]Permission requested[/bold yellow]",
+            f"  [bold]{safe_name}[/bold]",
+        ]
+
+        # Show detailed info based on tool type
+        name_lower = tool_name.lower()
+        if name_lower == "bash":
+            cmd = tool_input.get("command", "")
+            safe_cmd = cmd.replace("[", "\\[")
+            # Show full command for short ones, truncated for long
+            if len(cmd) <= 200:
+                lines.append(f"  [dim]$[/dim] {safe_cmd}")
+            else:
+                lines.append(f"  [dim]$[/dim] {safe_cmd[:200]}...")
+        elif name_lower in ("write", "edit"):
+            fp = tool_input.get("file_path", "")
+            safe_fp = fp.replace("[", "\\[")
+            lines.append(f"  [dim]file:[/dim] {safe_fp}")
+        elif name_lower == "read":
+            fp = tool_input.get("file_path", "")
+            safe_fp = fp.replace("[", "\\[")
+            lines.append(f"  [dim]file:[/dim] {safe_fp}")
+        elif summary:
+            safe_summary = summary.replace("[", "\\[")
+            lines.append(f"  [dim]{safe_summary}[/dim]")
+
+        lines.append("[yellow]  Allow (y) | Deny (n) | Always Allow (a)[/yellow]")
+        lines.append("")
+
+        self.append_output("\n".join(lines), as_markup=True)
+
+    # ------------------------------------------------------------------
     # Scroll tracking
     # ------------------------------------------------------------------
 

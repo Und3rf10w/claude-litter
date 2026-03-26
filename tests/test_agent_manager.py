@@ -97,6 +97,18 @@ class _ClaudeSDKClient:
             yield msg
 
 
+class _PermissionResultAllow:
+    def __init__(self, **kwargs) -> None:
+        self.behavior = "allow"
+        self.__dict__.update(kwargs)
+
+
+class _PermissionResultDeny:
+    def __init__(self, **kwargs) -> None:
+        self.behavior = "deny"
+        self.__dict__.update(kwargs)
+
+
 # Inject the fake module before any production import
 _fake_sdk = MagicMock()
 _fake_sdk.ClaudeSDKClient = _ClaudeSDKClient
@@ -115,6 +127,8 @@ _fake_types.TextBlock = _TextBlock
 _fake_types.ToolResultBlock = _ToolResultBlock
 _fake_types.ToolUseBlock = _ToolUseBlock
 _fake_types.UserMessage = _UserMessage
+_fake_types.PermissionResultAllow = _PermissionResultAllow
+_fake_types.PermissionResultDeny = _PermissionResultDeny
 _fake_sdk.types = _fake_types
 sys.modules.setdefault("claude_agent_sdk", _fake_sdk)
 sys.modules.setdefault("claude_agent_sdk.types", _fake_types)
@@ -161,7 +175,10 @@ async def test_spawn_agent_with_initial_prompt() -> None:
     mgr = _make_manager()
     session = await mgr.spawn_agent("team-a", "worker-1", initial_prompt="hello")
     assert session._client is not None
-    assert session._client._queued == "hello"  # type: ignore[union-attr]
+    # send_prompt always uses AsyncIterable format now; the mock stores str(msg)
+    queued = session._client._queued  # type: ignore[union-attr]
+    assert queued is not None
+    assert "hello" in queued
 
 
 @pytest.mark.anyio

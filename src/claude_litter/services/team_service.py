@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,22 @@ def _safe_path(root: Path, *parts: str) -> Path:
     if not result.is_relative_to(root.resolve()):
         raise ValueError(f"Path traversal attempt: {parts!r}")
     return result
+
+
+def _sanitize_team_name(name: str) -> str:
+    """Sanitize a team name for use as a directory name.
+
+    Matches Claude Code's ``pA6()`` — lowercase, replace non-alphanumeric with ``-``.
+    """
+    return re.sub(r"[^a-zA-Z0-9]", "-", name).lower()
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a name for use in filesystem paths (task dirs, inbox filenames).
+
+    Matches Claude Code's ``ZN6()`` — replace chars outside ``[a-zA-Z0-9_-]`` with ``-``.
+    """
+    return re.sub(r"[^a-zA-Z0-9_-]", "-", name)
 
 
 class TeamService:
@@ -100,23 +117,28 @@ class TeamService:
     # ------------------------------------------------------------------ #
 
     def create_team(self, name: str, description: str = "") -> dict:
-        team_dir = _safe_path(self.teams_path, name)
+        dir_name = _sanitize_team_name(name)
+        team_dir = _safe_path(self.teams_path, dir_name)
         team_dir.mkdir(parents=True, exist_ok=True)
-        (team_dir / "inboxes").mkdir(exist_ok=True)
 
         config_path = team_dir / "config.json"
         if config_path.exists():
-            return self._read_json(config_path)  # type: ignore[return-value]
+            config = self._read_json(config_path)
+            config["dir_name"] = dir_name  # type: ignore[index]
+            return config  # type: ignore[return-value]
 
         config: dict = {
             "name": name,
+            "dir_name": dir_name,
             "description": description,
             "createdAt": int(time.time() * 1000),
             "leadAgentId": "",
             "leadSessionId": "",
             "members": [],
         }
-        self._write_json(config_path, config)
+        # Don't persist dir_name to disk — it's derived from the directory
+        disk_config = {k: v for k, v in config.items() if k != "dir_name"}
+        self._write_json(config_path, disk_config)
         return config
 
     def delete_team(self, name: str) -> None:
@@ -258,7 +280,7 @@ class TeamService:
         tasks_dir.mkdir(parents=True, exist_ok=True)
 
         # Acquire a lock to prevent task ID race conditions
-        lock_sentinel = tasks_dir / ".id_lock.json"
+        lock_sentinel = tasks_dir / ".lock"
         lock = self._acquire_lock(lock_sentinel)
         try:
             task_id = self._next_task_id(tasks_dir)
@@ -296,6 +318,8 @@ class TeamService:
             return []
         tasks = []
         for f in sorted(tasks_dir.glob("*.json"), key=lambda p: int(p.stem) if p.stem.isdigit() else 0):
+            if f.name.startswith("."):
+                continue
             try:
                 tasks.append(self._read_json(f))
             except (json.JSONDecodeError, OSError):

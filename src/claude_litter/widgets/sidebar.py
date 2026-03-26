@@ -147,22 +147,23 @@ class TeamSidebar(Widget):
 
         for team in teams:
             team_name = team["name"]
+            dir_name = team.get("dir_name", team_name)
             status = team.get("status", "inactive")
             color = _STATUS_COLOR.get(status, "gray")
             label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
             team_node: TreeNode[dict] = tree.root.add(
-                label, data={"type": "team", "team": team_name}, expand=True
+                label, data={"type": "team", "team": dir_name}, expand=True
             )
-            self._team_nodes[team_name] = team_node
+            self._team_nodes[dir_name] = team_node
 
             for agent in team.get("agents", []):
                 agent_name = agent["name"]
-                self._agent_data[(team_name, agent_name)] = agent
+                self._agent_data[(dir_name, agent_name)] = agent
                 agent_node = team_node.add_leaf(
                     self._agent_label(agent),
-                    data={"type": "agent", "team": team_name, "agent": agent_name},
+                    data={"type": "agent", "team": dir_name, "agent": agent_name},
                 )
-                self._agent_nodes[(team_name, agent_name)] = agent_node
+                self._agent_nodes[(dir_name, agent_name)] = agent_node
 
     def refresh_agent(self, team: str, agent: str, **data) -> None:
         """Update a single agent node in the tree without full rebuild."""

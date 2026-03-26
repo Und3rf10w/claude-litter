@@ -15,13 +15,13 @@ from textual.widgets import Footer, Header, Static
 from textual.containers import Horizontal, Vertical
 
 from claude_litter.models.task import TodoItem
-from claude_litter.services.agent_manager import AgentManager
+from claude_litter.services.agent_manager import AgentManager, PermissionRequest
 from claude_litter.services.state import InboxUpdated, StateManager, TaskUpdated, TeamUpdated
 from claude_litter.services.team_service import TeamService
 from claude_litter.widgets.sidebar import TeamSidebar
 from claude_litter.widgets.tab_bar import SessionTabBar
-from claude_litter.widgets.session_view import SessionView, TodoWriteDetected
-from claude_litter.widgets.input_bar import InputBar, PromptSubmitted, CommandSubmitted
+from claude_litter.widgets.session_view import SessionView, TodoWriteDetected, _format_tool_input
+from claude_litter.widgets.input_bar import InputBar, PermissionResponse, PromptSubmitted, CommandSubmitted
 from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
 from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
 from claude_litter.widgets.context_menu import ContextMenu
@@ -110,6 +110,8 @@ class MainScreen(Screen):
         self._active_agent_key: tuple[str, str] | None = _MAIN_CHAT_KEY
         # Cache of full member dicts from config.json, keyed by (team, agent)
         self._member_info: dict[tuple[str, str], dict] = {}
+        # Pending permission requests per agent, keyed by (team, agent)
+        self._pending_permissions: dict[tuple[str, str], PermissionRequest] = {}
 
     # ------------------------------------------------------------------
     # Per-agent buffer helpers
@@ -273,6 +275,7 @@ class MainScreen(Screen):
         sv = self.query_one("#session-view", SessionView)
         try:
             session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
+            self._wire_permission_callback(session, _MAIN_CHAT_KEY)
             # Populate autocomplete with CC commands from server_info
             if session.server_info:
                 cc_commands = {
@@ -411,6 +414,7 @@ class MainScreen(Screen):
                     session = await self._agent_manager.spawn_agent(
                         team, agent, model=model,
                     )
+                self._wire_permission_callback(session, streaming_key)
             else:
                 session = self._agent_manager.get_session("", "default")
                 if session is None:
@@ -421,6 +425,7 @@ class MainScreen(Screen):
                             for c in session.server_info.get("commands", [])
                         }
                         self.query_one("#input-bar", InputBar).update_commands(cc_commands)
+                self._wire_permission_callback(session, _MAIN_CHAT_KEY)
 
             _log.info("_run_prompt: calling send_prompt")
             await session.send_prompt(text, images=images)
@@ -476,6 +481,59 @@ class MainScreen(Screen):
         self.query_one("#task-panel", TaskPanel).update_todos(todos)
 
     # ------------------------------------------------------------------
+    # Permission prompt handling
+    # ------------------------------------------------------------------
+
+    def _wire_permission_callback(self, session: object, key: tuple[str, str]) -> None:
+        """Attach the permission callback to an AgentSession so it notifies the TUI."""
+        from claude_litter.services.agent_manager import AgentSession
+
+        if isinstance(session, AgentSession):
+            session._permission_callback = lambda sess, req: self._on_permission_request(key, req)
+
+    def _on_permission_request(self, key: tuple[str, str], req: PermissionRequest) -> None:
+        """Called from the SDK's internal task when a tool needs permission.
+
+        Must be thread-safe — the SDK callback may run on a different thread.
+        """
+        self.app.call_from_thread(self._show_permission_request, key, req)
+
+    def _show_permission_request(self, key: tuple[str, str], req: PermissionRequest) -> None:
+        """Show the permission prompt in the TUI (runs on the main thread)."""
+        self._pending_permissions[key] = req
+        if self._active_agent_key == key:
+            sv = self.query_one("#session-view", SessionView)
+            sv.render_permission_request(req.tool_name, req.tool_input)
+            input_bar = self.query_one("#input-bar", InputBar)
+            summary = _format_tool_input(req.tool_name, req.tool_input)
+            input_bar.enter_permission_mode(req.tool_name, summary)
+
+    def on_permission_response(self, event: PermissionResponse) -> None:
+        """Handle the user's Allow/Deny/Always response to a permission prompt."""
+        from claude_agent_sdk.types import (
+            PermissionResultAllow,
+            PermissionResultDeny,
+        )
+
+        key = self._active_agent_key
+        if key is None:
+            return
+        req = self._pending_permissions.pop(key, None)
+        if req is None:
+            return
+
+        if event.allow:
+            updated_permissions = None
+            if event.always and req.suggestions:
+                updated_permissions = req.suggestions
+            result = PermissionResultAllow(updated_permissions=updated_permissions)
+        else:
+            result = PermissionResultDeny(message="User denied in TUI")
+
+        req.resolve(result)
+        self.query_one("#input-bar", InputBar).exit_permission_mode()
+
+    # ------------------------------------------------------------------
     # View switching
     # ------------------------------------------------------------------
 
@@ -490,11 +548,18 @@ class MainScreen(Screen):
         self.query_one("#session-view", SessionView).display = False
 
     def _resolve_active_team(self) -> str | None:
-        """Return the team name for the currently selected agent, or the first available team."""
+        """Return the team dir_name for the currently selected agent, or the first available team."""
         if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
             return self._active_agent_key[0]
         teams = self._team_service.list_teams()
         return teams[0] if teams else None
+
+    def _display_name(self, dir_name: str) -> str:
+        """Resolve a team directory name to its display name from config.json."""
+        config = self._team_service.get_team(dir_name)
+        if config:
+            return config.get("name", dir_name)
+        return dir_name
 
     def toggle_tasks(self) -> None:
         """Show/hide the task panel."""
@@ -572,8 +637,9 @@ class MainScreen(Screen):
         """Create a team from the dialog result and refresh the sidebar."""
         name = result["name"]
         description = result.get("description", "")
-        self._team_service.create_team(name, description)
-        _log.info("create_team: created team %r", name)
+        config = self._team_service.create_team(name, description)
+        dir_name = config.get("dir_name", name)
+        _log.info("create_team: created team %r (dir=%r)", name, dir_name)
         self._refresh_sidebar()
 
         if result.get("auto_lead"):
@@ -588,7 +654,7 @@ class MainScreen(Screen):
                 "Use these to create tasks, spawn agents, assign work, and coordinate the team. "
                 "Start by breaking down the work into tasks and spawning the agents you need."
             )
-            self._execute_team_spawn(name, {
+            self._execute_team_spawn(dir_name, {
                 "name": "team-lead",
                 "model": model,
                 "type": "team-lead",
@@ -639,15 +705,16 @@ class MainScreen(Screen):
                         has_active = True
                 team_status = config.get("status", "active" if has_active else "inactive")
                 teams.append({
-                    "name": config["name"],
+                    "name": config.get("name", name),
+                    "dir_name": name,
                     "status": team_status,
                     "agents": agents,
                 })
         # Compute task counts while still in the worker (avoids extra disk read in apply)
         task_counts: dict[str, tuple[int, int]] = {}
-        for t_name in {t["name"] for t in teams}:
-            t_tasks = self._team_service.list_tasks(t_name)
-            task_counts[t_name] = (len(t_tasks), sum(1 for t in t_tasks if t.get("status") == "completed"))
+        for t in teams:
+            t_tasks = self._team_service.list_tasks(t["dir_name"])
+            task_counts[t["dir_name"]] = (len(t_tasks), sum(1 for tk in t_tasks if tk.get("status") == "completed"))
         self._apply_sidebar_data(teams, member_info, task_counts)
 
     def _apply_sidebar_data(self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]]) -> None:
@@ -663,15 +730,18 @@ class MainScreen(Screen):
         if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
             active_team = self._active_agent_key[0]
         elif teams:
-            active_team = teams[0]["name"]
+            active_team = teams[0].get("dir_name", teams[0]["name"])
 
         agent_count = 0
         active_count = 0
+        display_name = active_team
         for t in teams:
-            if not active_team or t["name"] == active_team:
+            t_dir = t.get("dir_name", t["name"])
+            if not active_team or t_dir == active_team:
+                display_name = t["name"]
                 agent_count += len(t.get("agents", []))
                 for ag in t.get("agents", []):
-                    if self._agent_manager.get_session(t["name"], ag["name"]) is not None:
+                    if self._agent_manager.get_session(t_dir, ag["name"]) is not None:
                         active_count += 1
 
         task_total, task_done = task_counts.get(active_team, (0, 0))
@@ -680,7 +750,7 @@ class MainScreen(Screen):
         try:
             sb = self.query_one(StatusBar)
             sb.update_status(
-                team_name=active_team,
+                team_name=display_name,
                 agent_count=agent_count,
                 active_count=active_count,
                 task_total=task_total,
@@ -748,6 +818,15 @@ class MainScreen(Screen):
 
         self.show_session()
 
+        # Handle permission mode transitions
+        input_bar = self.query_one("#input-bar", InputBar)
+        if key in self._pending_permissions:
+            req = self._pending_permissions[key]
+            summary = _format_tool_input(req.tool_name, req.tool_input)
+            input_bar.enter_permission_mode(req.tool_name, summary)
+        elif input_bar._permission_mode:
+            input_bar.exit_permission_mode()
+
     # ------------------------------------------------------------------
     # Agent click-to-view + tab switching
     # ------------------------------------------------------------------
@@ -794,7 +873,7 @@ class MainScreen(Screen):
         member = self._member_info.get(key, {})
         sv.update_header(
             agent_name=agent,
-            team=team,
+            team=self._display_name(team),
             model=member.get("model", ""),
             cwd=member.get("cwd", ""),
             agent_type=member.get("agentType", ""),
@@ -819,6 +898,15 @@ class MainScreen(Screen):
         # Update task panel with this team's tasks
         tasks = self._team_service.list_tasks(team)
         self.query_one("#task-panel", TaskPanel).update_tasks(tasks)
+
+        # Handle permission mode transitions
+        input_bar = self.query_one("#input-bar", InputBar)
+        if key in self._pending_permissions:
+            req = self._pending_permissions[key]
+            summary = _format_tool_input(req.tool_name, req.tool_input)
+            input_bar.enter_permission_mode(req.tool_name, summary)
+        elif input_bar._permission_mode:
+            input_bar.exit_permission_mode()
 
     def _load_agent_history(self, team: str, agent: str) -> None:
         """Schedule loading chat history from inbox messages and JSONL transcripts."""
@@ -1214,7 +1302,7 @@ class MainScreen(Screen):
         )
 
         self._refresh_sidebar()
-        self.notify(f"Duplicated {source_agent} -> {new_name} in {target_team}")
+        self.notify(f"Duplicated {source_agent} -> {new_name} in {self._display_name(target_team)}")
 
     def _build_context_summary(self, team: str, agent: str) -> str:
         """Extract recent assistant text from JSONL transcript for context."""
@@ -1331,7 +1419,7 @@ class MainScreen(Screen):
             sv = self.query_one("#session-view", SessionView)
             sv.update_header(
                 agent_name=new_name,
-                team=team,
+                team=self._display_name(team),
                 model=opts.get("model", ""),
                 agent_type=opts.get("agentType", ""),
                 color=opts.get("color", ""),
@@ -1371,8 +1459,9 @@ class MainScreen(Screen):
             team, name, model=model,
             initial_prompt=initial_prompt,
         )
+        self._wire_permission_callback(session, (team, name))
         self._refresh_sidebar()
-        self.notify(f"Spawned {name} in {team}")
+        self.notify(f"Spawned {name} in {self._display_name(team)}")
 
         # If there was an initial prompt, switch to the agent and stream the response
         if initial_prompt and session:
@@ -1398,7 +1487,7 @@ class MainScreen(Screen):
                 # TODO: broadcast_message() calls _acquire_lock() which uses time.sleep().
                 # This callback runs on the main event loop thread. Should be moved to a @work worker.
                 count = self._team_service.broadcast_message(team, "tui", text)
-                self.notify(f"Broadcast sent to {count} agent(s) in {team}")
+                self.notify(f"Broadcast sent to {count} agent(s) in {self._display_name(team)}")
 
         self.app.push_screen(BroadcastMessageScreen(team), _on_result)
 
@@ -1445,7 +1534,7 @@ class MainScreen(Screen):
             # This runs on the main event loop thread. Should be moved to a @work worker.
             self._team_service.update_team_status(team, "active")
             self._refresh_sidebar()
-            self.notify(f"Resumed team {team}")
+            self.notify(f"Resumed team {self._display_name(team)}")
         else:
             # Suspend
             self._execute_team_suspend(team)
@@ -1456,7 +1545,7 @@ class MainScreen(Screen):
         await self._agent_manager.stop_team(team)
         self._team_service.update_team_status(team, "suspended")
         self._refresh_sidebar()
-        self.notify(f"Suspended team {team}")
+        self.notify(f"Suspended team {self._display_name(team)}")
 
     def _team_kill_all(self, team: str) -> None:
         """Confirm and kill all agents in a team."""
@@ -1467,7 +1556,7 @@ class MainScreen(Screen):
                 self._execute_team_kill_all(team)
 
         self.app.push_screen(
-            ConfirmScreen(f"Kill all agents in [bold]{team}[/bold]?"),
+            ConfirmScreen(f"Kill all agents in [bold]{self._display_name(team)}[/bold]?"),
             _on_result,
         )
 
@@ -1476,7 +1565,7 @@ class MainScreen(Screen):
         """Stop all agent sessions for a team."""
         await self._agent_manager.stop_team(team)
         self._refresh_sidebar()
-        self.notify(f"Killed all agents in {team}")
+        self.notify(f"Killed all agents in {self._display_name(team)}")
 
     def _team_delete(self, team: str) -> None:
         """Confirm and delete a team."""
@@ -1488,7 +1577,7 @@ class MainScreen(Screen):
 
         self.app.push_screen(
             ConfirmScreen(
-                f"Delete team [bold]{team}[/bold]? This cannot be undone.",
+                f"Delete team [bold]{self._display_name(team)}[/bold]? This cannot be undone.",
                 yes_label="Delete",
             ),
             _on_result,
@@ -1513,7 +1602,7 @@ class MainScreen(Screen):
             if key[0] == team:
                 del self._member_info[key]
         self._refresh_sidebar()
-        self.notify(f"Deleted team {team}")
+        self.notify(f"Deleted team {self._display_name(team)}")
 
     # ------------------------------------------------------------------
     # Task detail
@@ -1579,6 +1668,8 @@ class MainScreen(Screen):
         if task_panel._visible:
             tasks = self._team_service.list_tasks(message.team_name)
             task_panel.update_tasks(tasks)
+        # Refresh sidebar to update status bar task counts
+        self._refresh_sidebar()
 
     def on_inbox_updated(self, message: InboxUpdated) -> None:
         """Refresh the message panel when an agent inbox changes on disk."""
@@ -1586,6 +1677,8 @@ class MainScreen(Screen):
         if msg_panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
             team, agent = self._active_agent_key
             self._update_message_panel(team, agent)
+        # Refresh sidebar to update unread badges
+        self._refresh_sidebar()
 
     async def on_unmount(self) -> None:
         """Stop the filesystem watcher on screen teardown."""

@@ -18,8 +18,23 @@ CLAUDE_HOME = Path(os.environ.get("CLAUDE_HOME", str(Path.home() / ".claude")))
 TEAMS = CLAUDE_HOME / "teams"
 TASKS = CLAUDE_HOME / "tasks"
 
-_TEAM_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,100}$")
 _VALID_STATUSES = {"pending", "in_progress", "completed"}
+
+
+def _sanitize_team_name(name: str) -> str:
+    """Sanitize a team name for use as a directory name.
+
+    Matches Claude Code's ``pA6()`` — lowercase, replace non-alphanumeric with ``-``.
+    """
+    return re.sub(r"[^a-zA-Z0-9]", "-", name).lower()
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a name for filesystem paths (task dirs, inbox filenames).
+
+    Matches Claude Code's ``ZN6()`` — replace chars outside ``[a-zA-Z0-9_-]`` with ``-``.
+    """
+    return re.sub(r"[^a-zA-Z0-9_-]", "-", name)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +194,8 @@ def list_tasks(team: str, status: str = "") -> str:
         return "[]"
     results = []
     for f in sorted(tasks_dir.glob("*.json"), key=lambda p: int(p.stem) if p.stem.isdigit() else 0):
+        if f.name.startswith("."):
+            continue
         try:
             task: dict = _read_json(f)
             if status and task.get("status") != status:
@@ -234,17 +251,17 @@ def create_team(name: str, description: str = "") -> str:
     """Create a new team.
 
     Args:
-        name: Team name (no spaces, use hyphens)
+        name: Team name
         description: Optional team description
     """
-    if not _TEAM_NAME_RE.match(name):
-        return json.dumps({"error": f"Invalid team name '{name}': must match ^[a-zA-Z0-9_-]{{1,100}}$"})
+    dir_name = _sanitize_team_name(name)
+    if not dir_name:
+        return json.dumps({"error": f"Invalid team name '{name}': sanitizes to empty string"})
     try:
-        team_dir = _safe_path(TEAMS, name)
+        team_dir = _safe_path(TEAMS, dir_name)
     except ValueError as e:
         return json.dumps({"error": str(e)})
     team_dir.mkdir(parents=True, exist_ok=True)
-    (team_dir / "inboxes").mkdir(exist_ok=True)
 
     config_path = team_dir / "config.json"
     if config_path.exists():
@@ -278,7 +295,7 @@ def create_task(team: str, subject: str, description: str = "") -> str:
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
     # Acquire a lock on the tasks directory to prevent ID race conditions
-    lock_sentinel = tasks_dir / ".id_lock.json"
+    lock_sentinel = tasks_dir / ".lock"
     lock = _acquire_lock(lock_sentinel)
     try:
         task_id = _next_task_id(tasks_dir)

@@ -68,8 +68,8 @@ async def test_create_team(mcp_server, tmp_path):
     on_disk = json.loads(config_path.read_text())
     assert on_disk["name"] == "alpha"
 
-    # Inboxes directory should exist
-    assert (tmp_path / "teams" / "alpha" / "inboxes").is_dir()
+    # Inboxes directory is lazily created on first message send
+    assert not (tmp_path / "teams" / "alpha" / "inboxes").exists()
 
 
 @pytest.mark.anyio

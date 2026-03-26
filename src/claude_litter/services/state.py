@@ -94,6 +94,8 @@ def _parse_change_path(
         parts = rel_teams.parts
         if len(parts) >= 1:
             team_name = parts[0]
+            if len(parts) == 1:
+                return TeamUpdated(team_name)
             if len(parts) == 2 and parts[1] == "config.json":
                 return TeamUpdated(team_name)
             if len(parts) == 3 and parts[1] == "inboxes":
@@ -105,7 +107,10 @@ def _parse_change_path(
         parts = rel_tasks.parts
         if len(parts) == 2:
             team_name = parts[0]
-            task_id = Path(parts[1]).stem
+            filename = parts[1]
+            if filename.startswith("."):
+                return None
+            task_id = Path(filename).stem
             return TaskUpdated(team_name, task_id)
         return None
 

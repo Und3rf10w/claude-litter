@@ -10,6 +10,7 @@ from pathlib import Path
 
 from textual import events, on, work
 from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Label, OptionList, TextArea
@@ -46,6 +47,15 @@ class CommandSubmitted(Message):
 
 class InterruptRequested(Message):
     """Fired when the user presses Ctrl+C."""
+
+
+class PermissionResponse(Message):
+    """Fired when the user responds to a permission prompt."""
+
+    def __init__(self, allow: bool, always: bool = False) -> None:
+        super().__init__()
+        self.allow = allow
+        self.always = always
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +140,7 @@ class InputBar(Widget):
         PromptSubmitted  — plain text submitted
         CommandSubmitted — /command [args] submitted
         InterruptRequested — Ctrl+C pressed
+        PermissionResponse — user responded to a permission prompt
     """
 
     DEFAULT_CSS = """
@@ -155,6 +166,12 @@ class InputBar(Widget):
         text-style: bold;
     }
 
+    InputBar .mode-indicator.permission-mode {
+        color: $warning;
+        background: $warning-darken-3;
+        text-style: bold;
+    }
+
     InputBar PromptTextArea {
         width: 1fr;
         height: auto;
@@ -163,6 +180,31 @@ class InputBar(Widget):
 
     InputBar Button {
         min-width: 8;
+    }
+
+    InputBar #permission-bar {
+        display: none;
+        width: 1fr;
+        height: 3;
+        layout: horizontal;
+        align: center middle;
+    }
+
+    InputBar #permission-bar.-visible {
+        display: block;
+    }
+
+    InputBar #permission-label {
+        width: 1fr;
+        height: 1;
+        content-align: left middle;
+        padding: 0 1;
+        color: $warning;
+    }
+
+    InputBar .permission-btn {
+        min-width: 10;
+        margin: 0 1;
     }
 
     InputBar #cmd-completions {
@@ -187,6 +229,7 @@ class InputBar(Widget):
         self._history_index: int = -1  # -1 means not navigating history
         self._pending_input: str = ""  # saved draft while navigating history
         self._command_mode: bool = False
+        self._permission_mode: bool = False
         self._all_commands: dict[str, str] = dict(_TUI_COMMANDS)
         self._pending_images: list[tuple[str, bytes]] = []
 
@@ -198,6 +241,11 @@ class InputBar(Widget):
         yield _CompletionList(id="cmd-completions")
         yield Label(">", classes="mode-indicator")
         yield PromptTextArea("", id="prompt-input")
+        with Horizontal(id="permission-bar"):
+            yield Label("", id="permission-label")
+            yield Button("Allow (y)", id="perm-allow", variant="success", classes="permission-btn")
+            yield Button("Deny (n)", id="perm-deny", variant="error", classes="permission-btn")
+            yield Button("Always (a)", id="perm-always", variant="warning", classes="permission-btn")
         yield Button("Send", id="send-btn", variant="primary")
 
     def on_mount(self) -> None:
@@ -239,6 +287,42 @@ class InputBar(Widget):
         else:
             indicator.update(">")
             indicator.remove_class("command-mode")
+
+    # ------------------------------------------------------------------
+    # Permission mode
+    # ------------------------------------------------------------------
+
+    def enter_permission_mode(self, tool_name: str, tool_summary: str) -> None:
+        """Switch to permission approval mode — hide text input, show Allow/Deny buttons."""
+        self._permission_mode = True
+        indicator = self._indicator
+        indicator.update("?")
+        indicator.add_class("permission-mode")
+        # Hide normal input, show permission bar
+        self.query_one("#prompt-input", PromptTextArea).display = False
+        self.query_one("#send-btn", Button).display = False
+        perm_bar = self.query_one("#permission-bar")
+        perm_bar.add_class("-visible")
+        safe_name = tool_name.replace("[", "\\[")
+        safe_summary = tool_summary.replace("[", "\\[") if tool_summary else ""
+        label_text = f"{safe_name}: {safe_summary}" if safe_summary else safe_name
+        self.query_one("#permission-label", Label).update(label_text)
+        # Focus the Allow button
+        self.query_one("#perm-allow", Button).focus()
+
+    def exit_permission_mode(self) -> None:
+        """Restore normal input mode."""
+        self._permission_mode = False
+        indicator = self._indicator
+        indicator.remove_class("permission-mode")
+        indicator.update(">")
+        # Show normal input, hide permission bar
+        self.query_one("#prompt-input", PromptTextArea).display = True
+        self.query_one("#send-btn", Button).display = True
+        perm_bar = self.query_one("#permission-bar")
+        perm_bar.remove_class("-visible")
+        # Restore focus to text input
+        self.query_one("#prompt-input", PromptTextArea).focus()
 
     def _submit(self, value: str) -> None:
         """Parse and post the appropriate message for *value*."""
@@ -371,9 +455,46 @@ class InputBar(Widget):
     def _on_send_pressed(self, event: Button.Pressed) -> None:
         self._submit(self._input.text)
 
+    @on(Button.Pressed, "#perm-allow")
+    def _on_perm_allow(self) -> None:
+        self.post_message(PermissionResponse(allow=True, always=False))
+
+    @on(Button.Pressed, "#perm-deny")
+    def _on_perm_deny(self) -> None:
+        self.post_message(PermissionResponse(allow=False))
+
+    @on(Button.Pressed, "#perm-always")
+    def _on_perm_always(self) -> None:
+        self.post_message(PermissionResponse(allow=True, always=True))
+
     def on_key(self, event: events.Key) -> None:
-        """Handle autocomplete navigation, history, and Ctrl+C interrupt."""
+        """Handle autocomplete navigation, history, permission shortcuts, and Ctrl+C interrupt."""
         key = event.key
+
+        # Permission mode shortcuts
+        if self._permission_mode:
+            if key in ("y", "enter"):
+                event.prevent_default()
+                event.stop()
+                self.post_message(PermissionResponse(allow=True, always=False))
+                return
+            if key == "n":
+                event.prevent_default()
+                event.stop()
+                self.post_message(PermissionResponse(allow=False))
+                return
+            if key == "a":
+                event.prevent_default()
+                event.stop()
+                self.post_message(PermissionResponse(allow=True, always=True))
+                return
+            if key == "escape":
+                event.prevent_default()
+                event.stop()
+                self.post_message(PermissionResponse(allow=False))
+                return
+            # Block all other keys in permission mode
+            return
 
         if key == "ctrl+c":
             # If there's selected text on screen, let the Screen's copy binding handle it
