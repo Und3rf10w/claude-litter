@@ -11,12 +11,12 @@ from pathlib import Path
 from textual import work
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header, LoadingIndicator, Static
 from textual.containers import Horizontal, Vertical
 
 from claude_litter.models.task import TodoItem
 from claude_litter.services.agent_manager import AgentManager, PermissionRequest
-from claude_litter.services.state import InboxUpdated, StateManager, TaskUpdated, TeamUpdated
+from claude_litter.services.state import InboxUpdated, StateManager, TaskUpdated, TeamUpdated, TranscriptActivity
 from claude_litter.services.team_service import TeamService
 from claude_litter.widgets.sidebar import TeamSidebar
 from claude_litter.widgets.tab_bar import SessionTabBar
@@ -1671,6 +1671,10 @@ class MainScreen(Screen):
     def on_team_updated(self, message: TeamUpdated) -> None:
         """Refresh the sidebar when a team config changes on disk."""
         self._refresh_sidebar()
+        # Rebuild transcript index to pick up new agents, then restart watcher
+        if hasattr(self, "_state_manager"):
+            self._state_manager.build_transcript_index()
+            self.run_worker(self._state_manager.restart(), exclusive=True, group="watcher-restart")
 
     def on_task_updated(self, message: TaskUpdated) -> None:
         """Refresh the task panel when a task file changes on disk."""
@@ -1689,6 +1693,33 @@ class MainScreen(Screen):
             self._update_message_panel(team, agent)
         # Refresh sidebar to update unread badges
         self._refresh_sidebar()
+
+    def on_transcript_activity(self, message: TranscriptActivity) -> None:
+        """Update sidebar and session view with agent activity from transcript."""
+        sidebar = self.query_one("#sidebar", TeamSidebar)
+        sidebar.refresh_agent(
+            message.team_name,
+            message.agent_name,
+            working=not message.is_idle,
+            tool=message.tool_name,
+        )
+        # If viewing this agent, update the session status
+        if self._active_agent_key == (message.team_name, message.agent_name):
+            sv = self.query_one("#session-view", SessionView)
+            if message.is_idle:
+                sv._set_idle()
+            else:
+                tool = message.tool_name
+                if tool:
+                    try:
+                        status = sv.query_one(".session-status", Static)
+                        status.update(f"\\[{tool}]")
+                        status.display = True
+                        sv.query_one(LoadingIndicator).display = True
+                    except Exception:
+                        sv._set_active()
+                else:
+                    sv._set_active()
 
     async def on_unmount(self) -> None:
         """Stop the filesystem watcher on screen teardown."""

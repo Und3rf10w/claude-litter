@@ -201,11 +201,25 @@ class TeamSidebar(Widget):
         task_id = agent.get("task_id")
         agent_type = agent.get("agentType", "")
         color = agent.get("color", "")
+        working = agent.get("working")
+        tool = agent.get("tool", "")
 
         # Color the badge using the agent's assigned color
         color_name = _AGENT_COLORS.get(color, "dim")
         safe_name = agent.get("name", "?").replace("[", "\\[")
-        parts = [f"[{color_name}]{badge}[/{color_name}]", safe_name]
+
+        # Activity indicator
+        if working is True:
+            indicator = "[green]\u25cf[/green]"
+        elif working is False:
+            indicator = "[dim]\u25cb[/dim]"
+        else:
+            indicator = ""
+
+        parts = [f"[{color_name}]{badge}[/{color_name}]"]
+        if indicator:
+            parts.append(indicator)
+        parts.append(safe_name)
 
         if agent_type and agent_type not in ("general-purpose", "teammate"):
             parts.append(f"[dim]({agent_type})[/dim]")
@@ -213,4 +227,7 @@ class TeamSidebar(Widget):
             parts.append(f"[bold yellow]({unread})[/bold yellow]")
         if task_id:
             parts.append(f"[dim]#{task_id}[/dim]")
+        if tool:
+            safe_tool = tool.replace("[", "\\[")
+            parts.append(f"[dim]\\[{safe_tool}][/dim]")
         return " ".join(parts)

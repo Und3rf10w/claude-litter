@@ -64,6 +64,17 @@ class InboxUpdated(TextualMessage):
         self.agent_name = agent_name
 
 
+class TranscriptActivity(TextualMessage):
+    """Posted when a JSONL transcript changes, indicating agent activity."""
+
+    def __init__(self, team_name: str, agent_name: str, tool_name: str, is_idle: bool) -> None:
+        super().__init__()
+        self.team_name = team_name
+        self.agent_name = agent_name
+        self.tool_name = tool_name
+        self.is_idle = is_idle
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -74,6 +85,57 @@ def _read_json(path: Path) -> dict | list | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _read_last_entry(path: Path) -> tuple[str, bool]:
+    """Read the last JSONL line to extract current tool and idle state.
+
+    Returns ``(tool_name, is_idle)``.  *tool_name* is ``""`` when the agent
+    is idle or thinking (no specific tool in progress).
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return "", True
+            chunk = min(8192, size)
+            f.seek(-chunk, 2)
+            data = f.read().decode("utf-8", errors="ignore")
+        lines = [ln for ln in data.splitlines() if ln.strip()]
+        if not lines:
+            return "", True
+        entry = json.loads(lines[-1])
+    except Exception:
+        return "", False  # can't read → assume working (conservative)
+
+    entry_type = entry.get("type")
+    msg = entry.get("message", {})
+
+    if entry_type == "system":
+        if entry.get("subtype") == "turn_duration":
+            return "", True
+
+    if entry_type == "assistant":
+        stop = msg.get("stop_reason")
+        if stop == "end_turn":
+            return "", True
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for blk in reversed(content):
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    return blk.get("name", ""), False
+        return "", False  # thinking/streaming
+
+    if entry_type == "user":
+        content = msg.get("content")
+        if isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                    return "", False
+        return "", False
+
+    return "", False
 
 
 def _parse_change_path(
@@ -128,9 +190,11 @@ class StateManager:
         self._base = base_path or _DEFAULT_BASE
         self._teams_dir = self._base / "teams"
         self._tasks_dir = self._base / "tasks"
+        self._projects_dir = self._base / "projects"
         self._task_group: anyio.abc.TaskGroup | None = None
         self._cancel_scope: anyio.CancelScope | None = None
         self._app: object | None = None  # Textual App reference for posting
+        self._transcript_index: dict[str, tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -164,6 +228,13 @@ class StateManager:
             self._cancel_scope.cancel()
             self._cancel_scope = None
             self._task_group = None
+
+    async def restart(self) -> None:
+        """Stop and re-start the watcher (picks up new transcript paths)."""
+        await self.stop()
+        # Brief yield so the cancelled task can clean up
+        await anyio.sleep(0)
+        await self.start()
 
     # ------------------------------------------------------------------
     # Getters
@@ -250,6 +321,72 @@ class StateManager:
         return sum(1 for m in self.get_inbox(team_name, agent_name) if not m.read)
 
     # ------------------------------------------------------------------
+    # Transcript index
+    # ------------------------------------------------------------------
+
+    def build_transcript_index(self) -> None:
+        """Scan all teams to map JSONL transcript files to (team_dir, agent) pairs."""
+        index: dict[str, tuple[str, str]] = {}
+        if not self._teams_dir.is_dir():
+            self._transcript_index = index
+            return
+        for team_dir in self._teams_dir.iterdir():
+            if not team_dir.is_dir():
+                continue
+            config_path = team_dir / "config.json"
+            if not config_path.exists():
+                continue
+            config = _read_json(config_path)
+            if not isinstance(config, dict):
+                continue
+            lead_session = config.get("leadSessionId", "")
+            members = config.get("members", [])
+            if not lead_session or not members:
+                continue
+            cwd = members[0].get("cwd", "")
+            if not cwd:
+                continue
+            sanitized = "".join(c if c.isalnum() else "-" for c in cwd)[:200]
+            subagents_dir = self._projects_dir / sanitized / lead_session / "subagents"
+            if not subagents_dir.is_dir():
+                continue
+            member_names = {m.get("name") for m in members if m.get("name")}
+            # Track best mtime per (team, agent) to keep only the most recent JSONL
+            best: dict[tuple[str, str], tuple[str, float]] = {}
+            for meta_path in subagents_dir.glob("agent-*.meta.json"):
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    agent_type = meta.get("agentType", "")
+                    if agent_type not in member_names:
+                        continue
+                    jsonl_path = Path(str(meta_path).replace(".meta.json", ".jsonl"))
+                    if not jsonl_path.exists():
+                        continue
+                    mtime = jsonl_path.stat().st_mtime
+                    key = (team_dir.name, agent_type)
+                    prev = best.get(key)
+                    if prev is None or mtime > prev[1]:
+                        best[key] = (str(jsonl_path), mtime)
+                except Exception:
+                    continue
+            for (team_name, agent_name), (jsonl_str, _) in best.items():
+                index[jsonl_str] = (team_name, agent_name)
+
+            # Also index the team lead's main session JSONL
+            lead_name = ""
+            lead_agent_id = config.get("leadAgentId", "")
+            if "@" in lead_agent_id:
+                lead_name = lead_agent_id.rsplit("@", 1)[0]
+            if not lead_name and members:
+                lead_name = members[0].get("name", "")
+            if lead_name:
+                lead_jsonl = self._projects_dir / sanitized / lead_session / f"{lead_session}.jsonl"
+                if lead_jsonl.exists():
+                    index[str(lead_jsonl)] = (team_dir.name, lead_name)
+
+        self._transcript_index = index
+
+    # ------------------------------------------------------------------
     # Internal watcher
     # ------------------------------------------------------------------
 
@@ -259,11 +396,42 @@ class StateManager:
             path.mkdir(parents=True, exist_ok=True)
             watch_paths.append(str(path))
 
+        # Build transcript index and add subagent dirs to watch
+        self.build_transcript_index()
+        watched_dirs: set[str] = set()
+        for jsonl_path in self._transcript_index:
+            parent = str(Path(jsonl_path).parent)
+            if parent not in watched_dirs:
+                watched_dirs.add(parent)
+                watch_paths.append(parent)
+        # Also watch the lead session dirs (parent of subagents/)
+        for jsonl_path in self._transcript_index:
+            p = Path(jsonl_path)
+            if p.parent.name != "subagents":
+                parent = str(p.parent)
+                if parent not in watched_dirs:
+                    watched_dirs.add(parent)
+                    watch_paths.append(parent)
+
         try:
             from watchfiles import awatch, Change
 
             async for changes in awatch(*watch_paths, debounce=int(_DEBOUNCE_SECONDS * 1000)):
                 for change_type, path_str in changes:
+                    # Check transcript index first
+                    transcript_key = self._transcript_index.get(path_str)
+                    if transcript_key is not None:
+                        team, agent = transcript_key
+                        tool_name, is_idle = _read_last_entry(Path(path_str))
+                        if self._app is not None:
+                            try:
+                                self._app.post_message(  # type: ignore[attr-defined]
+                                    TranscriptActivity(team, agent, tool_name, is_idle)
+                                )
+                            except Exception:
+                                pass
+                        continue
+
                     changed = Path(path_str)
                     msg = _parse_change_path(changed, self._teams_dir, self._tasks_dir)
                     if msg is not None and self._app is not None:
