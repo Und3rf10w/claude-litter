@@ -249,7 +249,7 @@ class MainScreen(Screen):
     async def on_mount(self) -> None:
         # Start the filesystem watcher for live updates
         self._state_manager = StateManager()
-        self._state_manager.set_app(self.app)
+        self._state_manager.set_app(self)
         await self._state_manager.start()
 
         # Skip the welcome screen — go straight to a live session
@@ -558,6 +558,16 @@ class MainScreen(Screen):
         """Resolve a team directory name to its display name from config.json."""
         config = self._team_service.get_team(dir_name)
         if config:
+            return config.get("name", dir_name)
+        return dir_name
+
+    def _team_label(self, dir_name: str) -> str:
+        """Return a user-friendly team label: description if available, else display name."""
+        config = self._team_service.get_team(dir_name)
+        if config:
+            desc = config.get("description", "")
+            if desc:
+                return desc
             return config.get("name", dir_name)
         return dir_name
 
@@ -873,7 +883,7 @@ class MainScreen(Screen):
         member = self._member_info.get(key, {})
         sv.update_header(
             agent_name=agent,
-            team=self._display_name(team),
+            team=self._team_label(team),
             model=member.get("model", ""),
             cwd=member.get("cwd", ""),
             agent_type=member.get("agentType", ""),
@@ -1419,7 +1429,7 @@ class MainScreen(Screen):
             sv = self.query_one("#session-view", SessionView)
             sv.update_header(
                 agent_name=new_name,
-                team=self._display_name(team),
+                team=self._team_label(team),
                 model=opts.get("model", ""),
                 agent_type=opts.get("agentType", ""),
                 color=opts.get("color", ""),

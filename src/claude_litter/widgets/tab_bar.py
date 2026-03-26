@@ -88,9 +88,11 @@ class SessionTabBar(Widget):
 
         self._tabs.append(key)
         tab_id = _tab_id(team, agent)
-        label = _tab_label(team, agent, active=True)
+        # Use the agent name as the plain pane title; the styled label
+        # with the ✕ button is set on the Tab widget via _update_close_colors.
+        title = agent if not team else f"{agent}"
         tabbed = self.query_one(TabbedContent)
-        tabbed.add_pane(TabPane(label, id=tab_id))
+        tabbed.add_pane(TabPane(title, id=tab_id))
         tabbed.active = tab_id
 
     def remove_tab(self, team: str, agent: str) -> None:
