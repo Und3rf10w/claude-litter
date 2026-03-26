@@ -41,6 +41,9 @@ class SessionTabBar(Widget):
         height: auto;
         dock: top;
     }
+    SessionTabBar ContentSwitcher {
+        height: 0;
+    }
     """
 
     class TabActivated(Message):
