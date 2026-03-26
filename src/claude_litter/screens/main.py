@@ -685,8 +685,10 @@ class MainScreen(Screen):
             config = self._team_service.get_team(name)
             if config is not None:
                 agents = []
+                known_names: set[str] = set()
                 for m in config.get("members", []):
                     agent_name = m.get("name", "?")
+                    known_names.add(agent_name)
                     try:
                         inbox = self._team_service.read_inbox(name, agent_name)
                         unread = sum(1 for msg in inbox if not msg.get("read", False))
@@ -703,6 +705,40 @@ class MainScreen(Screen):
                     agents.append(agent_dict)
                     # Cache full member info for header display
                     member_info[(name, agent_name)] = m
+
+                # Discover agents from team-lead inbox idle_notifications
+                # that aren't in config.json (spawned in later iterations)
+                lead_name = ""
+                if config.get("members"):
+                    lead_name = config["members"][0].get("name", "")
+                if lead_name:
+                    try:
+                        lead_inbox = self._team_service.read_inbox(name, lead_name)
+                        for msg in lead_inbox:
+                            text = msg.get("text", "")
+                            if "idle_notification" not in text:
+                                continue
+                            try:
+                                inner = json.loads(text)
+                                from_agent = inner.get("from", "")
+                                if from_agent and from_agent not in known_names:
+                                    known_names.add(from_agent)
+                                    agents.append({
+                                        "name": from_agent,
+                                        "model": "",
+                                        "agentType": "",
+                                        "color": "",
+                                        "cwd": config["members"][0].get("cwd", "") if config.get("members") else "",
+                                        "unread": 0,
+                                    })
+                                    member_info[(name, from_agent)] = {
+                                        "name": from_agent,
+                                        "cwd": config["members"][0].get("cwd", "") if config.get("members") else "",
+                                    }
+                            except (json.JSONDecodeError, TypeError):
+                                continue
+                    except Exception:
+                        pass
                 has_active = any(m.get("status") == "active" for m in config.get("members", []))
                 # If no member has an explicit status, infer from team-level status
                 # or treat as active when members exist (swarm-spawned agents
