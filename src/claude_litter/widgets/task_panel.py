@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from textual.app import ComposeResult
 from textual.message import Message
 from textual.widget import Widget
@@ -13,7 +15,7 @@ from textual.containers import Horizontal, Vertical
 _ICONS = {
     "pending": "○",
     "in_progress": "●",
-    "blocked": "🔒",
+    "blocked": "\U0001f512",
     "completed": "✓",
 }
 
@@ -24,6 +26,100 @@ _STATUS_CLASSES = {
     "blocked": "task-blocked",
     "completed": "task-completed",
 }
+
+
+def _resolve_blocks(tasks: list[dict]) -> list[dict]:
+    """Auto-resolve stale blockedBy references.
+
+    If all tasks in a task's ``blockedBy`` list are completed, clear the
+    ``blockedBy`` so the task is no longer shown as blocked.  Dependencies
+    pointing to tasks not in the current list are kept (they may exist
+    outside the current filter).
+    """
+    status_map = {t.get("id", ""): t.get("status", "") for t in tasks}
+    resolved = []
+    for t in tasks:
+        blocked_by = t.get("blockedBy", [])
+        if blocked_by:
+            still_blocking = [
+                bid for bid in blocked_by
+                if bid not in status_map or status_map[bid] != "completed"
+            ]
+            if not still_blocking:
+                t = {**t, "blockedBy": []}
+            elif len(still_blocking) < len(blocked_by):
+                t = {**t, "blockedBy": still_blocking}
+        resolved.append(t)
+    return resolved
+
+
+def _topo_sort(tasks: list[dict]) -> list[dict]:
+    """Topological sort: roots first, dependents later.
+
+    Falls back to ID order for tasks at the same depth.
+    Uses Kahn's algorithm.
+    """
+    by_id: dict[str, dict] = {t.get("id", ""): t for t in tasks}
+    ids = list(by_id.keys())
+
+    # Build adjacency: task A blocks task B → edge A→B
+    children: dict[str, list[str]] = defaultdict(list)
+    in_degree: dict[str, int] = {tid: 0 for tid in ids}
+    for t in tasks:
+        for dep in t.get("blockedBy", []):
+            if dep in by_id:
+                children[dep].append(t.get("id", ""))
+                in_degree[t.get("id", "")] = in_degree.get(t.get("id", ""), 0) + 1
+
+    # Kahn's: start with roots (in_degree 0), ordered by int(id)
+    def _id_key(tid: str) -> int:
+        try:
+            return int(tid)
+        except (ValueError, TypeError):
+            return 0
+
+    queue = sorted([tid for tid in ids if in_degree[tid] == 0], key=_id_key)
+    result: list[dict] = []
+    while queue:
+        tid = queue.pop(0)
+        result.append(by_id[tid])
+        for child in sorted(children[tid], key=_id_key):
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+                queue.sort(key=_id_key)
+
+    # Append any remaining (cycles) in ID order
+    seen = {t.get("id") for t in result}
+    for tid in sorted(ids, key=_id_key):
+        if tid not in seen:
+            result.append(by_id[tid])
+
+    return result
+
+
+def _compute_depths(tasks: list[dict]) -> dict[str, int]:
+    """Compute the depth of each task in the dependency tree (0 = root)."""
+    by_id = {t.get("id", ""): t for t in tasks}
+    depths: dict[str, int] = {}
+
+    def _depth(tid: str) -> int:
+        if tid in depths:
+            return depths[tid]
+        depths[tid] = 0  # cycle guard
+        t = by_id.get(tid)
+        if not t:
+            return 0
+        blocked_by = t.get("blockedBy", [])
+        if not blocked_by:
+            depths[tid] = 0
+        else:
+            depths[tid] = 1 + max(_depth(b) for b in blocked_by if b in by_id)
+        return depths[tid]
+
+    for t in tasks:
+        _depth(t.get("id", ""))
+    return depths
 
 DEFAULT_CSS = """
 TaskPanel {
@@ -103,9 +199,10 @@ class TaskSelected(Message):
 class _TaskItem(ListItem):
     """A single task row."""
 
-    def __init__(self, task: dict) -> None:
+    def __init__(self, task: dict, depth: int = 0) -> None:
         super().__init__()
         self._task_data = task
+        self._depth = depth
 
     def compose(self) -> ComposeResult:
         task = self._task_data
@@ -124,9 +221,12 @@ class _TaskItem(ListItem):
         owner = task.get("owner", "")
         task_id = task.get("id", "")
 
-        label_text = f"{icon} [{task_id}] {subject}"
+        indent = "  " * self._depth
+        label_text = f"{indent}{icon} [{task_id}] {subject}"
         if owner:
             label_text += f" ({owner})"
+        if blocked_by:
+            label_text += f" \u2190 #{', #'.join(blocked_by)}"
 
         label = Label(label_text, classes=f"task-item {css_class}", markup=False)
         yield label
@@ -196,11 +296,13 @@ class TaskPanel(Widget):
             yield Button("ID", id="sort-id", variant="primary")
             yield Button("Status", id="sort-status")
             yield Button("Owner", id="sort-owner")
+            yield Button("Deps", id="sort-deps")
         with Vertical(classes="task-list-container"):
             yield ListView(id="task-list")
 
     def _get_filtered_sorted_tasks(self) -> list[dict]:
-        tasks = list(self._all_tasks)
+        # Auto-resolve stale blockedBy references
+        tasks = _resolve_blocks(list(self._all_tasks))
 
         # Apply filter
         if self._filter is not None:
@@ -217,6 +319,9 @@ class TaskPanel(Widget):
                 ]
 
         # Apply sort
+        if self._sort_by == "deps":
+            return _topo_sort(tasks)
+
         def sort_key(t: dict):
             if self._sort_by == "id":
                 try:
@@ -238,8 +343,11 @@ class TaskPanel(Widget):
     def _refresh_list(self) -> None:
         task_list = self.query_one("#task-list", ListView)
         task_list.clear()
-        for task in self._get_filtered_sorted_tasks():
-            task_list.append(_TaskItem(task))
+        tasks = self._get_filtered_sorted_tasks()
+        depths = _compute_depths(tasks) if self._sort_by == "deps" else {}
+        for task in tasks:
+            depth = depths.get(task.get("id", ""), 0) if depths else 0
+            task_list.append(_TaskItem(task, depth=depth))
         # Append agent todos if present
         if self._all_todos:
             task_list.append(ListItem(Label("── Agent Todos ──", classes="task-panel-title")))
@@ -289,6 +397,7 @@ class TaskPanel(Widget):
             "sort-id": "id",
             "sort-status": "status",
             "sort-owner": "owner",
+            "sort-deps": "deps",
         }
         if button_id in sort_map:
             self._sort_by = sort_map[button_id]
