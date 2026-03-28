@@ -616,7 +616,7 @@ class MainScreen(Screen):
         broadcast: list[dict] = []
         for msg in messages:
             text = msg.get("text", "")
-            display_text = self._format_inbox_text(text)
+            display_text = self._format_inbox_text(text, truncate=False)
             if display_text == "":  # skip idle notifications
                 continue
             entry = {**msg, "text": display_text}
@@ -633,9 +633,11 @@ class MainScreen(Screen):
         if not self._active_agent_key or self._active_agent_key == _MAIN_CHAT_KEY:
             return
         team, agent = self._active_agent_key
-        # TODO: send_message() calls _acquire_lock() which uses time.sleep().
-        # This runs on the main event loop thread. Should be moved to a @work worker.
-        self._team_service.send_message(team, event.to, agent, event.text)
+        if event.broadcast:
+            count = self._team_service.broadcast_message(team, agent, event.text)
+            self.notify(f"Broadcast sent to {count} agent(s)")
+        else:
+            self._team_service.send_message(team, event.to, agent, event.text)
         # Refresh the panel to show the sent message
         self._update_message_panel(team, agent)
 
@@ -977,7 +979,7 @@ class MainScreen(Screen):
             sv.append_output(f"[dim]No history found for {agent}[/dim]\n")
 
     @staticmethod
-    def _format_inbox_text(text: str) -> str:
+    def _format_inbox_text(text: str, *, truncate: bool = True) -> str:
         """Parse structured JSON messages into readable text; pass plain text through."""
         if not text.startswith("{"):
             return text
@@ -992,7 +994,10 @@ class MainScreen(Screen):
             subj = parsed.get("subject", "")
             desc = parsed.get("description", "")
             tid = parsed.get("taskId", "")
-            preview = (desc[:200] + "...") if len(desc) > 200 else desc
+            if truncate:
+                preview = (desc[:200] + "...") if len(desc) > 200 else desc
+            else:
+                preview = desc
             return f"[Task #{tid}] {subj}\n  {preview}"
         if msg_type == "task_completed":
             return f"Task #{parsed.get('taskId', '?')} completed: {parsed.get('subject', '')}"
@@ -1001,9 +1006,9 @@ class MainScreen(Screen):
         if msg_type == "shutdown_response":
             approved = parsed.get("approve", False)
             return f"Shutdown {'approved' if approved else 'rejected'}: {parsed.get('reason', '')}"
-        # Fallback: show type + truncated content
+        # Fallback: show type + content
         content = json.dumps(parsed, indent=2)
-        if len(content) > 300:
+        if truncate and len(content) > 300:
             content = content[:300] + "..."
         safe_type = (msg_type or "json").replace("[", "\\[")
         safe_content = content.replace("[", "\\[")

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, Label, ListView, Select, Static
+from textual.widgets import Button, Input, Label, ListView, Select, Static, Checkbox, Collapsible, TabbedContent, TextArea
+from textual.containers import VerticalScroll
 
 from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
 from claude_litter.widgets.message_panel import MessagePanel, MessageComposed
@@ -213,14 +214,14 @@ class TestMessagePanel:
 
     @pytest.mark.anyio
     async def test_update_messages_populates_list(self):
-        """update_messages() fills the ListView."""
+        """update_messages() fills the inbox with Collapsible items."""
         app = MessagePanelApp()
         async with app.run_test() as pilot:
             panel = app.query_one("#panel", MessagePanel)
             panel.update_messages(SAMPLE_MESSAGES)
             await pilot.pause()
-            msg_list = panel.query_one("#msg-list", ListView)
-            assert len(msg_list) == len(SAMPLE_MESSAGES)
+            inbox = panel.query_one("#inbox-list", VerticalScroll)
+            assert len(list(inbox.query(Collapsible))) == len(SAMPLE_MESSAGES)
 
     @pytest.mark.anyio
     async def test_toggle_visibility(self):
@@ -246,6 +247,17 @@ class TestMessagePanel:
             assert "alice" in str(title.content)
 
     @pytest.mark.anyio
+    async def test_set_agent_updates_from_label(self):
+        """set_agent() updates the compose From label."""
+        app = MessagePanelApp()
+        async with app.run_test() as pilot:
+            panel = app.query_one("#panel", MessagePanel)
+            panel.set_agent("my-team", "alice")
+            await pilot.pause()
+            from_label = panel.query_one("#compose-from-label", Label)
+            assert "alice" in str(from_label.content)
+
+    @pytest.mark.anyio
     async def test_compose_fires_message_composed(self):
         """Filling compose form and pressing Send fires MessageComposed."""
         app = MessagePanelApp()
@@ -257,8 +269,8 @@ class TestMessagePanel:
             await pilot.pause()
 
             # Set values directly then trigger button press
-            text_input = panel.query_one("#compose-text", Input)
-            text_input.value = "Hello Alice!"
+            text_area = panel.query_one("#compose-text", TextArea)
+            text_area.load_text("Hello Alice!")
 
             to_select = panel.query_one("#compose-to", Select)
             to_select.value = "alice"
@@ -283,48 +295,97 @@ class TestMessagePanel:
             panel.toggle()
             await pilot.pause()
 
-            text_input = panel.query_one("#compose-text", Input)
-            text_input.value = "No recipient"
+            text_area = panel.query_one("#compose-text", TextArea)
+            text_area.load_text("No recipient")
             await pilot.pause()
 
-            await pilot.click("#send-btn")
+            send_btn = panel.query_one("#send-btn", Button)
+            panel.on_button_pressed(Button.Pressed(send_btn))
             await pilot.pause()
 
             assert len(app.captured_composed) == 0
 
     @pytest.mark.anyio
-    async def test_view_toggle_broadcast(self):
-        """Switching to broadcast shows broadcast messages (empty by default)."""
+    async def test_broadcast_messages_appear_in_inbox(self):
+        """Broadcast messages are merged into the inbox list."""
         app = MessagePanelApp()
         async with app.run_test() as pilot:
             panel = app.query_one("#panel", MessagePanel)
             panel.update_messages(SAMPLE_MESSAGES)
+            panel.update_messages(
+                [{"from": "system", "text": "Broadcast msg", "timestamp": "11:00", "read": True}],
+                broadcast=True,
+            )
             await pilot.pause()
 
-            # Switch to broadcast view directly
-            panel._show_broadcasts = True
-            panel._refresh_list()
-            await pilot.pause()
-
-            msg_list = panel.query_one("#msg-list", ListView)
-            assert len(msg_list) == 0
+            # All messages (2 inbox + 1 broadcast) in the single inbox list
+            inbox = panel.query_one("#inbox-list", VerticalScroll)
+            assert len(list(inbox.query(Collapsible))) == 3
 
     @pytest.mark.anyio
-    async def test_view_toggle_inbox(self):
-        """Switching back to inbox shows inbox messages."""
+    async def test_unread_message_has_indicator(self):
+        """Unread messages get the msg-unread CSS class."""
         app = MessagePanelApp()
         async with app.run_test() as pilot:
             panel = app.query_one("#panel", MessagePanel)
             panel.update_messages(SAMPLE_MESSAGES)
             await pilot.pause()
 
-            panel._show_broadcasts = True
-            panel._refresh_list()
+            inbox = panel.query_one("#inbox-list", VerticalScroll)
+            collapsibles = list(inbox.query(Collapsible))
+            # Second message (bob) is unread
+            assert collapsibles[1].has_class("msg-unread")
+            # First message (alice) is read
+            assert not collapsibles[0].has_class("msg-unread")
+
+    @pytest.mark.anyio
+    async def test_has_tabbed_content(self):
+        """Panel has TabbedContent with Inbox and Send tabs."""
+        app = MessagePanelApp()
+        async with app.run_test() as pilot:
+            panel = app.query_one("#panel", MessagePanel)
+            tabs = panel.query_one("#msg-tabs", TabbedContent)
+            assert tabs is not None
+
+    @pytest.mark.anyio
+    async def test_broadcast_checkbox_disables_to(self):
+        """Checking broadcast disables the To dropdown."""
+        app = MessagePanelApp()
+        async with app.run_test() as pilot:
+            panel = app.query_one("#panel", MessagePanel)
+            panel.set_known_agents(["alice", "bob"])
+            panel.set_agent("my-team", "carol")
             await pilot.pause()
 
-            panel._show_broadcasts = False
-            panel._refresh_list()
+            select = panel.query_one("#compose-to", Select)
+            assert not select.disabled
+
+            cb = panel.query_one("#compose-broadcast", Checkbox)
+            cb.value = True
             await pilot.pause()
 
-            msg_list = panel.query_one("#msg-list", ListView)
-            assert len(msg_list) == len(SAMPLE_MESSAGES)
+            assert select.disabled
+
+    @pytest.mark.anyio
+    async def test_broadcast_send_fires_with_broadcast_flag(self):
+        """Sending with broadcast checkbox fires MessageComposed with broadcast=True."""
+        app = MessagePanelApp()
+        async with app.run_test() as pilot:
+            panel = app.query_one("#panel", MessagePanel)
+            panel.set_agent("my-team", "carol")
+            await pilot.pause()
+
+            cb = panel.query_one("#compose-broadcast", Checkbox)
+            cb.value = True
+
+            text_area = panel.query_one("#compose-text", TextArea)
+            text_area.load_text("Hello everyone!")
+            await pilot.pause()
+
+            send_btn = panel.query_one("#send-btn", Button)
+            panel.on_button_pressed(Button.Pressed(send_btn))
+            await pilot.pause()
+
+            assert len(app.captured_composed) == 1
+            assert app.captured_composed[0].broadcast is True
+            assert app.captured_composed[0].text == "Hello everyone!"

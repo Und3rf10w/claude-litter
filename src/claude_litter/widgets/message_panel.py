@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+from rich.markdown import Markdown
+from rich.markup import escape as rich_escape
+
 from textual.app import ComposeResult
+from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
-from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Collapsible,
+    Label,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+    TextArea,
+)
 
 
 DEFAULT_CSS = """
@@ -33,46 +46,63 @@ MessagePanel .msg-panel-title {
     padding: 0 1;
 }
 
-MessagePanel .msg-view-toggle {
-    height: 3;
-    background: $panel;
-    padding: 0 1;
+MessagePanel #msg-tabs {
+    height: 1fr;
 }
 
 MessagePanel .msg-list-container {
     height: 1fr;
 }
 
-MessagePanel .msg-item {
-    padding: 0 1;
+MessagePanel CollapsibleTitle {
+    width: 1fr;
+}
+
+MessagePanel Collapsible {
     border-bottom: solid $panel;
-    min-height: 4;
+    padding: 0;
+    background: $surface;
 }
 
-MessagePanel .msg-item-unread {
+MessagePanel .msg-unread > CollapsibleTitle {
+    text-style: bold;
     background: $boost;
-    text-style: bold;
 }
 
-MessagePanel .msg-sender {
-    text-style: bold;
-}
-
-MessagePanel .msg-timestamp {
+MessagePanel .msg-detail-header {
     color: $text-muted;
+    padding: 0 1;
+    height: auto;
+    width: 1fr;
+}
+
+MessagePanel .msg-text {
+    width: 1fr;
+    padding: 0 1;
 }
 
 MessagePanel .msg-compose {
-    height: auto;
-    max-height: 8;
-    background: $panel;
+    height: 1fr;
     padding: 1;
-    border-top: solid $primary;
 }
 
-MessagePanel .compose-row {
+MessagePanel .compose-from {
+    color: $text-muted;
+    height: 1;
+}
+
+MessagePanel #compose-to {
     height: 3;
-    margin-bottom: 1;
+}
+
+MessagePanel #compose-text {
+    height: 1fr;
+    min-height: 3;
+}
+
+MessagePanel #send-btn {
+    width: 100%;
+    margin-top: 1;
 }
 """
 
@@ -80,41 +110,58 @@ MessagePanel .compose-row {
 class MessageComposed(Message):
     """Fired when user sends a message."""
 
-    def __init__(self, to: str, text: str) -> None:
+    def __init__(self, to: str, text: str, *, broadcast: bool = False) -> None:
         super().__init__()
         self.to = to
         self.text = text
+        self.broadcast = broadcast
 
 
-class _MessageItem(ListItem):
-    """A single message row."""
+def _make_message_collapsible(msg: dict) -> Collapsible:
+    """Build a Collapsible widget for a single inbox/broadcast message."""
+    sender = msg.get("from", msg.get("sender", "unknown"))
+    text = msg.get("text", msg.get("message", ""))
+    timestamp = msg.get("timestamp", msg.get("time", ""))
+    read = msg.get("read", False)
+    summary = msg.get("summary", "")
 
-    def __init__(self, msg: dict) -> None:
-        super().__init__()
-        self._msg_data = msg
+    # Build collapsed title: unread dot + sender + summary/preview
+    unread_dot = "\u25cf " if not read else ""
+    safe_sender = rich_escape(sender)
+    preview = summary or (text[:80] + "\u2026" if len(text) > 80 else text)
+    # Replace newlines in preview for a single-line title
+    preview = preview.replace("\n", " ").strip()
+    safe_preview = rich_escape(preview)
+    title = f"{unread_dot}[bold]{safe_sender}[/bold]: {safe_preview}"
 
-    def compose(self) -> ComposeResult:
-        sender = self._msg_data.get("from", self._msg_data.get("sender", "unknown"))
-        text = self._msg_data.get("text", self._msg_data.get("message", ""))
-        timestamp = self._msg_data.get("timestamp", self._msg_data.get("time", ""))
-        read = self._msg_data.get("read", False)
+    # Build expanded content
+    meta_parts = [f"From: {sender}"]
+    if timestamp:
+        meta_parts.append(timestamp)
+    meta_parts.append("read" if read else "unread")
+    meta_label = Label("  |  ".join(meta_parts), classes="msg-detail-header", markup=False)
 
-        item_class = "msg-item"
-        if not read:
-            item_class += " msg-item-unread"
+    children: list[Widget] = [meta_label]
+    if text.strip():
+        try:
+            renderable: str | Markdown = Markdown(text)
+        except Exception:
+            renderable = text
+        children.append(Static(renderable, classes="msg-text", markup=False))
 
-        with Vertical(classes=item_class):
-            with Horizontal():
-                yield Label(sender, classes="msg-sender", markup=False)
-                if timestamp:
-                    yield Label(f"  {timestamp}", classes="msg-timestamp", markup=False)
-            yield Label(text, markup=False)
+    classes = "msg-unread" if not read else ""
+    return Collapsible(
+        *children,
+        title=title,
+        collapsed=True,
+        classes=classes,
+    )
 
 
 class MessagePanel(Widget):
-    """Slide-out message panel from the right side of the screen.
+    """Slide-out message panel with tabbed Inbox/Send views.
 
-    Shows inbox or broadcast feed, with a compose form at the bottom.
+    Shows collapsible message items for reading, and a compose form for sending.
     Posts MessageComposed messages when user sends.
     """
 
@@ -124,7 +171,6 @@ class MessagePanel(Widget):
         super().__init__(**kwargs)
         self._all_messages: list[dict] = []
         self._broadcast_messages: list[dict] = []
-        self._show_broadcasts: bool = False
         self._visible: bool = False
         self._team: str = ""
         self._agent: str = ""
@@ -132,32 +178,34 @@ class MessagePanel(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("Messages", classes="msg-panel-title")
-        with Horizontal(classes="msg-view-toggle"):
-            yield Button("Inbox", id="view-inbox", variant="primary")
-            yield Button("Broadcast", id="view-broadcast")
-        with Vertical(classes="msg-list-container"):
-            yield ListView(id="msg-list")
-        with Vertical(classes="msg-compose"):
-            yield Label("Compose")
-            with Horizontal(classes="compose-row"):
-                yield Select(
-                    options=[],
-                    prompt="To...",
-                    id="compose-to",
-                    allow_blank=True,
-                )
-            with Horizontal(classes="compose-row"):
-                yield Input(placeholder="Message...", id="compose-text")
-                yield Button("Send", id="send-btn", variant="primary")
+        with TabbedContent(id="msg-tabs"):
+            with TabPane("Inbox", id="tab-inbox"):
+                yield VerticalScroll(id="inbox-list", classes="msg-list-container")
+            with TabPane("Send", id="tab-send"):
+                with Vertical(classes="msg-compose"):
+                    yield Label("From:", id="compose-from-label", classes="compose-from")
+                    yield Checkbox("Broadcast to all", id="compose-broadcast")
+                    yield Select(
+                        options=[],
+                        prompt="To...",
+                        id="compose-to",
+                        allow_blank=True,
+                    )
+                    yield TextArea("", id="compose-text")
+                    yield Button("Send", id="send-btn", variant="primary")
 
     def _refresh_list(self) -> None:
-        msg_list = self.query_one("#msg-list", ListView)
-        msg_list.clear()
-        messages = (
-            self._broadcast_messages if self._show_broadcasts else self._all_messages
-        )
-        for msg in messages:
-            msg_list.append(_MessageItem(msg))
+        try:
+            inbox = self.query_one("#inbox-list", VerticalScroll)
+        except Exception:
+            return  # not mounted yet
+
+        inbox.remove_children()
+        # Show broadcast messages first (if any), then regular inbox
+        for msg in self._broadcast_messages:
+            inbox.mount(_make_message_collapsible(msg))
+        for msg in self._all_messages:
+            inbox.mount(_make_message_collapsible(msg))
 
     def update_messages(self, messages: list, *, broadcast: bool = False) -> None:
         """Refresh the inbox or broadcast list with new messages.
@@ -181,9 +229,13 @@ class MessagePanel(Widget):
         """Switch whose inbox to display."""
         self._team = team
         self._agent = agent
-        self.query_one(".msg-panel-title", Static).update(
-            f"Messages — {agent}"
-        )
+        try:
+            self.query_one(".msg-panel-title", Static).update(
+                f"Messages \u2014 {agent}"
+            )
+            self.query_one("#compose-from-label", Label).update(f"From: {agent}")
+        except Exception:
+            pass  # not yet mounted
 
     def _update_to_dropdown(self) -> None:
         """Refresh the To dropdown with known agents."""
@@ -196,26 +248,28 @@ class MessagePanel(Widget):
         self._known_agents = agents
         self._update_to_dropdown()
 
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "compose-broadcast":
+            select = self.query_one("#compose-to", Select)
+            select.disabled = event.value
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        button_id = event.button.id
-
-        if button_id == "view-inbox":
-            self._show_broadcasts = False
-            self.query_one("#view-inbox", Button).variant = "primary"
-            self.query_one("#view-broadcast", Button).variant = "default"
-            self._refresh_list()
-
-        elif button_id == "view-broadcast":
-            self._show_broadcasts = True
-            self.query_one("#view-inbox", Button).variant = "default"
-            self.query_one("#view-broadcast", Button).variant = "primary"
-            self._refresh_list()
-
-        elif button_id == "send-btn":
+        if event.button.id == "send-btn":
+            broadcast_cb = self.query_one("#compose-broadcast", Checkbox)
             to_select = self.query_one("#compose-to", Select)
-            text_input = self.query_one("#compose-text", Input)
-            to_value = str(to_select.value) if to_select.value is not None and to_select.value != Select.BLANK else ""
-            text_value = text_input.value.strip()
-            if to_value and text_value:
-                self.post_message(MessageComposed(to=to_value, text=text_value))
-                text_input.value = ""
+            text_area = self.query_one("#compose-text", TextArea)
+            text_value = text_area.text.strip()
+            if not text_value:
+                return
+
+            if broadcast_cb.value:
+                self.post_message(
+                    MessageComposed(to="", text=text_value, broadcast=True)
+                )
+                text_area.clear()
+            else:
+                raw = to_select.value
+                to_value = str(raw) if isinstance(raw, str) else ""
+                if to_value:
+                    self.post_message(MessageComposed(to=to_value, text=text_value))
+                    text_area.clear()

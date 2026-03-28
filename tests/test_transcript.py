@@ -26,7 +26,7 @@ def _mock_sv() -> MagicMock:
     sv = MagicMock()
     sv._output_history = []
 
-    def _append(text: str):
+    def _append(text: str, **kwargs):
         sv._output_history.append(text)
 
     sv.append_output.side_effect = _append
