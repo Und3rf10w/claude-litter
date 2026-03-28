@@ -1,0 +1,11 @@
+{
+  "name": "swarm-loop",
+  "description": "Orchestrated multi-agent loops with profile-based modes. Default: persistent Teams for complex implementation. Deepplan: multi-agent planning with explore/synthesize/critique/deliver. Async: background agent orchestration for independent parallel tasks. Decomposes complex tasks into parallel subtasks, spawns agent teams, tracks progress via native TaskCreate/TaskList, and dynamically re-plans each iteration until verified completion.",
+  "version": "1.0.0",
+  "author": {
+    "name": "und3rf10w",
+    "email": "oemail@example.com"
+  },
+  "license": "private",
+  "keywords": ["ralph", "ralph wiggum", "ralph-loop", "swarm", "team", "orchestration", "deepplan", "async", "profiles", "planning", "background-agents"]
+}

@@ -180,6 +180,3 @@ anyio.run(main)
 "
 ```
 
-### Dev scripts
-
-The `dev/` directory contains ad-hoc developer scripts for live SDK testing and debugging (not part of the test suite).

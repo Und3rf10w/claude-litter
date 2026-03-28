@@ -141,7 +141,7 @@ class TeamSidebar(Widget):
 
         # Add "Main Chat" entry at the top
         tree.root.add_leaf(
-            "[bold]> Main Chat[/bold]",
+            "[bold]> Litter Overlord[/bold]",
             data={"type": "main_chat"},
         )
 

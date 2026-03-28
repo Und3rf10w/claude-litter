@@ -5,7 +5,7 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "Claude Code Agent Team/Swarm Management Layer"
   },
   "plugins": [
@@ -27,6 +27,17 @@
         "coordination",
         "tasks"
       ]
+    },
+    {
+      "name": "swarm-loop",
+      "source": "./plugins/swarm-loop",
+      "description": "Orchestrated multi-agent loops with profile-based modes. Default: persistent Teams for complex implementation. Deepplan: multi-agent planning with explore/synthesize/critique/deliver. Async: background agent orchestration for independent parallel tasks. Decomposes complex tasks into parallel subtasks, spawns agent teams, tracks progress via native TaskCreate/TaskList, and dynamically re-plans each iteration until verified completion.",
+      "author": {
+        "name": "Und3rf10w"
+      },
+      "version": "1.0.0",
+      "keywords": ["ralph", "ralph wiggum", "ralph-loop", "swarm", "team", "orchestration", "deepplan", "async", "profiles", "planning"],
+      "category": "automation"
     }
   ]
 }

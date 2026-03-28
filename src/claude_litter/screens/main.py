@@ -46,7 +46,7 @@ Teams are read from [dim]~/.claude/teams/[/dim]
 """
 
 # Key used for the main (default) chat session
-_MAIN_CHAT_KEY = ("", "Main Chat")
+_MAIN_CHAT_KEY = ("", "Litter Overlord")
 
 # Team-overlord plugin path and config
 _PLUGIN_PATH = str(Path(__file__).resolve().parents[3] / "plugins" / "team-overlord")
@@ -257,9 +257,9 @@ class MainScreen(Screen):
         sv = self.query_one("#session-view", SessionView)
         sv.append_output("[dim]Connecting to agent...[/dim]\n")
         self._connect_default_agent()
-        # Add the permanent "Main Chat" tab
+        # Add the permanent "Litter Overlord" tab
         tab_bar = self.query_one("#tab-bar", SessionTabBar)
-        tab_bar.add_tab("", "Main Chat")
+        tab_bar.add_tab("", "Litter Overlord")
         # Focus the input bar so the user can start typing immediately
         self.query_one("#prompt-input").focus()
         # Populate the sidebar with any existing teams
@@ -342,7 +342,7 @@ class MainScreen(Screen):
         self._dispatch_prompt(full_cmd, None)
 
     def _build_team_context(self) -> str:
-        """Build a context block describing active teams and agents for Main Chat."""
+        """Build a context block describing active teams and agents for Litter Overlord Chat."""
         team_names = self._team_service.list_teams()
         if not team_names:
             return ""
@@ -849,7 +849,7 @@ class MainScreen(Screen):
             sv._set_idle()
 
         # Activate the Main Chat tab
-        tab_bar.add_tab("", "Main Chat")
+        tab_bar.add_tab("", "Litter Overlord")
         self._active_agent_key = key
 
         # Replay main chat buffer

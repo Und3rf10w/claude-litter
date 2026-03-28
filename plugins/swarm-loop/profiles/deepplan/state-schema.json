@@ -1,0 +1,10 @@
+{
+  "model": null,
+  "user_feedback": null,
+  "rejection_count": 0,
+  "exploration_agent_count": 3,
+  "critique_max_revisions": 2,
+  "findings_complete": { "architecture": false, "file_discovery": false, "risk_analysis": false },
+  "has_draft": false,
+  "has_critique": false
+}
