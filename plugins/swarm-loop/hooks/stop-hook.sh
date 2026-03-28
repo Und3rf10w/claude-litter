@@ -3,10 +3,10 @@
 # Swarm Loop Stop Hook
 # The heartbeat of the swarm-loop system.
 # On each Stop event, this hook:
-#   1. Reads structured state from .claude/swarm-loop.local.state.json
+#   1. Discovers the active instance for this session via instance-lib.sh
 #   2. Checks if the completion promise was fulfilled
 #   3. Runs verification if promise detected
-#   4. Checks for sentinel file (.claude/swarm-loop.local.next-iteration)
+#   4. Checks for sentinel file (<instance-dir>/next-iteration)
 #      - Sentinel present: consume it and re-inject orchestrator prompt
 #      - Sentinel absent + stop_hook_active=true: allow idle (prevents starving teammate messages)
 #      - Sentinel absent + stop_hook_active=false: check for timeout, force re-inject if exceeded
@@ -24,9 +24,19 @@ fi
 # Read hook input from stdin
 HOOK_INPUT=$(cat)
 
-STATE_FILE=".claude/swarm-loop.local.state.json"
-LOG_FILE=".claude/swarm-loop.local.log.md"
-SENTINEL=".claude/swarm-loop.local.next-iteration"
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+
+# Bail early if subagent
+HOOK_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // ""')
+if [[ -n "$HOOK_AGENT_ID" ]]; then
+  exit 0
+fi
+
+HOOK_SESSION=$(echo "$HOOK_INPUT" | jq -r '.session_id // ""')
+if ! discover_instance "$HOOK_SESSION"; then
+  exit 0
+fi
 
 # Read stop_hook_active — true if the hook already blocked on the previous turn.
 # Used to prevent sentinel timeout from re-firing immediately after a forced re-inject,
@@ -34,19 +44,9 @@ SENTINEL=".claude/swarm-loop.local.next-iteration"
 STOP_HOOK_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false')
 
 # Clean up orphaned temp files on unexpected exit
-trap 'rm -f "${STATE_FILE}.tmp.$$" ".claude/settings.local.json.tmp.$$"' EXIT
-
-# If this is a subagent/teammate (not the orchestrator), do not interfere.
-# Plugin Stop hooks are converted to SubagentStop for teammates — bail out early.
-HOOK_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // ""')
-if [[ -n "$HOOK_AGENT_ID" ]]; then
-  exit 0
-fi
-
-# No active swarm loop — allow exit
-if [[ ! -f "$STATE_FILE" ]]; then
-  exit 0
-fi
+# PROJECT_ROOT is set by discover_instance from CLAUDE_PROJECT_DIR
+_settings_tmp="${PROJECT_ROOT}/.claude/settings.local.json.tmp.$$"
+trap 'rm -f "${STATE_FILE}.tmp.$$" "'"$_settings_tmp"'"' EXIT
 
 # Read and cache the state file to avoid repeated disk reads
 STATE_JSON=$(cat "$STATE_FILE" 2>/dev/null)
@@ -55,33 +55,6 @@ STATE_JSON=$(cat "$STATE_FILE" 2>/dev/null)
 if [[ -z "$STATE_JSON" ]] || ! echo "$STATE_JSON" | jq empty 2>/dev/null; then
   echo "⚠️  Swarm loop: State file is empty or corrupt — cleaning up" >&2
   rm -f "$STATE_FILE"
-  exit 0
-fi
-
-# Session isolation: only the session that started the loop should be looped
-STATE_SESSION=$(echo "$STATE_JSON" | jq -r '.session_id // ""')
-HOOK_SESSION=$(echo "$HOOK_INPUT" | jq -r '.session_id // ""')
-
-# A session_id starting with "swarm-" is a generated placeholder from setup
-# (CLAUDE_CODE_SESSION_ID was unavailable). Replace it with the real session_id.
-IS_PLACEHOLDER=false
-if [[ "$STATE_SESSION" == swarm-* ]]; then
-  IS_PLACEHOLDER=true
-fi
-
-if { [[ -z "$STATE_SESSION" ]] || [[ "$IS_PLACEHOLDER" == true ]]; } && [[ -n "$HOOK_SESSION" ]]; then
-  # Backfill: lock the loop to the first session that triggers the hook.
-  TEMP_FILE="${STATE_FILE}.tmp.$$"
-  jq --arg sid "$HOOK_SESSION" '.session_id = $sid' "$STATE_FILE" > "$TEMP_FILE"
-  if [[ -s "$TEMP_FILE" ]]; then
-    mv "$TEMP_FILE" "$STATE_FILE"
-  else
-    rm -f "$TEMP_FILE"
-  fi
-  STATE_SESSION="$HOOK_SESSION"
-  # Re-cache after update
-  STATE_JSON=$(cat "$STATE_FILE" 2>/dev/null)
-elif [[ -n "$STATE_SESSION" ]] && [[ "$IS_PLACEHOLDER" == false ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
   exit 0
 fi
 
@@ -101,11 +74,10 @@ TEAMMATES_ISOLATION=$(echo "$STATE_JSON" | jq -r '.teammates_isolation // "share
 TEAMMATES_MAX_COUNT=$(echo "$STATE_JSON" | jq -r '.teammates_max_count // 8')
 PERMISSION_FAILURES=$(echo "$STATE_JSON" | jq '[.permission_failures[]?] | length' 2>/dev/null || echo "0")
 AUTONOMY_HEALTH=$(echo "$STATE_JSON" | jq -r '.autonomy_health // "healthy"')
-SENTINEL_TIMEOUT=$(echo "$STATE_JSON" | jq -r '.sentinel_timeout // 300')
+SENTINEL_TIMEOUT=$(echo "$STATE_JSON" | jq -r '.sentinel_timeout // 600')
 
 # Load profile
 MODE=$(echo "$STATE_JSON" | jq -r '.mode // "default"')
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/profile-lib.sh"
 load_profile "$MODE" "$_PLUGIN_ROOT"
 MODE="$RESOLVED_MODE"
@@ -172,39 +144,44 @@ if [[ "$COMPLETION_DETECTED" == "true" ]]; then
   echo "Finished at: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
 
   rm -f "$STATE_FILE"
-  rm -f .claude/swarm-loop.local.verify.sh
-  rm -f .claude/swarm-loop.local.heartbeat.json
+  rm -f "${INSTANCE_DIR}/verify.sh"
+  rm -f "$HEARTBEAT_FILE"
   rm -f "$SENTINEL"
+  rm -f "${INSTANCE_DIR}"/.idle-retry.*
+  rm -f "${INSTANCE_DIR}/progress.jsonl"
 
-  # Clean up deepplan intermediate files (preserve .claude/deepplan.local.plan.md)
+  # Clean up deepplan intermediate files (preserve deepplan plan.md)
   if [[ "$MODE" == "deepplan" ]]; then
-    rm -f .claude/deepplan.local.findings.arch.md
-    rm -f .claude/deepplan.local.findings.files.md
-    rm -f .claude/deepplan.local.findings.risk.md
-    rm -f .claude/deepplan.local.draft.md
-    rm -f .claude/deepplan.local.critique.pragmatist.md
-    rm -f .claude/deepplan.local.critique.strategist.md
+    rm -f "${INSTANCE_DIR}/deepplan."*
   fi
 
   # Restore original settings.local.json from backup
-  SETTINGS_LOCAL=".claude/settings.local.json"
-  if [[ -f "${SETTINGS_LOCAL}.swarm-backup" ]]; then
-    mv "${SETTINGS_LOCAL}.swarm-backup" "$SETTINGS_LOCAL"
-  elif [[ -f "$SETTINGS_LOCAL" ]]; then
-    jq '
-      .permissions.allow = ([.permissions.allow[]? | select(test("swarm-loop|deepplan") | not)] | unique) |
-      if .hooks then
-        .hooks |= with_entries(
-          .value = [.value[]? | select(._swarm != true)] |
-          select(.value | length > 0)
-        ) |
-        if (.hooks | length) == 0 then del(.hooks) else . end
-      else . end
-    ' "$SETTINGS_LOCAL" > "${SETTINGS_LOCAL}.tmp.$$"
-    if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
-      mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
-    else
-      rm -f "${SETTINGS_LOCAL}.tmp.$$"
+  # Only restore settings if this is the last active instance
+  _remaining=0
+  _swarm_root="$(dirname "$INSTANCE_DIR")"
+  for _sf in "${_swarm_root}"/*/state.json; do
+    [[ -f "$_sf" ]] && [[ "$_sf" != "$STATE_FILE" ]] && _remaining=$((_remaining + 1))
+  done
+  if [[ $_remaining -eq 0 ]]; then
+    SETTINGS_LOCAL="${PROJECT_ROOT}/.claude/settings.local.json"
+    if [[ -f "${SETTINGS_LOCAL}.swarm-backup" ]]; then
+      mv "${SETTINGS_LOCAL}.swarm-backup" "$SETTINGS_LOCAL"
+    elif [[ -f "$SETTINGS_LOCAL" ]]; then
+      jq '
+        .permissions.allow = ([.permissions.allow[]? | select(test("swarm-loop|deepplan") | not)] | unique) |
+        if .hooks then
+          .hooks |= with_entries(
+            .value = [.value[]? | select(._swarm != true)] |
+            select(.value | length > 0)
+          ) |
+          if (.hooks | length) == 0 then del(.hooks) else . end
+        else . end
+      ' "$SETTINGS_LOCAL" > "${SETTINGS_LOCAL}.tmp.$$"
+      if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
+        mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
+      else
+        rm -f "${SETTINGS_LOCAL}.tmp.$$"
+      fi
     fi
   fi
 
@@ -262,12 +239,50 @@ else
         NOW_SECS=$(date +%s)
         AGE_SECS=$((NOW_SECS - LAST_UPDATE_SECS))
         if [[ $AGE_SECS -gt $SENTINEL_TIMEOUT ]]; then
-          echo "⚠️  Swarm loop: No sentinel after ${AGE_SECS}s (timeout=${SENTINEL_TIMEOUT}s). Forcing re-inject." >&2
+          # Before force-re-injecting, check if teammates still have in_progress tasks.
+          # If so, they're legitimately working — reset the clock and allow idle instead.
+          TEAMMATES_WORKING=false
+          if [[ -n "$TEAM_NAME" ]]; then
+            _sanitized_team=$(printf '%s' "$TEAM_NAME" | sed 's/[^a-zA-Z0-9_-]/-/g')
+            _task_dir="$HOME/.claude/tasks/${_sanitized_team}"
+            if [[ -d "$_task_dir" ]]; then
+              for _tf in "${_task_dir}"/*.json; do
+                [[ -f "$_tf" ]] || continue
+                _tf_status=$(jq -r '.status // ""' "$_tf" 2>/dev/null) || continue
+                if [[ "$_tf_status" == "in_progress" ]]; then
+                  TEAMMATES_WORKING=true
+                  break
+                fi
+              done
+            fi
+          fi
+
+          if [[ "$TEAMMATES_WORKING" == "true" ]]; then
+            # Teammates still working — reset last_updated to extend the timeout window
+            # and allow idle so teammate messages can be delivered.
+            _TEMP="${STATE_FILE}.tmp.$$"
+            jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+               '.last_updated = $now' "$STATE_FILE" > "$_TEMP" 2>/dev/null
+            if [[ -s "$_TEMP" ]]; then
+              mv "$_TEMP" "$STATE_FILE"
+            else
+              rm -f "$_TEMP"
+            fi
+            echo "⚠️  Swarm loop: Sentinel timeout (${AGE_SECS}s) but teammates still have in_progress tasks. Resetting clock." >&2
+            exit 0
+          fi
+
+          echo "⚠️  Swarm loop: No sentinel after ${AGE_SECS}s (timeout=${SENTINEL_TIMEOUT}s). No in_progress tasks. Forcing re-inject." >&2
           FORCE_REINJECT=true
           STUCK_TIMEOUT_MSG="
-⚠️ SENTINEL TIMEOUT: The orchestrator has not signaled readiness for the next iteration in ${AGE_SECS} seconds (timeout=${SENTINEL_TIMEOUT}s).
-This usually means the orchestrator is still waiting for teammate messages, or got stuck.
-If teammates are still working, continue monitoring. If you are ready to proceed, Write .claude/swarm-loop.local.next-iteration (Write tool, empty content)."
+⚠️ SENTINEL TIMEOUT (${AGE_SECS}s, threshold=${SENTINEL_TIMEOUT}s). This is NOT a new iteration — the iteration counter has NOT advanced.
+No teammates have in_progress tasks — the orchestrator appears stuck.
+Action required:
+  1. Call TaskList to check task status
+  2. If all tasks are completed → proceed to VERIFY and then write the sentinel
+  3. If tasks are pending/blocked → spawn teammates or unblock dependencies
+  4. If a teammate failed silently → mark its task completed and reassign
+Do NOT output the completion promise while any tasks are still in_progress."
         fi
       fi
     fi
@@ -276,10 +291,19 @@ If teammates are still working, continue monitoring. If you are ready to proceed
   if [[ "$FORCE_REINJECT" != "true" ]]; then
     # Allow idle — teammates may still be delivering messages.
     # Write heartbeat with team_active status.
-    # Read progress from progress_history (v2 — tasks are in native system, not state file)
-    LAST_PROGRESS=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
-    TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
-    TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+    # Read progress from progress.jsonl (v3), fall back to state.json progress_history (v2)
+    TASKS_COMPLETED=0
+    TASKS_TOTAL=0
+    if [[ -f "${INSTANCE_DIR}/progress.jsonl" ]] && [[ -s "${INSTANCE_DIR}/progress.jsonl" ]]; then
+      # Use jq -s to handle both compact (single-line) and pretty-printed (multi-line) JSON entries
+      LAST_PROGRESS=$(jq -s '.[-1] // {}' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "{}")
+      TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+      TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+    else
+      LAST_PROGRESS=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
+      TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+      TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+    fi
     jq -n \
       --argjson iteration "$ITERATION" \
       --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -293,19 +317,34 @@ If teammates are still working, continue monitoring. If you are ready to proceed
       --argjson permission_failure_count "$PERMISSION_FAILURES" \
       --argjson sentinel_timeout "$SENTINEL_TIMEOUT" \
       '{iteration: $iteration, timestamp: $timestamp, tasks_completed: $tasks_completed, tasks_total: $tasks_total, phase: $phase, last_tool: $last_tool, goal: $goal, team_name: $team_name, team_active: true, autonomy_health: $autonomy_health, permission_failure_count: $permission_failure_count, sentinel_timeout: $sentinel_timeout}' \
-      > .claude/swarm-loop.local.heartbeat.json 2>/dev/null || true
+      > "$HEARTBEAT_FILE" 2>/dev/null || true
     exit 0
   fi
 fi
 
 # Not complete — continue the loop
-NEXT_ITERATION=$((ITERATION + 1))
+# Only increment iteration if the sentinel was consumed (real iteration boundary).
+# Timeout re-injects stay at the same iteration — they're recovery, not progress.
+if [[ -n "$STUCK_TIMEOUT_MSG" ]]; then
+  NEXT_ITERATION=$ITERATION
+else
+  NEXT_ITERATION=$((ITERATION + 1))
+fi
 
 # Write heartbeat file for external monitoring (CI, watch scripts, dashboards)
-# Read progress from progress_history (v2 — tasks are in native system, not state file)
-LAST_PROGRESS_RE=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
-TASKS_COMPLETED=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
-TASKS_TOTAL=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+# Read progress from progress.jsonl (v3), fall back to state.json progress_history (v2)
+TASKS_COMPLETED=0
+TASKS_TOTAL=0
+if [[ -f "${INSTANCE_DIR}/progress.jsonl" ]] && [[ -s "${INSTANCE_DIR}/progress.jsonl" ]]; then
+  # Use jq -s to handle both compact (single-line) and pretty-printed (multi-line) JSON entries
+  LAST_PROGRESS_RE=$(jq -s '.[-1] // {}' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "{}")
+  TASKS_COMPLETED=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+  TASKS_TOTAL=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+else
+  LAST_PROGRESS_RE=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
+  TASKS_COMPLETED=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+  TASKS_TOTAL=$(echo "$LAST_PROGRESS_RE" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+fi
 PHASE=$(echo "$STATE_JSON" | jq -r '.phase // "working"')
 jq -n \
   --argjson iteration "$NEXT_ITERATION" \
@@ -331,28 +370,47 @@ jq -n \
     autonomy_health: $autonomy_health,
     permission_failure_count: $permission_failure_count,
     sentinel_timeout: $sentinel_timeout
-  }' > .claude/swarm-loop.local.heartbeat.json 2>/dev/null || true
+  }' > "$HEARTBEAT_FILE" 2>/dev/null || true
 
-# Stuck detection: check if tasks_completed is unchanged across the last 3 iterations.
+# Stuck detection: check if tasks_completed is unchanged across the last 3 progress entries.
+# Reads from progress.jsonl (append-only, written by task-completed-gate.sh).
+# Falls back to state.json progress_history for backwards compatibility.
 # unique count == 1 means all three values are identical (no progress). The select(. > 0)
 # guard avoids false positives when history is sparse or all entries report zero tasks.
 STUCK_MSG=""
+PROGRESS_JSONL="${INSTANCE_DIR}/progress.jsonl"
 if [[ $ITERATION -ge 3 ]]; then
-  HISTORY_LEN=$(echo "$STATE_JSON" | jq -r '.progress_history | length' 2>/dev/null || echo "0")
-  if [[ "$HISTORY_LEN" -ge 3 ]]; then
-    PREV_COMPLETED=$(echo "$STATE_JSON" | jq -r '
-      .progress_history[-3:] | map(.tasks_completed // 0) |
-      if (map(select(. > 0)) | length) == 0 then 0
-      else (unique | length) end
-    ' 2>/dev/null || echo "0")
-    if [[ "$PREV_COMPLETED" == "1" ]]; then
-      STUCK_MSG="
+  HISTORY_LEN=0
+  PREV_COMPLETED="0"
+  if [[ -f "$PROGRESS_JSONL" ]] && [[ -s "$PROGRESS_JSONL" ]]; then
+    # Use jq -s to handle both compact and pretty-printed entries
+    HISTORY_LEN=$(jq -s 'length' "$PROGRESS_JSONL" 2>/dev/null || echo "0")
+    HISTORY_LEN=${HISTORY_LEN:-0}
+    if [[ "$HISTORY_LEN" -ge 3 ]]; then
+      PREV_COMPLETED=$(jq -s '
+        .[-3:] | map(.tasks_completed // 0) |
+        if (map(select(. > 0)) | length) == 0 then 0
+        else (unique | length) end
+      ' "$PROGRESS_JSONL" 2>/dev/null || echo "0")
+    fi
+  else
+    # Fallback to state.json progress_history (backwards compat)
+    HISTORY_LEN=$(echo "$STATE_JSON" | jq -r '.progress_history | length' 2>/dev/null || echo "0")
+    if [[ "$HISTORY_LEN" -ge 3 ]]; then
+      PREV_COMPLETED=$(echo "$STATE_JSON" | jq -r '
+        .progress_history[-3:] | map(.tasks_completed // 0) |
+        if (map(select(. > 0)) | length) == 0 then 0
+        else (unique | length) end
+      ' 2>/dev/null || echo "0")
+    fi
+  fi
+  if [[ "$PREV_COMPLETED" == "1" ]]; then
+    STUCK_MSG="
 ⚠️ STUCK DETECTION: No task progress in the last 3 iterations. Consider:
   - Changing your decomposition strategy
   - Tackling a different subtask first
   - Simplifying the current approach
   - Investigating what's blocking progress"
-    fi
   fi
 fi
 

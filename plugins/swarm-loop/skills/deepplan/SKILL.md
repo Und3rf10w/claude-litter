@@ -1,7 +1,7 @@
 ---
 description: "Deep multi-agent planning session (alias for /swarm-loop --mode deepplan)"
 argument-hint: "<planning prompt> --completion-promise 'TEXT'"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh:*)", "Edit(.claude/swarm-loop.local.*)", "Write(.claude/swarm-loop.local.*)", "Read(.claude/swarm-loop.local.*)", "Edit(.claude/deepplan.local.*)", "Write(.claude/deepplan.local.*)", "Read(.claude/deepplan.local.*)", "Read", "Grep", "Glob", "Bash", "Agent", "EnterPlanMode", "ExitPlanMode", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "AskUserQuestion"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh:*)", "Edit(.claude/swarm-loop/**)", "Write(.claude/swarm-loop/**)", "Read(.claude/swarm-loop/**)", "Edit(.claude/swarm-loop.local.md)", "Write(.claude/swarm-loop.local.md)", "Read(.claude/swarm-loop.local.md)", "Read", "Grep", "Glob", "Bash", "Agent", "EnterPlanMode", "ExitPlanMode", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "AskUserQuestion"]
 ---
 
 # Deepplan Command

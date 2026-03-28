@@ -26,7 +26,7 @@ load_profile() {
 # Requires these env vars to be set before calling:
 #   GOAL_SAFE, PROMISE_SAFE, TEAM_NAME, ITERATION,
 #   TEAMMATES_ISOLATION, TEAMMATES_MAX_COUNT,
-#   WORKTREE_NOTE, COMPACT_NOTE
+#   WORKTREE_NOTE, COMPACT_NOTE, INSTANCE_DIR
 # Outputs the substituted string to stdout.
 substitute_profile_template() {
   local tmpl="$1"
@@ -34,6 +34,7 @@ substitute_profile_template() {
     TEAM_NAME="$TEAM_NAME" ITERATION="$ITERATION" \
     TEAMMATES_ISOLATION="$TEAMMATES_ISOLATION" TEAMMATES_MAX_COUNT="$TEAMMATES_MAX_COUNT" \
     WORKTREE_NOTE="$WORKTREE_NOTE" COMPACT_NOTE="$COMPACT_NOTE" \
+    INSTANCE_DIR="$INSTANCE_DIR" \
     perl -0777 -pe '
       s/\{\{GOAL\}\}/$ENV{GOAL_SAFE}/g;
       s/\{\{PROMISE\}\}/$ENV{PROMISE_SAFE}/g;
@@ -43,5 +44,6 @@ substitute_profile_template() {
       s/\{\{TEAMMATES_MAX_COUNT\}\}/$ENV{TEAMMATES_MAX_COUNT}/g;
       s/\{\{WORKTREE_NOTE\}\}/$ENV{WORKTREE_NOTE}/g;
       s/\{\{COMPACT_NOTE\}\}/$ENV{COMPACT_NOTE}/g;
+      s/\{\{INSTANCE_DIR\}\}/$ENV{INSTANCE_DIR}/g;
     '
 }

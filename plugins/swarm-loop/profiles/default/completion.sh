@@ -6,8 +6,8 @@
 # Inputs (env vars set by stop-hook.sh):
 #   LAST_OUTPUT          — last assistant message text
 #   COMPLETION_PROMISE   — normalized promise string (whitespace-collapsed)
-#   STATE_FILE           — path to swarm-loop.local.state.json
-#   LOG_FILE             — path to swarm-loop.local.log.md
+#   STATE_FILE           — path to instance state.json
+#   LOG_FILE             — path to instance log.md
 #   STATE_JSON           — cached contents of STATE_FILE
 #   ITERATION            — current iteration number (numeric)
 #
@@ -35,11 +35,11 @@ check_completion() {
   fi
 
   # Promise matched — run verification
-  # Check project-local verify script first, then plugin default
+  # Check instance-local verify script first, then plugin default
   _plugin_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
-  if [[ -x ".claude/swarm-loop.local.verify.sh" ]]; then
-    VERIFY_SCRIPT=".claude/swarm-loop.local.verify.sh"
+  if [[ -n "${INSTANCE_DIR:-}" ]] && [[ -x "${INSTANCE_DIR}/verify.sh" ]]; then
+    VERIFY_SCRIPT="${INSTANCE_DIR}/verify.sh"
   else
     VERIFY_SCRIPT="${_plugin_root}/scripts/verify-completion.sh"
   fi
@@ -78,7 +78,7 @@ check_completion() {
 Verification output:
 ${VERIFY_RESULT}
 
-Re-read .claude/swarm-loop.local.state.json and .claude/swarm-loop.local.log.md for full context. Continue working on the goal.
+Re-read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md for full context. Continue working on the goal.
 
 When the goal is fully achieved, output exactly: <promise>${COMPLETION_PROMISE}</promise>"
       return

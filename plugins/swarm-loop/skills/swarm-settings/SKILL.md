@@ -14,7 +14,7 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 | Setting | Current Value | Description |
 |---|---|---|
 | compact_on_iteration | false | Run /compact at end of each iteration |
-| sentinel_timeout | 300 | Seconds before force re-inject if orchestrator stuck |
+| sentinel_timeout | 600 | Seconds before force re-inject if orchestrator stuck |
 | classifier.enabled | true | Enable safety classifier for Bash commands |
 | classifier.model | sonnet | Model for classifier (haiku, sonnet, opus) |
 | classifier.effort | auto | Effort level (low, medium, high, max, auto) |
@@ -32,7 +32,7 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 ```yaml
 ---
 compact_on_iteration: false
-sentinel_timeout: 300
+sentinel_timeout: 600
 classifier:
   enabled: true
   model: sonnet
@@ -49,6 +49,6 @@ notifications:
 ---
 ```
 
-5. Note: Changes take effect on the NEXT `/swarm-loop` start, not the current running loop. To change settings for a running loop, edit `.claude/swarm-loop.local.state.json` directly.
+5. Note: Changes take effect on the NEXT `/swarm-loop` start, not the current running loop. To change settings for a running loop, edit the instance state file (`.claude/swarm-loop/<id>/state.json`) directly.
 
 6. If classifier.effort is set to a specific level (low/medium/high/max — not auto), the PreToolUse hook uses `claude -p --bare --effort <level>` (command hook) instead of a native prompt hook. Valid effort levels: `low`, `medium`, `high`, `max` (opus only), `auto`.

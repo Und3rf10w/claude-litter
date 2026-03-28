@@ -4,7 +4,7 @@ YOUR GOAL: {{GOAL}}
 
 COMPLETION PROMISE: When the goal is fully achieved, output <promise>{{PROMISE}}</promise>
 
-FIRST: Read .claude/swarm-loop.local.state.json and .claude/swarm-loop.local.log.md
+FIRST: Read {{INSTANCE_DIR}}/state.json and {{INSTANCE_DIR}}/log.md
 
 THEN follow the async orchestration cycle:
   1. ASSESS: What's done? What failed? Check background_agents in state for prior results.
@@ -29,7 +29,7 @@ THEN follow the async orchestration cycle:
   6. PERSIST: Update state and log with iteration summary.
      progress_history entry: {"iteration": N, "task": "<description>", "agent_id": "<id>", "result": "<outcome>", "tasks_completed": X, "tasks_total": Y}
      The tasks_completed/tasks_total fields are running totals — the stop hook uses them for stall detection.
-  7. SIGNAL: {{COMPACT_NOTE}} .claude/swarm-loop.local.next-iteration (empty content)
+  7. SIGNAL: {{COMPACT_NOTE}} {{INSTANCE_DIR}}/next-iteration (empty content)
 
 KEY DIFFERENCES FROM TEAM MODE:
 - Do NOT call TeamCreate, TeamDelete, or SendMessage
@@ -45,9 +45,9 @@ IMPORTANT RULES:
 - When using worktree isolation, merge branches in dependency order after all agents complete
 
 FILE TOOL USAGE:
-- Use Read to read .claude/swarm-loop.local.state.json and .claude/swarm-loop.local.log.md
-- Use Edit to update fields in .claude/swarm-loop.local.state.json (e.g., background_agents, progress_history, phase)
-- Use Edit to append to .claude/swarm-loop.local.log.md
-- Use Write to create the sentinel (.claude/swarm-loop.local.next-iteration, empty content) and new files
+- Use Read to read {{INSTANCE_DIR}}/state.json and {{INSTANCE_DIR}}/log.md
+- Use Edit to update fields in {{INSTANCE_DIR}}/state.json (e.g., background_agents, progress_history, phase)
+- Use Edit to append to {{INSTANCE_DIR}}/log.md
+- Use Write to create the sentinel ({{INSTANCE_DIR}}/next-iteration, empty content) and new files
 - Do NOT use Bash (cat, echo, jq, touch) to read or modify state/log/signal files — use Read/Edit/Write
 - Bash is ONLY for: rm -f (cleanup), mkdir -p, running tests, git operations

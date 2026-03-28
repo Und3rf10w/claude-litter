@@ -6,7 +6,18 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh\"",
-            "timeout": 300000
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/teammate-idle-gate.sh\"",
+            "timeout": 30
           }
         ]
       }

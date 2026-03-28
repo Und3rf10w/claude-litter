@@ -5,8 +5,8 @@
 # Inputs (env vars set by stop-hook.sh):
 #   LAST_OUTPUT          — last assistant message text
 #   COMPLETION_PROMISE   — normalized promise string (whitespace-collapsed)
-#   STATE_FILE           — path to swarm-loop.local.state.json
-#   LOG_FILE             — path to swarm-loop.local.log.md
+#   STATE_FILE           — path to instance state.json
+#   LOG_FILE             — path to instance log.md
 #   STATE_JSON           — cached contents of STATE_FILE
 #   ITERATION            — current iteration number (numeric)
 #
@@ -52,7 +52,7 @@ check_completion() {
       # Only signal re-inject if sentinel was NOT written (missed sentinel case).
       # If sentinel exists, the shared stop-hook sentinel logic will handle it
       # with the full PROFILE.md re-inject prompt — much richer than a one-liner.
-      if [[ ! -f ".claude/swarm-loop.local.next-iteration" ]]; then
+      if [[ ! -f "$SENTINEL" ]]; then
         COMPLETION_BLOCK_REASON="User rejected the plan. Re-read state for feedback and revise."
       fi
       ;;

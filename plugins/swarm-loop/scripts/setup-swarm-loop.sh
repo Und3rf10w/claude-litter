@@ -44,7 +44,7 @@ DESCRIPTION:
     2. Decomposes remaining work into parallel subtasks using native TaskCreate
     3. Sends work to teammates in the persistent team (created once for entire loop)
     4. Monitors teammate messages, persists results immediately, and re-plans
-    5. Writes .claude/swarm-loop.local.next-iteration sentinel to signal iteration complete
+    5. Writes the instance sentinel file to signal iteration complete
     6. Repeats until the completion promise is genuinely fulfilled
 
   The completion promise is the ONLY exit mechanism. There is no max-iterations.
@@ -56,10 +56,10 @@ EXAMPLES:
   /swarm-loop Migrate to TypeScript --completion-promise 'All files converted' --soft-budget 20
 
 MONITORING:
-  /swarm-status                    View current progress
-  cat .claude/swarm-loop.local.state.json  Raw state
-  cat .claude/swarm-loop.local.log.md      Narrative history
-  /cancel-swarm                     Stop the loop
+  /swarm-status                               View current progress
+  cat .claude/swarm-loop/<id>/state.json      Raw state
+  cat .claude/swarm-loop/<id>/log.md          Narrative history
+  /cancel-swarm                               Stop the loop
 
 CONFIGURATION:
   /swarm-settings                  View/edit loop configuration (.claude/swarm-loop.local.md)
@@ -133,26 +133,59 @@ done
 
 GOAL="${PROMPT_PARTS[*]:-}"
 
+# ── Prompt-file helpers ──────────────────────────────────────────
+# Strip surrounding single or double quotes from a value, with leading/trailing whitespace trim.
+_strip_quotes() {
+  local val="$1"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  if [[ "$val" =~ ^\'(.*)\'$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  elif [[ "$val" =~ ^\"(.*)\"$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Pre-process a prompt file so that known flags land on their own lines.
+# $ARGUMENTS often arrives as a single line with the goal and flags concatenated.
+# The line-oriented parser below only matches flags at line-start, so we split them.
+_preprocess_prompt_file() {
+  local file="$1"
+  perl -0777 -pe '
+    s/\r//g;
+    my $flag_re = "completion-promise|soft-budget|safe-mode|verify|mode";
+    s/[^\S\n]+(--(?:$flag_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
 # If --prompt-file was given, read the file and extract flags + goal from its content.
 # Lines starting with -- are parsed as flags. Everything else is the goal text.
 # This avoids shell expansion issues with multiline/special-char prompts.
 if [[ -n "$PROMPT_FILE" ]]; then
+  _preprocess_prompt_file "$PROMPT_FILE"
   _goal_lines=()
   while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line//$'\r'/}"
     case "$_line" in
-      --completion-promise\ *)  COMPLETION_PROMISE="${_line#--completion-promise }" ;;
-      --completion-promise=*)   COMPLETION_PROMISE="${_line#--completion-promise=}" ;;
+      --completion-promise\ *)  COMPLETION_PROMISE="$(_strip_quotes "${_line#--completion-promise }")" ;;
+      --completion-promise=*)   COMPLETION_PROMISE="$(_strip_quotes "${_line#--completion-promise=}")" ;;
       --soft-budget\ *)         SOFT_BUDGET="${_line#--soft-budget }" ;;
-      --verify\ *)              VERIFY_CMD="${_line#--verify }" ;;
+      --soft-budget=*)          SOFT_BUDGET="${_line#--soft-budget=}" ;;
+      --verify\ *)              VERIFY_CMD="$(_strip_quotes "${_line#--verify }")" ;;
+      --verify=*)               VERIFY_CMD="$(_strip_quotes "${_line#--verify=}")" ;;
       --safe-mode\ *)           SAFE_MODE="${_line#--safe-mode }" ;;
+      --safe-mode=*)            SAFE_MODE="${_line#--safe-mode=}" ;;
       --mode\ *)                MODE="${_line#--mode }" ;;
+      --mode=*)                 MODE="${_line#--mode=}" ;;
       --*)                      ;;  # skip unknown flags
-      *)                        _goal_lines+=("$_line") ;;
+      *)                        [[ -n "$_line" ]] && _goal_lines+=("$_line") ;;
     esac
   done < "$PROMPT_FILE"
   rm -f "$PROMPT_FILE"
   # Join goal lines with newlines (preserves multiline markdown)
-  GOAL="$(printf '%s\n' "${_goal_lines[@]}")"
+  GOAL="$(printf '%s\n' "${_goal_lines[@]+"${_goal_lines[@]}"}")"
   # Trim trailing newline
   GOAL="${GOAL%$'\n'}"
 fi
@@ -184,6 +217,12 @@ fi
 # Create state directory
 mkdir -p .claude
 
+# Resolve session ID early — needed for duplicate instance detection below.
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+if [[ -z "$SESSION_ID" ]]; then
+  SESSION_ID="swarm-$(head -c 8 /dev/urandom | od -A n -t x1 | tr -d ' \n')-$(date +%s)"
+fi
+
 # Guard against concurrent loops — use a lockfile with noclobber for atomic check-and-create.
 # This prevents TOCTOU races where two invocations could both pass a simple -f check.
 LOCKFILE=".claude/swarm-loop.local.lock"
@@ -199,19 +238,23 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
     fi
   else
     # Lock is held by a live process, or state file indicates active loop
-    if [[ -f ".claude/swarm-loop.local.state.json" ]]; then
-      EXISTING_GOAL=$(jq -r '.goal // "unknown"' .claude/swarm-loop.local.state.json 2>/dev/null)
-      EXISTING_ITER=$(jq -r '.iteration // "?"' .claude/swarm-loop.local.state.json 2>/dev/null)
-      echo "Error: A swarm loop is already active!" >&2
-      echo "" >&2
-      echo "   Goal: $EXISTING_GOAL" >&2
-      echo "   Iteration: $EXISTING_ITER" >&2
-      echo "" >&2
-      echo "   To stop it first: /cancel-swarm" >&2
-      echo "   To check status:  /swarm-status" >&2
-    else
-      echo "Error: Another swarm loop is being set up concurrently" >&2
-    fi
+    for _sf in .claude/swarm-loop/*/state.json; do
+      [[ -f "$_sf" ]] || continue
+      _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
+      if [[ "$_existing_session" == "$SESSION_ID" ]]; then
+        EXISTING_GOAL=$(jq -r '.goal // "unknown"' "$_sf" 2>/dev/null)
+        EXISTING_ITER=$(jq -r '.iteration // "?"' "$_sf" 2>/dev/null)
+        echo "Error: A swarm loop is already active for this session!" >&2
+        echo "" >&2
+        echo "   Goal: $EXISTING_GOAL" >&2
+        echo "   Iteration: $EXISTING_ITER" >&2
+        echo "" >&2
+        echo "   To stop it first: /cancel-swarm" >&2
+        echo "   To check status:  /swarm-status" >&2
+        exit 1
+      fi
+    done
+    echo "Error: Another swarm loop is being set up concurrently" >&2
     exit 1
   fi
 fi
@@ -220,35 +263,33 @@ fi
 # itself — after setup completes, the state file's existence prevents concurrent loops.
 # A crashed setup that never writes the state file will have its lock cleaned up by the
 # trap, leaving no stale lock — the state-file check (below) is the authoritative guard.
-trap 'rm -f "$LOCKFILE" ".claude/swarm-loop.local.state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"' EXIT
+trap 'rm -f "$LOCKFILE" ".claude/settings.local.json.tmp.$$"' EXIT
 
 # Also check if state file already exists (lockfile was stale from a crashed setup)
-if [[ -f ".claude/swarm-loop.local.state.json" ]]; then
-  EXISTING_GOAL=$(jq -r '.goal // "unknown"' .claude/swarm-loop.local.state.json 2>/dev/null)
-  EXISTING_ITER=$(jq -r '.iteration // "?"' .claude/swarm-loop.local.state.json 2>/dev/null)
-  echo "Error: A swarm loop is already active!" >&2
-  echo "" >&2
-  echo "   Goal: $EXISTING_GOAL" >&2
-  echo "   Iteration: $EXISTING_ITER" >&2
-  echo "" >&2
-  echo "   To stop it first: /cancel-swarm" >&2
-  echo "   To check status:  /swarm-status" >&2
-  exit 1
-fi
+for _sf in .claude/swarm-loop/*/state.json; do
+  [[ -f "$_sf" ]] || continue
+  _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
+  if [[ "$_existing_session" == "$SESSION_ID" ]]; then
+    EXISTING_GOAL=$(jq -r '.goal // "unknown"' "$_sf" 2>/dev/null)
+    EXISTING_ITER=$(jq -r '.iteration // "?"' "$_sf" 2>/dev/null)
+    echo "Error: A swarm loop is already active for this session!" >&2
+    echo "" >&2
+    echo "   Goal: $EXISTING_GOAL" >&2
+    echo "   Iteration: $EXISTING_ITER" >&2
+    echo "" >&2
+    echo "   To stop it first: /cancel-swarm" >&2
+    echo "   To check status:  /swarm-status" >&2
+    exit 1
+  fi
+done
 
-# Clean up stale deepplan intermediate files from prior runs
-rm -f .claude/deepplan.local.findings.arch.md
-rm -f .claude/deepplan.local.findings.files.md
-rm -f .claude/deepplan.local.findings.risk.md
-rm -f .claude/deepplan.local.draft.md
-rm -f .claude/deepplan.local.critique.pragmatist.md
-rm -f .claude/deepplan.local.critique.strategist.md
+# Stale instance-dir cleanup happens after INSTANCE_DIR is derived below
 
 # Read optional config from .claude/swarm-loop.local.md
 # Parse YAML frontmatter values using grep/sed — no yq dependency
 LOCAL_CONFIG=".claude/swarm-loop.local.md"
 COMPACT_ON_ITERATION="false"
-SENTINEL_TIMEOUT=300
+SENTINEL_TIMEOUT=600
 CLASSIFIER_ENABLED="true"
 CLASSIFIER_MODEL="sonnet"
 CLASSIFIER_EFFORT="auto"
@@ -331,11 +372,23 @@ fi
 # Create structured state file (v2 schema — no tasks[], no agent_results[])
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Use CLAUDE_CODE_SESSION_ID if available, otherwise generate a fallback.
-# A non-empty session_id is critical for isolating the loop to the originating session.
-SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
-if [[ -z "$SESSION_ID" ]]; then
-  SESSION_ID="swarm-$(head -c 8 /dev/urandom | od -A n -t x1 | tr -d ' \n')-$(date +%s)"
+# Generate instance ID: first 8 hex chars of sha256(session_id)
+# SESSION_ID was resolved earlier (before lockfile acquisition) for duplicate detection.
+INSTANCE_ID=$(printf '%s' "$SESSION_ID" | shasum -a 256 2>/dev/null || printf '%s' "$SESSION_ID" | sha256sum 2>/dev/null)
+INSTANCE_ID="${INSTANCE_ID:0:8}"
+if [[ ! "$INSTANCE_ID" =~ ^[0-9a-f]{8}$ ]]; then
+  INSTANCE_ID=$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+fi
+
+INSTANCE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/swarm-loop/${INSTANCE_ID}"
+mkdir -p "$INSTANCE_DIR"
+
+# Extend trap to cover instance-specific temp files now that INSTANCE_DIR is known
+trap 'rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"' EXIT
+
+# Clean up stale instance directory for this session if it exists from a crashed previous run
+if [[ -d "$INSTANCE_DIR" ]]; then
+  rm -f "${INSTANCE_DIR}/deepplan."*
 fi
 
 # Derive team_name from goal for use with TeamCreate
@@ -363,6 +416,7 @@ jq -n \
   --argjson budget "$SOFT_BUDGET" \
   --arg verify "$VERIFY_CMD" \
   --arg session "$SESSION_ID" \
+  --arg instance_id "$INSTANCE_ID" \
   --arg started "$NOW" \
   --arg now "$NOW" \
   --arg team "$TEAM_NAME" \
@@ -380,6 +434,7 @@ jq -n \
     "soft_budget": $budget,
     "verify_command": $verify,
     "session_id": $session,
+    "instance_id": $instance_id,
     "iteration": 1,
     "phase": "initial",
     "started_at": $started,
@@ -393,38 +448,34 @@ jq -n \
     "permission_failures": [],
     "autonomy_health": "healthy",
     "progress_history": []
-  }' > ".claude/swarm-loop.local.state.json.tmp.$$"
-mv ".claude/swarm-loop.local.state.json.tmp.$$" .claude/swarm-loop.local.state.json
+  }' > "${INSTANCE_DIR}/state.json.tmp.$$"
+mv "${INSTANCE_DIR}/state.json.tmp.$$" "${INSTANCE_DIR}/state.json"
 
 # Merge profile state extensions (if any)
 PROFILE_SCHEMA="${PROFILE_DIR}/state-schema.json"
 if [[ -f "$PROFILE_SCHEMA" ]] && [[ -s "$PROFILE_SCHEMA" ]]; then
   _schema_content=$(cat "$PROFILE_SCHEMA")
   if [[ "$_schema_content" != "{}" ]]; then
-    jq -s '.[0] * .[1]' .claude/swarm-loop.local.state.json "$PROFILE_SCHEMA" > ".claude/swarm-loop.local.state.json.tmp.$$"
-    if [[ -s ".claude/swarm-loop.local.state.json.tmp.$$" ]]; then
-      mv ".claude/swarm-loop.local.state.json.tmp.$$" .claude/swarm-loop.local.state.json
+    jq -s '.[0] * .[1]' "${INSTANCE_DIR}/state.json" "$PROFILE_SCHEMA" > "${INSTANCE_DIR}/state.json.tmp.$$"
+    if [[ -s "${INSTANCE_DIR}/state.json.tmp.$$" ]]; then
+      mv "${INSTANCE_DIR}/state.json.tmp.$$" "${INSTANCE_DIR}/state.json"
     else
-      rm -f ".claude/swarm-loop.local.state.json.tmp.$$"
+      rm -f "${INSTANCE_DIR}/state.json.tmp.$$"
     fi
   fi
 fi
 
-# Create narrative log
-cat > .claude/swarm-loop.local.log.md <<EOF
-# Swarm Loop Log
+# Create narrative log (use printf to avoid shell expansion of user-controlled content)
+{
+  printf '%s\n' "# Swarm Loop Log" ""
+  printf '**Goal:** %s\n' "$GOAL"
+  printf '**Completion Promise:** `%s`\n' "$COMPLETION_PROMISE"
+  printf '**Started:** %s\n' "$NOW"
+  printf '%s\n' "" "---" "" "## Iteration 1 — Initial Assessment" "" "*(Orchestrator will write the first entry here)*" ""
+} > "${INSTANCE_DIR}/log.md"
 
-**Goal:** $GOAL
-**Completion Promise:** \`$COMPLETION_PROMISE\`
-**Started:** $NOW
-
----
-
-## Iteration 1 — Initial Assessment
-
-*(Orchestrator will write the first entry here)*
-
-EOF
+# Initialize progress.jsonl for append-only progress tracking (used by TaskCompleted gate hook)
+touch "${INSTANCE_DIR}/progress.jsonl"
 
 # Build settings.local.json with hook-based safety.
 # Replaces the v1 defaultMode: acceptEdits approach.
@@ -467,7 +518,7 @@ if [[ "$CLASSIFIER_EFFORT" != "auto" ]] && [[ "$CLASSIFIER_EFFORT" != "null" ]];
   esac
 fi
 
-CLASSIFIER_SYSTEM_PROMPT="You are a safety classifier for a swarm loop orchestrator. Your job is to evaluate bash commands and block dangerous ones. A command is DANGEROUS if it: deletes files/directories outside .claude/, force-pushes git branches, drops databases, kills system processes, modifies system files, or exfiltrates data. A command is SAFE if it: reads files, runs tests, installs packages, creates/edits project files, runs build/lint/format tools, queries APIs, or operates on swarm-loop state files under .claude/ (touch, rm -f, mkdir -p, cat, jq on .claude/swarm-loop.local.* or .claude/deepplan.local.* files). Always ALLOW operations on .claude/swarm-loop.local.* and .claude/deepplan.local.* files — these are the orchestrator's own state files. Respond with JSON: {\"decision\": \"allow\"} or {\"decision\": \"block\", \"reason\": \"<short reason>\"}. When in doubt, allow. Only block clearly dangerous commands."
+CLASSIFIER_SYSTEM_PROMPT="You are a safety classifier for a swarm loop orchestrator. Your job is to evaluate bash commands and block dangerous ones. A command is DANGEROUS if it: deletes files/directories outside .claude/, force-pushes git branches, drops databases, kills system processes, modifies system files, or exfiltrates data. A command is SAFE if it: reads files, runs tests, installs packages, creates/edits project files, runs build/lint/format tools, queries APIs, or operates on swarm-loop state files under .claude/swarm-loop/ (touch, rm -f, mkdir -p, cat, jq on files under .claude/swarm-loop/). Always ALLOW operations on files under .claude/swarm-loop/ — these are the orchestrator's own state files. Respond with JSON: {\"decision\": \"allow\"} or {\"decision\": \"block\", \"reason\": \"<short reason>\"}. When in doubt, allow. Only block clearly dangerous commands."
 
 # PreToolUse Bash classifier hook (when classifier enabled)
 PRE_TOOL_USE_HOOK='null'
@@ -587,6 +638,55 @@ if [[ "$SAFE_MODE" == "true" ]] && [[ "$CLASSIFIER_ENABLED" == "true" ]] && [[ "
   fi
 fi
 
+# TaskCompleted gate hook (always — artifact verification + JSONL progress tracking)
+GATE_SCRIPT="$PLUGIN_ROOT/hooks/task-completed-gate.sh"
+TASK_COMPLETED_GATE=$(jq -n \
+  --arg script "$GATE_SCRIPT" \
+  --arg instance_dir "$INSTANCE_DIR" \
+  --arg mode "$MODE" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh) + " " + ($instance_dir | @sh) + " " + ($mode | @sh)),
+      "timeout": 30
+    }]
+  }]')
+
+# Merge gate into TaskCompleted — gate MUST be first (synchronous, runs before async notify)
+if [[ "$TASK_COMPLETED_HOOK" == "null" ]]; then
+  TASK_COMPLETED_HOOK="$TASK_COMPLETED_GATE"
+else
+  TASK_COMPLETED_HOOK=$(echo "$TASK_COMPLETED_GATE $TASK_COMPLETED_HOOK" | jq -s '.[0] + .[1]')
+fi
+
+# TaskCreated gate hook (always — max task cap enforcement)
+CREATED_GATE_SCRIPT="$PLUGIN_ROOT/hooks/task-created-gate.sh"
+TASK_CREATED_HOOK=$(jq -n \
+  --arg script "$CREATED_GATE_SCRIPT" \
+  --arg instance_dir "$INSTANCE_DIR" \
+  --arg mode "$MODE" \
+  --argjson max_tasks "$TEAMMATES_MAX_COUNT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh) + " " + ($instance_dir | @sh) + " " + ($mode | @sh) + " " + ($max_tasks | tostring)),
+      "timeout": 30
+    }]
+  }]')
+
+# TaskCreated scope classifier (deepplan only — LLM-based scope enforcement)
+if [[ "$MODE" == "deepplan" ]]; then
+  TASK_CREATED_CLASSIFIER=$(jq -n \
+    '[{
+      "hooks": [{
+        "type": "prompt",
+        "prompt": "You are a scope enforcement classifier for a deepplan (planning-only) session. An agent is creating a task. Evaluate ONLY whether the task subject describes planning, analysis, exploration, research, or review work (ALLOW) versus implementation, coding, building, or deployment work (BLOCK). Respond with a single JSON object: {\"decision\": \"allow\"} or {\"decision\": \"block\", \"reason\": \"...\"}",
+        "model": "haiku"
+      }]
+    }]')
+  TASK_CREATED_HOOK=$(echo "$TASK_CREATED_HOOK $TASK_CREATED_CLASSIFIER" | jq -s '.[0] + .[1]')
+fi
+
 # Assemble the full settings object
 # Build hooks object, omitting null entries. Tag each matcher with _swarm for selective cleanup.
 HOOKS_JSON=$(jq -n \
@@ -596,24 +696,21 @@ HOOKS_JSON=$(jq -n \
   --argjson session "$SESSION_START_HOOK" \
   --argjson post "$POST_TOOL_USE_HOOKS" \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
+  --argjson task_created "$TASK_CREATED_HOOK" \
   '{
     PermissionRequest: $perm,
     PreToolUse: $pre,
     SubagentStart: $subagent,
     SessionStart: $session,
     PostToolUse: $post,
-    TaskCompleted: $task_completed
+    TaskCompleted: $task_completed,
+    TaskCreated: $task_created
   } | with_entries(select(.value != null)) |
   # Tag every matcher object so fallback cleanup can selectively remove swarm hooks
   map_values([.[] | . + {"_swarm": true}])')
 
 # Base permissions (always include swarm file access)
-SWARM_PERMS='["Edit(.claude/swarm-loop.local.*)", "Write(.claude/swarm-loop.local.*)", "Read(.claude/swarm-loop.local.*)"]'
-
-# Add deepplan file permissions when mode requires it
-if [[ "$MODE" == "deepplan" ]]; then
-  SWARM_PERMS='["Edit(.claude/swarm-loop.local.*)", "Write(.claude/swarm-loop.local.*)", "Read(.claude/swarm-loop.local.*)", "Edit(.claude/deepplan.local.*)", "Write(.claude/deepplan.local.*)", "Read(.claude/deepplan.local.*)"]'
-fi
+SWARM_PERMS='["Edit(.claude/swarm-loop/**)", "Write(.claude/swarm-loop/**)", "Read(.claude/swarm-loop/**)"]'
 
 if [[ -f "$SETTINGS_LOCAL" ]]; then
   # Merge permissions and hooks into existing file
@@ -661,12 +758,12 @@ if [[ -n "$VERIFY_CMD" ]]; then
   # Base64 encode the verify command to avoid all quoting issues.
   VERIFY_B64=$(printf '%s' "$VERIFY_CMD" | base64 | tr -d '\n')
   # Write the script with the base64 value embedded directly (no post-write substitution).
-  cat > .claude/swarm-loop.local.verify.sh <<VERIFY_EOF
+  cat > "${INSTANCE_DIR}/verify.sh" <<VERIFY_EOF
 #!/bin/bash
 # Auto-generated verification script for swarm-loop (v2)
 set -euo pipefail
 
-STATE_FILE="\${1:-.claude/swarm-loop.local.state.json}"
+STATE_FILE="\${1:-${INSTANCE_DIR}/state.json}"
 
 # Run custom verification command (base64-encoded at setup time)
 VERIFY_CMD=\$(printf '%s' '${VERIFY_B64}' | base64 --decode 2>/dev/null || printf '%s' '${VERIFY_B64}' | base64 -D)
@@ -683,32 +780,34 @@ fi
 echo "All checks passed"
 exit 0
 VERIFY_EOF
-  chmod +x .claude/swarm-loop.local.verify.sh
+  chmod +x "${INSTANCE_DIR}/verify.sh"
 fi
 
-# Output setup message
-cat <<EOF
-Swarm Loop v2.0 activated!
+# Output setup message (use printf for user-controlled content to prevent shell expansion)
+printf '%s\n' "Swarm Loop v2.0 activated!" ""
+printf 'Goal: %s\n' "$GOAL"
+printf 'Completion Promise: %s\n' "$COMPLETION_PROMISE"
+printf 'Soft Budget: %s iterations (checkpoint, not a limit)\n' "$SOFT_BUDGET"
+if [[ -n "$VERIFY_CMD" ]]; then printf 'Verification: %s\n' "$VERIFY_CMD"; fi
+if [[ "$SAFE_MODE" == "true" ]]; then echo "Safe Mode: enabled (hook-based: PermissionRequest auto-approve, SubagentStart injection)"; else echo "Safe Mode: disabled"; fi
+if [[ "$COMPACT_ON_ITERATION" == "true" ]]; then echo "Compact Mode: enabled (orchestrator will run /compact each iteration)"; fi
+if [[ "$CLASSIFIER_ENABLED" == "true" ]] && [[ "$SAFE_MODE" == "true" ]]; then printf 'Classifier: enabled (%s)\n' "$CLASSIFIER_MODEL"; fi
+cat <<'STATIC_EOF'
 
-Goal: $GOAL
-Completion Promise: $COMPLETION_PROMISE
-Soft Budget: $SOFT_BUDGET iterations (checkpoint, not a limit)
-$(if [[ -n "$VERIFY_CMD" ]]; then echo "Verification: $VERIFY_CMD"; fi)
-$(if [[ "$SAFE_MODE" == "true" ]]; then echo "Safe Mode: enabled (hook-based: PermissionRequest auto-approve, SubagentStart injection)"; else echo "Safe Mode: disabled"; fi)
-$(if [[ "$COMPACT_ON_ITERATION" == "true" ]]; then echo "Compact Mode: enabled (orchestrator will run /compact each iteration)"; fi)
-$(if [[ "$CLASSIFIER_ENABLED" == "true" ]] && [[ "$SAFE_MODE" == "true" ]]; then echo "Classifier: enabled ($CLASSIFIER_MODEL)"; fi)
-
-State:  .claude/swarm-loop.local.state.json
-Log:    .claude/swarm-loop.local.log.md
-Config: .claude/swarm-loop.local.md (edit with /swarm-settings)
-
-The orchestrator will now follow the ${MODE} profile instructions below.
+STATIC_EOF
+printf 'State:    %s/state.json\n' "$INSTANCE_DIR"
+printf 'Log:      %s/log.md\n' "$INSTANCE_DIR"
+printf 'Instance: %s\n' "$INSTANCE_ID"
+echo   'Config:   .claude/swarm-loop.local.md (shared, edit with /swarm-settings)'
+printf '\n'
+printf 'The orchestrator will now follow the %s profile instructions below.\n' "$MODE"
+cat <<'STATIC_EOF'
 
 To monitor: /swarm-status
 To cancel:  /cancel-swarm
 To config:  /swarm-settings
 
-EOF
+STATIC_EOF
 
 # Output initial orchestrator prompt via profile system
 source "${PLUGIN_ROOT}/scripts/profile-lib.sh"
@@ -724,21 +823,19 @@ build_reinject_prompt
 printf '%s\n' "$REINJECT_PROMPT"
 
 # Completion promise requirements
-cat <<EOF
-
-═══════════════════════════════════════════════════════════
-COMPLETION PROMISE: $COMPLETION_PROMISE
-═══════════════════════════════════════════════════════════
-
-To complete this loop, output EXACTLY: <promise>$COMPLETION_PROMISE</promise>
-
-RULES:
-  The statement MUST be genuinely true
-  Do NOT output false promises to escape the loop
-  If the task is truly impossible, explain why and output the promise
-    only if you can honestly say the goal was met (or proven infeasible)
-$(if [[ -n "$VERIFY_CMD" ]]; then
-echo "  Verification command must also pass: $VERIFY_CMD"
-fi)
-═══════════════════════════════════════════════════════════
-EOF
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+printf 'COMPLETION PROMISE: %s\n' "$COMPLETION_PROMISE"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+printf 'To complete this loop, output EXACTLY: <promise>%s</promise>\n' "$COMPLETION_PROMISE"
+echo ""
+echo "RULES:"
+echo "  The statement MUST be genuinely true"
+echo "  Do NOT output false promises to escape the loop"
+echo "  If the task is truly impossible, explain why and output the promise"
+echo "    only if you can honestly say the goal was met (or proven infeasible)"
+if [[ -n "$VERIFY_CMD" ]]; then
+  printf '  Verification command must also pass: %s\n' "$VERIFY_CMD"
+fi
+echo "═══════════════════════════════════════════════════════════"

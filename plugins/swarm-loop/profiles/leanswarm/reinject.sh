@@ -1,5 +1,5 @@
 #!/bin/bash
-# reinject.sh — build the orchestrator re-inject prompt for the async profile
+# reinject.sh — build the orchestrator re-inject prompt for the leanswarm profile
 # Sourced contract: sets global REINJECT_PROMPT (no stdout output).
 # Available env vars: GOAL_SAFE, PROMISE_SAFE, TEAM_NAME, NEXT_ITERATION (or ITERATION),
 #   TEAMMATES_ISOLATION, TEAMMATES_MAX_COUNT, COMPACT_MODE,
@@ -14,23 +14,20 @@ build_reinject_prompt() {
   # Build WORKTREE_NOTE — injected into {{WORKTREE_NOTE}} in the template
   WORKTREE_NOTE=""
   if [[ "${TEAMMATES_ISOLATION:-shared}" == "worktree" ]]; then
-    WORKTREE_NOTE='Use isolation: "worktree" for each Agent call. Record worktree branch names for later merge.'
-  else
-    WORKTREE_NOTE="Agents share the main checkout. Partition file ownership carefully."
+    WORKTREE_NOTE='Add isolation: "worktree" to each Agent call. Teammates must commit changes before completing. You must merge branches in VERIFY step.'
   fi
 
   # Build COMPACT_NOTE — injected into {{COMPACT_NOTE}} in the template
   COMPACT_NOTE=""
   if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
-    COMPACT_NOTE="Run /compact first, then write"
-  else
-    COMPACT_NOTE="Write"
+    COMPACT_NOTE="
+     If compact_on_iteration is enabled in state, run /compact BEFORE writing the sentinel."
   fi
 
   if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
     # Compact mode: SessionStart(compact) hook already re-injected full context.
     # Use a minimal prompt to avoid double-injection token waste.
-    REINJECT_PROMPT="Async swarm iteration ${iteration}. Context was compacted and re-injected by SessionStart hook. Read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md, then continue the async orchestration cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${STUCK_TIMEOUT_MSG:-}"
+    REINJECT_PROMPT="Swarm loop iteration ${iteration}. Context was compacted and re-injected by SessionStart hook. Read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md, then continue the orchestration cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${STUCK_TIMEOUT_MSG:-}"
   else
     # Standard mode: read PROFILE.md, substitute placeholders, append runtime messages
     local tmpl

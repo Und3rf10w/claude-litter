@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Async completion profile for swarm-loop.
+# Leanswarm completion profile for swarm-loop.
 # Sourced by stop-hook.sh before the completion check.
 #
 # Inputs (env vars set by stop-hook.sh):

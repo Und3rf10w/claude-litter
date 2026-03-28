@@ -12,14 +12,17 @@
 # Don't fail on errors — this is a non-critical observability hook
 set +e
 
-STATE_FILE=".claude/swarm-loop.local.state.json"
-HEARTBEAT_FILE=".claude/swarm-loop.local.heartbeat.json"
-
-# Only update if a swarm loop is active
-[[ -f "$STATE_FILE" ]] || exit 0
-
 # Require jq
 command -v jq >/dev/null 2>&1 || exit 0
+
+# Read hook input from stdin
+INPUT=$(cat)
+
+# Discover instance
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+HOOK_SESSION=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
 
 # Throttle: skip if heartbeat was updated less than 5 seconds ago
 if [[ -f "$HEARTBEAT_FILE" ]]; then
@@ -31,8 +34,6 @@ if [[ -f "$HEARTBEAT_FILE" ]]; then
   fi
 fi
 
-# Read hook input from stdin
-INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // "unknown"' 2>/dev/null)
 
 # Read state for context
@@ -42,13 +43,21 @@ GOAL=$(echo "$STATE_JSON" | jq -r '.goal // ""' 2>/dev/null)
 TEAM_NAME=$(echo "$STATE_JSON" | jq -r '.team_name // ""' 2>/dev/null)
 AUTONOMY_HEALTH=$(echo "$STATE_JSON" | jq -r '.autonomy_health // "healthy"' 2>/dev/null)
 PERMISSION_FAILURES=$(echo "$STATE_JSON" | jq '[.permission_failures[]?] | length' 2>/dev/null || echo "0")
-SENTINEL_TIMEOUT=$(echo "$STATE_JSON" | jq -r '.sentinel_timeout // 300' 2>/dev/null)
+SENTINEL_TIMEOUT=$(echo "$STATE_JSON" | jq -r '.sentinel_timeout // 600' 2>/dev/null)
 PHASE=$(echo "$STATE_JSON" | jq -r '.phase // "working"' 2>/dev/null)
 
-# Read progress from progress_history (v2 — tasks are in native system, not state file)
-LAST_PROGRESS=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
-TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
-TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+# Read progress from progress.jsonl (v3), fall back to state.json progress_history (v2)
+TASKS_COMPLETED=0
+TASKS_TOTAL=0
+if [[ -f "${INSTANCE_DIR}/progress.jsonl" ]] && [[ -s "${INSTANCE_DIR}/progress.jsonl" ]]; then
+  LAST_PROGRESS=$(jq -s '.[-1] // {}' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "{}")
+  TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+  TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+else
+  LAST_PROGRESS=$(echo "$STATE_JSON" | jq '.progress_history[-1] // {}' 2>/dev/null)
+  TASKS_COMPLETED=$(echo "$LAST_PROGRESS" | jq '.tasks_completed // 0' 2>/dev/null || echo "0")
+  TASKS_TOTAL=$(echo "$LAST_PROGRESS" | jq '.tasks_total // 0' 2>/dev/null || echo "0")
+fi
 
 # Write heartbeat — unified schema matching stop-hook.sh idle-path writes.
 # team_active is always true here because PostToolUse only fires while the session is running.

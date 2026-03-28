@@ -10,18 +10,16 @@
 
 set -euo pipefail
 
-STATE_FILE=".claude/swarm-loop.local.state.json"
-LOG_FILE=".claude/swarm-loop.local.log.md"
-
-# Only inject context if a swarm loop is active
-if [[ ! -f "$STATE_FILE" ]]; then
-  exit 0
-fi
-
 # Require jq
 if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
+
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+HOOK_INPUT=$(cat)
+HOOK_SESSION=$(echo "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
 
 # Read state
 STATE_JSON=$(cat "$STATE_FILE" 2>/dev/null)
@@ -38,7 +36,6 @@ TEAMMATES_ISOLATION=$(echo "$STATE_JSON" | jq -r '.teammates_isolation // "share
 TEAMMATES_MAX_COUNT=$(echo "$STATE_JSON" | jq -r '.teammates_max_count // 8')
 
 MODE=$(echo "$STATE_JSON" | jq -r '.mode // "default"')
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/profile-lib.sh"
 load_profile "$MODE" "$_PLUGIN_ROOT"
 MODE="$RESOLVED_MODE"

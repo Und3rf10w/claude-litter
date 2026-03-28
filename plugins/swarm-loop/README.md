@@ -9,6 +9,7 @@ Swarm Loop supports multiple orchestration modes via a **profile system**. Each 
 | Profile | Alias Command | Description |
 |---------|---------------|-------------|
 | `default` | `/swarm-loop` | Persistent Teams with TaskCreate coordination. Best for complex multi-file implementation. |
+| `leanswarm` | — | Lean 4-concern orchestration (WORK/MONITOR/VERIFY/SIGNAL). Same Teams coordination as default with less prescriptive scaffolding. |
 | `deepplan` | `/deepplan` | Multi-agent planning with explore/synthesize/critique/deliver phases. Spawns 3 scout agents, synthesizes findings, self-critiques, delivers via ExitPlanMode. Best for codebase analysis and structured plan generation. |
 | `async` | `/async-swarm` | Background agent orchestration with `run_in_background: true`. No Teams, no SendMessage — agents run independently and notify on completion. Supports worktree isolation. Best for independent parallel tasks. |
 
@@ -66,10 +67,10 @@ With optional verification:
 
 ## How It Works
 
-1. **Setup** — the `/swarm-loop` command initializes `.claude/swarm-loop.local.state.json`, creates the narrative log, and generates all safety hooks into `settings.local.json`. A backup of any existing `settings.local.json` is taken and restored on completion or cancellation.
+1. **Setup** — the `/swarm-loop` command initializes an instance directory under `.claude/swarm-loop/<id>/`, creates the narrative log, and generates all safety hooks into `settings.local.json`. A backup of any existing `settings.local.json` is taken and restored on completion or cancellation.
 2. **Team creation** — the orchestrator calls `TeamCreate` once. The same team is reused across every iteration. `TeamCreate` is never called again during a running loop.
-3. **7-step cycle** — each iteration runs: ASSESS → PLAN → EXECUTE → MONITOR → VERIFY → PERSIST → SIGNAL.
-4. **Sentinel file** — at the end of each SIGNAL step the orchestrator writes `.claude/swarm-loop.local.next-iteration` (Write tool, empty content). The Stop hook detects this file, consumes it, and re-injects the full orchestrator prompt to begin the next iteration.
+3. **7-step cycle** — each iteration runs: ASSESS → PLAN → EXECUTE → MONITOR → VERIFY → PERSIST → SIGNAL (the `leanswarm` profile collapses this to 4 concerns: WORK → MONITOR → VERIFY → SIGNAL).
+4. **Sentinel file** — at the end of each SIGNAL step the orchestrator writes the instance sentinel file (`<instance-dir>/next-iteration`, Write tool, empty content). The Stop hook detects this file, consumes it, and re-injects the full orchestrator prompt to begin the next iteration.
 5. **Context management** — when the context window fills, Claude Code triggers auto-compaction automatically. The `SessionStart(compact)` hook re-injects orchestrator identity and key state so the loop resumes correctly. The `SessionStart(clear)` hook does the same if the user manually runs `/clear`. The optional `compact_on_iteration` setting causes the orchestrator to run `/compact` proactively at the end of every SIGNAL step.
 6. **Completion** — `<promise>TEXT</promise>` output by the orchestrator is the only exit mechanism. The Stop hook extracts and verifies the promise before accepting it. There is no maximum iteration count.
 
@@ -81,7 +82,7 @@ With optional verification:
 | `/deepplan PROMPT --completion-promise 'TEXT'` | Start a deepplan session (multi-agent planning) |
 | `/async-swarm GOAL --completion-promise 'TEXT'` | Start an async swarm loop (background agents) |
 | `/swarm-status` | View iteration count, phase, task status, team roster, and recent log entries |
-| `/cancel-swarm` | Stop the active loop, call `TeamDelete`, and clean up files |
+| `/cancel-swarm` | Stop the active loop, call `TeamDelete`, and clean up instance files |
 | `/swarm-settings` | Configure loop behavior (stored in `.claude/swarm-loop.local.md`) |
 | `/swarm-help` | Show detailed orchestration instructions and command reference |
 
@@ -93,19 +94,19 @@ With optional verification:
 | `--soft-budget N` | Iteration count for a progress reflection checkpoint (not a hard limit) | `10` |
 | `--verify 'CMD'` | Shell command that must exit 0 when the promise is output (e.g., `npm test`) | none |
 | `--safe-mode true\|false` | Enable or disable hook-based safe mode | `true` |
-| `--mode NAME` | Profile to use (`default`, `deepplan`, `async`, or any custom profile) | `default` |
+| `--mode NAME` | Profile to use (`default`, `leanswarm`, `deepplan`, `async`, or any custom profile) | `default` |
 | `--prompt-file PATH` | Read the goal and flags from a file instead of positional arguments. Supports multiline markdown. Overrides positional `GOAL` words. | none |
 
 ## Configuration
 
-`/swarm-settings` reads and writes `.claude/swarm-loop.local.md`. Settings take effect on the next `/swarm-loop` start. To change settings on a running loop, edit `.claude/swarm-loop.local.state.json` directly.
+`/swarm-settings` reads and writes `.claude/swarm-loop.local.md`. Settings take effect on the next `/swarm-loop` start. To change settings on a running loop, edit the instance state file (`.claude/swarm-loop/<id>/state.json`) directly.
 
 The config file uses YAML frontmatter format:
 
 ```yaml
 ---
 compact_on_iteration: false
-sentinel_timeout: 300
+sentinel_timeout: 600
 classifier:
   enabled: true
   model: sonnet
@@ -125,7 +126,7 @@ notifications:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `compact_on_iteration` | `false` | Run `/compact` at the end of each iteration (proactive context trimming) |
-| `sentinel_timeout` | `300` | Seconds before force re-inject if no sentinel detected (stuck orchestrator recovery) |
+| `sentinel_timeout` | `600` | Seconds before force re-inject if no sentinel detected (stuck orchestrator recovery) |
 | `classifier.enabled` | `true` | Enable the safety classifier for Bash commands |
 | `classifier.model` | `sonnet` | Model used by the classifier (`haiku`, `sonnet`, `opus`) |
 | `classifier.effort` | `auto` | Effort level for the classifier (`low`, `medium`, `high`, `max`, `auto`) |
@@ -148,7 +149,7 @@ Inspired by [Anthropic's permission classifier used in auto mode](https://www.an
 
 - **SessionStart(clear|compact)** — re-injects orchestrator identity and key state after auto-compaction or a manual `/clear`. Synchronous. Always active.
 
-- **PostToolUse heartbeat** — updates `.claude/swarm-loop.local.heartbeat.json` after every tool call. Asynchronous (non-blocking). Throttled to at most one write every 5 seconds to avoid I/O pressure during rapid tool use.
+- **PostToolUse heartbeat** — updates the instance `heartbeat.json` file after every tool call. Asynchronous (non-blocking). Throttled to at most one write every 5 seconds to avoid I/O pressure during rapid tool use.
 
 - **TaskCompleted notifications** — sends a webhook request when a task completes. Asynchronous. Active only when `notifications.enabled: true` and `notifications.channel` is set.
 
@@ -181,42 +182,65 @@ Context management across long-running loops is handled by a layered set of mech
 
 Inspired by [Anthropic's harness research on long-running harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps), each iteration executes these steps in order:
 
-1. **ASSESS** — read `.claude/swarm-loop.local.state.json` and `.claude/swarm-loop.local.log.md` from disk; call `TaskList` to review current task status (pending, in-progress, blocked, completed).
+1. **ASSESS** — read the instance state file (`<instance-dir>/state.json`) and log file (`<instance-dir>/log.md`) from disk; call `TaskList` to review current task status (pending, in-progress, blocked, completed).
 
 2. **PLAN** — decompose remaining work into concrete, parallelizable subtasks; call `TaskCreate` with `blockedBy` dependencies to model ordering; assign explicit file ownership to each task.
 
 3. **EXECUTE** — spawn teammates into the persistent team for each unblocked task using `Agent` (or `SendMessage` to idle teammates from previous iterations); respect `teammates_isolation` and `teammates_max_count` from state.
 
-4. **MONITOR** — receive teammate completion messages via `SendMessage`; persist key results to `.claude/swarm-loop.local.state.json` (`progress_history`) and `.claude/swarm-loop.local.log.md` immediately on receipt — do not defer to the PERSIST step (microcompact may clear old tool results before then); check `TaskList` for newly unblocked tasks and spawn teammates for them.
+4. **MONITOR** — receive teammate completion messages via `SendMessage`; persist key results to the instance log file and update `last_updated` in state immediately on receipt — do not defer to the PERSIST step (microcompact may clear old tool results). Progress tracking to `progress.jsonl` is handled automatically by the TaskCompleted gate hook. Check `TaskList` for newly unblocked tasks and spawn teammates for them.
 
 5. **VERIFY** — read modified files; run the configured `--verify` command if present; check for regressions.
 
-6. **PERSIST** — update `.claude/swarm-loop.local.state.json` fields `phase`, `autonomy_health`, and `last_updated`; append a full iteration summary to `.claude/swarm-loop.local.log.md` including completed work, failed approaches, and the next iteration plan.
+6. **PERSIST** — update the instance state file fields `phase`, `autonomy_health`, and `last_updated`; append a full iteration summary to the instance log file including completed work, failed approaches, and the next iteration plan.
 
-7. **SIGNAL** — if `compact_on_iteration` is `true`, run `/compact` first; then write `.claude/swarm-loop.local.next-iteration` (Write tool, empty content); end the turn. The Stop hook consumes the sentinel and re-injects the orchestrator prompt.
+7. **SIGNAL** — if `compact_on_iteration` is `true`, run `/compact` first; then write the instance sentinel file (`<instance-dir>/next-iteration`, Write tool, empty content); end the turn. The Stop hook consumes the sentinel and re-injects the orchestrator prompt.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `.claude/swarm-loop.local.state.json` | Structured state: goal, iteration, phase, team name, autonomy health, permission failures, progress history (v2 schema) |
-| `.claude/swarm-loop.local.log.md` | Narrative iteration history: completed work, failed approaches, next-iteration plans — the orchestrator's cross-iteration memory |
-| `.claude/swarm-loop.local.heartbeat.json` | Real-time monitoring: written on every Stop event and by the PostToolUse hook (throttled 5s) |
-| `.claude/swarm-loop.local.next-iteration` | Sentinel file: written by the orchestrator to signal iteration complete; consumed by the Stop hook |
-| `.claude/swarm-loop.local.md` | Per-project settings: written by `/swarm-settings`, read at next loop start |
+| `.claude/swarm-loop/<id>/state.json` | Structured state: goal, iteration, phase, team name, autonomy health, permission failures (v2 schema) |
+| `.claude/swarm-loop/<id>/log.md` | Narrative iteration history: completed work, failed approaches, next-iteration plans — the orchestrator's cross-iteration memory |
+| `.claude/swarm-loop/<id>/progress.jsonl` | Append-only progress tracking: one compact JSON line per task completion, written by the TaskCompleted gate hook. Read by stop-hook for stall detection. |
+| `.claude/swarm-loop/<id>/heartbeat.json` | Real-time monitoring: written on every Stop event and by the PostToolUse hook (throttled 5s) |
+| `.claude/swarm-loop/<id>/next-iteration` | Sentinel file: written by the orchestrator to signal iteration complete; consumed by the Stop hook |
+| `.claude/swarm-loop/<id>/verify.sh` | Generated verification script (created when `--verify` is used) |
+| `.claude/swarm-loop/<id>/.idle-retry.<name>` | Per-teammate retry counter for TeammateIdle gate hook (cleaned on completion and rejection) |
+| `.claude/swarm-loop.local.md` | Per-project settings: written by `/swarm-settings`, read at next loop start (shared across all instances) |
 | `.claude/swarm-loop.local.lock` | Concurrent setup guard: prevents two `/swarm-loop` invocations from racing during initialization |
-| `.claude/swarm-loop.local.verify.sh` | Generated verification script (created when `--verify` is used) |
 | `.claude/settings.local.json` | Modified with swarm hooks at setup; backed up before modification and restored on completion or `/cancel-swarm` |
+
+## Multi-Instance Support
+
+Each `/swarm-loop` invocation creates an isolated instance directory under `.claude/swarm-loop/<id>/` where `<id>` is an 8-character hex identifier derived from the session. This allows multiple loops to run concurrently in the same repo from different terminal sessions.
+
+Instance files (per-loop):
+- `.claude/swarm-loop/<id>/state.json`
+- `.claude/swarm-loop/<id>/log.md`
+- `.claude/swarm-loop/<id>/next-iteration`
+- `.claude/swarm-loop/<id>/heartbeat.json`
+
+Shared files (all loops):
+- `.claude/swarm-loop.local.md` — per-project configuration
+- `.claude/swarm-loop.local.lock` — setup guard
+
+Use `/swarm-status` to see all active instances and `/cancel-swarm` to stop one.
 
 ## Hook Architecture
 
 The plugin uses two distinct hook registration mechanisms:
 
-- **Static hooks** — declared in `hooks/hooks.json` and loaded by Claude Code at plugin load time. Currently this includes only the `Stop` hook (`stop-hook.sh`), which drives iteration via sentinel detection.
+- **Static hooks** — declared in `hooks/hooks.json` and loaded by Claude Code at plugin load time:
+  - `Stop` → `stop-hook.sh` — drives iteration via sentinel detection, completion checking, stuck detection, and cleanup
+  - `TeammateIdle` → `teammate-idle-gate.sh` — enforces task completion discipline: teammates with in_progress tasks are forced to keep working (up to 3 retries) until they call `TaskUpdate(completed)` + `SendMessage(to: 'team-lead')`. Logs retries to `log.md`; writes `hook_warnings` to `state.json` after max retries.
 
 - **Dynamic hooks** — injected into the project's `.claude/settings.local.json` at loop-start time by `setup-swarm-loop.sh`. These are not listed in `hooks/hooks.json` because they are only active during a running swarm loop and are removed on completion or `/cancel-swarm`. The dynamically-injected hooks are:
   - `session-context.sh` — `SessionStart(compact|clear)` hook that re-injects orchestrator identity after context compaction or `/clear`
-  - `heartbeat-update.sh` — `PostToolUse` hook that writes `.claude/swarm-loop.local.heartbeat.json` (throttled to every 5s)
+  - `heartbeat-update.sh` — `PostToolUse` hook that writes the instance `heartbeat.json` file (throttled to every 5s)
+  - `task-completed-gate.sh` — `TaskCompleted` gate hook with two responsibilities: (1) append-only progress tracking via `progress.jsonl` (compact JSONL, atomic O_APPEND), (2) deepplan artifact verification via `metadata.artifact` from task files
+  - `task-created-gate.sh` — `TaskCreated` gate hook enforcing `teammates_max_count` cap (rejects `TaskCreate` when active tasks >= cap)
+  - Deepplan scope classifier — `TaskCreated` prompt hook (Haiku) that blocks implementation tasks in deepplan mode (planning only)
   - `notify-task-complete.sh` — `TaskCompleted` hook that sends webhook notifications on task completion (active only when `notifications.enabled: true`)
   - Inline `TaskCompleted` prompt hook — verifies that a task was genuinely completed via classifier (active only when `classifier.checks.task-completed: true`)
 
@@ -224,12 +248,12 @@ The plugin uses two distinct hook registration mechanisms:
 
 - **Persistent team** — `TeamCreate` is called once. The team and its task records survive all iterations. `TeamDelete` is never called during a normal loop; only `/cancel-swarm` calls it. Old team directories from prior loops are cleaned up by the next `/swarm-loop` setup or by `/cancel-swarm`.
 
-- **Native task system** — `TaskCreate` / `TaskUpdate` / `TaskList` is the single source of truth for task status. Tasks are team-scoped and persist for the loop's lifetime. There is no `tasks[]` array in the state file.
+- **Native task system** — `TaskCreate` / `TaskUpdate` / `TaskList` is the single source of truth for task status. Tasks are team-scoped and persist for the loop's lifetime. There is no `tasks[]` array in the state file. Progress is tracked via `progress.jsonl` (append-only, written by the `TaskCompleted` gate hook) — not `progress_history` in state.json.
 
-- **Crash resilience** — state and task records survive process crashes. On restart, the next iteration re-reads `.claude/swarm-loop.local.state.json` and `.claude/swarm-loop.local.log.md` from disk to reconstruct context.
+- **Crash resilience** — state and task records survive process crashes. On restart, the next iteration re-reads the instance state file and log file from disk to reconstruct context.
 
-- **Microcompact protection** — Claude Code silently replaces old tool results with `[Old tool result content cleared]` during context trimming. Teammate results must be written to `.claude/swarm-loop.local.state.json` and `.claude/swarm-loop.local.log.md` immediately in the MONITOR step — not deferred to PERSIST.
+- **Microcompact protection** — Claude Code silently replaces old tool results with `[Old tool result content cleared]` during context trimming. Teammate results must be written to the instance state file and log file immediately in the MONITOR step — not deferred to PERSIST.
 
-- **Sentinel timeout** — if no sentinel file appears within `sentinel_timeout` seconds (default 300) of the last activity, the Stop hook force-reinjects the orchestrator prompt. This recovers from a stuck or crashed orchestrator without requiring manual intervention.
+- **Sentinel timeout** — if no sentinel file appears within `sentinel_timeout` seconds (default 600) of the last activity, the Stop hook force-reinjects the orchestrator prompt. This recovers from a stuck or crashed orchestrator without requiring manual intervention.
 
 - **Autonomy health** — the state file tracks `autonomy_health` as `"healthy"`, `"degraded"`, or `"escalation_required"` based on accumulated permission failures. After 3 iterations with no progress and active permission failures, the Stop hook injects an escalation message requesting human input.

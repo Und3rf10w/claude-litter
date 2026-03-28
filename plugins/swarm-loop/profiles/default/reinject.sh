@@ -27,7 +27,7 @@ build_reinject_prompt() {
   if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
     # Compact mode: SessionStart(compact) hook already re-injected full context.
     # Use a minimal prompt to avoid double-injection token waste.
-    REINJECT_PROMPT="Swarm loop iteration ${iteration}. Context was compacted and re-injected by SessionStart hook. Read .claude/swarm-loop.local.state.json and .claude/swarm-loop.local.log.md, then continue the orchestration cycle. Write .claude/swarm-loop.local.next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${STUCK_TIMEOUT_MSG:-}"
+    REINJECT_PROMPT="Swarm loop iteration ${iteration}. Context was compacted and re-injected by SessionStart hook. Read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md, then continue the orchestration cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${STUCK_TIMEOUT_MSG:-}"
   else
     # Standard mode: read PROFILE.md, substitute placeholders, append runtime messages
     local tmpl
