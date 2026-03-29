@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./logo.png" alt="Claude Litter" width="320" />
+  <img src="./assets/logo.png" alt="Claude Litter" width="320" />
   <br />
   <em>A terminal control plane for Claude Code agent teams</em>
   <br /><br />
@@ -103,24 +103,8 @@ uv sync && uv run claude-litter
 ## Screenshots
 
 <div align="center">
-  <img src="./screenshot.svg" alt="Claude Litter TUI" width="800" />
+  <img src="./assets/screenshot.svg" alt="Claude Litter TUI" width="800" />
 </div>
-
-> Generate a fresh screenshot locally:
->
-> ```bash
-> uv run python -c "
-> import anyio
-> from claude_litter.app import ClaudeLitterApp
-> async def main():
->     app = ClaudeLitterApp()
->     async with app.run_test(size=(120, 40)) as pilot:
->         await pilot.pause(delay=0.5)
->         app.save_screenshot('screenshot.svg')
->         print('Screenshot saved to screenshot.svg')
-> anyio.run(main)
-> "
-> ```
 
 ---
 
