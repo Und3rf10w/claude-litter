@@ -248,7 +248,7 @@ For planning-only sessions, ask Claude Code to plan with deepplan:
 
 > _I need a detailed plan for migrating our auth system from session cookies to JWT. Use deepplan to explore the codebase, identify all affected files, and produce a reviewed implementation plan._
 
-You can also specify details like hard or soft limits for the number of iterations, and specific things you want to happen.
+You can also specify details like hard or soft limits for the number of iterations, and any other additional details.
 
 > _Use swarm-loop to kick of 10 independent improvement iterations for this application. Each iteration should be independent of the previous._
 
