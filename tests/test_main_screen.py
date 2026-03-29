@@ -1,4 +1,5 @@
 """Tests for MainScreen composition and basic handler logic."""
+
 from __future__ import annotations
 
 import sys
@@ -14,9 +15,7 @@ _fake_sdk.types = _fake_types
 sys.modules.setdefault("claude_agent_sdk", _fake_sdk)
 sys.modules.setdefault("claude_agent_sdk.types", _fake_types)
 
-from claude_litter.screens.main import MainScreen, AgentBuffer, _MAIN_CHAT_KEY  # noqa: E402
-from claude_litter.services.agent_manager import AgentManager  # noqa: E402
-
+from claude_litter.screens.main import _MAIN_CHAT_KEY, AgentBuffer, MainScreen  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Composition test (skipped — requires full SDK connectivity)

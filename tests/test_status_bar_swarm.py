@@ -33,7 +33,11 @@ async def test_status_bar_with_swarm():
     async with app.run_test() as pilot:
         sb = app.query_one(StatusBar)
         sb.update_status(
-            "test-team", 2, 1, 5, 3,
+            "test-team",
+            2,
+            1,
+            5,
+            3,
             swarm_active=True,
             swarm_phase="execute",
             swarm_iteration=2,
@@ -51,7 +55,11 @@ async def test_status_bar_swarm_phase_shown():
     async with app.run_test() as pilot:
         sb = app.query_one(StatusBar)
         sb.update_status(
-            "test-team", 1, 1, 3, 1,
+            "test-team",
+            1,
+            1,
+            3,
+            1,
             swarm_active=True,
             swarm_phase="plan",
             swarm_iteration=1,

@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, Label, ListView, Select, Static, Checkbox, Collapsible, TabbedContent, TextArea
 from textual.containers import VerticalScroll
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Collapsible,
+    Label,
+    ListView,
+    Select,
+    Static,
+    TabbedContent,
+    TextArea,
+)
 
-from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
-from claude_litter.widgets.message_panel import MessagePanel, MessageComposed
-
+from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
+from claude_litter.widgets.task_panel import TaskPanel
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,6 +60,7 @@ class MessagePanelApp(App):
 # ---------------------------------------------------------------------------
 # TaskPanel Tests
 # ---------------------------------------------------------------------------
+
 
 class TestTaskPanel:
     @pytest.mark.anyio
@@ -202,6 +212,7 @@ class TestTaskPanel:
 # ---------------------------------------------------------------------------
 # MessagePanel Tests
 # ---------------------------------------------------------------------------
+
 
 class TestMessagePanel:
     @pytest.mark.anyio

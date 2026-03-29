@@ -5,16 +5,15 @@ from __future__ import annotations
 import pytest
 from textual.app import App
 
-from claude_litter.screens.create_team import CreateTeamScreen, validate_team_name
-from claude_litter.screens.spawn_agent import SpawnAgentScreen
-from claude_litter.screens.task_detail import TaskDetailScreen
-from claude_litter.screens.settings import SettingsScreen
-from claude_litter.screens.duplicate_agent import DuplicateAgentScreen
+from claude_litter.screens.broadcast_message import BroadcastMessageScreen
 from claude_litter.screens.configure_agent import ConfigureAgentScreen, _normalize_model
 from claude_litter.screens.confirm import ConfirmScreen
+from claude_litter.screens.create_team import CreateTeamScreen, validate_team_name
+from claude_litter.screens.duplicate_agent import DuplicateAgentScreen
 from claude_litter.screens.rename_team import RenameTeamScreen
-from claude_litter.screens.broadcast_message import BroadcastMessageScreen
-
+from claude_litter.screens.settings import SettingsScreen
+from claude_litter.screens.spawn_agent import SpawnAgentScreen
+from claude_litter.screens.task_detail import TaskDetailScreen
 
 # ---------------------------------------------------------------------------
 # _normalize_model unit tests (no app needed)
@@ -90,7 +89,7 @@ class _ModalApp(App):
 
     def on_mount(self) -> None:
         screen = self._screen_factory()
-        original_dismiss = screen.dismiss
+        original_dismiss = screen.dismiss  # noqa: F841
 
         def _capture(result=None):
             self.dismissed_values.append(result)
@@ -298,20 +297,26 @@ def test_build_team_context_with_teams(tmp_path):
 
     ts = TeamService(base_path=tmp_path)
     ts.create_team("alpha", "Test team")
-    ts.add_member("alpha", {
-        "agentId": "a1",
-        "name": "backend",
-        "model": "sonnet",
-        "status": "active",
-        "agentType": "worker",
-        "cwd": "/tmp/project",
-    })
-    ts.add_member("alpha", {
-        "agentId": "a2",
-        "name": "frontend",
-        "model": "haiku",
-        "status": "idle",
-    })
+    ts.add_member(
+        "alpha",
+        {
+            "agentId": "a1",
+            "name": "backend",
+            "model": "sonnet",
+            "status": "active",
+            "agentType": "worker",
+            "cwd": "/tmp/project",
+        },
+    )
+    ts.add_member(
+        "alpha",
+        {
+            "agentId": "a2",
+            "name": "frontend",
+            "model": "haiku",
+            "status": "idle",
+        },
+    )
 
     # Add a task
     ts.create_task("alpha", "Fix bug", "Fix the login bug")
@@ -338,10 +343,14 @@ def test_build_team_context_with_teams(tmp_path):
 
 @pytest.mark.anyio
 async def test_duplicate_agent_cancel_returns_none():
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         await pilot.click(_sq(app, "#cancel"))
@@ -351,10 +360,14 @@ async def test_duplicate_agent_cancel_returns_none():
 
 @pytest.mark.anyio
 async def test_duplicate_agent_prefilled_name():
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="opus",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="opus",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         name_input = _sq(app, "#agent-name")
@@ -363,10 +376,14 @@ async def test_duplicate_agent_prefilled_name():
 
 @pytest.mark.anyio
 async def test_duplicate_agent_ok_returns_dict():
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         await pilot.click(_sq(app, "#ok"))
@@ -385,10 +402,14 @@ async def test_duplicate_agent_ok_returns_dict():
 
 @pytest.mark.anyio
 async def test_duplicate_agent_invalid_name_shows_error():
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         name_input = _sq(app, "#agent-name")
@@ -403,11 +424,14 @@ async def test_duplicate_agent_invalid_name_shows_error():
 
 @pytest.mark.anyio
 async def test_duplicate_agent_no_other_teams_disables_ok():
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha"],  # only source team
-        source_model="sonnet",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha"],  # only source team
+            source_model="sonnet",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         ok_btn = _sq(app, "#ok")
@@ -417,11 +441,14 @@ async def test_duplicate_agent_no_other_teams_disables_ok():
 @pytest.mark.anyio
 async def test_duplicate_agent_full_model_string():
     """DuplicateAgentScreen should handle full model strings like 'claude-opus-4-6'."""
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"],
-        source_model="claude-opus-4-6",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="claude-opus-4-6",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#model").value == "opus"
@@ -430,11 +457,14 @@ async def test_duplicate_agent_full_model_string():
 @pytest.mark.anyio
 async def test_duplicate_agent_bedrock_model_string():
     """DuplicateAgentScreen should handle Bedrock model strings."""
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"],
-        source_model="bedrock:global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="bedrock:global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#model").value == "sonnet"
@@ -443,11 +473,16 @@ async def test_duplicate_agent_bedrock_model_string():
 @pytest.mark.anyio
 async def test_duplicate_agent_inherits_color_and_type():
     """DuplicateAgentScreen should pre-fill color and agentType from source."""
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-        source_color="green", source_type="tester",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+            source_color="green",
+            source_type="tester",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#color").value == "green"
@@ -457,11 +492,15 @@ async def test_duplicate_agent_inherits_color_and_type():
 @pytest.mark.anyio
 async def test_duplicate_agent_unknown_color_defaults_to_none():
     """DuplicateAgentScreen should handle unknown color values."""
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-        source_color="magenta",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+            source_color="magenta",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#color").value == ""
@@ -470,11 +509,15 @@ async def test_duplicate_agent_unknown_color_defaults_to_none():
 @pytest.mark.anyio
 async def test_duplicate_agent_unknown_type_defaults_to_worker():
     """DuplicateAgentScreen should handle unknown agentType values."""
-    app = _ModalApp(lambda: DuplicateAgentScreen(
-        source_team="alpha", source_agent="worker-1",
-        all_teams=["alpha", "beta"], source_model="sonnet",
-        source_type="custom-role",
-    ))
+    app = _ModalApp(
+        lambda: DuplicateAgentScreen(
+            source_team="alpha",
+            source_agent="worker-1",
+            all_teams=["alpha", "beta"],
+            source_model="sonnet",
+            source_type="custom-role",
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#agent-type").value == "worker"
@@ -487,10 +530,13 @@ async def test_duplicate_agent_unknown_type_defaults_to_worker():
 
 @pytest.mark.anyio
 async def test_configure_agent_cancel_returns_none():
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1",
-        current={"name": "worker-1", "model": "sonnet", "color": "blue", "agentType": "worker"},
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current={"name": "worker-1", "model": "sonnet", "color": "blue", "agentType": "worker"},
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         await pilot.click(_sq(app, "#cancel"))
@@ -501,9 +547,13 @@ async def test_configure_agent_cancel_returns_none():
 @pytest.mark.anyio
 async def test_configure_agent_prefilled_values():
     current = {"name": "worker-1", "model": "opus", "color": "green", "agentType": "tester"}
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#agent-name").value == "worker-1"
@@ -515,9 +565,13 @@ async def test_configure_agent_prefilled_values():
 @pytest.mark.anyio
 async def test_configure_agent_ok_returns_changed_fields():
     current = {"name": "worker-1", "model": "sonnet", "color": "", "agentType": "worker"}
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         await pilot.click(_sq(app, "#ok"))
@@ -535,9 +589,13 @@ async def test_configure_agent_ok_returns_changed_fields():
 async def test_configure_agent_full_model_string():
     """ConfigureAgentScreen should handle full model strings like 'claude-opus-4-6'."""
     current = {"name": "worker-1", "model": "claude-opus-4-6", "color": "blue", "agentType": "worker"}
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#model").value == "opus"
@@ -552,9 +610,13 @@ async def test_configure_agent_bedrock_model_string():
         "color": "green",
         "agentType": "tester",
     }
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#model").value == "sonnet"
@@ -564,9 +626,13 @@ async def test_configure_agent_bedrock_model_string():
 async def test_configure_agent_unknown_color_defaults_to_none():
     """ConfigureAgentScreen should handle unknown color values."""
     current = {"name": "worker-1", "model": "sonnet", "color": "magenta", "agentType": "worker"}
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#color").value == ""
@@ -576,9 +642,13 @@ async def test_configure_agent_unknown_color_defaults_to_none():
 async def test_configure_agent_unknown_type_defaults_to_worker():
     """ConfigureAgentScreen should handle unknown agentType values."""
     current = {"name": "worker-1", "model": "sonnet", "color": "", "agentType": "custom-role"}
-    app = _ModalApp(lambda: ConfigureAgentScreen(
-        team="alpha", agent_name="worker-1", current=current,
-    ))
+    app = _ModalApp(
+        lambda: ConfigureAgentScreen(
+            team="alpha",
+            agent_name="worker-1",
+            current=current,
+        )
+    )
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         assert _sq(app, "#agent-type").value == "worker"
@@ -737,6 +807,7 @@ class TestFormatInboxText:
     @staticmethod
     def _fmt(text: str) -> str:
         from claude_litter.screens.main import MainScreen
+
         return MainScreen._format_inbox_text(text)
 
     def test_plain_text_passthrough(self) -> None:
@@ -746,7 +817,10 @@ class TestFormatInboxText:
         assert self._fmt('{"type":"idle_notification","from":"w1"}') == ""
 
     def test_task_assignment_formatted(self) -> None:
-        msg = '{"type":"task_assignment","taskId":"10","subject":"Explore Jobs","description":"Deep exploration of Jobs system"}'
+        msg = (
+            '{"type":"task_assignment","taskId":"10","subject":"Explore Jobs",'
+            '"description":"Deep exploration of Jobs system"}'
+        )
         result = self._fmt(msg)
         assert "[Task #10]" in result
         assert "Explore Jobs" in result

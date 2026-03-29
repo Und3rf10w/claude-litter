@@ -1,11 +1,12 @@
 """Tests for MainScreen transcript loading methods."""
+
 from __future__ import annotations
 
 import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -76,9 +77,7 @@ class TestFindAgentTranscript:
         subagents_dir.mkdir()
 
         jsonl = subagents_dir / "agent-xyz.jsonl"
-        jsonl.write_text(
-            json.dumps({"message": {"role": "user", "content": 'You are "worker" agent.'}}) + "\n"
-        )
+        jsonl.write_text(json.dumps({"message": {"role": "user", "content": 'You are "worker" agent.'}}) + "\n")
 
         result = _make_screen(tmp_path)._find_agent_transcript(subagents_dir, "worker")
 
@@ -90,9 +89,7 @@ class TestFindAgentTranscript:
         subagents_dir.mkdir()
 
         jsonl = subagents_dir / "agent-xyz.jsonl"
-        jsonl.write_text(
-            json.dumps({"message": {"role": "user", "content": 'teammate_id="analyst" stuff'}}) + "\n"
-        )
+        jsonl.write_text(json.dumps({"message": {"role": "user", "content": 'teammate_id="analyst" stuff'}}) + "\n")
 
         result = _make_screen(tmp_path)._find_agent_transcript(subagents_dir, "analyst")
 
@@ -188,9 +185,7 @@ def fake_home(tmp_path: Path, monkeypatch):
 class TestLoadTranscriptHistory:
     """Tests for _load_transcript_history using a fake home directory."""
 
-    def _make_transcript_screen(
-        self, team_root: Path, team: str, agent: str, cwd: str
-    ) -> MainScreen:
+    def _make_transcript_screen(self, team_root: Path, team: str, agent: str, cwd: str) -> MainScreen:
         screen = MainScreen.__new__(MainScreen)
         screen._team_service = TeamService(base_path=team_root)
         screen._member_info = {(team, agent): {"cwd": cwd}}
@@ -270,8 +265,7 @@ class TestLoadTranscriptHistory:
 
         jsonl = subagents_dir / "agent-222.jsonl"
         jsonl.write_text(
-            "{this is not valid json}\n"
-            + _make_jsonl_entry("assistant", [{"type": "text", "text": "Valid content"}])
+            "{this is not valid json}\n" + _make_jsonl_entry("assistant", [{"type": "text", "text": "Valid content"}])
         )
         (subagents_dir / "agent-222.meta.json").write_text(json.dumps({"agentType": "checker"}))
 
@@ -294,10 +288,9 @@ class TestLoadTranscriptHistory:
         _, subagents_dir = _make_project_dir(fake_home, cwd, lead_session_id)
 
         jsonl = subagents_dir / "agent-333.jsonl"
-        jsonl.write_text("".join(
-            _make_jsonl_entry("assistant", [{"type": "text", "text": f"Message {i}"}])
-            for i in range(210)
-        ))
+        jsonl.write_text(
+            "".join(_make_jsonl_entry("assistant", [{"type": "text", "text": f"Message {i}"}]) for i in range(210))
+        )
         (subagents_dir / "agent-333.meta.json").write_text(json.dumps({"agentType": "cruncher"}))
 
         screen = self._make_transcript_screen(team_root, team, agent, cwd)

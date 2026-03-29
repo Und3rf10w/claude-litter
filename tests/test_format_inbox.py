@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from claude_litter.screens.main import MainScreen
 
 fmt = MainScreen._format_inbox_text
@@ -58,23 +56,27 @@ class TestFormatInboxText:
     # ------------------------------------------------------------------
 
     def test_task_assignment_short_description(self):
-        msg = json.dumps({
-            "type": "task_assignment",
-            "taskId": "42",
-            "subject": "Fix bug",
-            "description": "Short desc",
-        })
+        msg = json.dumps(
+            {
+                "type": "task_assignment",
+                "taskId": "42",
+                "subject": "Fix bug",
+                "description": "Short desc",
+            }
+        )
         result = fmt(msg)
         assert result == "[Task #42] Fix bug\n  Short desc"
 
     def test_task_assignment_long_description_truncated_by_default(self):
         long_desc = "A" * 300
-        msg = json.dumps({
-            "type": "task_assignment",
-            "taskId": "7",
-            "subject": "Do work",
-            "description": long_desc,
-        })
+        msg = json.dumps(
+            {
+                "type": "task_assignment",
+                "taskId": "7",
+                "subject": "Do work",
+                "description": long_desc,
+            }
+        )
         result = fmt(msg)
         assert result.startswith("[Task #7] Do work\n  ")
         preview = result.split("\n  ", 1)[1]
@@ -82,23 +84,27 @@ class TestFormatInboxText:
 
     def test_task_assignment_long_description_not_truncated_when_false(self):
         long_desc = "B" * 300
-        msg = json.dumps({
-            "type": "task_assignment",
-            "taskId": "8",
-            "subject": "Big task",
-            "description": long_desc,
-        })
+        msg = json.dumps(
+            {
+                "type": "task_assignment",
+                "taskId": "8",
+                "subject": "Big task",
+                "description": long_desc,
+            }
+        )
         result = fmt(msg, truncate=False)
         assert result == f"[Task #8] Big task\n  {long_desc}"
 
     def test_task_assignment_description_exactly_200_chars_not_truncated(self):
         desc = "C" * 200
-        msg = json.dumps({
-            "type": "task_assignment",
-            "taskId": "9",
-            "subject": "Edge",
-            "description": desc,
-        })
+        msg = json.dumps(
+            {
+                "type": "task_assignment",
+                "taskId": "9",
+                "subject": "Edge",
+                "description": desc,
+            }
+        )
         result = fmt(msg)
         assert result == f"[Task #9] Edge\n  {desc}"
 
@@ -140,20 +146,24 @@ class TestFormatInboxText:
     # ------------------------------------------------------------------
 
     def test_shutdown_response_approved(self):
-        msg = json.dumps({
-            "type": "shutdown_response",
-            "approve": True,
-            "reason": "OK",
-        })
+        msg = json.dumps(
+            {
+                "type": "shutdown_response",
+                "approve": True,
+                "reason": "OK",
+            }
+        )
         result = fmt(msg)
         assert result == "Shutdown approved: OK"
 
     def test_shutdown_response_rejected(self):
-        msg = json.dumps({
-            "type": "shutdown_response",
-            "approve": False,
-            "reason": "Not now",
-        })
+        msg = json.dumps(
+            {
+                "type": "shutdown_response",
+                "approve": False,
+                "reason": "Not now",
+            }
+        )
         result = fmt(msg)
         assert result == "Shutdown rejected: Not now"
 
@@ -176,7 +186,7 @@ class TestFormatInboxText:
         msg = json.dumps({"type": "big_msg", "data": big_data})
         result = fmt(msg)
         # The content portion (after "[big_msg] ") should be truncated
-        content_part = result[len("[big_msg] "):]
+        content_part = result[len("[big_msg] ") :]
         assert content_part.endswith("...")
         assert len(content_part) == 303  # 300 chars + "..."
 
@@ -212,12 +222,14 @@ class TestFormatInboxText:
 
     def test_truncate_true_is_default(self):
         long_desc = "Z" * 300
-        msg = json.dumps({
-            "type": "task_assignment",
-            "taskId": "1",
-            "subject": "S",
-            "description": long_desc,
-        })
+        msg = json.dumps(
+            {
+                "type": "task_assignment",
+                "taskId": "1",
+                "subject": "S",
+                "description": long_desc,
+            }
+        )
         assert fmt(msg, truncate=True) == fmt(msg)
 
     def test_truncate_false_preserves_full_content_for_fallback(self):

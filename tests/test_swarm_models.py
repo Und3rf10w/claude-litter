@@ -3,14 +3,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from claude_litter.models.swarm import SwarmState, SwarmHeartbeat, SwarmProgressEntry
-from claude_litter.services.state import _parse_swarm_change_path, SwarmUpdated
+from claude_litter.models.swarm import SwarmHeartbeat, SwarmProgressEntry, SwarmState
+from claude_litter.services.state import SwarmUpdated, _parse_swarm_change_path
 
 
 class TestSwarmProgressEntry:
     def test_from_dict(self):
-        data = {"task_id": "1", "task": "Fix bug", "teammate": "alice",
-                "tasks_completed": 3, "tasks_total": 5, "ts": "2026-01-01T00:00:00Z"}
+        data = {
+            "task_id": "1",
+            "task": "Fix bug",
+            "teammate": "alice",
+            "tasks_completed": 3,
+            "tasks_total": 5,
+            "ts": "2026-01-01T00:00:00Z",
+        }
         entry = SwarmProgressEntry.from_dict(data)
         assert entry.task_id == "1"
         assert entry.tasks_completed == 3
@@ -24,9 +30,16 @@ class TestSwarmProgressEntry:
 
 class TestSwarmHeartbeat:
     def test_from_dict(self):
-        data = {"iteration": 2, "phase": "execute", "tasks_completed": 3,
-                "tasks_total": 5, "last_tool": "Write", "team_active": True,
-                "autonomy_health": "healthy", "timestamp": "2026-01-01T00:00:00Z"}
+        data = {
+            "iteration": 2,
+            "phase": "execute",
+            "tasks_completed": 3,
+            "tasks_total": 5,
+            "last_tool": "Write",
+            "team_active": True,
+            "autonomy_health": "healthy",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
         hb = SwarmHeartbeat.from_dict(data)
         assert hb.iteration == 2
         assert hb.phase == "execute"
@@ -46,16 +59,25 @@ class TestSwarmState:
 
     def _minimal_state(self) -> dict:
         return {
-            "version": 2, "mode": "default", "goal": "test",
-            "completion_promise": "done", "soft_budget": 10,
-            "session_id": "test", "instance_id": "abcd1234",
-            "iteration": 1, "phase": "initial",
+            "version": 2,
+            "mode": "default",
+            "goal": "test",
+            "completion_promise": "done",
+            "soft_budget": 10,
+            "session_id": "test",
+            "instance_id": "abcd1234",
+            "iteration": 1,
+            "phase": "initial",
             "started_at": "2026-01-01T00:00:00Z",
             "last_updated": "2026-01-01T00:00:00Z",
-            "team_name": "test-team", "safe_mode": True,
-            "sentinel_timeout": 600, "teammates_isolation": "shared",
-            "teammates_max_count": 8, "permission_failures": [],
-            "autonomy_health": "healthy", "progress_history": []
+            "team_name": "test-team",
+            "safe_mode": True,
+            "sentinel_timeout": 600,
+            "teammates_isolation": "shared",
+            "teammates_max_count": 8,
+            "permission_failures": [],
+            "autonomy_health": "healthy",
+            "progress_history": [],
         }
 
     def test_from_files_missing_dir(self, tmp_path):
@@ -82,9 +104,16 @@ class TestSwarmState:
     def test_from_files_with_heartbeat(self, tmp_path):
         d = tmp_path / "abcd1234"
         self._write_state(d, self._minimal_state())
-        hb = {"iteration": 2, "phase": "execute", "tasks_completed": 3,
-              "tasks_total": 5, "last_tool": "Write", "team_active": True,
-              "autonomy_health": "healthy", "timestamp": "2026-01-01T00:00:00Z"}
+        hb = {
+            "iteration": 2,
+            "phase": "execute",
+            "tasks_completed": 3,
+            "tasks_total": 5,
+            "last_tool": "Write",
+            "team_active": True,
+            "autonomy_health": "healthy",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
         (d / "heartbeat.json").write_text(json.dumps(hb))
         state = SwarmState.from_files(d)
         assert state is not None
@@ -139,9 +168,16 @@ class TestSwarmState:
     def test_progress_pct_with_heartbeat(self, tmp_path):
         d = tmp_path / "abcd1234"
         self._write_state(d, self._minimal_state())
-        hb = {"iteration": 1, "phase": "execute", "tasks_completed": 3,
-              "tasks_total": 6, "last_tool": "Write", "team_active": True,
-              "autonomy_health": "healthy", "timestamp": "2026-01-01T00:00:00Z"}
+        hb = {
+            "iteration": 1,
+            "phase": "execute",
+            "tasks_completed": 3,
+            "tasks_total": 6,
+            "last_tool": "Write",
+            "team_active": True,
+            "autonomy_health": "healthy",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
         (d / "heartbeat.json").write_text(json.dumps(hb))
         state = SwarmState.from_files(d)
         assert state.progress_pct == 0.5

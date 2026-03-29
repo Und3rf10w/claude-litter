@@ -18,16 +18,25 @@ def _make_state(tmp_path: Path, instance_id: str = "abcd1234", **overrides) -> S
     d = tmp_path / instance_id
     d.mkdir(parents=True, exist_ok=True)
     data = {
-        "version": 2, "mode": "default", "goal": "test goal",
-        "completion_promise": "done", "soft_budget": 10,
-        "session_id": "test", "instance_id": instance_id,
-        "iteration": 2, "phase": "execute",
+        "version": 2,
+        "mode": "default",
+        "goal": "test goal",
+        "completion_promise": "done",
+        "soft_budget": 10,
+        "session_id": "test",
+        "instance_id": instance_id,
+        "iteration": 2,
+        "phase": "execute",
         "started_at": "2026-01-01T00:00:00Z",
         "last_updated": "2026-01-01T00:01:00Z",
-        "team_name": "test-team", "safe_mode": True,
-        "sentinel_timeout": 600, "teammates_isolation": "shared",
-        "teammates_max_count": 8, "permission_failures": [],
-        "autonomy_health": "healthy", "progress_history": [],
+        "team_name": "test-team",
+        "safe_mode": True,
+        "sentinel_timeout": 600,
+        "teammates_isolation": "shared",
+        "teammates_max_count": 8,
+        "permission_failures": [],
+        "autonomy_health": "healthy",
+        "progress_history": [],
     }
     data.update(overrides)
     (d / "state.json").write_text(json.dumps(data))

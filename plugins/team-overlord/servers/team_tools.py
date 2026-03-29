@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Team Overlord MCP Server — team/task/message management tools."""
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -73,7 +74,7 @@ def _acquire_lock(path: Path, timeout: float = 5.0) -> Path:
                     except OSError:
                         pass
                     return lock_dir
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
             if time.monotonic() > deadline:
                 raise TimeoutError(f"Could not acquire lock: {lock_dir}")
@@ -122,9 +123,7 @@ def _locked_update(path: Path, update_fn, default_data=None) -> dict | list:
 
 def _next_task_id(tasks_dir: Path) -> str:
     """Generate next task ID. Must be called while holding a directory-level lock."""
-    existing = [
-        int(f.stem) for f in tasks_dir.glob("*.json") if f.stem.isdigit()
-    ]
+    existing = [int(f.stem) for f in tasks_dir.glob("*.json") if f.stem.isdigit()]
     return str(max(existing, default=0) + 1)
 
 
@@ -148,16 +147,22 @@ def list_teams() -> str:
             try:
                 config: dict = _read_json(config_path)
                 members: list[dict] = config.get("members", [])
-                results.append({
-                    "name": config.get("name", d.name),
-                    "description": config.get("description", ""),
-                    "status": config.get("status", "active"),
-                    "members": [
-                        {"name": m.get("name", "?"), "model": m.get("model", ""), "agentType": m.get("agentType", "")}
-                        for m in members
-                    ],
-                })
-            except (json.JSONDecodeError, OSError):
+                results.append(
+                    {
+                        "name": config.get("name", d.name),
+                        "description": config.get("description", ""),
+                        "status": config.get("status", "active"),
+                        "members": [
+                            {
+                                "name": m.get("name", "?"),
+                                "model": m.get("model", ""),
+                                "agentType": m.get("agentType", ""),
+                            }
+                            for m in members
+                        ],
+                    }
+                )
+            except json.JSONDecodeError, OSError:
                 continue
     return json.dumps(results, indent=2)
 
@@ -201,7 +206,7 @@ def list_tasks(team: str, status: str = "") -> str:
             if status and task.get("status") != status:
                 continue
             results.append(task)
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             continue
     return json.dumps(results, indent=2)
 
@@ -382,7 +387,7 @@ def send_message(team: str, to: str, text: str, from_agent: str = "tui") -> str:
     message = {
         "from": from_agent,
         "text": text,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "read": False,
     }
 
@@ -432,7 +437,7 @@ def broadcast_message(team: str, text: str, from_agent: str = "tui") -> str:
             message = {
                 "from": from_agent,
                 "text": text,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "read": False,
                 "summary": f"[broadcast] {summary}",
             }

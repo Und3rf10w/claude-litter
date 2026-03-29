@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from rich.markdown import Markdown
 from rich.markup import escape as rich_escape
-
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
@@ -20,7 +19,6 @@ from textual.widgets import (
     TabPane,
     TextArea,
 )
-
 
 DEFAULT_CSS = """
 MessagePanel {
@@ -230,9 +228,7 @@ class MessagePanel(Widget):
         self._team = team
         self._agent = agent
         try:
-            self.query_one(".msg-panel-title", Static).update(
-                f"Messages \u2014 {agent}"
-            )
+            self.query_one(".msg-panel-title", Static).update(f"Messages \u2014 {agent}")
             self.query_one("#compose-from-label", Label).update(f"From: {agent}")
         except Exception:
             pass  # not yet mounted
@@ -263,9 +259,7 @@ class MessagePanel(Widget):
                 return
 
             if broadcast_cb.value:
-                self.post_message(
-                    MessageComposed(to="", text=text_value, broadcast=True)
-                )
+                self.post_message(MessageComposed(to="", text=text_value, broadcast=True))
                 text_area.clear()
             else:
                 raw = to_select.value

@@ -1,8 +1,9 @@
 """Litter TUI services."""
-from .state import StateManager
+
 from .agent_manager import AgentManager, AgentSession
-from .team_service import TeamService
-from .kitty import KittyService
 from .claude_settings import ClaudeSettings
+from .kitty import KittyService
+from .state import StateManager
+from .team_service import TeamService
 
 __all__ = ["StateManager", "AgentManager", "AgentSession", "TeamService", "KittyService", "ClaudeSettings"]

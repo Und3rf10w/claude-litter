@@ -1,4 +1,5 @@
 """Command-line entry point for claude-litter."""
+
 from __future__ import annotations
 
 import argparse

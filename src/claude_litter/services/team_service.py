@@ -1,11 +1,12 @@
 """TeamService — direct JSON file operations for swarm team/task data."""
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from claude_litter.utils import safe_path
@@ -65,7 +66,7 @@ class TeamService:
                         except OSError:
                             pass
                         return lock_dir
-                except (OSError, ValueError):
+                except OSError, ValueError:
                     pass
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"Could not acquire lock: {lock_dir}")
@@ -86,7 +87,7 @@ class TeamService:
         try:
             with open(path) as f:
                 return json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             return {}
 
     def _write_json(self, path: Path, data: dict | list) -> None:
@@ -106,7 +107,7 @@ class TeamService:
                 try:
                     with open(path) as f:
                         data = json.load(f)
-                except (OSError, json.JSONDecodeError):
+                except OSError, json.JSONDecodeError:
                     data = default_data
             else:
                 data = default_data
@@ -147,6 +148,7 @@ class TeamService:
 
     def delete_team(self, name: str) -> None:
         import shutil
+
         team_dir = safe_path(self.teams_path, name)
         if team_dir.exists():
             shutil.rmtree(team_dir)
@@ -160,17 +162,13 @@ class TeamService:
             return None
         try:
             return self._read_json(config_path)  # type: ignore[return-value]
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return None
 
     def list_teams(self) -> list[str]:
         if not self.teams_path.exists():
             return []
-        return [
-            d.name
-            for d in self.teams_path.iterdir()
-            if d.is_dir() and (d / "config.json").exists()
-        ]
+        return [d.name for d in self.teams_path.iterdir() if d.is_dir() and (d / "config.json").exists()]
 
     # ------------------------------------------------------------------ #
     #  Members
@@ -194,10 +192,7 @@ class TeamService:
         config_path = safe_path(self.teams_path, team_name) / "config.json"
 
         def _remove(data: dict) -> dict:
-            data["members"] = [
-                m for m in data.get("members", [])
-                if m.get("agentId") != agent_id
-            ]
+            data["members"] = [m for m in data.get("members", []) if m.get("agentId") != agent_id]
             return data
 
         self._locked_update(config_path, _remove)
@@ -273,10 +268,7 @@ class TeamService:
 
     def _next_task_id(self, tasks_dir: Path) -> str:
         """Generate next task ID. Must be called while holding a lock on tasks_dir."""
-        existing = [
-            int(f.stem) for f in tasks_dir.glob("*.json")
-            if f.stem.isdigit()
-        ]
+        existing = [int(f.stem) for f in tasks_dir.glob("*.json") if f.stem.isdigit()]
         return str(max(existing, default=0) + 1)
 
     def create_task(self, team_name: str, subject: str, description: str = "") -> dict:
@@ -326,7 +318,7 @@ class TeamService:
                 continue
             try:
                 tasks.append(self._read_json(f))
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError, OSError:
                 continue
         return tasks
 
@@ -350,7 +342,7 @@ class TeamService:
         message: dict = {
             "from": from_agent,
             "text": text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "read": False,
         }
         if summary:
@@ -398,6 +390,7 @@ class TeamService:
         # Update config.json internals
         config_path = new_team_dir / "config.json"
         if config_path.exists():
+
             def _update(data: dict) -> dict:
                 data["name"] = new_name
                 # Update leadAgentId if it references the old team name
@@ -428,7 +421,10 @@ class TeamService:
         self._locked_update(config_path, _update)
 
     def broadcast_message(
-        self, team_name: str, from_agent: str, text: str,
+        self,
+        team_name: str,
+        from_agent: str,
+        text: str,
     ) -> int:
         """Send a message to all team members except *from_agent*. Returns count sent."""
         config = self.get_team(team_name)
@@ -441,7 +437,10 @@ class TeamService:
             name = member.get("name", "")
             if name and name != from_agent:
                 self.send_message(
-                    team_name, name, from_agent, text,
+                    team_name,
+                    name,
+                    from_agent,
+                    text,
                     summary=f"[broadcast] {summary}",
                 )
                 count += 1

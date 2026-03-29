@@ -6,13 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import anyio
 from textual import work
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, Select, Static, Switch
-from textual.containers import Horizontal, Vertical, VerticalScroll
-
-import anyio
 
 from claude_litter.services.claude_settings import ClaudeSettings
 
@@ -23,7 +22,7 @@ def _load_config() -> dict[str, Any]:
     if _CONFIG_PATH.exists():
         try:
             return json.loads(_CONFIG_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             pass
     return {"vim_mode": False, "theme": "textual-dark"}
 
@@ -190,7 +189,9 @@ class SettingsScreen(Screen):
             await row.mount(Label("(no env vars configured)", classes="config-value-muted"))
         else:
             for k, v in sorted(env.items()):
-                display_val = _mask_token(v) if "TOKEN" in k or "SECRET" in k or "KEY" in k or "PASS" in k or "CRED" in k else v
+                display_val = (
+                    _mask_token(v) if "TOKEN" in k or "SECRET" in k or "KEY" in k or "PASS" in k or "CRED" in k else v
+                )
                 row = Horizontal(classes="setting-row")
                 await env_grid.mount(row)
                 await row.mount(Label(k, classes="config-key"))

@@ -74,7 +74,12 @@ class ContextMenu(OptionList):
         self.focus()
 
     def show_team_menu_at(
-        self, team: str, x: int, y: int, *, is_suspended: bool = False,
+        self,
+        team: str,
+        x: int,
+        y: int,
+        *,
+        is_suspended: bool = False,
     ) -> None:
         """Populate and display team context menu near *x*, *y*."""
         self._team = team
@@ -95,9 +100,7 @@ class ContextMenu(OptionList):
         event.stop()
         self.remove_class("-visible")
         option = event.option
-        self.post_message(
-            self.ActionSelected(option.id or "", self._team, self._agent)
-        )
+        self.post_message(self.ActionSelected(option.id or "", self._team, self._agent))
 
     def on_blur(self) -> None:
         self.remove_class("-visible")

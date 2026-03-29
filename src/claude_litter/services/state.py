@@ -1,11 +1,11 @@
 """StateManager: watches ~/.claude/ for changes and reads teams/tasks/messages."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import anyio
 import anyio.abc
@@ -18,8 +18,10 @@ from claude_litter.utils import safe_path
 try:
     from textual.message import Message as TextualMessage
 except ImportError:  # allow use without textual installed in tests
+
     class TextualMessage:  # type: ignore[no-redef]
         pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ _DEBOUNCE_SECONDS = 0.1
 # ---------------------------------------------------------------------------
 # Textual messages
 # ---------------------------------------------------------------------------
+
 
 class TeamUpdated(TextualMessage):
     """Posted when a team config changes."""
@@ -80,6 +83,7 @@ class SwarmUpdated(TextualMessage):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _read_json(path: Path) -> dict | list | None:
     """Read JSON file, returning None on any error."""
@@ -181,9 +185,7 @@ def _parse_change_path(
     return None
 
 
-def _parse_swarm_change_path(
-    changed: Path, swarm_instance_dirs: dict[str, tuple[Path, str]]
-) -> SwarmUpdated | None:
+def _parse_swarm_change_path(changed: Path, swarm_instance_dirs: dict[str, tuple[Path, str]]) -> SwarmUpdated | None:
     """Map a path change to SwarmUpdated if inside a known swarm instance dir."""
     for instance_id, (instance_dir, project_root) in swarm_instance_dirs.items():
         try:
@@ -197,6 +199,7 @@ def _parse_swarm_change_path(
 # ---------------------------------------------------------------------------
 # StateManager
 # ---------------------------------------------------------------------------
+
 
 class StateManager:
     """Reads swarm state from ~/.claude/ and posts Textual messages on changes."""
@@ -414,7 +417,8 @@ class StateManager:
     def _rescan_swarm_instances(self) -> None:
         self._swarm_instance_dirs.clear()
         import re
-        hex8 = re.compile(r'^[0-9a-f]{8}$')
+
+        hex8 = re.compile(r"^[0-9a-f]{8}$")
         for root_str in self._swarm_project_roots:
             root = Path(root_str)
             swarm_base = root / ".claude" / "swarm-loop"
@@ -423,19 +427,32 @@ class StateManager:
             try:
                 for entry in swarm_base.iterdir():
                     if entry.is_dir() and not entry.is_symlink() and hex8.match(entry.name):
-                        if (entry / "state.json").exists():
-                            self._swarm_instance_dirs[entry.name] = (entry, root_str)
+                        self._swarm_instance_dirs[entry.name] = (entry, root_str)
             except OSError:
                 continue
 
     def get_swarm_instances(self):
-        from claude_litter.models.swarm import SwarmState
+        from claude_litter.models.swarm import DefunctSwarmInstance, SwarmState
+
         results = []
         for iid, (idir, _root) in self._swarm_instance_dirs.items():
             state = SwarmState.from_files(idir)
             if state is not None:
                 results.append(state)
+            else:
+                defunct = DefunctSwarmInstance.from_dir(idir)
+                if defunct is not None:
+                    results.append(defunct)
         return sorted(results, key=lambda s: s.last_updated, reverse=True)
+
+    def _refresh_single_instance(self, instance_id: str) -> None:
+        """Re-check a single instance directory after a file change."""
+        if instance_id not in self._swarm_instance_dirs:
+            return
+        instance_dir, _root = self._swarm_instance_dirs[instance_id]
+        # Remove if both state.json and log.md are gone (nothing useful)
+        if not (instance_dir / "state.json").exists() and not (instance_dir / "log.md").exists():
+            del self._swarm_instance_dirs[instance_id]
 
     # ------------------------------------------------------------------
     # Internal watcher
@@ -473,7 +490,7 @@ class StateManager:
                 watch_paths.append(sd)
 
         try:
-            from watchfiles import awatch, Change
+            from watchfiles import awatch
 
             async for changes in awatch(*watch_paths, debounce=int(_DEBOUNCE_SECONDS * 1000)):
                 for change_type, path_str in changes:
@@ -495,7 +512,7 @@ class StateManager:
                     changed = Path(path_str)
                     swarm_msg = _parse_swarm_change_path(changed, self._swarm_instance_dirs)
                     if swarm_msg is not None:
-                        self._rescan_swarm_instances()
+                        self._refresh_single_instance(swarm_msg.instance_id)
                         if self._app is not None:
                             try:
                                 self._app.post_message(swarm_msg)

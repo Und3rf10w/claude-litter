@@ -1,6 +1,6 @@
 [project]
 name = "claude-litter"
-version = "0.1.0"
+version = "1.0.0"
 description = "A TUI for managing Claude Agent Teams"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -35,7 +35,22 @@ packages = ["src/claude_litter"]
 dev = [
     "pytest",
     "pytest-anyio",
+    "ruff",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = ["plugins"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F841"]
+
+[tool.ruff.format]
+quote-style = "double"

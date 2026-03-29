@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from claude_litter.screens.settings import _mask_token, _resolve_theme
 
 

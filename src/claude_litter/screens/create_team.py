@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
+
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
-from textual.containers import Horizontal, Vertical
-
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,100}$")
 
@@ -72,9 +72,11 @@ class CreateTeamScreen(ModalScreen[dict | None]):
             self.query_one("#name-error", Static).update(error)
             return
         self.query_one("#name-error", Static).update("")
-        self.dismiss({
-            "name": name,
-            "description": self.query_one("#description", TextArea).text,
-            "auto_lead": self.query_one("#auto-lead", Switch).value,
-            "model": self.query_one("#model", Select).value,
-        })
+        self.dismiss(
+            {
+                "name": name,
+                "description": self.query_one("#description", TextArea).text,
+                "auto_lead": self.query_one("#auto-lead", Switch).value,
+                "model": self.query_one("#model", Select).value,
+            }
+        )

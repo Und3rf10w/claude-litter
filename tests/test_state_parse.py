@@ -1,4 +1,5 @@
 """Tests for _parse_change_path and _read_last_entry in state.py."""
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,6 @@ from claude_litter.services.state import (
     _parse_change_path,
     _read_last_entry,
 )
-
 
 # ---------------------------------------------------------------------------
 # TestParseChangePath
@@ -311,9 +311,7 @@ class TestReadLastEntry:
     def test_malformed_json_on_last_line_does_not_crash(self, tmp_path: Path) -> None:
         # Invalid JSON on the last line -> exception path -> ("", False)
         p = tmp_path / "transcript.jsonl"
-        valid_line = json.dumps(
-            {"type": "assistant", "message": {"stop_reason": "end_turn", "content": []}}
-        )
+        valid_line = json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn", "content": []}})
         p.write_text(valid_line + "\n{this is not json\n", encoding="utf-8")
         tool_name, is_idle = _read_last_entry(p)
         assert tool_name == ""

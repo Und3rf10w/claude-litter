@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static, TextArea
-from textual.containers import Horizontal, Vertical
 
 from .create_team import validate_team_name
 
@@ -36,9 +36,13 @@ class SpawnAgentScreen(ModalScreen[dict | None]):
             yield Static("", id="name-error")
             yield Label("Type", classes="field-label")
             yield Select(
-                [("Worker", "worker"), ("Backend Dev", "backend-dev"),
-                 ("Frontend Dev", "frontend-dev"), ("Tester", "tester"),
-                 ("Researcher", "researcher")],
+                [
+                    ("Worker", "worker"),
+                    ("Backend Dev", "backend-dev"),
+                    ("Frontend Dev", "frontend-dev"),
+                    ("Tester", "tester"),
+                    ("Researcher", "researcher"),
+                ],
                 value="worker",
                 id="agent-type",
             )
@@ -64,9 +68,11 @@ class SpawnAgentScreen(ModalScreen[dict | None]):
             self.query_one("#name-error", Static).update(error)
             return
         self.query_one("#name-error", Static).update("")
-        self.dismiss({
-            "name": name,
-            "type": self.query_one("#agent-type", Select).value,
-            "model": self.query_one("#model", Select).value,
-            "initial_prompt": self.query_one("#initial-prompt", TextArea).text,
-        })
+        self.dismiss(
+            {
+                "name": name,
+                "type": self.query_one("#agent-type", Select).value,
+                "model": self.query_one("#model", Select).value,
+                "initial_prompt": self.query_one("#initial-prompt", TextArea).text,
+            }
+        )

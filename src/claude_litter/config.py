@@ -1,10 +1,10 @@
 """Configuration dataclass for claude-litter."""
+
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-
 
 _DEFAULT_CONFIG_PATH = Path.home() / ".claude" / "claude-litter" / "config.json"
 
@@ -18,7 +18,7 @@ class Config:
     theme: str = "dark"
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
+    def load(cls, path: Path | None = None) -> Config:
         """Load config from disk; return defaults on missing or corrupt file."""
         config_path = path or _DEFAULT_CONFIG_PATH
         if not config_path.exists():

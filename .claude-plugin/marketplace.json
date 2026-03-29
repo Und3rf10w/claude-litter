@@ -5,15 +5,14 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "2.0.1",
+    "version": "2.1.0",
     "description": "Claude Code Agent Team/Swarm Management Layer"
   },
   "plugins": [
     {
       "name": "team-overlord",
       "source": "./plugins/team-overlord",
-      "description": "Multi-agent swarm management",
-      "version": "1.0.0",
+      "description": "Multi-agent swarm management plugin for use by the Claude-litter tui manager",
       "author": {
         "name": "Und3rf10w"
       },
@@ -35,7 +34,6 @@
       "author": {
         "name": "Und3rf10w"
       },
-      "version": "1.0.0",
       "keywords": ["ralph", "ralph wiggum", "ralph-loop", "swarm", "team", "orchestration", "deepplan", "async", "profiles", "planning"],
       "category": "automation"
     }

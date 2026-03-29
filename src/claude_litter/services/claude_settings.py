@@ -1,4 +1,5 @@
 """Read and expose Claude Code settings from ~/.claude/settings.json."""
+
 from __future__ import annotations
 
 import json
@@ -6,11 +7,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 _CACHE_TTL = 30.0
 
-_settings_cache: tuple[float, "ClaudeSettings"] | None = None
+_settings_cache: tuple[float, ClaudeSettings] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class ClaudeSettings:
         return self.env.get("CLAUDE_CODE_SUBAGENT_MODEL")
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "ClaudeSettings":
+    def load(cls, path: Path | None = None) -> ClaudeSettings:
         """Load settings from disk, with a 30s module-level cache.
 
         The cache is bypassed when a custom *path* is provided (e.g. in tests).
@@ -62,7 +62,7 @@ class ClaudeSettings:
         settings_path = path or _SETTINGS_PATH
         try:
             data = json.loads(settings_path.read_text())
-        except (OSError, json.JSONDecodeError, TypeError):
+        except OSError, json.JSONDecodeError, TypeError:
             result = cls()
         else:
             result = cls(

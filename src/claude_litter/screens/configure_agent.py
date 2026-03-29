@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from rich.text import Text
-
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static
-from textual.containers import Horizontal, Vertical
 
 from .create_team import validate_team_name
-
 
 _VALID_COLORS = {"blue", "green", "yellow", "purple", "orange", "pink", "red", "cyan", ""}
 _VALID_TYPES = {"worker", "backend-dev", "frontend-dev", "tester", "researcher"}
@@ -145,9 +143,11 @@ class ConfigureAgentScreen(ModalScreen[dict | None]):
             return
         self.query_one("#name-error", Static).update("")
 
-        self.dismiss({
-            "name": name,
-            "model": self.query_one("#model", Select).value,
-            "color": self.query_one("#color", Select).value,
-            "agentType": self.query_one("#agent-type", Select).value,
-        })
+        self.dismiss(
+            {
+                "name": name,
+                "model": self.query_one("#model", Select).value,
+                "color": self.query_one("#color", Select).value,
+                "agentType": self.query_one("#agent-type", Select).value,
+            }
+        )

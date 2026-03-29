@@ -1,4 +1,5 @@
 """MainScreen — primary application screen."""
+
 from __future__ import annotations
 
 import json
@@ -10,24 +11,24 @@ from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, LoadingIndicator, Static
-from textual.containers import Horizontal, Vertical
 
 from claude_litter.models.task import TodoItem
+from claude_litter.screens.configure_agent import _normalize_model
 from claude_litter.services.agent_manager import AgentManager, PermissionRequest
 from claude_litter.services.state import InboxUpdated, StateManager, TaskUpdated, TeamUpdated, TranscriptActivity
 from claude_litter.services.team_service import TeamService
-from claude_litter.widgets.sidebar import TeamSidebar
-from claude_litter.widgets.tab_bar import SessionTabBar
-from claude_litter.widgets.session_view import SessionView, TodoWriteDetected, _format_tool_input
-from claude_litter.widgets.input_bar import InputBar, PermissionResponse, PromptSubmitted, CommandSubmitted
-from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
-from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
-from claude_litter.widgets.context_menu import ContextMenu
-from claude_litter.widgets.status_bar import StatusBar
-from claude_litter.screens.configure_agent import _normalize_model
 from claude_litter.utils import COLOR_MAP
+from claude_litter.widgets.context_menu import ContextMenu
+from claude_litter.widgets.input_bar import CommandSubmitted, InputBar, PermissionResponse, PromptSubmitted
+from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
+from claude_litter.widgets.session_view import SessionView, TodoWriteDetected, _format_tool_input
+from claude_litter.widgets.sidebar import TeamSidebar
+from claude_litter.widgets.status_bar import StatusBar
+from claude_litter.widgets.tab_bar import SessionTabBar
+from claude_litter.widgets.task_panel import TaskPanel, TaskSelected
 
 _log = logging.getLogger("claude_litter.main_screen")
 
@@ -131,11 +132,12 @@ class MainScreen(Screen):
             return
         try:
             from claude_litter.widgets.session_view import SelectableLog
+
             log = sv.query_one(SelectableLog)
             if buf.streaming_block_count > 0:
                 # Replace: remove previous streaming lines, rewrite
                 if buf.sv_line_count > 0:
-                    del log.lines[-buf.sv_line_count:]
+                    del log.lines[-buf.sv_line_count :]
                 if sv._output_history:
                     sv._output_history.pop()
                 if sv._render_items:
@@ -185,6 +187,7 @@ class MainScreen(Screen):
             partial = "".join(buf.stream_accumulator)
             if partial:
                 from claude_litter.widgets.session_view import SelectableLog
+
                 try:
                     log = sv.query_one(SelectableLog)
                     renderable = sv._render_markdown(partial)
@@ -207,6 +210,7 @@ class MainScreen(Screen):
         """Return the currently selected text from the active SessionView, or empty string."""
         try:
             from claude_litter.widgets.session_view import SelectableLog
+
             sv = self.query_one("#session-view", SessionView)
             if not sv.display:
                 return ""
@@ -234,6 +238,7 @@ class MainScreen(Screen):
         yield TaskPanel(id="task-panel", classes="slide-panel")
         yield MessagePanel(id="message-panel", classes="slide-panel")
         from claude_litter.widgets.swarm_panel import SwarmPanel
+
         yield SwarmPanel(id="swarm-panel")
         yield ContextMenu(id="context-menu")
         yield Footer()
@@ -271,10 +276,7 @@ class MainScreen(Screen):
             self._wire_permission_callback(session, _MAIN_CHAT_KEY)
             # Populate autocomplete with CC commands from server_info
             if session.server_info:
-                cc_commands = {
-                    c["name"]: c.get("description", "")
-                    for c in session.server_info.get("commands", [])
-                }
+                cc_commands = {c["name"]: c.get("description", "") for c in session.server_info.get("commands", [])}
                 self.query_one("#input-bar", InputBar).update_commands(cc_commands)
             sv.clear_output()
         except Exception as exc:
@@ -308,6 +310,7 @@ class MainScreen(Screen):
                 self._team_spawn_agent(self._active_agent_key[0])
             else:
                 from claude_litter.screens.spawn_agent import SpawnAgentScreen
+
                 self.app.push_screen(SpawnAgentScreen(), lambda r: None)
             return
 
@@ -405,7 +408,9 @@ class MainScreen(Screen):
                     member = self._member_info.get(streaming_key, {})
                     model = member.get("model", "sonnet")
                     session = await self._agent_manager.spawn_agent(
-                        team, agent, model=model,
+                        team,
+                        agent,
+                        model=model,
                     )
                 self._wire_permission_callback(session, streaming_key)
             else:
@@ -414,8 +419,7 @@ class MainScreen(Screen):
                     session = await self._agent_manager.spawn_agent("", "default", plugins=_PLUGIN_CONFIG)
                     if session.server_info:
                         cc_commands = {
-                            c["name"]: c.get("description", "")
-                            for c in session.server_info.get("commands", [])
+                            c["name"]: c.get("description", "") for c in session.server_info.get("commands", [])
                         }
                         self.query_one("#input-bar", InputBar).update_commands(cc_commands)
                 self._wire_permission_callback(session, _MAIN_CHAT_KEY)
@@ -439,7 +443,9 @@ class MainScreen(Screen):
             if self._active_agent_key == streaming_key:
                 sv.append_output(err)
 
-    async def _stream_to_buffer(self, session, buf: AgentBuffer, sv: SessionView, streaming_key: tuple[str, str]) -> None:
+    async def _stream_to_buffer(
+        self, session, buf: AgentBuffer, sv: SessionView, streaming_key: tuple[str, str]
+    ) -> None:
         """Stream response chunks from an agent session into the buffer and view."""
         last_flush = time.monotonic()
         try:
@@ -595,6 +601,7 @@ class MainScreen(Screen):
         """Show/hide the swarm-loop panel."""
         try:
             from claude_litter.widgets.swarm_panel import SwarmPanel
+
             panel = self.query_one("#swarm-panel", SwarmPanel)
             panel.toggle()
             if panel._visible:
@@ -609,11 +616,13 @@ class MainScreen(Screen):
         instances = self._state_manager.get_swarm_instances()
         try:
             from claude_litter.widgets.swarm_panel import SwarmPanel
+
             self.query_one("#swarm-panel", SwarmPanel).update_instances(instances)
         except Exception:
             pass
         try:
             from claude_litter.widgets.sidebar import TeamSidebar
+
             self.query_one("#sidebar", TeamSidebar).update_swarm_instances(instances)
         except Exception:
             pass
@@ -687,9 +696,7 @@ class MainScreen(Screen):
 
         if result.get("auto_lead"):
             model = result.get("model", "sonnet")
-            brief = (
-                f"You are the team lead for team \"{name}\"."
-            )
+            brief = f'You are the team lead for team "{name}".'
             if description:
                 brief += f"\n\nTeam description:\n{description}"
             brief += (
@@ -697,12 +704,15 @@ class MainScreen(Screen):
                 "Use these to create tasks, spawn agents, assign work, and coordinate the team. "
                 "Start by breaking down the work into tasks and spawning the agents you need."
             )
-            self._execute_team_spawn(dir_name, {
-                "name": "team-lead",
-                "model": model,
-                "type": "team-lead",
-                "initial_prompt": brief,
-            })
+            self._execute_team_spawn(
+                dir_name,
+                {
+                    "name": "team-lead",
+                    "model": model,
+                    "type": "team-lead",
+                    "initial_prompt": brief,
+                },
+            )
 
     def _refresh_sidebar(self) -> None:
         """Reload all teams from disk and update the sidebar widget."""
@@ -756,19 +766,21 @@ class MainScreen(Screen):
                                 from_agent = inner.get("from", "")
                                 if from_agent and from_agent not in known_names:
                                     known_names.add(from_agent)
-                                    agents.append({
-                                        "name": from_agent,
-                                        "model": "",
-                                        "agentType": "",
-                                        "color": "",
-                                        "cwd": config["members"][0].get("cwd", "") if config.get("members") else "",
-                                        "unread": 0,
-                                    })
+                                    agents.append(
+                                        {
+                                            "name": from_agent,
+                                            "model": "",
+                                            "agentType": "",
+                                            "color": "",
+                                            "cwd": config["members"][0].get("cwd", "") if config.get("members") else "",
+                                            "unread": 0,
+                                        }
+                                    )
                                     member_info[(name, from_agent)] = {
                                         "name": from_agent,
                                         "cwd": config["members"][0].get("cwd", "") if config.get("members") else "",
                                     }
-                            except (json.JSONDecodeError, TypeError):
+                            except json.JSONDecodeError, TypeError:
                                 continue
                     except Exception:
                         pass
@@ -777,18 +789,18 @@ class MainScreen(Screen):
                 # or treat as active when members exist (swarm-spawned agents
                 # don't always write a per-member status field).
                 if not has_active and config.get("members"):
-                    all_missing_status = all(
-                        "status" not in m for m in config.get("members", [])
-                    )
+                    all_missing_status = all("status" not in m for m in config.get("members", []))
                     if all_missing_status:
                         has_active = True
                 team_status = config.get("status", "active" if has_active else "inactive")
-                teams.append({
-                    "name": config.get("name", name),
-                    "dir_name": name,
-                    "status": team_status,
-                    "agents": agents,
-                })
+                teams.append(
+                    {
+                        "name": config.get("name", name),
+                        "dir_name": name,
+                        "status": team_status,
+                        "agents": agents,
+                    }
+                )
         # Compute task counts while still in the worker (avoids extra disk read in apply)
         task_counts: dict[str, tuple[int, int]] = {}
         for t in teams:
@@ -796,7 +808,9 @@ class MainScreen(Screen):
             task_counts[t["dir_name"]] = (len(t_tasks), sum(1 for tk in t_tasks if tk.get("status") == "completed"))
         self._apply_sidebar_data(teams, member_info, task_counts)
 
-    def _apply_sidebar_data(self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]]) -> None:
+    def _apply_sidebar_data(
+        self, teams: list[dict], member_info: dict, task_counts: dict[str, tuple[int, int]]
+    ) -> None:
         """Apply the sidebar data computed by the worker to the UI."""
         self._member_info.clear()
         self._member_info.update(member_info)
@@ -804,6 +818,7 @@ class MainScreen(Screen):
         self._last_task_counts: dict[str, tuple[int, int]] = task_counts
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
         self._update_status_bar(teams, task_counts)
+        self._update_swarm_project_roots()
 
     def _update_status_bar(self, teams: list[dict], task_counts: dict[str, tuple[int, int]]) -> None:
         """Refresh the StatusBar with current team/task summary."""
@@ -886,6 +901,8 @@ class MainScreen(Screen):
         if agent:
             self._update_message_panel(team, agent)
 
+        self._refresh_swarm_panel()
+
     def _switch_to_main_chat(self) -> None:
         """Restore the main chat session view."""
         sv = self.query_one("#session-view", SessionView)
@@ -932,6 +949,7 @@ class MainScreen(Screen):
     def on_team_sidebar_agent_selected(self, event: TeamSidebar.AgentSelected) -> None:
         """Left-click on an agent node -> switch view to that agent."""
         self._switch_to_agent(event.team, event.agent)
+        self._refresh_swarm_panel()
 
     def on_session_tab_bar_tab_activated(self, event: SessionTabBar.TabActivated) -> None:
         """Tab bar click -> switch view to the selected agent or main chat."""
@@ -1035,7 +1053,7 @@ class MainScreen(Screen):
             return text
         try:
             parsed = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return text
         msg_type = parsed.get("type", "")
         if msg_type == "idle_notification":
@@ -1089,12 +1107,12 @@ class MainScreen(Screen):
 
                 # Show sender with color badge
                 safe_sender = sender.replace("[", "\\[")
-                sv.append_output(
-                    f"[{rich_color}]{safe_sender}[/{rich_color}]{read_marker}\n"
-                )
+                sv.append_output(f"[{rich_color}]{safe_sender}[/{rich_color}]{read_marker}\n")
 
                 # Show summary if available, else formatted text
-                safe_display = (summary or (display_text[:200] + "..." if len(display_text) > 200 else display_text)).replace("[", "\\[")
+                safe_display = (
+                    summary or (display_text[:200] + "..." if len(display_text) > 200 else display_text)
+                ).replace("[", "\\[")
                 sv.append_output(f"  {safe_display}\n\n")
 
             return True
@@ -1200,9 +1218,7 @@ class MainScreen(Screen):
 
                     if role == "user" and isinstance(content, str):
                         # Strip <teammate-message> wrapper if present
-                        stripped = re.sub(
-                            r"<teammate-message[^>]*>\s*", "", content
-                        )
+                        stripped = re.sub(r"<teammate-message[^>]*>\s*", "", content)
                         stripped = stripped.replace("</teammate-message>", "").strip()
                         if not stripped:
                             continue
@@ -1240,9 +1256,7 @@ class MainScreen(Screen):
                                         summary = f": {inp['file_path']}"
                                     elif "pattern" in inp:
                                         summary = f": {inp['pattern']}"
-                                sv.append_output(
-                                    f"[dim]\\[{name}{summary}][/dim]\n"
-                                )
+                                sv.append_output(f"[dim]\\[{name}{summary}][/dim]\n")
 
                     # Limit to avoid flooding
                     if msg_count > 200:
@@ -1258,32 +1272,26 @@ class MainScreen(Screen):
     # Right-click context menu
     # ------------------------------------------------------------------
 
-    def on_team_sidebar_agent_context_menu_requested(
-        self, event: TeamSidebar.AgentContextMenuRequested
-    ) -> None:
+    def on_team_sidebar_agent_context_menu_requested(self, event: TeamSidebar.AgentContextMenuRequested) -> None:
         menu = self.query_one("#context-menu", ContextMenu)
         menu.show_at(event.team, event.agent, event.screen_x, event.screen_y)
 
-    def on_team_sidebar_team_context_menu_requested(
-        self, event: TeamSidebar.TeamContextMenuRequested
-    ) -> None:
+    def on_team_sidebar_team_context_menu_requested(self, event: TeamSidebar.TeamContextMenuRequested) -> None:
         config = self._team_service.get_team(event.team)
         is_suspended = config.get("status") == "suspended" if config else False
         menu = self.query_one("#context-menu", ContextMenu)
         menu.show_team_menu_at(
-            event.team, event.screen_x, event.screen_y,
+            event.team,
+            event.screen_x,
+            event.screen_y,
             is_suspended=is_suspended,
         )
 
-    def on_session_tab_bar_tab_context_menu_requested(
-        self, event: SessionTabBar.TabContextMenuRequested
-    ) -> None:
+    def on_session_tab_bar_tab_context_menu_requested(self, event: SessionTabBar.TabContextMenuRequested) -> None:
         menu = self.query_one("#context-menu", ContextMenu)
         menu.show_tab_menu_at(event.team, event.agent, event.screen_x, event.screen_y)
 
-    def on_context_menu_action_selected(
-        self, event: ContextMenu.ActionSelected
-    ) -> None:
+    def on_context_menu_action_selected(self, event: ContextMenu.ActionSelected) -> None:
         if event.action == "view":
             self._switch_to_agent(event.team, event.agent)
         elif event.action == "kill":
@@ -1365,7 +1373,10 @@ class MainScreen(Screen):
 
     @work(exclusive=True, group="agent-action")
     async def _execute_duplicate(
-        self, source_team: str, source_agent: str, opts: dict,
+        self,
+        source_team: str,
+        source_agent: str,
+        opts: dict,
     ) -> None:
         """Perform the cross-team duplication after dialog confirms."""
         target_team = opts["target_team"]
@@ -1393,13 +1404,20 @@ class MainScreen(Screen):
         # Copy inbox if requested
         if copy_inbox:
             self._team_service.copy_inbox(
-                source_team, source_agent, target_team, new_name,
+                source_team,
+                source_agent,
+                target_team,
+                new_name,
             )
 
         # Spawn the agent session
         await self._agent_manager.duplicate_agent(
-            source_team, source_agent, target_team, new_name,
-            model=model, initial_prompt=initial_prompt,
+            source_team,
+            source_agent,
+            target_team,
+            new_name,
+            model=model,
+            initial_prompt=initial_prompt,
         )
 
         self._refresh_sidebar()
@@ -1481,10 +1499,7 @@ class MainScreen(Screen):
 
         # Take last 5 assistant messages as context
         recent = summaries[-5:]
-        return (
-            "Context from the source agent's recent work:\n\n"
-            + "\n---\n".join(recent)
-        )
+        return "Context from the source agent's recent work:\n\n" + "\n---\n".join(recent)
 
     def _configure_agent(self, team: str, agent: str) -> None:
         """Open the ConfigureAgentScreen dialog."""
@@ -1508,7 +1523,11 @@ class MainScreen(Screen):
 
     @work(exclusive=True, group="agent-action")
     async def _execute_configure(
-        self, team: str, agent_id: str, old_name: str, opts: dict,
+        self,
+        team: str,
+        agent_id: str,
+        old_name: str,
+        opts: dict,
     ) -> None:
         """Apply configuration changes to the member."""
         self._team_service.update_member(team, agent_id, **opts)
@@ -1557,7 +1576,9 @@ class MainScreen(Screen):
         }
         self._team_service.add_member(team, member_dict)
         session = await self._agent_manager.spawn_agent(
-            team, name, model=model,
+            team,
+            name,
+            model=model,
             initial_prompt=initial_prompt,
         )
         self._wire_permission_callback(session, (team, name))
@@ -1724,10 +1745,9 @@ class MainScreen(Screen):
     def on_task_panel_task_selected(self, message: TaskSelected) -> None:
         """Handle task click: open TaskDetailScreen for view/edit."""
         from claude_litter.screens.task_detail import TaskDetailScreen
+
         team = (
-            self._active_agent_key[0]
-            if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY
-            else None
+            self._active_agent_key[0] if self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY else None
         )
         if team:
             task = self._team_service.get_task(team, message.task_id)
@@ -1783,17 +1803,19 @@ class MainScreen(Screen):
     def on_swarm_updated(self, message) -> None:
         """Handle filesystem change in a swarm-loop instance directory."""
         if hasattr(self, "_state_manager"):
-            self._state_manager._rescan_swarm_instances()
+            # Watcher already called _refresh_single_instance; no full rescan needed
             instances = self._state_manager.get_swarm_instances()
             # Always update sidebar badge
             try:
                 from claude_litter.widgets.sidebar import TeamSidebar
+
                 self.query_one("#sidebar", TeamSidebar).update_swarm_instances(instances)
             except Exception:
                 pass
             # Update panel if visible
             try:
                 from claude_litter.widgets.swarm_panel import SwarmPanel
+
                 panel = self.query_one("#swarm-panel", SwarmPanel)
                 if panel._visible:
                     panel.update_instances(instances)
@@ -1810,10 +1832,60 @@ class MainScreen(Screen):
             self._state_manager._rescan_swarm_instances()
         self._refresh_swarm_panel()
 
+    def on_swarm_panel_data_load_requested(self, event) -> None:
+        """Handle async data load request from swarm panel."""
+        self._load_swarm_data_worker(event.instance_id, event.instance_dir)
+
+    @work(exclusive=True, group="swarm-data-load")
+    async def _load_swarm_data_worker(self, instance_id: str, instance_dir: Path) -> None:
+        """Read log.md and progress.jsonl off the UI thread."""
+        import asyncio
+
+        from claude_litter.widgets.swarm_panel import _LOG_LINE_CAP, SwarmPanel
+
+        loop = asyncio.get_event_loop()
+
+        def _read_log():
+            log_path = instance_dir / "log.md"
+            try:
+                lines = log_path.read_text(encoding="utf-8").splitlines()
+                truncated = len(lines) > _LOG_LINE_CAP
+                if truncated:
+                    lines = lines[-_LOG_LINE_CAP:]
+                return lines, truncated
+            except Exception:
+                return [], False
+
+        def _read_progress():
+            p_path = instance_dir / "progress.jsonl"
+            entries: list[dict] = []
+            try:
+                for raw in p_path.read_text(encoding="utf-8").splitlines():
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        entries.append(json.loads(raw))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            return entries
+
+        log_lines, truncated = await loop.run_in_executor(None, _read_log)
+        progress_entries = await loop.run_in_executor(None, _read_progress)
+
+        try:
+            panel = self.query_one("#swarm-panel", SwarmPanel)
+            panel.post_message(SwarmPanel.LogDataReady(instance_id, log_lines, progress_entries, truncated))
+        except Exception:
+            pass
+
     def on_team_sidebar_swarm_selected(self, event) -> None:
         """Clicking swarm instance in sidebar opens the swarm panel focused on that instance."""
         try:
             from claude_litter.widgets.swarm_panel import SwarmPanel
+
             panel = self.query_one("#swarm-panel", SwarmPanel)
             for i, inst in enumerate(panel._instances):
                 if inst.instance_id == event.instance_id:
