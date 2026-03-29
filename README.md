@@ -8,6 +8,7 @@
   <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/textual-3.0%2B-6c3483?style=flat-square" alt="Textual 3.0+" /></a>
   <a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 0.1.0" /></a>
   <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
+  <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/Made_with-Textual-6c3483?style=flat-square" alt="Made with Textual" /></a>
 </div>
 
 ---
@@ -16,33 +17,70 @@
 
 ---
 
+## Why Claude Litter?
+
+Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON files, digging through JSONL transcripts, and manually tracking task state. Claude Litter replaces that friction with a purpose-built terminal UI.
+
+<div align="center">
+
+| | Raw CLI | Claude Litter |
+|---|---|---|
+| Team overview | `cat ~/.claude/teams/*/config.json` | Live sidebar with status indicators |
+| Agent transcripts | Scroll through JSONL files | Tabbed sessions with full history |
+| Task tracking | Manual JSON edits | Filterable panel with inline editing |
+| Messaging | Write to inbox JSON files | Compose form with broadcast support |
+| Agent lifecycle | Shell commands, manual PID tracking | Spawn, kill, detach, reattach in-UI |
+| Multi-team view | Multiple terminal windows | Single pane, switchable sidebar |
+
+</div>
+
+---
+
 ## Features
 
 ### Core UI
+
+*Everything you need at a glance — teams, transcripts, themes, and status.*
+
 - **Team sidebar** with live status indicators (active / partial / inactive) and colored agent badges
 - **Tabbed sessions** with full conversation transcript history loaded from JSONL files
 - **Status bar** with team, agent, and task summary at a glance
 - **10 built-in themes**: `textual-dark`, `textual-light`, `nord`, `gruvbox`, `dracula`, `tokyo-night`, `monokai`, `catppuccin-mocha`, `solarized-dark`, `solarized-light`
 
 ### Team Management
+
+*Create and operate teams without touching a config file.*
+
 - Create, rename, suspend/resume, broadcast to, and delete teams
 - Right-click context menus on teams, agents, and tabs
 
 ### Agent Management
+
+*Full agent lifecycle control from a single interface.*
+
 - Spawn agents with model selection (Haiku / Sonnet / Opus) and type assignment
 - Configure, duplicate (cross-team with inbox/context copy), kill, detach, and reattach agents
 - **Task panel** with filtering (pending / in-progress / completed / blocked), sorting (ID / status / owner), and inline editing
 
 ### Messaging
+
+*Inter-agent communication without hand-editing JSON.*
+
 - **Message panel** with inbox view, broadcast view, and compose form
 - `/broadcast` command for team-wide messages
 
 ### Terminal Integration
+
+*Deep terminal integration for a native feel.*
+
 - **Kitty terminal** pop-out: open agents in splits, tabs, or new windows
 - **Text selection** with Cmd+C / right-click copy support
 - **Live filesystem watching** — changes to team/task/inbox JSON files refresh the UI automatically
 
 ### Input and Customization
+
+*Keyboard-first, extensible, and debuggable.*
+
 - **Command mode** via `/` prefix with Tab autocomplete
 - **Vim mode** (`--vim` flag)
 - **Debug logging** (`--debug` flag, writes to `~/.claude/claude-litter/debug.log`)
@@ -63,7 +101,27 @@ uv sync && uv run claude-litter
 
 ## Screenshots
 
-> Screenshots and demo recordings are coming soon. In the meantime, generate a headless screenshot locally — see [Development](#development).
+> Run it live and see it for yourself:
+>
+> ```bash
+> uv run claude-litter
+> ```
+>
+> Or generate a headless screenshot locally:
+>
+> ```bash
+> uv run python -c "
+> import anyio
+> from claude_litter.app import ClaudeLitterApp
+> async def main():
+>     app = ClaudeLitterApp()
+>     async with app.run_test(size=(120, 40)) as pilot:
+>         await pilot.pause(delay=0.5)
+>         app.save_screenshot('screenshot.svg')
+>         print('Screenshot saved to screenshot.svg')
+> anyio.run(main)
+> "
+> ```
 
 ---
 
@@ -114,6 +172,8 @@ Type `/` in the input bar to enter command mode. Tab completes available command
 ---
 
 ## Architecture
+
+The codebase follows a layered design: **models** (frozen dataclasses representing teams, tasks, and messages) feed into **services** (state management, CRUD operations, SDK integration, filesystem watching), which power **screens** (full-page layouts and modal dialogs) composed from **widgets** (the reusable sidebar, tab bar, panels, and input bar that make up the UI).
 
 ```
 src/claude_litter/
@@ -222,6 +282,14 @@ async def main():
 anyio.run(main)
 "
 ```
+
+---
+
+## Acknowledgements
+
+- [Textual](https://textual.textualize.io/) by Textualize — the TUI framework powering the interface
+- [Claude Code](https://claude.ai/code) by Anthropic — the AI coding agent whose teams this manages
+- [watchfiles](https://watchfiles.helpmanual.io/) — filesystem watching for live UI updates
 
 ---
 
