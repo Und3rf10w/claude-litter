@@ -31,6 +31,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_litter"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src/claude_litter", "pyproject.toml", "README.md"]
+
 [dependency-groups]
 dev = [
     "pytest",
