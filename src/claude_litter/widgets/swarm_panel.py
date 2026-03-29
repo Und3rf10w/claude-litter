@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as rich_escape
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll

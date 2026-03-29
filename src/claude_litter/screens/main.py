@@ -1841,7 +1841,7 @@ class MainScreen(Screen):
         """Read log.md and progress.jsonl off the UI thread."""
         import asyncio
 
-        from claude_litter.widgets.swarm_panel import SwarmPanel, _LOG_LINE_CAP
+        from claude_litter.widgets.swarm_panel import _LOG_LINE_CAP, SwarmPanel
 
         loop = asyncio.get_event_loop()
 
