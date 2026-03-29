@@ -124,6 +124,16 @@ class SwarmState:
         hw = raw.get("hook_warnings", [])
         hw_strs = tuple(str(w) if isinstance(w, str) else json.dumps(w) for w in hw)
 
+        team_name = str(raw.get("team_name", ""))
+
+        # Persist team_name breadcrumb so DefunctSwarmInstance can recover it
+        # after state.json is deleted on completion.
+        if team_name:
+            try:
+                (instance_dir / ".team_name").write_text(team_name, encoding="utf-8")
+            except Exception:
+                pass
+
         return cls(
             instance_id=str(raw.get("instance_id", instance_dir.name)),
             instance_dir=instance_dir,
@@ -133,7 +143,7 @@ class SwarmState:
             mode=str(raw.get("mode", "")),
             autonomy_health=str(raw.get("autonomy_health", "healthy")),
             completion_promise=str(raw.get("completion_promise", "")),
-            team_name=str(raw.get("team_name", "")),
+            team_name=team_name,
             safe_mode=bool(raw.get("safe_mode", True)),
             started_at=str(raw.get("started_at", "")),
             last_updated=str(raw.get("last_updated", "")),
@@ -199,6 +209,11 @@ class DefunctSwarmInstance:
             goal = prompt_path.read_text(encoding="utf-8").strip()[:200]
         except Exception:
             pass
+        team_name = ""
+        try:
+            team_name = (instance_dir / ".team_name").read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
         try:
             mtime = log_path.stat().st_mtime
             last_updated = datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat(timespec="seconds")
@@ -209,6 +224,7 @@ class DefunctSwarmInstance:
             instance_dir=instance_dir,
             last_updated=last_updated,
             goal=goal,
+            team_name=team_name,
         )
 
     @property

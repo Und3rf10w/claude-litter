@@ -50,17 +50,18 @@ class SidebarApp(App):
 class TestSidebarSwarm:
     @pytest.mark.anyio
     async def test_sidebar_no_swarm(self):
-        """update_swarm_instances([]) has no swarm root node."""
+        """update_swarm_instances([]) has no swarm nodes."""
         app = SidebarApp()
         async with app.run_test() as pilot:
             sidebar = app.query_one(TeamSidebar)
             sidebar.update_swarm_instances([])
             await pilot.pause()
-            assert sidebar._swarm_root_node is None
+            assert sidebar._swarm_nodes == {}
+            assert sidebar._swarm_fallback_node is None
 
     @pytest.mark.anyio
-    async def test_sidebar_with_swarm(self, tmp_path):
-        """update_swarm_instances with SwarmState shows tree nodes."""
+    async def test_sidebar_with_swarm_fallback(self, tmp_path):
+        """Swarm instances with no matching team go to fallback root node."""
         state = _make_state(tmp_path)
         assert state is not None
 
@@ -69,9 +70,24 @@ class TestSidebarSwarm:
             sidebar = app.query_one(TeamSidebar)
             sidebar.update_swarm_instances([state])
             await pilot.pause()
-            assert sidebar._swarm_root_node is not None
-            # The swarm root node should have one child leaf for the instance
-            assert len(sidebar._swarm_root_node.children) == 1
+            assert sidebar._swarm_fallback_node is not None
+            assert len(sidebar._swarm_fallback_node.children) == 1
+
+    @pytest.mark.anyio
+    async def test_sidebar_swarm_nested_under_team(self, tmp_path):
+        """Swarm instances nest under their matching team node."""
+        state = _make_state(tmp_path)
+        assert state is not None
+
+        app = SidebarApp()
+        async with app.run_test() as pilot:
+            sidebar = app.query_one(TeamSidebar)
+            sidebar.update_teams([{"name": "test-team", "dir_name": "test-team", "status": "active", "agents": []}])
+            sidebar.update_swarm_instances([state])
+            await pilot.pause()
+            assert sidebar._swarm_fallback_node is None
+            assert "test-team" in sidebar._swarm_nodes
+            assert len(sidebar._swarm_nodes["test-team"].children) == 1
 
     @pytest.mark.anyio
     async def test_sidebar_swarm_cleared_on_empty(self, tmp_path):
@@ -84,15 +100,16 @@ class TestSidebarSwarm:
             sidebar = app.query_one(TeamSidebar)
             sidebar.update_swarm_instances([state])
             await pilot.pause()
-            assert sidebar._swarm_root_node is not None
+            assert sidebar._swarm_fallback_node is not None
 
             sidebar.update_swarm_instances([])
             await pilot.pause()
-            assert sidebar._swarm_root_node is None
+            assert sidebar._swarm_fallback_node is None
+            assert sidebar._swarm_nodes == {}
 
     @pytest.mark.anyio
     async def test_sidebar_swarm_multiple_instances(self, tmp_path):
-        """update_swarm_instances with multiple states creates multiple leaf nodes."""
+        """Multiple swarm instances for the same team nest under one branch."""
         state1 = _make_state(tmp_path, instance_id="aaa11111")
         state2 = _make_state(tmp_path, instance_id="bbb22222")
         assert state1 is not None
@@ -101,7 +118,8 @@ class TestSidebarSwarm:
         app = SidebarApp()
         async with app.run_test() as pilot:
             sidebar = app.query_one(TeamSidebar)
+            sidebar.update_teams([{"name": "test-team", "dir_name": "test-team", "status": "active", "agents": []}])
             sidebar.update_swarm_instances([state1, state2])
             await pilot.pause()
-            assert sidebar._swarm_root_node is not None
-            assert len(sidebar._swarm_root_node.children) == 2
+            assert "test-team" in sidebar._swarm_nodes
+            assert len(sidebar._swarm_nodes["test-team"].children) == 2

@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, Static, TabbedContent, TabPane
+from textual.widgets import Button, Markdown, Static, TabbedContent, TabPane
 
 if TYPE_CHECKING:
     from claude_litter.models.swarm import SwarmState
@@ -69,6 +69,10 @@ class SwarmPanel(Widget):
     SwarmPanel .swarm-log-line {
         height: auto;
         padding: 0 1;
+    }
+    SwarmPanel #log-markdown {
+        padding: 0 1;
+        height: auto;
     }
     SwarmPanel .swarm-progress-line {
         height: auto;
@@ -147,7 +151,8 @@ class SwarmPanel(Widget):
                     yield Static("", id="swarm-warnings", classes="swarm-row")
                     yield Static("", id="swarm-profile-extras", classes="swarm-row")
             with TabPane("Log", id="tab-log"):
-                yield VerticalScroll(classes="swarm-scroll", id="log-scroll")
+                with VerticalScroll(classes="swarm-scroll", id="log-scroll"):
+                    yield Markdown("", id="log-markdown")
             with TabPane("Progress", id="tab-progress"):
                 yield VerticalScroll(classes="swarm-scroll", id="progress-scroll")
 
@@ -193,7 +198,7 @@ class SwarmPanel(Widget):
                 "swarm-profile-extras",
             ):
                 self.query_one(f"#{wid}", Static).update("")
-            self.query_one("#log-scroll", VerticalScroll).remove_children()
+            self.query_one("#log-markdown", Markdown).update("")
             self.query_one("#progress-scroll", VerticalScroll).remove_children()
             self._last_log_instance_id = ""
             self._last_log_line_count = 0
@@ -233,7 +238,7 @@ class SwarmPanel(Widget):
         self._safe_update("#swarm-progress", "")
 
         goal = getattr(state, "goal", "") or ""
-        goal_display = goal[:120] + ("..." if len(goal) > 120 else "")
+        goal_display = rich_escape(goal)
         self._safe_update("#swarm-goal", f"[bold]Goal:[/bold] {goal_display}" if goal else "")
 
         iid = getattr(state, "instance_id", "")
@@ -274,7 +279,7 @@ class SwarmPanel(Widget):
 
         # Goal
         goal = getattr(state, "goal", "") or ""
-        goal_display = goal[:120] + ("..." if len(goal) > 120 else "")
+        goal_display = rich_escape(goal)
         self._safe_update("#swarm-goal", f"[bold]Goal:[/bold] {goal_display}")
 
         # Meta
@@ -341,36 +346,31 @@ class SwarmPanel(Widget):
     def _apply_log_lines(self, instance_id: str, lines: list[str], truncated: bool) -> None:
         try:
             scroll = self.query_one("#log-scroll", VerticalScroll)
+            md_widget = self.query_one("#log-markdown", Markdown)
         except Exception:
             return
 
         instance_changed = instance_id != self._last_log_instance_id
         if instance_changed:
-            scroll.remove_children()
             self._last_log_line_count = 0
             self._last_log_instance_id = instance_id
-            if truncated:
-                scroll.mount(
-                    Static(
-                        f"[dim](showing last {_LOG_LINE_CAP} lines)[/dim]",
-                        classes="swarm-log-line",
-                    )
-                )
 
         if not lines:
             if instance_changed:
-                scroll.mount(Static("[dim]Log is empty[/dim]", classes="swarm-log-line"))
+                md_widget.update("*Log is empty*")
             return
 
-        # Incremental append — only mount new lines
-        existing = self._last_log_line_count
-        new_widgets = [
-            Static(rich_escape(line) if line.strip() else " ", classes="swarm-log-line") for line in lines[existing:]
-        ]
-        if new_widgets:
-            scroll.mount(*new_widgets)
-            self._last_log_line_count = len(lines)
-            scroll.scroll_end(animate=False)
+        # Skip update if no new lines
+        if len(lines) == self._last_log_line_count:
+            return
+
+        content = "\n".join(lines)
+        if truncated:
+            content = f"*(showing last {_LOG_LINE_CAP} lines)*\n\n{content}"
+
+        md_widget.update(content)
+        self._last_log_line_count = len(lines)
+        scroll.scroll_end(animate=False)
 
     def _apply_progress_entries(self, entries: list[dict[str, Any]]) -> None:
         try:

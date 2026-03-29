@@ -73,7 +73,7 @@ class ClaudeLitterApp(App):
         Binding("f1", "about", "About"),
         Binding("f2", "toggle_messages", "Messages"),
         Binding("f3", "settings", "Settings"),
-        Binding("f4", "toggle_swarm", "Swarm"),
+        Binding("ctrl+l", "toggle_swarm", "Swarm"),
     ]
 
     def __init__(self, config: Config | None = None, **kwargs: object) -> None:

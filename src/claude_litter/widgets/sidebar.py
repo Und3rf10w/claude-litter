@@ -130,7 +130,8 @@ class TeamSidebar(Widget):
         self._team_nodes: dict[str, TreeNode] = {}
         self._agent_nodes: dict[tuple[str, str], TreeNode] = {}
         self._agent_data: dict[tuple[str, str], dict] = {}
-        self._swarm_root_node = None
+        self._swarm_nodes: dict[str, TreeNode] = {}
+        self._swarm_fallback_node: TreeNode | None = None
 
     def compose(self) -> ComposeResult:
         tree: _SidebarTree = _SidebarTree("Teams", id="sidebar-tree")
@@ -145,6 +146,8 @@ class TeamSidebar(Widget):
         self._team_nodes.clear()
         self._agent_nodes.clear()
         self._agent_data.clear()
+        self._swarm_nodes.clear()
+        self._swarm_fallback_node = None
 
         # Add "Main Chat" entry at the top
         tree.root.add_leaf(
@@ -183,41 +186,77 @@ class TeamSidebar(Widget):
             node.set_label(self._agent_label(self._agent_data[key]))
 
     def update_swarm_instances(self, instances: list) -> None:
-        """Update the swarm instances section in the sidebar tree."""
+        """Update the swarm instances section, nesting under parent teams."""
         try:
             tree = self.query_one(Tree)
         except Exception:
             return
-        # Remove old swarm section
-        if self._swarm_root_node is not None:
+        # Remove old swarm sections
+        for node in self._swarm_nodes.values():
             try:
-                self._swarm_root_node.remove()
+                node.remove()
             except Exception:
                 pass
-            self._swarm_root_node = None
+        self._swarm_nodes.clear()
+        if self._swarm_fallback_node is not None:
+            try:
+                self._swarm_fallback_node.remove()
+            except Exception:
+                pass
+            self._swarm_fallback_node = None
         if not instances:
             return
-        # Add section
-        self._swarm_root_node = tree.root.add(
-            "[bold magenta]\u25c6 Swarm Loop[/bold magenta]",
-            data={"type": "swarm_root"},
-            expand=True,
-        )
+        # Group instances by team_name
+        from collections import defaultdict
+
+        by_team: dict[str, list] = defaultdict(list)
+        orphans: list = []
         for state in instances:
-            health = getattr(state, "autonomy_health", "unknown")
-            health_color = {"healthy": "green", "degraded": "yellow", "critical": "red"}.get(health, "dim")
-            hb = getattr(state, "heartbeat", None)
-            pct = ""
-            if hb and getattr(hb, "tasks_total", 0):
-                pct = f" \\[{hb.tasks_completed}/{hb.tasks_total}]"
-            iid = getattr(state, "instance_id", "????")
-            phase = getattr(state, "phase", "?")
-            iteration = getattr(state, "iteration", 0)
-            label = f"[{health_color}]\u25cf[/{health_color}] [dim]{iid}[/dim] iter {iteration} {phase}{pct}"
-            self._swarm_root_node.add_leaf(
-                label,
-                data={"type": "swarm_instance", "instance_id": iid},
+            team_name = getattr(state, "team_name", "") or ""
+            if team_name and team_name in self._team_nodes:
+                by_team[team_name].append(state)
+            else:
+                orphans.append(state)
+        # Add swarm section under each team
+        for team_name, team_instances in by_team.items():
+            team_node = self._team_nodes[team_name]
+            swarm_branch = team_node.add(
+                "[bold magenta]\u25c6 Swarm[/bold magenta]",
+                data={"type": "swarm_root"},
+                expand=True,
             )
+            self._swarm_nodes[team_name] = swarm_branch
+            for state in team_instances:
+                swarm_branch.add_leaf(
+                    self._swarm_instance_label(state),
+                    data={"type": "swarm_instance", "instance_id": getattr(state, "instance_id", "????")},
+                )
+        # Fallback for orphans (no matching team)
+        if orphans:
+            self._swarm_fallback_node = tree.root.add(
+                "[bold magenta]\u25c6 Swarm Loop[/bold magenta]",
+                data={"type": "swarm_root"},
+                expand=True,
+            )
+            for state in orphans:
+                self._swarm_fallback_node.add_leaf(
+                    self._swarm_instance_label(state),
+                    data={"type": "swarm_instance", "instance_id": getattr(state, "instance_id", "????")},
+                )
+
+    @staticmethod
+    def _swarm_instance_label(state) -> str:
+        """Build a Rich label for a swarm instance leaf node."""
+        health = getattr(state, "autonomy_health", "unknown")
+        health_color = {"healthy": "green", "degraded": "yellow", "critical": "red"}.get(health, "dim")
+        hb = getattr(state, "heartbeat", None)
+        pct = ""
+        if hb and getattr(hb, "tasks_total", 0):
+            pct = f" \\[{hb.tasks_completed}/{hb.tasks_total}]"
+        iid = getattr(state, "instance_id", "????")
+        phase = getattr(state, "phase", "?")
+        iteration = getattr(state, "iteration", 0)
+        return f"[{health_color}]\u25cf[/{health_color}] [dim]{iid}[/dim] iter {iteration} {phase}{pct}"
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         event.stop()
