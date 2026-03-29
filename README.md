@@ -347,10 +347,3 @@ anyio.run(main)
 - [Claude Code](https://code.claude.com) by Anthropic — the AI coding agent whose teams this manages
 - [watchfiles](https://watchfiles.helpmanual.io/) — filesystem watching for live UI updates
 
----
-
-<div align="center">
-  <a href="https://github.com/Und3rf10w/claude-litter">github.com/Und3rf10w/claude-litter</a>
-  &nbsp;·&nbsp;
-  Built by <a href="https://github.com/Und3rf10w">Und3rf10w</a>
-</div>
