@@ -74,6 +74,10 @@ class SwarmPanel(Widget):
         padding: 0 1;
         height: auto;
     }
+    SwarmPanel #swarm-goal {
+        padding: 0 1;
+        height: auto;
+    }
     SwarmPanel .swarm-progress-line {
         height: auto;
         padding: 0 1;
@@ -135,6 +139,9 @@ class SwarmPanel(Widget):
         # Incremental log tracking
         self._last_log_instance_id: str = ""
         self._last_log_line_count: int = 0
+        # Instance bar dedup
+        self._last_instance_ids: list[str] = []
+        self._last_bar_selected: int = -1
 
     def compose(self) -> ComposeResult:
         yield Static("Swarm Loop", classes="swarm-panel-title", id="swarm-title")
@@ -145,7 +152,7 @@ class SwarmPanel(Widget):
                 with VerticalScroll(classes="swarm-scroll", id="status-scroll"):
                     yield Static("", id="swarm-status-overview", classes="swarm-row")
                     yield Static("", id="swarm-progress", classes="swarm-row")
-                    yield Static("", id="swarm-goal", classes="swarm-row")
+                    yield Markdown("", id="swarm-goal")
                     yield Static("", id="swarm-meta", classes="swarm-row")
                     yield Static("", id="swarm-heartbeat", classes="swarm-row")
                     yield Static("", id="swarm-warnings", classes="swarm-row")
@@ -191,17 +198,19 @@ class SwarmPanel(Widget):
             for wid in (
                 "swarm-status-overview",
                 "swarm-progress",
-                "swarm-goal",
                 "swarm-meta",
                 "swarm-heartbeat",
                 "swarm-warnings",
                 "swarm-profile-extras",
             ):
                 self.query_one(f"#{wid}", Static).update("")
+            self.query_one("#swarm-goal", Markdown).update("")
             self.query_one("#log-markdown", Markdown).update("")
             self.query_one("#progress-scroll", VerticalScroll).remove_children()
             self._last_log_instance_id = ""
             self._last_log_line_count = 0
+            self._last_instance_ids = []
+            self._last_bar_selected = -1
         except Exception:
             pass
 
@@ -238,8 +247,10 @@ class SwarmPanel(Widget):
         self._safe_update("#swarm-progress", "")
 
         goal = getattr(state, "goal", "") or ""
-        goal_display = rich_escape(goal)
-        self._safe_update("#swarm-goal", f"[bold]Goal:[/bold] {goal_display}" if goal else "")
+        try:
+            self.query_one("#swarm-goal", Markdown).update(f"**Goal:** {goal}" if goal else "")
+        except Exception:
+            pass
 
         iid = getattr(state, "instance_id", "")
         self._safe_update("#swarm-meta", f"[dim]Instance: {iid}[/dim]")
@@ -279,22 +290,32 @@ class SwarmPanel(Widget):
 
         # Goal
         goal = getattr(state, "goal", "") or ""
-        goal_display = rich_escape(goal)
-        self._safe_update("#swarm-goal", f"[bold]Goal:[/bold] {goal_display}")
+        try:
+            self.query_one("#swarm-goal", Markdown).update(f"**Goal:** {goal}")
+        except Exception:
+            pass
 
         # Meta
         mode = getattr(state, "mode", "")
         team = getattr(state, "team_name", "")
         safe = getattr(state, "safe_mode", True)
         started = getattr(state, "started_at", "")
-        meta = f"Mode: {mode}  Team: {team}  Safe: {safe}"
+        meta_lines = [
+            f"[bold]Mode:[/bold] {mode}",
+            f"[bold]Team:[/bold] {team}",
+            f"[bold]Safe:[/bold] {safe}",
+        ]
         if started:
-            meta += f"  Started: {started[:19]}"
-        self._safe_update("#swarm-meta", meta)
+            meta_lines.append(f"[bold]Started:[/bold] {started[:19]}")
+        self._safe_update("#swarm-meta", "\n".join(meta_lines))
 
         # Heartbeat
         if hb:
-            hb_text = f"Last tool: {hb.last_tool or '\u2014'}  Active: {hb.team_active}"
+            hb_lines = [
+                f"[bold]Last tool:[/bold] {hb.last_tool or '\u2014'}",
+                f"[bold]Active:[/bold] {hb.team_active}",
+            ]
+            hb_text = "\n".join(hb_lines)
         else:
             hb_text = "[dim]No heartbeat data[/dim]"
         self._safe_update("#swarm-heartbeat", hb_text)
@@ -418,15 +439,32 @@ class SwarmPanel(Widget):
     def _update_instance_bar(self) -> None:
         try:
             bar = self.query_one("#swarm-instance-bar", Horizontal)
-            bar.remove_children()
             if len(self._instances) <= 1:
+                if self._last_instance_ids:
+                    bar.remove_children()
+                    self._last_instance_ids = []
+                    self._last_bar_selected = -1
                 bar.remove_class("-multi")
                 return
             bar.add_class("-multi")
-            for i, inst in enumerate(self._instances):
-                iid = getattr(inst, "instance_id", "????")
-                variant = "primary" if i == self._selected_idx else "default"
-                bar.mount(Button(iid[:8], id=f"swarm-inst-{iid}", variant=variant))
+            current_ids = [getattr(inst, "instance_id", "????") for inst in self._instances]
+            # Only rebuild buttons when the instance list changes
+            if current_ids != self._last_instance_ids:
+                bar.remove_children()
+                for i, iid in enumerate(current_ids):
+                    variant = "primary" if i == self._selected_idx else "default"
+                    bar.mount(Button(iid[:8], id=f"swarm-inst-{iid}", variant=variant))
+                self._last_instance_ids = current_ids
+                self._last_bar_selected = self._selected_idx
+            elif self._selected_idx != self._last_bar_selected:
+                # Just update variant on existing buttons
+                for i, iid in enumerate(current_ids):
+                    try:
+                        btn = self.query_one(f"#swarm-inst-{iid}", Button)
+                        btn.variant = "primary" if i == self._selected_idx else "default"
+                    except Exception:
+                        pass
+                self._last_bar_selected = self._selected_idx
         except Exception:
             pass
 
