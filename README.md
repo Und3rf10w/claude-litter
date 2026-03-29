@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./assets/logo.png" alt="Claude Litter" width="320" />
   <br />
-  <em>A terminal control plane for Claude Code agent teams</em>
+  <em>An enhancement suite for Claude Code agent teams</em>
   <br /><br />
 
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.14+" /></a>
@@ -13,24 +13,25 @@
 
 ---
 
-**Claude Litter** is a full-featured terminal UI for managing [Claude Code agent teams](https://code.claude.com) and, and provides a powerful [Claude Code plugin for running iterative swarm loops](plugins/swarm-loop). It gives you a live sidebar of teams and agents, tabbed transcript sessions, a task panel with filtering and sorting, an inbox and compose workflow for inter-agent messaging, and filesystem watching that keeps the UI in sync as your agents work, all without leaving the terminal
+**Claude Litter** is an enhancement suite for [Claude Code](https://code.claude.com) agent teams. Its core is the **[swarm-loop plugin](plugins/swarm-loop)** — an orchestrated multi-agent loop that decomposes complex goals into parallel subtasks, drives autonomous iteration with hook-based safety, and exits only when a user-defined completion promise is fulfilled. Alongside the plugin, a **[terminal UI](src/)** gives you a live control plane for managing teams, agents, tasks, and swarm executions without leaving the terminal.
 
 ---
 
 ## Why Claude Litter?
 
-Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON files, digging through JSONL transcripts, and manually tracking task state. Claude Litter replaces that friction with a purpose-built terminal UI.
+Claude Code's native agent teams are powerful, but undercooked. The swarm-loop plugin adds structured orchestration on top of teams — iterative loops with safety classifiers, stuck detection, and progress tracking — while the TUI provides a simple interface that can assistant with managing the.
 
 <div align="center">
 
-|                   | Raw CLI                             | Claude Litter                        |
-| ----------------- | ----------------------------------- | ------------------------------------ |
-| Team overview     | `cat ~/.claude/teams/*/config.json` | Live sidebar with status indicators  |
-| Agent transcripts | Scroll through JSONL files          | Tabbed sessions with full history    |
-| Task tracking     | Manual JSON edits                   | Filterable panel with inline editing |
-| Messaging         | Write to inbox JSON files           | Compose form with broadcast support  |
-| Agent lifecycle   | Shell commands, manual PID tracking | Spawn, kill, detach, reattach in-UI  |
-| Multi-team view   | Multiple terminal windows           | Single pane, switchable sidebar      |
+|                   | Pain                                  | Claude Litter                           |
+| ----------------- | ------------------------------------- | --------------------------------------- |
+| Orchestration     | Manual agent coordination             | Swarm loop with autonomous iteration    |
+| Team overview     | `cat ~/.claude/teams/*/config.json`   | Live sidebar with status indicators     |
+| Agent transcripts | Buggy interface                       | Tabbed sessions with full history       |
+| Task tracking     | Manual JSON edits                     | Filterable panel with inline editing    |
+| Messaging         | Write to inbox JSON files             | Compose form with broadcast support     |
+| Agent lifecycle   | Shell commands, manual PID tracking   | Spawn, kill, detach, reattach in-UI     |
+| Swarm monitoring  | `cat .claude/swarm-loop/*/state.json` | Live progress, phase, and log streaming |
 
 </div>
 
@@ -38,119 +39,31 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 ## Features
 
-### Core UI
+### Swarm Loop Plugin
 
-_Everything you need at a glance — teams, transcripts, themes, and status._
+_The core of Claude Litter — orchestrated multi-agent iteration for Claude Code._
+
+- **Iterative orchestration** with profile-driven cycles (default 7-step, leanswarm 4-concern, deepplan 5-phase planning, async background agents)
+- **Hook-based safety** — bash classifier, teammate idle gate, task completion/creation gates, sentinel timeout recovery
+- **Completion promise** system with optional shell verification (`--verify`)
+- **Iteration control** — soft budget checkpoints, hard min/max floors and ceilings, stuck detection with permission-aware escalation
+- Configurable via `.claude/swarm-loop.local.md` — classifier model/effort, teammate isolation (shared or worktree), max count, notifications
+
+See [Swarm Loop Plugin](#swarm-loop-plugin-1) for full documentation.
+
+### Terminal UI
+
+_A control plane for managing Claude Code agent teams and swarm executions._
 
 - **Team sidebar** with live status indicators (active / partial / inactive) and colored agent badges
 - **Tabbed sessions** with full conversation transcript history loaded from JSONL files
-- **Status bar** with team, agent, and task summary at a glance
-- **10 built-in themes**: `textual-dark`, `textual-light`, `nord`, `gruvbox`, `dracula`, `tokyo-night`, `monokai`, `catppuccin-mocha`, `solarized-dark`, `solarized-light`
-
-### Team Management
-
-_Create and operate teams without touching a config file._
-
-- Create, rename, suspend/resume, broadcast to, and delete teams
-- Right-click context menus on teams, agents, and tabs
-
-### Agent Management
-
-_Full agent lifecycle control from a single interface._
-
-- Spawn agents with model selection (Haiku / Sonnet / Opus) and type assignment
-- Configure, duplicate (cross-team with inbox/context copy), kill, detach, and reattach agents
+- **Swarm panel** with live iteration status, phase, autonomy health, progress bars, and incremental log streaming
 - **Task panel** with filtering (pending / in-progress / completed / blocked), sorting (ID / status / owner), and inline editing
-
-### Messaging
-
-_Inter-agent communication without hand-editing JSON._
-
 - **Message panel** with inbox view, broadcast view, and compose form
-- `/broadcast` command for team-wide messages
-
-### Swarm Loop Control
-
-_Monitor and manage multi-agent swarm loops directly from the TUI._
-
-- **Swarm panel** with live iteration status, phase, autonomy health, and progress bars
-- Browse active and completed swarm instances with incremental log streaming
-- View task breakdowns, heartbeat data, and permission/hook warnings at a glance
-- Works with all orchestration profiles: default, leanswarm, deepplan, and async
-
-### Terminal Integration
-
-_Deep terminal integration for a native feel._
-
+- **Agent lifecycle** — spawn with model selection, configure, duplicate cross-team, kill, detach, reattach
 - **Kitty terminal** pop-out: open agents in splits, tabs, or new windows
-- **Text selection** with Cmd+C / right-click copy support
-- **Live filesystem watching** — changes to team/task/inbox JSON files refresh the UI automatically
-
-### Input and Customization
-
-_Keyboard-first, extensible, and debuggable._
-
-- **Command mode** via `/` prefix with Tab autocomplete
-- **Vim mode** (`--vim` flag)
-- **Debug logging** (`--debug` flag, writes to `~/.claude/claude-litter/debug.log`)
-
----
-
-## Quick Start
-
-```bash
-git clone https://github.com/Und3rf10w/claude-litter
-cd claude-litter
-uv sync && uv run claude-litter
-```
-
-> Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/). A Claude Code environment with teams under `~/.claude/teams/` must be running.
-
----
-
-## CLI Options
-
-| Flag            | Default | Description                                               |
-| --------------- | ------- | --------------------------------------------------------- |
-| `--vim`         | `false` | Enable vim keybindings                                    |
-| `--theme THEME` | `dark`  | Color theme (`dark`, `light`, or any built-in theme name) |
-| `--debug`       | `false` | Debug logging to `~/.claude/claude-litter/debug.log`      |
-| `--version`     | —       | Print version and exit                                    |
-
----
-
-## Keybindings
-
-| Key                | Action               |
-| ------------------ | -------------------- |
-| `Ctrl+N`           | Create new team      |
-| `Ctrl+S`           | Spawn agent          |
-| `Ctrl+T`           | Toggle task panel    |
-| `Ctrl+Q`           | Quit                 |
-| `F1`               | About                |
-| `F2`               | Toggle message panel |
-| `F3`               | Settings             |
-| `Escape`           | Close dialog / quit  |
-| `Tab`              | Focus next widget    |
-| `Cmd+C` / `Ctrl+C` | Copy selected text   |
-
----
-
-## Command Mode
-
-Type `/` in the input bar to enter command mode. Tab completes available commands.
-
-| Command             | Action                      |
-| ------------------- | --------------------------- |
-| `/spawn`            | Spawn a new agent           |
-| `/kill`             | Kill an agent               |
-| `/msg <to> <text>`  | Send a message to an agent  |
-| `/broadcast <text>` | Broadcast to the whole team |
-| `/task`             | Task operations             |
-| `/team`             | Team operations             |
-| `/kitty`            | Kitty terminal pop-out      |
-| `/detach`           | Detach session              |
-| `/vim`              | Toggle vim mode             |
+- **Live filesystem watching** — changes to team/task/inbox/swarm JSON files refresh the UI automatically
+- **10 built-in themes**, vim mode, command mode with Tab autocomplete, debug logging
 
 ---
 
@@ -192,7 +105,7 @@ flowchart TD
 ```
 
 <details>
-<summary>Text diagram (for terminals and editors without Mermaid support)</summary>
+<summary>Text diagram</summary>
 
 ```
            ┌────────────────────────────┐
@@ -318,19 +231,26 @@ Hooks running in parallel across all turns:
 | `/swarm-loop:swarm-settings` | Configure teammate count, safety, and notifications                   |
 | `/swarm-loop:swarm-help`     | Full reference guide                                                  |
 
+### Installation
+
+```
+/plugin marketplace add und3rf10w/claude-litter
+/plugin install swarm-loop@claude-litter
+```
+
 ### Quick Start
 
-```bash
-/swarm-loop Build a REST API with auth and tests \
-  --completion-promise 'All endpoints work and tests pass'
-```
+The best way to start using it is to prompt Claude Code directly with your goal — it will invoke the swarm loop, create a team, and iterate autonomously:
 
-```bash
-/swarm-loop Refactor auth to JWT \
-  --completion-promise 'JWT auth working and all tests pass' \
-  --verify 'npm test' \
-  --max-iterations 5
-```
+> _Use a swarm-loop to build a REST API with authentication and full test coverage. Use Express and JWT. All endpoints should work and tests should pass._
+
+For planning-only sessions, ask Claude Code to plan with deepplan:
+
+> _I need a detailed plan for migrating our auth system from session cookies to JWT. Use deepplan to explore the codebase, identify all affected files, and produce a reviewed implementation plan._
+
+You can also specify details like hard or soft limits for the number of iterations, and specific things you want to happen.
+
+> _Use swarm-loop to kick of 10 independent improvement iterations for this application. Each iteration should be independent of the previous._
 
 ### Orchestration Profiles
 
@@ -432,6 +352,66 @@ Requires `jq` and `perl` at runtime.
 
 ---
 
+## TUI
+
+## Quick Start
+
+```bash
+git clone https://github.com/Und3rf10w/claude-litter
+cd claude-litter
+uv sync && uv run claude-litter
+```
+
+> Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/). A Claude Code environment with teams under `~/.claude/teams/` must be running.
+
+---
+
+## CLI Options
+
+| Flag            | Default | Description                                               |
+| --------------- | ------- | --------------------------------------------------------- |
+| `--vim`         | `false` | Enable vim keybindings                                    |
+| `--theme THEME` | `dark`  | Color theme (`dark`, `light`, or any built-in theme name) |
+| `--debug`       | `false` | Debug logging to `~/.claude/claude-litter/debug.log`      |
+| `--version`     | —       | Print version and exit                                    |
+
+---
+
+## Keybindings
+
+| Key                | Action               |
+| ------------------ | -------------------- |
+| `Ctrl+N`           | Create new team      |
+| `Ctrl+S`           | Spawn agent          |
+| `Ctrl+T`           | Toggle task panel    |
+| `Ctrl+Q`           | Quit                 |
+| `F1`               | About                |
+| `F2`               | Toggle message panel |
+| `F3`               | Settings             |
+| `Escape`           | Close dialog / quit  |
+| `Tab`              | Focus next widget    |
+| `Cmd+C` / `Ctrl+C` | Copy selected text   |
+
+---
+
+## Command Mode
+
+Type `/` in the input bar to enter command mode. Tab completes available commands.
+
+| Command             | Action                      |
+| ------------------- | --------------------------- |
+| `/spawn`            | Spawn a new agent           |
+| `/kill`             | Kill an agent               |
+| `/msg <to> <text>`  | Send a message to an agent  |
+| `/broadcast <text>` | Broadcast to the whole team |
+| `/task`             | Task operations             |
+| `/team`             | Team operations             |
+| `/kitty`            | Kitty terminal pop-out      |
+| `/detach`           | Detach session              |
+| `/vim`              | Toggle vim mode             |
+
+---
+
 ## Architecture
 
 The codebase follows a layered design: **models** (frozen dataclasses representing teams, tasks, and messages) feed into **services** (state management, CRUD operations, SDK integration, filesystem watching), which power **screens** (full-page layouts and modal dialogs) composed from **widgets** (the reusable sidebar, tab bar, panels, and input bar that make up the UI).
@@ -483,3 +463,4 @@ anyio.run(main)
 - [Textual](https://textual.textualize.io/) by Textualize — the TUI framework powering the interface
 - [Claude Code](https://code.claude.com) by Anthropic — the AI coding agent whose teams this manages
 - [watchfiles](https://watchfiles.helpmanual.io/) — filesystem watching for live UI updates
+- [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps) — Inspiration for the swarm-loop plugin
