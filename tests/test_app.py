@@ -1,4 +1,5 @@
 """Tests for ClaudeLitterApp, MainScreen, and Config."""
+
 from __future__ import annotations
 
 import json
@@ -12,10 +13,9 @@ from claude_litter.app import ClaudeLitterApp
 from claude_litter.config import Config
 from claude_litter.screens.main import MainScreen
 from claude_litter.services.agent_manager import AgentStatus
+from claude_litter.widgets.message_panel import MessagePanel
 from claude_litter.widgets.session_view import SessionView
 from claude_litter.widgets.task_panel import TaskPanel
-from claude_litter.widgets.message_panel import MessagePanel
-
 
 # ---------------------------------------------------------------------------
 # Config tests (no app needed)
@@ -282,6 +282,7 @@ async def test_prompt_e2e_type_submit_receive():
             sv = app.screen.query_one("#session-view", SessionView)
 
             from claude_litter.widgets.session_view import SelectableLog
+
             log = sv.query_one(SelectableLog)
 
             # Verify connecting message was cleared after agent ready

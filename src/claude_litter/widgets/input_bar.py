@@ -402,11 +402,7 @@ class InputBar(Widget):
         completions = self.query_one("#cmd-completions", _CompletionList)
         if text.startswith("/") and " " not in text and "\n" not in text and len(text) > 0:
             partial = text[1:].lower()
-            matches = [
-                (n, d)
-                for n, d in self._all_commands.items()
-                if not partial or n.lower().startswith(partial)
-            ]
+            matches = [(n, d) for n, d in self._all_commands.items() if not partial or n.lower().startswith(partial)]
             if matches:
                 completions.clear_options()
                 for name, desc in sorted(matches):

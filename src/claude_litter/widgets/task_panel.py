@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Label, ListItem, ListView, Static
-from textual.containers import Horizontal, Vertical
-
 
 # Status icons
 _ICONS = {
@@ -41,10 +40,7 @@ def _resolve_blocks(tasks: list[dict]) -> list[dict]:
     for t in tasks:
         blocked_by = t.get("blockedBy", [])
         if blocked_by:
-            still_blocking = [
-                bid for bid in blocked_by
-                if bid not in status_map or status_map[bid] != "completed"
-            ]
+            still_blocking = [bid for bid in blocked_by if bid not in status_map or status_map[bid] != "completed"]
             if not still_blocking:
                 t = {**t, "blockedBy": []}
             elif len(still_blocking) < len(blocked_by):
@@ -75,7 +71,7 @@ def _topo_sort(tasks: list[dict]) -> list[dict]:
     def _id_key(tid: str) -> int:
         try:
             return int(tid)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return 0
 
     queue = sorted([tid for tid in ids if in_degree[tid] == 0], key=_id_key)
@@ -120,6 +116,7 @@ def _compute_depths(tasks: list[dict]) -> dict[str, int]:
     for t in tasks:
         _depth(t.get("id", ""))
     return depths
+
 
 DEFAULT_CSS = """
 TaskPanel {
@@ -237,9 +234,9 @@ class _TaskItem(ListItem):
 
 
 _PRIORITY_ICONS = {
-    "high": "\u2191",     # ↑
-    "medium": "\u2192",   # →
-    "low": "\u2193",      # ↓
+    "high": "\u2191",  # ↑
+    "medium": "\u2192",  # →
+    "low": "\u2193",  # ↓
 }
 
 
@@ -307,15 +304,12 @@ class TaskPanel(Widget):
         # Apply filter
         if self._filter is not None:
             if self._filter == "blocked":
-                tasks = [
-                    t for t in tasks
-                    if t.get("blockedBy") and t.get("status") != "completed"
-                ]
+                tasks = [t for t in tasks if t.get("blockedBy") and t.get("status") != "completed"]
             else:
                 tasks = [
-                    t for t in tasks
-                    if t.get("status") == self._filter
-                    and not (t.get("blockedBy") and self._filter == "pending")
+                    t
+                    for t in tasks
+                    if t.get("status") == self._filter and not (t.get("blockedBy") and self._filter == "pending")
                 ]
 
         # Apply sort
@@ -326,7 +320,7 @@ class TaskPanel(Widget):
             if self._sort_by == "id":
                 try:
                     return int(t.get("id", 0))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     return 0
             elif self._sort_by == "status":
                 return t.get("status", "")
@@ -334,7 +328,7 @@ class TaskPanel(Widget):
                 return t.get("owner", "")
             try:
                 return int(t.get("id", 0))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 return 0
 
         tasks.sort(key=sort_key)

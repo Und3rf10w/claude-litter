@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Self
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     pending = "pending"
     in_progress = "in_progress"
     completed = "completed"
@@ -72,7 +72,7 @@ class TodoItem:
     priority: str = "medium"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TodoItem":
+    def from_dict(cls, data: dict[str, Any]) -> TodoItem:
         raw_status = data.get("status", "pending")
         try:
             status = TaskStatus(raw_status)

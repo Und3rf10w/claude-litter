@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -135,7 +135,6 @@ sys.modules.setdefault("claude_agent_sdk.types", _fake_types)
 
 # Now we can safely import production code
 from claude_litter.services.agent_manager import AgentManager, AgentSession, AgentStatus  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -413,7 +412,9 @@ async def test_stream_response_tool_use() -> None:
     session = await mgr.spawn_agent("team-a", "worker-1")
     session._client._messages = [  # type: ignore[union-attr]
         _StreamEvent({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "bash"}}),
-        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"command":'}}),
+        _StreamEvent(
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"command":'}}
+        ),
         _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": ' "ls"}'}}),
         _StreamEvent({"type": "content_block_stop"}),
         _ResultMessage(),
@@ -482,7 +483,9 @@ async def test_stream_response_mixed_messages() -> None:
         _SystemMessage(subtype="init", session_id="s-1"),
         _StreamEvent({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Step 1"}}),
         _StreamEvent({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "read_file"}}),
-        _StreamEvent({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"path": "/x"}'}}),
+        _StreamEvent(
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"path": "/x"}'}}
+        ),
         _StreamEvent({"type": "content_block_stop"}),
         _ResultMessage(),
     ]

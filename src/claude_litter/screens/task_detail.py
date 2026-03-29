@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from typing import Any
+
 from textual.app import ComposeResult
-from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static, TextArea
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-
+from textual.screen import ModalScreen
+from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 _STATUS_OPTIONS = [
-    ("Pending", "pending"), ("In Progress", "in_progress"),
+    ("Pending", "pending"),
+    ("In Progress", "in_progress"),
     ("Completed", "completed"),
 ]
 

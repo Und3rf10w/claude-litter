@@ -5,17 +5,17 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 import anyio
 
-_log = logging.getLogger("claude_litter.agent_manager")
-
-
 from claude_litter.services.claude_settings import ClaudeSettings
+
+_log = logging.getLogger("claude_litter.agent_manager")
 
 
 def _read_user_model() -> str | None:
@@ -72,9 +72,7 @@ class AgentSession:
     _client: object | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
     _plugins: list[dict] | None = field(default=None, repr=False)
-    _permission_callback: Callable[[Any, PermissionRequest], None] | None = field(
-        default=None, repr=False
-    )
+    _permission_callback: Callable[[Any, PermissionRequest], None] | None = field(default=None, repr=False)
 
     async def start(self) -> None:
         """Initialize and connect ClaudeSDKClient for this session."""
@@ -97,20 +95,23 @@ class AgentSession:
         self._client = ClaudeSDKClient(options)
 
         # Log the exact CLI command for debugging
-        _log.info("start: connecting with options model=%r, include_partial=%r",
-                  self.model, getattr(options, 'include_partial_messages', None))
+        _log.info(
+            "start: connecting with options model=%r, include_partial=%r",
+            self.model,
+            getattr(options, "include_partial_messages", None),
+        )
 
         await self._client.connect()
         self._connected = True
 
         # Log the command that was actually run
         try:
-            query = getattr(self._client, '_query', None)
+            query = getattr(self._client, "_query", None)
             if query:
-                tp = getattr(query, 'transport', None)
-                if tp and hasattr(tp, '_build_command'):
+                tp = getattr(query, "transport", None)
+                if tp and hasattr(tp, "_build_command"):
                     cmd = tp._build_command()
-                    _log.info("start: CLI command = %s", ' '.join(cmd))
+                    _log.info("start: CLI command = %s", " ".join(cmd))
         except Exception:
             pass
 
@@ -147,19 +148,21 @@ class AgentSession:
         Always uses AsyncIterable format (required by can_use_tool).
         """
         if not self._connected:
-                await self.start()
+            await self.start()
 
         if images:
             content: list[dict] = [{"type": "text", "text": prompt}]
             for media_type, data in images:
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": base64.b64encode(data).decode(),
-                    },
-                })
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.b64encode(data).decode(),
+                        },
+                    }
+                )
         else:
             content = prompt  # type: ignore[assignment]
 
@@ -266,7 +269,10 @@ class AgentSession:
                     if got_stream_events:
                         _log.debug("stream_response: skipping AssistantMessage (already streamed)")
                     else:
-                        _log.info("stream_response: got AssistantMessage (non-streaming fallback), %d content blocks", len(msg.content))
+                        _log.info(
+                            "stream_response: got AssistantMessage (non-streaming fallback), %d content blocks",
+                            len(msg.content),
+                        )
                         for block in msg.content:
                             if isinstance(block, TextBlock) and block.text:
                                 self.output_buffer.append(block.text)
@@ -283,9 +289,7 @@ class AgentSession:
                                 content = block.content
                                 if isinstance(content, list):
                                     text_parts = [
-                                        b["text"]
-                                        for b in content
-                                        if isinstance(b, dict) and b.get("type") == "text"
+                                        b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"
                                     ]
                                     content = "\n".join(text_parts)
                                 yield {
@@ -391,7 +395,10 @@ class AgentManager:
             source = self.sessions.get((source_team, source_agent))
             model = source.model if source is not None else self._default_model
         return await self.spawn_agent(
-            target_team, new_name, model=model, initial_prompt=initial_prompt,
+            target_team,
+            new_name,
+            model=model,
+            initial_prompt=initial_prompt,
         )
 
     async def move_agent(
@@ -426,7 +433,7 @@ class AgentManager:
         if await detach_file.exists():
             try:
                 data = json.loads(await detach_file.read_text())
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError, OSError:
                 data = {}
 
         data.setdefault(team_name, {})[agent_name] = {
@@ -446,7 +453,7 @@ class AgentManager:
 
         try:
             data = json.loads(await detach_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return None
 
         entry = data.get(team_name, {}).get(agent_name)
@@ -477,8 +484,6 @@ class AgentManager:
         )
         # Set can_use_tool before connecting so the session has permission support
         resume_opts["can_use_tool"] = session._can_use_tool
-
-        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
         options = ClaudeAgentOptions(**resume_opts)
         client = ClaudeSDKClient(options)

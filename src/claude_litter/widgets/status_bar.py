@@ -47,11 +47,5 @@ class StatusBar(Widget):
         if swarm_active:
             swarm_part = f"  Swarm: iter {swarm_iteration} \\[{swarm_phase}]"
 
-        text = (
-            f" Team: {team_part}"
-            f"  Agents: {agents_part}"
-            f"  Tasks: {tasks_part}"
-            f"{swarm_part}"
-            f"  [{mode}]"
-        )
+        text = f" Team: {team_part}  Agents: {agents_part}  Tasks: {tasks_part}{swarm_part}  [{mode}]"
         self.query_one("#status-text", Static).update(text)

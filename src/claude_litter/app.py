@@ -1,4 +1,5 @@
 """Main application class for claude-litter."""
+
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
@@ -84,6 +85,7 @@ class ClaudeLitterApp(App):
     def on_mount(self) -> None:
         """Push the main screen on startup."""
         from claude_litter.screens.main import MainScreen
+
         self.push_screen(MainScreen(agent_manager=self.agent_manager))
 
     def compose(self) -> ComposeResult:
@@ -93,18 +95,21 @@ class ClaudeLitterApp(App):
     def action_toggle_tasks(self) -> None:
         """Toggle the task panel."""
         from claude_litter.screens.main import MainScreen
+
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_tasks()
 
     def action_toggle_messages(self) -> None:
         """Toggle the message panel."""
         from claude_litter.screens.main import MainScreen
+
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_messages()
 
     def action_toggle_swarm(self) -> None:
         """Toggle the swarm panel."""
         from claude_litter.screens.main import MainScreen
+
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_swarm()
 
@@ -116,6 +121,7 @@ class ClaudeLitterApp(App):
             if result is None:
                 return
             from claude_litter.screens.main import MainScreen
+
             if isinstance(self.screen, MainScreen):
                 self.screen.create_team(result)
 
@@ -124,10 +130,12 @@ class ClaudeLitterApp(App):
     def action_spawn_agent(self) -> None:
         """Open the spawn-agent dialog."""
         from claude_litter.screens.spawn_agent import SpawnAgentScreen
+
         self.push_screen(SpawnAgentScreen())
 
     def action_request_quit(self) -> None:
         """Show centered quit confirmation dialog."""
+
         def _on_quit(confirmed: bool | None) -> None:
             if confirmed:
                 self.exit()
@@ -143,7 +151,8 @@ class ClaudeLitterApp(App):
 
     def action_detach(self) -> None:
         """Detach the active agent session."""
-        from claude_litter.screens.main import MainScreen, _MAIN_CHAT_KEY
+        from claude_litter.screens.main import _MAIN_CHAT_KEY, MainScreen
+
         screen = self.screen
         if not isinstance(screen, MainScreen):
             return
@@ -154,11 +163,13 @@ class ClaudeLitterApp(App):
     def action_about(self) -> None:
         """Show about dialog."""
         from claude_litter.screens.about import AboutScreen
+
         self.push_screen(AboutScreen())
 
     def action_settings(self) -> None:
         """Open the settings screen."""
         from claude_litter.screens.settings import SettingsScreen
+
         self.push_screen(SettingsScreen())
 
     def copy_to_clipboard(self, text: str) -> None:

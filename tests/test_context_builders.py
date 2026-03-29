@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from claude_litter.screens.main import MainScreen
 
 
@@ -24,6 +22,7 @@ def _make_screen(list_teams, get_team, list_tasks):
 # ---------------------------------------------------------------------------
 # _build_team_context
 # ---------------------------------------------------------------------------
+
 
 class TestBuildTeamContext:
     def test_no_teams_returns_empty_string(self):
@@ -174,6 +173,7 @@ class TestBuildTeamContext:
 # _build_context_summary
 # ---------------------------------------------------------------------------
 
+
 def _make_screen_for_context_summary(member_info, team_service_get_team, projects_dir):
     """Build a minimal object for _build_context_summary tests."""
     obj = MagicMock(spec=MainScreen)
@@ -245,6 +245,7 @@ class TestBuildContextSummary:
 
         # Monkeypatch Path.home() in the main module so the method finds our tmp dir
         import claude_litter.screens.main as main_module
+
         monkeypatch.setattr(main_module.Path, "home", staticmethod(lambda: tmp_path))
 
         obj = _make_screen_for_context_summary(

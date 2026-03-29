@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import pytest
-
 from textual.app import App, ComposeResult
 
-from claude_litter.widgets.session_view import SessionView
-from claude_litter.widgets.session_view import _format_tool_input, _truncate_tool_output
 from claude_litter.widgets.input_bar import (
+    CommandSubmitted,
     InputBar,
+    InterruptRequested,
     PromptSubmitted,
     PromptTextArea,
-    CommandSubmitted,
-    InterruptRequested,
 )
-
+from claude_litter.widgets.session_view import SessionView, _format_tool_input, _truncate_tool_output
 
 # ---------------------------------------------------------------------------
 # Minimal test apps
@@ -81,6 +78,7 @@ class TestSessionView:
             sv.append_output("Hello world")
             await pilot.pause()
             from claude_litter.widgets.session_view import SelectableLog
+
             log = sv.query_one(SelectableLog)
             assert log is not None
 
@@ -94,6 +92,7 @@ class TestSessionView:
             sv.clear_output()
             await pilot.pause()
             from claude_litter.widgets.session_view import SelectableLog
+
             log = sv.query_one(SelectableLog)
             assert log is not None  # log still exists after clear
 
@@ -109,6 +108,7 @@ class TestSessionView:
             sv._set_idle()
             await pilot.pause()
             from textual.widgets import LoadingIndicator
+
             spinner = sv.query_one(LoadingIndicator)
             assert spinner.display is False
 
@@ -239,7 +239,7 @@ class TestInputBar:
             await _set_input(pilot, app, "draft")
             # Navigate up then back down via internal method
             ib._navigate_history(-1)  # -> old
-            ib._navigate_history(1)   # -> restore draft
+            ib._navigate_history(1)  # -> restore draft
             await pilot.pause()
             assert ib._input.text == "draft"
 
@@ -359,11 +359,13 @@ class TestRenderToolChunk:
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
             sv.render_tool_chunk({"type": "tool_start", "name": "Read"})
-            sv.render_tool_chunk({
-                "type": "tool_done",
-                "name": "Read",
-                "input": {"file_path": "/src/app.py"},
-            })
+            sv.render_tool_chunk(
+                {
+                    "type": "tool_done",
+                    "name": "Read",
+                    "input": {"file_path": "/src/app.py"},
+                }
+            )
             await pilot.pause()
             history = sv.get_output_history()
             assert any("/src/app.py" in h for h in history)
@@ -373,12 +375,14 @@ class TestRenderToolChunk:
         app = SessionApp()
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
-            sv.render_tool_chunk({
-                "type": "tool_result",
-                "tool_use_id": "abc",
-                "content": "test output line",
-                "is_error": False,
-            })
+            sv.render_tool_chunk(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "abc",
+                    "content": "test output line",
+                    "is_error": False,
+                }
+            )
             await pilot.pause()
             history = sv.get_output_history()
             assert any("test output line" in h for h in history)
@@ -388,12 +392,14 @@ class TestRenderToolChunk:
         app = SessionApp()
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
-            sv.render_tool_chunk({
-                "type": "tool_result",
-                "tool_use_id": "abc",
-                "content": "something failed",
-                "is_error": True,
-            })
+            sv.render_tool_chunk(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "abc",
+                    "content": "something failed",
+                    "is_error": True,
+                }
+            )
             await pilot.pause()
             history = sv.get_output_history()
             assert any("red" in h and "something failed" in h for h in history)
@@ -404,12 +410,14 @@ class TestRenderToolChunk:
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
             long_output = "\n".join(f"line{i}" for i in range(20))
-            sv.render_tool_chunk({
-                "type": "tool_result",
-                "tool_use_id": "abc",
-                "content": long_output,
-                "is_error": False,
-            })
+            sv.render_tool_chunk(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "abc",
+                    "content": long_output,
+                    "is_error": False,
+                }
+            )
             await pilot.pause()
             history = sv.get_output_history()
             assert any("+7 lines" in h for h in history)
@@ -419,12 +427,14 @@ class TestRenderToolChunk:
         app = SessionApp()
         async with app.run_test() as pilot:
             sv = app.query_one(SessionView)
-            sv.render_tool_chunk({
-                "type": "api_retry",
-                "attempt": 2,
-                "error": "rate limited",
-                "status": 429,
-            })
+            sv.render_tool_chunk(
+                {
+                    "type": "api_retry",
+                    "attempt": 2,
+                    "error": "rate limited",
+                    "status": 429,
+                }
+            )
             await pilot.pause()
             history = sv.get_output_history()
             assert any("retry" in h and "429" in str(h) for h in history)

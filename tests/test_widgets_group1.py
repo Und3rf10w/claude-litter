@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Tree, Static, TabbedContent, Tabs
+from textual.widgets import Static, TabbedContent, Tabs, Tree
 
-from claude_litter.widgets.sidebar import TeamSidebar
-from claude_litter.widgets.tab_bar import SessionTabBar, _tab_label, _tab_id
-from claude_litter.widgets.status_bar import StatusBar
 from claude_litter.widgets.context_menu import ContextMenu
-
+from claude_litter.widgets.sidebar import TeamSidebar
+from claude_litter.widgets.status_bar import StatusBar
+from claude_litter.widgets.tab_bar import SessionTabBar, _tab_id, _tab_label
 
 # ------------------------------------------------------------------ #
 # TeamSidebar tests
@@ -356,9 +355,7 @@ async def test_tabbar_right_click_emits_context_menu():
         def compose(self) -> ComposeResult:
             yield SessionTabBar(id="tabbar")
 
-        def on_session_tab_bar_tab_context_menu_requested(
-            self, msg: SessionTabBar.TabContextMenuRequested
-        ):
+        def on_session_tab_bar_tab_context_menu_requested(self, msg: SessionTabBar.TabContextMenuRequested):
             received.append(msg)
 
     async with WatchApp().run_test(size=(80, 24)) as pilot:
@@ -611,7 +608,7 @@ async def test_statusbar_no_team():
 
 def test_widget_imports():
     """All three widget classes should be importable from the package."""
-    from claude_litter.widgets import TeamSidebar, SessionTabBar, StatusBar
+    from claude_litter.widgets import SessionTabBar, StatusBar, TeamSidebar
 
     assert TeamSidebar is not None
     assert SessionTabBar is not None

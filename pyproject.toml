@@ -35,7 +35,22 @@ packages = ["src/claude_litter"]
 dev = [
     "pytest",
     "pytest-anyio",
+    "ruff",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = ["plugins"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F841"]
+
+[tool.ruff.format]
+quote-style = "double"

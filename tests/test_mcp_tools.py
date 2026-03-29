@@ -1,4 +1,5 @@
 """Tests for the team-overlord MCP server tools."""
+
 from __future__ import annotations
 
 import importlib
@@ -114,11 +115,15 @@ async def test_get_team_missing(mcp_server):
 
 @pytest.mark.anyio
 async def test_create_task(mcp_server, tmp_path):
-    result = await _call(mcp_server, "create_task", {
-        "team": "alpha",
-        "subject": "Build auth",
-        "description": "Implement JWT auth",
-    })
+    result = await _call(
+        mcp_server,
+        "create_task",
+        {
+            "team": "alpha",
+            "subject": "Build auth",
+            "description": "Implement JWT auth",
+        },
+    )
     data = _parse_json(result)
     assert data["id"] == "1"
     assert data["subject"] == "Build auth"
@@ -190,12 +195,16 @@ async def test_get_task_missing(mcp_server):
 @pytest.mark.anyio
 async def test_update_task(mcp_server, tmp_path):
     await _call(mcp_server, "create_task", {"team": "alpha", "subject": "Task 1"})
-    result = await _call(mcp_server, "update_task", {
-        "team": "alpha",
-        "task_id": "1",
-        "status": "in_progress",
-        "owner": "researcher",
-    })
+    result = await _call(
+        mcp_server,
+        "update_task",
+        {
+            "team": "alpha",
+            "task_id": "1",
+            "status": "in_progress",
+            "owner": "researcher",
+        },
+    )
     data = _parse_json(result)
     assert data["status"] == "in_progress"
     assert data["owner"] == "researcher"
@@ -232,11 +241,15 @@ async def test_update_task_no_fields(mcp_server):
 async def test_send_message(mcp_server, tmp_path):
     # Create team with a member for the inbox
     await _call(mcp_server, "create_team", {"name": "alpha"})
-    result = await _call(mcp_server, "send_message", {
-        "team": "alpha",
-        "to": "researcher",
-        "text": "Check the docs",
-    })
+    result = await _call(
+        mcp_server,
+        "send_message",
+        {
+            "team": "alpha",
+            "to": "researcher",
+            "text": "Check the docs",
+        },
+    )
     assert "sent" in result.lower() if isinstance(result, str) else True
 
     # Verify inbox on disk
@@ -283,10 +296,14 @@ async def test_broadcast_message(mcp_server, tmp_path):
     ]
     config_path.write_text(json.dumps(config))
 
-    result = await _call(mcp_server, "broadcast_message", {
-        "team": "alpha",
-        "text": "Stand down",
-    })
+    result = await _call(
+        mcp_server,
+        "broadcast_message",
+        {
+            "team": "alpha",
+            "text": "Stand down",
+        },
+    )
     assert "2" in (result if isinstance(result, str) else str(result))
 
     # Verify inboxes

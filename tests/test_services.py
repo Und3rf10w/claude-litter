@@ -1,16 +1,14 @@
 """Tests for TeamService and KittyService."""
+
 from __future__ import annotations
 
 import concurrent.futures
-import json
-import os
 from pathlib import Path
 
 import pytest
 
-from claude_litter.services.team_service import TeamService
 from claude_litter.services.kitty import KittyService
-
+from claude_litter.services.team_service import TeamService
 
 # ------------------------------------------------------------------ #
 #  TeamService tests
@@ -370,9 +368,7 @@ class TestKittySocket:
         svc = KittyService()
         assert svc.find_socket() == socket_path
 
-    def test_find_socket_none_when_no_env_no_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_find_socket_none_when_no_env_no_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("KITTY_LISTEN_ON", raising=False)
         monkeypatch.delenv("USER", raising=False)
         monkeypatch.delenv("LOGNAME", raising=False)

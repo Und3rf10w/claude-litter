@@ -1,4 +1,5 @@
 """KittyService — kitty terminal integration for swarm window management."""
+
 from __future__ import annotations
 
 import json
@@ -46,6 +47,7 @@ class KittyService:
 
         try:
             import anyio
+
             result = await anyio.run_process(cmd, check=True)
             return result.stdout.decode() if result.stdout else ""
         except Exception:
@@ -71,8 +73,10 @@ class KittyService:
 
         await self.kitten_cmd(
             *base_args,
-            "--var", f"swarm_{team}_{agent}=true",
-            "--title", f"[swarm] {team}/{agent}",
+            "--var",
+            f"swarm_{team}_{agent}=true",
+            "--title",
+            f"[swarm] {team}/{agent}",
         )
 
     async def list_windows(self) -> list[dict]:

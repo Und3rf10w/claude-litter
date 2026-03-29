@@ -134,7 +134,7 @@ class SessionTabBar(Widget):
             idx = self._tabs.index(key)
         except ValueError:
             return
-        to_close = list(self._tabs[idx + 1:])
+        to_close = list(self._tabs[idx + 1 :])
         for t, a in to_close:
             self.remove_tab(t, a)
 
@@ -144,9 +144,7 @@ class SessionTabBar(Widget):
         for t, a in to_close:
             self.remove_tab(t, a)
 
-    def on_tabbed_content_tab_activated(
-        self, event: TabbedContent.TabActivated
-    ) -> None:
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         event.stop()
         if event.tab is None:
             return
@@ -188,6 +186,7 @@ class SessionTabBar(Widget):
         # Walk up from the hit widget to find a Tab
         node = widget
         from textual.widgets._tabs import Tab
+
         while node is not None:
             if isinstance(node, Tab):
                 pane_id = _pane_id_from_tab_id(node.id or "")
@@ -206,6 +205,7 @@ class SessionTabBar(Widget):
             return False
 
         from textual.widgets._tabs import Tab
+
         tab = widget
         while tab is not None:
             if isinstance(tab, Tab):

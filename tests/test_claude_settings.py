@@ -1,4 +1,5 @@
 """Tests for ClaudeSettings service."""
+
 from __future__ import annotations
 
 import json
@@ -20,13 +21,17 @@ def _clear_cache():
 def test_load_valid_settings(tmp_path: Path) -> None:
     """Load a valid settings.json and verify fields are populated."""
     settings_file = tmp_path / "settings.json"
-    settings_file.write_text(json.dumps({
-        "model": "claude-opus-4-6",
-        "env": {
-            "ANTHROPIC_BASE_URL": "https://api.example.com",
-            "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
-        },
-    }))
+    settings_file.write_text(
+        json.dumps(
+            {
+                "model": "claude-opus-4-6",
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
+                },
+            }
+        )
+    )
 
     result = ClaudeSettings.load(path=settings_file)
 
@@ -61,14 +66,18 @@ def test_load_corrupt_json(tmp_path: Path) -> None:
 def test_env_vars_extraction(tmp_path: Path) -> None:
     """Verify env vars are exposed via ClaudeSettings convenience properties."""
     settings_file = tmp_path / "settings.json"
-    settings_file.write_text(json.dumps({
-        "env": {
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5",
-        },
-    }))
+    settings_file.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+                    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5",
+                },
+            }
+        )
+    )
 
     result = ClaudeSettings.load(path=settings_file)
 

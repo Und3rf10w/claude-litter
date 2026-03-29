@@ -9,7 +9,6 @@ from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
-
 _STATUS_COLOR = {
     "active": "green",
     "partial": "yellow",
@@ -159,9 +158,7 @@ class TeamSidebar(Widget):
             status = team.get("status", "inactive")
             color = _STATUS_COLOR.get(status, "gray")
             label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
-            team_node: TreeNode[dict] = tree.root.add(
-                label, data={"type": "team", "team": dir_name}, expand=True
-            )
+            team_node: TreeNode[dict] = tree.root.add(label, data={"type": "team", "team": dir_name}, expand=True)
             self._team_nodes[dir_name] = team_node
 
             for agent in team.get("agents", []):
@@ -216,11 +213,7 @@ class TeamSidebar(Widget):
             iid = getattr(state, "instance_id", "????")
             phase = getattr(state, "phase", "?")
             iteration = getattr(state, "iteration", 0)
-            label = (
-                f"[{health_color}]\u25cf[/{health_color}] "
-                f"[dim]{iid}[/dim] "
-                f"iter {iteration} {phase}{pct}"
-            )
+            label = f"[{health_color}]\u25cf[/{health_color}] [dim]{iid}[/dim] iter {iteration} {phase}{pct}"
             self._swarm_root_node.add_leaf(
                 label,
                 data={"type": "swarm_instance", "instance_id": iid},
@@ -238,9 +231,7 @@ class TeamSidebar(Widget):
             event.node.toggle()
             self.post_message(self.TeamSelected(team=node_data["team"]))
         elif node_data.get("type") == "agent":
-            self.post_message(
-                self.AgentSelected(team=node_data["team"], agent=node_data["agent"])
-            )
+            self.post_message(self.AgentSelected(team=node_data["team"], agent=node_data["agent"]))
         elif node_data.get("type") == "swarm_instance":
             self.post_message(self.SwarmSelected(instance_id=node_data["instance_id"]))
 

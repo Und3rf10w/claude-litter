@@ -1,9 +1,10 @@
 """Tests for claude_litter data models."""
+
 from __future__ import annotations
 
 import pytest
-from claude_litter.models import Team, TeamMember, Task, TaskStatus, Message
 
+from claude_litter.models import Message, Task, TaskStatus, Team, TeamMember
 
 # ── Fixtures: real-world JSON samples ──────────────────────────────────────
 
@@ -48,6 +49,7 @@ MESSAGE_JSON = {
 
 
 # ── TeamMember tests ────────────────────────────────────────────────────────
+
 
 class TestTeamMember:
     def test_from_dict_required_fields(self):
@@ -107,6 +109,7 @@ class TestTeamMember:
 
 # ── Team tests ──────────────────────────────────────────────────────────────
 
+
 class TestTeam:
     def test_from_dict(self):
         t = Team.from_dict(TEAM_JSON)
@@ -137,6 +140,7 @@ class TestTeam:
 
 # ── TaskStatus tests ────────────────────────────────────────────────────────
 
+
 class TestTaskStatus:
     def test_enum_values(self):
         assert TaskStatus.pending.value == "pending"
@@ -150,6 +154,7 @@ class TestTaskStatus:
 
 
 # ── Task tests ──────────────────────────────────────────────────────────────
+
 
 class TestTask:
     def test_from_dict(self):
@@ -206,6 +211,7 @@ class TestTask:
 
 
 # ── Message tests ───────────────────────────────────────────────────────────
+
 
 class TestMessage:
     def test_from_dict(self):

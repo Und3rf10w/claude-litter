@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static, Switch
-from textual.containers import Horizontal, Vertical
 
+from .configure_agent import _VALID_COLORS, _VALID_TYPES, _color_options, _normalize_model
 from .create_team import validate_team_name
-from .configure_agent import _normalize_model, _VALID_COLORS, _VALID_TYPES, _color_options
 
 
 class DuplicateAgentScreen(ModalScreen[dict | None]):
@@ -133,12 +133,14 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
         self.query_one("#name-error", Static).update("")
 
         target_team = self.query_one("#target-team", Select).value
-        self.dismiss({
-            "target_team": target_team,
-            "new_name": name,
-            "model": self.query_one("#model", Select).value,
-            "color": self.query_one("#color", Select).value,
-            "agentType": self.query_one("#agent-type", Select).value,
-            "copy_inbox": self.query_one("#copy-inbox", Switch).value,
-            "copy_context": self.query_one("#copy-context", Switch).value,
-        })
+        self.dismiss(
+            {
+                "target_team": target_team,
+                "new_name": name,
+                "model": self.query_one("#model", Select).value,
+                "color": self.query_one("#color", Select).value,
+                "agentType": self.query_one("#agent-type", Select).value,
+                "copy_inbox": self.query_one("#copy-inbox", Switch).value,
+                "copy_context": self.query_one("#copy-context", Switch).value,
+            }
+        )

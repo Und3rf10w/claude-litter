@@ -1,4 +1,5 @@
 """Tests for StateManager."""
+
 from __future__ import annotations
 
 import json
@@ -8,10 +9,10 @@ import pytest
 
 from claude_litter.services.state import StateManager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,7 @@ def _message_dict(msg_id: str, sender: str = "alice", text: str = "hello") -> di
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def base(tmp_path: Path) -> Path:
     """Return a fake ~/.claude base directory."""
@@ -69,6 +71,7 @@ def sm(base: Path) -> StateManager:
 # ---------------------------------------------------------------------------
 # get_teams
 # ---------------------------------------------------------------------------
+
 
 class TestGetTeams:
     def test_no_dir(self, sm: StateManager) -> None:
@@ -109,6 +112,7 @@ class TestGetTeams:
 # get_team
 # ---------------------------------------------------------------------------
 
+
 class TestGetTeam:
     def test_missing(self, sm: StateManager) -> None:
         assert sm.get_team("nope") is None
@@ -128,6 +132,7 @@ class TestGetTeam:
 # ---------------------------------------------------------------------------
 # get_tasks
 # ---------------------------------------------------------------------------
+
 
 class TestGetTasks:
     def test_no_dir(self, sm: StateManager) -> None:
@@ -170,6 +175,7 @@ class TestGetTasks:
 # get_task
 # ---------------------------------------------------------------------------
 
+
 class TestGetTask:
     def test_missing(self, sm: StateManager) -> None:
         assert sm.get_task("alpha", "xyz") is None
@@ -189,6 +195,7 @@ class TestGetTask:
 # ---------------------------------------------------------------------------
 # get_inbox / get_unread_count
 # ---------------------------------------------------------------------------
+
 
 class TestGetInbox:
     def test_no_file(self, sm: StateManager) -> None:
@@ -239,6 +246,7 @@ class TestGetInbox:
 # ---------------------------------------------------------------------------
 # Async lifecycle (start/stop)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.anyio
 async def test_start_stop(sm: StateManager) -> None:

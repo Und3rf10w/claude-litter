@@ -8,27 +8,25 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Union
 
 from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.style import Style as RichStyle
 from rich.syntax import Syntax
-
 from textual.app import ComposeResult
 from textual.events import MouseDown
 from textual.message import Message
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import RichLog, LoadingIndicator, Static
+from textual.widgets import LoadingIndicator, RichLog, Static
 
 from claude_litter.utils import COLOR_MAP
 
 _log = logging.getLogger("claude_litter.session_view")
 
 # Type alias for items that can be written to the RichLog
-_RenderItem = Union[str, Markdown, Syntax]
+_RenderItem = str | Markdown | Syntax
 
 # File-extension to Pygments lexer name mapping for syntax highlighting
 _EXT_TO_LEXER: dict[str, str] = {
@@ -63,6 +61,7 @@ def _lexer_for_path(file_path: str) -> str:
     """Return a Pygments lexer name for the given file path, or 'text' as fallback."""
     ext = os.path.splitext(file_path)[1].lower()
     return _EXT_TO_LEXER.get(ext, "text")
+
 
 class SelectableLog(RichLog):
     """RichLog subclass with full mouse-drag text selection and copy support.
@@ -149,9 +148,7 @@ class SelectableLog(RichLog):
                 else:
                     sel_end = max(0, sel_end - scroll_x)
                 if sel_start < sel_end:
-                    sel_style = self.screen.get_component_rich_style(
-                        "screen--selection"
-                    )
+                    sel_style = self.screen.get_component_rich_style("screen--selection")
                     strip = _apply_selection_to_strip(strip, sel_start, sel_end, sel_style)
 
         if selection is None:
@@ -205,13 +202,17 @@ async def _copy_to_system_clipboard(text: str) -> None:
             # Try xclip first, then xsel
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "xclip", "-selection", "clipboard",
+                    "xclip",
+                    "-selection",
+                    "clipboard",
                     stdin=asyncio.subprocess.PIPE,
                 )
                 await asyncio.wait_for(proc.communicate(encoded), timeout=2)
             except FileNotFoundError:
                 proc = await asyncio.create_subprocess_exec(
-                    "xsel", "--clipboard", "--input",
+                    "xsel",
+                    "--clipboard",
+                    "--input",
                     stdin=asyncio.subprocess.PIPE,
                 )
                 await asyncio.wait_for(proc.communicate(encoded), timeout=2)
@@ -219,9 +220,7 @@ async def _copy_to_system_clipboard(text: str) -> None:
         pass  # Silently fail — OSC 52 is the primary mechanism
 
 
-def _apply_selection_to_strip(
-    strip: Strip, start: int, end: int, style: RichStyle
-) -> Strip:
+def _apply_selection_to_strip(strip: Strip, start: int, end: int, style: RichStyle) -> Strip:
     """Apply a highlight style to a character range within a Strip."""
     new_segments: list[Segment] = []
     col = 0
@@ -235,17 +234,13 @@ def _apply_selection_to_strip(
             new_segments.append(segment)
         elif col >= start and seg_end <= end:
             # Entirely inside selection
-            new_segments.append(
-                Segment(text, (segment.style or RichStyle()) + style, segment.control)
-            )
+            new_segments.append(Segment(text, (segment.style or RichStyle()) + style, segment.control))
         else:
             # Partial overlap — split character by character
             for i, ch in enumerate(text):
                 ch_col = col + i
                 if start <= ch_col < end:
-                    new_segments.append(
-                        Segment(ch, (segment.style or RichStyle()) + style, segment.control)
-                    )
+                    new_segments.append(Segment(ch, (segment.style or RichStyle()) + style, segment.control))
                 else:
                     new_segments.append(Segment(ch, segment.style, segment.control))
         col = seg_end
@@ -581,9 +576,7 @@ class SessionView(Widget):
                 as_markup=True,
             )
 
-    def _render_tool_result(
-        self, tool_name: str, tool_input: dict, content: str
-    ) -> "Syntax | None":
+    def _render_tool_result(self, tool_name: str, tool_input: dict, content: str) -> Syntax | None:
         """Return a Syntax renderable for tool result content, or None to fall back."""
         name_lower = tool_name.lower() if tool_name else ""
         file_path = ""
@@ -651,4 +644,3 @@ class SessionView(Widget):
         lines.append("")
 
         self.append_output("\n".join(lines), as_markup=True)
-

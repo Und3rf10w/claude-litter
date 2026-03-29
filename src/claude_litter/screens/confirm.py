@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
-from textual.containers import Horizontal, Vertical
 
 
 class ConfirmScreen(ModalScreen[bool]):

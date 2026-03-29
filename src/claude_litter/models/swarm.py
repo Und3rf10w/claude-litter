@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,9 +113,7 @@ class SwarmState:
 
         # async extras
         bg_agents = raw.get("background_agents", [])
-        async_agent_names = tuple(
-            str(a.get("id", "")) for a in bg_agents if isinstance(a, dict)
-        )
+        async_agent_names = tuple(str(a.get("id", "")) for a in bg_agents if isinstance(a, dict))
         async_completed = int(raw.get("agents_completed", 0))
 
         # permission failures as strings
@@ -155,4 +154,63 @@ class SwarmState:
     def progress_pct(self) -> float:
         if self.heartbeat and self.heartbeat.tasks_total > 0:
             return self.heartbeat.tasks_completed / self.heartbeat.tasks_total
+        return 0.0
+
+
+@dataclass(frozen=True)
+class DefunctSwarmInstance:
+    """A swarm run whose state.json was deleted but artefacts (log.md) remain."""
+
+    instance_id: str
+    instance_dir: Path = field(hash=False, compare=False)
+    last_updated: str
+    goal: str = ""
+    # Defaults matching SwarmState fields accessed by the panel via getattr
+    phase: str = "completed"
+    iteration: int = 0
+    mode: str = ""
+    autonomy_health: str = "defunct"
+    completion_promise: str = ""
+    team_name: str = ""
+    safe_mode: bool = False
+    started_at: str = ""
+    sentinel_timeout: int = 600
+    teammates_isolation: str = "shared"
+    teammates_max_count: int = 8
+    has_sentinel: bool = False
+    permission_failures: tuple[str, ...] = ()
+    hook_warnings: tuple[str, ...] = ()
+    heartbeat: SwarmHeartbeat | None = None
+    # deepplan / async
+    deepplan_findings_complete: dict[str, bool] | None = field(default=None, hash=False, compare=False)
+    deepplan_has_draft: bool = False
+    async_agents: tuple[str, ...] = ()
+    async_agents_completed: int = 0
+
+    @classmethod
+    def from_dir(cls, instance_dir: Path) -> DefunctSwarmInstance | None:
+        """Build from a directory that has no state.json but has log.md."""
+        log_path = instance_dir / "log.md"
+        if not log_path.exists():
+            return None
+        goal = ""
+        prompt_path = instance_dir / "prompt.md"
+        try:
+            goal = prompt_path.read_text(encoding="utf-8").strip()[:200]
+        except Exception:
+            pass
+        try:
+            mtime = log_path.stat().st_mtime
+            last_updated = datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat(timespec="seconds")
+        except Exception:
+            last_updated = ""
+        return cls(
+            instance_id=instance_dir.name,
+            instance_dir=instance_dir,
+            last_updated=last_updated,
+            goal=goal,
+        )
+
+    @property
+    def progress_pct(self) -> float:
         return 0.0

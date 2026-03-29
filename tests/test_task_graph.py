@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from claude_litter.widgets.task_panel import _resolve_blocks, _topo_sort, _compute_depths
+from claude_litter.widgets.task_panel import _compute_depths, _resolve_blocks, _topo_sort
 
 
 def make_task(id: str, status: str = "pending", blocked_by: list[str] | None = None) -> dict:
@@ -14,6 +12,7 @@ def make_task(id: str, status: str = "pending", blocked_by: list[str] | None = N
 # ---------------------------------------------------------------------------
 # TestResolveBlocks
 # ---------------------------------------------------------------------------
+
 
 class TestResolveBlocks:
     def test_empty_list(self):
@@ -74,6 +73,7 @@ class TestResolveBlocks:
 # TestTopoSort
 # ---------------------------------------------------------------------------
 
+
 class TestTopoSort:
     def test_empty_list(self):
         assert _topo_sort([]) == []
@@ -133,6 +133,7 @@ class TestTopoSort:
 # ---------------------------------------------------------------------------
 # TestComputeDepths
 # ---------------------------------------------------------------------------
+
 
 class TestComputeDepths:
     def test_no_dependencies_all_depth_zero(self):
