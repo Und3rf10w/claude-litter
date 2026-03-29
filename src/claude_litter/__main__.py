@@ -5,6 +5,8 @@ import argparse
 import logging
 from pathlib import Path
 
+from claude_litter import __version__
+
 
 def _setup_logging(debug: bool = False) -> None:
     """Configure logging. Only writes to file when *debug* is True."""
@@ -32,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.1.0",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--vim",

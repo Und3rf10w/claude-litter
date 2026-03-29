@@ -27,6 +27,7 @@ from claude_litter.widgets.message_panel import MessageComposed, MessagePanel
 from claude_litter.widgets.context_menu import ContextMenu
 from claude_litter.widgets.status_bar import StatusBar
 from claude_litter.screens.configure_agent import _normalize_model
+from claude_litter.utils import COLOR_MAP
 
 _log = logging.getLogger("claude_litter.main_screen")
 
@@ -52,23 +53,12 @@ _MAIN_CHAT_KEY = ("", "Litter Overlord")
 _PLUGIN_PATH = str(Path(__file__).resolve().parents[3] / "plugins" / "team-overlord")
 _PLUGIN_CONFIG: list[dict] = [{"type": "local", "path": _PLUGIN_PATH}]
 
-# Color name -> Rich color name mapping (used for inbox sender badges and session headers)
-_COLOR_MAP = {
-    "blue": "dodger_blue1",
-    "green": "green3",
-    "yellow": "yellow3",
-    "purple": "medium_purple",
-    "orange": "dark_orange",
-    "pink": "hot_pink",
-    "red": "red1",
-}
-
 
 @dataclass
 class AgentBuffer:
     """Per-agent output accumulator. Source of truth for an agent's display history."""
 
-    history: list = field(default_factory=list)  # str (text) or dict (tool chunk)
+    history: list[str | dict] = field(default_factory=list)
     stream_accumulator: list[str] = field(default_factory=list)
     stream_buffer: list[str] = field(default_factory=list)
     streaming_block_count: int = 0
@@ -1034,7 +1024,7 @@ class MainScreen(Screen):
                 if display_text == "":  # skip idle notifications
                     continue
 
-                rich_color = _COLOR_MAP.get(color, "dim")
+                rich_color = COLOR_MAP.get(color, "dim")
                 read_marker = "" if read else " [bold yellow]*[/bold yellow]"
 
                 # Show sender with color badge
@@ -1535,12 +1525,18 @@ class MainScreen(Screen):
 
         def _on_result(text: str | None) -> None:
             if text is not None:
-                # TODO: broadcast_message() calls _acquire_lock() which uses time.sleep().
-                # This callback runs on the main event loop thread. Should be moved to a @work worker.
-                count = self._team_service.broadcast_message(team, "tui", text)
-                self.notify(f"Broadcast sent to {count} agent(s) in {self._display_name(team)}")
+                self._execute_team_broadcast(team, text)
 
         self.app.push_screen(BroadcastMessageScreen(team), _on_result)
+
+    @work(thread=True, group="team-action")
+    def _execute_team_broadcast(self, team: str, text: str) -> None:
+        """Send broadcast message off the main thread (avoids blocking _acquire_lock)."""
+        count = self._team_service.broadcast_message(team, "tui", text)
+        self.call_from_thread(
+            self.notify,
+            f"Broadcast sent to {count} agent(s) in {self._display_name(team)}",
+        )
 
     def _team_rename(self, team: str) -> None:
         """Open RenameTeamScreen for this team."""
@@ -1581,14 +1577,20 @@ class MainScreen(Screen):
         is_suspended = config.get("status") == "suspended"
         if is_suspended:
             # Resume
-            # TODO: update_team_status() calls _acquire_lock() which uses time.sleep().
-            # This runs on the main event loop thread. Should be moved to a @work worker.
-            self._team_service.update_team_status(team, "active")
-            self._refresh_sidebar()
-            self.notify(f"Resumed team {self._display_name(team)}")
+            self._execute_team_resume(team)
         else:
             # Suspend
             self._execute_team_suspend(team)
+
+    @work(thread=True, group="team-action")
+    def _execute_team_resume(self, team: str) -> None:
+        """Resume a suspended team off the main thread (avoids blocking _acquire_lock)."""
+        self._team_service.update_team_status(team, "active")
+        self.call_from_thread(self._refresh_sidebar)
+        self.call_from_thread(
+            self.notify,
+            f"Resumed team {self._display_name(team)}",
+        )
 
     @work(exclusive=True, group="team-action")
     async def _execute_team_suspend(self, team: str) -> None:

@@ -13,6 +13,7 @@ import anyio.abc
 from claude_litter.models.message import Message
 from claude_litter.models.task import Task
 from claude_litter.models.team import Team
+from claude_litter.utils import safe_path
 
 try:
     from textual.message import Message as TextualMessage
@@ -24,14 +25,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".claude"
 _DEBOUNCE_SECONDS = 0.1
-
-
-def _safe_path(root: Path, *parts: str) -> Path:
-    """Resolve a path under *root*, raising ValueError on traversal attempts."""
-    result = root.joinpath(*parts).resolve()
-    if not result.is_relative_to(root.resolve()):
-        raise ValueError(f"Path traversal attempt: {parts!r}")
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +250,7 @@ class StateManager:
 
     def get_team(self, name: str) -> Team | None:
         try:
-            config_path = _safe_path(self._teams_dir, name, "config.json")
+            config_path = safe_path(self._teams_dir, name, "config.json")
         except ValueError:
             return None
         data = _read_json(config_path)
@@ -270,7 +263,7 @@ class StateManager:
 
     def get_tasks(self, team_name: str) -> list[Task]:
         try:
-            task_dir = _safe_path(self._tasks_dir, team_name)
+            task_dir = safe_path(self._tasks_dir, team_name)
         except ValueError:
             return []
         if not task_dir.is_dir():
@@ -289,7 +282,7 @@ class StateManager:
 
     def get_task(self, team_name: str, task_id: str) -> Task | None:
         try:
-            task_path = _safe_path(self._tasks_dir, team_name, f"{task_id}.json")
+            task_path = safe_path(self._tasks_dir, team_name, f"{task_id}.json")
         except ValueError:
             return None
         data = _read_json(task_path)
@@ -302,7 +295,7 @@ class StateManager:
 
     def get_inbox(self, team_name: str, agent_name: str) -> list[Message]:
         try:
-            inbox_path = _safe_path(self._teams_dir, team_name, "inboxes", f"{agent_name}.json")
+            inbox_path = safe_path(self._teams_dir, team_name, "inboxes", f"{agent_name}.json")
         except ValueError:
             return []
         data = _read_json(inbox_path)

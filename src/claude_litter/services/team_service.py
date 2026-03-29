@@ -8,13 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def _safe_path(root: Path, *parts: str) -> Path:
-    """Resolve a path under *root*, raising ValueError on traversal attempts."""
-    result = root.joinpath(*parts).resolve()
-    if not result.is_relative_to(root.resolve()):
-        raise ValueError(f"Path traversal attempt: {parts!r}")
-    return result
+from claude_litter.utils import safe_path
 
 
 def _sanitize_team_name(name: str) -> str:
@@ -89,8 +83,11 @@ class TeamService:
             pass
 
     def _read_json(self, path: Path) -> dict | list:
-        with open(path) as f:
-            return json.load(f)
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
 
     def _write_json(self, path: Path, data: dict | list) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,7 +102,14 @@ class TeamService:
         try:
             if default_data is None:
                 default_data = {}
-            data = self._read_json(path) if path.exists() else default_data
+            if path.exists():
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    data = default_data
+            else:
+                data = default_data
             result = update_fn(data)
             self._write_json(path, result if result is not None else data)
             return result if result is not None else data
@@ -118,7 +122,7 @@ class TeamService:
 
     def create_team(self, name: str, description: str = "") -> dict:
         dir_name = _sanitize_team_name(name)
-        team_dir = _safe_path(self.teams_path, dir_name)
+        team_dir = safe_path(self.teams_path, dir_name)
         team_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = team_dir / "config.json"
@@ -143,15 +147,15 @@ class TeamService:
 
     def delete_team(self, name: str) -> None:
         import shutil
-        team_dir = _safe_path(self.teams_path, name)
+        team_dir = safe_path(self.teams_path, name)
         if team_dir.exists():
             shutil.rmtree(team_dir)
-        tasks_dir = _safe_path(self.tasks_path, name)
+        tasks_dir = safe_path(self.tasks_path, name)
         if tasks_dir.exists():
             shutil.rmtree(tasks_dir)
 
     def get_team(self, name: str) -> dict | None:
-        config_path = _safe_path(self.teams_path, name) / "config.json"
+        config_path = safe_path(self.teams_path, name) / "config.json"
         if not config_path.exists():
             return None
         try:
@@ -173,7 +177,7 @@ class TeamService:
     # ------------------------------------------------------------------ #
 
     def add_member(self, team_name: str, member: dict) -> None:
-        config_path = _safe_path(self.teams_path, team_name) / "config.json"
+        config_path = safe_path(self.teams_path, team_name) / "config.json"
 
         def _add(data: dict) -> dict:
             members = data.get("members", [])
@@ -187,7 +191,7 @@ class TeamService:
         self._locked_update(config_path, _add)
 
     def remove_member(self, team_name: str, agent_id: str) -> None:
-        config_path = _safe_path(self.teams_path, team_name) / "config.json"
+        config_path = safe_path(self.teams_path, team_name) / "config.json"
 
         def _remove(data: dict) -> dict:
             data["members"] = [
@@ -204,7 +208,7 @@ class TeamService:
         If *name* is changed, the ``agentId`` is updated to
         ``"{new_name}@{team_name}"`` and the inbox file is renamed.
         """
-        config_path = _safe_path(self.teams_path, team_name) / "config.json"
+        config_path = safe_path(self.teams_path, team_name) / "config.json"
         old_name: str | None = None
         new_name: str | None = fields.get("name")
 
@@ -223,9 +227,9 @@ class TeamService:
 
         # Rename inbox file when the agent name changes
         if new_name and old_name and new_name != old_name:
-            inboxes_dir = _safe_path(self.teams_path, team_name) / "inboxes"
-            old_inbox = _safe_path(inboxes_dir, f"{old_name}.json")
-            new_inbox = _safe_path(inboxes_dir, f"{new_name}.json")
+            inboxes_dir = safe_path(self.teams_path, team_name) / "inboxes"
+            old_inbox = safe_path(inboxes_dir, f"{old_name}.json")
+            new_inbox = safe_path(inboxes_dir, f"{new_name}.json")
             if old_inbox.exists():
                 old_inbox.rename(new_inbox)
 
@@ -240,7 +244,7 @@ class TeamService:
 
         Returns the number of messages copied.
         """
-        src_path = _safe_path(self.teams_path, src_team, "inboxes", f"{src_agent}.json")
+        src_path = safe_path(self.teams_path, src_team, "inboxes", f"{src_agent}.json")
         if not src_path.exists():
             return 0
 
@@ -248,7 +252,7 @@ class TeamService:
         if not isinstance(messages, list) or not messages:
             return 0
 
-        dst_path = _safe_path(self.teams_path, dst_team, "inboxes", f"{dst_agent}.json")
+        dst_path = safe_path(self.teams_path, dst_team, "inboxes", f"{dst_agent}.json")
         dst_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not dst_path.exists():
@@ -276,7 +280,7 @@ class TeamService:
         return str(max(existing, default=0) + 1)
 
     def create_task(self, team_name: str, subject: str, description: str = "") -> dict:
-        tasks_dir = _safe_path(self.tasks_path, team_name)
+        tasks_dir = safe_path(self.tasks_path, team_name)
         tasks_dir.mkdir(parents=True, exist_ok=True)
 
         # Acquire a lock to prevent task ID race conditions
@@ -298,13 +302,13 @@ class TeamService:
         return task
 
     def get_task(self, team_name: str, task_id: str) -> dict | None:
-        task_path = _safe_path(self.tasks_path, team_name, f"{task_id}.json")
+        task_path = safe_path(self.tasks_path, team_name, f"{task_id}.json")
         if not task_path.exists():
             return None
         return self._read_json(task_path)  # type: ignore[return-value]
 
     def update_task(self, team_name: str, task_id: str, **fields) -> dict:
-        task_path = _safe_path(self.tasks_path, team_name, f"{task_id}.json")
+        task_path = safe_path(self.tasks_path, team_name, f"{task_id}.json")
 
         def _update(data: dict) -> dict:
             data.update(fields)
@@ -313,7 +317,7 @@ class TeamService:
         return self._locked_update(task_path, _update)  # type: ignore[return-value]
 
     def list_tasks(self, team_name: str) -> list[dict]:
-        tasks_dir = _safe_path(self.tasks_path, team_name)
+        tasks_dir = safe_path(self.tasks_path, team_name)
         if not tasks_dir.exists():
             return []
         tasks = []
@@ -340,7 +344,7 @@ class TeamService:
         summary: str = "",
         color: str = "",
     ) -> None:
-        inbox_path = _safe_path(self.teams_path, team_name, "inboxes", f"{to_agent}.json")
+        inbox_path = safe_path(self.teams_path, team_name, "inboxes", f"{to_agent}.json")
         inbox_path.parent.mkdir(parents=True, exist_ok=True)
 
         message: dict = {
@@ -366,7 +370,7 @@ class TeamService:
         self._locked_update(inbox_path, _append, default_data=[])
 
     def read_inbox(self, team_name: str, agent_name: str) -> list[dict]:
-        inbox_path = _safe_path(self.teams_path, team_name, "inboxes", f"{agent_name}.json")
+        inbox_path = safe_path(self.teams_path, team_name, "inboxes", f"{agent_name}.json")
         if not inbox_path.exists():
             return []
         data = self._read_json(inbox_path)
@@ -378,10 +382,10 @@ class TeamService:
 
     def rename_team(self, old_name: str, new_name: str) -> None:
         """Rename a team directory, task directory, and internal references."""
-        old_team_dir = _safe_path(self.teams_path, old_name)
-        new_team_dir = _safe_path(self.teams_path, new_name)
-        old_tasks_dir = _safe_path(self.tasks_path, old_name)
-        new_tasks_dir = _safe_path(self.tasks_path, new_name)
+        old_team_dir = safe_path(self.teams_path, old_name)
+        new_team_dir = safe_path(self.teams_path, new_name)
+        old_tasks_dir = safe_path(self.tasks_path, old_name)
+        new_tasks_dir = safe_path(self.tasks_path, new_name)
 
         if not old_team_dir.exists():
             return
@@ -412,7 +416,7 @@ class TeamService:
 
     def update_team_status(self, team_name: str, status: str) -> None:
         """Update the team's top-level status. If 'suspended', set all members offline."""
-        config_path = _safe_path(self.teams_path, team_name) / "config.json"
+        config_path = safe_path(self.teams_path, team_name) / "config.json"
 
         def _update(data: dict) -> dict:
             data["status"] = status

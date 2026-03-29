@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Union
 
 from rich.markdown import Markdown
@@ -21,6 +22,8 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import RichLog, LoadingIndicator, Static
+
+from claude_litter.utils import COLOR_MAP
 
 _log = logging.getLogger("claude_litter.session_view")
 
@@ -160,6 +163,14 @@ class SelectableLog(RichLog):
 
     def clear(self) -> None:  # type: ignore[override]
         return super().clear()
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Update parent SessionView's scroll tracking when scroll position changes."""
+        super().watch_scroll_y(old_value, new_value)
+        for ancestor in self.ancestors_with_self:
+            if isinstance(ancestor, SessionView):
+                ancestor._user_scrolled_up = not self.is_vertical_scroll_end
+                break
 
     def on_mouse_down(self, event: MouseDown) -> None:
         """Right-click copies selected text to clipboard."""
@@ -389,18 +400,7 @@ class SessionView(Widget):
         color: str = "",
     ) -> None:
         """Update the header bar with agent metadata."""
-        # Map color names to Rich color names
-        _color_map = {
-            "blue": "dodger_blue1",
-            "green": "green3",
-            "yellow": "yellow3",
-            "purple": "medium_purple",
-            "orange": "dark_orange",
-            "pink": "hot_pink",
-            "red": "red1",
-            "cyan": "cyan",
-        }
-        rich_color = _color_map.get(color, "")
+        rich_color = COLOR_MAP.get(color, "")
 
         parts: list[str] = []
         if agent_name:
@@ -431,7 +431,7 @@ class SessionView(Widget):
 
         # CWD / project path (shortened)
         if cwd:
-            home = str(__import__("pathlib").Path.home())
+            home = str(Path.home())
             display_cwd = cwd.replace(home, "~") if cwd.startswith(home) else cwd
             parts.append(f"[dim]{display_cwd}[/dim]")
 
@@ -652,14 +652,3 @@ class SessionView(Widget):
 
         self.append_output("\n".join(lines), as_markup=True)
 
-    # ------------------------------------------------------------------
-    # Scroll tracking
-    # ------------------------------------------------------------------
-
-    def on_rich_log_scroll(self) -> None:
-        """Track whether the user has scrolled up."""
-        try:
-            log = self.query_one(SelectableLog)
-            self._user_scrolled_up = not log.is_vertical_scroll_end
-        except Exception:
-            pass

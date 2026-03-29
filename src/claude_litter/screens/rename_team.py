@@ -43,6 +43,7 @@ class RenameTeamScreen(ModalScreen[str | None]):
             return
         name = self.query_one("#team-name", Input).value.strip()
         if name == self._current_name:
+            self.notify("Name unchanged", severity="information")
             self.dismiss(None)
             return
         error = validate_team_name(name)

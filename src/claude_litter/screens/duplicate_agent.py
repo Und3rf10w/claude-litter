@@ -121,6 +121,10 @@ class DuplicateAgentScreen(ModalScreen[dict | None]):
             self.dismiss(None)
             return
 
+        if not self._other_teams:
+            self.dismiss(None)
+            return
+
         name = self.query_one("#agent-name", Input).value.strip()
         error = validate_team_name(name)
         if error:
