@@ -1877,9 +1877,7 @@ class MainScreen(Screen):
 
         try:
             panel = self.query_one("#swarm-panel", SwarmPanel)
-            panel.post_message(
-                SwarmPanel.LogDataReady(instance_id, log_lines, progress_entries, truncated)
-            )
+            panel.post_message(SwarmPanel.LogDataReady(instance_id, log_lines, progress_entries, truncated))
         except Exception:
             pass
 

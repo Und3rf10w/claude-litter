@@ -338,9 +338,7 @@ class SwarmPanel(Widget):
         self._apply_log_lines(event.instance_id, event.log_lines, event.log_truncated)
         self._apply_progress_entries(event.progress_entries)
 
-    def _apply_log_lines(
-        self, instance_id: str, lines: list[str], truncated: bool
-    ) -> None:
+    def _apply_log_lines(self, instance_id: str, lines: list[str], truncated: bool) -> None:
         try:
             scroll = self.query_one("#log-scroll", VerticalScroll)
         except Exception:
@@ -367,8 +365,7 @@ class SwarmPanel(Widget):
         # Incremental append — only mount new lines
         existing = self._last_log_line_count
         new_widgets = [
-            Static(rich_escape(line) if line.strip() else " ", classes="swarm-log-line")
-            for line in lines[existing:]
+            Static(rich_escape(line) if line.strip() else " ", classes="swarm-log-line") for line in lines[existing:]
         ]
         if new_widgets:
             scroll.mount(*new_widgets)
@@ -440,7 +437,7 @@ class SwarmPanel(Widget):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if bid.startswith("swarm-inst-"):
-            iid = bid[len("swarm-inst-"):]
+            iid = bid[len("swarm-inst-") :]
             for i, inst in enumerate(self._instances):
                 if inst.instance_id == iid:
                     self._selected_idx = i
