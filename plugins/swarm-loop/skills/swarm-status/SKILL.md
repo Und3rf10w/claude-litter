@@ -28,6 +28,8 @@ If no files are found, report that no swarm loop is currently active and stop.
    - **Permission Failures**: Count of entries in `permission_failures` array
    - **Mode**: `<mode>` (profile)
    - **Compact Mode**: Whether `compact_on_iteration` is enabled
+   - **Min Iterations**: `min_iterations` value (0 = disabled)
+   - **Max Iterations**: `max_iterations` value (0 = unlimited)
    - **Sentinel Timeout**: `sentinel_timeout` value in seconds
 
 4. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owners and any blocked-by dependencies.

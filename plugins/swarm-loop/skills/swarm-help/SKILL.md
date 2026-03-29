@@ -32,6 +32,8 @@ Options:
 - `--completion-promise 'TEXT'` (required) — Statement that must be true for the loop to end
 - `--mode NAME` — Execution profile: `default`, `leanswarm`, `deepplan`, or `async` (default: `default`)
 - `--soft-budget N` — Iteration count for a progress checkpoint (default: 10, not a hard limit)
+- `--min-iterations N` — Hard minimum — promise suppressed until N iterations complete (default: 0, disabled)
+- `--max-iterations N` — Hard ceiling — force-stops loop after N iterations (default: 0, unlimited)
 - `--verify 'CMD'` — Shell command that must also pass before the loop exits (e.g., `npm test`)
 - `--safe-mode true|false` — Enable/disable autonomous safe mode (default: true)
 
@@ -40,6 +42,7 @@ Examples:
 /swarm-loop Build a REST API with auth and tests --completion-promise 'All endpoints work and tests pass'
 /swarm-loop Refactor auth to JWT --completion-promise 'JWT auth working' --verify 'npm test'
 /swarm-loop Migrate to TypeScript --completion-promise 'All files converted' --soft-budget 20
+/swarm-loop Thorough refactor --completion-promise 'All refactored' --min-iterations 3 --max-iterations 10
 ```
 
 ### `/swarm-status`
@@ -71,7 +74,8 @@ Select an execution profile with `--mode NAME`:
 
 ## Key Concepts
 
-- **Completion Promise** — The only exit mechanism. The orchestrator outputs `<promise>TEXT</promise>` when the statement is genuinely true. The loop will not exit on a soft budget alone.
+- **Completion Promise** — The primary exit mechanism. The orchestrator outputs `<promise>TEXT</promise>` when the statement is genuinely true. The loop will not exit on a soft budget alone.
+- **Iteration Bounds** — `--min-iterations N` forces at least N iterations (promise suppressed until then). `--max-iterations N` force-stops the loop after N iterations regardless of promise. Both are optional and independent of `--soft-budget`.
 - **Persistent Team** — Created once at loop start and reused across all iterations. TeamDelete is never called between iterations; only `/cancel-swarm` tears the team down.
 - **Native Tasks** — TaskCreate/TaskUpdate/TaskList is the primary progress tracker. The state file mirrors this for external visibility.
 - **Sentinel File** — The instance sentinel file signals that the current iteration is complete. The Stop hook consumes this file and re-injects the orchestrator prompt.
@@ -91,6 +95,8 @@ Select an execution profile with `--mode NAME`:
 | `--completion-promise 'TEXT'` | Exit condition (required) | — |
 | `--mode NAME` | Execution profile: `default`, `leanswarm`, `deepplan`, `async` | `default` |
 | `--soft-budget N` | Reflection checkpoint at N iterations | 10 |
+| `--min-iterations N` | Hard minimum — promise suppressed until N | 0 (disabled) |
+| `--max-iterations N` | Hard ceiling — force-stop after N iterations | 0 (unlimited) |
 | `--verify 'CMD'` | Shell command that must pass for exit | none |
 | `--safe-mode true\|false` | Enable autonomous safety hooks | true |
 

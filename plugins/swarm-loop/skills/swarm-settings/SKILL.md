@@ -14,6 +14,8 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 | Setting | Current Value | Description |
 |---|---|---|
 | compact_on_iteration | false | Run /compact at end of each iteration |
+| min_iterations | 0 | Minimum iterations before completion promise is honored (0 = disabled) |
+| max_iterations | 0 | Hard iteration ceiling, force-stops loop (0 = unlimited) |
 | sentinel_timeout | 600 | Seconds before force re-inject if orchestrator stuck |
 | classifier.enabled | true | Enable safety classifier for Bash commands |
 | classifier.model | sonnet | Model for classifier (haiku, sonnet, opus) |
@@ -32,6 +34,8 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 ```yaml
 ---
 compact_on_iteration: false
+min_iterations: 0
+max_iterations: 0
 sentinel_timeout: 600
 classifier:
   enabled: true

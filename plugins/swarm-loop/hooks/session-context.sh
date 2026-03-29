@@ -32,6 +32,8 @@ ITERATION=$(echo "$STATE_JSON" | jq -r '.iteration // 1')
 PROMISE=$(echo "$STATE_JSON" | jq -r '.completion_promise // ""')
 TEAM_NAME=$(echo "$STATE_JSON" | jq -r '.team_name // ""')
 COMPACT_ON_ITERATION=$(echo "$STATE_JSON" | jq -r '.compact_on_iteration // false')
+MIN_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.min_iterations // 0')
+MAX_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.max_iterations // 0')
 TEAMMATES_ISOLATION=$(echo "$STATE_JSON" | jq -r '.teammates_isolation // "shared"')
 TEAMMATES_MAX_COUNT=$(echo "$STATE_JSON" | jq -r '.teammates_max_count // 8')
 
@@ -50,5 +52,11 @@ PROMISE_SAFE=$(_sanitize "$PROMISE")
 COMPACT_MODE="$COMPACT_ON_ITERATION"
 NEXT_ITERATION="$ITERATION"
 STUCK_MSG="" BUDGET_MSG="" STUCK_TIMEOUT_MSG=""
+# Rebuild floor warning if below minimum so the orchestrator doesn't attempt the promise
+MIN_ITER_MSG=""
+if [[ $MIN_ITERATIONS -gt 0 ]] && [[ $ITERATION -lt $MIN_ITERATIONS ]]; then
+  MIN_ITER_MSG="
+🔒 MINIMUM ITERATIONS NOT REACHED (${ITERATION}/${MIN_ITERATIONS}): Continue working — promise will be honored after iteration ${MIN_ITERATIONS}."
+fi
 build_reinject_prompt
 printf '%s\n' "$REINJECT_PROMPT"

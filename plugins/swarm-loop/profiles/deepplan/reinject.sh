@@ -29,5 +29,5 @@ build_reinject_prompt() {
   local _iter="${NEXT_ITERATION:-$ITERATION}"
   local rendered
   rendered=$(ITERATION="$_iter" substitute_profile_template "$template")
-  REINJECT_PROMPT="${rendered}${STUCK_MSG:-}${BUDGET_MSG:-}${STUCK_TIMEOUT_MSG:-}"
+  REINJECT_PROMPT="${rendered}${STUCK_MSG:-}${BUDGET_MSG:-}${MIN_ITER_MSG:-}${STUCK_TIMEOUT_MSG:-}"
 }

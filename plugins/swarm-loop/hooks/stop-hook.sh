@@ -62,6 +62,8 @@ fi
 ITERATION=$(echo "$STATE_JSON" | jq -r '.iteration // 1')
 COMPLETION_PROMISE=$(echo "$STATE_JSON" | jq -r '.completion_promise // ""')
 SOFT_BUDGET=$(echo "$STATE_JSON" | jq -r '.soft_budget // 10')
+MIN_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.min_iterations // 0')
+MAX_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.max_iterations // 0')
 GOAL=$(echo "$STATE_JSON" | jq -r '.goal // ""')
 TEAM_NAME=$(echo "$STATE_JSON" | jq -r '.team_name // ""')
 
@@ -128,7 +130,15 @@ fi
 # Delegate completion detection to profile
 COMPLETION_DETECTED="false"
 COMPLETION_BLOCK_REASON=""
+MIN_ITER_MSG=""
 check_completion
+
+# Hard minimum floor — suppress early completion
+if [[ "$COMPLETION_DETECTED" == "true" ]] && [[ $MIN_ITERATIONS -gt 0 ]] && [[ $ITERATION -lt $MIN_ITERATIONS ]]; then
+  COMPLETION_DETECTED="false"
+  MIN_ITER_MSG="
+🔒 MINIMUM ITERATIONS NOT REACHED (${ITERATION}/${MIN_ITERATIONS}): Promise detected but suppressed. Continue working — review, test, improve. Promise honored after iteration ${MIN_ITERATIONS}."
+fi
 
 if [[ "$COMPLETION_DETECTED" == "true" ]]; then
   # Promise verified — do final cleanup (this stays in stop-hook, not in profile)
@@ -446,6 +456,73 @@ if [[ $SOFT_BUDGET -gt 0 ]] && [[ $NEXT_ITERATION -eq $SOFT_BUDGET ]]; then
   This is NOT a stop — just a moment to reflect."
 fi
 
+# Hard maximum ceiling — force-stop the loop
+# Normal case: NEXT_ITERATION > MAX_ITERATIONS means N iterations completed.
+# Sentinel timeout case: NEXT_ITERATION == ITERATION (no increment), so also check
+# ITERATION >= MAX_ITERATIONS to avoid deferring the ceiling by an extra recovery turn.
+if [[ $MAX_ITERATIONS -gt 0 ]] && \
+   { [[ $NEXT_ITERATION -gt $MAX_ITERATIONS ]] || \
+     { [[ -n "$STUCK_TIMEOUT_MSG" ]] && [[ $ITERATION -ge $MAX_ITERATIONS ]]; }; }; then
+  printf '🛑 Swarm loop: Hard maximum of %d iterations reached. Force-stopping.\n' "$MAX_ITERATIONS"
+
+  echo "" >> "$LOG_FILE"
+  echo "---" >> "$LOG_FILE"
+  echo "" >> "$LOG_FILE"
+  # Preserve soft-budget checkpoint message if it coincides with the ceiling
+  if [[ -n "$BUDGET_MSG" ]]; then
+    echo "## 📊 CHECKPOINT at iteration $SOFT_BUDGET (coincides with hard ceiling)" >> "$LOG_FILE"
+    echo "$BUDGET_MSG" >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+  fi
+  echo "## 🛑 FORCE-STOPPED — Max Iterations ($MAX_ITERATIONS) Reached" >> "$LOG_FILE"
+  echo "" >> "$LOG_FILE"
+  echo "Hard iteration ceiling reached at iteration $ITERATION." >> "$LOG_FILE"
+  echo "Stopped at: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+
+  rm -f "$STATE_FILE"
+  rm -f "${INSTANCE_DIR}/verify.sh"
+  rm -f "$HEARTBEAT_FILE"
+  rm -f "$SENTINEL"
+  rm -f "${INSTANCE_DIR}"/.idle-retry.*
+  rm -f "${INSTANCE_DIR}/progress.jsonl"
+
+  if [[ "$MODE" == "deepplan" ]]; then
+    rm -f "${INSTANCE_DIR}/deepplan."*
+  fi
+
+  # Restore settings if this is the last active instance
+  _remaining=0
+  _swarm_root="$(dirname "$INSTANCE_DIR")"
+  for _sf in "${_swarm_root}"/*/state.json; do
+    [[ -f "$_sf" ]] && [[ "$_sf" != "$STATE_FILE" ]] && _remaining=$((_remaining + 1))
+  done
+  if [[ $_remaining -eq 0 ]]; then
+    SETTINGS_LOCAL="${PROJECT_ROOT}/.claude/settings.local.json"
+    if [[ -f "${SETTINGS_LOCAL}.swarm-backup" ]]; then
+      mv "${SETTINGS_LOCAL}.swarm-backup" "$SETTINGS_LOCAL"
+    elif [[ -f "$SETTINGS_LOCAL" ]]; then
+      jq '
+        .permissions.allow = ([.permissions.allow[]? | select(test("swarm-loop|deepplan") | not)] | unique) |
+        if .hooks then
+          .hooks |= with_entries(
+            .value = [.value[]? | select(._swarm != true)] |
+            select(.value | length > 0)
+          ) |
+          if (.hooks | length) == 0 then del(.hooks) else . end
+        else . end
+      ' "$SETTINGS_LOCAL" > "${SETTINGS_LOCAL}.tmp.$$"
+      if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
+        mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
+      else
+        rm -f "${SETTINGS_LOCAL}.tmp.$$"
+      fi
+    fi
+  fi
+
+  jq -n '{"decision": "allow"}'
+  exit 0
+fi
+
 # Update state
 TEMP_FILE="${STATE_FILE}.tmp.$$"
 NOW_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -465,10 +542,13 @@ build_reinject_prompt
 ORCHESTRATOR_PROMPT="$REINJECT_PROMPT"
 
 # System message with iteration info
+BOUNDS_INFO=""
+if [[ $MIN_ITERATIONS -gt 0 ]]; then BOUNDS_INFO="${BOUNDS_INFO} | Min: ${MIN_ITERATIONS}"; fi
+if [[ $MAX_ITERATIONS -gt 0 ]]; then BOUNDS_INFO="${BOUNDS_INFO} | Max: ${MAX_ITERATIONS}"; fi
 if [[ -n "$COMPLETION_PROMISE" ]] && [[ "$COMPLETION_PROMISE" != "null" ]]; then
-  SYSTEM_MSG="🔄 Swarm iteration $NEXT_ITERATION | Promise: <promise>$PROMISE_SAFE</promise> when done"
+  SYSTEM_MSG="🔄 Swarm iteration $NEXT_ITERATION | Promise: <promise>$PROMISE_SAFE</promise> when done${BOUNDS_INFO}"
 else
-  SYSTEM_MSG="🔄 Swarm iteration $NEXT_ITERATION"
+  SYSTEM_MSG="🔄 Swarm iteration $NEXT_ITERATION${BOUNDS_INFO}"
 fi
 
 jq -n \

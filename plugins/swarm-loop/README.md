@@ -72,7 +72,7 @@ With optional verification:
 3. **7-step cycle** — each iteration runs: ASSESS → PLAN → EXECUTE → MONITOR → VERIFY → PERSIST → SIGNAL (the `leanswarm` profile collapses this to 4 concerns: WORK → MONITOR → VERIFY → SIGNAL).
 4. **Sentinel file** — at the end of each SIGNAL step the orchestrator writes the instance sentinel file (`<instance-dir>/next-iteration`, Write tool, empty content). The Stop hook detects this file, consumes it, and re-injects the full orchestrator prompt to begin the next iteration.
 5. **Context management** — when the context window fills, Claude Code triggers auto-compaction automatically. The `SessionStart(compact)` hook re-injects orchestrator identity and key state so the loop resumes correctly. The `SessionStart(clear)` hook does the same if the user manually runs `/clear`. The optional `compact_on_iteration` setting causes the orchestrator to run `/compact` proactively at the end of every SIGNAL step.
-6. **Completion** — `<promise>TEXT</promise>` output by the orchestrator is the only exit mechanism. The Stop hook extracts and verifies the promise before accepting it. There is no maximum iteration count.
+6. **Completion** — `<promise>TEXT</promise>` output by the orchestrator is the primary exit mechanism. The Stop hook extracts and verifies the promise before accepting it. Use `--min-iterations N` to force a minimum number of passes before the promise is honored, and `--max-iterations N` to force-stop after a hard ceiling.
 
 ## Commands
 
@@ -92,6 +92,8 @@ With optional verification:
 |--------|-------------|---------|
 | `--completion-promise 'TEXT'` | Statement that must be true for the loop to exit (required) | — |
 | `--soft-budget N` | Iteration count for a progress reflection checkpoint (not a hard limit) | `10` |
+| `--min-iterations N` | Hard minimum — promise suppressed until N iterations complete | `0` (disabled) |
+| `--max-iterations N` | Hard ceiling — force-stops the loop after N iterations | `0` (unlimited) |
 | `--verify 'CMD'` | Shell command that must exit 0 when the promise is output (e.g., `npm test`) | none |
 | `--safe-mode true\|false` | Enable or disable hook-based safe mode | `true` |
 | `--mode NAME` | Profile to use (`default`, `leanswarm`, `deepplan`, `async`, or any custom profile) | `default` |
@@ -106,6 +108,8 @@ The config file uses YAML frontmatter format:
 ```yaml
 ---
 compact_on_iteration: false
+min_iterations: 0
+max_iterations: 0
 sentinel_timeout: 600
 classifier:
   enabled: true
@@ -126,6 +130,8 @@ notifications:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `compact_on_iteration` | `false` | Run `/compact` at the end of each iteration (proactive context trimming) |
+| `min_iterations` | `0` | Minimum iterations before completion promise is honored (0 = disabled) |
+| `max_iterations` | `0` | Hard iteration ceiling — force-stops the loop (0 = unlimited) |
 | `sentinel_timeout` | `600` | Seconds before force re-inject if no sentinel detected (stuck orchestrator recovery) |
 | `classifier.enabled` | `true` | Enable the safety classifier for Bash commands |
 | `classifier.model` | `sonnet` | Model used by the classifier (`haiku`, `sonnet`, `opus`) |

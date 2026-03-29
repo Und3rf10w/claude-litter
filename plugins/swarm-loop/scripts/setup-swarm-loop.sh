@@ -9,6 +9,8 @@ set -euo pipefail
 PROMPT_PARTS=()
 COMPLETION_PROMISE=""
 SOFT_BUDGET=10
+MIN_ITERATIONS=0
+MAX_ITERATIONS=0
 VERIFY_CMD=""
 SAFE_MODE="true"
 MODE="default"
@@ -29,6 +31,8 @@ ARGUMENTS:
 OPTIONS:
   --completion-promise '<text>'  Promise phrase — loop runs until this is true
   --soft-budget <n>              Iteration count for a progress checkpoint (default: 10, 0 to disable)
+  --min-iterations <n>           Hard minimum — promise suppressed until N iterations complete (default: 0, disabled)
+  --max-iterations <n>           Hard ceiling — force-stop after N iterations (default: 0, unlimited)
   --verify '<command>'           Shell command that must pass for completion (exit 0 = pass)
   --safe-mode true|false         Enable/disable safe mode (default: true). Safe mode generates
                                  PermissionRequest and SubagentStart hooks for autonomous operation.
@@ -47,13 +51,14 @@ DESCRIPTION:
     5. Writes the instance sentinel file to signal iteration complete
     6. Repeats until the completion promise is genuinely fulfilled
 
-  The completion promise is the ONLY exit mechanism. There is no max-iterations.
-  Claude will loop as long as necessary to fulfill the promise.
+  The completion promise is the primary exit mechanism. Use --min-iterations to
+  force a minimum number of passes, and --max-iterations for a hard ceiling.
 
 EXAMPLES:
   /swarm-loop Build a REST API with auth and tests --completion-promise 'All endpoints work and tests pass'
   /swarm-loop Refactor auth to JWT --completion-promise 'JWT auth working' --verify 'npm test'
   /swarm-loop Migrate to TypeScript --completion-promise 'All files converted' --soft-budget 20
+  /swarm-loop Thorough refactor --completion-promise 'All refactored' --min-iterations 3 --max-iterations 10
 
 MONITORING:
   /swarm-status                               View current progress
@@ -82,6 +87,22 @@ HELP_EOF
         exit 1
       fi
       SOFT_BUDGET="$2"
+      shift 2
+      ;;
+    --min-iterations)
+      if [[ -z "${2:-}" ]] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+        echo "Error: --min-iterations requires a non-negative integer (0 disables)" >&2
+        exit 1
+      fi
+      MIN_ITERATIONS="$2"
+      shift 2
+      ;;
+    --max-iterations)
+      if [[ -z "${2:-}" ]] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+        echo "Error: --max-iterations requires a non-negative integer (0 = unlimited)" >&2
+        exit 1
+      fi
+      MAX_ITERATIONS="$2"
       shift 2
       ;;
     --verify)
@@ -155,7 +176,7 @@ _preprocess_prompt_file() {
   local file="$1"
   perl -0777 -pe '
     s/\r//g;
-    my $flag_re = "completion-promise|soft-budget|safe-mode|verify|mode";
+    my $flag_re = "completion-promise|soft-budget|min-iterations|max-iterations|safe-mode|verify|mode";
     s/[^\S\n]+(--(?:$flag_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
   ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
 }
@@ -173,6 +194,10 @@ if [[ -n "$PROMPT_FILE" ]]; then
       --completion-promise=*)   COMPLETION_PROMISE="$(_strip_quotes "${_line#--completion-promise=}")" ;;
       --soft-budget\ *)         SOFT_BUDGET="${_line#--soft-budget }" ;;
       --soft-budget=*)          SOFT_BUDGET="${_line#--soft-budget=}" ;;
+      --min-iterations\ *)      MIN_ITERATIONS="${_line#--min-iterations }" ;;
+      --min-iterations=*)       MIN_ITERATIONS="${_line#--min-iterations=}" ;;
+      --max-iterations\ *)      MAX_ITERATIONS="${_line#--max-iterations }" ;;
+      --max-iterations=*)       MAX_ITERATIONS="${_line#--max-iterations=}" ;;
       --verify\ *)              VERIFY_CMD="$(_strip_quotes "${_line#--verify }")" ;;
       --verify=*)               VERIFY_CMD="$(_strip_quotes "${_line#--verify=}")" ;;
       --safe-mode\ *)           SAFE_MODE="${_line#--safe-mode }" ;;
@@ -307,6 +332,12 @@ if [[ -f "$LOCAL_CONFIG" ]]; then
     _val=$(echo "$FRONTMATTER" | grep -E '^compact_on_iteration:' | sed 's/compact_on_iteration:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && COMPACT_ON_ITERATION="$_val"
 
+    _val=$(echo "$FRONTMATTER" | grep -E '^min_iterations:' | sed 's/min_iterations:[[:space:]]*//' | tr -d ' ' || true)
+    [[ -n "$_val" ]] && MIN_ITERATIONS="$_val"
+
+    _val=$(echo "$FRONTMATTER" | grep -E '^max_iterations:' | sed 's/max_iterations:[[:space:]]*//' | tr -d ' ' || true)
+    [[ -n "$_val" ]] && MAX_ITERATIONS="$_val"
+
     _val=$(echo "$FRONTMATTER" | grep -E '^sentinel_timeout:' | sed 's/sentinel_timeout:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && SENTINEL_TIMEOUT="$_val"
 
@@ -368,6 +399,18 @@ if ! [[ "$TEAMMATES_MAX_COUNT" =~ ^[0-9]+$ ]]; then
   echo "Error: teammates.max-count must be a non-negative integer, got '$TEAMMATES_MAX_COUNT'" >&2
   exit 1
 fi
+if ! [[ "$MIN_ITERATIONS" =~ ^[0-9]+$ ]]; then
+  echo "Error: min_iterations must be a non-negative integer, got '$MIN_ITERATIONS'" >&2
+  exit 1
+fi
+if ! [[ "$MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
+  echo "Error: max_iterations must be a non-negative integer, got '$MAX_ITERATIONS'" >&2
+  exit 1
+fi
+if [[ $MIN_ITERATIONS -gt 0 ]] && [[ $MAX_ITERATIONS -gt 0 ]] && [[ $MIN_ITERATIONS -gt $MAX_ITERATIONS ]]; then
+  echo "Error: --min-iterations ($MIN_ITERATIONS) cannot exceed --max-iterations ($MAX_ITERATIONS)" >&2
+  exit 1
+fi
 
 # Create structured state file (v2 schema — no tasks[], no agent_results[])
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -414,6 +457,8 @@ jq -n \
   --arg goal "$GOAL" \
   --arg promise "$COMPLETION_PROMISE" \
   --argjson budget "$SOFT_BUDGET" \
+  --argjson min_iterations "$MIN_ITERATIONS" \
+  --argjson max_iterations "$MAX_ITERATIONS" \
   --arg verify "$VERIFY_CMD" \
   --arg session "$SESSION_ID" \
   --arg instance_id "$INSTANCE_ID" \
@@ -432,6 +477,8 @@ jq -n \
     "goal": $goal,
     "completion_promise": $promise,
     "soft_budget": $budget,
+    "min_iterations": $min_iterations,
+    "max_iterations": $max_iterations,
     "verify_command": $verify,
     "session_id": $session,
     "instance_id": $instance_id,
@@ -788,6 +835,8 @@ printf '%s\n' "Swarm Loop v2.0 activated!" ""
 printf 'Goal: %s\n' "$GOAL"
 printf 'Completion Promise: %s\n' "$COMPLETION_PROMISE"
 printf 'Soft Budget: %s iterations (checkpoint, not a limit)\n' "$SOFT_BUDGET"
+if [[ "$MIN_ITERATIONS" -gt 0 ]]; then printf 'Min Iterations: %s (hard floor — promise suppressed until then)\n' "$MIN_ITERATIONS"; fi
+if [[ "$MAX_ITERATIONS" -gt 0 ]]; then printf 'Max Iterations: %s (hard ceiling — force-stop after)\n' "$MAX_ITERATIONS"; fi
 if [[ -n "$VERIFY_CMD" ]]; then printf 'Verification: %s\n' "$VERIFY_CMD"; fi
 if [[ "$SAFE_MODE" == "true" ]]; then echo "Safe Mode: enabled (hook-based: PermissionRequest auto-approve, SubagentStart injection)"; else echo "Safe Mode: disabled"; fi
 if [[ "$COMPACT_ON_ITERATION" == "true" ]]; then echo "Compact Mode: enabled (orchestrator will run /compact each iteration)"; fi
@@ -817,7 +866,7 @@ PROMISE_SAFE=$(_sanitize_pipe "$COMPLETION_PROMISE")
 ITERATION=1
 NEXT_ITERATION=1
 COMPACT_MODE="$COMPACT_ON_ITERATION"
-STUCK_MSG="" BUDGET_MSG="" STUCK_TIMEOUT_MSG=""
+STUCK_MSG="" BUDGET_MSG="" MIN_ITER_MSG="" STUCK_TIMEOUT_MSG=""
 source "${PROFILE_DIR}/reinject.sh"
 build_reinject_prompt
 printf '%s\n' "$REINJECT_PROMPT"
