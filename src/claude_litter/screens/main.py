@@ -13,6 +13,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Footer, Header, LoadingIndicator, Static
 
 from claude_litter.models.task import TodoItem
@@ -103,6 +104,7 @@ class MainScreen(Screen):
         self._member_info: dict[tuple[str, str], dict] = {}
         # Pending permission requests per agent, keyed by (team, agent)
         self._pending_permissions: dict[tuple[str, str], PermissionRequest] = {}
+        self._sidebar_refresh_timer: Timer | None = None
 
     # ------------------------------------------------------------------
     # Per-agent buffer helpers
@@ -715,7 +717,14 @@ class MainScreen(Screen):
             )
 
     def _refresh_sidebar(self) -> None:
-        """Reload all teams from disk and update the sidebar widget."""
+        """Debounced sidebar refresh — coalesces rapid calls into one rebuild."""
+        if self._sidebar_refresh_timer is not None:
+            self._sidebar_refresh_timer.stop()
+        self._sidebar_refresh_timer = self.set_timer(0.3, self._do_refresh_sidebar)
+
+    def _do_refresh_sidebar(self) -> None:
+        """Actually kick off the sidebar worker."""
+        self._sidebar_refresh_timer = None
         self._refresh_sidebar_worker()
 
     @work(exclusive=True, group="sidebar-refresh")
@@ -1903,8 +1912,15 @@ class MainScreen(Screen):
         if task_panel._visible:
             tasks = self._team_service.list_tasks(message.team_name)
             task_panel.update_tasks(tasks)
-        # Refresh sidebar to update status bar task counts
-        self._refresh_sidebar()
+        # Update task counts in the status bar without full sidebar rebuild
+        t_tasks = self._team_service.list_tasks(message.team_name)
+        task_counts = getattr(self, "_last_task_counts", {})
+        task_counts[message.team_name] = (
+            len(t_tasks),
+            sum(1 for tk in t_tasks if tk.get("status") == "completed"),
+        )
+        self._last_task_counts = task_counts
+        self._update_status_bar(getattr(self, "_last_teams", []), task_counts)
 
     def on_inbox_updated(self, message: InboxUpdated) -> None:
         """Refresh the message panel when an agent inbox changes on disk."""
@@ -1912,8 +1928,15 @@ class MainScreen(Screen):
         if msg_panel._visible and self._active_agent_key and self._active_agent_key != _MAIN_CHAT_KEY:
             team, agent = self._active_agent_key
             self._update_message_panel(team, agent)
-        # Refresh sidebar to update unread badges
-        self._refresh_sidebar()
+        # Update just the unread badge for this agent
+        try:
+            inbox = self._team_service.read_inbox(message.team_name, message.agent_name)
+            unread = sum(1 for msg in inbox if not msg.get("read", False))
+        except Exception:
+            unread = 0
+        self.query_one("#sidebar", TeamSidebar).update_unread(
+            message.team_name, message.agent_name, unread
+        )
 
     def on_transcript_activity(self, message: TranscriptActivity) -> None:
         """Update sidebar and session view with agent activity from transcript."""

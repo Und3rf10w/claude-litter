@@ -139,39 +139,89 @@ class TeamSidebar(Widget):
         yield tree
 
     def update_teams(self, teams: list[dict]) -> None:
-        """Rebuild the tree from a list of team dicts."""
+        """Update the tree from a list of team dicts, diffing to avoid flicker."""
         tree = self.query_one(Tree)
-        tree.clear()
-        tree.root.expand()
-        self._team_nodes.clear()
-        self._agent_nodes.clear()
-        self._agent_data.clear()
-        self._swarm_nodes.clear()
-        self._swarm_fallback_node = None
 
-        # Add "Main Chat" entry at the top
-        tree.root.add_leaf(
-            "[bold]> Litter Overlord[/bold]",
-            data={"type": "main_chat"},
-        )
-
+        # Build the incoming structure for comparison
+        incoming_teams: list[str] = []
+        incoming_agents: dict[str, list[str]] = {}
+        incoming_data: dict[str, dict] = {}
+        incoming_agent_data: dict[tuple[str, str], dict] = {}
         for team in teams:
-            team_name = team["name"]
-            dir_name = team.get("dir_name", team_name)
-            status = team.get("status", "inactive")
-            color = _STATUS_COLOR.get(status, "gray")
-            label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
-            team_node: TreeNode[dict] = tree.root.add(label, data={"type": "team", "team": dir_name}, expand=True)
-            self._team_nodes[dir_name] = team_node
-
+            dir_name = team.get("dir_name", team["name"])
+            incoming_teams.append(dir_name)
+            incoming_data[dir_name] = team
+            incoming_agents[dir_name] = [a["name"] for a in team.get("agents", [])]
             for agent in team.get("agents", []):
-                agent_name = agent["name"]
-                self._agent_data[(dir_name, agent_name)] = agent
-                agent_node = team_node.add_leaf(
-                    self._agent_label(agent),
-                    data={"type": "agent", "team": dir_name, "agent": agent_name},
-                )
-                self._agent_nodes[(dir_name, agent_name)] = agent_node
+                incoming_agent_data[(dir_name, agent["name"])] = agent
+
+        existing_teams = list(self._team_nodes.keys())
+
+        # Check if the structural set of teams/agents changed
+        structure_changed = existing_teams != incoming_teams
+        if not structure_changed:
+            for dir_name in incoming_teams:
+                existing = [
+                    name
+                    for (t, name) in self._agent_nodes
+                    if t == dir_name
+                ]
+                if existing != incoming_agents.get(dir_name, []):
+                    structure_changed = True
+                    break
+
+        if structure_changed or not self._team_nodes:
+            # Full rebuild needed — structure differs
+            tree.clear()
+            tree.root.expand()
+            self._team_nodes.clear()
+            self._agent_nodes.clear()
+            self._agent_data.clear()
+            self._swarm_nodes.clear()
+            self._swarm_fallback_node = None
+
+            tree.root.add_leaf(
+                "[bold]> Litter Overlord[/bold]",
+                data={"type": "main_chat"},
+            )
+
+            for team in teams:
+                team_name = team["name"]
+                dir_name = team.get("dir_name", team_name)
+                status = team.get("status", "inactive")
+                color = _STATUS_COLOR.get(status, "gray")
+                label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
+                team_node: TreeNode[dict] = tree.root.add(label, data={"type": "team", "team": dir_name}, expand=True)
+                self._team_nodes[dir_name] = team_node
+
+                for agent in team.get("agents", []):
+                    agent_name = agent["name"]
+                    self._agent_data[(dir_name, agent_name)] = agent
+                    agent_node = team_node.add_leaf(
+                        self._agent_label(agent),
+                        data={"type": "agent", "team": dir_name, "agent": agent_name},
+                    )
+                    self._agent_nodes[(dir_name, agent_name)] = agent_node
+        else:
+            # Structure is the same — update labels in place
+            for dir_name, team in incoming_data.items():
+                team_name = team["name"]
+                status = team.get("status", "inactive")
+                color = _STATUS_COLOR.get(status, "gray")
+                new_label = f"[@{color}]\u25cf[/@{color}] {team_name.replace('[', '\\[')}"
+                team_node = self._team_nodes.get(dir_name)
+                if team_node is not None:
+                    team_node.set_label(new_label)
+
+                for agent in team.get("agents", []):
+                    agent_name = agent["name"]
+                    key = (dir_name, agent_name)
+                    old = self._agent_data.get(key)
+                    self._agent_data[key] = agent
+                    new_label = self._agent_label(agent)
+                    node = self._agent_nodes.get(key)
+                    if node is not None and (old is None or self._agent_label(old) != new_label):
+                        node.set_label(new_label)
 
     def refresh_agent(self, team: str, agent: str, **data) -> None:
         """Update a single agent node in the tree without full rebuild."""
@@ -184,6 +234,18 @@ class TeamSidebar(Widget):
         node = self._agent_nodes.get(key)
         if node is not None:
             node.set_label(self._agent_label(self._agent_data[key]))
+
+    def update_unread(self, team: str, agent: str, unread: int) -> None:
+        """Update just the unread badge for a single agent without rebuilding."""
+        key = (team, agent)
+        if key in self._agent_data:
+            old_unread = self._agent_data[key].get("unread", 0)
+            if old_unread == unread:
+                return
+            self._agent_data[key]["unread"] = unread
+            node = self._agent_nodes.get(key)
+            if node is not None:
+                node.set_label(self._agent_label(self._agent_data[key]))
 
     def update_swarm_instances(self, instances: list) -> None:
         """Update the swarm instances section, nesting under parent teams."""
