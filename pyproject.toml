@@ -1,6 +1,6 @@
 [project]
 name = "claude-litter"
-version = "0.1.0"
+version = "1.0.0"
 description = "A TUI for managing Claude Agent Teams"
 readme = "README.md"
 requires-python = ">=3.14"

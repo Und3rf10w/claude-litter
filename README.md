@@ -5,7 +5,7 @@
   <br /><br />
 
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.14+" /></a>
-<a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 0.1.0" /></a>
+<a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 1.0.0" /></a>
 <a href="https://code.claude.com/"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
 <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/Made_with-Textual-6c3483?style=flat-square" alt="Made with Textual" /></a>
 
@@ -352,7 +352,7 @@ anyio.run(main)
 ## Acknowledgements
 
 - [Textual](https://textual.textualize.io/) by Textualize — the TUI framework powering the interface
-- [Claude Code](https://claude.ai/code) by Anthropic — the AI coding agent whose teams this manages
+- [Claude Code](https://code.claude.com) by Anthropic — the AI coding agent whose teams this manages
 - [watchfiles](https://watchfiles.helpmanual.io/) — filesystem watching for live UI updates
 
 ---
