@@ -101,13 +101,11 @@ uv sync && uv run claude-litter
 
 ## Screenshots
 
-> Run it live and see it for yourself:
->
-> ```bash
-> uv run claude-litter
-> ```
->
-> Or generate a headless screenshot locally:
+<div align="center">
+  <img src="./screenshot.svg" alt="Claude Litter TUI" width="800" />
+</div>
+
+> Generate a fresh screenshot locally:
 >
 > ```bash
 > uv run python -c "
