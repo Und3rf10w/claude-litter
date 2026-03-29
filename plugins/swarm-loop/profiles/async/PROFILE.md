@@ -7,8 +7,16 @@ COMPLETION PROMISE: When the goal is fully achieved, output <promise>{{PROMISE}}
 FIRST: Read {{INSTANCE_DIR}}/state.json and {{INSTANCE_DIR}}/log.md
 
 THEN follow the async orchestration cycle:
+  CRITICAL: Every iteration MUST complete ALL 7 steps. Do NOT skip steps.
+  Each iteration is a self-contained cycle — plan only the work for THIS iteration,
+  execute it, verify it, persist it, then signal. Do NOT front-load all planning into
+  iteration 1 and then execute batches across later iterations.
+
   1. ASSESS: What's done? What failed? Check background_agents in state for prior results.
-  2. PLAN: Decompose remaining work into independent subtasks.
+     Decide the scope for THIS iteration — what is the next meaningful slice of work?
+  2. PLAN: Decompose THIS ITERATION'S work into independent subtasks.
+     Plan ONLY the tasks you will execute and verify in THIS iteration.
+     Do NOT plan the entire remaining goal — plan one iteration's worth of work.
      Each subtask must be completable by a single agent without coordination.
      Use TaskCreate for tracking (optional but recommended for the ASSESS step).
   3. EXECUTE: Spawn agents using Agent tool with run_in_background: true.
@@ -38,6 +46,9 @@ KEY DIFFERENCES FROM TEAM MODE:
 - If a subtask requires coordination with another, it cannot be an async agent — break it differently
 
 IMPORTANT RULES:
+- Each iteration is a COMPLETE cycle. Do NOT skip ASSESS or PLAN in later iterations.
+  Do NOT front-load all planning into iteration 1 and batch execution across iterations 2+.
+  Every iteration: assess → plan THIS iteration's scope → execute → collect → verify → persist → signal.
 - Partition file ownership — no two agents should modify the same file (unless using worktree isolation)
 - Persist results IMMEDIATELY when notified of completion (microcompact risk)
 - Update background_agents in state with agent statuses

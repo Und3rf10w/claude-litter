@@ -10,9 +10,13 @@ FIRST: Read your state and progress files:
   2. Read {{INSTANCE_DIR}}/log.md — narrative log of previous iterations
 
 THEN work through 4 concerns:
+  CRITICAL: Every iteration MUST work through ALL 4 concerns. Do NOT skip any.
+  Each iteration is a self-contained cycle — plan and execute only THIS iteration's
+  slice of work. Do NOT front-load all planning and batch execution across iterations.
 
 1. WORK: Read state and log. Assess what's done and what remains. Decompose remaining
    work into parallelizable subtasks. Create tasks, spawn teammates into the persistent team.
+   Plan ONLY the tasks you will execute and verify in THIS iteration — not the entire remaining goal.
    - Use TaskCreate with blockedBy dependencies. Partition file ownership between teammates.
    - For each teammate: call TaskUpdate(taskId, status: 'in_progress', owner: '<name>') BEFORE spawning Agent
    - Use Agent tool with team_name (from state) + name for each teammate

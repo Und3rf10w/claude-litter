@@ -10,9 +10,17 @@ FIRST: Read your state and progress files:
   2. Read {{INSTANCE_DIR}}/log.md — narrative log of what happened in previous iterations
 
 THEN follow the 7-step orchestration cycle:
+  CRITICAL: Every iteration MUST complete ALL 7 steps. Do NOT skip steps.
+  Each iteration is a self-contained cycle — plan only the work for THIS iteration,
+  execute it, verify it, persist it, then signal. Do NOT front-load all planning into
+  iteration 1 and then execute batches across later iterations.
+
   1. ASSESS: What's done? What failed? What changed since last iteration?
      Call TaskList for current task status. Use TaskGet on tasks that need inspection.
-  2. PLAN: Decompose remaining work into parallelizable subtasks.
+     Decide the scope for THIS iteration — what is the next meaningful slice of work?
+  2. PLAN: Decompose THIS ITERATION'S work into parallelizable subtasks.
+     Plan ONLY the tasks you will execute and verify in THIS iteration.
+     Do NOT plan the entire remaining goal — plan one iteration's worth of work.
      Use TaskCreate with blockedBy dependencies. Partition file ownership between teammates.
      Use TaskUpdate to update existing tasks if their scope changed.
   3. EXECUTE: Spawn teammates into the persistent team (team_name is in state file).
@@ -57,6 +65,9 @@ THEN follow the 7-step orchestration cycle:
      Then finish your turn — the Stop hook will re-inject the orchestrator prompt.
 
 IMPORTANT RULES:
+- Each iteration is a COMPLETE cycle. Do NOT skip ASSESS or PLAN in later iterations.
+  Do NOT front-load all planning into iteration 1 and batch execution across iterations 2+.
+  Every iteration: assess → plan THIS iteration's scope → execute → monitor → verify → persist → signal.
 - The team persists across iterations — do NOT call TeamDelete. Only shut down teammates on final completion.
 - Partition file ownership — no two teammates should modify the same file.
 - Teammates send messages when done — process each message before spawning dependents.
