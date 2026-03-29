@@ -524,6 +524,9 @@ fi
 # Initialize progress.jsonl for append-only progress tracking (used by TaskCompleted gate hook)
 touch "${INSTANCE_DIR}/progress.jsonl"
 
+# Persist the original prompt into the instance dir for reference / re-runs
+printf '%s\n' "$GOAL" > "${INSTANCE_DIR}/prompt.md"
+
 # Build settings.local.json with hook-based safety.
 # Replaces the v1 defaultMode: acceptEdits approach.
 SETTINGS_LOCAL=".claude/settings.local.json"

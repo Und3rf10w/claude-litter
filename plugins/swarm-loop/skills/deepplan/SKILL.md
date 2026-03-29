@@ -10,9 +10,11 @@ Execute the setup script with deepplan mode:
 
 ```!
 mkdir -p .claude
-# Write raw arguments to file to avoid shell expansion of special chars in multiline prompts.
-printf '%s' "$ARGUMENTS" > .claude/swarm-loop.local.prompt.md
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh" --mode deepplan --prompt-file .claude/swarm-loop.local.prompt.md
+# Write raw arguments to a PID-unique file to avoid shell expansion of special chars
+# in multiline prompts and to prevent races between concurrent swarm invocations.
+_prompt_file=".claude/swarm-loop.local.prompt.$$.md"
+printf '%s' "$ARGUMENTS" > "$_prompt_file"
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh" --mode deepplan --prompt-file "$_prompt_file"
 ```
 
 You are now the DEEPPLAN ORCHESTRATOR. Follow the instructions output by the setup script exactly.
