@@ -1,6 +1,6 @@
 ---
 description: "Start an orchestrated multi-agent swarm loop"
-argument-hint: "GOAL --completion-promise 'TEXT' [--mode NAME] [--soft-budget N] [--min-iterations N] [--max-iterations N] [--verify 'CMD'] [--safe-mode true|false]"
+argument-hint: "GOAL --completion-promise 'TEXT' [--team-name NAME] [--mode NAME] [--soft-budget N] [--min-iterations N] [--max-iterations N] [--verify 'CMD'] [--safe-mode true|false]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh:*)", "Edit(.claude/swarm-loop/**)", "Write(.claude/swarm-loop/**)", "Read(.claude/swarm-loop/**)", "Edit(.claude/swarm-loop.local.md)", "Write(.claude/swarm-loop.local.md)", "Read(.claude/swarm-loop.local.md)", "Read", "Grep", "Glob", "Bash", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
 ---
 

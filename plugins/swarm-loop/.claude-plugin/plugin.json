@@ -1,7 +1,7 @@
 {
   "name": "swarm-loop",
   "description": "Orchestrated multi-agent loops with profile-based modes. Default: persistent Teams for complex implementation. Leanswarm: lean 4-concern variant of default for capable models. Deepplan: multi-agent planning with explore/synthesize/critique/deliver. Async: background agent orchestration for independent parallel tasks. Decomposes complex tasks into parallel subtasks, spawns agent teams, tracks progress via native TaskCreate/TaskList, and dynamically re-plans each iteration until verified completion.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Und3rf10w"
   },

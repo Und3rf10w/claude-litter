@@ -15,6 +15,7 @@ VERIFY_CMD=""
 SAFE_MODE="true"
 MODE="default"
 PROMPT_FILE=""
+TEAM_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -38,6 +39,8 @@ OPTIONS:
                                  PermissionRequest and SubagentStart hooks for autonomous operation.
   --mode <name>                  Profile to use for orchestrator prompts (default: default).
                                  Available profiles are in the profiles/ directory of the plugin.
+  --team-name '<name>'           Base team name (random suffix appended for uniqueness).
+                                 Default: derived from goal text.
   --prompt-file <path>           Read the goal/prompt from a file instead of positional arguments.
                                  Supports multiline markdown content. Overrides positional GOAL words.
   -h, --help                     Show this help
@@ -133,6 +136,14 @@ HELP_EOF
       MODE="$2"
       shift 2
       ;;
+    --team-name)
+      if [[ -z "${2:-}" ]]; then
+        echo "Error: --team-name requires a name" >&2
+        exit 1
+      fi
+      TEAM_NAME="$2"
+      shift 2
+      ;;
     --prompt-file)
       if [[ -z "${2:-}" ]]; then
         echo "Error: --prompt-file requires a file path" >&2
@@ -176,7 +187,7 @@ _preprocess_prompt_file() {
   local file="$1"
   perl -0777 -pe '
     s/\r//g;
-    my $flag_re = "completion-promise|soft-budget|min-iterations|max-iterations|safe-mode|verify|mode";
+    my $flag_re = "completion-promise|soft-budget|min-iterations|max-iterations|safe-mode|verify|mode|team-name";
     s/[^\S\n]+(--(?:$flag_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
   ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
 }
@@ -204,6 +215,8 @@ if [[ -n "$PROMPT_FILE" ]]; then
       --safe-mode=*)            SAFE_MODE="${_line#--safe-mode=}" ;;
       --mode\ *)                MODE="${_line#--mode }" ;;
       --mode=*)                 MODE="${_line#--mode=}" ;;
+      --team-name\ *)           TEAM_NAME="$(_strip_quotes "${_line#--team-name }")" ;;
+      --team-name=*)            TEAM_NAME="$(_strip_quotes "${_line#--team-name=}")" ;;
       --*)                      ;;  # skip unknown flags
       *)                        [[ -n "$_line" ]] && _goal_lines+=("$_line") ;;
     esac
@@ -331,7 +344,7 @@ CLASSIFIER_MODEL="sonnet"
 CLASSIFIER_EFFORT="auto"
 CLASSIFIER_PRE_TOOL_USE="true"
 CLASSIFIER_TASK_COMPLETED="false"
-TEAMMATES_ISOLATION="shared"
+TEAMMATES_ISOLATION="worktree"
 TEAMMATES_MAX_COUNT=8
 NOTIFICATIONS_ENABLED="false"
 NOTIFICATIONS_CHANNEL=""
@@ -445,8 +458,12 @@ if [[ -d "$INSTANCE_DIR" ]]; then
   rm -f "${INSTANCE_DIR}/deepplan."*
 fi
 
-# Derive team_name from goal for use with TeamCreate
-TEAM_NAME="swarm-$(echo "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-40)-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+# Derive team_name: use --team-name if provided, otherwise slugify the goal
+if [[ -z "$TEAM_NAME" ]]; then
+  TEAM_NAME="swarm-$(echo "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+fi
+# Always append random suffix for uniqueness
+TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
 
 # Resolve absolute plugin root path for hook script references.
 # ${CLAUDE_PLUGIN_ROOT} is NOT resolved in settings.local.json — must use absolute path.

@@ -1,6 +1,6 @@
 ---
 description: "Async background-agent swarm loop (alias for /swarm-loop --mode async)"
-argument-hint: "GOAL --completion-promise 'TEXT'"
+argument-hint: "GOAL --completion-promise 'TEXT' [--team-name NAME]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh:*)", "Edit(.claude/swarm-loop/**)", "Write(.claude/swarm-loop/**)", "Read(.claude/swarm-loop/**)", "Edit(.claude/swarm-loop.local.md)", "Write(.claude/swarm-loop.local.md)", "Read(.claude/swarm-loop.local.md)", "Read", "Grep", "Glob", "Bash", "Agent", "TaskCreate", "TaskUpdate", "TaskList"]
 ---
 
