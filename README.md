@@ -174,6 +174,16 @@ Type `/` in the input bar to enter command mode. Tab completes available command
 
 The **swarm-loop** plugin is an orchestrated multi-agent iterative development system for Claude Code. It decomposes complex goals into parallel subtasks, creates a persistent agent team, and drives autonomous iteration until a user-defined completion promise is fulfilled.
 
+### How It Works
+
+Each iteration, the orchestrator reads current progress and decomposes remaining work into parallel subtasks, then spawns teammates to execute them concurrently. It monitors their completion messages, verifies results against the user-defined promise and optional shell command, and persists a narrative log of what happened before signaling the next iteration. The loop exits only when the completion promise is genuinely true.
+
+```
+ASSESS → PLAN → EXECUTE → MONITOR → VERIFY → PERSIST → SIGNAL
+  ↑                                                        |
+  └────────────────── next iteration ──────────────────────┘
+```
+
 ### Commands
 
 | Command | Description |
@@ -191,6 +201,13 @@ The **swarm-loop** plugin is an orchestrated multi-agent iterative development s
 ```bash
 /swarm-loop Build a REST API with auth and tests \
   --completion-promise 'All endpoints work and tests pass'
+```
+
+```bash
+/swarm-loop Refactor auth to JWT \
+  --completion-promise 'JWT auth working and all tests pass' \
+  --verify 'npm test' \
+  --max-iterations 5
 ```
 
 ### Orchestration Profiles
