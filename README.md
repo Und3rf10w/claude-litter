@@ -416,7 +416,7 @@ Type `/` in the input bar to enter command mode. Tab completes available command
 
 The codebase follows a layered design: **models** (frozen dataclasses representing teams, tasks, and messages) feed into **services** (state management, CRUD operations, SDK integration, filesystem watching), which power **screens** (full-page layouts and modal dialogs) composed from **widgets** (the reusable sidebar, tab bar, panels, and input bar that make up the UI).
 
-**Plugins** live under `plugins/`:
+**Plugins** live under `plugins/`
 
 ---
 
