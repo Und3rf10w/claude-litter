@@ -218,9 +218,20 @@ fi
 if [[ -z "$GOAL" ]]; then
   echo "Error: No goal provided" >&2
   echo "" >&2
+  echo "   Usage: /swarm-loop <GOAL> --completion-promise '<condition>'" >&2
+  echo "" >&2
+  echo "   The goal text goes first, followed by any flags:" >&2
+  echo "" >&2
   echo "   Examples:" >&2
   echo "     /swarm-loop Build a REST API --completion-promise 'API complete'" >&2
   echo "     /swarm-loop Fix all lint errors --completion-promise 'Zero lint errors'" >&2
+  echo "" >&2
+  echo "   With --prompt-file, the file should contain the goal text (one or more lines)" >&2
+  echo "   with optional flags on their own lines starting with '--':" >&2
+  echo "" >&2
+  echo "     Build a REST API with auth and tests" >&2
+  echo "     --completion-promise 'All endpoints work and tests pass'" >&2
+  echo "     --max-iterations 5" >&2
   echo "" >&2
   echo "   For help: /swarm-loop --help" >&2
   exit 1
