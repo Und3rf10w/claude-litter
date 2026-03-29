@@ -68,6 +68,15 @@ class TranscriptActivity(TextualMessage):
         self.is_idle = is_idle
 
 
+class SwarmUpdated(TextualMessage):
+    """Posted when any file inside a swarm-loop instance directory changes."""
+
+    def __init__(self, instance_id: str, project_root: str) -> None:
+        super().__init__()
+        self.instance_id = instance_id
+        self.project_root = project_root
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -172,6 +181,19 @@ def _parse_change_path(
     return None
 
 
+def _parse_swarm_change_path(
+    changed: Path, swarm_instance_dirs: dict[str, tuple[Path, str]]
+) -> SwarmUpdated | None:
+    """Map a path change to SwarmUpdated if inside a known swarm instance dir."""
+    for instance_id, (instance_dir, project_root) in swarm_instance_dirs.items():
+        try:
+            changed.relative_to(instance_dir)
+            return SwarmUpdated(instance_id, project_root)
+        except ValueError:
+            continue
+    return None
+
+
 # ---------------------------------------------------------------------------
 # StateManager
 # ---------------------------------------------------------------------------
@@ -188,6 +210,8 @@ class StateManager:
         self._cancel_scope: anyio.CancelScope | None = None
         self._app: object | None = None  # Textual App reference for posting
         self._transcript_index: dict[str, tuple[str, str]] = {}
+        self._swarm_project_roots: set[str] = set()
+        self._swarm_instance_dirs: dict[str, tuple[Path, str]] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -380,6 +404,40 @@ class StateManager:
         self._transcript_index = index
 
     # ------------------------------------------------------------------
+    # Swarm management
+    # ------------------------------------------------------------------
+
+    def set_swarm_project_roots(self, roots: set[str]) -> None:
+        self._swarm_project_roots = roots
+        self._rescan_swarm_instances()
+
+    def _rescan_swarm_instances(self) -> None:
+        self._swarm_instance_dirs.clear()
+        import re
+        hex8 = re.compile(r'^[0-9a-f]{8}$')
+        for root_str in self._swarm_project_roots:
+            root = Path(root_str)
+            swarm_base = root / ".claude" / "swarm-loop"
+            if not swarm_base.is_dir():
+                continue
+            try:
+                for entry in swarm_base.iterdir():
+                    if entry.is_dir() and not entry.is_symlink() and hex8.match(entry.name):
+                        if (entry / "state.json").exists():
+                            self._swarm_instance_dirs[entry.name] = (entry, root_str)
+            except OSError:
+                continue
+
+    def get_swarm_instances(self):
+        from claude_litter.models.swarm import SwarmState
+        results = []
+        for iid, (idir, _root) in self._swarm_instance_dirs.items():
+            state = SwarmState.from_files(idir)
+            if state is not None:
+                results.append(state)
+        return sorted(results, key=lambda s: s.last_updated, reverse=True)
+
+    # ------------------------------------------------------------------
     # Internal watcher
     # ------------------------------------------------------------------
 
@@ -406,6 +464,14 @@ class StateManager:
                     watched_dirs.add(parent)
                     watch_paths.append(parent)
 
+        # Watch swarm-loop instance directories
+        self._rescan_swarm_instances()
+        for _iid, (instance_dir, _root) in self._swarm_instance_dirs.items():
+            sd = str(instance_dir)
+            if sd not in watched_dirs:
+                watched_dirs.add(sd)
+                watch_paths.append(sd)
+
         try:
             from watchfiles import awatch, Change
 
@@ -425,7 +491,18 @@ class StateManager:
                                 pass
                         continue
 
+                    # Check swarm-loop instance dirs
                     changed = Path(path_str)
+                    swarm_msg = _parse_swarm_change_path(changed, self._swarm_instance_dirs)
+                    if swarm_msg is not None:
+                        self._rescan_swarm_instances()
+                        if self._app is not None:
+                            try:
+                                self._app.post_message(swarm_msg)
+                            except Exception:
+                                pass
+                        continue
+
                     msg = _parse_change_path(changed, self._teams_dir, self._tasks_dir)
                     if msg is not None and self._app is not None:
                         try:

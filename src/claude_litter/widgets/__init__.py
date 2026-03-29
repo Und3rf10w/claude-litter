@@ -8,6 +8,7 @@ from .input_bar import InputBar
 from .task_panel import TaskPanel
 from .message_panel import MessagePanel
 from .context_menu import ContextMenu
+from .swarm_panel import SwarmPanel
 
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "TaskPanel",
     "MessagePanel",
     "ContextMenu",
+    "SwarmPanel",
 ]

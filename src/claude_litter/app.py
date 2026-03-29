@@ -72,6 +72,7 @@ class ClaudeLitterApp(App):
         Binding("f1", "about", "About"),
         Binding("f2", "toggle_messages", "Messages"),
         Binding("f3", "settings", "Settings"),
+        Binding("f4", "toggle_swarm", "Swarm"),
     ]
 
     def __init__(self, config: Config | None = None, **kwargs: object) -> None:
@@ -100,6 +101,12 @@ class ClaudeLitterApp(App):
         from claude_litter.screens.main import MainScreen
         if isinstance(self.screen, MainScreen):
             self.screen.toggle_messages()
+
+    def action_toggle_swarm(self) -> None:
+        """Toggle the swarm panel."""
+        from claude_litter.screens.main import MainScreen
+        if isinstance(self.screen, MainScreen):
+            self.screen.toggle_swarm()
 
     def action_new_team(self) -> None:
         """Open the create-team dialog."""

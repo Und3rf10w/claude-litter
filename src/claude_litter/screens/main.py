@@ -233,6 +233,8 @@ class MainScreen(Screen):
                 yield StatusBar(id="status-bar")
         yield TaskPanel(id="task-panel", classes="slide-panel")
         yield MessagePanel(id="message-panel", classes="slide-panel")
+        from claude_litter.widgets.swarm_panel import SwarmPanel
+        yield SwarmPanel(id="swarm-panel")
         yield ContextMenu(id="context-menu")
         yield Footer()
 
@@ -241,6 +243,7 @@ class MainScreen(Screen):
         self._state_manager = StateManager()
         self._state_manager.set_app(self)
         await self._state_manager.start()
+        self._update_swarm_project_roots()
 
         # Skip the welcome screen — go straight to a live session
         self.show_session()
@@ -588,6 +591,44 @@ class MainScreen(Screen):
                         if agent:
                             self._update_message_panel(team, agent)
 
+    def toggle_swarm(self) -> None:
+        """Show/hide the swarm-loop panel."""
+        try:
+            from claude_litter.widgets.swarm_panel import SwarmPanel
+            panel = self.query_one("#swarm-panel", SwarmPanel)
+            panel.toggle()
+            if panel._visible:
+                self._refresh_swarm_panel()
+        except Exception:
+            pass
+
+    def _refresh_swarm_panel(self) -> None:
+        """Push fresh swarm state into the panel."""
+        if not hasattr(self, "_state_manager"):
+            return
+        instances = self._state_manager.get_swarm_instances()
+        try:
+            from claude_litter.widgets.swarm_panel import SwarmPanel
+            self.query_one("#swarm-panel", SwarmPanel).update_instances(instances)
+        except Exception:
+            pass
+        try:
+            from claude_litter.widgets.sidebar import TeamSidebar
+            self.query_one("#sidebar", TeamSidebar).update_swarm_instances(instances)
+        except Exception:
+            pass
+
+    def _update_swarm_project_roots(self) -> None:
+        """Collect project roots from team member cwds + own CWD."""
+        roots: set[str] = set()
+        roots.add(str(Path.cwd()))
+        for _key, info in self._member_info.items():
+            cwd = info.get("cwd", "")
+            if cwd:
+                roots.add(cwd)
+        if hasattr(self, "_state_manager"):
+            self._state_manager.set_swarm_project_roots(roots)
+
     def _update_message_panel(self, team: str, agent: str) -> None:
         """Populate the message panel with the agent's inbox messages."""
         panel = self.query_one("#message-panel", MessagePanel)
@@ -759,6 +800,8 @@ class MainScreen(Screen):
         """Apply the sidebar data computed by the worker to the UI."""
         self._member_info.clear()
         self._member_info.update(member_info)
+        self._last_teams: list[dict] = teams
+        self._last_task_counts: dict[str, tuple[int, int]] = task_counts
         self.query_one("#sidebar", TeamSidebar).update_teams(teams)
         self._update_status_bar(teams, task_counts)
 
@@ -785,6 +828,20 @@ class MainScreen(Screen):
         task_total, task_done = task_counts.get(active_team, (0, 0))
         vim_mode = getattr(self.app.config, "vim_mode", False)
 
+        swarm_active = False
+        swarm_phase = ""
+        swarm_iteration = 0
+        if hasattr(self, "_state_manager"):
+            try:
+                instances = self._state_manager.get_swarm_instances()
+                if instances:
+                    active = instances[0]
+                    swarm_active = True
+                    swarm_phase = active.phase
+                    swarm_iteration = active.iteration
+            except Exception:
+                pass
+
         try:
             sb = self.query_one(StatusBar)
             sb.update_status(
@@ -794,6 +851,9 @@ class MainScreen(Screen):
                 task_total=task_total,
                 task_done=task_done,
                 vim_mode=vim_mode,
+                swarm_active=swarm_active,
+                swarm_phase=swarm_phase,
+                swarm_iteration=swarm_iteration,
             )
         except Exception:
             pass
@@ -1714,10 +1774,56 @@ class MainScreen(Screen):
     def on_team_updated(self, message: TeamUpdated) -> None:
         """Refresh the sidebar when a team config changes on disk."""
         self._refresh_sidebar()
+        self._update_swarm_project_roots()
         # Rebuild transcript index to pick up new agents, then restart watcher
         if hasattr(self, "_state_manager"):
             self._state_manager.build_transcript_index()
             self.run_worker(self._state_manager.restart(), exclusive=True, group="watcher-restart")
+
+    def on_swarm_updated(self, message) -> None:
+        """Handle filesystem change in a swarm-loop instance directory."""
+        if hasattr(self, "_state_manager"):
+            self._state_manager._rescan_swarm_instances()
+            instances = self._state_manager.get_swarm_instances()
+            # Always update sidebar badge
+            try:
+                from claude_litter.widgets.sidebar import TeamSidebar
+                self.query_one("#sidebar", TeamSidebar).update_swarm_instances(instances)
+            except Exception:
+                pass
+            # Update panel if visible
+            try:
+                from claude_litter.widgets.swarm_panel import SwarmPanel
+                panel = self.query_one("#swarm-panel", SwarmPanel)
+                if panel._visible:
+                    panel.update_instances(instances)
+            except Exception:
+                pass
+            self._update_status_bar(
+                getattr(self, "_last_teams", []),
+                getattr(self, "_last_task_counts", {}),
+            )
+
+    def on_swarm_panel_refresh_requested(self, _event) -> None:
+        """Handle manual refresh from swarm panel keyboard shortcut."""
+        if hasattr(self, "_state_manager"):
+            self._state_manager._rescan_swarm_instances()
+        self._refresh_swarm_panel()
+
+    def on_team_sidebar_swarm_selected(self, event) -> None:
+        """Clicking swarm instance in sidebar opens the swarm panel focused on that instance."""
+        try:
+            from claude_litter.widgets.swarm_panel import SwarmPanel
+            panel = self.query_one("#swarm-panel", SwarmPanel)
+            for i, inst in enumerate(panel._instances):
+                if inst.instance_id == event.instance_id:
+                    panel._selected_idx = i
+                    panel._refresh_display()
+                    break
+            if not panel._visible:
+                self.toggle_swarm()
+        except Exception:
+            pass
 
     def on_task_updated(self, message: TaskUpdated) -> None:
         """Refresh the task panel when a task file changes on disk."""

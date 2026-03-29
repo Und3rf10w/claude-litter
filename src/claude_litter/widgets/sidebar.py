@@ -119,11 +119,19 @@ class TeamSidebar(Widget):
             self.screen_x = screen_x
             self.screen_y = screen_y
 
+    class SwarmSelected(Message):
+        """Emitted when a swarm instance node is clicked."""
+
+        def __init__(self, instance_id: str) -> None:
+            super().__init__()
+            self.instance_id = instance_id
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._team_nodes: dict[str, TreeNode] = {}
         self._agent_nodes: dict[tuple[str, str], TreeNode] = {}
         self._agent_data: dict[tuple[str, str], dict] = {}
+        self._swarm_root_node = None
 
     def compose(self) -> ComposeResult:
         tree: _SidebarTree = _SidebarTree("Teams", id="sidebar-tree")
@@ -177,6 +185,47 @@ class TeamSidebar(Widget):
         if node is not None:
             node.set_label(self._agent_label(self._agent_data[key]))
 
+    def update_swarm_instances(self, instances: list) -> None:
+        """Update the swarm instances section in the sidebar tree."""
+        try:
+            tree = self.query_one(Tree)
+        except Exception:
+            return
+        # Remove old swarm section
+        if self._swarm_root_node is not None:
+            try:
+                self._swarm_root_node.remove()
+            except Exception:
+                pass
+            self._swarm_root_node = None
+        if not instances:
+            return
+        # Add section
+        self._swarm_root_node = tree.root.add(
+            "[bold magenta]\u25c6 Swarm Loop[/bold magenta]",
+            data={"type": "swarm_root"},
+            expand=True,
+        )
+        for state in instances:
+            health = getattr(state, "autonomy_health", "unknown")
+            health_color = {"healthy": "green", "degraded": "yellow", "critical": "red"}.get(health, "dim")
+            hb = getattr(state, "heartbeat", None)
+            pct = ""
+            if hb and getattr(hb, "tasks_total", 0):
+                pct = f" \\[{hb.tasks_completed}/{hb.tasks_total}]"
+            iid = getattr(state, "instance_id", "????")
+            phase = getattr(state, "phase", "?")
+            iteration = getattr(state, "iteration", 0)
+            label = (
+                f"[{health_color}]\u25cf[/{health_color}] "
+                f"[dim]{iid}[/dim] "
+                f"iter {iteration} {phase}{pct}"
+            )
+            self._swarm_root_node.add_leaf(
+                label,
+                data={"type": "swarm_instance", "instance_id": iid},
+            )
+
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         event.stop()
         node_data = event.node.data
@@ -192,6 +241,8 @@ class TeamSidebar(Widget):
             self.post_message(
                 self.AgentSelected(team=node_data["team"], agent=node_data["agent"])
             )
+        elif node_data.get("type") == "swarm_instance":
+            self.post_message(self.SwarmSelected(instance_id=node_data["instance_id"]))
 
     @staticmethod
     def _agent_label(agent: dict) -> str:
