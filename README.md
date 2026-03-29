@@ -13,7 +13,7 @@
 
 ---
 
-**Claude Litter** is a full-featured terminal UI for managing [Claude Code agent teams](https://code.claude.com) and swarm loops. It gives you a live sidebar of teams and agents, tabbed transcript sessions, a task panel with filtering and sorting, an inbox and compose workflow for inter-agent messaging, and filesystem watching that keeps the UI in sync as your agents work, all without leaving the terminal.
+**Claude Litter** is a full-featured terminal UI for managing [Claude Code agent teams](https://code.claude.com) and, and provides a powerful [Claude Code plugin for running iterative swarm loops](plugins/swarm-loop). It gives you a live sidebar of teams and agents, tabbed transcript sessions, a task panel with filtering and sorting, an inbox and compose workflow for inter-agent messaging, and filesystem watching that keeps the UI in sync as your agents work, all without leaving the terminal
 
 ---
 
