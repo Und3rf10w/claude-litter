@@ -5,16 +5,15 @@
   <br /><br />
 
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.14+" /></a>
-<a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/textual-3.0%2B-6c3483?style=flat-square" alt="Textual 3.0+" /></a>
 <a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 0.1.0" /></a>
-<a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
+<a href="https://code.claude.com/"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
 <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/Made_with-Textual-6c3483?style=flat-square" alt="Made with Textual" /></a>
 
 </div>
 
 ---
 
-**Claude Litter** is a full-featured terminal UI for managing [Claude Code agent teams](https://claude.ai/code). It gives you a live sidebar of teams and agents, tabbed transcript sessions, a task panel with filtering and sorting, an inbox and compose workflow for inter-agent messaging, and filesystem watching that keeps the UI in sync as your agents work — all without leaving the terminal.
+**Claude Litter** is a full-featured terminal UI for managing [Claude Code agent teams](https://code.claude.com) and swarm loops. It gives you a live sidebar of teams and agents, tabbed transcript sessions, a task panel with filtering and sorting, an inbox and compose workflow for inter-agent messaging, and filesystem watching that keeps the UI in sync as your agents work, all without leaving the terminal.
 
 ---
 
@@ -69,6 +68,15 @@ _Inter-agent communication without hand-editing JSON._
 
 - **Message panel** with inbox view, broadcast view, and compose form
 - `/broadcast` command for team-wide messages
+
+### Swarm Loop Control
+
+_Monitor and manage multi-agent swarm loops directly from the TUI._
+
+- **Swarm panel** with live iteration status, phase, autonomy health, and progress bars
+- Browse active and completed swarm instances with incremental log streaming
+- View task breakdowns, heartbeat data, and permission/hook warnings at a glance
+- Works with all orchestration profiles: default, leanswarm, deepplan, and async
 
 ### Terminal Integration
 
