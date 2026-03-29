@@ -464,3 +464,4 @@ anyio.run(main)
 - [Claude Code](https://code.claude.com) by Anthropic — the AI coding agent whose teams this manages
 - [watchfiles](https://watchfiles.helpmanual.io/) — filesystem watching for live UI updates
 - [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps) — Inspiration for the swarm-loop plugin
+- [Geoffrey Huntely's Ralph Wiggum Approach](https://ghuntley.com/ralph/) - Foundational research for iterative coding agent loops
