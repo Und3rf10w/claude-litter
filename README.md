@@ -1,14 +1,15 @@
 <div align="center">
-  <img src="./claudelitterlogo.png" alt="Claude Litter" width="320" />
+  <img src="./logo.png" alt="Claude Litter" width="320" />
   <br />
   <em>A terminal control plane for Claude Code agent teams</em>
   <br /><br />
 
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.14+" /></a>
-  <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/textual-3.0%2B-6c3483?style=flat-square" alt="Textual 3.0+" /></a>
-  <a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 0.1.0" /></a>
-  <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
-  <a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/Made_with-Textual-6c3483?style=flat-square" alt="Made with Textual" /></a>
+<a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.14+" /></a>
+<a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/textual-3.0%2B-6c3483?style=flat-square" alt="Textual 3.0+" /></a>
+<a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-0.1.0-22c55e?style=flat-square" alt="Version 0.1.0" /></a>
+<a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Claude_Code-agent_teams-orange?style=flat-square" alt="Claude Code" /></a>
+<a href="https://textual.textualize.io/"><img src="https://img.shields.io/badge/Made_with-Textual-6c3483?style=flat-square" alt="Made with Textual" /></a>
+
 </div>
 
 ---
@@ -23,14 +24,14 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 <div align="center">
 
-| | Raw CLI | Claude Litter |
-|---|---|---|
-| Team overview | `cat ~/.claude/teams/*/config.json` | Live sidebar with status indicators |
-| Agent transcripts | Scroll through JSONL files | Tabbed sessions with full history |
-| Task tracking | Manual JSON edits | Filterable panel with inline editing |
-| Messaging | Write to inbox JSON files | Compose form with broadcast support |
-| Agent lifecycle | Shell commands, manual PID tracking | Spawn, kill, detach, reattach in-UI |
-| Multi-team view | Multiple terminal windows | Single pane, switchable sidebar |
+|                   | Raw CLI                             | Claude Litter                        |
+| ----------------- | ----------------------------------- | ------------------------------------ |
+| Team overview     | `cat ~/.claude/teams/*/config.json` | Live sidebar with status indicators  |
+| Agent transcripts | Scroll through JSONL files          | Tabbed sessions with full history    |
+| Task tracking     | Manual JSON edits                   | Filterable panel with inline editing |
+| Messaging         | Write to inbox JSON files           | Compose form with broadcast support  |
+| Agent lifecycle   | Shell commands, manual PID tracking | Spawn, kill, detach, reattach in-UI  |
+| Multi-team view   | Multiple terminal windows           | Single pane, switchable sidebar      |
 
 </div>
 
@@ -40,7 +41,7 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 ### Core UI
 
-*Everything you need at a glance — teams, transcripts, themes, and status.*
+_Everything you need at a glance — teams, transcripts, themes, and status._
 
 - **Team sidebar** with live status indicators (active / partial / inactive) and colored agent badges
 - **Tabbed sessions** with full conversation transcript history loaded from JSONL files
@@ -49,14 +50,14 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 ### Team Management
 
-*Create and operate teams without touching a config file.*
+_Create and operate teams without touching a config file._
 
 - Create, rename, suspend/resume, broadcast to, and delete teams
 - Right-click context menus on teams, agents, and tabs
 
 ### Agent Management
 
-*Full agent lifecycle control from a single interface.*
+_Full agent lifecycle control from a single interface._
 
 - Spawn agents with model selection (Haiku / Sonnet / Opus) and type assignment
 - Configure, duplicate (cross-team with inbox/context copy), kill, detach, and reattach agents
@@ -64,14 +65,14 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 ### Messaging
 
-*Inter-agent communication without hand-editing JSON.*
+_Inter-agent communication without hand-editing JSON._
 
 - **Message panel** with inbox view, broadcast view, and compose form
 - `/broadcast` command for team-wide messages
 
 ### Terminal Integration
 
-*Deep terminal integration for a native feel.*
+_Deep terminal integration for a native feel._
 
 - **Kitty terminal** pop-out: open agents in splits, tabs, or new windows
 - **Text selection** with Cmd+C / right-click copy support
@@ -79,7 +80,7 @@ Managing a multi-agent Claude Code setup from the raw CLI means juggling JSON fi
 
 ### Input and Customization
 
-*Keyboard-first, extensible, and debuggable.*
+_Keyboard-first, extensible, and debuggable._
 
 - **Command mode** via `/` prefix with Tab autocomplete
 - **Vim mode** (`--vim` flag)
@@ -125,29 +126,29 @@ uv sync && uv run claude-litter
 
 ## CLI Options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--vim` | `false` | Enable vim keybindings |
-| `--theme THEME` | `dark` | Color theme (`dark`, `light`, or any built-in theme name) |
-| `--debug` | `false` | Debug logging to `~/.claude/claude-litter/debug.log` |
-| `--version` | — | Print version and exit |
+| Flag            | Default | Description                                               |
+| --------------- | ------- | --------------------------------------------------------- |
+| `--vim`         | `false` | Enable vim keybindings                                    |
+| `--theme THEME` | `dark`  | Color theme (`dark`, `light`, or any built-in theme name) |
+| `--debug`       | `false` | Debug logging to `~/.claude/claude-litter/debug.log`      |
+| `--version`     | —       | Print version and exit                                    |
 
 ---
 
 ## Keybindings
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+N` | Create new team |
-| `Ctrl+S` | Spawn agent |
-| `Ctrl+T` | Toggle task panel |
-| `Ctrl+Q` | Quit |
-| `F1` | About |
-| `F2` | Toggle message panel |
-| `F3` | Settings |
-| `Escape` | Close dialog / quit |
-| `Tab` | Focus next widget |
-| `Cmd+C` / `Ctrl+C` | Copy selected text |
+| Key                | Action               |
+| ------------------ | -------------------- |
+| `Ctrl+N`           | Create new team      |
+| `Ctrl+S`           | Spawn agent          |
+| `Ctrl+T`           | Toggle task panel    |
+| `Ctrl+Q`           | Quit                 |
+| `F1`               | About                |
+| `F2`               | Toggle message panel |
+| `F3`               | Settings             |
+| `Escape`           | Close dialog / quit  |
+| `Tab`              | Focus next widget    |
+| `Cmd+C` / `Ctrl+C` | Copy selected text   |
 
 ---
 
@@ -155,17 +156,72 @@ uv sync && uv run claude-litter
 
 Type `/` in the input bar to enter command mode. Tab completes available commands.
 
-| Command | Action |
-|---------|--------|
-| `/spawn` | Spawn a new agent |
-| `/kill` | Kill an agent |
-| `/msg <to> <text>` | Send a message to an agent |
+| Command             | Action                      |
+| ------------------- | --------------------------- |
+| `/spawn`            | Spawn a new agent           |
+| `/kill`             | Kill an agent               |
+| `/msg <to> <text>`  | Send a message to an agent  |
 | `/broadcast <text>` | Broadcast to the whole team |
-| `/task` | Task operations |
-| `/team` | Team operations |
-| `/kitty` | Kitty terminal pop-out |
-| `/detach` | Detach session |
-| `/vim` | Toggle vim mode |
+| `/task`             | Task operations             |
+| `/team`             | Team operations             |
+| `/kitty`            | Kitty terminal pop-out      |
+| `/detach`           | Detach session              |
+| `/vim`              | Toggle vim mode             |
+
+---
+
+## Swarm Loop Plugin
+
+The **swarm-loop** plugin is an orchestrated multi-agent iterative development system for Claude Code. It decomposes complex goals into parallel subtasks, creates a persistent agent team, and drives autonomous iteration until a user-defined completion promise is fulfilled.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/swarm-loop` | Start an orchestrated multi-agent loop |
+| `/deepplan` | Multi-agent planning session (explore, synthesize, critique, deliver) |
+| `/async-swarm` | Background-agent orchestration for independent parallel tasks |
+| `/swarm-status` | View iteration count, phase, task status, and recent log |
+| `/cancel-swarm` | Stop the active loop and clean up |
+| `/swarm-settings` | Configure teammate count, safety, and notifications |
+| `/swarm-help` | Full reference guide |
+
+### Quick Start
+
+```bash
+/swarm-loop Build a REST API with auth and tests \
+  --completion-promise 'All endpoints work and tests pass'
+```
+
+### Orchestration Profiles
+
+| Profile | Flag | Description |
+|---------|------|-------------|
+| **default** | *(none)* | Persistent teams with a 7-step cycle (assess, plan, execute, monitor, verify, persist, signal) |
+| **leanswarm** | `--mode leanswarm` | Leaner 4-concern cycle for capable models |
+| **deepplan** | `--mode deepplan` | Structured planning with parallel scouts and reviewers — no implementation |
+| **async** | `--mode async` | Fully independent background agents, no inter-agent messaging |
+
+### Iteration Control
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--completion-promise` | *(required)* | Loop runs until this statement is genuinely true |
+| `--soft-budget N` | `10` | Reflection checkpoint — not a hard limit |
+| `--min-iterations N` | `0` | Hard floor — promise suppressed until N iterations complete |
+| `--max-iterations N` | `0` (unlimited) | Hard ceiling — force-stop after N iterations |
+| `--verify 'cmd'` | *(none)* | Shell command that must exit 0 for completion |
+
+### Safety
+
+Safe mode (enabled by default) provides three layers of protection:
+- **Auto-approval** — file operations proceed without manual confirmation
+- **Bash classifier** — evaluates shell commands and blocks dangerous patterns (force push, credential access, external code execution)
+- **Teammate injection** — safety constraints are injected into every teammate's context at spawn time
+
+Additional safeguards include sentinel timeout recovery (automatically restarts stuck orchestrators) and autonomy health tracking (escalates to human input after repeated failures).
+
+Requires `jq` and `perl` at runtime.
 
 ---
 
@@ -220,10 +276,10 @@ src/claude_litter/
 
 **Plugins** live under `plugins/`:
 
-| Plugin | Description |
-|--------|-------------|
-| `swarm-loop` | Multi-agent orchestration loop (bash). Requires `jq` and `perl`. |
-| `team-overlord` | Team/task MCP server (Python / fastmcp). |
+| Plugin          | Description                                                      |
+| --------------- | ---------------------------------------------------------------- |
+| `swarm-loop`    | Multi-agent orchestration loop — see [Swarm Loop Plugin](#swarm-loop-plugin) |
+| `team-overlord` | Team/task MCP server (Python / fastmcp).                         |
 
 ---
 
@@ -258,6 +314,7 @@ uv run pytest tests/ -v -k 'test_name'   # single test
 Tests use the `tmp_claude_home` fixture from `conftest.py` to create an isolated `~/.claude/` structure. The real `~/.claude/` is never touched.
 
 **Coverage spans 10 test files:**
+
 - Models: team, task, message dataclasses and serialization round-trips
 - Services: TeamService CRUD, file locking under concurrency, StateManager, AgentManager, KittyService
 - App: initialization, keybindings, MainScreen composition
