@@ -108,14 +108,6 @@ uv sync && uv run claude-litter
 
 ---
 
-## Screenshots
-
-<div align="center">
-  <img src="./assets/screenshot.svg" alt="Claude Litter TUI" width="800" />
-</div>
-
----
-
 ## CLI Options
 
 | Flag            | Default | Description                                               |
