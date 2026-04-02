@@ -26,6 +26,9 @@ discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
 
 # Throttle: skip if heartbeat was updated less than 5 seconds ago
 if [[ -f "$HEARTBEAT_FILE" ]]; then
+  # Fail-open: if stat fails on both platforms, HEARTBEAT_MTIME defaults to "0",
+  # making AGE = NOW_SECS (a huge value), so AGE -lt 5 is false and the update
+  # proceeds. This is intentional — a missing mtime should never suppress a write.
   HEARTBEAT_MTIME=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || echo "0")
   NOW_SECS=$(date +%s)
   AGE=$((NOW_SECS - HEARTBEAT_MTIME))
