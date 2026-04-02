@@ -9,6 +9,8 @@
 # Does NOT print to stdout — callers read RESOLVED_MODE directly.
 load_profile() {
   local mode="$1" plugin_root="$2"
+  [[ -n "$mode" ]] || { echo "swarm-loop: load_profile: mode argument is required" >&2; return 1; }
+  [[ -n "$plugin_root" ]] || { echo "swarm-loop: load_profile: plugin_root argument is required" >&2; return 1; }
   local dir="${plugin_root}/profiles/${mode}"
   if [[ ! -d "$dir" ]]; then
     echo "swarm-loop: profile '${mode}' not found, falling back to 'default'" >&2

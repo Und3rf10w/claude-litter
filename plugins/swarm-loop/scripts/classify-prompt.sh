@@ -52,8 +52,8 @@ RESULT=$(
 ) || RESULT="SAFE: classifier timeout or error (fail-open)"
 
 # Parse the result
-if echo "$RESULT" | grep -q "^BLOCKED:"; then
-  REASON=$(echo "$RESULT" | head -1)
+if printf '%s\n' "$RESULT" | grep -q "^BLOCKED:"; then
+  REASON=$(printf '%s\n' "$RESULT" | head -1)
   echo "$REASON" >&2
   exit 1
 fi

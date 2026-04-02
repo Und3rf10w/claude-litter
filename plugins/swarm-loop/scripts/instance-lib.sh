@@ -41,6 +41,9 @@ discover_instance() {
 
     # Backfill placeholder session IDs (generated when CLAUDE_CODE_SESSION_ID
     # was unavailable at setup time — prefix "swarm-")
+    # RACE NOTE: Two parallel hooks can both reach this branch simultaneously.
+    # Both will write the same value (hook_session), so the race is benign —
+    # the last writer wins but the result is identical either way.
     if [[ "$_sid" == swarm-* ]] && [[ -n "$hook_session" ]]; then
       jq --arg sid "$hook_session" '.session_id = $sid' "$_f" > "${_f}.tmp.$$" \
         && mv "${_f}.tmp.$$" "$_f" || { rm -f "${_f}.tmp.$$"; continue; }
