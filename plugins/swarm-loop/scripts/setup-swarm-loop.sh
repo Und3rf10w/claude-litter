@@ -638,7 +638,7 @@ if [[ "$SAFE_MODE" == "true" ]]; then
   SUBAGENT_START_HOOK=$(jq -n \
     --arg goal "$GOAL" \
     --arg team "$TEAM_NAME" \
-    '{ "additionalContext": ("You are a teammate in swarm loop team " + $team + " working on: " + $goal + ". Follow your assigned task, partition file ownership carefully, and send your results to team-lead via SendMessage when done. Do not delete or overwrite files owned by other teammates.") } as $payload |
+    '{ "hookSpecificOutput": { "hookEventName": "SubagentStart", "additionalContext": ("You are a teammate in swarm loop team " + $team + " working on: " + $goal + ". Follow your assigned task, partition file ownership carefully, and send your results to team-lead via SendMessage when done. Do not delete or overwrite files owned by other teammates.") } } as $payload |
     [{
       "hooks": [{
         "type": "command",
@@ -646,6 +646,20 @@ if [[ "$SAFE_MODE" == "true" ]]; then
       }]
     }]')
 fi
+
+# SubagentStop cleanup hook (always, async)
+# Fires when any teammate stops — logs in_progress task warnings and cleans up retry counters.
+SUBAGENT_STOP_SCRIPT="$PLUGIN_ROOT/hooks/subagent-stop.sh"
+SUBAGENT_STOP_HOOK=$(jq -n \
+  --arg script "$SUBAGENT_STOP_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 30
+    }]
+  }]')
 
 # SessionStart(clear|compact) context re-injection hook (always)
 # Fires after auto-compaction or manual /clear to restore orchestrator identity.
@@ -765,6 +779,19 @@ if [[ "$MODE" == "deepplan" ]]; then
   TASK_CREATED_HOOK=$(echo "$TASK_CREATED_HOOK $TASK_CREATED_CLASSIFIER" | jq -s '.[0] + .[1]')
 fi
 
+# StopFailure observability hook (always, async)
+STOP_FAILURE_SCRIPT="$PLUGIN_ROOT/hooks/stop-failure.sh"
+STOP_FAILURE_HOOK=$(jq -n \
+  --arg script "$STOP_FAILURE_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 15
+    }]
+  }]')
+
 # Assemble the full settings object
 # Build hooks object, omitting null entries. Tag each matcher with _swarm for selective cleanup.
 HOOKS_JSON=$(jq -n \
@@ -775,14 +802,18 @@ HOOKS_JSON=$(jq -n \
   --argjson post "$POST_TOOL_USE_HOOKS" \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson task_created "$TASK_CREATED_HOOK" \
+  --argjson stop_failure "$STOP_FAILURE_HOOK" \
+  --argjson subagent_stop "$SUBAGENT_STOP_HOOK" \
   '{
     PermissionRequest: $perm,
     PreToolUse: $pre,
     SubagentStart: $subagent,
+    SubagentStop: $subagent_stop,
     SessionStart: $session,
     PostToolUse: $post,
     TaskCompleted: $task_completed,
-    TaskCreated: $task_created
+    TaskCreated: $task_created,
+    StopFailure: $stop_failure
   } | with_entries(select(.value != null)) |
   # Tag every matcher object so fallback cleanup can selectively remove swarm hooks
   map_values([.[] | . + {"_swarm": true}])')
