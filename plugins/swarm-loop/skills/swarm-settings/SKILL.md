@@ -22,7 +22,7 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 | classifier.effort | auto | Effort level (low, medium, high, max, auto) |
 | classifier.checks.pre-tool-use | true | Classify Bash commands before execution |
 | classifier.checks.task-completed | false | Verify task completion with agent hook |
-| teammates.isolation | shared | Teammate isolation (shared, worktree) |
+| teammates.isolation | worktree | Teammate isolation (shared, worktree) |
 | teammates.max-count | 8 | Max simultaneous teammates |
 | notifications.enabled | false | Enable external notifications |
 | notifications.channel | null | Webhook URL for notifications |
@@ -45,7 +45,7 @@ classifier:
     pre-tool-use: true
     task-completed: false
 teammates:
-  isolation: shared
+  isolation: worktree
   max-count: 8
 notifications:
   enabled: false
