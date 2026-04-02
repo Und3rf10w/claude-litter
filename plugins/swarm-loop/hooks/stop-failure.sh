@@ -28,14 +28,20 @@ source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 HOOK_SESSION=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
 
+trap 'rm -f "${STATE_FILE}.tmp.$$"' EXIT
+
+# Cache state.json once to avoid double reads
+STATE_JSON=$(jq '.' "$STATE_FILE" 2>/dev/null || echo "")
+[[ -z "$STATE_JSON" ]] && exit 0
+
 # Read error fields from stdin JSON
 ERROR_TYPE=$(echo "$INPUT" | jq -r '.error // "unknown"' 2>/dev/null || echo "unknown")
 ERROR_DETAILS=$(echo "$INPUT" | jq -r '.error_details // ""' 2>/dev/null || echo "")
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Read current iteration from state
-ITERATION=$(jq -r '.iteration // 1' "$STATE_FILE" 2>/dev/null || echo "1")
+# Read current iteration from cached state
+ITERATION=$(printf '%s' "$STATE_JSON" | jq -r '.iteration // 1' 2>/dev/null || echo "1")
 
 # 1. Log to instance log.md
 {
@@ -67,9 +73,9 @@ else
 fi
 
 # 3. Update heartbeat with error status
-GOAL=$(jq -r '.goal // ""' "$STATE_FILE" 2>/dev/null || echo "")
-TEAM_NAME=$(jq -r '.team_name // ""' "$STATE_FILE" 2>/dev/null || echo "")
-SENTINEL_TIMEOUT=$(jq -r '.sentinel_timeout // 600' "$STATE_FILE" 2>/dev/null || echo "600")
+GOAL=$(printf '%s' "$STATE_JSON" | jq -r '.goal // ""' 2>/dev/null || echo "")
+TEAM_NAME=$(printf '%s' "$STATE_JSON" | jq -r '.team_name // ""' 2>/dev/null || echo "")
+SENTINEL_TIMEOUT=$(printf '%s' "$STATE_JSON" | jq -r '.sentinel_timeout // 600' 2>/dev/null || echo "600")
 jq -n \
   --argjson iteration "$ITERATION" \
   --arg timestamp "$NOW" \

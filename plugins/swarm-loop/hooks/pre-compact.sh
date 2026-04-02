@@ -55,7 +55,12 @@ TASKS_PENDING=0
 if [[ -d "$TASK_DIR" ]]; then
   for tf in "${TASK_DIR}"/*.json; do
     [[ -f "$tf" ]] || continue
-    TF_JSON=$(jq '.' "$tf" 2>/dev/null) || continue
+    TF_JSON=""
+    for _retry in 1 2 3; do
+      TF_JSON=$(jq '.' "$tf" 2>/dev/null) && break
+      TF_JSON=""
+      [[ $_retry -lt 3 ]] && sleep 0.05
+    done
     [[ -z "$TF_JSON" ]] && continue
     tf_status=$(printf '%s' "$TF_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
     [[ "$tf_status" == "deleted" ]] && continue

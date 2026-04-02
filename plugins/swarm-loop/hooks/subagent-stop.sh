@@ -49,6 +49,8 @@ fi
 # If still no instance, nothing to log to — exit cleanly
 [[ -n "${INSTANCE_DIR:-}" ]] || exit 0
 
+trap 'rm -f "${STATE_FILE}.tmp.$$"' EXIT
+
 # Read team_name from state.json
 TEAM_NAME=$(jq -r '.team_name // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -n "$TEAM_NAME" ]] || exit 0
