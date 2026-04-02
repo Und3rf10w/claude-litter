@@ -26,7 +26,7 @@ check_completion() {
   COMPLETION_BLOCK_REASON=""
 
   if [[ -z "$COMPLETION_PROMISE" ]] || [[ "$COMPLETION_PROMISE" == "null" ]]; then
-    return 0
+    return
   fi
 
   # Check for promise tag (same as default)
@@ -36,7 +36,7 @@ check_completion() {
 
   if [[ -n "$promise_text" ]] && [[ "$promise_text" == "$COMPLETION_PROMISE" ]]; then
     COMPLETION_DETECTED="true"
-    return 0
+    return
   fi
 
   # Phase-specific logic
@@ -63,5 +63,5 @@ check_completion() {
       # Terminal states — do nothing, let shared logic handle
       ;;
   esac
-  return 0
+  return
 }
