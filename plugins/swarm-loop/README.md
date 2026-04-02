@@ -119,7 +119,7 @@ classifier:
     pre-tool-use: true
     task-completed: false
 teammates:
-  isolation: shared
+  isolation: worktree
   max-count: 8
 notifications:
   enabled: false
@@ -138,7 +138,7 @@ notifications:
 | `classifier.effort` | `auto` | Effort level for the classifier (`low`, `medium`, `high`, `max`, `auto`) |
 | `classifier.checks.pre-tool-use` | `true` | Evaluate Bash commands through the classifier before execution |
 | `classifier.checks.task-completed` | `false` | Run a classifier hook to verify task completion |
-| `teammates.isolation` | `shared` | Teammate isolation mode (`shared` or `worktree`) |
+| `teammates.isolation` | `worktree` | Teammate isolation mode (`shared` or `worktree`) |
 | `teammates.max-count` | `8` | Maximum number of teammates active simultaneously |
 | `notifications.enabled` | `false` | Enable external webhook notifications |
 | `notifications.channel` | `null` | Webhook URL to receive task completion notifications |
@@ -153,9 +153,15 @@ Inspired by [Anthropic's permission classifier used in auto mode](https://www.an
 
 - **SubagentStart injection** — automatically injects safety constraints into every teammate context at spawn time. Synchronous. Active when `--safe-mode true`.
 
+- **SubagentStop cleanup** — logs warning when teammates stop with incomplete tasks. Captures last assistant message for debugging. Asynchronous. Always active.
+
 - **SessionStart(clear|compact)** — re-injects orchestrator identity and key state after auto-compaction or a manual `/clear`. Synchronous. Always active.
 
+- **PreCompact context injection** — injects orchestrator identity (goal, iteration, team, task status) into compaction instructions. Synchronous. Always active (registered in `hooks.json`).
+
 - **PostToolUse heartbeat** — updates the instance `heartbeat.json` file after every tool call. Asynchronous (non-blocking). Throttled to at most one write every 5 seconds to avoid I/O pressure during rapid tool use.
+
+- **StopFailure observability** — logs API errors (rate limit, billing, server) to instance log, sets autonomy_health to degraded, updates heartbeat. Asynchronous. Always active.
 
 - **TaskCompleted notifications** — sends a webhook request when a task completes. Asynchronous. Active only when `notifications.enabled: true` and `notifications.channel` is set.
 
@@ -165,9 +171,9 @@ Inspired by [Anthropic's permission classifier used in auto mode](https://www.an
 
 ### Isolation Modes
 
-**`shared`** (default) — all teammates work on the same checkout. File ownership is partitioned by the orchestrator at PLAN time — each teammate receives an explicit list of files it is responsible for. No git required.
+**`shared`** — all teammates work on the same checkout. File ownership is partitioned by the orchestrator at PLAN time — each teammate receives an explicit list of files it is responsible for. No git required.
 
-**`worktree`** — each teammate receives an isolated git worktree via the `isolation: "worktree"` field on the `Agent` call. No file conflicts are possible. After teammates complete, the orchestrator merges their branches in dependency order. Requires git.
+**`worktree`** (default) — each teammate receives an isolated git worktree via the `isolation: "worktree"` field on the `Agent` call. No file conflicts are possible. After teammates complete, the orchestrator merges their branches in dependency order. Requires git.
 
 Set the mode globally via `/swarm-settings` (`teammates.isolation`) or choose per-loop based on whether file ownership can be cleanly partitioned.
 
@@ -240,6 +246,7 @@ The plugin uses two distinct hook registration mechanisms:
 - **Static hooks** — declared in `hooks/hooks.json` and loaded by Claude Code at plugin load time:
   - `Stop` → `stop-hook.sh` — drives iteration via sentinel detection, completion checking, stuck detection, and cleanup
   - `TeammateIdle` → `teammate-idle-gate.sh` — enforces task completion discipline: teammates with in_progress tasks are forced to keep working (up to 3 retries) until they call `TaskUpdate(completed)` + `SendMessage(to: 'team-lead')`. Logs retries to `log.md`; writes `hook_warnings` to `state.json` after max retries.
+  - `PreCompact` → `pre-compact.sh` — injects swarm orchestrator context (goal, iteration, team, task status) into compaction instructions so post-compact model retains orchestrator knowledge
 
 - **Dynamic hooks** — injected into the project's `.claude/settings.local.json` at loop-start time by `setup-swarm-loop.sh`. These are not listed in `hooks/hooks.json` because they are only active during a running swarm loop and are removed on completion or `/cancel-swarm`. The dynamically-injected hooks are:
   - `session-context.sh` — `SessionStart(compact|clear)` hook that re-injects orchestrator identity after context compaction or `/clear`
@@ -249,6 +256,8 @@ The plugin uses two distinct hook registration mechanisms:
   - Deepplan scope classifier — `TaskCreated` prompt hook (Haiku) that blocks implementation tasks in deepplan mode (planning only)
   - `notify-task-complete.sh` — `TaskCompleted` hook that sends webhook notifications on task completion (active only when `notifications.enabled: true`)
   - Inline `TaskCompleted` prompt hook — verifies that a task was genuinely completed via classifier (active only when `classifier.checks.task-completed: true`)
+  - `subagent-stop.sh` — `SubagentStop` async hook that logs teammate crash recovery warnings when teammates stop with in_progress tasks, captures last_assistant_message, cleans up idle-retry counters
+  - `stop-failure.sh` — `StopFailure` async hook that logs API errors (rate_limit, billing_error, server_error, etc.), sets autonomy_health to degraded, updates heartbeat with error status
 
 ## Architecture Notes
 
