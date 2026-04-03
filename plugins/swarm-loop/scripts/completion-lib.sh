@@ -56,7 +56,6 @@ _check_completion_with_verify() {
       # Verification failed — increment iteration, update state, log, and signal block
       NEXT_ITERATION=$((ITERATION + 1))
       TEMP_FILE="${STATE_FILE}.tmp.$$"
-      trap 'rm -f "$TEMP_FILE"' EXIT
       jq --argjson iter "$NEXT_ITERATION" \
          --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
          '.iteration = $iter | .phase = "verification_failed" | .last_updated = $now' "$STATE_FILE" > "$TEMP_FILE"
