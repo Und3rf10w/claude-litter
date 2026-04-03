@@ -17,7 +17,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 
 # Bail if subagent — StopFailure for teammates is not actionable at the orchestrator level
-HOOK_AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+HOOK_AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
 if [[ -n "$HOOK_AGENT_ID" ]]; then
   exit 0
 fi
@@ -25,7 +25,7 @@ fi
 # Discover instance
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
-HOOK_SESSION=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+HOOK_SESSION=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
 
 trap 'rm -f "${STATE_FILE}.tmp.$$"' EXIT
@@ -35,8 +35,8 @@ STATE_JSON=$(jq '.' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -z "$STATE_JSON" ]] && exit 0
 
 # Read error fields from stdin JSON
-ERROR_TYPE=$(echo "$INPUT" | jq -r '.error // "unknown"' 2>/dev/null || echo "unknown")
-ERROR_DETAILS=$(echo "$INPUT" | jq -r '.error_details // ""' 2>/dev/null || echo "")
+ERROR_TYPE=$(printf '%s' "$INPUT" | jq -r '.error // "unknown"' 2>/dev/null || echo "unknown")
+ERROR_DETAILS=$(printf '%s' "$INPUT" | jq -r '.error_details // ""' 2>/dev/null || echo "")
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -45,7 +45,7 @@ ITERATION=$(printf '%s' "$STATE_JSON" | jq -r '.iteration // 1' 2>/dev/null || e
 
 # 1. Log to instance log.md
 {
-  echo ""
+  printf '\n'
   printf '> ⚠️ StopFailure: API error %s: %s at %s\n' "$ERROR_TYPE" "$ERROR_DETAILS" "$NOW"
 } >> "$LOG_FILE" 2>/dev/null || true
 

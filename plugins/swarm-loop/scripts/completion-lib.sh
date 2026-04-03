@@ -67,14 +67,14 @@ _check_completion_with_verify() {
       fi
 
       # Log the verification failure
-      echo "" >> "$LOG_FILE"
-      echo "### Iteration $ITERATION — Verification Failed" >> "$LOG_FILE"
-      echo "" >> "$LOG_FILE"
-      echo "Promise was output but verification failed:" >> "$LOG_FILE"
-      echo '```' >> "$LOG_FILE"
-      echo "$VERIFY_RESULT" >> "$LOG_FILE"
-      echo '```' >> "$LOG_FILE"
-      echo "" >> "$LOG_FILE"
+      printf '\n' >> "$LOG_FILE"
+      printf '### Iteration %s — Verification Failed\n' "$ITERATION" >> "$LOG_FILE"
+      printf '\n' >> "$LOG_FILE"
+      printf 'Promise was output but verification failed:\n' >> "$LOG_FILE"
+      printf '```\n' >> "$LOG_FILE"
+      printf '%s\n' "$VERIFY_RESULT" >> "$LOG_FILE"
+      printf '```\n' >> "$LOG_FILE"
+      printf '\n' >> "$LOG_FILE"
 
       COMPLETION_BLOCK_REASON="⚠️ VERIFICATION FAILED — Your completion promise was detected but verification did not pass. Fix the issues and try again.
 
@@ -87,7 +87,7 @@ When the goal is fully achieved, output exactly: <promise>${COMPLETION_PROMISE}<
       return
     fi
   else
-    echo "WARNING: Verification script not found at $VERIFY_SCRIPT — skipping verification" >&2
+    printf 'WARNING: Verification script not found at %s — skipping verification\n' "$VERIFY_SCRIPT" >&2
   fi
 
   # Promise matched and verification passed (or no verify script)

@@ -15,11 +15,11 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 
 # Extract agent_type — if empty or not a teammate pattern, skip
-AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // ""' 2>/dev/null || echo "")
+AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // ""' 2>/dev/null || echo "")
 [[ -n "$AGENT_TYPE" ]] || exit 0
 
 # Extract agent_id and derive teammate name (part before '@')
-AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
 [[ -n "$AGENT_ID" ]] || exit 0
 
 # Teammate name is the part before '@' in agent_id (e.g., "researcher@team-name" → "researcher")
@@ -30,7 +30,7 @@ _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 
 # Discover instance using session_id from the hook input
-HOOK_SESSION=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+HOOK_SESSION=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 
 # Try session-based discovery first, then fall back to searching all instances
 if [[ -n "$HOOK_SESSION" ]]; then
@@ -78,9 +78,9 @@ if [[ -d "$TASK_DIR" ]]; then
     done
     [[ -z "$TASK_JSON" ]] && continue
 
-    task_owner=$(echo "$TASK_JSON" | jq -r '.owner // ""' 2>/dev/null || echo "")
-    task_status=$(echo "$TASK_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
-    task_subject=$(echo "$TASK_JSON" | jq -r '.subject // ""' 2>/dev/null || echo "")
+    task_owner=$(printf '%s' "$TASK_JSON" | jq -r '.owner // ""' 2>/dev/null || echo "")
+    task_status=$(printf '%s' "$TASK_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
+    task_subject=$(printf '%s' "$TASK_JSON" | jq -r '.subject // ""' 2>/dev/null || echo "")
 
     [[ "$task_status" == "deleted" ]] && continue
     if [[ "$task_owner" == "$TEAMMATE" ]] && [[ "$task_status" == "in_progress" ]]; then
@@ -92,7 +92,7 @@ fi
 
 if [[ $OWNED_INPROGRESS -gt 0 ]]; then
   # Capture and truncate last_assistant_message to 500 chars
-  LAST_MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null || echo "")
+  LAST_MSG=$(printf '%s' "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null || echo "")
   LAST_MSG_TRUNCATED="${LAST_MSG:0:500}"
 
   # Log warning to instance log.md
