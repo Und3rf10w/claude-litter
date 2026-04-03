@@ -1934,9 +1934,7 @@ class MainScreen(Screen):
             unread = sum(1 for msg in inbox if not msg.get("read", False))
         except Exception:
             unread = 0
-        self.query_one("#sidebar", TeamSidebar).update_unread(
-            message.team_name, message.agent_name, unread
-        )
+        self.query_one("#sidebar", TeamSidebar).update_unread(message.team_name, message.agent_name, unread)
 
     def on_transcript_activity(self, message: TranscriptActivity) -> None:
         """Update sidebar and session view with agent activity from transcript."""

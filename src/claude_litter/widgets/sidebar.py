@@ -161,11 +161,7 @@ class TeamSidebar(Widget):
         structure_changed = existing_teams != incoming_teams
         if not structure_changed:
             for dir_name in incoming_teams:
-                existing = [
-                    name
-                    for (t, name) in self._agent_nodes
-                    if t == dir_name
-                ]
+                existing = [name for (t, name) in self._agent_nodes if t == dir_name]
                 if existing != incoming_agents.get(dir_name, []):
                     structure_changed = True
                     break
