@@ -70,7 +70,7 @@ With optional verification:
 1. **Setup** — the `/swarm-loop` command initializes an instance directory under `.claude/swarm-loop/<id>/`, creates the narrative log, and generates all safety hooks into `settings.local.json`. A backup of any existing `settings.local.json` is taken and restored on completion or cancellation.
 2. **Team creation** — the orchestrator calls `TeamCreate` once. The same team is reused across every iteration. `TeamCreate` is never called again during a running loop.
 3. **7-step cycle** — each iteration runs: ASSESS → PLAN → EXECUTE → MONITOR → VERIFY → PERSIST → SIGNAL (the `leanswarm` profile collapses this to 4 concerns: WORK → MONITOR → VERIFY → SIGNAL).
-4. **Sentinel file** — at the end of each SIGNAL step the orchestrator writes the instance sentinel file (`<instance-dir>/next-iteration`, Write tool, empty content). The Stop hook detects this file, consumes it, and re-injects the full orchestrator prompt to begin the next iteration.
+4. **Sentinel file** — at the end of each SIGNAL step the orchestrator writes the instance sentinel file (`<instance-dir>/next-iteration`, Write tool, empty content). The Stop hook detects this file, consumes it, writes a fallback log entry if the orchestrator skipped PERSIST, and re-injects the full orchestrator prompt to begin the next iteration.
 5. **Context management** — when the context window fills, Claude Code triggers auto-compaction automatically. The `SessionStart(compact)` hook re-injects orchestrator identity and key state so the loop resumes correctly. The `SessionStart(clear)` hook does the same if the user manually runs `/clear`. The optional `compact_on_iteration` setting causes the orchestrator to run `/compact` proactively at the end of every SIGNAL step.
 6. **Completion** — `<promise>TEXT</promise>` output by the orchestrator is the primary exit mechanism. The Stop hook extracts and verifies the promise before accepting it. Use `--min-iterations N` to force a minimum number of passes before the promise is honored, and `--max-iterations N` to force-stop after a hard ceiling.
 
@@ -162,6 +162,8 @@ Inspired by [Anthropic's permission classifier used in auto mode](https://www.an
 - **PostToolUse heartbeat** — updates the instance `heartbeat.json` file after every tool call. Asynchronous (non-blocking). Throttled to at most one write every 5 seconds to avoid I/O pressure during rapid tool use.
 
 - **StopFailure observability** — logs API errors (rate limit, billing, server) to instance log, sets autonomy_health to degraded, updates heartbeat. Asynchronous. Always active.
+
+- **PermissionDenied tracking** — records teammate permission failures (tool name, reason, input summary) to `permission_failures` in `state.json` and logs to `log.md`. Enables the stop hook's permission-aware stuck escalation without relying on the orchestrator to manually track failures. Asynchronous. Always active.
 
 - **TaskCompleted notifications** — sends a webhook request when a task completes. Asynchronous. Active only when `notifications.enabled: true` and `notifications.channel` is set.
 
@@ -258,6 +260,7 @@ The plugin uses two distinct hook registration mechanisms:
   - Inline `TaskCompleted` prompt hook — verifies that a task was genuinely completed via classifier (active only when `classifier.checks.task-completed: true`)
   - `subagent-stop.sh` — `SubagentStop` async hook that logs teammate crash recovery warnings when teammates stop with in_progress tasks, captures last_assistant_message, cleans up idle-retry counters
   - `stop-failure.sh` — `StopFailure` async hook that logs API errors (rate_limit, billing_error, server_error, etc.), sets autonomy_health to degraded, updates heartbeat with error status
+  - `permission-denied.sh` — `PermissionDenied` async hook that records teammate permission failures (tool name, reason, input summary) to `permission_failures` in `state.json` and logs to `log.md`. Enables the stop hook's permission-aware stuck escalation without relying on the orchestrator to manually track failures.
 
 ## Architecture Notes
 
@@ -271,4 +274,4 @@ The plugin uses two distinct hook registration mechanisms:
 
 - **Sentinel timeout** — if no sentinel file appears within `sentinel_timeout` seconds (default 600) of the last activity, the Stop hook force-reinjects the orchestrator prompt. This recovers from a stuck or crashed orchestrator without requiring manual intervention.
 
-- **Autonomy health** — the state file tracks `autonomy_health` as `"healthy"`, `"degraded"`, or `"escalation_required"` based on accumulated permission failures. After 3 iterations with no progress and active permission failures, the Stop hook injects an escalation message requesting human input.
+- **Autonomy health** — the state file tracks `autonomy_health` as `"healthy"`, `"degraded"`, or `"escalation_required"` based on accumulated permission failures. Permission failures are recorded mechanically by the `PermissionDenied` hook. After 3 iterations with no progress and active permission failures, the Stop hook injects an escalation message requesting human input.

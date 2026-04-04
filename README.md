@@ -44,9 +44,10 @@ Claude Code's native agent teams are powerful, but undercooked. The swarm-loop p
 _The core of Claude Litter — orchestrated multi-agent iteration for Claude Code._
 
 - **Iterative orchestration** with profile-driven cycles (default 7-step, leanswarm 4-concern, deepplan 5-phase planning, async background agents)
-- **Hook-based safety** — bash classifier, teammate idle gate, task completion/creation gates, sentinel timeout recovery
+- **Hook-based safety** — bash classifier, teammate idle gate, task completion/creation gates, sentinel timeout recovery, permission denial tracking
 - **Completion promise** system with optional shell verification (`--verify`)
 - **Iteration control** — soft budget checkpoints, hard min/max floors and ceilings, stuck detection with permission-aware escalation
+- **Mechanical log enforcement** — stop hook writes a fallback log entry when the orchestrator skips PERSIST
 - Configurable via `.claude/swarm-loop.local.md` — classifier model/effort, teammate isolation (shared or worktree), max count, notifications
 
 See [Swarm Loop Plugin](#swarm-loop-plugin-1) for full documentation.
@@ -58,6 +59,7 @@ _A control plane for managing Claude Code agent teams and swarm executions._
 - **Team sidebar** with live status indicators (active / partial / inactive) and colored agent badges
 - **Tabbed sessions** with full conversation transcript history loaded from JSONL files
 - **Swarm panel** with live iteration status, phase, autonomy health, progress bars, and incremental log streaming
+- **Swarm instance cleanup** — right-click context menu to delete individual instances or purge all orphans
 - **Task panel** with filtering (pending / in-progress / completed / blocked), sorting (ID / status / owner), and inline editing
 - **Message panel** with inbox view, broadcast view, and compose form
 - **Agent lifecycle** — spawn with model selection, configure, duplicate cross-team, kill, detach, reattach
@@ -218,6 +220,7 @@ Hooks running in parallel across all turns:
 | `TaskCompleted` | Progress tracking + artifact verification (deepplan) |
 |  `TaskCreated`  | Max task cap + scope classifier (deepplan)           |
 | `SessionStart`  | Re-injects orchestrator context after compaction     |
+| `PermissionDenied` | Records teammate permission failures to state     |
 
 ### Commands
 
@@ -311,7 +314,7 @@ The swarm loop uses a layered hook system to maintain safety and enforce discipl
 **Stop Hook** (`stop-hook.sh`) — The heartbeat of the system. Fires on every Claude Code Stop event and handles:
 
 - **Completion detection**: extracts `<promise>...</promise>` tags from the last assistant message, normalizes whitespace, and compares against the configured promise. Delegates verification to the active profile's `completion.sh`.
-- **Sentinel consumption**: when the orchestrator writes `next-iteration`, the hook consumes it, increments the iteration counter, and re-injects the full profile prompt to start the next cycle.
+- **Sentinel consumption**: when the orchestrator writes `next-iteration`, the hook consumes it, checks for a missing log entry (writing a fallback if the orchestrator skipped PERSIST), increments the iteration counter, and re-injects the full profile prompt to start the next cycle.
 - **Sentinel timeout recovery**: if no sentinel appears after `sentinel_timeout` seconds (default 600) and no teammates have in_progress tasks, the hook force-re-injects with diagnostic instructions. If teammates are still working, it resets the clock instead.
 - **Stuck detection**: after 3+ iterations, checks if `tasks_completed` is unchanged across the last 3 progress entries. If stuck with permission failures, escalates with specific remediation options.
 - **Hard limits**: enforces `--min-iterations` (suppresses early promise) and `--max-iterations` (force-stops the loop).
@@ -344,7 +347,7 @@ Safe mode (enabled by default) provides three layers of protection:
 - **Bash classifier** — LLM-based PreToolUse hook evaluates shell commands and blocks dangerous patterns (force push, credential access, external code execution)
 - **Teammate injection** — safety constraints and team context are injected into every teammate's context at spawn time via a SubagentStart hook
 
-Additional safeguards include sentinel timeout recovery (automatically restarts stuck orchestrators), stuck detection with permission-aware escalation, autonomy health tracking, the TeammateIdle gate (enforces task completion discipline), and the TaskCompleted/TaskCreated gates (progress tracking, artifact verification, and task cap enforcement).
+Additional safeguards include sentinel timeout recovery (automatically restarts stuck orchestrators), stuck detection with permission-aware escalation, mechanical log enforcement (fallback entry when orchestrator skips PERSIST), PermissionDenied tracking (records teammate permission failures to state for escalation), autonomy health tracking, the TeammateIdle gate (enforces task completion discipline), and the TaskCompleted/TaskCreated gates (progress tracking, artifact verification, and task cap enforcement).
 
 Configuration is stored in `.claude/swarm-loop.local.md` (YAML frontmatter) and can be edited via `/swarm-settings`. Key options include classifier model/effort, teammate isolation mode (shared or worktree), max teammate count, and notification channel.
 
