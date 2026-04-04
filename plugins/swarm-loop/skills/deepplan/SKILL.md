@@ -10,10 +10,12 @@ Execute the setup script with deepplan mode:
 
 ```!
 mkdir -p .claude
-# Write raw arguments to a PID-unique file to avoid shell expansion of special chars
-# in multiline prompts and to prevent races between concurrent swarm invocations.
+# Write arguments to a PID-unique file using a quoted heredoc to prevent shell
+# expansion of special chars ($, backticks, braces, parens) in user prompts.
 _prompt_file=".claude/swarm-loop.local.prompt.$$.md"
-printf '%s' "$ARGUMENTS" > "$_prompt_file"
+cat <<'__SWARM_PROMPT_EOF__' > "$_prompt_file"
+$ARGUMENTS
+__SWARM_PROMPT_EOF__
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-swarm-loop.sh" --mode deepplan --prompt-file "$_prompt_file"
 ```
 
