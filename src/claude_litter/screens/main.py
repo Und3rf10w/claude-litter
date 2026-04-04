@@ -1300,6 +1300,10 @@ class MainScreen(Screen):
         menu = self.query_one("#context-menu", ContextMenu)
         menu.show_tab_menu_at(event.team, event.agent, event.screen_x, event.screen_y)
 
+    def on_team_sidebar_swarm_context_menu_requested(self, event: TeamSidebar.SwarmContextMenuRequested) -> None:
+        menu = self.query_one("#context-menu", ContextMenu)
+        menu.show_swarm_menu_at(event.instance_id, event.screen_x, event.screen_y)
+
     def on_context_menu_action_selected(self, event: ContextMenu.ActionSelected) -> None:
         if event.action == "view":
             self._switch_to_agent(event.team, event.agent)
@@ -1342,6 +1346,11 @@ class MainScreen(Screen):
             panel = self.query_one("#message-panel", MessagePanel)
             if not panel._visible:
                 self.toggle_messages()
+        # Swarm context menu actions
+        elif event.action == "swarm_delete":
+            self._swarm_delete(event.instance_id)
+        elif event.action == "swarm_delete_orphans":
+            self._swarm_delete_orphans()
 
     @work(exclusive=True, group="agent-action")
     async def _kill_agent(self, team: str, agent: str) -> None:
@@ -1746,6 +1755,55 @@ class MainScreen(Screen):
                 del self._member_info[key]
         self._refresh_sidebar()
         self.notify(f"Deleted team {self._display_name(team)}")
+
+    # ------------------------------------------------------------------
+    # Swarm cleanup
+    # ------------------------------------------------------------------
+
+    def _swarm_delete(self, instance_id: str) -> None:
+        """Confirm and delete a single swarm instance directory."""
+        from claude_litter.screens.confirm import ConfirmScreen
+
+        def _on_result(confirmed: bool | None) -> None:
+            if confirmed:
+                self._execute_swarm_delete(instance_id)
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Delete swarm instance [bold]{instance_id}[/bold]?",
+                yes_label="Delete",
+            ),
+            _on_result,
+        )
+
+    def _execute_swarm_delete(self, instance_id: str) -> None:
+        if self._state_manager.delete_swarm_instance(instance_id):
+            self._refresh_swarm_panel()
+            self.notify(f"Deleted swarm instance {instance_id}")
+        else:
+            self.notify(f"Failed to delete swarm instance {instance_id}", severity="error")
+
+    def _swarm_delete_orphans(self) -> None:
+        """Confirm and delete all orphaned swarm instances."""
+        from claude_litter.screens.confirm import ConfirmScreen
+        from claude_litter.widgets.sidebar import TeamSidebar
+
+        sidebar = self.query_one("#sidebar", TeamSidebar)
+        known_teams = set(sidebar._team_nodes.keys())
+
+        def _on_result(confirmed: bool | None) -> None:
+            if confirmed:
+                count = self._state_manager.delete_orphan_swarm_instances(known_teams)
+                self._refresh_swarm_panel()
+                self.notify(f"Deleted {count} orphaned swarm instance(s)")
+
+        self.app.push_screen(
+            ConfirmScreen(
+                "Delete all orphaned swarm instances? This cannot be undone.",
+                yes_label="Delete All",
+            ),
+            _on_result,
+        )
 
     # ------------------------------------------------------------------
     # Task detail

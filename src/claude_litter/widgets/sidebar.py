@@ -64,6 +64,14 @@ class _SidebarTree(Tree):
                             screen_y=event.screen_y,
                         )
                     )
+                elif node and node.data and node.data.get("type") == "swarm_instance":
+                    self.post_message(
+                        TeamSidebar.SwarmContextMenuRequested(
+                            instance_id=node.data["instance_id"],
+                            screen_x=event.screen_x,
+                            screen_y=event.screen_y,
+                        )
+                    )
             event.stop()
             event.prevent_default()
             return
@@ -124,6 +132,15 @@ class TeamSidebar(Widget):
         def __init__(self, instance_id: str) -> None:
             super().__init__()
             self.instance_id = instance_id
+
+    class SwarmContextMenuRequested(Message):
+        """Emitted when a swarm instance node is right-clicked."""
+
+        def __init__(self, instance_id: str, screen_x: int, screen_y: int) -> None:
+            super().__init__()
+            self.instance_id = instance_id
+            self.screen_x = screen_x
+            self.screen_y = screen_y
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)

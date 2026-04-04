@@ -34,16 +34,18 @@ class ContextMenu(OptionList):
     class ActionSelected(Message):
         """Emitted when the user picks a menu item."""
 
-        def __init__(self, action: str, team: str, agent: str) -> None:
+        def __init__(self, action: str, team: str, agent: str, instance_id: str = "") -> None:
             super().__init__()
             self.action = action
             self.team = team
             self.agent = agent
+            self.instance_id = instance_id
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._team = ""
         self._agent = ""
+        self._instance_id = ""
 
     def show_at(self, team: str, agent: str, x: int, y: int) -> None:
         """Populate and display agent context menu near *x*, *y*."""
@@ -84,6 +86,7 @@ class ContextMenu(OptionList):
         """Populate and display team context menu near *x*, *y*."""
         self._team = team
         self._agent = ""
+        self._instance_id = ""
         self.clear_options()
         self.add_option(Option("Spawn Agent", id="team_spawn"))
         self.add_option(Option("Send Broadcast", id="team_broadcast"))
@@ -96,11 +99,23 @@ class ContextMenu(OptionList):
         self.add_class("-visible")
         self.focus()
 
+    def show_swarm_menu_at(self, instance_id: str, x: int, y: int) -> None:
+        """Populate and display swarm instance context menu near *x*, *y*."""
+        self._team = ""
+        self._agent = ""
+        self._instance_id = instance_id
+        self.clear_options()
+        self.add_option(Option("Delete Instance", id="swarm_delete"))
+        self.add_option(Option("Delete All Orphans", id="swarm_delete_orphans"))
+        self.absolute_offset = Offset(x, y)
+        self.add_class("-visible")
+        self.focus()
+
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         self.remove_class("-visible")
         option = event.option
-        self.post_message(self.ActionSelected(option.id or "", self._team, self._agent))
+        self.post_message(self.ActionSelected(option.id or "", self._team, self._agent, self._instance_id))
 
     def on_blur(self) -> None:
         self.remove_class("-visible")
