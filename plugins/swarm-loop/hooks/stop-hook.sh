@@ -229,6 +229,31 @@ fi
 STUCK_TIMEOUT_MSG=""
 if [[ -f "$SENTINEL" ]]; then
   rm -f "$SENTINEL"
+
+  # Enforce log entry: if the orchestrator skipped PERSIST (step 6) and didn't write
+  # an iteration summary to log.md, append a minimal fallback entry. This prevents
+  # silent iteration gaps when context compaction or worktree issues cause the model
+  # to skip the log write.
+  if [[ -f "$LOG_FILE" ]] && ! grep -qE "^## .*[Ii]teration ${ITERATION}\\b" "$LOG_FILE" 2>/dev/null; then
+    # Read task progress for the fallback entry
+    _fb_completed="?"
+    _fb_total="?"
+    if [[ -f "${INSTANCE_DIR}/progress.jsonl" ]] && [[ -s "${INSTANCE_DIR}/progress.jsonl" ]]; then
+      _fb_completed=$(jq -s '.[-1].tasks_completed // "?"' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "?")
+      _fb_total=$(jq -s '.[-1].tasks_total // "?"' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "?")
+    fi
+    {
+      echo ""
+      echo "---"
+      echo ""
+      echo "## Iteration ${ITERATION} — (no log written by orchestrator)"
+      echo ""
+      echo "Tasks: ${_fb_completed}/${_fb_total} completed"
+      echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo ""
+    } >> "$LOG_FILE"
+  fi
+
   # Fall through to build orchestrator prompt and block
 else
   # No sentinel present.
@@ -426,7 +451,7 @@ fi
 
 # Permission-specific escalation: if stuck AND permission failures exist
 if [[ -n "$STUCK_MSG" ]] && [[ "$PERMISSION_FAILURES" -gt 0 ]]; then
-  FAILURE_DETAILS=$(echo "$STATE_JSON" | jq -r '.permission_failures[]? | "  - [\(.iteration)] \(.teammate // "unknown"): \(.operation // "unknown")"' 2>/dev/null || echo "  (unable to read failure details)")
+  FAILURE_DETAILS=$(echo "$STATE_JSON" | jq -r '.permission_failures[]? | "  - [\(.iteration)] \(.teammate // "unknown"): \(.tool // "unknown") — \(.reason // .operation // "unknown")"' 2>/dev/null || echo "  (unable to read failure details)")
   STUCK_MSG="
 ⚠️ PERMISSION ESCALATION — The loop is stuck and permission blocks have been recorded.
 

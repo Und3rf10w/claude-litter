@@ -792,6 +792,20 @@ STOP_FAILURE_HOOK=$(jq -n \
     }]
   }]')
 
+# PermissionDenied observability hook (always, async)
+# Records teammate permission failures in state.json for stuck escalation.
+PERMISSION_DENIED_SCRIPT="$PLUGIN_ROOT/hooks/permission-denied.sh"
+PERMISSION_DENIED_HOOK=$(jq -n \
+  --arg script "$PERMISSION_DENIED_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 15
+    }]
+  }]')
+
 # Assemble the full settings object
 # Build hooks object, omitting null entries. Tag each matcher with _swarm for selective cleanup.
 HOOKS_JSON=$(jq -n \
@@ -804,6 +818,7 @@ HOOKS_JSON=$(jq -n \
   --argjson task_created "$TASK_CREATED_HOOK" \
   --argjson stop_failure "$STOP_FAILURE_HOOK" \
   --argjson subagent_stop "$SUBAGENT_STOP_HOOK" \
+  --argjson perm_denied "$PERMISSION_DENIED_HOOK" \
   '{
     PermissionRequest: $perm,
     PreToolUse: $pre,
@@ -813,7 +828,8 @@ HOOKS_JSON=$(jq -n \
     PostToolUse: $post,
     TaskCompleted: $task_completed,
     TaskCreated: $task_created,
-    StopFailure: $stop_failure
+    StopFailure: $stop_failure,
+    PermissionDenied: $perm_denied
   } | with_entries(select(.value != null)) |
   # Tag every matcher object so fallback cleanup can selectively remove swarm hooks
   map_values([.[] | . + {"_swarm": true}])')
