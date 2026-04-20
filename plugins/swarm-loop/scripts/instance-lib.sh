@@ -120,6 +120,7 @@ discover_instance_by_team_name() {
   fi
   [[ -n "$_project_root" ]] || return 1
 
+  local _had_state_files=0 _seen_names=""
   for _f in "${_project_root}/.claude/swarm-loop"/*/state.json; do
     [[ -f "$_f" ]] || continue
     [[ -L "$_f" ]] && continue
@@ -130,7 +131,9 @@ discover_instance_by_team_name() {
     _id="$(basename "$_dir")"
     [[ "$_id" =~ ^[0-9a-f]{8}$ ]] || continue
 
+    _had_state_files=1
     _tname=$(jq -r '.team_name // ""' "$_f" 2>/dev/null) || continue
+    _seen_names="${_seen_names}${_tname}|"
     [[ "$_tname" == "$team_name" ]] || continue
 
     INSTANCE_ID="$_id"
@@ -142,6 +145,17 @@ discover_instance_by_team_name() {
     PROJECT_ROOT="$_project_root"
     return 0
   done
+
+  # Diagnostic: if state files exist and the input name looks like a swarm team
+  # (has the -<8 hex> suffix), but no match → silent desync. Log once per event
+  # to a shared file so the failure is visible without spamming non-swarm hooks.
+  if [[ "$_had_state_files" -eq 1 ]] && [[ "$team_name" =~ -[0-9a-f]{8}$ ]]; then
+    local _log="${_project_root}/.claude/swarm-loop/_desync.log"
+    local _ts
+    _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    printf '[%s] discover_instance_by_team_name: no match for %q; state files had: %s\n' \
+      "$_ts" "$team_name" "${_seen_names%|}" >> "$_log" 2>/dev/null || true
+  fi
 
   return 1
 }

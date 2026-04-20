@@ -48,7 +48,9 @@ BLOCKED: <one-line reason>'
 RESULT=$(
   printf '%s' "$TEAMMATE_PROMPT" | \
     perl -e 'alarm 30; exec @ARGV' -- \
-      claude -p --model sonnet --system-prompt "$CLASSIFIER_SYSTEM" 2>/dev/null
+      claude -p \
+      # --model sonnet\
+      --system-prompt "$CLASSIFIER_SYSTEM" 2>/dev/null
 ) || RESULT="SAFE: classifier timeout or error (fail-open)"
 
 # Parse the result

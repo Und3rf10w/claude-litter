@@ -458,12 +458,35 @@ if [[ -d "$INSTANCE_DIR" ]]; then
   rm -f "${INSTANCE_DIR}/deepplan."*
 fi
 
-# Derive team_name: use --team-name if provided, otherwise slugify the goal
+# Derive team_name: use --team-name if provided, otherwise slugify the goal.
+# Both paths run through the same slugifier so the value in state.json is always
+# single-line, lowercase, and [a-z0-9-] only. sed/cut are line-oriented; flatten
+# whitespace BEFORE them or multi-line input produces embedded-newline garbage.
+_slugify_team_name() {
+  printf '%s' "$1" \
+    | tr '\r\n\t' '   ' \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-*//; s/-*$//' \
+    | cut -c1-30 \
+    | sed 's/-*$//'
+}
 if [[ -z "$TEAM_NAME" ]]; then
-  TEAM_NAME="swarm-$(echo "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+  _slug=$(_slugify_team_name "$GOAL")
+  TEAM_NAME="swarm-${_slug:-task}"
+else
+  _slug=$(_slugify_team_name "$TEAM_NAME")
+  TEAM_NAME="${_slug:-swarm-user}"
 fi
-# Always append random suffix for uniqueness
+# Always append random suffix for uniqueness (8 hex chars)
 TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+
+# Defense-in-depth: refuse to continue if the derived name violates the
+# [a-z0-9-] whitelist or exceeds 64 chars. Prevents any future regression in
+# the slugifier from silently corrupting state.json and breaking hook discovery.
+if [[ ! "$TEAM_NAME" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+  echo "Error: derived team_name '${TEAM_NAME}' failed validation (must match ^[a-z0-9][a-z0-9-]{0,63}\$)" >&2
+  exit 1
+fi
 
 # Resolve absolute plugin root path for hook script references.
 # ${CLAUDE_PLUGIN_ROOT} is NOT resolved in settings.local.json — must use absolute path.
