@@ -14,6 +14,7 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 | Setting | Current Value | Description |
 |---|---|---|
 | compact_on_iteration | false | Run /compact at end of each iteration |
+| clear_on_iteration | false | True transcript clearing each iteration via TTY-injected /clear. Requires supported terminal (tmux/kitty/wezterm/screen/zellij/iTerm2/Terminal.app). Supersedes compact_on_iteration. |
 | min_iterations | 0 | Minimum iterations before completion promise is honored (0 = disabled) |
 | max_iterations | 0 | Hard iteration ceiling, force-stops loop (0 = unlimited) |
 | sentinel_timeout | 600 | Seconds before force re-inject if orchestrator stuck |
@@ -34,6 +35,7 @@ Configure the swarm loop behavior. Settings are stored in `.claude/swarm-loop.lo
 ```yaml
 ---
 compact_on_iteration: false
+clear_on_iteration: false
 min_iterations: 0
 max_iterations: 0
 sentinel_timeout: 600
@@ -54,5 +56,7 @@ notifications:
 ```
 
 5. Note: Changes take effect on the NEXT `/swarm-loop` start, not the current running loop. To change settings for a running loop, edit the instance state file (`.claude/swarm-loop/<id>/state.json`) directly.
+
+   **Mutex**: `clear_on_iteration` and `compact_on_iteration` are mutually exclusive (clear discards prior context; compact summarizes it — clear is a strict superset). If the user enables `clear_on_iteration`, set `compact_on_iteration: false` in the same write and note the change in your reply. If the user enables `compact_on_iteration` while `clear_on_iteration` is already true, refuse the compact change and instruct them to disable `clear_on_iteration` first.
 
 6. If classifier.effort is set to a specific level (low/medium/high/max — not auto), the PreToolUse hook uses `claude -p --bare --effort <level>` (command hook) instead of a native prompt hook. Valid effort levels: `low`, `medium`, `high`, `max` (opus only), `auto`.

@@ -338,7 +338,6 @@ done
 # Parse YAML frontmatter values using grep/sed — no yq dependency
 LOCAL_CONFIG=".claude/swarm-loop.local.md"
 COMPACT_ON_ITERATION="false"
-CLEAR_ON_ITERATION="false"
 SENTINEL_TIMEOUT=600
 CLASSIFIER_ENABLED="true"
 CLASSIFIER_MODEL="sonnet"
@@ -356,17 +355,6 @@ if [[ -f "$LOCAL_CONFIG" ]]; then
   if [[ -n "$FRONTMATTER" ]]; then
     _val=$(echo "$FRONTMATTER" | grep -E '^compact_on_iteration:' | sed 's/compact_on_iteration:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && COMPACT_ON_ITERATION="$_val"
-
-    _val=$(echo "$FRONTMATTER" | grep -E '^clear_on_iteration:' | sed 's/clear_on_iteration:[[:space:]]*//' | tr -d ' ' || true)
-    [[ -n "$_val" ]] && CLEAR_ON_ITERATION="$_val"
-
-    # FF2 mutex: clear_on_iteration supersedes compact_on_iteration (both discard
-    # prior transcript; clear is strictly stronger). If both are true in the file
-    # (hand-edited), warn and let clear win.
-    if [[ "$CLEAR_ON_ITERATION" == "true" ]] && [[ "$COMPACT_ON_ITERATION" == "true" ]]; then
-      echo "swarm-loop: clear_on_iteration supersedes compact_on_iteration; disabling compact for this session" >&2
-      COMPACT_ON_ITERATION="false"
-    fi
 
     _val=$(echo "$FRONTMATTER" | grep -E '^min_iterations:' | sed 's/min_iterations:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && MIN_ITERATIONS="$_val"
@@ -470,12 +458,35 @@ if [[ -d "$INSTANCE_DIR" ]]; then
   rm -f "${INSTANCE_DIR}/deepplan."*
 fi
 
-# Derive team_name: use --team-name if provided, otherwise slugify the goal
+# Derive team_name: use --team-name if provided, otherwise slugify the goal.
+# Both paths run through the same slugifier so the value in state.json is always
+# single-line, lowercase, and [a-z0-9-] only. sed/cut are line-oriented; flatten
+# whitespace BEFORE them or multi-line input produces embedded-newline garbage.
+_slugify_team_name() {
+  printf '%s' "$1" \
+    | tr '\r\n\t' '   ' \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-*//; s/-*$//' \
+    | cut -c1-30 \
+    | sed 's/-*$//'
+}
 if [[ -z "$TEAM_NAME" ]]; then
-  TEAM_NAME="swarm-$(echo "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+  _slug=$(_slugify_team_name "$GOAL")
+  TEAM_NAME="swarm-${_slug:-task}"
+else
+  _slug=$(_slugify_team_name "$TEAM_NAME")
+  TEAM_NAME="${_slug:-swarm-user}"
 fi
-# Always append random suffix for uniqueness
+# Always append random suffix for uniqueness (8 hex chars)
 TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+
+# Defense-in-depth: refuse to continue if the derived name violates the
+# [a-z0-9-] whitelist or exceeds 64 chars. Prevents any future regression in
+# the slugifier from silently corrupting state.json and breaking hook discovery.
+if [[ ! "$TEAM_NAME" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+  echo "Error: derived team_name '${TEAM_NAME}' failed validation (must match ^[a-z0-9][a-z0-9-]{0,63}\$)" >&2
+  exit 1
+fi
 
 # Resolve absolute plugin root path for hook script references.
 # ${CLAUDE_PLUGIN_ROOT} is NOT resolved in settings.local.json — must use absolute path.
@@ -508,7 +519,6 @@ jq -n \
   --arg mode "$MODE" \
   --argjson safe_mode_val "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
   --argjson compact_on_iter "$([ "$COMPACT_ON_ITERATION" = "true" ] && echo true || echo false)" \
-  --argjson clear_on_iter "$([ "$CLEAR_ON_ITERATION" = "true" ] && echo true || echo false)" \
   --argjson sentinel_timeout_val "$SENTINEL_TIMEOUT" \
   --arg teammates_isolation "$TEAMMATES_ISOLATION" \
   --argjson teammates_max_count "$TEAMMATES_MAX_COUNT" \
@@ -530,7 +540,6 @@ jq -n \
     "team_name": $team,
     "safe_mode": $safe_mode_val,
     "compact_on_iteration": $compact_on_iter,
-    "clear_on_iteration": $clear_on_iter,
     "sentinel_timeout": $sentinel_timeout_val,
     "teammates_isolation": $teammates_isolation,
     "teammates_max_count": $teammates_max_count,
@@ -932,7 +941,6 @@ if [[ "$MAX_ITERATIONS" -gt 0 ]]; then printf 'Max Iterations: %s (hard ceiling 
 if [[ -n "$VERIFY_CMD" ]]; then printf 'Verification: %s\n' "$VERIFY_CMD"; fi
 if [[ "$SAFE_MODE" == "true" ]]; then echo "Safe Mode: enabled (hook-based: PermissionRequest auto-approve, SubagentStart injection)"; else echo "Safe Mode: disabled"; fi
 if [[ "$COMPACT_ON_ITERATION" == "true" ]]; then echo "Compact Mode: enabled (orchestrator will run /compact each iteration)"; fi
-if [[ "$CLEAR_ON_ITERATION" == "true" ]]; then echo "Clear Mode: enabled (supervisor will inject /clear via TTY each iteration — requires tmux/kitty/wezterm/screen/zellij/iTerm2/Terminal.app)"; fi
 if [[ "$CLASSIFIER_ENABLED" == "true" ]] && [[ "$SAFE_MODE" == "true" ]]; then printf 'Classifier: enabled (%s)\n' "$CLASSIFIER_MODEL"; fi
 cat <<'STATIC_EOF'
 
@@ -959,7 +967,6 @@ PROMISE_SAFE=$(_sanitize_pipe "$COMPLETION_PROMISE")
 ITERATION=1
 NEXT_ITERATION=1
 COMPACT_MODE="$COMPACT_ON_ITERATION"
-CLEAR_MODE="$CLEAR_ON_ITERATION"
 STUCK_MSG="" BUDGET_MSG="" MIN_ITER_MSG="" STUCK_TIMEOUT_MSG=""
 WORKTREE_NOTE="" COMPACT_NOTE=""
 source "${PROFILE_DIR}/reinject.sh"

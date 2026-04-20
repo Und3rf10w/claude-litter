@@ -69,22 +69,17 @@ _build_standard_reinject_prompt() {
     WORKTREE_NOTE="$worktree_note_text"
   fi
 
-  # Build COMPACT_NOTE — injected into {{COMPACT_NOTE}} in the template.
-  # Only applies in compact_on_iteration mode; clear_on_iteration is invisible to
-  # the orchestrator (the supervisor drives /clear, not the orchestrator itself).
+  # Build COMPACT_NOTE — injected into {{COMPACT_NOTE}} in the template
   COMPACT_NOTE=""
   if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
     COMPACT_NOTE="
      If compact_on_iteration is enabled in state, run /compact BEFORE writing the sentinel."
   fi
 
-  if [[ "${COMPACT_MODE:-false}" == "true" ]] || [[ "${CLEAR_MODE:-false}" == "true" ]]; then
-    # Minimal-reinject mode: either compact_on_iteration (SessionStart(compact) re-injected
-    # a summarized transcript) or clear_on_iteration (SessionStart(clear) re-injected
-    # into an empty transcript). In both cases state.json + log.md are the authoritative
-    # source of iteration progress; the minimal prompt just points the orchestrator
-    # at disk-backed truth and tells it to continue.
-    REINJECT_PROMPT="${compact_prompt_type} iteration ${iteration}. Prior transcript was compacted or cleared; read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md for full context, then continue the orchestration cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${MIN_ITER_MSG:-}${STUCK_TIMEOUT_MSG:-}"
+  if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
+    # Compact mode: SessionStart(compact) hook already re-injected full context.
+    # Use a minimal prompt to avoid double-injection token waste.
+    REINJECT_PROMPT="${compact_prompt_type} iteration ${iteration}. Context was compacted and re-injected by SessionStart hook. Read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md, then continue the orchestration cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next iteration.${STUCK_MSG:-}${BUDGET_MSG:-}${MIN_ITER_MSG:-}${STUCK_TIMEOUT_MSG:-}"
   else
     # Standard mode: read PROFILE.md, substitute placeholders, append runtime messages
     local tmpl

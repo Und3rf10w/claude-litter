@@ -26,6 +26,7 @@ HOOK_INPUT=$(cat)
 
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+source "${_PLUGIN_ROOT}/scripts/supervisor-lib.sh"
 
 # Bail early if subagent
 HOOK_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // ""')
@@ -561,8 +562,34 @@ else
   rm -f "$TEMP_FILE"
 fi
 
+# Proposal D v3: clear_on_iteration intercept.
+# Ordering invariant: state.json committed above (atomic mv at line ~559) BEFORE
+# the clear-requested marker is touched. After /clear the transcript is empty, so
+# the orchestrator's entire ground truth is state.json + log.md. Fresh iteration
+# number must be on disk before the supervisor fires /clear.
+CLEAR_ON_ITERATION=$(echo "$STATE_JSON" | jq -r '.clear_on_iteration // false')
+if [[ "$CLEAR_ON_ITERATION" == "true" ]]; then
+  if [[ -f "$INSTANCE_DIR/supervisor-error.log" ]]; then
+    # Error cascade from a prior-iteration supervisor failure (send-text, unsupported
+    # terminal, etc.). Degrade to normal re-inject with a visible warning.
+    printf '⚠️  swarm-loop: clear_on_iteration disabled for remaining iterations — TTY injection failed. See %s\n' \
+      "$INSTANCE_DIR/supervisor-error.log" >&2
+  else
+    # Ensure supervisor is running. $PPID in a hook is claude's PID (hooks are
+    # spawned directly by Claude Code). Lazy-launch handles the common case.
+    if _ensure_supervisor_running "$PPID"; then
+      touch "$INSTANCE_DIR/clear-requested"
+      jq -n '{"continue": false}'
+      exit 0
+    else
+      printf '⚠️  swarm-loop: clear_on_iteration requires kitty/tmux/wezterm/screen/zellij/iTerm2/Terminal.app; running this iteration without clearing\n' >&2
+    fi
+  fi
+fi
+
 # Build re-inject prompt via profile
 COMPACT_MODE=$(echo "$STATE_JSON" | jq -r '.compact_on_iteration // false')
+CLEAR_MODE="$CLEAR_ON_ITERATION"
 build_reinject_prompt
 ORCHESTRATOR_PROMPT="$REINJECT_PROMPT"
 
