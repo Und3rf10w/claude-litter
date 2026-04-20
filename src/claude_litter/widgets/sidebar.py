@@ -64,6 +64,14 @@ class _SidebarTree(Tree):
                             screen_y=event.screen_y,
                         )
                     )
+                elif node and node.data and node.data.get("type") == "swarm_instance":
+                    self.post_message(
+                        TeamSidebar.SwarmContextMenuRequested(
+                            instance_id=node.data["instance_id"],
+                            screen_x=event.screen_x,
+                            screen_y=event.screen_y,
+                        )
+                    )
             event.stop()
             event.prevent_default()
             return
@@ -125,6 +133,15 @@ class TeamSidebar(Widget):
             super().__init__()
             self.instance_id = instance_id
 
+    class SwarmContextMenuRequested(Message):
+        """Emitted when a swarm instance node is right-clicked."""
+
+        def __init__(self, instance_id: str, screen_x: int, screen_y: int) -> None:
+            super().__init__()
+            self.instance_id = instance_id
+            self.screen_x = screen_x
+            self.screen_y = screen_y
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._team_nodes: dict[str, TreeNode] = {}
@@ -161,11 +178,7 @@ class TeamSidebar(Widget):
         structure_changed = existing_teams != incoming_teams
         if not structure_changed:
             for dir_name in incoming_teams:
-                existing = [
-                    name
-                    for (t, name) in self._agent_nodes
-                    if t == dir_name
-                ]
+                existing = [name for (t, name) in self._agent_nodes if t == dir_name]
                 if existing != incoming_agents.get(dir_name, []):
                     structure_changed = True
                     break

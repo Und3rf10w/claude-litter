@@ -26,6 +26,7 @@ HOOK_INPUT=$(cat)
 
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+source "${_PLUGIN_ROOT}/scripts/supervisor-lib.sh"
 
 # Bail early if subagent
 HOOK_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // ""')
@@ -229,6 +230,31 @@ fi
 STUCK_TIMEOUT_MSG=""
 if [[ -f "$SENTINEL" ]]; then
   rm -f "$SENTINEL"
+
+  # Enforce log entry: if the orchestrator skipped PERSIST (step 6) and didn't write
+  # an iteration summary to log.md, append a minimal fallback entry. This prevents
+  # silent iteration gaps when context compaction or worktree issues cause the model
+  # to skip the log write.
+  if [[ -f "$LOG_FILE" ]] && ! grep -qE "^## .*[Ii]teration ${ITERATION}\\b" "$LOG_FILE" 2>/dev/null; then
+    # Read task progress for the fallback entry
+    _fb_completed="?"
+    _fb_total="?"
+    if [[ -f "${INSTANCE_DIR}/progress.jsonl" ]] && [[ -s "${INSTANCE_DIR}/progress.jsonl" ]]; then
+      _fb_completed=$(jq -s '.[-1].tasks_completed // "?"' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "?")
+      _fb_total=$(jq -s '.[-1].tasks_total // "?"' "${INSTANCE_DIR}/progress.jsonl" 2>/dev/null || echo "?")
+    fi
+    {
+      echo ""
+      echo "---"
+      echo ""
+      echo "## Iteration ${ITERATION} — (no log written by orchestrator)"
+      echo ""
+      echo "Tasks: ${_fb_completed}/${_fb_total} completed"
+      echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo ""
+    } >> "$LOG_FILE"
+  fi
+
   # Fall through to build orchestrator prompt and block
 else
   # No sentinel present.
@@ -426,7 +452,7 @@ fi
 
 # Permission-specific escalation: if stuck AND permission failures exist
 if [[ -n "$STUCK_MSG" ]] && [[ "$PERMISSION_FAILURES" -gt 0 ]]; then
-  FAILURE_DETAILS=$(echo "$STATE_JSON" | jq -r '.permission_failures[]? | "  - [\(.iteration)] \(.teammate // "unknown"): \(.operation // "unknown")"' 2>/dev/null || echo "  (unable to read failure details)")
+  FAILURE_DETAILS=$(echo "$STATE_JSON" | jq -r '.permission_failures[]? | "  - [\(.iteration)] \(.teammate // "unknown"): \(.tool // "unknown") — \(.reason // .operation // "unknown")"' 2>/dev/null || echo "  (unable to read failure details)")
   STUCK_MSG="
 ⚠️ PERMISSION ESCALATION — The loop is stuck and permission blocks have been recorded.
 
@@ -536,8 +562,34 @@ else
   rm -f "$TEMP_FILE"
 fi
 
+# Proposal D v3: clear_on_iteration intercept.
+# Ordering invariant: state.json committed above (atomic mv at line ~559) BEFORE
+# the clear-requested marker is touched. After /clear the transcript is empty, so
+# the orchestrator's entire ground truth is state.json + log.md. Fresh iteration
+# number must be on disk before the supervisor fires /clear.
+CLEAR_ON_ITERATION=$(echo "$STATE_JSON" | jq -r '.clear_on_iteration // false')
+if [[ "$CLEAR_ON_ITERATION" == "true" ]]; then
+  if [[ -f "$INSTANCE_DIR/supervisor-error.log" ]]; then
+    # Error cascade from a prior-iteration supervisor failure (send-text, unsupported
+    # terminal, etc.). Degrade to normal re-inject with a visible warning.
+    printf '⚠️  swarm-loop: clear_on_iteration disabled for remaining iterations — TTY injection failed. See %s\n' \
+      "$INSTANCE_DIR/supervisor-error.log" >&2
+  else
+    # Ensure supervisor is running. $PPID in a hook is claude's PID (hooks are
+    # spawned directly by Claude Code). Lazy-launch handles the common case.
+    if _ensure_supervisor_running "$PPID"; then
+      touch "$INSTANCE_DIR/clear-requested"
+      jq -n '{"continue": false}'
+      exit 0
+    else
+      printf '⚠️  swarm-loop: clear_on_iteration requires kitty/tmux/wezterm/screen/zellij/iTerm2/Terminal.app; running this iteration without clearing\n' >&2
+    fi
+  fi
+fi
+
 # Build re-inject prompt via profile
 COMPACT_MODE=$(echo "$STATE_JSON" | jq -r '.compact_on_iteration // false')
+CLEAR_MODE="$CLEAR_ON_ITERATION"
 build_reinject_prompt
 ORCHESTRATOR_PROMPT="$REINJECT_PROMPT"
 

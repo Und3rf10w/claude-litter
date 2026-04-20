@@ -41,6 +41,8 @@ rm -f .claude/swarm-loop/<id>/verify.sh
 rm -f .claude/swarm-loop/<id>/next-iteration
 rm -f .claude/swarm-loop/<id>/heartbeat.json
 rm -f .claude/swarm-loop/<id>/deepplan.*
+rm -f .claude/swarm-loop/<id>/progress.jsonl
+rm -f .claude/swarm-loop/<id>/.idle-retry.*
 ```
 
 9. Check if any other instances remain:

@@ -454,6 +454,43 @@ class StateManager:
         if not (instance_dir / "state.json").exists() and not (instance_dir / "log.md").exists():
             del self._swarm_instance_dirs[instance_id]
 
+    def delete_swarm_instance(self, instance_id: str) -> bool:
+        """Delete a swarm instance directory from disk and remove from tracking."""
+        import shutil
+
+        if instance_id not in self._swarm_instance_dirs:
+            return False
+        instance_dir, _root = self._swarm_instance_dirs[instance_id]
+        try:
+            shutil.rmtree(instance_dir)
+        except OSError:
+            return False
+        del self._swarm_instance_dirs[instance_id]
+        return True
+
+    def delete_orphan_swarm_instances(self, known_teams: set[str]) -> int:
+        """Delete all swarm instances whose team_name is empty or not in *known_teams*."""
+        from claude_litter.models.swarm import DefunctSwarmInstance, SwarmState
+
+        to_delete: list[str] = []
+        for iid, (idir, _root) in self._swarm_instance_dirs.items():
+            team_name = ""
+            state = SwarmState.from_files(idir)
+            if state is not None:
+                team_name = state.team_name or ""
+            else:
+                defunct = DefunctSwarmInstance.from_dir(idir)
+                if defunct is not None:
+                    team_name = defunct.team_name or ""
+            if not team_name or team_name not in known_teams:
+                to_delete.append(iid)
+
+        count = 0
+        for iid in to_delete:
+            if self.delete_swarm_instance(iid):
+                count += 1
+        return count
+
     # ------------------------------------------------------------------
     # Internal watcher
     # ------------------------------------------------------------------

@@ -1,0 +1,11 @@
+{
+  "phase": "scope",
+  "source_of_truth": [],
+  "anchors": [],
+  "guardrails": [],
+  "bar": [],
+  "empirical_unknowns": [],
+  "role_definitions": [],
+  "user_feedback": null,
+  "hook_warnings": []
+}

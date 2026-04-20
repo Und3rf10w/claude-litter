@@ -7,26 +7,22 @@ source "$_PROFILE_LIB"
 build_reinject_prompt() {
   REINJECT_PROMPT=""
 
-  # Set conditional placeholders
-  if [[ "$TEAMMATES_ISOLATION" == "worktree" ]]; then
-    WORKTREE_NOTE='Add isolation: "worktree" to each Agent call. Teammates must commit changes before completing. Merge branches after each phase completes.'
-  else
-    WORKTREE_NOTE="Teammates share the main checkout."
-  fi
+  local _iter="${NEXT_ITERATION:-$ITERATION}"
+
   if [[ "${COMPACT_MODE:-false}" == "true" ]]; then
-    COMPACT_NOTE="Run /compact first, then write"
-  else
-    COMPACT_NOTE="Write"
+    # Compact mode: SessionStart(compact) hook already re-injected full context.
+    # Use a minimal prompt to avoid double-injection token waste.
+    REINJECT_PROMPT="Deepplan pass ${_iter}. Context was compacted and re-injected by SessionStart hook. Read ${INSTANCE_DIR}/state.json and ${INSTANCE_DIR}/log.md, then continue the deepplan cycle. Write ${INSTANCE_DIR}/next-iteration (empty content) when ready for next pass.${STUCK_MSG:-}${BUDGET_MSG:-}${MIN_ITER_MSG:-}${STUCK_TIMEOUT_MSG:-}"
+    return
   fi
 
   local template
   template=$(cat "${PROFILE_DIR}/PROFILE.md" 2>/dev/null)
   if [[ -z "$template" ]]; then
-    REINJECT_PROMPT="Deepplan pass ${NEXT_ITERATION:-$ITERATION}. Read state and log, continue."
-    return 0
+    REINJECT_PROMPT="Deepplan pass ${_iter}. Read state and log, continue."
+    return
   fi
 
-  local _iter="${NEXT_ITERATION:-$ITERATION}"
   local rendered
   rendered=$(ITERATION="$_iter" substitute_profile_template "$template")
   REINJECT_PROMPT="${rendered}${STUCK_MSG:-}${BUDGET_MSG:-}${MIN_ITER_MSG:-}${STUCK_TIMEOUT_MSG:-}"

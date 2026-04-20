@@ -83,6 +83,9 @@ Select an execution profile with `--mode NAME`:
   - **TeammateIdle gate** (static, `hooks.json`) — forces teammates to complete tasks + send results before going idle (up to 3 retries)
   - **TaskCompleted gate** (dynamic) — append-only progress tracking via `progress.jsonl` + deepplan artifact verification via task metadata
   - **TaskCreated gate** (dynamic) — max task cap enforcement + deepplan scope classifier (blocks implementation tasks)
+  - **SubagentStop cleanup** (dynamic) — logs teammate crash recovery when teammates stop with in_progress tasks; captures last_assistant_message for debugging
+  - **StopFailure observability** (dynamic) — logs API errors (rate limit, billing, server), sets autonomy_health to degraded, updates heartbeat with error status
+  - **PreCompact context injection** (static, `hooks.json`) — injects swarm orchestrator context (goal, iteration, team, task status) into compaction so post-compact model retains orchestrator identity
 - **Safe Mode** — When enabled (default), hooks allow autonomous file edits within the project but block force pushes, external code execution, and credential access. Disable with `--safe-mode false` for supervised sessions.
 - **Compact Mode** — The orchestrator may optionally run `/compact` at the end of an iteration to manage context growth. Enabled via `swarm-loop.local.md` config (`compact_on_iteration: true`).
 - **Heartbeat** — The instance `heartbeat.json` file is updated after each iteration for external monitoring and health checks.

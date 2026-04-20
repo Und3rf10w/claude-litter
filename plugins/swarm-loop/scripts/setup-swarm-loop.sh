@@ -338,6 +338,7 @@ done
 # Parse YAML frontmatter values using grep/sed — no yq dependency
 LOCAL_CONFIG=".claude/swarm-loop.local.md"
 COMPACT_ON_ITERATION="false"
+CLEAR_ON_ITERATION="false"
 SENTINEL_TIMEOUT=600
 CLASSIFIER_ENABLED="true"
 CLASSIFIER_MODEL="sonnet"
@@ -355,6 +356,17 @@ if [[ -f "$LOCAL_CONFIG" ]]; then
   if [[ -n "$FRONTMATTER" ]]; then
     _val=$(echo "$FRONTMATTER" | grep -E '^compact_on_iteration:' | sed 's/compact_on_iteration:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && COMPACT_ON_ITERATION="$_val"
+
+    _val=$(echo "$FRONTMATTER" | grep -E '^clear_on_iteration:' | sed 's/clear_on_iteration:[[:space:]]*//' | tr -d ' ' || true)
+    [[ -n "$_val" ]] && CLEAR_ON_ITERATION="$_val"
+
+    # FF2 mutex: clear_on_iteration supersedes compact_on_iteration (both discard
+    # prior transcript; clear is strictly stronger). If both are true in the file
+    # (hand-edited), warn and let clear win.
+    if [[ "$CLEAR_ON_ITERATION" == "true" ]] && [[ "$COMPACT_ON_ITERATION" == "true" ]]; then
+      echo "swarm-loop: clear_on_iteration supersedes compact_on_iteration; disabling compact for this session" >&2
+      COMPACT_ON_ITERATION="false"
+    fi
 
     _val=$(echo "$FRONTMATTER" | grep -E '^min_iterations:' | sed 's/min_iterations:[[:space:]]*//' | tr -d ' ' || true)
     [[ -n "$_val" ]] && MIN_ITERATIONS="$_val"
@@ -496,6 +508,7 @@ jq -n \
   --arg mode "$MODE" \
   --argjson safe_mode_val "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
   --argjson compact_on_iter "$([ "$COMPACT_ON_ITERATION" = "true" ] && echo true || echo false)" \
+  --argjson clear_on_iter "$([ "$CLEAR_ON_ITERATION" = "true" ] && echo true || echo false)" \
   --argjson sentinel_timeout_val "$SENTINEL_TIMEOUT" \
   --arg teammates_isolation "$TEAMMATES_ISOLATION" \
   --argjson teammates_max_count "$TEAMMATES_MAX_COUNT" \
@@ -517,6 +530,7 @@ jq -n \
     "team_name": $team,
     "safe_mode": $safe_mode_val,
     "compact_on_iteration": $compact_on_iter,
+    "clear_on_iteration": $clear_on_iter,
     "sentinel_timeout": $sentinel_timeout_val,
     "teammates_isolation": $teammates_isolation,
     "teammates_max_count": $teammates_max_count,
@@ -638,7 +652,7 @@ if [[ "$SAFE_MODE" == "true" ]]; then
   SUBAGENT_START_HOOK=$(jq -n \
     --arg goal "$GOAL" \
     --arg team "$TEAM_NAME" \
-    '{ "additionalContext": ("You are a teammate in swarm loop team " + $team + " working on: " + $goal + ". Follow your assigned task, partition file ownership carefully, and send your results to team-lead via SendMessage when done. Do not delete or overwrite files owned by other teammates.") } as $payload |
+    '{ "hookSpecificOutput": { "hookEventName": "SubagentStart", "additionalContext": ("You are a teammate in swarm loop team " + $team + " working on: " + $goal + ". Follow your assigned task, partition file ownership carefully, and send your results to team-lead via SendMessage when done. Do not delete or overwrite files owned by other teammates.") } } as $payload |
     [{
       "hooks": [{
         "type": "command",
@@ -646,6 +660,20 @@ if [[ "$SAFE_MODE" == "true" ]]; then
       }]
     }]')
 fi
+
+# SubagentStop cleanup hook (always, async)
+# Fires when any teammate stops — logs in_progress task warnings and cleans up retry counters.
+SUBAGENT_STOP_SCRIPT="$PLUGIN_ROOT/hooks/subagent-stop.sh"
+SUBAGENT_STOP_HOOK=$(jq -n \
+  --arg script "$SUBAGENT_STOP_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 30
+    }]
+  }]')
 
 # SessionStart(clear|compact) context re-injection hook (always)
 # Fires after auto-compaction or manual /clear to restore orchestrator identity.
@@ -765,6 +793,33 @@ if [[ "$MODE" == "deepplan" ]]; then
   TASK_CREATED_HOOK=$(echo "$TASK_CREATED_HOOK $TASK_CREATED_CLASSIFIER" | jq -s '.[0] + .[1]')
 fi
 
+# StopFailure observability hook (always, async)
+STOP_FAILURE_SCRIPT="$PLUGIN_ROOT/hooks/stop-failure.sh"
+STOP_FAILURE_HOOK=$(jq -n \
+  --arg script "$STOP_FAILURE_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 15
+    }]
+  }]')
+
+# PermissionDenied observability hook (always, async)
+# Records teammate permission failures in state.json for stuck escalation.
+PERMISSION_DENIED_SCRIPT="$PLUGIN_ROOT/hooks/permission-denied.sh"
+PERMISSION_DENIED_HOOK=$(jq -n \
+  --arg script "$PERMISSION_DENIED_SCRIPT" \
+  '[{
+    "hooks": [{
+      "type": "command",
+      "command": ("bash " + ($script | @sh)),
+      "async": true,
+      "timeout": 15
+    }]
+  }]')
+
 # Assemble the full settings object
 # Build hooks object, omitting null entries. Tag each matcher with _swarm for selective cleanup.
 HOOKS_JSON=$(jq -n \
@@ -775,14 +830,20 @@ HOOKS_JSON=$(jq -n \
   --argjson post "$POST_TOOL_USE_HOOKS" \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson task_created "$TASK_CREATED_HOOK" \
+  --argjson stop_failure "$STOP_FAILURE_HOOK" \
+  --argjson subagent_stop "$SUBAGENT_STOP_HOOK" \
+  --argjson perm_denied "$PERMISSION_DENIED_HOOK" \
   '{
     PermissionRequest: $perm,
     PreToolUse: $pre,
     SubagentStart: $subagent,
+    SubagentStop: $subagent_stop,
     SessionStart: $session,
     PostToolUse: $post,
     TaskCompleted: $task_completed,
-    TaskCreated: $task_created
+    TaskCreated: $task_created,
+    StopFailure: $stop_failure,
+    PermissionDenied: $perm_denied
   } | with_entries(select(.value != null)) |
   # Tag every matcher object so fallback cleanup can selectively remove swarm hooks
   map_values([.[] | . + {"_swarm": true}])')
@@ -871,6 +932,7 @@ if [[ "$MAX_ITERATIONS" -gt 0 ]]; then printf 'Max Iterations: %s (hard ceiling 
 if [[ -n "$VERIFY_CMD" ]]; then printf 'Verification: %s\n' "$VERIFY_CMD"; fi
 if [[ "$SAFE_MODE" == "true" ]]; then echo "Safe Mode: enabled (hook-based: PermissionRequest auto-approve, SubagentStart injection)"; else echo "Safe Mode: disabled"; fi
 if [[ "$COMPACT_ON_ITERATION" == "true" ]]; then echo "Compact Mode: enabled (orchestrator will run /compact each iteration)"; fi
+if [[ "$CLEAR_ON_ITERATION" == "true" ]]; then echo "Clear Mode: enabled (supervisor will inject /clear via TTY each iteration — requires tmux/kitty/wezterm/screen/zellij/iTerm2/Terminal.app)"; fi
 if [[ "$CLASSIFIER_ENABLED" == "true" ]] && [[ "$SAFE_MODE" == "true" ]]; then printf 'Classifier: enabled (%s)\n' "$CLASSIFIER_MODEL"; fi
 cat <<'STATIC_EOF'
 
@@ -897,7 +959,9 @@ PROMISE_SAFE=$(_sanitize_pipe "$COMPLETION_PROMISE")
 ITERATION=1
 NEXT_ITERATION=1
 COMPACT_MODE="$COMPACT_ON_ITERATION"
+CLEAR_MODE="$CLEAR_ON_ITERATION"
 STUCK_MSG="" BUDGET_MSG="" MIN_ITER_MSG="" STUCK_TIMEOUT_MSG=""
+WORKTREE_NOTE="" COMPACT_NOTE=""
 source "${PROFILE_DIR}/reinject.sh"
 build_reinject_prompt
 printf '%s\n' "$REINJECT_PROMPT"

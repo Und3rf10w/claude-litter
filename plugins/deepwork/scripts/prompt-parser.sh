@@ -1,0 +1,90 @@
+#!/bin/bash
+# prompt-parser.sh — shared flag/goal parser for --prompt-file inputs.
+#
+# Sourced by setup-deepwork.sh and test-prompt-parse.sh. Do NOT add
+# `set -euo pipefail` here; this file is sourced, not executed directly.
+#
+# CONTRACT for callers:
+#   - Caller must declare these as arrays BEFORE calling parse_prompt_file:
+#       SOURCE_OF_TRUTH=()  ANCHORS=()  GUARDRAILS=()  BAR_SEEDS=()
+#       PROMPT_PARTS=()
+#   - Caller must declare these as scalars with defaults (or empty):
+#       SAFE_MODE  MODE  TEAM_NAME
+#   - parse_prompt_file mutates these globals. The prompt file is consumed
+#     (removed on success).
+#
+# Why perl -0777 slurp-mode regex? SKILL.md's quoted heredoc delivers $ARGUMENTS
+# as a single line with the goal and flags concatenated. A line-oriented parser
+# would miss everything. The slurp regex injects `\n` before every known flag
+# occurrence, normalizing single-line input to one-flag-per-line before the
+# case-branch parser runs. Pattern from setup-swarm-loop.sh:170-229.
+
+# Strip surrounding single/double quotes with whitespace trim.
+_strip_quotes() {
+  local val="$1"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  if [[ "$val" =~ ^\'(.*)\'$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  elif [[ "$val" =~ ^\"(.*)\"$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Split concatenated `goal --flag value --flag value` single-line input
+# into one-flag-per-line form, in-place.
+_preprocess_prompt_file() {
+  local file="$1"
+  perl -0777 -pe '
+    s/\r//g;
+    my $flag_re = "source-of-truth|anchor|guardrail|bar|safe-mode|mode|team-name|prompt-file";
+    s/[^\S\n]+(--(?:$flag_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
+# parse_prompt_file <path> — reads flags and goal body, mutates globals.
+# Populates: SOURCE_OF_TRUTH, ANCHORS, GUARDRAILS, BAR_SEEDS (arrays)
+#            SAFE_MODE, MODE, TEAM_NAME (scalars — overwritten only if flag present)
+#            PROMPT_PARTS — goal body lines joined with \n (if any non-flag lines found)
+# Removes the prompt file on success.
+parse_prompt_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+
+  _preprocess_prompt_file "$file"
+
+  local _goal_lines=()
+  local _line
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line//$'\r'/}"
+    case "$_line" in
+      --source-of-truth\ *)  SOURCE_OF_TRUTH+=("$(_strip_quotes "${_line#--source-of-truth }")") ;;
+      --source-of-truth=*)   SOURCE_OF_TRUTH+=("$(_strip_quotes "${_line#--source-of-truth=}")") ;;
+      --anchor\ *)           ANCHORS+=("$(_strip_quotes "${_line#--anchor }")") ;;
+      --anchor=*)            ANCHORS+=("$(_strip_quotes "${_line#--anchor=}")") ;;
+      --guardrail\ *)        GUARDRAILS+=("$(_strip_quotes "${_line#--guardrail }")") ;;
+      --guardrail=*)         GUARDRAILS+=("$(_strip_quotes "${_line#--guardrail=}")") ;;
+      --bar\ *)              BAR_SEEDS+=("$(_strip_quotes "${_line#--bar }")") ;;
+      --bar=*)               BAR_SEEDS+=("$(_strip_quotes "${_line#--bar=}")") ;;
+      --safe-mode\ *)        SAFE_MODE="$(_strip_quotes "${_line#--safe-mode }")" ;;
+      --safe-mode=*)         SAFE_MODE="$(_strip_quotes "${_line#--safe-mode=}")" ;;
+      --mode\ *)             MODE="$(_strip_quotes "${_line#--mode }")" ;;
+      --mode=*)              MODE="$(_strip_quotes "${_line#--mode=}")" ;;
+      --team-name\ *)        TEAM_NAME="$(_strip_quotes "${_line#--team-name }")" ;;
+      --team-name=*)         TEAM_NAME="$(_strip_quotes "${_line#--team-name=}")" ;;
+      --*)                   ;;  # skip unknown flags (forward-compat)
+      *)                     [[ -n "$_line" ]] && _goal_lines+=("$_line") ;;
+    esac
+  done < "$file"
+  rm -f "$file"
+
+  if [[ ${#_goal_lines[@]} -gt 0 ]]; then
+    local _goal_body
+    _goal_body="$(printf '%s\n' "${_goal_lines[@]}")"
+    _goal_body="${_goal_body%$'\n'}"
+    PROMPT_PARTS=("$_goal_body")
+  fi
+  return 0
+}

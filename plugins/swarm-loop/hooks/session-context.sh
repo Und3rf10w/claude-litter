@@ -32,10 +32,13 @@ ITERATION=$(echo "$STATE_JSON" | jq -r '.iteration // 1')
 PROMISE=$(echo "$STATE_JSON" | jq -r '.completion_promise // ""')
 TEAM_NAME=$(echo "$STATE_JSON" | jq -r '.team_name // ""')
 COMPACT_ON_ITERATION=$(echo "$STATE_JSON" | jq -r '.compact_on_iteration // false')
+CLEAR_ON_ITERATION=$(echo "$STATE_JSON" | jq -r '.clear_on_iteration // false')
 MIN_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.min_iterations // 0')
 MAX_ITERATIONS=$(echo "$STATE_JSON" | jq -r '.max_iterations // 0')
 TEAMMATES_ISOLATION=$(echo "$STATE_JSON" | jq -r '.teammates_isolation // "shared"')
 TEAMMATES_MAX_COUNT=$(echo "$STATE_JSON" | jq -r '.teammates_max_count // 8')
+SENTINEL_TIMEOUT=$(echo "$STATE_JSON" | jq -r '.sentinel_timeout // 600')
+SOFT_BUDGET=$(echo "$STATE_JSON" | jq -r '.soft_budget // 10')
 
 MODE=$(echo "$STATE_JSON" | jq -r '.mode // "default"')
 source "${_PLUGIN_ROOT}/scripts/profile-lib.sh"
@@ -50,6 +53,7 @@ PROMISE_SAFE=$(_sanitize "$PROMISE")
 
 # Output orchestrator context — this gets injected into Claude's context
 COMPACT_MODE="$COMPACT_ON_ITERATION"
+CLEAR_MODE="$CLEAR_ON_ITERATION"
 NEXT_ITERATION="$ITERATION"
 STUCK_MSG="" BUDGET_MSG="" STUCK_TIMEOUT_MSG=""
 # Rebuild floor warning if below minimum so the orchestrator doesn't attempt the promise
