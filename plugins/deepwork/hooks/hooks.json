@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "TeammateIdle": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/teammate-idle-gate.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

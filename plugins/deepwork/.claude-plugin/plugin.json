@@ -1,0 +1,9 @@
+{
+  "name": "deepwork",
+  "description": "Research/design convergence via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic). Operationalizes the team pattern proven on Proposal D v3-final: written bar with categorical bans, required reframing, file:line anchors, independent cross-checks for nulls, live empiricism on load-bearing unknowns, named versioning, guardrail accumulation from incidents, default-off shipping for residual risk. Orchestrator designs the team dynamically per problem; CRITIC is the only invariant role. Delivers via ExitPlanMode; never crosses into implementation.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Und3rf10w"
+  },
+  "keywords": ["deepwork", "research", "design", "convergence", "team", "oppositional", "critic", "reframer", "gate-list", "adversarial"]
+}

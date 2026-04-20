@@ -5,7 +5,7 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "2.1.0",
+    "version": "3.2.0",
     "description": "Claude Code Agent Team/Swarm Management Layer"
   },
   "plugins": [
@@ -36,6 +36,16 @@
       },
       "keywords": ["ralph", "ralph wiggum", "ralph-loop", "swarm", "team", "orchestration", "deepplan", "async", "profiles", "planning"],
       "category": "automation"
+    },
+    {
+      "name": "deepwork",
+      "source": "./plugins/deepwork",
+      "description": "Research/design convergence via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic). Operationalizes the team pattern proven on Proposal D v3-final: written bar with categorical bans, required reframing, file:line anchors, independent cross-checks for nulls, live empiricism on load-bearing unknowns, named versioning, guardrail accumulation from incidents, default-off shipping for residual risk. Orchestrator designs the team dynamically per problem; CRITIC is the only invariant role. Delivers via ExitPlanMode; never crosses into implementation.",
+      "author": {
+        "name": "Und3rf10w"
+      },
+      "license": "private",
+      "keywords": ["deepwork", "research", "design", "convergence", "team", "oppositional", "critic", "reframer", "gate-list", "adversarial"]
     }
   ]
 }
