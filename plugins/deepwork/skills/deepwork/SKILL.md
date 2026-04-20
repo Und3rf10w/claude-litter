@@ -1,7 +1,7 @@
 ---
 description: "Start a deepwork research/design convergence session with a 5-archetype oppositional team"
 argument-hint: "<goal> [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Edit(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Read(.claude/deepwork/**)", "Read", "Grep", "Glob", "Bash", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Read(.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
 # Deepwork — Research/Design Convergence
