@@ -57,6 +57,9 @@ See `references/archetype-taxonomy.md` for composition patterns per problem shap
 
 ## Installation
 
+> [!IMPORTANT]
+> You MUST configure Claude Code to [enable agent teams](https://code.claude.com/docs/en/agent-teams) for this plugin to work. Enable by adding `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` to your `settings.json` or environment.
+
 From the marketplace:
 ```
 /plugin marketplace add Und3rf10w/claude-litter
