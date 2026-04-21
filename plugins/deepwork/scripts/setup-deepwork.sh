@@ -18,6 +18,14 @@ SOURCE_OF_TRUTH=()
 ANCHORS=()
 GUARDRAILS=()
 BAR_SEEDS=()
+# Execute-mode-specific flags (only meaningful when --mode execute)
+PLAN_REF=""
+AUTHORIZED_FORCE_PUSH="false"
+AUTHORIZED_PUSH="false"
+AUTHORIZED_PROD_DEPLOY="false"
+AUTHORIZED_LOCAL_DESTRUCTIVE="false"
+SECRET_SCAN_WAIVED="false"
+CHAOS_MONKEY="auto"  # auto | true | false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -43,12 +51,30 @@ OPTIONS:
   --safe-mode true|false         Enable autonomous hooks (default: true). Safe mode wires
                                  PermissionRequest auto-approve for the team coordination
                                  tools (Edit/Write/Read/Agent/TaskCreate/TaskUpdate/...).
-  --mode <name>                  Profile (default: default). Currently only "default" exists.
+  --mode <name>                  Profile (default: "default"). Also available: "execute"
+                                 (implementation mode — requires --plan-ref).
   --team-name <name>             Base team name (random 8-hex suffix appended for uniqueness).
                                  Default: derived from goal text.
   --prompt-file <path>           Read goal/flags from a file instead of positional args.
                                  Flags in the file are extracted by a perl preprocessor;
                                  multiline goal body after flags becomes the goal text.
+
+EXECUTE-MODE OPTIONS (only meaningful with --mode execute):
+  --plan-ref <path>              Absolute path to the APPROVED plan document. Required for
+                                 execute mode. Setup computes sha256 and stores as plan_hash
+                                 for drift detection.
+  --authorized-force-push        Grant setup-time authorization for `git push --force`.
+  --authorized-push              Grant setup-time authorization for `git push`, `npm publish`,
+                                 `docker push` (also requires CRITIC APPROVED + green CI).
+  --authorized-prod-deploy       Grant setup-time authorization for `kubectl apply`,
+                                 `terraform apply`, `helm upgrade` (also requires rollback plan).
+  --authorized-local-destructive Grant setup-time authorization for `rm -rf` non-tmp,
+                                 `git reset --hard`, local DB destructive migrations.
+  --secret-scan-waive            Disable G7 secret-scan (not recommended; setup-time only).
+  --chaos-monkey                 Explicitly spawn chaos-monkey archetype (fault injection).
+                                 Default: auto-enabled for distributed/infra goals.
+  --no-chaos-monkey              Explicitly disable chaos-monkey spawn.
+
   -h, --help                     Show this help
 
 DESCRIPTION:
@@ -107,6 +133,38 @@ HELP_EOF
     --prompt-file)
       PROMPT_FILE="$2"
       shift 2
+      ;;
+    --plan-ref)
+      PLAN_REF="$2"
+      shift 2
+      ;;
+    --authorized-force-push)
+      AUTHORIZED_FORCE_PUSH="true"
+      shift
+      ;;
+    --authorized-push)
+      AUTHORIZED_PUSH="true"
+      shift
+      ;;
+    --authorized-prod-deploy)
+      AUTHORIZED_PROD_DEPLOY="true"
+      shift
+      ;;
+    --authorized-local-destructive)
+      AUTHORIZED_LOCAL_DESTRUCTIVE="true"
+      shift
+      ;;
+    --secret-scan-waive)
+      SECRET_SCAN_WAIVED="true"
+      shift
+      ;;
+    --chaos-monkey)
+      CHAOS_MONKEY="true"
+      shift
+      ;;
+    --no-chaos-monkey)
+      CHAOS_MONKEY="false"
+      shift
       ;;
     *)
       PROMPT_PARTS+=("$1")
@@ -241,6 +299,36 @@ if [[ ! -d "$PROFILE_DIR" ]] || [[ ! -f "$PROFILE_DIR/PROFILE.md" ]]; then
   exit 1
 fi
 
+# Execute-mode validation: --plan-ref REQUIRED; compute plan_hash
+PLAN_HASH=""
+if [[ "$MODE" == "execute" ]]; then
+  if [[ -z "$PLAN_REF" ]]; then
+    echo "Error: --mode execute requires --plan-ref <path>" >&2
+    echo "  Pass the absolute path to the APPROVED plan document produced by plan-mode." >&2
+    exit 1
+  fi
+  if [[ ! -f "$PLAN_REF" ]]; then
+    echo "Error: --plan-ref '$PLAN_REF' does not exist or is not a file." >&2
+    exit 1
+  fi
+  # Canonicalize to absolute path
+  PLAN_REF="$(cd "$(dirname "$PLAN_REF")" && pwd)/$(basename "$PLAN_REF")"
+  # Compute sha256 (prefer sha256sum, fall back to shasum -a 256)
+  if command -v sha256sum >/dev/null 2>&1; then
+    PLAN_HASH=$(sha256sum "$PLAN_REF" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    PLAN_HASH=$(shasum -a 256 "$PLAN_REF" | awk '{print $1}')
+  else
+    echo "Error: neither sha256sum nor shasum found; cannot compute plan_hash." >&2
+    exit 1
+  fi
+  if [[ -z "$PLAN_HASH" ]]; then
+    echo "Error: failed to compute plan_hash for '$PLAN_REF'." >&2
+    exit 1
+  fi
+  echo "execute mode: plan_ref=$PLAN_REF plan_hash=$PLAN_HASH" >&2
+fi
+
 # Build seeded arrays for state.json using jq
 SOURCE_OF_TRUTH_JSON=$(printf '%s\n' "${SOURCE_OF_TRUTH[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')
 ANCHORS_JSON=$(printf '%s\n' "${ANCHORS[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')
@@ -320,6 +408,54 @@ if [[ -f "$PROFILE_SCHEMA" ]] && [[ -s "$PROFILE_SCHEMA" ]]; then
     else
       rm -f "${INSTANCE_DIR}/state.json.tmp.$$"
     fi
+  fi
+fi
+
+# Execute-mode: populate CLI-driven fields + setup_flags_snapshot
+# Runs after schema merge so CLI values win over schema defaults (plan §5.2 last paragraph:
+# authorized_* flags are setup-time only; snapshot captures them here so bash-gate.sh can
+# refuse runtime mutations).
+if [[ "$MODE" == "execute" ]]; then
+  # Auto-detect chaos-monkey spawn if user didn't override
+  if [[ "$CHAOS_MONKEY" == "auto" ]]; then
+    # Heuristic: goal mentions services/networks/databases/queues/distributed/deploy/k8s/infra
+    if printf '%s' "$GOAL" | grep -qiE 'service|network|database|queue|distributed|deploy|kubectl|terraform|helm|infrastructure|microservice|cluster'; then
+      CHAOS_MONKEY="true"
+    else
+      CHAOS_MONKEY="false"
+    fi
+  fi
+
+  jq \
+    --arg plan_ref "$PLAN_REF" \
+    --arg plan_hash "$PLAN_HASH" \
+    --argjson auth_fp "$([ "$AUTHORIZED_FORCE_PUSH" = "true" ] && echo true || echo false)" \
+    --argjson auth_push "$([ "$AUTHORIZED_PUSH" = "true" ] && echo true || echo false)" \
+    --argjson auth_prod "$([ "$AUTHORIZED_PROD_DEPLOY" = "true" ] && echo true || echo false)" \
+    --argjson auth_local "$([ "$AUTHORIZED_LOCAL_DESTRUCTIVE" = "true" ] && echo true || echo false)" \
+    --argjson scan_waive "$([ "$SECRET_SCAN_WAIVED" = "true" ] && echo true || echo false)" \
+    --argjson chaos "$([ "$CHAOS_MONKEY" = "true" ] && echo true || echo false)" \
+    '.execute.plan_ref = $plan_ref
+     | .execute.plan_hash = $plan_hash
+     | .execute.authorized_force_push = $auth_fp
+     | .execute.authorized_push = $auth_push
+     | .execute.authorized_prod_deploy = $auth_prod
+     | .execute.authorized_local_destructive = $auth_local
+     | .execute.secret_scan_waived = $scan_waive
+     | .execute.chaos_monkey_enabled = $chaos
+     | .execute.setup_flags_snapshot = {
+         "authorized_force_push": $auth_fp,
+         "authorized_push": $auth_push,
+         "authorized_prod_deploy": $auth_prod,
+         "authorized_local_destructive": $auth_local,
+         "secret_scan_waived": $scan_waive
+       }' \
+    "${INSTANCE_DIR}/state.json" > "${INSTANCE_DIR}/state.json.tmp.$$"
+  if [[ -s "${INSTANCE_DIR}/state.json.tmp.$$" ]]; then
+    mv "${INSTANCE_DIR}/state.json.tmp.$$" "${INSTANCE_DIR}/state.json"
+  else
+    rm -f "${INSTANCE_DIR}/state.json.tmp.$$"
+    echo "Warning: failed to populate execute-mode state fields" >&2
   fi
 fi
 
@@ -440,6 +576,79 @@ if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
   echo "Warning: failed to write hooks into $SETTINGS_LOCAL (proceeding without dynamic hooks)" >&2
+fi
+
+# ---- Execute-mode additional hook wiring (conditional) ----
+# Adds 8 execute-specific hooks to settings.local.json (SessionStart reinject is already
+# handled by the existing session-context.sh hook above — it dispatches to
+# profiles/execute/reinject.sh via load_profile when MODE==execute).
+if [[ "$MODE" == "execute" ]]; then
+  EXEC_HOOKS_DIR="$PLUGIN_ROOT/hooks/execute"
+
+  # Build each hook registration as jq-compatible JSON
+  EXEC_PRE_WRITE=$(jq -n --arg s "$EXEC_HOOKS_DIR/plan-citation-gate.sh" \
+    '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_POST_WRITE=$(jq -n --arg s "$EXEC_HOOKS_DIR/retest-dispatch.sh" \
+    '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_PRE_BASH=$(jq -n --arg s "$EXEC_HOOKS_DIR/bash-gate.sh" \
+    '[{"matcher": "Bash", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_POST_BASH=$(jq -n --arg s "$EXEC_HOOKS_DIR/test-capture.sh" \
+    '[{"matcher": "Bash", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_FC_SRC=$(jq -n --arg s "$EXEC_HOOKS_DIR/file-changed-retest.sh" \
+    '[{"matcher": "src/**", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  # Plan-drift detector — matcher is the absolute plan file path
+  EXEC_FC_PLAN=$(jq -n --arg s "$EXEC_HOOKS_DIR/plan-drift-detector.sh" --arg m "$PLAN_REF" \
+    '[{"matcher": $m, "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_TC=$(jq -n --arg s "$EXEC_HOOKS_DIR/task-scope-gate.sh" \
+    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+  EXEC_STOP=$(jq -n --arg s "$EXEC_HOOKS_DIR/stop-hook.sh" \
+    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
+
+  CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
+  jq -n \
+    --argjson current "$CURRENT_SETTINGS" \
+    --argjson pre_write "$EXEC_PRE_WRITE" \
+    --argjson post_write "$EXEC_POST_WRITE" \
+    --argjson pre_bash "$EXEC_PRE_BASH" \
+    --argjson post_bash "$EXEC_POST_BASH" \
+    --argjson fc_src "$EXEC_FC_SRC" \
+    --argjson fc_plan "$EXEC_FC_PLAN" \
+    --argjson tc "$EXEC_TC" \
+    --argjson stop_exec "$EXEC_STOP" \
+    '
+    def attach_dw(arr; tag):
+      if arr == null then null
+      else (arr | map(. + {_deepwork: tag}))
+      end;
+
+    def add_hook_event(current; event; new):
+      if new == null then current
+      else
+        current[event] = (current[event] // []) + new
+        | current
+      end;
+
+    ($current // {}) as $c
+    | ($c.hooks // {}) as $h
+    | ($h
+        | add_hook_event(.; "PreToolUse"; attach_dw($pre_write; true))
+        | add_hook_event(.; "PostToolUse"; attach_dw($post_write; true))
+        | add_hook_event(.; "PreToolUse"; attach_dw($pre_bash; true))
+        | add_hook_event(.; "PostToolUse"; attach_dw($post_bash; true))
+        | add_hook_event(.; "FileChanged"; attach_dw($fc_src; true))
+        | add_hook_event(.; "FileChanged"; attach_dw($fc_plan; true))
+        | add_hook_event(.; "TaskCreated"; attach_dw($tc; true))
+        | add_hook_event(.; "Stop"; attach_dw($stop_exec; true))
+      ) as $new_hooks
+    | $c + {"hooks": $new_hooks}
+    ' > "${SETTINGS_LOCAL}.tmp.$$"
+
+  if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
+    mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
+  else
+    rm -f "${SETTINGS_LOCAL}.tmp.$$"
+    echo "Warning: failed to write execute-mode hooks into $SETTINGS_LOCAL" >&2
+  fi
 fi
 
 # ---- Print user-visible setup banner to stderr ----
