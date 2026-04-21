@@ -66,11 +66,11 @@ ls .claude/deepwork/*/state.json 2>/dev/null
     if jq 'if .hooks then
              .hooks |= with_entries(.value = [.value[]? | select(._deepwork != true)] | select(.value | length > 0))
              | if (.hooks | length) == 0 then del(.hooks) else . end
-           else . end' .claude/settings.local.json > tmp && [ -s tmp ]; then
-      mv tmp .claude/settings.local.json
+           else . end' .claude/settings.local.json > .claude/settings.local.json.cancel-tmp.$$ && [ -s .claude/settings.local.json.cancel-tmp.$$ ]; then
+      mv .claude/settings.local.json.cancel-tmp.$$ .claude/settings.local.json
       rm -f .claude/settings.local.json.deepwork-backup  # success — drop stale backup
     else
-      rm -f tmp
+      rm -f .claude/settings.local.json.cancel-tmp.$$
       # Fallback — reachable only if jq failed on corrupt settings
       [ -f .claude/settings.local.json.deepwork-backup ] && \
         mv .claude/settings.local.json.deepwork-backup .claude/settings.local.json

@@ -589,7 +589,7 @@ fi
 
 # Build re-inject prompt via profile
 COMPACT_MODE=$(echo "$STATE_JSON" | jq -r '.compact_on_iteration // false')
-CLEAR_MODE="$CLEAR_ON_ITERATION"
+CLEAR_MODE="false"   # degraded path only — successful clear exits at line 583; transcript is intact here
 build_reinject_prompt
 ORCHESTRATOR_PROMPT="$REINJECT_PROMPT"
 

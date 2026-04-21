@@ -55,11 +55,20 @@ discover_instance() {
     # a fresh session_id. The supervisor creates clear-in-flight to signal this is
     # an intentional rotation (vs a concurrent resume of an old SID). Migrate
     # state.json atomically and consume the marker.
+    #
+    # The marker content is the claude-pid the supervisor was launched with.
+    # Hooks run as direct children of claude, so $PPID in a hook equals that
+    # same claude-pid. Gating on PID match prevents a concurrent session's hook
+    # (running under a DIFFERENT claude process) from mis-migrating this
+    # instance's state.json while our /clear is in flight.
     if [[ "$_sid" != "$hook_session" ]] && [[ -f "${_dir}/clear-in-flight" ]]; then
-      jq --arg sid "$hook_session" '.session_id = $sid' "$_f" > "${_f}.tmp.$$" \
-        && mv "${_f}.tmp.$$" "$_f" || { rm -f "${_f}.tmp.$$"; continue; }
-      _sid="$hook_session"
-      rm -f "${_dir}/clear-in-flight"
+      _marker_pid=$(<"${_dir}/clear-in-flight" 2>/dev/null)
+      if [[ -n "$_marker_pid" ]] && [[ "$_marker_pid" == "$PPID" ]]; then
+        jq --arg sid "$hook_session" '.session_id = $sid' "$_f" > "${_f}.tmp.$$" \
+          && mv "${_f}.tmp.$$" "$_f" || { rm -f "${_f}.tmp.$$"; continue; }
+        _sid="$hook_session"
+        rm -f "${_dir}/clear-in-flight"
+      fi
     fi
 
     [[ "$_sid" == "$hook_session" ]] || continue

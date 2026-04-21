@@ -78,8 +78,12 @@ while process_live "$CLAUDE_PID"; do
   if [ -f "$INSTANCE_DIR/clear-requested" ]; then
     # Create in-flight marker BEFORE removing the request, so discover_instance
     # can distinguish a legitimate SID rotation (marker present) from a
-    # concurrent resume of the old SID (marker absent).
-    touch "$INSTANCE_DIR/clear-in-flight"
+    # concurrent resume of the old SID (marker absent). Write our claude-pid
+    # into the marker (atomic rename) so a hook from a DIFFERENT concurrent
+    # claude process — whose $PPID differs from ours — cannot mis-trigger
+    # state.json migration on this instance.
+    printf '%d' "$CLAUDE_PID" > "$INSTANCE_DIR/clear-in-flight.tmp.$$"
+    mv "$INSTANCE_DIR/clear-in-flight.tmp.$$" "$INSTANCE_DIR/clear-in-flight"
     rm -f "$INSTANCE_DIR/clear-requested"
     send_text_to_pane "$HANDLE" $'\x15/clear\r'
     rc=$?
