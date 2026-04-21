@@ -140,4 +140,18 @@ if [[ "$CROSS_CHECK" == "true" ]]; then
   fi
 fi
 
+# --- Gate 3: commit_sha artifact existence (execute-mode) ---
+# If metadata.commit_sha is set, the referenced commit must exist in the repo.
+# Plan-mode tasks never set commit_sha — this gate is a no-op for them.
+# CC source: cli_formatted_2.1.116.js:265849 (TaskCompleted schema), :564789 (exit 2 → blockingError).
+COMMIT_SHA=$(echo "$INPUT" | jq -r '.metadata.commit_sha // ""' 2>/dev/null || echo "")
+if [[ -n "$COMMIT_SHA" ]] && [[ "$COMMIT_SHA" != "null" ]]; then
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"
+  if ! git -C "$PROJECT_DIR" cat-file -e "${COMMIT_SHA}^{commit}" 2>/dev/null; then
+    printf 'metadata.commit_sha "%s" does not exist in repo at %s\n' "$COMMIT_SHA" "$PROJECT_DIR" >&2
+    printf 'Ensure the commit exists (not squashed, rebased, or on a different branch) before completing this task.\n' >&2
+    exit 2
+  fi
+fi
+
 exit 0
