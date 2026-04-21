@@ -1,0 +1,24 @@
+{
+  "execute": {
+    "plan_ref": null,
+    "plan_hash": null,
+    "plan_drift_detected": false,
+    "plan_drift_detected_at": null,
+    "plan_hash_at_drift": null,
+    "phase": "setup",
+    "change_log": [],
+    "test_manifest": [],
+    "rollback_log": [],
+    "flaky_tests": [],
+    "scope_amendments": [],
+    "env_attestations": [],
+    "discoveries": [],
+    "authorized_force_push": false,
+    "authorized_push": false,
+    "authorized_prod_deploy": false,
+    "authorized_local_destructive": false,
+    "secret_scan_waived": false,
+    "setup_flags_snapshot": {},
+    "chaos_monkey_enabled": false
+  }
+}
