@@ -97,6 +97,8 @@ User surface during the run is minimal by design — `AskUserQuestion` is reserv
 | `/deepwork-cancel` | Tear down team (only path that calls TeamDelete) and clean up. |
 | `/deepwork-guardrail add\|remove\|list "<rule>"` | Manual guardrail management. |
 | `/deepwork-bar add\|remove\|list "<criterion>"` | Tune the written bar mid-run. |
+| `/deepwork-wiki` | Regenerate Overview, Session Index, and Cross-refs in `.claude/deepwork/DEEPWORK_WIKI.md` from all archived sessions. |
+| `/deepwork-recap` | Karpathy-style 30-50-word plain-text recap of deepwork history. |
 
 ## Flags for `/deepwork`
 
@@ -140,6 +142,8 @@ When `/deepwork` runs, `setup-deepwork.sh` writes these into `.claude/settings.l
 | TaskCompleted | `task-completed-gate.sh` | Artifact-existence + cross-check count enforcement |
 | PermissionDenied | `incident-detector.sh --event PermissionDenied` | Appends to `incidents.jsonl` on denied operations |
 | PreToolUse:ExitPlanMode | `deliver-gate.sh` | Lints ExitPlanMode content for "Residual unknowns" section + delta_from_prior populated on v≥2 |
+| Stop | `approve-archive.sh` | On phase=="done" (APPROVE path), renames `state.json` → `state.archived.json`, cleans heartbeat/idle-retry, and invokes `settings-teardown.sh` |
+| FileChanged(.claude/deepwork/) | `wiki-log-append.sh` | Appends a dated log entry to `.claude/deepwork/DEEPWORK_WIKI.md` when a new `state.archived.json` appears |
 
 Plus the static hook in `hooks/hooks.json`:
 
@@ -162,6 +166,24 @@ All state lives in `.claude/deepwork/<instance-id>/`:
 - `prompt.md` — original user prompt
 
 The instance directory is per-project, per-session, keyed on an 8-hex hash of `$CLAUDE_CODE_SESSION_ID`. Multiple concurrent deepwork sessions in different terminals do not collide.
+
+### Post-teardown archive
+
+On both cancel and approve, `state.json` is renamed to `state.archived.json` rather than deleted. The rename is the lifecycle marker: all active-session globs look for `*/state.json` and naturally skip archived instances, while the archived file preserves the full structured record — bar verdicts, empirical_unknowns results, user_feedback, guardrails, role_definitions, anchors — for programmatic query across past sessions (`jq` over `.claude/deepwork/*/state.archived.json`). The `phase` field inside the archived state distinguishes outcome:
+
+- **Approve path**: `hooks/approve-archive.sh` fires on the `Stop` event, gates on `phase == "done"`, and performs the rename + cleanup automatically. No user action required.
+- **Cancel path**: `/deepwork-cancel` performs the same rename + cleanup explicitly, and additionally calls `TeamDelete` (the ONLY path that does so — approved-and-done sessions leave the team intact for inspection).
+
+Both paths converge on the same shared helper `scripts/settings-teardown.sh` to restore `settings.local.json` when no active instances remain. Only `heartbeat.json` and `.idle-retry.*` runtime scratch files are removed; all teammate artifacts (`findings.*.md`, `critique.*.md`, `empirical_results.*.md`, etc.), `log.md`, `proposals/`, `prompt.md`, and `incidents.jsonl` remain in place.
+
+### Decision wiki
+
+`.claude/deepwork/DEEPWORK_WIKI.md` accumulates a cross-session decision log for the project. Modeled after Karpathy's LLM-wiki pattern, it has two layers:
+
+- **Hook-owned (deterministic)**: the `# Log` section is append-only, written by `wiki-log-append.sh` on every `state.archived.json` creation. Each line records date, goal, session id, and outcome (`approved` or `cancelled (phase=<X>)`). Never edited by the LLM.
+- **Skill-owned (LLM synthesis)**: `Overview`, `Session Index`, and `Cross-refs` sections are regenerated on demand by `/deepwork-wiki`. The skill reads all archived state files, rewrites only the synthesis sections, and preserves the `# Log` section verbatim.
+
+Use `/deepwork-recap` for a quick 30-50-word plain-text summary of where things stand. DEEPWORK_WIKI.md is **not** auto-loaded by Claude Code (it's a queryable artifact, read by the skills on demand). Check it into git alongside the archived session directories so the decision history persists with the repo.
 
 ## Trust boundaries
 

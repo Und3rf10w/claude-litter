@@ -380,6 +380,17 @@ DELIVER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/deliver-gate.sh"
 DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
   '[{"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# Stop — approve-archive renames state.json→state.archived.json when phase==done
+# (Stop fires every turn-end; script no-ops until orchestrator transitions to done on APPROVE).
+APPROVE_ARCHIVE_SCRIPT="$PLUGIN_ROOT/hooks/approve-archive.sh"
+STOP_ARCHIVE_HOOK=$(jq -n --arg script "$APPROVE_ARCHIVE_SCRIPT" \
+  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# FileChanged(.claude/deepwork/) — wiki-log-append fires on state.archived.json creation
+WIKI_LOG_SCRIPT="$PLUGIN_ROOT/hooks/wiki-log-append.sh"
+WIKI_LOG_HOOK=$(jq -n --arg script "$WIKI_LOG_SCRIPT" \
+  '[{"matcher": ".claude/deepwork", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
 # Merge hooks into settings.local.json. Tag with _deepwork:true for selective teardown.
 CURRENT_SETTINGS='{}'
 if [[ -f "$SETTINGS_LOCAL" ]]; then
@@ -394,6 +405,8 @@ jq -n \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
   --argjson deliver_gate "$DELIVER_GATE_HOOK" \
+  --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
+  --argjson wiki_log "$WIKI_LOG_HOOK" \
   '
   def attach_dw(arr; tag):
     if arr == null then null
@@ -416,6 +429,8 @@ jq -n \
       | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
       | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
+      | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))
+      | add_hook_event(.; "FileChanged"; attach_dw($wiki_log; true))
     ) as $new_hooks
   | $c + {"hooks": $new_hooks}
   ' > "${SETTINGS_LOCAL}.tmp.$$"

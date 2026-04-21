@@ -1,6 +1,6 @@
 ---
 description: "Cancel the active deepwork session — tears down team and cleans up"
-allowed-tools: ["Bash(ls .claude/deepwork/*/state.json:*)", "Bash(rm .claude/deepwork/**:*)", "Bash(rm -f .claude/deepwork/**:*)", "Bash(rm -rf .claude/deepwork/**:*)", "Bash(ls .claude/deepwork/:*)", "Bash(mv .claude/settings.local.json.deepwork-backup:*)", "Bash(test -f .claude/settings.local.json.deepwork-backup:*)", "Read(.claude/deepwork/**)", "Edit(.claude/settings.local.json)", "Read(.claude/settings.local.json)", "Write(.claude/settings.local.json)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
+allowed-tools: ["Bash(ls .claude/deepwork/*/state.json:*)", "Bash(rm .claude/deepwork/**:*)", "Bash(rm -f .claude/deepwork/**:*)", "Bash(rm -rf .claude/deepwork/**:*)", "Bash(mv .claude/deepwork/**:*)", "Bash(ls .claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
 ---
 
 # Cancel Deepwork
@@ -34,52 +34,36 @@ Then use `AskUserQuestion` to ask the user which instance to cancel.
    - **This is the ONLY place TeamDelete is called.** Approved-and-done sessions leave the team intact for inspection.
    - If TeamDelete fails (team already gone), continue anyway.
 
-8. Clean up the instance directory, preserving `log.md` and `proposals/` for reference:
+8. Archive runtime state; preserve all artifacts for audit and future reference:
 ```bash
-rm -f .claude/deepwork/<id>/state.json
+mv .claude/deepwork/<id>/state.json .claude/deepwork/<id>/state.archived.json
 rm -f .claude/deepwork/<id>/heartbeat.json
 rm -f .claude/deepwork/<id>/.idle-retry.*
-rm -f .claude/deepwork/<id>/incidents.jsonl
-rm -f .claude/deepwork/<id>/findings.*.md
-rm -f .claude/deepwork/<id>/coverage.*.md
-rm -f .claude/deepwork/<id>/mechanism.*.md
-rm -f .claude/deepwork/<id>/reframe.*.md
-rm -f .claude/deepwork/<id>/empirical_results.*.md
-rm -f .claude/deepwork/<id>/critique.*.md
-rm -f .claude/deepwork/<id>/gate-list-*.md
-rm -f .claude/deepwork/<id>/anchors.md
 ```
 
-Do NOT delete:
+The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on both mid-flight cancels and post-approval cleanup; the `phase` field inside the archived state distinguishes the two.
+
+Do NOT delete the artifacts — they capture the *why* behind the session (what was explored, what failed, what was rejected) and remain useful after teardown for historical analysis and future decisions:
 - `log.md` — narrative history
 - `proposals/` — all versions of the proposal (audit trail)
 - `prompt.md` — original user prompt
+- `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md`, `critique.*.md` — teammate outputs
+- `gate-list-*.md`, `anchors.md` — bar/scope artifacts
+- `incidents.jsonl` — structured record of runtime failures (SubagentStop non-zero, PermissionDenied)
 
-9. Check if any other instances remain:
+9. Check if any other instances remain (informational only — the teardown script in step 10 performs the same check internally):
 ```bash
 ls .claude/deepwork/*/state.json 2>/dev/null
 ```
 
-10. Restore settings ONLY if no other instances remain. **Primary path**: selectively remove only `_deepwork: true`-tagged entries from `settings.local.json` via jq (preserves hooks added by the user or other plugins AFTER deepwork started). **Fallback**: restore from backup only if the jq filter fails (e.g., corrupt JSON):
+10. Restore settings via the centralized teardown script. It checks for remaining active instances, performs selective jq removal of `_deepwork: true`-tagged entries (preserving hooks added by the user or sibling plugins), and falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
     ```bash
-    # Primary — selective removal (preserves user+sibling-plugin hooks)
-    if jq 'if .hooks then
-             .hooks |= with_entries(.value = [.value[]? | select(._deepwork != true)] | select(.value | length > 0))
-             | if (.hooks | length) == 0 then del(.hooks) else . end
-           else . end' .claude/settings.local.json > .claude/settings.local.json.cancel-tmp.$$ && [ -s .claude/settings.local.json.cancel-tmp.$$ ]; then
-      mv .claude/settings.local.json.cancel-tmp.$$ .claude/settings.local.json
-      rm -f .claude/settings.local.json.deepwork-backup  # success — drop stale backup
-    else
-      rm -f .claude/settings.local.json.cancel-tmp.$$
-      # Fallback — reachable only if jq failed on corrupt settings
-      [ -f .claude/settings.local.json.deepwork-backup ] && \
-        mv .claude/settings.local.json.deepwork-backup .claude/settings.local.json
-    fi
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/settings-teardown.sh" "${CLAUDE_PROJECT_DIR:-$PWD}"
     ```
-    If other instances remain, skip the settings restore — the running sessions still need the hooks.
+    The same script is invoked by `hooks/approve-archive.sh` on APPROVE, so both teardown paths use identical restore semantics.
 
 11. Report to the user:
     - Goal that was being worked on
-    - Phase at time of cancellation
+    - Phase at time of teardown (the phase field in archived state is preserved as-is — `done` for post-approval cleanup, or whichever phase was live for mid-flight cancels)
     - Task status summary from TaskList (completed / in_progress / pending)
-    - Confirm cleanup; note that `log.md` and `proposals/` are preserved at `.claude/deepwork/<id>/`
+    - Confirm teardown; note that the full instance is preserved at `.claude/deepwork/<id>/` including `state.archived.json` (structured record), `log.md`, `proposals/`, and all teammate artifacts — queryable via `jq` across past sessions
