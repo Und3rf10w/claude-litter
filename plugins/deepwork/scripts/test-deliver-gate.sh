@@ -53,6 +53,32 @@ _run_gate() {
   echo $?
 }
 
+_run_gate_stderr() {
+  local plan_text="$1"
+  local _tmpfile
+  _tmpfile=$(mktemp)
+  local payload
+  payload=$(jq -cn --arg sid "$SESSION_ID" --arg plan "$plan_text" \
+    '{session_id: $sid, tool_name: "ExitPlanMode", tool_input: {plan: $plan}}')
+  echo "$payload" | bash "$HOOK" >/dev/null 2>"$_tmpfile"
+  local _exit=$?
+  cat "$_tmpfile"
+  rm -f "$_tmpfile"
+  return $_exit
+}
+
+_assert_stderr_contains() {
+  local name="$1" needle="$2" haystack="$3"
+  if printf '%s' "$haystack" | grep -q -- "$needle"; then
+    printf '✔ %s (stderr matched "%s")\n' "$name" "$needle"
+    PASS=$((PASS + 1))
+  else
+    printf '✘ %s — stderr did not contain "%s"\n' "$name" "$needle" >&2
+    printf '  actual: %s\n' "$haystack" >&2
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 # ────────────────────────────────────────────────────────────
 # Fixture 1: plan without "Residual unknowns" → reject (exit 2)
 echo ""
@@ -138,6 +164,23 @@ delta_from_prior: |
 # v3-final
 EOF
 _assert_exit "allows plan when v3-final has populated delta" "0" "$(_run_gate "$PLAN3")"
+
+# ────────────────────────────────────────────────────────────
+# Fixture 6: 5-hash "Residual unknowns" heading → reject (exit 2 + stderr)
+echo ""
+echo "── Fixture 6: 5-hash Residual unknowns boundary ──"
+rm -f "$INSTANCE_DIR/proposals/"v*.md
+PLAN6="# My Plan
+
+## Changes
+
+- FIX-9
+
+##### Residual unknowns
+
+- None identified."
+_assert_exit "rejects plan with h5 'Residual unknowns' (outside #{1,4})" "2" "$(_run_gate "$PLAN6")"
+_assert_stderr_contains "Fixture 6 stderr mentions BLOCKED" "BLOCKED: ExitPlanMode plan is missing" "$(_run_gate_stderr "$PLAN6")"
 
 # Cleanup
 rm -rf "$SANDBOX"
