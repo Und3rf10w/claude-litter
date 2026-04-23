@@ -224,8 +224,8 @@ if printf '%s' "$COMMAND" | grep -qE '(kubectl[[:space:]]+apply|terraform[[:spac
   fi
 fi
 
-# irreversible-remote: git push (non-force already handled above), npm publish, docker push
-if printf '%s' "$COMMAND" | grep -qE '(git[[:space:]]+push(?![[:space:]].*(-f|--force))|npm[[:space:]]+publish|docker[[:space:]]+push)'; then
+# irreversible-remote: git push (force-push already denied above), npm publish, docker push
+if printf '%s' "$COMMAND" | grep -qE '(git[[:space:]]+push|npm[[:space:]]+publish|docker[[:space:]]+push)'; then
   if [[ "$AUTH_PUSH_VALID" != "true" ]]; then
     _deny "Irreversible-remote blocked (G2): push/publish operations require state.execute.authorized_push:true set at setup time, CRITIC approval in critique.v*.md, and a green CI attestation in state.execute.env_attestations[]."
   fi

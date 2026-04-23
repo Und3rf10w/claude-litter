@@ -144,6 +144,88 @@ for skill in deepwork-execute-amend deepwork-execute-status; do
 done
 _pass "skills: 2/2 present"
 
+# ---- Tests 12-15: bash-gate.sh POSIX ERE fix (C5) ----
+# Set up a minimal active execute instance in a temp project dir so discover_instance
+# can find it. authorized_push is false so all irreversible-remote commands must deny.
+_TMP_PROJECT=$(mktemp -d)
+_INST_DIR="${_TMP_PROJECT}/.claude/deepwork/ab12cd34"
+mkdir -p "$_INST_DIR"
+cat > "${_INST_DIR}/state.json" <<'STATEJSON'
+{
+  "session_id": "test-bash-gate-posix",
+  "execute": {
+    "phase": "execute",
+    "plan_ref": "PLAN.md",
+    "plan_hash": "abc123",
+    "plan_drift_detected": false,
+    "authorized_force_push": false,
+    "authorized_push": false,
+    "authorized_prod_deploy": false,
+    "authorized_local_destructive": false,
+    "secret_scan_waived": false,
+    "setup_flags_snapshot": {}
+  }
+}
+STATEJSON
+_BG_INPUT_PLAIN_PUSH='{"session_id":"test-bash-gate-posix","tool_input":{"command":"git push origin main"}}'
+_BG_INPUT_FORCE_PUSH='{"session_id":"test-bash-gate-posix","tool_input":{"command":"git push --force origin main"}}'
+_BG_INPUT_NPM='{"session_id":"test-bash-gate-posix","tool_input":{"command":"npm publish"}}'
+_BG_INPUT_DOCKER='{"session_id":"test-bash-gate-posix","tool_input":{"command":"docker push myimage:latest"}}'
+
+# Test 12: plain git push → deny G2 (Irreversible-remote / authorized_push)
+OUT=$(printf '%s' "$_BG_INPUT_PLAIN_PUSH" \
+  | CLAUDE_PROJECT_DIR="$_TMP_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if printf '%s' "$OUT" | grep -q 'repetition-operator\|grep:'; then
+  _fail "Test 12: plain git push — grep PCRE error on stderr: ${OUT}"
+elif printf '%s' "$OUT" | grep -q 'G2\|Irreversible-remote\|authorized_push'; then
+  _pass "Test 12: plain git push → denied with G2/Irreversible-remote/authorized_push"
+else
+  _fail "Test 12: plain git push — expected G2 deny, got RC=${RC}: ${OUT}"
+fi
+
+# Test 13: git push --force → deny G8 (not G2)
+OUT=$(printf '%s' "$_BG_INPUT_FORCE_PUSH" \
+  | CLAUDE_PROJECT_DIR="$_TMP_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if printf '%s' "$OUT" | grep -q 'repetition-operator\|grep:'; then
+  _fail "Test 13: git push --force — grep PCRE error on stderr: ${OUT}"
+elif printf '%s' "$OUT" | grep -q 'G8\|CI-bypass\|authorized_force_push'; then
+  _pass "Test 13: git push --force → denied with G8/CI-bypass (not G2)"
+else
+  _fail "Test 13: git push --force — expected G8 deny, got RC=${RC}: ${OUT}"
+fi
+
+# Test 14: npm publish → deny G2 (Irreversible-remote / authorized_push)
+OUT=$(printf '%s' "$_BG_INPUT_NPM" \
+  | CLAUDE_PROJECT_DIR="$_TMP_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if printf '%s' "$OUT" | grep -q 'repetition-operator\|grep:'; then
+  _fail "Test 14: npm publish — grep PCRE error on stderr: ${OUT}"
+elif printf '%s' "$OUT" | grep -q 'G2\|Irreversible-remote\|authorized_push'; then
+  _pass "Test 14: npm publish → denied with G2/Irreversible-remote/authorized_push"
+else
+  _fail "Test 14: npm publish — expected G2 deny, got RC=${RC}: ${OUT}"
+fi
+
+# Test 15: docker push → deny G2 (Irreversible-remote / authorized_push)
+OUT=$(printf '%s' "$_BG_INPUT_DOCKER" \
+  | CLAUDE_PROJECT_DIR="$_TMP_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if printf '%s' "$OUT" | grep -q 'repetition-operator\|grep:'; then
+  _fail "Test 15: docker push — grep PCRE error on stderr: ${OUT}"
+elif printf '%s' "$OUT" | grep -q 'G2\|Irreversible-remote\|authorized_push'; then
+  _pass "Test 15: docker push myimage:latest → denied with G2/Irreversible-remote/authorized_push"
+else
+  _fail "Test 15: docker push — expected G2 deny, got RC=${RC}: ${OUT}"
+fi
+
+rm -rf "$_TMP_PROJECT"
+
 # ---- Summary ----
 printf '\n' >&2
 printf '%d passed, %d failed\n' "$PASSES" "$FAILS" >&2
