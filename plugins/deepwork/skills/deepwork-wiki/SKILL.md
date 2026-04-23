@@ -35,19 +35,21 @@ If none, report "No archived deepwork sessions found. Run `/deepwork` and comple
    - Cross-session patterns worth flagging
    Avoid per-session detail — that belongs in the Session Index.
 
-5. Write the **Session Index** — a markdown table:
+   **G8 hygiene**: every file reference in the Overview prose uses `[label](path)` markdown syntax, not bare backticked paths. For example: `[v2-final.md](8b9c6a4b/proposals/v2-final.md)` not `` `proposals/v2-final.md` ``. This applies to session IDs, proposal paths, and any other file citations in the narrative. Exceptions: fenced code blocks, shell command arguments, YAML frontmatter, JSON config values.
+
+5. Write the **Session Index** — a markdown table. Every cell referencing a file or session directory uses `[label](path)` syntax:
 
    | Date | ID | Goal | Phase | Outcome | Final proposal |
    |---|---|---|---|---|---|
-   | `<date>` | `<id>` | `<goal truncated to 60 chars>` | `<phase>` | approved / cancelled | `proposals/v<N>-final.md` or `—` |
+   | `<date>` | `[\`<id>\`](<id>/)` | `<goal truncated to 60 chars>` | `<phase>` | approved / cancelled | `[proposals/v<N>-final.md](<id>/proposals/v<N>-final.md)` or `—` |
 
-   Sort by Date descending (newest first). Use `started_at` for the Date column.
+   Sort by Date descending (newest first). Use `started_at` for the Date column. The ID cell MUST be a link to the session directory (`[<id>](<id>/)`); the Final proposal cell MUST be a link to the proposal file (`[v<N>-final.md](<id>/proposals/v<N>-final.md)`) or `—` when no proposal exists.
 
 6. Write the **Cross-refs** section: identify sessions that share related goals, overlapping guardrails, or anchor the same file paths. For each related pair, note:
 
-   `- [<id-A>] ↔ [<id-B>]: <one-sentence reason for cross-reference>`
+   `- [<id-A>](<id-A>/) ↔ [<id-B>](<id-B>/): <one-sentence reason for cross-reference>`
 
-   If fewer than 2 archived sessions exist, write `_None yet._`.
+   Session IDs in cross-refs MUST be linkified (`[<id>](<id>/)`) — bare backticked IDs do not satisfy G8. If fewer than 2 archived sessions exist, write `_None yet._`.
 
 7. Assemble the new DEEPWORK_WIKI.md content with this structure, placing the **verbatim `# Log` section** at the end:
 
