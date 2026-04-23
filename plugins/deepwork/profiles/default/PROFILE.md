@@ -101,7 +101,9 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 **Steps**:
 
-1. Read all `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md` files.
+1. **Drift sweep first**: invoke the `/deepwork-drift-sweep` skill before reading the artifacts. It enumerates ALL workstreams and produces `drift-report.v<N>.md` listing potential drift items. After the skill returns, perform a **secondary pass**: for each workstream in the enumerated list NOT mentioned in the sweep report, manually confirm it is either (a) not yet started, or (b) has no open source-of-truth dependency. Sign off in `log.md`: `Secondary pass complete: N workstreams checked, M had no drift items.` Addresses drift class (g) — partial / cluster-scoped drift sweeps miss items outside the drift agent's scope. See [skills/deepwork-drift-sweep/SKILL.md](../../skills/deepwork-drift-sweep/SKILL.md).
+
+2. Read all `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md` files.
 
    **Audit validity header (M4)**: authors of `findings.*.md` / `coverage.*.md` / `mechanism.*.md` / `reframe.*.md` / `critique.v*.md` SHOULD include a `valid_against` frontmatter block:
    ```yaml
@@ -116,9 +118,9 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    ```
    [hooks/stale-warn.sh](../../hooks/stale-warn.sh) flips `stale_warn: true` async when the cited proposal version is modified, so a cold reader of an audit file sees the staleness before reading the analysis. When reading audits here, check `stale_warn: true` first — if set, treat the file as a pre-reconciliation draft and call out the gap in the synthesized proposal.
 
-2. Consider REFRAMER's output seriously. If REFRAMER proposed a reframe that invalidates the original goal, AskUserQuestion to surface the choice ("REFRAMER proposes X as an alternative to the stated goal; should we pursue X, stay on the original goal, or proceed hybrid?").
+3. Consider REFRAMER's output seriously. If REFRAMER proposed a reframe that invalidates the original goal, AskUserQuestion to surface the choice ("REFRAMER proposes X as an alternative to the stated goal; should we pursue X, stay on the original goal, or proceed hybrid?").
 
-3. Write `proposals/v1.md` with front-matter:
+4. Write `proposals/v1.md` with front-matter:
    ```yaml
    ---
    version: "v1"
@@ -128,11 +130,11 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    ```
    Content is the consolidated proposal — design, scope, mitigations, residual unknowns.
 
-4. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
+5. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
 
-5. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via atomic jq+tmp+mv: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
+6. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via atomic jq+tmp+mv: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
 
-6. Advance `state.json.phase = "critique"`.
+7. Advance `state.json.phase = "critique"`.
 
 ## 4. CRITIQUE — CRITIC verdicts the bar
 
