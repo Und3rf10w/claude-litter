@@ -281,7 +281,11 @@ trap '
 
 # Derive team_name
 if [[ -z "$TEAM_NAME" ]]; then
-  TEAM_NAME="deepwork-$(printf '%s' "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+  # Normalize whitespace (including newlines) before `cut` — multi-line goals
+  # produced line-wise truncated team_name via `cut -c1-30`, leaking newlines
+  # into on-disk team_name while jq --arg further in the pipeline escaped them.
+  # Drift class (k) in proposals/v3-final.md.
+  TEAM_NAME="deepwork-$(printf '%s' "$GOAL" | tr '[:upper:]' '[:lower:]' | tr '\n' ' ' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
 fi
 TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
 
@@ -516,6 +520,13 @@ DELIVER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/deliver-gate.sh"
 DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
   '[{"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# PreToolUse:Edit|Write — phase-advance-gate enforces pre-transition checklists
+# (drift classes a + k from proposals/v3-final.md). Only acts on state.json
+# writes that change .phase; all other Edit/Write calls exit 0 immediately.
+PHASE_ADVANCE_GATE_SCRIPT="$PLUGIN_ROOT/hooks/phase-advance-gate.sh"
+PHASE_ADVANCE_GATE_HOOK=$(jq -n --arg script "$PHASE_ADVANCE_GATE_SCRIPT" \
+  '[{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
 # Stop — halt-gate enforces structured halt_reason when phase==halt
 # (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
 # the halt_reason key is entirely absent from state.json).
@@ -559,6 +570,7 @@ jq -n \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
   --argjson deliver_gate "$DELIVER_GATE_HOOK" \
+  --argjson phase_advance_gate "$PHASE_ADVANCE_GATE_HOOK" \
   --argjson stop_halt_gate "$STOP_HALT_GATE_HOOK" \
   --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
   --argjson wiki_log "$WIKI_LOG_HOOK" \
@@ -584,6 +596,7 @@ jq -n \
       | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
       | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
+      | add_hook_event(.; "PreToolUse"; attach_dw($phase_advance_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))
       | add_hook_event(.; "FileChanged"; attach_dw($wiki_log; true))
