@@ -542,6 +542,13 @@ VERSION_BUMP_NOTIFY_SCRIPT="$PLUGIN_ROOT/hooks/version-bump-notify.sh"
 VERSION_BUMP_NOTIFY_HOOK=$(jq -n --arg script "$VERSION_BUMP_NOTIFY_SCRIPT" \
   '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# FileChanged:v*.md — stale-warn flips `stale_warn: true` on audit/critique
+# files whose `valid_against.artifact_version` matches the changed proposal.
+# Addresses drift class (d).
+STALE_WARN_SCRIPT="$PLUGIN_ROOT/hooks/stale-warn.sh"
+STALE_WARN_HOOK=$(jq -n --arg script "$STALE_WARN_SCRIPT" \
+  '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
 # TaskCompleted — critique-version-gate Layer 3 (OPT-IN via guardrail
 # "critique_version_gate"). Blocks CRITIC verdict-task completion that
 # references a superseded version. Fail-open when the guardrail is absent.
@@ -595,6 +602,7 @@ jq -n \
   --argjson phase_advance_gate "$PHASE_ADVANCE_GATE_HOOK" \
   --argjson verdict_gate "$VERDICT_GATE_HOOK" \
   --argjson version_bump_notify "$VERSION_BUMP_NOTIFY_HOOK" \
+  --argjson stale_warn "$STALE_WARN_HOOK" \
   --argjson critique_version_gate "$CRITIQUE_VERSION_GATE_HOOK" \
   --argjson stop_halt_gate "$STOP_HALT_GATE_HOOK" \
   --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
@@ -624,6 +632,7 @@ jq -n \
       | add_hook_event(.; "PreToolUse"; attach_dw($phase_advance_gate; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($verdict_gate; true))
       | add_hook_event(.; "FileChanged"; attach_dw($version_bump_notify; true))
+      | add_hook_event(.; "FileChanged"; attach_dw($stale_warn; true))
       | add_hook_event(.; "TaskCompleted"; attach_dw($critique_version_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))

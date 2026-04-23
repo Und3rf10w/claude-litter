@@ -93,6 +93,19 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 1. Read all `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md` files.
 
+   **Audit validity header (M4)**: authors of `findings.*.md` / `coverage.*.md` / `mechanism.*.md` / `reframe.*.md` / `critique.v*.md` SHOULD include a `valid_against` frontmatter block:
+   ```yaml
+   ---
+   valid_against:
+     artifact: "proposals/v<N>-final.md"
+     artifact_version: "v<N>"
+     artifact_line_count: <N>
+     artifact_last_modified: "<ISO8601>"
+   stale_warn: false
+   ---
+   ```
+   [hooks/stale-warn.sh](../../hooks/stale-warn.sh) flips `stale_warn: true` async when the cited proposal version is modified, so a cold reader of an audit file sees the staleness before reading the analysis. When reading audits here, check `stale_warn: true` first — if set, treat the file as a pre-reconciliation draft and call out the gap in the synthesized proposal.
+
 2. Consider REFRAMER's output seriously. If REFRAMER proposed a reframe that invalidates the original goal, AskUserQuestion to surface the choice ("REFRAMER proposes X as an alternative to the stated goal; should we pursue X, stay on the original goal, or proceed hybrid?").
 
 3. Write `proposals/v1.md` with front-matter:
