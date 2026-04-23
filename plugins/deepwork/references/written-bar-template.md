@@ -96,6 +96,19 @@ A well-formed bar has one criterion from each category:
 }
 ```
 
+### 7. Artifact file-reference hygiene (with categorical ban)
+
+```json
+{
+  "id": "G8",
+  "criterion": "CATEGORICAL BAN: every file reference in session artifact prose uses [label](path) markdown syntax. Exceptions: fenced code blocks, shell command arguments, YAML frontmatter, JSON config values.",
+  "evidence_required": "grep session artifacts (findings.*.md, coverage.*.md, mechanism.*.md, reframe.*.md, critique.*.md, log.md, proposals/v*.md) for bare-backticked paths in prose — zero matches outside the documented exceptions",
+  "categorical_ban": true
+}
+```
+
+G8 enforces Obsidian-compatible links in session artifact prose so that cross-refs between findings, coverage, mechanism, and proposals resolve when the instance directory is opened in an Obsidian vault or browsed on GitHub. Bare backticked paths like `` `path/to/file.md` `` render as code but don't link — they break navigation. The exceptions list the contexts where backticks are structurally required (shell syntax, JSON/YAML values, fenced code blocks) and would break if rewritten as links.
+
 ---
 
 ## Categorical bans — why they matter
