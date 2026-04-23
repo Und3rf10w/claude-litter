@@ -17,11 +17,21 @@
 #
 # Ordering: registered BEFORE approve-archive.sh in the Stop hook chain. Both
 # fire on Stop but gate on different phase values (halt vs done), so ordering
-# is correctness-preserving either way — but halt-gate-first avoids approve-
-# archive racing a mid-halt state.json rename.
+# is correctness-preserving today either way — but halt-gate-first avoids
+# approve-archive racing a mid-halt state.json rename if future changes ever
+# expand overlap. CC runtime chain semantics (whether exit 2 from an earlier
+# hook short-circuits later hooks in the same event) are NOT enforced by this
+# hook; only the setup-level array-index ordering is guaranteed.
+#
+# Registration site: scripts/setup-deepwork.sh plan-mode block ONLY. This hook
+# must NOT be re-registered inside the execute-mode-only block (a single
+# registration with matcher:".*" fires for every Stop event regardless of
+# mode). See the ordering comment above STOP_HALT_GATE_HOOK in setup.
 #
 # Parse-failure pass-through: if state.json is unreadable or malformed, exit 0.
-# Consistent with deliver-gate.sh and approve-archive.sh robustness.
+# Consistent with deliver-gate.sh and approve-archive.sh robustness — prevents
+# halt-gate from wedging concurrent executor Stop events when another writer
+# has an in-flight jq+tmp+mv on state.json.
 
 set +e
 command -v jq >/dev/null 2>&1 || exit 0

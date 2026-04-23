@@ -519,6 +519,17 @@ DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
 # Stop — halt-gate enforces structured halt_reason when phase==halt
 # (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
 # the halt_reason key is entirely absent from state.json).
+#
+# Ordering intent: registered BEFORE approve-archive.sh in the Stop chain.
+# The pipeline below places this add_hook_event call first, producing a
+# settings.local.json Stop array where halt-gate's index is lower than
+# approve-archive's. CC runtime hook execution semantics (whether exit 2
+# from an earlier hook short-circuits later hooks in the same event) are
+# not verified by setup; array-index ordering is preserved here for
+# clarity and maintainer reference. The plan-mode block below runs for
+# EVERY session (plan + execute); do NOT re-register halt-gate inside the
+# execute-mode-only block that follows, or both invocations will fire on
+# each Stop (duplicate but harmless) and the invariant will drift.
 HALT_GATE_SCRIPT="$PLUGIN_ROOT/hooks/halt-gate.sh"
 STOP_HALT_GATE_HOOK=$(jq -n --arg script "$HALT_GATE_SCRIPT" \
   '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
@@ -613,10 +624,13 @@ if [[ "$MODE" == "execute" ]]; then
   EXEC_STOP=$(jq -n --arg s "$EXEC_HOOKS_DIR/stop-hook.sh" \
     '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
 
-  # Execute-mode halt-gate: identical hook, registered BEFORE stop-hook.sh
-  # so halt_reason enforcement happens first on Stop events.
-  EXEC_HALT_GATE=$(jq -n --arg script "$HALT_GATE_SCRIPT" \
-    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+  # halt-gate is NOT re-registered here. The plan-mode block above runs for
+  # every session (plan and execute) and already registers halt-gate once
+  # with matcher:".*", which fires on all Stop events. Adding a second
+  # registration in this execute-mode-only block would cause the hook to
+  # fire twice on every Stop for execute sessions — harmless (same hook,
+  # same verdict) but wasteful and confusing. See the ordering comment
+  # above the plan-mode STOP_HALT_GATE_HOOK declaration.
 
   CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
   jq -n \
@@ -628,7 +642,6 @@ if [[ "$MODE" == "execute" ]]; then
     --argjson fc_src "$EXEC_FC_SRC" \
     --argjson fc_plan "$EXEC_FC_PLAN" \
     --argjson tc "$EXEC_TC" \
-    --argjson stop_halt_gate "$EXEC_HALT_GATE" \
     --argjson stop_exec "$EXEC_STOP" \
     '
     def attach_dw(arr; tag):
@@ -653,7 +666,6 @@ if [[ "$MODE" == "execute" ]]; then
         | add_hook_event(.; "FileChanged"; attach_dw($fc_src; true))
         | add_hook_event(.; "FileChanged"; attach_dw($fc_plan; true))
         | add_hook_event(.; "TaskCreated"; attach_dw($tc; true))
-        | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
         | add_hook_event(.; "Stop"; attach_dw($stop_exec; true))
       ) as $new_hooks
     | $c + {"hooks": $new_hooks}

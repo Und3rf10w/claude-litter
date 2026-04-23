@@ -129,7 +129,7 @@ For the full pipeline, all 8 execute hooks, state fields, and amendment mechanic
 | `/deepwork-status` | Dashboard: phase, team, bar verdicts, proposals, guardrails | `skills/deepwork-status/SKILL.md` |
 | `/deepwork-execute-status` | Execute-mode dashboard: phase, plan_hash, drift, change_log, test results | `skills/deepwork-execute-status/SKILL.md` |
 | `/deepwork-teardown` | End a session — delete team (only path that calls TeamDelete), archive state, restore settings. Use for mid-flight abort or post-HALT cleanup | `skills/deepwork-teardown/SKILL.md` |
-| `/deepwork-guardrail add\|remove\|list "<rule>"` | Manual guardrail management | `skills/deepwork-guardrail/SKILL.md` |
+| `/deepwork-guardrail add\|replace\|remove\|list [--source <src>] "<rule>"` | Manual guardrail management (sources: `user`, `incident`, `flag`, `scope-boundary`, `orchestrator`, `teammate`) | `skills/deepwork-guardrail/SKILL.md` |
 | `/deepwork-bar add\|remove\|list "<criterion>"` | Tune the written bar mid-run | `skills/deepwork-bar/SKILL.md` |
 | `/deepwork-execute-amend <gate-id> --reason "<desc>"` | Single-gate amendment (MICRO-TEAM re-verdict) | `skills/deepwork-execute-amend/SKILL.md` |
 | `/deepwork-wiki` | Regenerate Overview, Session Index, and Cross-refs in DEEPWORK_WIKI.md | `skills/deepwork-wiki/SKILL.md` |
@@ -220,6 +220,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `task-completed-gate.sh` | TaskCompleted | Artifact-existence + cross-check count enforcement | `hooks/task-completed-gate.sh` |
 | `incident-detector.sh` | PermissionDenied | Appends to `incidents.jsonl` on denied operations | `hooks/incident-detector.sh` |
 | `deliver-gate.sh` | PreToolUse:ExitPlanMode | Lints ExitPlanMode content; enforces "Residual unknowns" + delta_from_prior | `hooks/deliver-gate.sh` |
+| `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |
 | `approve-archive.sh` | Stop | On phase=="done", renames `state.json` → `state.archived.json` and invokes teardown | `hooks/approve-archive.sh` |
 | `wiki-log-append.sh` | FileChanged(.claude/deepwork/) | Appends log entry to DEEPWORK_WIKI.md when `state.archived.json` appears | `hooks/wiki-log-append.sh` |
 | `teammate-idle-gate.sh` | TeammateIdle | Forces teammates with in_progress tasks to complete (≤3 retries) | `hooks/teammate-idle-gate.sh` |
@@ -250,6 +251,8 @@ All state lives in `.claude/deepwork/<instance-id>/state.json`:
 - `guardrails[]` — hard constraints rendered to every spawn
 - `hook_warnings[]` — advisory warnings from hooks
 - `empirical_unknowns[]` — open empirical questions
+- `halt_reason` — structured `{summary, blockers[]}` required at phase=="halt" (enforced by `hooks/halt-gate.sh`)
+- `iteration_queue[]` — user-authored or orchestrator-populated delta list; §4 step 3 pops one entry per REFINE cycle instead of advancing to DELIVER when CRITIC approves
 
 Archetype artifacts: `findings.<name>.md`, `coverage.<name>.md`, `mechanism.<name>.md`, `reframe.<name>.md`, `empirical_results.<E_id>.md`, `proposals/vN.md`, `critique.vN.md`.
 
