@@ -115,7 +115,17 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 2. CRITIC reads `proposals/v1.md`, the bar, and supporting artifacts. Emits per-gate verdict table + final APPROVED or HOLDING statement. Writes to `critique.v1.md`.
 
-3. If HOLDING: advance to REFINE. If APPROVED: advance to DELIVER.
+3. Branch on CRITIC's verdict:
+
+   - **HOLDING** → advance to REFINE.
+   - **APPROVED** → check the **goal-completeness branch** before calling ExitPlanMode:
+     ```bash
+     jq -r '.iteration_queue | length' state.json
+     ```
+     - If the result is `> 0`: pop the first entry (`jq '.iteration_queue[0]'`), remove it from the queue via atomic jq+tmp+mv, treat the popped entry as the target delta for the next iteration, and advance to REFINE with that entry as context. Do NOT call ExitPlanMode. CRITIC re-verdicts on the next version bump.
+     - If the result is `0` or `.iteration_queue` is absent: advance to DELIVER.
+
+   `iteration_queue[]` is a user-authored or orchestrator-populated list of work items that must be addressed before the plan is final. Each entry is a short description of what still needs to change. The orchestrator pops one entry per iteration and treats it as a REFINE target. This prevents premature DELIVER when CRITIC approves the current version but the goal has multi-version scope (e.g., user dropped `v3_queue.md`-equivalent items into the queue at SCOPE).
 
 4. Optionally, also message REFRAMER for a final sanity check ("any last-minute reframe before we deliver?"). This is especially useful when the proposal turned out heavy; REFRAMER's rejection can catch over-engineering.
 
@@ -155,9 +165,38 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 ## 7. HALT — clean handoff
 
-Do not cross into implementation. Your deliverable is the approved plan document. The user takes it from there (possibly via `/swarm-loop <plan>` or directly).
+Deepwork does not cross into implementation. Your deliverable is the approved plan document; the user takes it from there (possibly via `/swarm-loop <plan>` or directly via an execute-mode session).
 
-Log a final one-line status message. If the team is fully idle, the team remains intact for user inspection until `/deepwork-teardown` is called.
+**Steps (required before turn-end):**
+
+1. Set `state.json.halt_reason` to a structured object describing why this session is halting. Schema:
+
+   ```json
+   {
+     "summary": "<one-line explanation — non-empty string>",
+     "blockers": ["<open question or blocker>", ...]
+   }
+   ```
+
+   Examples:
+
+   | Halt type | Example halt_reason |
+   |---|---|
+   | Normal completion | `{"summary": "Plan approved; proposals/v3-final.md delivered via ExitPlanMode", "blockers": []}` |
+   | User cancel | `{"summary": "Session cancelled by user at phase=explore", "blockers": []}` |
+   | Mid-flight abort | `{"summary": "Halted on open design questions requiring user input", "blockers": ["OD3: which DB library?", "OD4: public API shape?"]}` |
+
+   Write via atomic jq+tmp+mv:
+
+   ```bash
+   jq '.halt_reason = {summary: "<text>", blockers: []}' state.json > state.json.tmp && mv state.json.tmp state.json
+   ```
+
+2. Append a final status line to `log.md` that cites `halt_reason.summary`.
+
+3. If the team is fully idle, the team remains intact for user inspection until `/deepwork-teardown` is called.
+
+**Enforcement**: [hooks/halt-gate.sh](../../hooks/halt-gate.sh) blocks turn-end (exit 2) when `phase == "halt"` and `halt_reason` is null, malformed, or missing its required fields (`summary` non-empty string, `blockers` array). Sessions predating this field (key entirely absent from state.json) pass the gate unchanged — the gate only enforces against new sessions that were initialized with `halt_reason: null`.
 
 ---
 
