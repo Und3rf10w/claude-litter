@@ -6,7 +6,7 @@
 #
 # Called by:
 #   - hooks/approve-archive.sh (after archive on APPROVE)
-#   - skills/deepwork-cancel/SKILL.md step 10 (after archive on cancel)
+#   - skills/deepwork-teardown/SKILL.md step 10 (after archive on teardown)
 #
 # No-op when other active instances still exist (they still need the hooks).
 # Primary: selective jq removal of _deepwork:true-tagged entries (preserves

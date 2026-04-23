@@ -21,7 +21,7 @@ TeamCreate(
 **Rules:**
 - Call TeamCreate exactly once at SCOPE phase. Do NOT call it again mid-run.
 - `team_name` comes from `state.json.team_name` — read it, don't invent.
-- Do NOT call `TeamDelete` from the orchestrator. The `/deepwork-cancel` skill is the only path that tears down the team.
+- Do NOT call `TeamDelete` from the orchestrator. The `/deepwork-teardown` skill is the only path that tears down the team.
 
 ---
 

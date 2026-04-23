@@ -231,7 +231,7 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
         echo "   Goal: $EXISTING_GOAL" >&2
         echo "   Phase: $EXISTING_PHASE" >&2
         echo "" >&2
-        echo "   To stop it first:   /deepwork-cancel" >&2
+        echo "   To stop it first:   /deepwork-teardown" >&2
         echo "   To check status:    /deepwork-status" >&2
         exit 1
       fi
@@ -252,7 +252,7 @@ for _sf in .claude/deepwork/*/state.json; do
     echo "Error: A deepwork session is already active for this Claude session!" >&2
     echo "   Goal: $EXISTING_GOAL" >&2
     echo "   Phase: $EXISTING_PHASE" >&2
-    echo "   /deepwork-cancel to stop it; /deepwork-status for detail" >&2
+    echo "   /deepwork-teardown to stop it; /deepwork-status for detail" >&2
     exit 1
   fi
 done
@@ -661,7 +661,7 @@ printf '%s\n' "" \
   "  Safe:     $SAFE_MODE" \
   "" \
   "  Status:   /deepwork-status" \
-  "  Cancel:   /deepwork-cancel" \
+  "  End:      /deepwork-teardown" \
   "  Guardrail add: /deepwork-guardrail add \"<rule>\"" \
   "  Bar add:       /deepwork-bar add \"<criterion>\"" \
   "" >&2
