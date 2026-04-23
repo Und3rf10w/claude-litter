@@ -7,5 +7,7 @@
   "empirical_unknowns": [],
   "role_definitions": [],
   "user_feedback": null,
-  "hook_warnings": []
+  "hook_warnings": [],
+  "halt_reason": null,
+  "iteration_queue": []
 }

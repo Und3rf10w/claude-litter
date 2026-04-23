@@ -10,7 +10,30 @@ Use `/deepwork-status` (design mode) or `/deepwork-execute-status` (execute mode
 
 ### `phase`
 
-Current orchestration phase. Valid values for design mode: `scope`, `explore`, `synthesize`, `critique`, `deliver`, `halt`. Reading this field tells you where in the pipeline the session stopped. If `phase = "halt"`, check `log.md` for the halt reason.
+Current orchestration phase. Valid values for design mode: `scope`, `explore`, `synthesize`, `critique`, `deliver`, `halt`. Reading this field tells you where in the pipeline the session stopped. If `phase = "halt"`, read `halt_reason` for the structured reason and `log.md` for the narrative.
+
+### `halt_reason`
+
+Object populated when the session reaches `phase = "halt"`. Schema:
+
+```json
+{
+  "summary": "<non-empty string>",
+  "blockers": ["<blocker description>", ...]
+}
+```
+
+`summary` is required and non-empty. `blockers` is required and is an array (use `[]` for normal completions; enumerate open items for blocker-halts).
+
+Enforced by [hooks/halt-gate.sh](../hooks/halt-gate.sh): the hook fires on every Stop event and blocks turn-end (exit 2) when `phase == "halt"` (top-level or `execute.phase`) and `halt_reason` is null or malformed. **Backward-compat**: sessions predating this field (key entirely absent from state.json) pass the gate unchanged — the gate discriminates "new session failed to populate" (key present but null/malformed) from "pre-migration session" (key absent).
+
+### `iteration_queue`
+
+Array of outstanding work items the orchestrator must address before DELIVER. Populated by the user (via `jq` or an orchestrator skill) or by the orchestrator during CRITIQUE when additional passes are needed. Each entry is a short description of a required change.
+
+Consulted at `profiles/default/PROFILE.md` §4 step 3: after CRITIC emits APPROVED, the orchestrator runs `jq '.iteration_queue | length'` on state.json. If `> 0`, it pops the first entry, treats it as the next REFINE target, and re-enters REFINE. If `0` or the field is absent, it advances to DELIVER.
+
+Initialized to `[]` at session setup. An empty array is equivalent to "no queued iterations — APPROVED means ship."
 
 ### `bar[]`
 
@@ -36,7 +59,7 @@ All execute fields live under `state.execute.*`.
 
 ### `execute.phase`
 
-Current execute-mode phase: `setup`, `write`, `verify`, `critique`, `refine`, `land`, `continuous-loop`, `halt`, `halting`. If this is `halting`, a discovery with `proposed_outcome: halt` is pending AskUserQuestion resolution. If `halt`, check `log.md` for whether this was a normal completion or a forced halt. See `references/execute-mode.md` for the full phase pipeline.
+Current execute-mode phase: `setup`, `write`, `verify`, `critique`, `refine`, `land`, `continuous-loop`, `halt`, `halting`. If this is `halting`, a discovery with `proposed_outcome: halt` is pending AskUserQuestion resolution. If `halt`, read the top-level `halt_reason` for the structured reason and `log.md` for the narrative. [hooks/halt-gate.sh](../hooks/halt-gate.sh) checks both `.phase` and `.execute.phase` and enforces `halt_reason` for either path. See `references/execute-mode.md` for the full phase pipeline.
 
 ### `execute.plan_hash`
 
@@ -78,8 +101,9 @@ Object capturing the `authorized_*` flag values at SETUP time: `authorized_push`
 The state file lives at `${INSTANCE_DIR}/state.json`. Use `jq` for safe reads:
 
 ```bash
-jq '.execute.phase' ~/.claude/teams/<team>/instances/<id>/state.json
-jq '.execute.change_log[] | select(.merged_at == null)' ~/.claude/teams/<team>/instances/<id>/state.json
+INSTANCE_DIR="$(ls -d .claude/deepwork/*/state.json 2>/dev/null | head -1 | xargs dirname)"
+jq '.execute.phase' "$INSTANCE_DIR/state.json"
+jq '.execute.change_log[] | select(.merged_at == null)' "$INSTANCE_DIR/state.json"
 ```
 
-For the instance directory path, check `~/.claude/teams/` for the active team. Alternatively, run `/deepwork-execute-status` which reads and formats `state.json` automatically.
+For the instance directory path, use `ls .claude/deepwork/*/state.json` or `/deepwork-execute-status`.

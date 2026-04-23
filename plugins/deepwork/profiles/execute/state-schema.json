@@ -1,4 +1,5 @@
 {
+  "halt_reason": null,
   "execute": {
     "plan_ref": null,
     "plan_hash": null,

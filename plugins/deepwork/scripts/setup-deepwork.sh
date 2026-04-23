@@ -516,6 +516,13 @@ DELIVER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/deliver-gate.sh"
 DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
   '[{"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# Stop — halt-gate enforces structured halt_reason when phase==halt
+# (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
+# the halt_reason key is entirely absent from state.json).
+HALT_GATE_SCRIPT="$PLUGIN_ROOT/hooks/halt-gate.sh"
+STOP_HALT_GATE_HOOK=$(jq -n --arg script "$HALT_GATE_SCRIPT" \
+  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
 # Stop — approve-archive renames state.json→state.archived.json when phase==done
 # (Stop fires every turn-end; script no-ops until orchestrator transitions to done on APPROVE).
 APPROVE_ARCHIVE_SCRIPT="$PLUGIN_ROOT/hooks/approve-archive.sh"
@@ -541,6 +548,7 @@ jq -n \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
   --argjson deliver_gate "$DELIVER_GATE_HOOK" \
+  --argjson stop_halt_gate "$STOP_HALT_GATE_HOOK" \
   --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
   --argjson wiki_log "$WIKI_LOG_HOOK" \
   '
@@ -565,6 +573,7 @@ jq -n \
       | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
       | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
+      | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))
       | add_hook_event(.; "FileChanged"; attach_dw($wiki_log; true))
     ) as $new_hooks
@@ -604,6 +613,11 @@ if [[ "$MODE" == "execute" ]]; then
   EXEC_STOP=$(jq -n --arg s "$EXEC_HOOKS_DIR/stop-hook.sh" \
     '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
 
+  # Execute-mode halt-gate: identical hook, registered BEFORE stop-hook.sh
+  # so halt_reason enforcement happens first on Stop events.
+  EXEC_HALT_GATE=$(jq -n --arg script "$HALT_GATE_SCRIPT" \
+    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
   CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
   jq -n \
     --argjson current "$CURRENT_SETTINGS" \
@@ -614,6 +628,7 @@ if [[ "$MODE" == "execute" ]]; then
     --argjson fc_src "$EXEC_FC_SRC" \
     --argjson fc_plan "$EXEC_FC_PLAN" \
     --argjson tc "$EXEC_TC" \
+    --argjson stop_halt_gate "$EXEC_HALT_GATE" \
     --argjson stop_exec "$EXEC_STOP" \
     '
     def attach_dw(arr; tag):
@@ -638,6 +653,7 @@ if [[ "$MODE" == "execute" ]]; then
         | add_hook_event(.; "FileChanged"; attach_dw($fc_src; true))
         | add_hook_event(.; "FileChanged"; attach_dw($fc_plan; true))
         | add_hook_event(.; "TaskCreated"; attach_dw($tc; true))
+        | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
         | add_hook_event(.; "Stop"; attach_dw($stop_exec; true))
       ) as $new_hooks
     | $c + {"hooks": $new_hooks}
