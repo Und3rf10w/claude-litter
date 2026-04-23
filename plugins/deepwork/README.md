@@ -134,6 +134,7 @@ For the full pipeline, all 8 execute hooks, state fields, and amendment mechanic
 | `/deepwork-execute-amend <gate-id> --reason "<desc>"` | Single-gate amendment (MICRO-TEAM re-verdict) | `skills/deepwork-execute-amend/SKILL.md` |
 | `/deepwork-wiki` | Regenerate Overview, Session Index, and Cross-refs in DEEPWORK_WIKI.md | `skills/deepwork-wiki/SKILL.md` |
 | `/deepwork-recap` | 30-50-word plain-text recap of deepwork history | `skills/deepwork-recap/SKILL.md` |
+| `/deepwork-drift-sweep` | Exhaustive drift sweep: enumerate ALL workstreams in the active session and diff each artifact against its source-of-truth; write `drift-report.v<N>.md` | `skills/deepwork-drift-sweep/SKILL.md` |
 
 ---
 
@@ -223,7 +224,12 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |
 | `approve-archive.sh` | Stop | On phase=="done", renames `state.json` → `state.archived.json` and invokes teardown | `hooks/approve-archive.sh` |
 | `wiki-log-append.sh` | FileChanged(.claude/deepwork/) | Appends log entry to DEEPWORK_WIKI.md when `state.archived.json` appears | `hooks/wiki-log-append.sh` |
-| `teammate-idle-gate.sh` | TeammateIdle | Forces teammates with in_progress tasks to complete (≤3 retries) | `hooks/teammate-idle-gate.sh` |
+| `teammate-idle-gate.sh` | TeammateIdle | Forces teammates with in_progress tasks to complete (≤3 retries); M5 Change C — exempts idle when a fresh `.gate-blocked-<task_id>` sidecar marker (AGE<300s) exists for an owned task (drift class l) | `hooks/teammate-idle-gate.sh` |
+| `phase-advance-gate.sh` | PreToolUse(Edit\|Write) | Blocks state.json phase transitions when `empirical_unknowns[*].result` is null / artifact missing (drift class a) or state.json vs log.md metadata disagrees (drift class k); warns on source_of_truth omissions | `hooks/phase-advance-gate.sh` |
+| `verdict-version-gate.sh` | PreToolUse(SendMessage) | Layer 1 halt-pending-verdict: blocks CRITIC verdict deliveries that reference a superseded proposal version (drift class h) | `hooks/verdict-version-gate.sh` |
+| `version-bump-notify.sh` | FileChanged(v*.md) | Async advisory: writes `drift.log` warning when an older proposal version is edited after a newer `version-sentinel.json` current_version | `hooks/version-bump-notify.sh` |
+| `stale-warn.sh` | FileChanged(v*.md) | Async: flips `stale_warn: true` on audit/critique files whose `valid_against.artifact_version` matches the changed proposal (drift class d) | `hooks/stale-warn.sh` |
+| `critique-version-gate.sh` | TaskCompleted | Layer 3 halt-pending-verdict (OPT-IN via `critique_version_gate` guardrail): blocks CRITIC task completion when subject references a superseded version | `hooks/critique-version-gate.sh` |
 
 ### Execute-mode hooks (registered at execute SETUP)
 
@@ -253,6 +259,7 @@ All state lives in `.claude/deepwork/<instance-id>/state.json`:
 - `empirical_unknowns[]` — open empirical questions
 - `halt_reason` — structured `{summary, blockers[]}` required at phase=="halt" (enforced by `hooks/halt-gate.sh`)
 - `iteration_queue[]` — user-authored or orchestrator-populated delta list; §4 step 3 pops one entry per REFINE cycle instead of advancing to DELIVER when CRITIC approves
+- `banners[]` — synthesis-deviation-backpointer banners surfaced at SYNTHESIZE step 6; advisory-only, never read by gates (see `references/state-schema.md`)
 
 Archetype artifacts: `findings.<name>.md`, `coverage.<name>.md`, `mechanism.<name>.md`, `reframe.<name>.md`, `empirical_results.<E_id>.md`, `proposals/vN.md`, `critique.vN.md`.
 
