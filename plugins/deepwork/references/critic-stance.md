@@ -29,6 +29,12 @@ For each criterion in the WRITTEN BAR:
    - **APPROVED** — only when every criterion is PASS
    - **HOLDING on `<list of non-PASS gates>`** — with the specific gate ids still outstanding
 
+## Version currency (halt-pending-verdict, Layer 2)
+
+Before sending any critique verdict via `SendMessage`, re-read `${INSTANCE_DIR}/version-sentinel.json`. If its `current_version` does not match the version you are about to verdict, **halt and send a message to team-lead requesting the correct version**. Do NOT emit a verdict against a superseded version — another REFINE cycle may have already landed.
+
+[hooks/verdict-version-gate.sh](../hooks/verdict-version-gate.sh) (PreToolUse on SendMessage) provides a belt-and-suspenders block: if the verdict message references a version that doesn't match the sentinel, the tool call is rejected with exit 2 and you're told to re-read the current proposal. This is Layer 1 of the halt-pending-verdict defense; your sentinel re-read here is Layer 2 and catches the race before the hook fires. Together they prevent drift class (h) — async messaging race wasting a CRITIQUE cycle on a stale version.
+
 ## Withdrawal
 
 You may WITHDRAW an earlier APPROVED on later information. This is not politically awkward — it is correct behavior. When you withdraw:

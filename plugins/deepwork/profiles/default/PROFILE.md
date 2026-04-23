@@ -149,6 +149,16 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 2. Gather updates, consolidate into `proposals/v2.md`. Populate `delta_from_prior:` with an explicit list of changes (see `references/versioning-protocol.md`).
 
+   **supersede-vN.md macro** (M3 Component A): on every version bump, atomically perform three writes:
+   1. Write `proposals/v<N+1>.md` with full frontmatter (version, delta_from_prior, bar_status all null).
+   2. Edit prior `proposals/v<N>.md` frontmatter → `status: "superseded-by-v<N+1>"` and `superseded_by: "[proposals/v<N+1>.md](v<N+1>.md)"`.
+   3. Write `${INSTANCE_DIR}/version-sentinel.json`:
+      ```json
+      {"current_version": "v<N+1>", "bumped_at": "<ISO8601>", "bumped_from": "v<N>"}
+      ```
+
+   [hooks/verdict-version-gate.sh](../../hooks/verdict-version-gate.sh) reads the sentinel on every SendMessage PreToolUse and blocks verdict deliveries that reference a superseded version (drift class h). [hooks/version-bump-notify.sh](../../hooks/version-bump-notify.sh) is a FileChanged async advisory that writes to `drift.log` when an older proposal version is edited after a newer sentinel.current_version — useful for catching orchestrator mistakes mid-REFINE.
+
 3. Return to CRITIQUE. CRITIC re-verdicts (fresh on version bump). Loop until APPROVED.
 
 4. If multiple REFINE cycles fail to converge, consider: (i) AskUserQuestion for goal reset, (ii) withdraw and recommend user do a solo pre-audit, (iii) accept a scope reduction. Do NOT ship via pressure.
