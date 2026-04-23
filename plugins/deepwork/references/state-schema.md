@@ -62,6 +62,8 @@ Backpointer annotations attached to teammate artifacts that SYNTHESIZE overruled
 
 Banners are advisory metadata only — they document the synthesis decision and direct readers to the current authoritative proposal section. **No hook reads `banners[]` as a blocking signal.** (Protocol commitment per proposals/v3-final.md §6 CONDITIONAL-2.) Writers append entries in the SYNTHESIZE phase after writing the proposal version. Backward-compat: the field is optional; absent or empty arrays produce no behavioral change.
 
+Schema enforced by `hooks/frontmatter-gate.sh` at Write|Edit time; see `references/schemas/banner-schema.json`.
+
 ---
 
 ## Execute-mode fields (profiles/execute/state-schema.json)

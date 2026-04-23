@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "banner-entry",
+  "title": "Banner entry",
+  "description": "A single entry in state.json banners[]. Written by SYNTHESIZE to record overruled teammate recommendations.",
+  "type": "object",
+  "required": ["artifact_path", "banner_type", "reason", "added_at", "added_by"],
+  "additionalProperties": false,
+  "properties": {
+    "artifact_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative or absolute path to the artifact this banner is attached to."
+    },
+    "banner_type": {
+      "type": "string",
+      "enum": ["pre-reconciliation-draft", "synthesis-deviation-backpointer"],
+      "description": "Discriminated type. pre-reconciliation-draft: later cross-check superseded this artifact. synthesis-deviation-backpointer: SYNTHESIZE weighed the recommendation differently."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable explanation of why this banner was added."
+    },
+    "added_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}",
+      "description": "ISO8601 timestamp when the banner was written."
+    },
+    "added_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role name or agent name that wrote the banner."
+    }
+  }
+}
