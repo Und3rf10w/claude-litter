@@ -20,7 +20,9 @@ SCHEMA_FILE="${PLUGIN_ROOT}/profiles/default/state-schema.json"
 
 # Fields exempt from the consumer check — add name + reason comment.
 EXEMPT=(
-  # none currently
+  # iteration_queue: P1 deferral per mode-parity audit 2026-04-23;
+  # re-evaluate after Wave 3 (PostToolBatch consolidation) lands
+  iteration_queue
 )
 
 # Consumer search roots: where field names must appear to count as "consumed".
