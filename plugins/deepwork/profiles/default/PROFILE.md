@@ -73,6 +73,10 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 2. **Live empirical tests** — MECHANISM (or appropriate specialist) must produce `empirical_results.<id>.md` for each empirical_unknown. These are live tests on real infrastructure, not documentation reading. Block SYNTHESIZE until all empirical_results files exist.
 
+   **Result backfill protocol** (per [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist A): when an `empirical_results.<id>.md` file lands, the orchestrator MUST set `empirical_unknowns[<id>].result` to a brief verdict string (e.g., `"PRESENT — async, 500ms delay"`) and update `owner` to the agent name. Atomic write via jq+tmp+mv. Phase advance is blocked until every `result` is non-null AND its cited artifact exists at `${INSTANCE_DIR}/${artifact}` (drift class a from proposals/v3-final.md).
+
+   **source_of_truth refresh protocol**: when a teammate's findings cite a file not already in `state.json.source_of_truth[]`, the orchestrator MUST append it via atomic jq+tmp+mv before the next phase advance. [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist B emits non-blocking warnings listing candidate omissions at each transition attempt.
+
 3. **Cross-check gates** — for any task with `metadata.cross_check_required: true`, ≥2 independent completions required. The task-completed-gate hook enforces; you don't need to check manually.
 
 4. If a teammate goes idle with in_progress tasks, the TeammateIdle gate forces resume (up to 3 retries). On 3x exhaustion, a guardrail is auto-appended and the teammate is released. Consider spawning a replacement for that archetype if their output is essential.
@@ -103,7 +107,9 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 4. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
 
-5. Advance `state.json.phase = "critique"`.
+5. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via atomic jq+tmp+mv: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
+
+6. Advance `state.json.phase = "critique"`.
 
 ## 4. CRITIQUE — CRITIC verdicts the bar
 
