@@ -21,6 +21,7 @@ Additional reference files available via Read at `${CLAUDE_PLUGIN_ROOT}/referenc
 - `versioning-protocol.md` — named proposal versioning and delta_from_prior protocol
 - `when-not-to-use.md` — non-use cases — may be relevant at SCOPE if goal looks like an execution task
 - `failure-modes.md` — pedagogical reference of failure modes this pattern prevents
+- `task-conventions.md` — TaskCreate metadata conventions (artifact paths, cross_check_required, scope_items) enforced by task-completed-gate.sh
 
 ---
 
@@ -60,6 +61,11 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    - **Every TaskCreate MUST set `owner`** (at spawn time or via `TaskUpdate(owner:...)`). The cross-check gate reads `owner` from the task file, NOT from the hook actor — otherwise Actor-Bob completing Alice-owned tasks inflates the distinct-owners count and defeats principle 6.
 
 8. **Call TeamCreate** with team_name from state.json. Spawn all teammates in parallel via a single message containing multiple Agent tool calls. Each spawn passes the fully-rendered role template in `prompt:` — resolve the HARD_GUARDRAILS, SOURCE_OF_TRUTH, ANCHORS, WRITTEN_BAR, and TEAM_ROSTER template slots from state.json values before calling. For CRITIC and REFRAMER, include their invariant stance text from `references/critic-stance.md` / `references/reframer-stance.md` verbatim.
+
+   **AGENT SCOPE CONSTRAINT (M8, drift class j)**: every agent spawn prompt MUST include this block verbatim:
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json except via the explicit jq+tmp+mv protocol for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+
+   Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
 
 9. Update `state.json.phase = "explore"`. Append a log.md entry noting team composition + anchors.
 
