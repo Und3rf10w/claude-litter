@@ -67,6 +67,19 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    - `scope-guard` (REFRAMER) — include `profiles/execute/stances/scope-guard-stance.md` verbatim
    - `chaos-monkey` (CHAOS-MONKEY, optional) — spawn ONLY when goal mentions services, networks, databases, queues, distributed components, or deployment infrastructure. Use `--chaos-monkey` opt-in; `--no-chaos-monkey` opt-out. Include `profiles/execute/stances/chaos-monkey-stance.md` verbatim.
 
+   **AGENT SCOPE CONSTRAINT**: every agent spawn prompt MUST include this block verbatim:
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json except via the explicit jq+tmp+mv protocol for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+
+   Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
+
+   **STATUS CLAIM RULE**: every agent spawn prompt MUST include this block verbatim. It addresses drift class (f) — status reports generated from cached mental model instead of fresh Read.
+
+   > **STATUS CLAIM RULE**: Any claim about the current status of a workstream, task, or artifact (e.g., "task #88 is complete", "the gate is at G-exec-3", "the test is passing", "the change covers gate G-exec-1") MUST be grounded in a fresh Read or grep made in THIS response. Cite the specific `file:line` that grounds the claim. Status claims not grounded in a fresh Read in the same response are unreliable and MUST be prefaced with `From memory (unverified):` — never presented as current ground truth.
+   >
+   > **COVERAGE CLAIM COROLLARY**: Any claim that a specific mechanism, drift class, or section is present in an artifact MUST be verified by a grep or Read in the same response; the grep result (including line numbers) MUST be included in the status message. Stating "the file contains X" without a live grep result is a STATUS CLAIM RULE violation.
+   >
+   > **EXEMPT from this rule**: architectural inference, design reasoning, analytical conclusions, and prospective proposals. You may reason about what SHOULD exist, how a mechanism SHOULD work, or what an invariant implies without a file:line citation — those are design outputs, not status claims. The rule targets retrospective/current-state claims specifically.
+
 6. **Write authorized flags to state**. The four `authorized_*` flags (`authorized_push`, `authorized_force_push`, `authorized_prod_deploy`, `authorized_local_destructive`) plus `secret_scan_waived` are written ONCE during SETUP from the invocation flags. They are NEVER updated post-SETUP — `bash-gate.sh` refuses to honor any mutation after `state.execute.phase` transitions out of "setup".
 
 7. Advance `state.json.execute.phase = "write"`. Append log.md entry.
@@ -200,8 +213,32 @@ WRITE → VERIFY → CRITIQUE → (REFINE → CRITIQUE)* → LAND → (CONTINUOU
 
 **Actions**:
 1. Set `state.json.execute.phase = "halt"`
-2. Archive state (the Stop hook / approve-archive.sh fires on session end)
-3. Write final log.md entry with completion summary and any open discoveries
+
+2. Set `state.json.halt_reason` to a structured object describing why this session is halting. Schema:
+
+   ```json
+   {
+     "summary": "<one-line explanation — non-empty string>",
+     "blockers": ["<open question or blocker>", ...]
+   }
+   ```
+
+   Examples:
+
+   | Halt type | Example halt_reason |
+   |---|---|
+   | Normal completion | `{"summary": "All plan gates APPROVED and LANDed; execution complete", "blockers": []}` |
+   | User cancel | `{"summary": "Session cancelled by user at phase=write", "blockers": []}` |
+   | Mid-flight abort | `{"summary": "Halted on unresolved discoveries requiring user input", "blockers": ["D3: irreversible operation blocked", "D4: test environment unavailable"]}` |
+
+   Write via atomic jq+tmp+mv:
+
+   ```bash
+   jq '.halt_reason = {summary: "<text>", blockers: []}' state.json > state.json.tmp && mv state.json.tmp state.json
+   ```
+
+3. Archive state (the Stop hook / approve-archive.sh fires on session end)
+4. Write final log.md entry with completion summary citing `halt_reason.summary` and any open discoveries
 
 **Do NOT restart SETUP** if state already has `plan_hash`. Do NOT re-spawn the team — it persists across clears.
 
