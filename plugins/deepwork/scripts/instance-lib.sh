@@ -16,7 +16,66 @@
 
 # Requires jq — caller should verify before sourcing if needed
 
+# ---------------------------------------------------------------------------
+# Hook latency instrumentation — installed once per sourcing hook.
+#
+# _HOOK_START_NS is captured at the top of discover_instance() (the first
+# function called by every hook). The EXIT trap computes elapsed_ms and
+# appends a JSONL record to ${INSTANCE_DIR}/hook-timing.jsonl.
+#
+# macOS BSD date supports %N (nanoseconds) since macOS 14. If it prints
+# a literal "N" the arithmetic below produces a garbage elapsed_ms; the
+# fallback sets _HOOK_START_NS from seconds precision only.
+_dw_ns_now() {
+  local _t
+  _t=$(date +%s%N)
+  # If date +%s%N is unsupported, the output ends with literal N
+  if [[ "$_t" == *N ]]; then
+    # Fall back to second precision; accept ~1 s granularity in elapsed_ms
+    _t="$(date +%s)000000000"
+  fi
+  printf '%s' "$_t"
+}
+
+_dw_emit_timing() {
+  local _exit=$1
+  # No-op when INSTANCE_DIR is unset or empty (hook fired outside active session)
+  [[ -n "${INSTANCE_DIR:-}" ]] || return 0
+  (
+    # Wrap in subshell so any error here cannot affect the hook exit code
+    local _end _start _elapsed_ms _blocked _ts _hook _event _tool
+    _end=$(_dw_ns_now)
+    _start="${_HOOK_START_NS:-$_end}"
+    _elapsed_ms=$(( (_end - _start) / 1000000 ))
+    (( _elapsed_ms < 0 )) && _elapsed_ms=0
+    _blocked="false"
+    (( _exit == 2 )) && _blocked="true"
+    _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _hook=$(basename "$0")
+    _event="${HOOK_EVENT_NAME:-}"
+    _tool="${TOOL_NAME:-}"
+    printf '{"hook":"%s","event":"%s","tool":"%s","elapsed_ms":%d,"ts":"%s","blocked":%s}\n' \
+      "$_hook" "$_event" "$_tool" "$_elapsed_ms" "$_ts" "$_blocked" \
+      >> "${INSTANCE_DIR}/hook-timing.jsonl" 2>/dev/null || true
+  ) || true
+}
+
+_dw_exit_trap() {
+  local _s=$?
+  _dw_emit_timing "$_s"
+  return $_s
+}
+
+# Only install the trap once (guard against double-sourcing)
+if [[ "${_DW_TIMING_TRAP_INSTALLED:-0}" != "1" ]]; then
+  trap '_dw_exit_trap' EXIT
+  _DW_TIMING_TRAP_INSTALLED=1
+fi
+
 discover_instance() {
+  # Capture start time on first call; subsequent calls (rare) don't overwrite it
+  [[ -n "${_HOOK_START_NS:-}" ]] || _HOOK_START_NS=$(_dw_ns_now)
+
   local hook_session="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
   [[ -n "$hook_session" ]] || return 1
   local _f _sid _id _dir _project_root
