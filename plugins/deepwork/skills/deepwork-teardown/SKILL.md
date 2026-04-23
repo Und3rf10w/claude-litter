@@ -1,11 +1,11 @@
 ---
-description: "Cancel the active deepwork session — tears down team and cleans up"
+description: "Tear down an active deepwork session — deletes the team, archives state, and restores settings. Works for both mid-flight abort and post-HALT cleanup."
 allowed-tools: ["Bash(ls .claude/deepwork/*/state.json:*)", "Bash(rm .claude/deepwork/**:*)", "Bash(rm -f .claude/deepwork/**:*)", "Bash(rm -rf .claude/deepwork/**:*)", "Bash(mv .claude/deepwork/**:*)", "Bash(ls .claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
 ---
 
-# Cancel Deepwork
+# Teardown Deepwork
 
-Check for active deepwork sessions and cancel the selected one:
+Tear down a deepwork session — delete the team, archive state, and restore settings. Applies to both mid-flight abort and post-HALT cleanup; the `phase` field in the archived state distinguishes the two.
 
 1. Use Glob to find all active instances:
 ```
@@ -16,22 +16,22 @@ Glob: .claude/deepwork/*/state.json
 
 3. Read each state file to extract: `session_id`, `goal`, `phase`, `team_name`.
 
-4. If exactly one instance exists, proceed to cancel it. If multiple instances exist, show a summary:
+4. If exactly one instance exists, proceed to tear it down. If multiple instances exist, show a summary:
 
 | Instance ID | Goal | Phase | Team |
 |---|---|---|---|
 | `<id>` | `<goal>` | `<phase>` | `<team>` |
 
-Then use `AskUserQuestion` to ask the user which instance to cancel.
+Then use `AskUserQuestion` to ask the user which instance to tear down.
 
 5. Once the target instance is selected, note its directory path: `.claude/deepwork/<id>/`.
 
 6. Read the state file to get team_name. Then call `TaskList` to get current task status for the summary report.
 
 7. If the state file has a non-null `team_name` field:
-   - Broadcast a shutdown_request to all teammates: `SendMessage(to: "*", summary: "cancelling deepwork", message: "The user has cancelled the deepwork session. Please stop any in-progress work.")`
+   - Broadcast a shutdown_request to all teammates: `SendMessage(to: "*", summary: "ending deepwork", message: "The user has ended the deepwork session. Please stop any in-progress work.")`
    - Call `TeamDelete` to clean up the team and task records.
-   - **This is the ONLY place TeamDelete is called.** Approved-and-done sessions leave the team intact for inspection.
+   - **This is the ONLY place TeamDelete is called.** `hooks/approve-archive.sh` archives state + restores settings on APPROVE but leaves the team intact for inspection; a full teardown (team deletion) only happens when this skill runs.
    - If TeamDelete fails (team already gone), continue anyway.
 
 8. Archive runtime state; preserve all artifacts for audit and future reference:
@@ -41,7 +41,7 @@ rm -f .claude/deepwork/<id>/heartbeat.json
 rm -f .claude/deepwork/<id>/.idle-retry.*
 ```
 
-The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on both mid-flight cancels and post-approval cleanup; the `phase` field inside the archived state distinguishes the two.
+The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
 
 Do NOT delete the artifacts — they capture the *why* behind the session (what was explored, what failed, what was rejected) and remain useful after teardown for historical analysis and future decisions:
 - `log.md` — narrative history
@@ -64,6 +64,6 @@ ls .claude/deepwork/*/state.json 2>/dev/null
 
 11. Report to the user:
     - Goal that was being worked on
-    - Phase at time of teardown (the phase field in archived state is preserved as-is — `done` for post-approval cleanup, or whichever phase was live for mid-flight cancels)
+    - Phase at time of teardown (the phase field in archived state is preserved as-is — `done` for post-APPROVE plan-mode cleanup, `halt` for post-HALT execute-mode cleanup, or whichever phase was live for mid-flight abort)
     - Task status summary from TaskList (completed / in_progress / pending)
     - Confirm teardown; note that the full instance is preserved at `.claude/deepwork/<id>/` including `state.archived.json` (structured record), `log.md`, `proposals/`, and all teammate artifacts — queryable via `jq` across past sessions

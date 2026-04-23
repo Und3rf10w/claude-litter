@@ -128,7 +128,7 @@ For the full pipeline, all 8 execute hooks, state fields, and amendment mechanic
 | `/deepwork <goal> [flags]` | Start a DESIGN or EXECUTE mode session | `skills/deepwork/SKILL.md` |
 | `/deepwork-status` | Dashboard: phase, team, bar verdicts, proposals, guardrails | `skills/deepwork-status/SKILL.md` |
 | `/deepwork-execute-status` | Execute-mode dashboard: phase, plan_hash, drift, change_log, test results | `skills/deepwork-execute-status/SKILL.md` |
-| `/deepwork-cancel` | Tear down team (only path that calls TeamDelete) and clean up | `skills/deepwork-cancel/SKILL.md` |
+| `/deepwork-teardown` | End a session — delete team (only path that calls TeamDelete), archive state, restore settings. Use for mid-flight abort or post-HALT cleanup | `skills/deepwork-teardown/SKILL.md` |
 | `/deepwork-guardrail add\|remove\|list "<rule>"` | Manual guardrail management | `skills/deepwork-guardrail/SKILL.md` |
 | `/deepwork-bar add\|remove\|list "<criterion>"` | Tune the written bar mid-run | `skills/deepwork-bar/SKILL.md` |
 | `/deepwork-execute-amend <gate-id> --reason "<desc>"` | Single-gate amendment (MICRO-TEAM re-verdict) | `skills/deepwork-execute-amend/SKILL.md` |
@@ -291,7 +291,7 @@ Safety boundaries:
 
 - **DESIGN mode does NOT implement.** No code changes to target codebase — only proposals and references.
 - **EXECUTE mode does NOT commit without CRITIC APPROVED.** The LAND phase requires all three PA/EG/RA dimensions to PASS.
-- **Does NOT call TeamDelete from the orchestrator.** Only `/deepwork-cancel` tears down the team.
+- **Does NOT call TeamDelete from the orchestrator.** Only `/deepwork-teardown` tears down the team.
 - **Does NOT overwrite settings.local.json irrecoverably.** Automatic backup + `_deepwork: true` tag filter preserves other plugins' hooks.
 - **SessionStart re-inject** — `hooks/session-context.sh` reconstructs orchestrator prompt from disk-backed state.
 - **Parallel-safe** — 8-hex instance IDs scope all state; setup is serialized on `.claude/deepwork.local.lock`.

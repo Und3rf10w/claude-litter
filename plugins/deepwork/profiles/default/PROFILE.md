@@ -157,7 +157,7 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 Do not cross into implementation. Your deliverable is the approved plan document. The user takes it from there (possibly via `/swarm-loop <plan>` or directly).
 
-Log a final one-line status message. If the team is fully idle, the team remains intact for user inspection until `/deepwork-cancel` is called.
+Log a final one-line status message. If the team is fully idle, the team remains intact for user inspection until `/deepwork-teardown` is called.
 
 ---
 

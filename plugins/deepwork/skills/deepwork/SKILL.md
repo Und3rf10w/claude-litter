@@ -52,7 +52,7 @@ Do NOT use `/deepwork` for execution tasks, documented answers, or small reversi
 ## Companion commands
 
 - `/deepwork-status` — dashboard: phase, team roster, bar verdicts, proposal versions
-- `/deepwork-cancel` — tear down team (only path that calls TeamDelete)
+- `/deepwork-teardown` — end session: delete team (only path that calls TeamDelete), archive state, restore settings. Use for mid-flight abort or post-HALT cleanup.
 - `/deepwork-guardrail add|remove|list "<rule>"` — manual guardrail management
 - `/deepwork-bar add|remove|list "<criterion>"` — tune the written bar mid-run
 
@@ -70,7 +70,7 @@ Do NOT use `/deepwork` for execution tasks, documented answers, or small reversi
 
 ## CRITICAL
 
-Do NOT call `TeamDelete` from the orchestrator. Only `/deepwork-cancel` tears down the team. Approved-and-done plans leave the team intact for user inspection.
+Do NOT call `TeamDelete` from the orchestrator. Only `/deepwork-teardown` tears down the team. Approved-and-done plans leave the team intact for user inspection.
 
 Do NOT cross into implementation. Your deliverable is the approved plan. Halt at DELIVER.
 
