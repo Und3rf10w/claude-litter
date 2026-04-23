@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 93 nodes, 150 edges
+Graph: 94 nodes, 151 edges
 
 ## Mermaid Flowchart
 
@@ -58,6 +58,7 @@ flowchart LR
     authorized_local_destructive(([".authorized_local_destructive"]))
     authorized_prod_deploy(([".authorized_prod_deploy"]))
     authorized_push(([".authorized_push"]))
+    banners(([".banners"]))
     bar(([".bar"]))
     change_id(([".change_id"]))
     current_version(([".current_version"]))
@@ -156,6 +157,7 @@ flowchart LR
   critique_version_gate -.->|"reads"| team_name
   file_changed_retest -.->|"reads"| change_id
   file_changed_retest -.->|"reads"| execute_phase
+  frontmatter_gate -.->|"reads"| banners
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   halt_gate -.->|"reads"| execute_phase
   halt_gate -.->|"reads"| halt_reason
@@ -408,6 +410,7 @@ flowchart LR
       "mode": "design",
       "reads": {
         "state": [
+          ".banners",
           ".frontmatter_schema_version"
         ],
         "markers": [
