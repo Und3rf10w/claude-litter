@@ -20,6 +20,12 @@ Produce a brief plain-text recap of the project's deepwork history. Modeled on C
    - Factual tone ("N sessions. X approved. Y remains open." — not "Looks like we've been busy!")
    - Lead with the aggregate state, then the most recent decision or open thread
    - Don't editorialize, don't add opinions
+   - When summarizing the latest archived session, if the session's archived instance dir
+     contains `.md` artifacts with `task_id` frontmatter, append one line at the end:
+       "Gate-list: <N> tasks completed across <N> bar criteria (instance <8-hex>)."
+     Implementation: glob archived instance dir for `*.md`, extract `task_id` and `bar_id`
+     frontmatter via Read tool, count distinct task_ids and distinct bar_ids. Skip if no
+     frontmatter present (back-compat with pre-fix artifacts).
 
 Example shape:
 

@@ -57,12 +57,36 @@ If no files are found, report that no deepwork session is currently active and s
 
    **Proposal versions** (list `proposals/*.md` files with their `version:` and `delta_from_prior:` front-matter if available).
 
-4. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owner and metadata.bar_id where available.
+4. **Cross-check state** (runs after step 3, before TaskList):
+   A. Glob the active instance dir: `.claude/deepwork/<id>/*.md` (NOT archived — live session).
+   B. For each file, extract the frontmatter (first `---` block).
+   C. From each parsed frontmatter, collect:
+        - `artifact_type`
+        - `bar_id` (or `bar_ids`)
+        - `cross_check_for`   (findings artifacts — points to the bar_id being cross-checked)
+        - `verdict`           (critique artifacts — `HOLDING|APPROVED`)
+        - `result`            (empirical_results — `confirmed|refuted|inconclusive`)
+   D. Render a "Cross-check state" column in the bar verdict table:
+      | Gate | Verdict | Cross-check state | Evidence |
+      |---|---|---|---|
+      | G6 | PASS | 2/2 confirmed | findings.hook-auditor.md (primary), mechanism.enforcement-designer.md (secondary) |
+      | G3 | PASS | empirical confirmed | empirical_results.E2.md (result: confirmed) |
+   E. Backwards compatible: artifacts without frontmatter contribute no cross-check state;
+      column shows `—`.
+   F. Also display:
+      - **Critique verdict**: glob `critique.v*.md` (highest version), read `verdict` field.
+        Display: `"CRITIC verdict: <verdict> (critique.v<version>.md)"`
+      - **Empirical results**: glob `empirical_results.*.md`, read `empirical_id` + `result`.
+        Display table:
+        | Unknown | Result |
+        | `<empirical_id>` | `<result>` |
 
-5. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
+5. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owner and metadata.bar_id where available.
 
-6. If `state.json.hook_warnings[]` is non-empty, display under **Hook Warnings** (these are incident signals that triggered guardrail auto-append).
+6. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
 
-7. If `state.json.user_feedback` is set, display it under **User Feedback** (from a prior ExitPlanMode rejection).
+7. If `state.json.hook_warnings[]` is non-empty, display under **Hook Warnings** (these are incident signals that triggered guardrail auto-append).
+
+8. If `state.json.user_feedback` is set, display it under **User Feedback** (from a prior ExitPlanMode rejection).
 
 Format all of this as a clean, readable dashboard. Use markdown tables; keep the overall output scannable.

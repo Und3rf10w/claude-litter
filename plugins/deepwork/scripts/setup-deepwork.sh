@@ -395,7 +395,8 @@ jq -n \
     "empirical_unknowns": [],
     "role_definitions": [],
     "user_feedback": null,
-    "hook_warnings": []
+    "hook_warnings": [],
+    "frontmatter_schema_version": "1"
   }' > "${INSTANCE_DIR}/state.json.tmp.$$"
 mv "${INSTANCE_DIR}/state.json.tmp.$$" "${INSTANCE_DIR}/state.json"
 
@@ -556,6 +557,22 @@ CRITIQUE_VERSION_GATE_SCRIPT="$PLUGIN_ROOT/hooks/critique-version-gate.sh"
 CRITIQUE_VERSION_GATE_HOOK=$(jq -n --arg script "$CRITIQUE_VERSION_GATE_SCRIPT" \
   '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# PreToolUse:Write|Edit — frontmatter-gate enforces uniform YAML frontmatter
+# on all .md artifacts written inside the active instance dir. Log.md /
+# prompt.md / adversarial-tests*.md are carved out. Warn-only for pre-fix
+# sessions where state.json lacks frontmatter_schema_version.
+FRONTMATTER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/frontmatter-gate.sh"
+FRONTMATTER_GATE_HOOK=$(jq -n --arg script "$FRONTMATTER_GATE_SCRIPT" \
+  '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# Pre+PostToolUse:Write|Edit — state-drift-marker snapshots state.json before
+# every write and appends phase-transition + bar-verdict markers to log.md
+# after every write. Single hook variable registered twice (Pre + Post) — the
+# script dispatches on $HOOK_EVENT_NAME at runtime.
+DRIFT_MARKER_SCRIPT="$PLUGIN_ROOT/hooks/state-drift-marker.sh"
+DRIFT_MARKER_HOOK=$(jq -n --arg script "$DRIFT_MARKER_SCRIPT" \
+  '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh)), "timeout": 5}]}]')
+
 # Stop — halt-gate enforces structured halt_reason when phase==halt
 # (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
 # the halt_reason key is entirely absent from state.json).
@@ -599,6 +616,8 @@ jq -n \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
   --argjson deliver_gate "$DELIVER_GATE_HOOK" \
+  --argjson frontmatter_gate "$FRONTMATTER_GATE_HOOK" \
+  --argjson drift_marker "$DRIFT_MARKER_HOOK" \
   --argjson phase_advance_gate "$PHASE_ADVANCE_GATE_HOOK" \
   --argjson verdict_gate "$VERDICT_GATE_HOOK" \
   --argjson version_bump_notify "$VERSION_BUMP_NOTIFY_HOOK" \
@@ -629,7 +648,10 @@ jq -n \
       | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
       | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
+      | add_hook_event(.; "PreToolUse"; attach_dw($frontmatter_gate; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($phase_advance_gate; true))
+      | add_hook_event(.; "PreToolUse"; attach_dw($drift_marker; true))
+      | add_hook_event(.; "PostToolUse"; attach_dw($drift_marker; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($verdict_gate; true))
       | add_hook_event(.; "FileChanged"; attach_dw($version_bump_notify; true))
       | add_hook_event(.; "FileChanged"; attach_dw($stale_warn; true))

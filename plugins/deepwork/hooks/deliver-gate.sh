@@ -64,6 +64,23 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
     # Find the actual file path for v<LATEST_V>*.md
     LATEST_FILE=$(ls "${INSTANCE_DIR}/proposals/"v"${LATEST_V}"*.md 2>/dev/null | head -1)
     if [[ -f "$LATEST_FILE" ]]; then
+      # Back-compat: proposal predates frontmatter schema; skip delta check
+      # and record the fall-open in state.json.hook_warnings[] so the pre-fix
+      # delivery is audit-visible (plan Part C).
+      FRONT_MATTER_CHECK=$(sed -n '/^---$/,/^---$/p' "$LATEST_FILE" 2>/dev/null)
+      if [[ -z "$FRONT_MATTER_CHECK" ]]; then
+        if [[ -f "$STATE_FILE" ]]; then
+          _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq --arg ts "$_NOW" --arg v "$LATEST_V" \
+            '.hook_warnings += [{event: "deliver-gate",
+                                 timestamp: $ts,
+                                 note: ("pre-fix proposal delivered; frontmatter presence not enforced (proposals/v" + $v + "*.md)")}]' \
+            "$STATE_FILE" > "${STATE_FILE}.tmp.$$" 2>/dev/null \
+            && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" \
+            || rm -f "${STATE_FILE}.tmp.$$"
+        fi
+        exit 0
+      fi
       # Extract front-matter delta_from_prior. Accept any non-empty non-null value.
       FRONT_MATTER=$(sed -n '/^---$/,/^---$/p' "$LATEST_FILE" 2>/dev/null)
       DELTA_LINE=$(printf '%s' "$FRONT_MATTER" | grep -E '^delta_from_prior:' | head -1)

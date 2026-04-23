@@ -230,6 +230,9 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `version-bump-notify.sh` | FileChanged(v*.md) | Async advisory: writes `drift.log` warning when an older proposal version is edited after a newer `version-sentinel.json` current_version | `hooks/version-bump-notify.sh` |
 | `stale-warn.sh` | FileChanged(v*.md) | Async: flips `stale_warn: true` on audit/critique files whose `valid_against.artifact_version` matches the changed proposal (drift class d) | `hooks/stale-warn.sh` |
 | `critique-version-gate.sh` | TaskCompleted | Layer 3 halt-pending-verdict (OPT-IN via `critique_version_gate` guardrail): blocks CRITIC task completion when subject references a superseded version | `hooks/critique-version-gate.sh` |
+| `frontmatter-gate.sh` | PreToolUse(Write\|Edit) | Enforces uniform YAML frontmatter on `.md` artifacts written inside the active instance dir; carve-outs: `log.md`, `prompt.md`, `adversarial-tests*.md`; warn-only for pre-fix sessions lacking `frontmatter_schema_version` sentinel | `hooks/frontmatter-gate.sh` |
+| `state-drift-marker.sh` | Pre+PostToolUse(Write\|Edit) | On state.json writes: snapshots pre-write, diffs post-write, appends deduped phase-transition + bar-verdict markers to log.md (removes model dependency for log freshness) | `hooks/state-drift-marker.sh` |
+| `pre-compact.sh` | PreCompact (static, `hooks.json`) | Stamps `state.json.last_updated`, appends freshness line to log.md, emits compact instructions on stdout; no-ops for subagent contexts and when no active session | `hooks/pre-compact.sh` |
 
 ### Execute-mode hooks (registered at execute SETUP)
 

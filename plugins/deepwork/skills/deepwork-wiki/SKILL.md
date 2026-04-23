@@ -81,3 +81,25 @@ If none, report "No archived deepwork sessions found. Run `/deepwork` and comple
    - Number of sessions synthesized
    - Date range covered (oldest → newest)
    - A 1-line summary of the Overview
+
+10. **Sources graph** (Step 6 — runs after step 8, appended as a new section):
+   A. Glob all `.md` files in each archived instance dir: `.claude/deepwork/<id>/*.md`
+   B. For each file, read the first ~30 lines with the Read tool and extract the YAML
+      frontmatter block (from first `---` to the second `---`).
+   C. From each parsed frontmatter block, collect:
+        - `artifact_type`
+        - `author`
+        - `bar_id` (or `bar_ids`)
+        - `sources[]` (list of source paths cited by this artifact)
+   D. Build a consumer×producer edge list: for each (artifact, source_path) pair, emit
+      "artifact consumed source_path" — where source_path may itself be another artifact.
+   E. Render as a markdown section in DEEPWORK_WIKI.md under `## Sources graph`, grouped
+      by `bar_id`, showing:
+      ```
+      G1:
+        - findings.inventory-hunter.md (author: inventory-hunter)
+            consumed: profiles/default/PROFILE.md, references/versioning-protocol.md
+      ```
+   F. Idempotent: if `## Sources graph` already exists, replace it in place (find the
+      heading, strip through the next `## ` heading, rewrite). Place the section
+      between `## Cross-refs` and `# Log`.
