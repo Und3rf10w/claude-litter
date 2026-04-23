@@ -248,6 +248,26 @@ _run_registration_test() {
   printf '  (info) halt-gate Stop-array index=%s, approve-archive Stop-array index=%s — CC runtime ordering is not tested here\n' \
     "$halt_idx" "$archive_idx"
 
+  # 4. Assert halt-gate Stop-array index < approve-archive Stop-array index.
+  # This catches a source reorder in setup-deepwork.sh that would put
+  # approve-archive before halt-gate (archive renames state.json, making
+  # halt_reason unreadable for a concurrent halt-phase Stop event).
+  if [[ "$halt_idx" =~ ^[0-9]+$ ]] && [[ "$archive_idx" =~ ^[0-9]+$ ]]; then
+    if [[ "$halt_idx" -lt "$archive_idx" ]]; then
+      printf '✔ TM-HALT-REGISTRATION/order (halt-gate idx=%s < approve-archive idx=%s)\n' \
+        "$halt_idx" "$archive_idx"
+      PASS=$((PASS + 1))
+    else
+      printf '✘ TM-HALT-REGISTRATION/order — halt-gate idx=%s >= approve-archive idx=%s; ' \
+        "$halt_idx" "$archive_idx" >&2
+      printf 'setup-deepwork.sh Stop registration order was changed\n' >&2
+      FAIL=$((FAIL + 1))
+      FAILED_CASES+=("TM-HALT-REGISTRATION/order")
+    fi
+  else
+    printf '  (skip) TM-HALT-REGISTRATION/order — one or both hooks absent from Stop array (already caught above)\n'
+  fi
+
   rm -rf "$sandbox"
 }
 
