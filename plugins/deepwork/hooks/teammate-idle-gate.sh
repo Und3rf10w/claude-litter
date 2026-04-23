@@ -1,5 +1,6 @@
 #!/bin/bash
 # teammate-idle-gate.sh — TeammateIdle hook enforcing task completion discipline
+# plus M5 Change C (cross-check cycle fix, drift class l).
 #
 # Fires in the teammate's session after all tool calls complete.
 # If the teammate owns any in_progress tasks, re-injects instructions via exit 2.
@@ -8,6 +9,18 @@
 #
 # On max-retries reached: emits a hook_warnings entry to state.json AND appends
 # an incident-derived guardrail to state.json.guardrails[] (principle 5).
+#
+# M5 Change C (drift class l): before running the normal retry path, check
+# for ${INSTANCE_DIR}/.gate-blocked-<task_id> markers. If a fresh marker
+# (AGE<300s) exists for any owned task, allow idle without retry — the
+# teammate is legitimately blocked pending cross-check sibling.
+#
+# Inv2 safeguard (M6 deferred Layer 2): this hook does NOT read any
+# interleaved session log content. It reads only state.json.phase, owned
+# task JSON, and per-task marker files. No cross-teammate log surfacing
+# occurs. Adding a STATUS CLAIM regex check would require per-teammate
+# log routing; that's deferred per proposals/v3-final.md §6 (not a blocker
+# for this impl).
 #
 # Registered in: hooks.json (plugin-level, fires on all teammate sessions)
 # Exit 2 = force keep working (stderr is injected as feedback)

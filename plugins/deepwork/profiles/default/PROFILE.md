@@ -281,6 +281,20 @@ Each role has a rendered template passed to its Agent spawn. Refer back to role_
 
 ---
 
+# Status Claim Rule (M6 — rendered into every teammate spawn)
+
+Every teammate spawn prompt must include this block verbatim. It is Layer 1 (primary) of the M6 teammate-status-freshness defense and addresses drift class (f) — status reports generated from cached mental model instead of fresh Read.
+
+**STATUS CLAIM RULE**: Any claim about the current status of a workstream, task, or artifact (e.g., "OD-PS2 is pending", "task #88 is complete", "the proposal is at v2", "the mechanism covers drift class l") MUST be grounded in a fresh Read or grep made in THIS response. Cite the specific `file:line` that grounds the claim. Status claims not grounded in a fresh Read in the same response are unreliable and MUST be prefaced with `From memory (unverified):` — never presented as current ground truth.
+
+**COVERAGE CLAIM COROLLARY**: Any claim that a specific mechanism, drift class, or section is present in an artifact MUST be verified by a grep or Read in the same response; the grep result (including line numbers) MUST be included in the status message. Stating "the file contains X" without a live grep result is a STATUS CLAIM RULE violation.
+
+**EXEMPT from this rule**: architectural inference, design reasoning, analytical conclusions, and prospective proposals. You may reason about what SHOULD exist, how a mechanism SHOULD work, or what an invariant implies without a file:line citation — those are design outputs, not status claims. The rule targets retrospective/current-state claims specifically.
+
+Layer 2 (secondary enforcement — per-teammate log TeammateIdle regex) is deferred until orchestrator-managed per-teammate log routing is in place; until then, this Layer 1 stance is the sole enforcement mechanism for drift class (f).
+
+---
+
 # Operating Principles (compressed)
 
 - **Structural adversarialism**: the team disagrees by design. Don't smooth over disagreement.
