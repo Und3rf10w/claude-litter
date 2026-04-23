@@ -48,7 +48,9 @@ else
   OUTCOME="cancelled (phase=${PHASE:-unknown})"
 fi
 
-LOG_LINE="## [${TODAY}] archived | ${GOAL_TRUNC} (id=${INSTANCE_ID}, ${OUTCOME})"
+ARTIFACT_COUNT=$(ls "${INSTANCE_DIR}"/*.md 2>/dev/null | wc -l | tr -d ' ')
+GATE_COUNT=$(jq -r '.bar | length' "$FILE_PATH" 2>/dev/null || echo "0")
+LOG_LINE="## [${TODAY}] archived | ${GOAL_TRUNC} (id=${INSTANCE_ID}, ${OUTCOME}, ${GATE_COUNT} gates, ${ARTIFACT_COUNT} artifacts)"
 
 # Bootstrap skeleton if missing
 if [[ ! -f "$WIKI_FILE" ]]; then
