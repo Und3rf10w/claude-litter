@@ -55,6 +55,14 @@ If no files are found, report that no deepwork session is currently active and s
    - <rule>  [source: <source>, <timestamp>]
    ```
 
+   **Banners** (`banners[]`): if non-empty, display:
+   ```
+   Banners: N artifacts flagged
+   - <artifact_path>: <reason> (<banner_type>, <added_at>)
+   ...
+   ```
+   If empty or absent, omit this section entirely.
+
    **Proposal versions** (list `proposals/*.md` files with their `version:` and `delta_from_prior:` front-matter if available).
 
 4. **Cross-check state** (runs after step 3, before TaskList):
