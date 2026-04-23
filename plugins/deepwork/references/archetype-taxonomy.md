@@ -110,6 +110,27 @@ CRITIC's full stance is in `references/critic-stance.md` — include it verbatim
 
 ---
 
+## CHAOS-MONKEY (execute-mode only, optional)
+
+**Incentive**: Break things under realistic fault conditions.
+**Counter-incentive**: Report only genuine faults, not theoretical ones.
+
+CHAOS-MONKEY is an **execute-mode-only** archetype. It does not appear in design-mode teams. Its authoritative stance is `profiles/execute/stances/chaos-monkey-stance.md` — include it verbatim in the CHAOS-MONKEY role prompt.
+
+CHAOS-MONKEY probes resiliency of changed components involving infrastructure during the VERIFY phase. It targets services, networks, databases, queues, distributed components, and deployment infrastructure. It injects realistic faults (network partition, process crash, resource exhaustion) and reports whether the system recovers without data corruption.
+
+**Spawn condition**: `state.execute.chaos_monkey_enabled == true`. This flag is set at SETUP by `scripts/setup-deepwork.sh:421-427` using an auto-detect heuristic — if the goal string matches any of: `service`, `network`, `database`, `queue`, `distributed`, `deploy`, `kubectl`, `terraform`, `helm`, `infrastructure`, `microservice`, `cluster` (case-insensitive). The auto-detect logic describes the trigger pattern; the exact regex lives at `scripts/setup-deepwork.sh:423`.
+
+**Opt-in/opt-out**: `--chaos-monkey` forces spawn; `--no-chaos-monkey` forces skip regardless of auto-detect.
+
+**Instantiation**: always `"chaos-monkey"` (lowercase identifier). Only one instantiation.
+
+**Output contract**: findings reported as discoveries in `discoveries.jsonl` with `type: new-failure` or `type: env-mismatch`.
+
+**Default model**: `"sonnet"` (probe execution). Upgrade to `"opus"` if fault analysis requires complex reasoning.
+
+---
+
 ## Composition by problem shape
 
 The orchestrator reads the goal and composes archetypes into named roles. Default compositions:

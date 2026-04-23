@@ -1,6 +1,6 @@
 {
   "name": "deepwork",
-  "description": "Research/design convergence via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic). Delivers an approved plan via ExitPlanMode; never crosses into implementation.",
+  "description": "Two-mode deep-work tool: DESIGN mode produces an approved plan via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic); EXECUTE mode implements that plan gate-by-gate with hook-enforced citation, test-evidence, and reversibility gates.",
   "version": "0.1.1",
   "author": {
     "name": "Und3rf10w"

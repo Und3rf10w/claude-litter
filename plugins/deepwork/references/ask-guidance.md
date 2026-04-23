@@ -38,6 +38,21 @@ CRITIC holds the bar (evidence-based gate). Specialists hold mechanism expertise
 
 This is the fifth case because it looks like #2 (mitigation-path choice) but is specifically about a *stance* disagreement between roles, not about the merits of the options. The user picks taste.
 
+### 6. Execute-mode halt discovery (execute mode only)
+
+In execute mode, when `discoveries.jsonl` emits an entry with `proposed_outcome: halt`, the orchestrator must surface the decision to the user. This is the only legitimate AskUserQuestion invocation in execute mode.
+
+> Example: a teammate appends a discovery with `type: env-mismatch` and `proposed_outcome: halt` because the changed component fails in a non-recoverable way on one environment. The orchestrator asks the user to choose: halt-and-review, continue-at-operator-risk, or escalate to `/deepwork-execute-amend`.
+
+Authoritative trigger spec: `profiles/execute/PROFILE.md:212-231`.
+
+**Important distinctions**:
+- `proposed_outcome: escalate` → do NOT ask the user; trigger `/deepwork-execute-amend` directly.
+- `proposed_outcome: continue` → do NOT ask the user; add a guardrail and continue.
+- `proposed_outcome: halt` → AskUserQuestion is **required**.
+
+This case differs from the 5 design-mode cases above because it is discovery-triggered at a specific execute-mode state boundary, not a deliberative design choice. The three options must be: (1) halt and review, (2) continue at operator risk, (3) escalate to amendment.
+
 ---
 
 ## WHEN NOT to ask

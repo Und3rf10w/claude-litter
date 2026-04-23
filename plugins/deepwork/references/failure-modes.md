@@ -41,3 +41,35 @@ Specific patterns that transfer to new problem domains:
 - **Vague null → independent cross-check gates any load-bearing null** (principle 6)
 
 The 10 principles are generalizations; this table gives concrete instantiations. Future `/deepwork` runs should extend this table with their own failure modes + catchers, building up institutional memory across sessions.
+
+---
+
+## Execute-mode failure modes
+
+These are the failure paths specific to `/deepwork --mode execute`. Each row cites the enforcing hook or script at file:line. Source: `mechanism.doc-architect.md` §F, validated against `findings.hunter.md` §C.
+
+| Failure | Handler (file:line) | Recovery |
+|---|---|---|
+| **Plan file mutated after SETUP** | `hooks/execute/plan-drift-detector.sh:44-75` | `plan_drift_detected=true`; halt; amend via `/deepwork-execute-amend` or rerun |
+| **Write without plan citation** | `hooks/execute/plan-citation-gate.sh:56-98` | Block Write/Edit until `pending-change.json` populated with valid `plan_section` and target file in `files[]` |
+| **Covering test last failed (EP3)** | `hooks/execute/plan-citation-gate.sh:100-127` | Fix the failing test before next Write/Edit; `test-results.jsonl` entry must show `last_result: "pass"` |
+| **Write to log files (GAP-10)** | `hooks/execute/plan-citation-gate.sh:48-53` | Blocked unconditionally; log files are append-only via hooks — use the designated hooks or jq+tmp+mv pattern |
+| **`--no-verify`/`SKIP=*`/`git core.hooksPath=` bypass** | `hooks/execute/bash-gate.sh:104-115` | Categorically denied; no override path exists (G8 ban) |
+| **Unauthorized force-push** | `hooks/execute/bash-gate.sh:119-124` | Denied unless `authorized_force_push` was set in `setup_flags_snapshot` at SETUP time |
+| **Secret in bash command** | `hooks/execute/bash-gate.sh:172-198` | Denied (G7 secret-scan); rotate credential and reissue without secret in command |
+| **Irreversibility ladder breach** | `hooks/execute/bash-gate.sh:206-279` | Denied per tier; set the corresponding `authorized_*` flag at SETUP time (not post-SETUP) |
+| **Post-setup mutation of `authorized_*`** | `hooks/execute/bash-gate.sh:80-100` | Denied; flags are frozen at SETUP; start a new execute session with the required flags |
+| **Out-of-scope task creation** | `hooks/execute/task-scope-gate.sh:57-112` | Discovery appended to `discoveries.jsonl`; resolve via `/deepwork-execute-amend` before creating the task |
+| **Flaky test (mixed last-6 results)** | `hooks/execute/test-capture.sh:132-184` | Logged to `test-results.jsonl`; surfaces in CRITIC context; add test stabilization before next CRITIQUE |
+| **Mid-execute session exit** | `hooks/execute/stop-hook.sh:43-101` | Re-injection (`decision:"block"`) until `change_log[]` entries have verdicts; complete or explicitly halt |
+
+### Unhandled / manually-maintained paths
+
+Documented as known limitations — not proposed for fixing in this session:
+
+- **`rollback_log[]`** — EXECUTOR-maintained manually; no auto-write hook.
+- **`env_attestations[]`** — AUDITOR-written via stance; no auto-write hook.
+- **`flaky_tests[]` state field** — detected by `test-capture.sh` but only written to `test-results.jsonl`; the `state.execute.flaky_tests[]` field is currently unused by any enforcement gate.
+- **`discoveries.jsonl` watchdog** — no automated watchdog for stale-open entries with `resolution: null`.
+
+See `references/execute-mode.md` §Known Limitations for detail.

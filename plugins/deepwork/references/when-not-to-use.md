@@ -68,6 +68,36 @@ Multi-agent debate on an execution task is waste. A single implementing agent (w
 - **Deepwork + execution**: deepwork produces a plan via ExitPlanMode. You then run an implementation loop (or solo agent) on the plan to execute. Two tools, two purposes.
 - **Deepwork for spec, solo for impl**: design-phase uses deepwork; code-phase doesn't. The team's output is a spec, not code.
 
+## When NOT to reach for execute mode
+
+Execute mode (`/deepwork --mode execute`) runs an approved plan through a gate-clearing implementation loop. It requires a fully-formed, CRITIC-approved plan with explicit gates. Use design mode when these conditions aren't met.
+
+### The plan has no gate list
+
+Execute mode requires a plan with discrete, verifiable gates. If your plan doc is a narrative without explicit `G-exec-<N>` gate structure, the SETUP phase will fail with zero gates detected. Go back to design mode to produce a properly-gated plan.
+
+### The plan has not been approved by CRITIC
+
+Execute mode inherits the design-mode bar criteria as categorical expectations. Running execute against a plan that didn't pass CRITIC in design mode is running against an unvetted specification — CRITIC in execute mode will likely HALT immediately.
+
+### `plan_hash` can't be computed or the plan file doesn't exist
+
+If you can't provide a valid `--plan-ref` path that resolves to an existing, readable file, SETUP halts. Ensure the plan file is at a stable absolute path before invoking execute mode.
+
+### The amendment would touch ≥ 3 gates
+
+Once executing, if a CRITIC HOLDING verdict requires amending 3 or more gates, execute mode's amendment flow (`/deepwork-execute-amend`) is not the right tool. The full-re-run threshold requires a fresh `/deepwork --mode default` design session. See `references/execute-mode.md` §Amendment Trigger Conditions.
+
+### You're not sure what the plan commits you to
+
+Execute mode's hooks actively gate writes, bash commands, and task creation. If you haven't read the plan and understand what each gate produces, you risk triggering the stop-hook re-injection loop mid-session with nowhere to go. Read the plan first.
+
+### The work is exploratory, not implementation
+
+Execute mode is for implementing an approved design. If you're still exploring the problem space, gathering evidence, or unsure which approach to take, use design mode. Execute mode will fight you — discovery entries will pile up, scope-guard will block tasks, and amendment cycles will compound.
+
+---
+
 ## Quick decision flowchart
 
 ```
