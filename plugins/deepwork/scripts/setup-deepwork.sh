@@ -281,7 +281,11 @@ trap '
 
 # Derive team_name
 if [[ -z "$TEAM_NAME" ]]; then
-  TEAM_NAME="deepwork-$(printf '%s' "$GOAL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+  # Normalize whitespace (including newlines) before `cut` — multi-line goals
+  # produced line-wise truncated team_name via `cut -c1-30`, leaking newlines
+  # into on-disk team_name while jq --arg further in the pipeline escaped them.
+  # Drift class (k) in proposals/v3-final.md.
+  TEAM_NAME="deepwork-$(printf '%s' "$GOAL" | tr '[:upper:]' '[:lower:]' | tr '\n' ' ' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
 fi
 TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
 
@@ -516,6 +520,42 @@ DELIVER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/deliver-gate.sh"
 DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
   '[{"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
 
+# PreToolUse:Edit|Write — phase-advance-gate enforces pre-transition checklists
+# (drift classes a + k from proposals/v3-final.md). Only acts on state.json
+# writes that change .phase; all other Edit/Write calls exit 0 immediately.
+PHASE_ADVANCE_GATE_SCRIPT="$PLUGIN_ROOT/hooks/phase-advance-gate.sh"
+PHASE_ADVANCE_GATE_HOOK=$(jq -n --arg script "$PHASE_ADVANCE_GATE_SCRIPT" \
+  '[{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# PreToolUse:SendMessage — verdict-version-gate Layer 1 of halt-pending-verdict.
+# Blocks CRITIC from delivering verdicts on superseded proposal versions
+# (drift class h).
+VERDICT_GATE_SCRIPT="$PLUGIN_ROOT/hooks/verdict-version-gate.sh"
+VERDICT_GATE_HOOK=$(jq -n --arg script "$VERDICT_GATE_SCRIPT" \
+  '[{"matcher": "SendMessage", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# FileChanged:v*.md — version-bump-notify writes drift.log warnings when an
+# older proposal version is edited after a newer sentinel.current_version.
+# Matcher is a regex (contains `.`) per hooks.md §FileChanged — matches
+# basenames like v1.md, v2-final.md, etc.
+VERSION_BUMP_NOTIFY_SCRIPT="$PLUGIN_ROOT/hooks/version-bump-notify.sh"
+VERSION_BUMP_NOTIFY_HOOK=$(jq -n --arg script "$VERSION_BUMP_NOTIFY_SCRIPT" \
+  '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# FileChanged:v*.md — stale-warn flips `stale_warn: true` on audit/critique
+# files whose `valid_against.artifact_version` matches the changed proposal.
+# Addresses drift class (d).
+STALE_WARN_SCRIPT="$PLUGIN_ROOT/hooks/stale-warn.sh"
+STALE_WARN_HOOK=$(jq -n --arg script "$STALE_WARN_SCRIPT" \
+  '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
+# TaskCompleted — critique-version-gate Layer 3 (OPT-IN via guardrail
+# "critique_version_gate"). Blocks CRITIC verdict-task completion that
+# references a superseded version. Fail-open when the guardrail is absent.
+CRITIQUE_VERSION_GATE_SCRIPT="$PLUGIN_ROOT/hooks/critique-version-gate.sh"
+CRITIQUE_VERSION_GATE_HOOK=$(jq -n --arg script "$CRITIQUE_VERSION_GATE_SCRIPT" \
+  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
+
 # Stop — halt-gate enforces structured halt_reason when phase==halt
 # (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
 # the halt_reason key is entirely absent from state.json).
@@ -559,6 +599,11 @@ jq -n \
   --argjson task_completed "$TASK_COMPLETED_HOOK" \
   --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
   --argjson deliver_gate "$DELIVER_GATE_HOOK" \
+  --argjson phase_advance_gate "$PHASE_ADVANCE_GATE_HOOK" \
+  --argjson verdict_gate "$VERDICT_GATE_HOOK" \
+  --argjson version_bump_notify "$VERSION_BUMP_NOTIFY_HOOK" \
+  --argjson stale_warn "$STALE_WARN_HOOK" \
+  --argjson critique_version_gate "$CRITIQUE_VERSION_GATE_HOOK" \
   --argjson stop_halt_gate "$STOP_HALT_GATE_HOOK" \
   --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
   --argjson wiki_log "$WIKI_LOG_HOOK" \
@@ -584,6 +629,11 @@ jq -n \
       | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
       | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
       | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
+      | add_hook_event(.; "PreToolUse"; attach_dw($phase_advance_gate; true))
+      | add_hook_event(.; "PreToolUse"; attach_dw($verdict_gate; true))
+      | add_hook_event(.; "FileChanged"; attach_dw($version_bump_notify; true))
+      | add_hook_event(.; "FileChanged"; attach_dw($stale_warn; true))
+      | add_hook_event(.; "TaskCompleted"; attach_dw($critique_version_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
       | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))
       | add_hook_event(.; "FileChanged"; attach_dw($wiki_log; true))

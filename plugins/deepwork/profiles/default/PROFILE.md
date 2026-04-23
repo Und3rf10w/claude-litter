@@ -21,6 +21,7 @@ Additional reference files available via Read at `${CLAUDE_PLUGIN_ROOT}/referenc
 - `versioning-protocol.md` — named proposal versioning and delta_from_prior protocol
 - `when-not-to-use.md` — non-use cases — may be relevant at SCOPE if goal looks like an execution task
 - `failure-modes.md` — pedagogical reference of failure modes this pattern prevents
+- `task-conventions.md` — TaskCreate metadata conventions (artifact paths, cross_check_required, scope_items) enforced by task-completed-gate.sh
 
 ---
 
@@ -61,6 +62,11 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 8. **Call TeamCreate** with team_name from state.json. Spawn all teammates in parallel via a single message containing multiple Agent tool calls. Each spawn passes the fully-rendered role template in `prompt:` — resolve the HARD_GUARDRAILS, SOURCE_OF_TRUTH, ANCHORS, WRITTEN_BAR, and TEAM_ROSTER template slots from state.json values before calling. For CRITIC and REFRAMER, include their invariant stance text from `references/critic-stance.md` / `references/reframer-stance.md` verbatim.
 
+   **AGENT SCOPE CONSTRAINT (M8, drift class j)**: every agent spawn prompt MUST include this block verbatim:
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json except via the explicit jq+tmp+mv protocol for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+
+   Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
+
 9. Update `state.json.phase = "explore"`. Append a log.md entry noting team composition + anchors.
 
 ## 2. EXPLORE — parallel investigation
@@ -73,7 +79,15 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 2. **Live empirical tests** — MECHANISM (or appropriate specialist) must produce `empirical_results.<id>.md` for each empirical_unknown. These are live tests on real infrastructure, not documentation reading. Block SYNTHESIZE until all empirical_results files exist.
 
+   **Result backfill protocol** (per [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist A): when an `empirical_results.<id>.md` file lands, the orchestrator MUST set `empirical_unknowns[<id>].result` to a brief verdict string (e.g., `"PRESENT — async, 500ms delay"`) and update `owner` to the agent name. Atomic write via jq+tmp+mv. Phase advance is blocked until every `result` is non-null AND its cited artifact exists at `${INSTANCE_DIR}/${artifact}` (drift class a from proposals/v3-final.md).
+
+   **source_of_truth refresh protocol**: when a teammate's findings cite a file not already in `state.json.source_of_truth[]`, the orchestrator MUST append it via atomic jq+tmp+mv before the next phase advance. [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist B emits non-blocking warnings listing candidate omissions at each transition attempt.
+
 3. **Cross-check gates** — for any task with `metadata.cross_check_required: true`, ≥2 independent completions required. The task-completed-gate hook enforces; you don't need to check manually.
+
+   **Cross-check cycle prevention (M5 Change C)**: when the gate blocks a cross-check task completion, [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) writes a sidecar marker `${INSTANCE_DIR}/.gate-blocked-<task_id>` at block time. [hooks/teammate-idle-gate.sh](../../hooks/teammate-idle-gate.sh) reads any such marker owned by the idling teammate and — if AGE < 300s — allows idle without the retry loop (prevents drift class l deadlock). On successful gate pass (cross-check sibling lands, distinct-owner check passes), the gate deletes the marker automatically; a subsequent unrelated idle triggers normal retry enforcement.
+
+   **Delta-audit-new-task rule (M5 Change B)**: post-amendment audits MUST NOT route new scope items into existing tasks by adding "also handle X in task #N" notes. Each new scope item from a delta audit spawns a NEW task via TaskCreate with its own scope. Existing tasks are not modified to absorb new work. This is behavioral; its enforcement relies on (a) orchestrator discipline and (b) CRITIC's G1 check that coverage matrix shows no task/artifact gaps. Violations in prior sessions (cecb2ba3 RCA) drove the scope_items Gate 4 in task-completed-gate.sh — set `metadata.scope_items: [...]` on tasks whose completeness you want flagged when the artifact omits a scope sentence.
 
 4. If a teammate goes idle with in_progress tasks, the TeammateIdle gate forces resume (up to 3 retries). On 3x exhaustion, a guardrail is auto-appended and the teammate is released. Consider spawning a replacement for that archetype if their output is essential.
 
@@ -87,11 +101,26 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 **Steps**:
 
-1. Read all `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md` files.
+1. **Drift sweep first**: invoke the `/deepwork-drift-sweep` skill before reading the artifacts. It enumerates ALL workstreams and produces `drift-report.v<N>.md` listing potential drift items. After the skill returns, perform a **secondary pass**: for each workstream in the enumerated list NOT mentioned in the sweep report, manually confirm it is either (a) not yet started, or (b) has no open source-of-truth dependency. Sign off in `log.md`: `Secondary pass complete: N workstreams checked, M had no drift items.` Addresses drift class (g) — partial / cluster-scoped drift sweeps miss items outside the drift agent's scope. See [skills/deepwork-drift-sweep/SKILL.md](../../skills/deepwork-drift-sweep/SKILL.md).
 
-2. Consider REFRAMER's output seriously. If REFRAMER proposed a reframe that invalidates the original goal, AskUserQuestion to surface the choice ("REFRAMER proposes X as an alternative to the stated goal; should we pursue X, stay on the original goal, or proceed hybrid?").
+2. Read all `findings.*.md`, `coverage.*.md`, `mechanism.*.md`, `reframe.*.md`, `empirical_results.*.md` files.
 
-3. Write `proposals/v1.md` with front-matter:
+   **Audit validity header (M4)**: authors of `findings.*.md` / `coverage.*.md` / `mechanism.*.md` / `reframe.*.md` / `critique.v*.md` SHOULD include a `valid_against` frontmatter block:
+   ```yaml
+   ---
+   valid_against:
+     artifact: "proposals/v<N>-final.md"
+     artifact_version: "v<N>"
+     artifact_line_count: <N>
+     artifact_last_modified: "<ISO8601>"
+   stale_warn: false
+   ---
+   ```
+   [hooks/stale-warn.sh](../../hooks/stale-warn.sh) flips `stale_warn: true` async when the cited proposal version is modified, so a cold reader of an audit file sees the staleness before reading the analysis. When reading audits here, check `stale_warn: true` first — if set, treat the file as a pre-reconciliation draft and call out the gap in the synthesized proposal.
+
+3. Consider REFRAMER's output seriously. If REFRAMER proposed a reframe that invalidates the original goal, AskUserQuestion to surface the choice ("REFRAMER proposes X as an alternative to the stated goal; should we pursue X, stay on the original goal, or proceed hybrid?").
+
+4. Write `proposals/v1.md` with front-matter:
    ```yaml
    ---
    version: "v1"
@@ -101,9 +130,11 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    ```
    Content is the consolidated proposal — design, scope, mitigations, residual unknowns.
 
-4. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
+5. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
 
-5. Advance `state.json.phase = "critique"`.
+6. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via atomic jq+tmp+mv: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
+
+7. Advance `state.json.phase = "critique"`.
 
 ## 4. CRITIQUE — CRITIC verdicts the bar
 
@@ -142,6 +173,16 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    - (d) truly requires AskUserQuestion (rare; only when CRITIC and a specialist disagree on taste-level call)
 
 2. Gather updates, consolidate into `proposals/v2.md`. Populate `delta_from_prior:` with an explicit list of changes (see `references/versioning-protocol.md`).
+
+   **supersede-vN.md macro** (M3 Component A): on every version bump, atomically perform three writes:
+   1. Write `proposals/v<N+1>.md` with full frontmatter (version, delta_from_prior, bar_status all null).
+   2. Edit prior `proposals/v<N>.md` frontmatter → `status: "superseded-by-v<N+1>"` and `superseded_by: "[proposals/v<N+1>.md](v<N+1>.md)"`.
+   3. Write `${INSTANCE_DIR}/version-sentinel.json`:
+      ```json
+      {"current_version": "v<N+1>", "bumped_at": "<ISO8601>", "bumped_from": "v<N>"}
+      ```
+
+   [hooks/verdict-version-gate.sh](../../hooks/verdict-version-gate.sh) reads the sentinel on every SendMessage PreToolUse and blocks verdict deliveries that reference a superseded version (drift class h). [hooks/version-bump-notify.sh](../../hooks/version-bump-notify.sh) is a FileChanged async advisory that writes to `drift.log` when an older proposal version is edited after a newer sentinel.current_version — useful for catching orchestrator mistakes mid-REFINE.
 
 3. Return to CRITIQUE. CRITIC re-verdicts (fresh on version bump). Loop until APPROVED.
 
@@ -245,6 +286,20 @@ Populated after SCOPE phase. Before SCOPE, this is empty.
 {{ROLE_DEFINITIONS}}
 
 Each role has a rendered template passed to its Agent spawn. Refer back to role_definitions during REFINE to know which archetype to delegate to.
+
+---
+
+# Status Claim Rule (M6 — rendered into every teammate spawn)
+
+Every teammate spawn prompt must include this block verbatim. It is Layer 1 (primary) of the M6 teammate-status-freshness defense and addresses drift class (f) — status reports generated from cached mental model instead of fresh Read.
+
+**STATUS CLAIM RULE**: Any claim about the current status of a workstream, task, or artifact (e.g., "OD-PS2 is pending", "task #88 is complete", "the proposal is at v2", "the mechanism covers drift class l") MUST be grounded in a fresh Read or grep made in THIS response. Cite the specific `file:line` that grounds the claim. Status claims not grounded in a fresh Read in the same response are unreliable and MUST be prefaced with `From memory (unverified):` — never presented as current ground truth.
+
+**COVERAGE CLAIM COROLLARY**: Any claim that a specific mechanism, drift class, or section is present in an artifact MUST be verified by a grep or Read in the same response; the grep result (including line numbers) MUST be included in the status message. Stating "the file contains X" without a live grep result is a STATUS CLAIM RULE violation.
+
+**EXEMPT from this rule**: architectural inference, design reasoning, analytical conclusions, and prospective proposals. You may reason about what SHOULD exist, how a mechanism SHOULD work, or what an invariant implies without a file:line citation — those are design outputs, not status claims. The rule targets retrospective/current-state claims specifically.
+
+Layer 2 (secondary enforcement — per-teammate log TeammateIdle regex) is deferred until orchestrator-managed per-teammate log routing is in place; until then, this Layer 1 stance is the sole enforcement mechanism for drift class (f).
 
 ---
 

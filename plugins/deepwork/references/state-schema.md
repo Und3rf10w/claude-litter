@@ -51,6 +51,17 @@ Advisory warnings emitted by hooks during the session. Advisory hooks (FileChang
 
 Open questions that remain unresolved after EXPLORE phase. The SYNTHESIZE phase reduces these; any remaining at DELIVER indicate the plan makes assumptions that were never validated. If CRITIC emits HOLDING with evidence pointing at an empirical unknown, this field is the starting point for the REFINE cycle.
 
+Each entry: `{id, description, artifact, owner, result}`. `result` is `null` at SCOPE and MUST be backfilled after the corresponding `empirical_results.<id>.md` artifact lands. [hooks/phase-advance-gate.sh](../hooks/phase-advance-gate.sh) blocks transitions into `synthesize`/`critique`/`deliver`/`done` when any `result` is still `null` or the artifact file is missing on disk (drift class a).
+
+### `banners[]`
+
+Backpointer annotations attached to teammate artifacts that SYNTHESIZE overruled or that upstream reconciliation superseded. Each entry: `{artifact_path, banner_type, reason, added_at, added_by}`. Banner types:
+
+- `pre-reconciliation-draft` — applied when a later cross-check (e.g., hunter-b overtakes hunter-a) supersedes the artifact
+- `synthesis-deviation-backpointer` — applied when SYNTHESIZE's proposal weighs a recommendation differently than the author proposed; points to the proposal section that demotes it
+
+Banners are advisory metadata only — they document the synthesis decision and direct readers to the current authoritative proposal section. **No hook reads `banners[]` as a blocking signal.** (Protocol commitment per proposals/v3-final.md §6 CONDITIONAL-2.) Writers append entries in the SYNTHESIZE phase after writing the proposal version. Backward-compat: the field is optional; absent or empty arrays produce no behavioral change.
+
 ---
 
 ## Execute-mode fields (profiles/execute/state-schema.json)

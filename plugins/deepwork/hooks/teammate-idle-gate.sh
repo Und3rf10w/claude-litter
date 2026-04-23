@@ -1,5 +1,6 @@
 #!/bin/bash
 # teammate-idle-gate.sh — TeammateIdle hook enforcing task completion discipline
+# plus M5 Change C (cross-check cycle fix, drift class l).
 #
 # Fires in the teammate's session after all tool calls complete.
 # If the teammate owns any in_progress tasks, re-injects instructions via exit 2.
@@ -8,6 +9,18 @@
 #
 # On max-retries reached: emits a hook_warnings entry to state.json AND appends
 # an incident-derived guardrail to state.json.guardrails[] (principle 5).
+#
+# M5 Change C (drift class l): before running the normal retry path, check
+# for ${INSTANCE_DIR}/.gate-blocked-<task_id> markers. If a fresh marker
+# (AGE<300s) exists for any owned task, allow idle without retry — the
+# teammate is legitimately blocked pending cross-check sibling.
+#
+# Inv2 safeguard (M6 deferred Layer 2): this hook does NOT read any
+# interleaved session log content. It reads only state.json.phase, owned
+# task JSON, and per-task marker files. No cross-teammate log surfacing
+# occurs. Adding a STATUS CLAIM regex check would require per-teammate
+# log routing; that's deferred per proposals/v3-final.md §6 (not a blocker
+# for this impl).
 #
 # Registered in: hooks.json (plugin-level, fires on all teammate sessions)
 # Exit 2 = force keep working (stderr is injected as feedback)
@@ -36,8 +49,12 @@ SANITIZED_TEAM=$(printf '%s' "$TEAM_NAME" | sed 's/[^a-zA-Z0-9_-]/-/g')
 TASK_DIR="$HOME/.claude/tasks/${SANITIZED_TEAM}"
 TEAMMATE_SAFE=$(printf '%s' "$TEAMMATE" | sed 's/[^a-zA-Z0-9_-]/_/g')
 
+MAX_RETRIES=3
+COUNTER_FILE="${INSTANCE_DIR}/.idle-retry.${TEAMMATE_SAFE}"
+
 OWNED_INPROGRESS=0
 TASK_SUBJECTS=""
+OWNED_TASK_IDS=()
 if [[ -d "$TASK_DIR" ]]; then
   for task_file in "${TASK_DIR}"/*.json; do
     [[ -f "$task_file" ]] || continue
@@ -53,17 +70,47 @@ if [[ -d "$TASK_DIR" ]]; then
     task_owner=$(echo "$TASK_JSON" | jq -r '.owner // ""' 2>/dev/null || echo "")
     task_status=$(echo "$TASK_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
     task_subject=$(echo "$TASK_JSON" | jq -r '.subject // ""' 2>/dev/null || echo "")
+    task_id=$(echo "$TASK_JSON" | jq -r '.id // .taskId // ""' 2>/dev/null || echo "")
 
     [[ "$task_status" == "deleted" ]] && continue
     if [[ "$task_owner" == "$TEAMMATE" ]] && [[ "$task_status" == "in_progress" ]]; then
       OWNED_INPROGRESS=$((OWNED_INPROGRESS + 1))
       TASK_SUBJECTS="${TASK_SUBJECTS}  - ${task_subject}"$'\n'
+      [[ -n "$task_id" ]] && OWNED_TASK_IDS+=("$task_id")
     fi
   done
 fi
 
-MAX_RETRIES=3
-COUNTER_FILE="${INSTANCE_DIR}/.idle-retry.${TEAMMATE_SAFE}"
+# M5 Change C — sidecar marker AGE<300 exemption (drift class l prevention).
+# If ANY owned in-progress task has a fresh gate-block marker (written by
+# task-completed-gate.sh when cross_check is pending), allow idle without
+# retry loop. The cross-check sibling's completion will delete the marker
+# and the next idle triggers normal retry enforcement again.
+#
+# Rationale: the task-completed-gate already blocked completion (exit 2); the
+# teammate can't make progress until the cross-check sibling lands. Forcing
+# retry would just re-invoke the same blocked gate. After 5 minutes (stale
+# marker) we fall through to normal retry — either the cross-check is never
+# coming (real stuckness) or the marker was orphaned by a crashed gate.
+if [[ $OWNED_INPROGRESS -gt 0 ]] && [[ ${#OWNED_TASK_IDS[@]} -gt 0 ]]; then
+  NOW_EPOCH=$(date +%s)
+  for tid in "${OWNED_TASK_IDS[@]}"; do
+    TID_SAFE=$(printf '%s' "$tid" | sed 's/[^a-zA-Z0-9_-]/_/g')
+    MARKER="${INSTANCE_DIR}/.gate-blocked-${TID_SAFE}"
+    [[ -f "$MARKER" ]] || continue
+    # Portable mtime: try GNU stat first, then BSD stat.
+    MARKER_MTIME=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo "")
+    [[ "$MARKER_MTIME" =~ ^[0-9]+$ ]] || continue
+    AGE=$((NOW_EPOCH - MARKER_MTIME))
+    if [[ $AGE -lt 300 ]]; then
+      printf '\n> ✓ teammate-idle-gate: %s has gate-blocked task %s (age=%ds < 300s); idle allowed without retry (drift class l fix).\n' \
+        "$TEAMMATE" "$tid" "$AGE" >> "$LOG_FILE" 2>/dev/null || true
+      # Reset retry counter so a later unrelated idle starts fresh.
+      rm -f "$COUNTER_FILE" 2>/dev/null || true
+      exit 0
+    fi
+  done
+fi
 
 if [[ $OWNED_INPROGRESS -gt 0 ]]; then
   RETRY_COUNT=0
