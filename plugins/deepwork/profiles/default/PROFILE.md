@@ -79,6 +79,10 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 3. **Cross-check gates** — for any task with `metadata.cross_check_required: true`, ≥2 independent completions required. The task-completed-gate hook enforces; you don't need to check manually.
 
+   **Cross-check cycle prevention (M5 Change C)**: when the gate blocks a cross-check task completion, [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) writes a sidecar marker `${INSTANCE_DIR}/.gate-blocked-<task_id>` at block time. [hooks/teammate-idle-gate.sh](../../hooks/teammate-idle-gate.sh) reads any such marker owned by the idling teammate and — if AGE < 300s — allows idle without the retry loop (prevents drift class l deadlock). On successful gate pass (cross-check sibling lands, distinct-owner check passes), the gate deletes the marker automatically; a subsequent unrelated idle triggers normal retry enforcement.
+
+   **Delta-audit-new-task rule (M5 Change B)**: post-amendment audits MUST NOT route new scope items into existing tasks by adding "also handle X in task #N" notes. Each new scope item from a delta audit spawns a NEW task via TaskCreate with its own scope. Existing tasks are not modified to absorb new work. This is behavioral; its enforcement relies on (a) orchestrator discipline and (b) CRITIC's G1 check that coverage matrix shows no task/artifact gaps. Violations in prior sessions (cecb2ba3 RCA) drove the scope_items Gate 4 in task-completed-gate.sh — set `metadata.scope_items: [...]` on tasks whose completeness you want flagged when the artifact omits a scope sentence.
+
 4. If a teammate goes idle with in_progress tasks, the TeammateIdle gate forces resume (up to 3 retries). On 3x exhaustion, a guardrail is auto-appended and the teammate is released. Consider spawning a replacement for that archetype if their output is essential.
 
 5. If an incident happens (SubagentStop non-zero, PermissionDenied, etc.), `hooks/incident-detector.sh` auto-appends to `state.json.guardrails[]`. Subsequent spawns render the updated guardrails. You may also manually append via jq if you observe a pattern worth capturing.
