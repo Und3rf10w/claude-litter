@@ -8,6 +8,13 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/teammate-idle-gate.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-claim-regex-precheck.sh",
+            "timeout": 10,
+            "statusMessage": "Logging status claim metrics...",
+            "asyncRewake": false
           }
         ]
       }
