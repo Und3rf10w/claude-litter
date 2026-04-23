@@ -1,7 +1,7 @@
 {
   "name": "deepwork",
   "description": "Two-mode deep-work tool: DESIGN mode produces an approved plan via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic); EXECUTE mode implements that plan gate-by-gate with hook-enforced citation, test-evidence, and reversibility gates.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": {
     "name": "Und3rf10w"
   },
