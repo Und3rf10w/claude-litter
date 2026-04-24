@@ -2,8 +2,9 @@
 type: reference
 name: post-tool-batch-consolidation
 description: Design spike for collapsing the 5-hook PreToolUse chain into one PostToolBatch hook
-status: pending-implementation
+status: prep-complete-ready-for-implementation
 generated: 2026-04-23
+revised: 2026-04-24
 ---
 
 # PostToolBatch Consolidation — Design
@@ -264,3 +265,37 @@ The Pre leg snapshot (`cp state.json .state-snapshot`) that currently lives in `
 3. **CC version string availability**: What env var or flag exposes the CC runtime version string inside `setup-deepwork.sh`? The feature-detection logic in §4 assumes it's readable at setup time. If CC doesn't expose a version string in the shell environment, the fallback strategy needs a different detection mechanism (e.g., attempt to register a PostToolBatch hook and check for a registration error).
 
 4. **Multiple state.json writes in one batch**: If the model issues two Write calls to state.json in the same batch, the snapshot captured before the first write may not correctly baseline the second. The demux loop in §6 handles this conservatively (operates on the final committed state), but the phase-transition diff may miss intermediate transitions. Flag for the W3-b implementer.
+
+---
+
+## §9 Resolutions (prep for implementation)
+
+### §9.1 Snapshot ownership
+
+**Resolution:** Option (b) — inline the `cp` into `frontmatter-gate.sh`. The hook already fires on `PreToolUse:Write|Edit` (hook-manifest.json, `"both"` modes, matching the same `Write|Edit` pattern as `state-drift-marker.sh`'s Pre registration). It already reads `FILE_PATH` and gates on `${INSTANCE_DIR}/state.json` (lines 28–83 of `frontmatter-gate.sh`). The state.json path is in scope as `${INSTANCE_DIR}/state.json` via `discover_instance`. A single line — `cp "${INSTANCE_DIR}/state.json" "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || true` — inserted just before the `exit 0` at line 83 (the end of the banners[] validation block, which is the only Write|Edit path that reaches `exit 0` for state.json) is sufficient. This avoids a new hook manifest entry and a new subprocess. No changes to other hooks are required.
+
+**Citation:** `plugins/deepwork/hooks/frontmatter-gate.sh:28–83` (state.json branch and banners validation block); `plugins/deepwork/scripts/hook-manifest.json` (frontmatter-gate entry, `"event": "PreToolUse"`, `"matcher": "Write|Edit"`, `"modes": ["both"]`); `plugins/deepwork/references/post-tool-batch-consolidation.md:§6` (skeleton §6 line: "Compare snapshot (written by the now-removed Pre leg) with committed state").
+
+---
+
+### §9.2 CC version detection
+
+**Resolution:** No dedicated CC version env var exists in the hook subprocess environment. The authoritative env var table in `hooks.md` (lines 333–340) lists exactly five variables set by the process spawner (`JK6`): `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `CLAUDE_PLUGIN_OPTION_<NAME>`, and `CLAUDE_ENV_FILE`. None expose the runtime version. The `v2_1_118_changelog.md` "New Environment Variables" table (lines 579–583) adds only `DISABLE_UPDATES`, `CLAUDE_BRIDGE_REATTACH_SESSION`, and `CLAUDE_BRIDGE_REATTACH_SEQ` — none version-related. `setup-deepwork.sh` runs at session-start as a normal shell script (not inside a hook subprocess), so it has access to the full shell environment and the `claude` binary on PATH. The correct mechanism is: `CC_VERSION=$(claude --version 2>/dev/null | awk '{print $1}')` — confirmed to emit `2.1.119` (bare semver, space-separated with `"(Claude Code)"` suffix). The feature-detection block in §4 can then parse `CC_VERSION_MAJOR/MINOR/PATCH` as shown. If `claude` is not on PATH (unusual in normal installations), the fallback is to attempt PostToolBatch registration unconditionally and rely on CC silently ignoring unknown events on older versions — per `hooks.md:516` ("The `matcher` field cannot filter this event per tool") and the §4 note that pre-2.1.118 installs silently ignore unknown events.
+
+**Citation:** `hooks.md:332–340` (env var table, `JK6`); `v2_1_118_changelog.md:579–583` (new env vars table); `plugins/deepwork/references/post-tool-batch-consolidation.md:§4` (feature-detection pseudocode block); runtime verification: `claude --version` → `2.1.119 (Claude Code)`.
+
+---
+
+### §9.3 tool_calls[] ordering
+
+**Resolution:** The docs do not explicitly state request-order vs. completion-order. The closest evidence is in the changelog firing-point code (`v2_1_118_changelog.md:103–118`): `tool_calls` is built as `s.map((g_) => ({ tool_name: g_.name, tool_input: g_.input, tool_use_id: g_.id, tool_response: K_.get(g_.id) }))` where `s` is the assistant message's tool_use block array (model-request order) and `K_` is a `Map<tool_use_id → tool_response>` built separately from the completed results. Because `s` is the model's original tool_use block list (not a results list reordered by completion time), `tool_calls[]` arrives in **model-request order**. However, neither `hooks.md` nor the changelog contains an explicit ordering guarantee. This is a residual risk: if CC ever reorders `s` (e.g., to surface failures first), the index correlation breaks. **Recommended sentinel test**: in the W3-b shadow period, log `tool_use_id` alongside each index and verify against the assistant message transcript. Document as a known risk with no mitigation path other than matching by `tool_use_id` rather than array index — the `batch-gate.sh` skeleton in §6 already does this (`FILE_PATH=$(... jq -r '.tool_input.file_path ...')` per entry, not by index).
+
+**Citation:** `v2_1_118_changelog.md:103–118` (PostToolBatch firing point, `s.map(...)` construction); `hooks.md:510–543` (PostToolBatch event catalogue, no ordering guarantee stated); `plugins/deepwork/references/post-tool-batch-consolidation.md:§6` (demux loop iterates by `tool_name`, not index-assumption).
+
+---
+
+### §9.4 Multiple state.json writes
+
+**Resolution:** Resolved by the §9.1 snapshot-ownership answer. `PreToolUse` fires **per tool call** (hooks.md:397: "Just before a tool call executes"); it is not batched. Therefore `frontmatter-gate.sh` fires once per Write/Edit in the batch. If the model issues two consecutive Write calls to `state.json` in the same batch, frontmatter-gate fires twice in Pre: once before the first Write (snapshot A → first-write result) and once before the second Write (snapshot B → second-write result). PostToolBatch fires once after both writes resolve and compares the final committed `state.json` against `.state-snapshot` — which is the snapshot written just before the *last* Write to `state.json`. This means intermediate transitions between the two writes are invisible to PostToolBatch's phase-diff. This is acceptable for the W3-b scope: PostToolBatch's role is non-blocking drift observation (log.md markers), not authoritative transition accounting. Any intermediate phase transition would already have been visible to the Pre hooks (`phase-advance-gate.sh`, which must stay Pre) and to `state-drift-marker.sh` in the shadow period. The W3-b implementer should note: if intermediate-transition visibility becomes a requirement, `batch-gate.sh` would need to accumulate per-write snapshots (e.g., keyed by `tool_use_id`), which is a future scope item, not a blocker.
+
+**Citation:** `hooks.md:397–438` (PreToolUse: "Just before a tool call executes — after the permission decision is made but before the tool actually runs"); `plugins/deepwork/hooks/frontmatter-gate.sh:28–83` (fires per Write/Edit, snapshots state.json at line 83 per §9.1); `plugins/deepwork/references/post-tool-batch-consolidation.md:§6` (PostToolBatch fires once, operates on final committed state).
