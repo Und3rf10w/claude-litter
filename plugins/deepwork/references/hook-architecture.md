@@ -44,14 +44,28 @@ flowchart LR
     wiki_log_append["wiki-log-append"]
   end
   subgraph Hooks_Execute
+    approve_archive["approve-archive"]
     bash_gate["bash-gate"]
+    critique_version_gate["critique-version-gate"]
+    deliver_gate["deliver-gate"]
     file_changed_retest["file-changed-retest"]
+    frontmatter_gate["frontmatter-gate"]
+    halt_gate["halt-gate"]
+    incident_detector["incident-detector"]
+    phase_advance_gate["phase-advance-gate"]
     plan_citation_gate["plan-citation-gate"]
     plan_drift_detector["plan-drift-detector"]
     retest_dispatch["retest-dispatch"]
+    session_context["session-context"]
+    stale_warn["stale-warn"]
+    state_drift_marker["state-drift-marker"]
     stop_hook["stop-hook"]
+    task_completed_gate["task-completed-gate"]
     task_scope_gate["task-scope-gate"]
     test_capture["test-capture"]
+    verdict_version_gate["verdict-version-gate"]
+    version_bump_notify["version-bump-notify"]
+    wiki_log_append["wiki-log-append"]
   end
   subgraph State
     authorized_force_push(([".authorized_force_push"]))
@@ -120,8 +134,8 @@ flowchart LR
   FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| stale_warn
   FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| version_bump_notify
   FileChanged -->|".claude/deepwork"| wiki_log_append
-  PermissionDenied --> incident_detector
-  PermissionRequest --> incident_detector
+  PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
+  PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   PostToolUse -->|"Write|Edit"| retest_dispatch
   PostToolUse -->|"Write|Edit"| state_drift_marker
   PostToolUse -->|"Bash"| test_capture
@@ -137,7 +151,7 @@ flowchart LR
   Stop --> approve_archive
   Stop --> halt_gate
   Stop --> stop_hook
-  SubagentStop --> incident_detector
+  SubagentStop -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   TaskCompleted --> critique_version_gate
   TaskCompleted --> task_completed_gate
   TaskCreated --> task_scope_gate
@@ -277,7 +291,7 @@ flowchart LR
       "triggered_by": [
       "Stop"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".phase"
@@ -334,7 +348,7 @@ flowchart LR
       "triggered_by": [
       "TaskCompleted"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".current_version",
@@ -359,7 +373,7 @@ flowchart LR
       "triggered_by": [
       "PreToolUse"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ""
@@ -407,7 +421,7 @@ flowchart LR
       "triggered_by": [
       "PreToolUse"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".banners",
@@ -431,7 +445,7 @@ flowchart LR
       "triggered_by": [
       "Stop"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".execute.phase",
@@ -458,7 +472,7 @@ flowchart LR
       "PermissionRequest",
       "SubagentStop"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".team_name"
@@ -481,7 +495,7 @@ flowchart LR
       "triggered_by": [
       "PreToolUse"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".current_version",
@@ -614,7 +628,7 @@ flowchart LR
       "triggered_by": [
       "SessionStart"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".goal",
@@ -640,7 +654,7 @@ flowchart LR
       "triggered_by": [
       "FileChanged"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ""
@@ -664,7 +678,7 @@ flowchart LR
       "PostToolUse",
       "PreToolUse"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".bar",
@@ -719,7 +733,7 @@ flowchart LR
       "triggered_by": [
       "TaskCompleted"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".id",
@@ -828,7 +842,7 @@ flowchart LR
       "triggered_by": [
       "PreToolUse"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".current_version"
@@ -851,7 +865,7 @@ flowchart LR
       "triggered_by": [
       "FileChanged"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".current_version"
@@ -875,7 +889,7 @@ flowchart LR
       "triggered_by": [
       "FileChanged"
       ],
-      "mode": "design",
+      "mode": "shared",
       "reads": {
         "state": [
           ".bar",

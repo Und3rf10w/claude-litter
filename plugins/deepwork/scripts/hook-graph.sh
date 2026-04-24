@@ -19,6 +19,7 @@ HOOKS_DIR="${PLUGIN_ROOT}/hooks"
 EXECUTE_HOOKS_DIR="${HOOKS_DIR}/execute"
 HOOKS_JSON="${HOOKS_DIR}/hooks.json"
 SETUP_SCRIPT="${PLUGIN_ROOT}/scripts/setup-deepwork.sh"
+MANIFEST="${PLUGIN_ROOT}/scripts/hook-manifest.json"
 
 # ----------------------------------------------------------------------------
 # --check mode
@@ -54,44 +55,44 @@ mermaid_label() {
 }
 
 # ----------------------------------------------------------------------------
-# Parse registration data from setup-deepwork.sh
+# Parse registration data from hook-manifest.json (primary source) + hooks.json (static)
 # Returns lines of: <hook_file> <event> <matcher> <mode>
 # mode = design | execute | shared
 # ----------------------------------------------------------------------------
 parse_registrations() {
-  # Design-mode block (lines ~499-661): extract matcher from HOOK= declarations
-  # and event from add_hook_event(.; "<Event>"; attach_dw(...)) calls.
-  # We correlate variable names: e.g., DELIVER_GATE_HOOK var → deliver-gate.sh.
-
-  # Static mapping: bash variable stem -> hook script basename, event, matcher, mode
-  # Derived by reading setup-deepwork.sh variable declarations and the jq block.
-  # Format: VAR_STEM:hook_file:event:matcher:mode  (colon delimiter — safe, no matcher uses colon)
-  cat <<'REGTABLE'
-PERMISSION_REQUEST_HOOK:incident-detector.sh:PermissionRequest:.*:design
-SUBAGENT_STOP_HOOK:incident-detector.sh:SubagentStop:.*:design
-SESSION_START_HOOK:session-context.sh:SessionStart:clear|compact:design
-TASK_COMPLETED_HOOK:task-completed-gate.sh:TaskCompleted:.*:design
-PERMISSION_DENIED_HOOK:incident-detector.sh:PermissionDenied:.*:design
-DELIVER_GATE_HOOK:deliver-gate.sh:PreToolUse:ExitPlanMode:design
-FRONTMATTER_GATE_HOOK:frontmatter-gate.sh:PreToolUse:Write|Edit:design
-DRIFT_MARKER_HOOK:state-drift-marker.sh:PreToolUse:Write|Edit:design
-DRIFT_MARKER_HOOK:state-drift-marker.sh:PostToolUse:Write|Edit:design
-PHASE_ADVANCE_GATE_HOOK:phase-advance-gate.sh:PreToolUse:Edit|Write:design
-VERDICT_GATE_HOOK:verdict-version-gate.sh:PreToolUse:SendMessage:design
-VERSION_BUMP_NOTIFY_HOOK:version-bump-notify.sh:FileChanged:^v[0-9]+(-final)?\.md$:design
-STALE_WARN_HOOK:stale-warn.sh:FileChanged:^v[0-9]+(-final)?\.md$:design
-CRITIQUE_VERSION_GATE_HOOK:critique-version-gate.sh:TaskCompleted:.*:design
-STOP_HALT_GATE_HOOK:halt-gate.sh:Stop:.*:design
-STOP_ARCHIVE_HOOK:approve-archive.sh:Stop:.*:design
-WIKI_LOG_HOOK:wiki-log-append.sh:FileChanged:.claude/deepwork:design
-REGTABLE
-  # hooks.json static registrations (TeammateIdle, PreCompact)
-  cat <<'REGTABLE'
-HOOKS_JSON_STATIC:teammate-idle-gate.sh:TeammateIdle:.*:design
-HOOKS_JSON_STATIC:pre-compact.sh:PreCompact:(none):design
-REGTABLE
-  # Execute-mode block
-  cat <<'REGTABLE'
+  # Manifest-driven entries. Mode translation:
+  #   modes contains only "execute"           → execute
+  #   modes contains "both" or "design"       → shared (registered in both sessions)
+  #   hooks.json entries (TeammateIdle/PreCompact) are appended below as design
+  if [[ -f "$MANIFEST" ]]; then
+    jq -r '
+      .hooks[] |
+      (.script | split("/") | last) as $base |
+      (.modes | map(. == "execute") | all) as $exec_only |
+      (if $exec_only then "execute" else "shared" end) as $mode |
+      (.matcher | if . == "__plan_ref__" then "<plan_ref>" else . end) as $matcher |
+      "MANIFEST:\($base):\(.event):\($matcher):\($mode)"
+    ' "$MANIFEST"
+  else
+    # Fallback: emit hardcoded table if manifest not found
+    cat <<'REGTABLE'
+PERMISSION_REQUEST_HOOK:incident-detector.sh:PermissionRequest:.*:shared
+SUBAGENT_STOP_HOOK:incident-detector.sh:SubagentStop:.*:shared
+SESSION_START_HOOK:session-context.sh:SessionStart:clear|compact:shared
+TASK_COMPLETED_HOOK:task-completed-gate.sh:TaskCompleted:.*:shared
+PERMISSION_DENIED_HOOK:incident-detector.sh:PermissionDenied:.*:shared
+DELIVER_GATE_HOOK:deliver-gate.sh:PreToolUse:ExitPlanMode:shared
+FRONTMATTER_GATE_HOOK:frontmatter-gate.sh:PreToolUse:Write|Edit:shared
+DRIFT_MARKER_HOOK:state-drift-marker.sh:PreToolUse:Write|Edit:shared
+DRIFT_MARKER_HOOK:state-drift-marker.sh:PostToolUse:Write|Edit:shared
+PHASE_ADVANCE_GATE_HOOK:phase-advance-gate.sh:PreToolUse:Edit|Write:shared
+VERDICT_GATE_HOOK:verdict-version-gate.sh:PreToolUse:SendMessage:shared
+VERSION_BUMP_NOTIFY_HOOK:version-bump-notify.sh:FileChanged:^v[0-9]+(-final)?\.md$:shared
+STALE_WARN_HOOK:stale-warn.sh:FileChanged:^v[0-9]+(-final)?\.md$:shared
+CRITIQUE_VERSION_GATE_HOOK:critique-version-gate.sh:TaskCompleted:.*:shared
+STOP_HALT_GATE_HOOK:halt-gate.sh:Stop:.*:shared
+STOP_ARCHIVE_HOOK:approve-archive.sh:Stop:.*:shared
+WIKI_LOG_HOOK:wiki-log-append.sh:FileChanged:.claude/deepwork:shared
 EXEC_PRE_WRITE:plan-citation-gate.sh:PreToolUse:Write|Edit:execute
 EXEC_POST_WRITE:retest-dispatch.sh:PostToolUse:Write|Edit:execute
 EXEC_PRE_BASH:bash-gate.sh:PreToolUse:Bash:execute
@@ -100,6 +101,12 @@ EXEC_FC_SRC:file-changed-retest.sh:FileChanged:src/**:execute
 EXEC_FC_PLAN:plan-drift-detector.sh:FileChanged:<plan_ref>:execute
 EXEC_TC:task-scope-gate.sh:TaskCreated:.*:execute
 EXEC_STOP:stop-hook.sh:Stop:.*:execute
+REGTABLE
+  fi
+  # hooks.json static registrations (TeammateIdle, PreCompact) — always-on, not in manifest
+  cat <<'REGTABLE'
+HOOKS_JSON_STATIC:teammate-idle-gate.sh:TeammateIdle:.*:design
+HOOKS_JSON_STATIC:pre-compact.sh:PreCompact:(none):design
 REGTABLE
 }
 

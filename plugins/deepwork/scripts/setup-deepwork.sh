@@ -484,125 +484,18 @@ if [[ -f "$SETTINGS_LOCAL" ]] && [[ ! -f "${SETTINGS_LOCAL}.deepwork-backup" ]];
   cp "$SETTINGS_LOCAL" "${SETTINGS_LOCAL}.deepwork-backup"
 fi
 
-# PermissionRequest auto-approve (safe-mode only)
-PERMISSION_REQUEST_HOOK='null'
-if [[ "$SAFE_MODE" == "true" ]]; then
-  PERMISSION_REQUEST_HOOK=$(jq -n '[{
-    "matcher": "Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate",
-    "hooks": [{
-      "type": "command",
-      "command": "echo '"'"'{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'"'"'"
-    }]
-  }]')
-fi
-
-# SubagentStop — feed into incident-detector
-SUBAGENT_STOP_SCRIPT="$PLUGIN_ROOT/hooks/incident-detector.sh"
-SUBAGENT_STOP_HOOK=$(jq -n --arg script "$SUBAGENT_STOP_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh) + " --event SubagentStop")}]}]')
-
-# SessionStart(clear|compact) context re-injection
-SESSION_CONTEXT_SCRIPT="$PLUGIN_ROOT/hooks/session-context.sh"
-SESSION_START_HOOK=$(jq -n --arg script "$SESSION_CONTEXT_SCRIPT" \
-  '[{"matcher": "clear|compact", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# TaskCompleted — artifact-existence check + cross-check count enforcement
-TASK_COMPLETED_SCRIPT="$PLUGIN_ROOT/hooks/task-completed-gate.sh"
-TASK_COMPLETED_HOOK=$(jq -n --arg script "$TASK_COMPLETED_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# PermissionDenied — incident signal
-PERMISSION_DENIED_SCRIPT="$PLUGIN_ROOT/hooks/incident-detector.sh"
-PERMISSION_DENIED_HOOK=$(jq -n --arg script "$PERMISSION_DENIED_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh) + " --event PermissionDenied")}]}]')
-
-# PreToolUse:ExitPlanMode — deliver-gate lints the plan for principle 9 + 8
-DELIVER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/deliver-gate.sh"
-DELIVER_GATE_HOOK=$(jq -n --arg script "$DELIVER_GATE_SCRIPT" \
-  '[{"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# PreToolUse:Edit|Write — phase-advance-gate enforces pre-transition checklists
-# (drift classes a + k from proposals/v3-final.md). Only acts on state.json
-# writes that change .phase; all other Edit/Write calls exit 0 immediately.
-PHASE_ADVANCE_GATE_SCRIPT="$PLUGIN_ROOT/hooks/phase-advance-gate.sh"
-PHASE_ADVANCE_GATE_HOOK=$(jq -n --arg script "$PHASE_ADVANCE_GATE_SCRIPT" \
-  '[{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# PreToolUse:SendMessage — verdict-version-gate Layer 1 of halt-pending-verdict.
-# Blocks CRITIC from delivering verdicts on superseded proposal versions
-# (drift class h).
-VERDICT_GATE_SCRIPT="$PLUGIN_ROOT/hooks/verdict-version-gate.sh"
-VERDICT_GATE_HOOK=$(jq -n --arg script "$VERDICT_GATE_SCRIPT" \
-  '[{"matcher": "SendMessage", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# FileChanged:v*.md — version-bump-notify writes drift.log warnings when an
-# older proposal version is edited after a newer sentinel.current_version.
-# Matcher is a regex (contains `.`) per hooks.md §FileChanged — matches
-# basenames like v1.md, v2-final.md, etc.
-VERSION_BUMP_NOTIFY_SCRIPT="$PLUGIN_ROOT/hooks/version-bump-notify.sh"
-VERSION_BUMP_NOTIFY_HOOK=$(jq -n --arg script "$VERSION_BUMP_NOTIFY_SCRIPT" \
-  '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# FileChanged:v*.md — stale-warn flips `stale_warn: true` on audit/critique
-# files whose `valid_against.artifact_version` matches the changed proposal.
-# Addresses drift class (d).
-STALE_WARN_SCRIPT="$PLUGIN_ROOT/hooks/stale-warn.sh"
-STALE_WARN_HOOK=$(jq -n --arg script "$STALE_WARN_SCRIPT" \
-  '[{"matcher": "^v[0-9]+(-final)?\\.md$", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# TaskCompleted — critique-version-gate Layer 3 (OPT-IN via guardrail
-# "critique_version_gate"). Blocks CRITIC verdict-task completion that
-# references a superseded version. Fail-open when the guardrail is absent.
-CRITIQUE_VERSION_GATE_SCRIPT="$PLUGIN_ROOT/hooks/critique-version-gate.sh"
-CRITIQUE_VERSION_GATE_HOOK=$(jq -n --arg script "$CRITIQUE_VERSION_GATE_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# PreToolUse:Write|Edit — frontmatter-gate enforces uniform YAML frontmatter
-# on all .md artifacts written inside the active instance dir. Log.md /
-# prompt.md / adversarial-tests*.md are carved out. Warn-only for pre-fix
-# sessions where state.json lacks frontmatter_schema_version.
-FRONTMATTER_GATE_SCRIPT="$PLUGIN_ROOT/hooks/frontmatter-gate.sh"
-FRONTMATTER_GATE_HOOK=$(jq -n --arg script "$FRONTMATTER_GATE_SCRIPT" \
-  '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# Pre+PostToolUse:Write|Edit — state-drift-marker snapshots state.json before
-# every write and appends phase-transition + bar-verdict markers to log.md
-# after every write. Single hook variable registered twice (Pre + Post) — the
-# script dispatches on $HOOK_EVENT_NAME at runtime.
-DRIFT_MARKER_SCRIPT="$PLUGIN_ROOT/hooks/state-drift-marker.sh"
-DRIFT_MARKER_HOOK=$(jq -n --arg script "$DRIFT_MARKER_SCRIPT" \
-  '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh)), "timeout": 5}]}]')
-
-# Stop — halt-gate enforces structured halt_reason when phase==halt
-# (fires every turn-end; no-ops for phase!=halt and for legacy sessions where
-# the halt_reason key is entirely absent from state.json).
+# Drive registration from the manifest. Filters by mode: entries with modes containing
+# the current mode ("design"/"execute") or "both" are registered. Execute is a superset
+# of design — all "design"/"both" hooks also register in execute sessions, matching the
+# previous two-block behaviour.
 #
-# Ordering intent: registered BEFORE approve-archive.sh in the Stop chain.
-# The pipeline below places this add_hook_event call first, producing a
-# settings.local.json Stop array where halt-gate's index is lower than
-# approve-archive's. CC runtime hook execution semantics (whether exit 2
-# from an earlier hook short-circuits later hooks in the same event) are
-# not verified by setup; array-index ordering is preserved here for
-# clarity and maintainer reference. The plan-mode block below runs for
-# EVERY session (plan + execute); do NOT re-register halt-gate inside the
-# execute-mode-only block that follows, or both invocations will fire on
-# each Stop (duplicate but harmless) and the invariant will drift.
-HALT_GATE_SCRIPT="$PLUGIN_ROOT/hooks/halt-gate.sh"
-STOP_HALT_GATE_HOOK=$(jq -n --arg script "$HALT_GATE_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# Stop — approve-archive renames state.json→state.archived.json when phase==done
-# (Stop fires every turn-end; script no-ops until orchestrator transitions to done on APPROVE).
-APPROVE_ARCHIVE_SCRIPT="$PLUGIN_ROOT/hooks/approve-archive.sh"
-STOP_ARCHIVE_HOOK=$(jq -n --arg script "$APPROVE_ARCHIVE_SCRIPT" \
-  '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# FileChanged(.claude/deepwork/) — wiki-log-append fires on state.archived.json creation
-WIKI_LOG_SCRIPT="$PLUGIN_ROOT/hooks/wiki-log-append.sh"
-WIKI_LOG_HOOK=$(jq -n --arg script "$WIKI_LOG_SCRIPT" \
-  '[{"matcher": ".claude/deepwork", "hooks": [{"type": "command", "command": ("bash " + ($script | @sh))}]}]')
-
-# Merge hooks into settings.local.json. Tag with _deepwork:true for selective teardown.
+# Special cases handled inline:
+#   safe_mode_only: PermissionRequest hook only registered when SAFE_MODE=true.
+#   command_override: use literal command string instead of "bash <script> [args]".
+#   args: appended to the "bash <script>" command string.
+#   __plan_ref__: matcher sentinel replaced with $PLAN_REF at registration time.
+#   timeout: forwarded into the hook entry when present.
+MANIFEST="${PLUGIN_ROOT}/scripts/hook-manifest.json"
 CURRENT_SETTINGS='{}'
 if [[ -f "$SETTINGS_LOCAL" ]]; then
   CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
@@ -610,56 +503,48 @@ fi
 
 jq -n \
   --argjson current "$CURRENT_SETTINGS" \
-  --argjson permission_request "$PERMISSION_REQUEST_HOOK" \
-  --argjson subagent_stop "$SUBAGENT_STOP_HOOK" \
-  --argjson session_start "$SESSION_START_HOOK" \
-  --argjson task_completed "$TASK_COMPLETED_HOOK" \
-  --argjson permission_denied "$PERMISSION_DENIED_HOOK" \
-  --argjson deliver_gate "$DELIVER_GATE_HOOK" \
-  --argjson frontmatter_gate "$FRONTMATTER_GATE_HOOK" \
-  --argjson drift_marker "$DRIFT_MARKER_HOOK" \
-  --argjson phase_advance_gate "$PHASE_ADVANCE_GATE_HOOK" \
-  --argjson verdict_gate "$VERDICT_GATE_HOOK" \
-  --argjson version_bump_notify "$VERSION_BUMP_NOTIFY_HOOK" \
-  --argjson stale_warn "$STALE_WARN_HOOK" \
-  --argjson critique_version_gate "$CRITIQUE_VERSION_GATE_HOOK" \
-  --argjson stop_halt_gate "$STOP_HALT_GATE_HOOK" \
-  --argjson stop_archive "$STOP_ARCHIVE_HOOK" \
-  --argjson wiki_log "$WIKI_LOG_HOOK" \
+  --argjson manifest "$(jq '.' "$MANIFEST")" \
+  --arg plugin_root "$PLUGIN_ROOT" \
+  --arg mode "$MODE" \
+  --argjson safe_mode "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
+  --arg plan_ref "$PLAN_REF" \
   '
-  def attach_dw(arr; tag):
-    if arr == null then null
-    else (arr | map(. + {_deepwork: tag}))
+  def build_hook_entry(entry):
+    if (entry | has("command_override")) then
+      {"type": "command", "command": entry.command_override}
+      | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
+    else
+      (("bash " + ($plugin_root + "/" + entry.script | @sh))
+        + (if (entry | has("args")) then " " + entry.args else "" end)) as $cmd
+      | {"type": "command", "command": $cmd}
+      | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
     end;
 
-  def add_hook_event(current; event; new):
-    if new == null then current
-    else
-      current[event] = (current[event] // []) + new
-      | current
+  def active_for_mode(entry):
+    ($mode == "execute" and (entry.modes | map(. == "execute" or . == "design" or . == "both") | any))
+    or ($mode != "execute" and (entry.modes | map(. == "design" or . == "both") | any));
+
+  def should_register(entry):
+    active_for_mode(entry)
+    and (if (entry | has("safe_mode_only")) then $safe_mode else true end);
+
+  def effective_matcher(entry):
+    if entry.matcher == "__plan_ref__" then $plan_ref
+    else entry.matcher
     end;
 
   ($current // {}) as $c
   | ($c.hooks // {}) as $h
-  | ($h
-      | add_hook_event(.; "PermissionRequest"; attach_dw($permission_request; true))
-      | add_hook_event(.; "SubagentStop"; attach_dw($subagent_stop; true))
-      | add_hook_event(.; "SessionStart"; attach_dw($session_start; true))
-      | add_hook_event(.; "TaskCompleted"; attach_dw($task_completed; true))
-      | add_hook_event(.; "PermissionDenied"; attach_dw($permission_denied; true))
-      | add_hook_event(.; "PreToolUse"; attach_dw($deliver_gate; true))
-      | add_hook_event(.; "PreToolUse"; attach_dw($frontmatter_gate; true))
-      | add_hook_event(.; "PreToolUse"; attach_dw($phase_advance_gate; true))
-      | add_hook_event(.; "PreToolUse"; attach_dw($drift_marker; true))
-      | add_hook_event(.; "PostToolUse"; attach_dw($drift_marker; true))
-      | add_hook_event(.; "PreToolUse"; attach_dw($verdict_gate; true))
-      | add_hook_event(.; "FileChanged"; attach_dw($version_bump_notify; true))
-      | add_hook_event(.; "FileChanged"; attach_dw($stale_warn; true))
-      | add_hook_event(.; "TaskCompleted"; attach_dw($critique_version_gate; true))
-      | add_hook_event(.; "Stop"; attach_dw($stop_halt_gate; true))
-      | add_hook_event(.; "Stop"; attach_dw($stop_archive; true))
-      | add_hook_event(.; "FileChanged"; attach_dw($wiki_log; true))
-    ) as $new_hooks
+  | reduce ($manifest.hooks[] | select(should_register(.))) as $entry (
+      $h;
+      . as $hooks
+      | effective_matcher($entry) as $m
+      | $entry.event as $ev
+      | {"matcher": $m, "hooks": [build_hook_entry($entry)], "_deepwork": true} as $block
+      | ($hooks[$ev] // [] | . + [$block]) as $merged
+      | $hooks | .[$ev] = $merged
+    )
+  | . as $new_hooks
   | $c + {"hooks": $new_hooks}
   ' > "${SETTINGS_LOCAL}.tmp.$$"
 
@@ -668,87 +553,6 @@ if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
   echo "Warning: failed to write hooks into $SETTINGS_LOCAL (proceeding without dynamic hooks)" >&2
-fi
-
-# ---- Execute-mode additional hook wiring (conditional) ----
-# Adds 8 execute-specific hooks to settings.local.json (SessionStart reinject is already
-# handled by the existing session-context.sh hook above — it dispatches to
-# profiles/execute/reinject.sh via load_profile when MODE==execute).
-if [[ "$MODE" == "execute" ]]; then
-  EXEC_HOOKS_DIR="$PLUGIN_ROOT/hooks/execute"
-
-  # Build each hook registration as jq-compatible JSON
-  EXEC_PRE_WRITE=$(jq -n --arg s "$EXEC_HOOKS_DIR/plan-citation-gate.sh" \
-    '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_POST_WRITE=$(jq -n --arg s "$EXEC_HOOKS_DIR/retest-dispatch.sh" \
-    '[{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_PRE_BASH=$(jq -n --arg s "$EXEC_HOOKS_DIR/bash-gate.sh" \
-    '[{"matcher": "Bash", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_POST_BASH=$(jq -n --arg s "$EXEC_HOOKS_DIR/test-capture.sh" \
-    '[{"matcher": "Bash", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_FC_SRC=$(jq -n --arg s "$EXEC_HOOKS_DIR/file-changed-retest.sh" \
-    '[{"matcher": "src/**", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  # Plan-drift detector — matcher is the absolute plan file path
-  EXEC_FC_PLAN=$(jq -n --arg s "$EXEC_HOOKS_DIR/plan-drift-detector.sh" --arg m "$PLAN_REF" \
-    '[{"matcher": $m, "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_TC=$(jq -n --arg s "$EXEC_HOOKS_DIR/task-scope-gate.sh" \
-    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-  EXEC_STOP=$(jq -n --arg s "$EXEC_HOOKS_DIR/stop-hook.sh" \
-    '[{"matcher": ".*", "hooks": [{"type": "command", "command": ("bash " + ($s | @sh))}]}]')
-
-  # halt-gate is NOT re-registered here. The plan-mode block above runs for
-  # every session (plan and execute) and already registers halt-gate once
-  # with matcher:".*", which fires on all Stop events. Adding a second
-  # registration in this execute-mode-only block would cause the hook to
-  # fire twice on every Stop for execute sessions — harmless (same hook,
-  # same verdict) but wasteful and confusing. See the ordering comment
-  # above the plan-mode STOP_HALT_GATE_HOOK declaration.
-
-  CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
-  jq -n \
-    --argjson current "$CURRENT_SETTINGS" \
-    --argjson pre_write "$EXEC_PRE_WRITE" \
-    --argjson post_write "$EXEC_POST_WRITE" \
-    --argjson pre_bash "$EXEC_PRE_BASH" \
-    --argjson post_bash "$EXEC_POST_BASH" \
-    --argjson fc_src "$EXEC_FC_SRC" \
-    --argjson fc_plan "$EXEC_FC_PLAN" \
-    --argjson tc "$EXEC_TC" \
-    --argjson stop_exec "$EXEC_STOP" \
-    '
-    def attach_dw(arr; tag):
-      if arr == null then null
-      else (arr | map(. + {_deepwork: tag}))
-      end;
-
-    def add_hook_event(current; event; new):
-      if new == null then current
-      else
-        current[event] = (current[event] // []) + new
-        | current
-      end;
-
-    ($current // {}) as $c
-    | ($c.hooks // {}) as $h
-    | ($h
-        | add_hook_event(.; "PreToolUse"; attach_dw($pre_write; true))
-        | add_hook_event(.; "PostToolUse"; attach_dw($post_write; true))
-        | add_hook_event(.; "PreToolUse"; attach_dw($pre_bash; true))
-        | add_hook_event(.; "PostToolUse"; attach_dw($post_bash; true))
-        | add_hook_event(.; "FileChanged"; attach_dw($fc_src; true))
-        | add_hook_event(.; "FileChanged"; attach_dw($fc_plan; true))
-        | add_hook_event(.; "TaskCreated"; attach_dw($tc; true))
-        | add_hook_event(.; "Stop"; attach_dw($stop_exec; true))
-      ) as $new_hooks
-    | $c + {"hooks": $new_hooks}
-    ' > "${SETTINGS_LOCAL}.tmp.$$"
-
-  if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
-    mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
-  else
-    rm -f "${SETTINGS_LOCAL}.tmp.$$"
-    echo "Warning: failed to write execute-mode hooks into $SETTINGS_LOCAL" >&2
-  fi
 fi
 
 # ---- Print user-visible setup banner to stderr ----

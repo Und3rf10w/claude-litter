@@ -1,0 +1,164 @@
+{
+  "_comment": "Single source of truth for all dynamically-injected deepwork hooks. Each entry is registered into settings.local.json by setup-deepwork.sh. TeammateIdle and PreCompact hooks are excluded — they live in hooks/hooks.json and are loaded by the CC runtime directly. The 'modes' field controls when a hook is registered: 'design' = design sessions only, 'execute' = execute sessions only, 'both' = all sessions. Execute mode is a superset: all 'design' and 'both' hooks also register in execute sessions.",
+  "hooks": [
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "PermissionRequest",
+      "matcher": "Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate",
+      "modes": ["both"],
+      "safe_mode_only": true,
+      "command_override": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'",
+      "_note": "PermissionRequest auto-approve: only registered when SAFE_MODE=true. Command is a literal echo, not a script invocation."
+    },
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "SubagentStop",
+      "matcher": ".*",
+      "modes": ["both"],
+      "args": "--event SubagentStop"
+    },
+    {
+      "script": "hooks/session-context.sh",
+      "event": "SessionStart",
+      "matcher": "clear|compact",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/task-completed-gate.sh",
+      "event": "TaskCompleted",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "PermissionDenied",
+      "matcher": ".*",
+      "modes": ["both"],
+      "args": "--event PermissionDenied"
+    },
+    {
+      "script": "hooks/deliver-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "ExitPlanMode",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/frontmatter-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/phase-advance-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Edit|Write",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["both"],
+      "timeout": 5
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
+      "event": "PostToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["both"],
+      "timeout": 5
+    },
+    {
+      "script": "hooks/verdict-version-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "SendMessage",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/version-bump-notify.sh",
+      "event": "FileChanged",
+      "matcher": "^v[0-9]+(-final)?\\.md$",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/stale-warn.sh",
+      "event": "FileChanged",
+      "matcher": "^v[0-9]+(-final)?\\.md$",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/critique-version-gate.sh",
+      "event": "TaskCompleted",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/halt-gate.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["both"],
+      "_note": "Registered once for all sessions. Must appear before approve-archive.sh in the Stop array (array-index ordering maintained by position in this manifest)."
+    },
+    {
+      "script": "hooks/approve-archive.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/wiki-log-append.sh",
+      "event": "FileChanged",
+      "matcher": ".claude/deepwork",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/execute/plan-citation-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/retest-dispatch.sh",
+      "event": "PostToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/bash-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/test-capture.sh",
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/file-changed-retest.sh",
+      "event": "FileChanged",
+      "matcher": "src/**",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/plan-drift-detector.sh",
+      "event": "FileChanged",
+      "matcher": "__plan_ref__",
+      "modes": ["execute"],
+      "_note": "Matcher is the absolute plan file path, substituted at registration time from $PLAN_REF."
+    },
+    {
+      "script": "hooks/execute/task-scope-gate.sh",
+      "event": "TaskCreated",
+      "matcher": ".*",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/stop-hook.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["execute"]
+    }
+  ]
+}
