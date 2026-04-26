@@ -68,6 +68,42 @@ echo "── SBG-e: grep state.json README.md (no redirect) → allowed ──"
 RC=$(_run_gate "grep state.json README.md")
 _assert_exit "SBG-e" "0" "$RC"
 
+# ── SBG-f: events.jsonl redirect → blocked ──────────────────────────────────
+echo ""
+echo "── SBG-f: echo line >> events.jsonl → blocked ──"
+RC=$(_run_gate "echo '{\"event_type\":\"x\"}' >> events.jsonl")
+_assert_exit "SBG-f" "2" "$RC"
+
+# ── SBG-g: pending-change.json redirect → blocked ───────────────────────────
+echo ""
+echo "── SBG-g: echo {} > pending-change.json → blocked ──"
+RC=$(_run_gate "echo '{}' > pending-change.json")
+_assert_exit "SBG-g" "2" "$RC"
+
+# ── SBG-h: incidents.jsonl mv → blocked ─────────────────────────────────────
+echo ""
+echo "── SBG-h: mv /tmp/x.jsonl incidents.jsonl → blocked ──"
+RC=$(_run_gate "mv /tmp/x.jsonl incidents.jsonl")
+_assert_exit "SBG-h" "2" "$RC"
+
+# ── SBG-i: test-results.jsonl — test-capture.sh writer → allowed ────────────
+echo ""
+echo "── SBG-i: bash .../test-capture.sh → allowed ──"
+RC=$(_run_gate "bash /path/to/plugins/deepwork/hooks/execute/test-capture.sh")
+_assert_exit "SBG-i" "0" "$RC"
+
+# ── SBG-j: override-tokens.json redirect → blocked ──────────────────────────
+echo ""
+echo "── SBG-j: echo {} > override-tokens.json → blocked ──"
+RC=$(_run_gate "echo '{}' > override-tokens.json")
+_assert_exit "SBG-j" "2" "$RC"
+
+# ── SBG-k: hook-timing.jsonl tee → blocked ──────────────────────────────────
+echo ""
+echo "── SBG-k: tee hook-timing.jsonl → blocked ──"
+RC=$(_run_gate "echo '{}' | tee hook-timing.jsonl")
+_assert_exit "SBG-k" "2" "$RC"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"

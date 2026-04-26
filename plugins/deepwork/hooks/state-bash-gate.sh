@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
 # hooks/state-bash-gate.sh
 # Registered: PreToolUse:Bash via hook-manifest.json (modes: both)
-# Blocks shell-redirect writes to state.json that bypass frontmatter-gate.sh,
-# which only covers Write|Edit tool calls (W8 H2).
+# Blocks shell-redirect writes to state.json and audit-trail files that bypass
+# frontmatter-gate.sh, which only covers Write|Edit tool calls (W8 H2, W13).
+#
+# Protected files (case-insensitive suffix match):
+#   state.json
+#   events.jsonl
+#   pending-change.json
+#   discoveries.jsonl
+#   rollback_log.jsonl
+#   incidents.jsonl
+#   metrics-violations.jsonl
+#   test-results.jsonl
+#   hook-timing.jsonl
+#   override-tokens.json
 #
 # Blocked patterns (case-insensitive):
-#   > .*state\.json       redirect
-#   >> .*state\.json      append redirect
-#   cp .* state\.json     copy overwrite
-#   mv .* state\.json     move overwrite
-#   tee .* state\.json    tee write
-#   dd .* of=.*state\.json  dd write
+#   > .*<file>       redirect
+#   >> .*<file>      append redirect
+#   cp .* <file>     copy overwrite
+#   mv .* <file>     move overwrite
+#   tee .* <file>    tee write
+#   dd .* of=.*<file>  dd write
 #
-# Allowlist: command invokes the canonical writer via `bash .*state-transition\.sh`.
+# Allowlist (checked before block):
+#   - command invokes `bash .*state-transition\.sh`
+#   - command invokes `bash .*test-capture\.sh` (canonical writer for test-results.jsonl)
+#   - env sentinel _DW_STATE_TRANSITION_WRITER=1 is set (subprocess of state-transition.sh)
 
 set +e
 
@@ -26,14 +41,26 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
 [[ -n "$COMMAND" ]] || exit 0
 
-# Allowlist: state-transition.sh is the canonical writer; let it through.
+# Allowlist: canonical writers; let them through.
 if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*state-transition\.sh'; then
   exit 0
 fi
+if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*test-capture\.sh'; then
+  exit 0
+fi
+# Subprocess sentinel: state-transition.sh sets this before writing
+[[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]] && exit 0
 
-# Block any command that writes to a file named state.json via shell operators or tools.
-if printf '%s' "$COMMAND" | grep -qiE '>[[:space:]]*[^;|&]*state\.json|>>[[:space:]]*[^;|&]*state\.json|cp[[:space:]]+[^;|&]*[[:space:]]+state\.json|mv[[:space:]]+[^;|&]*[[:space:]]+state\.json|tee[[:space:]]+[^;|&]*state\.json|dd[[:space:]]+[^;|&]*of=[^;|&]*state\.json'; then
-  printf 'state-bash-gate: SINGLE_WRITER_VIOLATION — direct Bash write to state.json is blocked; use state-transition.sh\n' >&2
+# Protected file pattern — matches any of the audit-trail filenames.
+_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|rollback_log\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
+
+# Block redirect/copy/move/tee/dd writes to any protected file.
+if printf '%s' "$COMMAND" | grep -qiE \
+  ">[[:space:]]*[^;|&]*${_PROTECTED}|>>[[:space:]]*[^;|&]*${_PROTECTED}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|tee[[:space:]]+[^;|&]*${_PROTECTED}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PROTECTED}"; then
+  _matched=$(printf '%s' "$COMMAND" | grep -oiE \
+    ">[[:space:]]*[^;|&]*${_PROTECTED}|>>[[:space:]]*[^;|&]*${_PROTECTED}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|tee[[:space:]]+[^;|&]*${_PROTECTED}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PROTECTED}" | head -1)
+  printf 'state-bash-gate: SINGLE_WRITER_VIOLATION — direct Bash write to audit-trail file is blocked; use state-transition.sh\n' >&2
+  printf '  matched: %s\n' "$_matched" >&2
   exit 2
 fi
 
