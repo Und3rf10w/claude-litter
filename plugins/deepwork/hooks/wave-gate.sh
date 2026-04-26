@@ -33,10 +33,9 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
 TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
 TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
@@ -96,9 +95,14 @@ if [[ "$ACTOR" == "team-lead" ]] || [[ "$ACTOR" == "orchestrator" ]]; then
   exit 0
 fi
 
-# Read task metadata
-WAVE=$(printf '%s' "$INPUT" | jq -r '.metadata.wave // ""' 2>/dev/null || echo "")
-OVERRIDE_TOKEN_ID=$(printf '%s' "$INPUT" | jq -r '.metadata.override_token_id // ""' 2>/dev/null || echo "")
+# Read task metadata from task file (W11 H7: not from hook INPUT)
+if _load_task_file "$TEAM_NAME" "$TASK_ID" 2>/dev/null; then
+  WAVE=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.wave // ""' 2>/dev/null || echo "")
+  OVERRIDE_TOKEN_ID=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.override_token_id // ""' 2>/dev/null || echo "")
+else
+  WAVE=""
+  OVERRIDE_TOKEN_ID=""
+fi
 
 # MISSING_WAVE_METADATA: teammate created a task without metadata.wave
 if [[ -z "$WAVE" ]]; then

@@ -16,6 +16,8 @@
 #   WG-l: consume_override removes the token (one-time-use)
 #   WG-m: token granted to teammate-A consumed by teammate-B → blocked (wrong actor)
 #   WG-n: wave mismatch with invalid/consumed token → blocked (WAVE_MISMATCH + INVALID_OVERRIDE_TOKEN)
+#   WG-o: task file has correct wave → allowed (W11 H7: metadata read from task file)
+#   WG-p: task file has mismatched wave → blocked (W11 H7: metadata read from task file)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -98,6 +100,25 @@ _write_malformed_state() {
   printf 'NOT VALID JSON{{{' > "${INSTANCE_DIR}/state.json"
 }
 
+# Write a task file to $HOME/.claude/tasks/<team>/<task_id>.json so wave-gate
+# can load metadata from the file (W11 H7: metadata no longer comes from INPUT).
+# $1=task_id  $2=wave  $3=override_token_id (optional)
+_write_task_file() {
+  local task_id="$1" wave="$2" override_token_id="${3:-}"
+  local task_dir="${SANDBOX}/.claude/tasks/${TEAM_NAME}"
+  mkdir -p "$task_dir"
+  local task_safe
+  task_safe=$(printf '%s' "$task_id" | sed 's/[^a-zA-Z0-9_-]/_/g')
+  jq -cn \
+    --arg tid "$task_id" \
+    --arg wave "$wave" \
+    --arg otid "$override_token_id" \
+    '{task_id: $tid, task_subject: "test task",
+      metadata: (if $wave != "" then {wave: $wave} else {} end |
+                 if $otid != "" then . + {override_token_id: $otid} else . end)}' \
+    > "${task_dir}/${task_safe}.json"
+}
+
 _run_hook() {
   local input="$1"
   printf '%s' "$input" \
@@ -124,11 +145,11 @@ _assert_not_contains "WG-a: no MISMATCH in output" "WAVE_MISMATCH" "$OUT"
 echo ""
 echo "── WG-b: teammate creates same-phase task → allowed ──"
 _write_design_state "explore"
+_write_task_file "task-2" "explore"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-2" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "explore task",
-    metadata: {wave: "explore"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "explore task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-b: same-phase allowed (exit=0)" "0" "$RC"
@@ -137,11 +158,11 @@ _assert_exit "WG-b: same-phase allowed (exit=0)" "0" "$RC"
 echo ""
 echo "── WG-c: teammate creates task without metadata.wave → blocked ──"
 _write_design_state "explore"
+_write_task_file "task-3" ""
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-3" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "no wave",
-    metadata: {}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "no wave"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-c: no metadata.wave blocked (exit=2)" "2" "$RC"
@@ -151,11 +172,11 @@ _assert_contains "WG-c: error mentions MISSING_WAVE_METADATA" "MISSING_WAVE_META
 echo ""
 echo "── WG-d: teammate creates task with mismatched wave, no override → blocked ──"
 _write_design_state "explore"
+_write_task_file "task-4" "synthesize"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-4" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "wrong phase",
-    metadata: {wave: "synthesize"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "wrong phase"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-d: wave mismatch blocked (exit=2)" "2" "$RC"
@@ -169,11 +190,11 @@ _write_design_state "explore"
 # Grant an override token as orchestrator — actor-bound to W1-researcher
 STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
   grant_override --id "tok-wg-e" --to "W1-researcher" --description "pre-emptive work approved by lead" >/dev/null
+_write_task_file "task-5" "synthesize" "tok-wg-e"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-5" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "override task",
-    metadata: {wave: "synthesize", override_token_id: "tok-wg-e"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "override task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-e: override allowed (exit=0)" "0" "$RC"
@@ -189,21 +210,21 @@ _assert_contains "WG-e: audit entry has token id" "tok-wg-e" "$LOG_CONTENT"
 echo ""
 echo "── WG-f: design mode — gate uses state.phase ──"
 _write_design_state "critique"
+_write_task_file "task-6" "critique"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-6" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "design task",
-    metadata: {wave: "critique"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "design task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-f: design mode same phase allowed (exit=0)" "0" "$RC"
 
 # And a mismatch in design mode:
+_write_task_file "task-6b" "explore"
 INPUT2=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-6b" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "design task mismatch",
-    metadata: {wave: "explore"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "design task mismatch"}')
 OUT2=$(_run_hook "$INPUT2")
 RC2=$(printf '%s' "$OUT2" | tail -1)
 _assert_exit "WG-f: design mode mismatch blocked (exit=2)" "2" "$RC2"
@@ -212,21 +233,21 @@ _assert_exit "WG-f: design mode mismatch blocked (exit=2)" "2" "$RC2"
 echo ""
 echo "── WG-g: execute mode — gate uses state.execute.phase ──"
 _write_execute_state "execute"
+_write_task_file "task-7" "execute"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-7" \
-  '{team_name: $team, teammate_name: "W1-coder", task_id: $tid, task_subject: "execute task",
-    metadata: {wave: "execute"}}')
+  '{team_name: $team, teammate_name: "W1-coder", task_id: $tid, task_subject: "execute task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-g: execute mode same phase allowed (exit=0)" "0" "$RC"
 
 # Mismatch in execute mode:
+_write_task_file "task-7b" "verify"
 INPUT2=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-7b" \
-  '{team_name: $team, teammate_name: "W1-coder", task_id: $tid, task_subject: "wrong execute phase",
-    metadata: {wave: "verify"}}')
+  '{team_name: $team, teammate_name: "W1-coder", task_id: $tid, task_subject: "wrong execute phase"}')
 OUT2=$(_run_hook "$INPUT2")
 RC2=$(printf '%s' "$OUT2" | tail -1)
 _assert_exit "WG-g: execute mode mismatch blocked (exit=2)" "2" "$RC2"
@@ -235,11 +256,11 @@ _assert_exit "WG-g: execute mode mismatch blocked (exit=2)" "2" "$RC2"
 echo ""
 echo "── WG-h: malformed state.json → fail-open ──"
 _write_malformed_state
+_write_task_file "task-8" "explore"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-8" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "any task",
-    metadata: {wave: "explore"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "any task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-h: malformed state fail-open (exit=0)" "0" "$RC"
@@ -303,11 +324,11 @@ _assert_contains "WG-m: error mentions granted_to mismatch" "W3-writer" "$OUT"
 echo ""
 echo "── WG-n: wave mismatch with invalid token → blocked (exit 2) ──"
 _write_design_state "explore"
+_write_task_file "task-wg-n" "synthesize" "tok-nonexistent"
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-wg-n" \
-  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "replay task",
-    metadata: {wave: "synthesize", override_token_id: "tok-nonexistent"}}')
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "replay task"}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-n: invalid token blocked (exit=2)" "2" "$RC"
@@ -326,6 +347,33 @@ OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-j: unknown actor blocked (exit=2)" "2" "$RC"
 _assert_contains "WG-j: UNKNOWN_ACTOR in stderr" "UNKNOWN_ACTOR" "$OUT"
+
+# ── WG-o: task file has correct wave → allowed (W11 H7) ──
+echo ""
+echo "── WG-o: task file read for metadata.wave — correct wave → allowed ──"
+_write_design_state "explore"
+_write_task_file "task-wg-o" "explore"
+INPUT=$(jq -cn \
+  --arg team "$TEAM_NAME" \
+  --arg tid "task-wg-o" \
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "task-file wave match"}')
+OUT=$(_run_hook "$INPUT")
+RC=$(printf '%s' "$OUT" | tail -1)
+_assert_exit "WG-o: task-file correct wave allowed (exit=0)" "0" "$RC"
+
+# ── WG-p: task file has mismatched wave → blocked (W11 H7) ──
+echo ""
+echo "── WG-p: task file read for metadata.wave — wrong wave → blocked ──"
+_write_design_state "explore"
+_write_task_file "task-wg-p" "synthesize"
+INPUT=$(jq -cn \
+  --arg team "$TEAM_NAME" \
+  --arg tid "task-wg-p" \
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "task-file wave mismatch"}')
+OUT=$(_run_hook "$INPUT")
+RC=$(printf '%s' "$OUT" | tail -1)
+_assert_exit "WG-p: task-file wave mismatch blocked (exit=2)" "2" "$RC"
+_assert_contains "WG-p: WAVE_MISMATCH in stderr" "WAVE_MISMATCH" "$OUT"
 
 # ── Summary ──
 echo ""

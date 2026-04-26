@@ -37,14 +37,13 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-TEAM_NAME=$(echo "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
-TASK_ID=$(echo "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
-TEAMMATE=$(echo "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null || echo "")
+TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
+TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
+TEAMMATE=$(printf '%s' "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null || echo "")
 
 [[ -n "$TEAM_NAME" ]] || exit 0
 [[ -n "$TASK_ID" ]] || exit 0
@@ -176,7 +175,7 @@ fi
 # If metadata.commit_sha is set, the referenced commit must exist in the repo.
 # Plan-mode tasks never set commit_sha — this gate is a no-op for them.
 # CC source: cli_formatted_2.1.116.js:265849 (TaskCompleted schema), :564789 (exit 2 → blockingError).
-COMMIT_SHA=$(echo "$INPUT" | jq -r '.metadata.commit_sha // ""' 2>/dev/null || echo "")
+COMMIT_SHA=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.commit_sha // ""' 2>/dev/null || echo "")
 if [[ -n "$COMMIT_SHA" ]] && [[ "$COMMIT_SHA" != "null" ]]; then
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"
   if ! git -C "$PROJECT_DIR" cat-file -e "${COMMIT_SHA}^{commit}" 2>/dev/null; then
