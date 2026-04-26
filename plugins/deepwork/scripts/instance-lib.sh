@@ -246,6 +246,8 @@ discover_instance() {
   # for all hook types). Fall back to pwd -P for non-hook contexts (e.g., test harness).
   _project_root="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"
 
+  # Glob matches only state.json — archived instances (state.archived.json) are
+  # automatically skipped without extra logic.
   for _f in "${_project_root}/.claude/deepwork"/*/state.json; do
     # Guard: glob returned literal pattern (no matches)
     [[ -f "$_f" ]] || continue

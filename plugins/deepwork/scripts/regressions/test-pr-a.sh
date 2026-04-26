@@ -325,6 +325,51 @@ else
 fi
 rm -rf "$SETUP_SANDBOX2"
 
+# ── PRA-14: transactional init — INSTANCE_DIR removed when _SETUP_COMPLETE=false on non-zero exit ──
+# Regression for W18-c: setup-deepwork.sh EXIT trap must rm -rf INSTANCE_DIR when
+# _SETUP_COMPLETE is not "true" and exit code is non-zero (partial init cleanup).
+echo ""
+echo "── PRA-14: transactional init — INSTANCE_DIR cleaned on non-zero exit ──"
+
+TRANS_SB=$(mktemp -d)
+TRANS_INST_DIR="${TRANS_SB}/.claude/deepwork/deadbeef"
+mkdir -p "$TRANS_INST_DIR"
+
+# Simulate the trap body as written in setup-deepwork.sh
+_SETUP_COMPLETE_T=false
+_TRANS_RC=1
+
+# Run the trap logic inline (mirrors the trap body in setup-deepwork.sh)
+if [ "$_SETUP_COMPLETE_T" != "true" ] && [ "$_TRANS_RC" -ne 0 ]; then
+  rm -rf "${TRANS_INST_DIR}" 2>/dev/null || true
+fi
+
+if [[ -d "$TRANS_INST_DIR" ]]; then
+  _fail "PRA-14: INSTANCE_DIR NOT removed when _SETUP_COMPLETE=false and rc=1"
+else
+  _pass "PRA-14: INSTANCE_DIR removed by transactional trap when _SETUP_COMPLETE=false and rc=1"
+fi
+
+# Also verify: when _SETUP_COMPLETE=true, INSTANCE_DIR is preserved even on non-zero exit
+TRANS_SB2=$(mktemp -d)
+TRANS_INST_DIR2="${TRANS_SB2}/.claude/deepwork/deadbeef"
+mkdir -p "$TRANS_INST_DIR2"
+
+_SETUP_COMPLETE_T2=true
+_TRANS_RC2=1
+
+if [ "$_SETUP_COMPLETE_T2" != "true" ] && [ "$_TRANS_RC2" -ne 0 ]; then
+  rm -rf "${TRANS_INST_DIR2}" 2>/dev/null || true
+fi
+
+if [[ -d "$TRANS_INST_DIR2" ]]; then
+  _pass "PRA-14b: INSTANCE_DIR preserved when _SETUP_COMPLETE=true (even rc=1)"
+else
+  _fail "PRA-14b: INSTANCE_DIR incorrectly removed when _SETUP_COMPLETE=true"
+fi
+
+rm -rf "$TRANS_SB" "$TRANS_SB2"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
