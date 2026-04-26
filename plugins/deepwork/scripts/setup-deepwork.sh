@@ -27,6 +27,7 @@ AUTHORIZED_LOCAL_DESTRUCTIVE="false"
 SECRET_SCAN_WAIVED="false"
 CHAOS_MONKEY="auto"  # auto | true | false
 ALLOW_NO_HOOKS="false"
+SINGLE_WRITER_ENABLED="true"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -171,6 +172,14 @@ HELP_EOF
       ;;
     --allow-no-hooks)
       ALLOW_NO_HOOKS="true"
+      shift
+      ;;
+    --enable-single-writer)
+      SINGLE_WRITER_ENABLED="true"
+      shift
+      ;;
+    --disable-single-writer)
+      SINGLE_WRITER_ENABLED="false"
       shift
       ;;
     *)
@@ -380,6 +389,7 @@ jq -n \
   --arg team "$TEAM_NAME" \
   --arg mode "$MODE" \
   --argjson safe_mode_val "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
+  --argjson single_writer_val "$([ "$SINGLE_WRITER_ENABLED" = "true" ] && echo true || echo false)" \
   --argjson sot "$SOURCE_OF_TRUTH_JSON" \
   --argjson anchors "$ANCHORS_JSON" \
   --argjson guardrails "$GUARDRAILS_JSON" \
@@ -394,6 +404,7 @@ jq -n \
     "last_updated": $now,
     "team_name": $team,
     "safe_mode": $safe_mode_val,
+    "single_writer_enabled": $single_writer_val,
     "phase": "scope",
     "source_of_truth": $sot,
     "anchors": $anchors,
