@@ -810,6 +810,8 @@ for idx, line in enumerate(raw_lines, 1):
         frag = payload.get("json_fragment", {})
         if isinstance(frag, dict):
             working.update(frag)
+    elif etype == "state_reverted":
+        working = payload.get("state_snapshot", {})
     elif etype == "halt_recorded":
         working["halt_reason"] = {
             "summary": payload.get("summary", ""),
@@ -954,6 +956,12 @@ PYEOF
           _frag=$(printf '%s' "$_line" | jq -c '.payload.json_fragment' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson frag "$_frag" '. * $frag' 2>/dev/null)
+          ;;
+        state_reverted)
+          _working_state=$(printf '%s' "$_line" | jq -c '.payload.state_snapshot' 2>/dev/null) || {
+            printf 'state-transition.sh replay: failed to extract state_snapshot from state_reverted at event %d\n' "$_event_count" >&2
+            exit 1
+          }
           ;;
         halt_recorded)
           _summary=$(printf '%s' "$_line" | jq -r '.payload.summary // ""' 2>/dev/null)
@@ -1103,9 +1111,37 @@ PYEOF
     exit 0
     ;;
 
+  # ---- emit_revert_event -----------------------------------------------------
+  # emit_revert_event --reason <text> --reverted_to_event <event_id>
+  # Appends a state_reverted event to events.jsonl. The payload carries the
+  # current (post-revert) state as a snapshot so replay can reconstruct it.
+  # Called by state-drift-marker.sh after it cp's .state-snapshot over state.json.
+  emit_revert_event)
+    _RE_REASON=""
+    _RE_TO_EVENT=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --reason) _RE_REASON="$2"; shift 2 ;;
+        --reverted_to_event) _RE_TO_EVENT="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_RE_REASON" ]] || { printf 'emit_revert_event: --reason is required\n' >&2; exit 3; }
+    [[ -n "$_RE_TO_EVENT" ]] || { printf 'emit_revert_event: --reverted_to_event is required\n' >&2; exit 3; }
+    _require_state_file
+    _ensure_event_log
+    _REVERT_SNAP=$(cat "$STATE_FILE" 2>/dev/null) || { printf 'emit_revert_event: cannot read STATE_FILE\n' >&2; exit 1; }
+    printf '%s' "$_REVERT_SNAP" | jq empty 2>/dev/null || { printf 'emit_revert_event: STATE_FILE is not valid JSON\n' >&2; exit 1; }
+    _emit_event "state_reverted" \
+      "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
+          --argjson snap "$_REVERT_SNAP" \
+          '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')"
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event\n' >&2
     exit 3
     ;;
 esac

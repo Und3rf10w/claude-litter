@@ -108,8 +108,18 @@ case "$HOOK_EVENT_NAME" in
       ' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
 
       if [[ -n "$VALIDATION_RESULT" ]]; then
+        # Capture the most recent event_id before overwriting state.json; the bad
+        # write bypassed state-transition.sh so events.jsonl already points to the
+        # last good event — that is the event we're reverting to.
+        _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
+          | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
         # Revert state.json from snapshot
         cp "${INSTANCE_DIR}/.state-snapshot" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
+        # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
+        STATE_FILE="${INSTANCE_DIR}/state.json" \
+          "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+          --reason "banner_schema_violation" \
+          --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
         # Append blocker line to log.md
         BLOCKER_LINE="> [banner-corruption ${NOW}] ${VALIDATION_RESULT}"
         printf '%s\n' "$BLOCKER_LINE" >> "$LOG_FILE" 2>/dev/null || true

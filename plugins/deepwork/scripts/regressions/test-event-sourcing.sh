@@ -629,6 +629,84 @@ printf '%s\n' "$_L2" >> "$ESL_EVENTS"
 ESLRC=$?
 _assert_exit "ES-l: replay exits 0 on valid jq_path" "0" "$ESLRC"
 
+# ── ES-m: state-drift-marker F1 revert path emits state_reverted event ───────
+echo ""
+echo "── ES-m: F1 revert path — state_reverted event present and replay correct ──"
+# Instance must live at CLAUDE_PROJECT_DIR/.claude/deepwork/<8-hex-id>/ so
+# discover_instance can locate it via session_id match.
+ESM_SESSION="esm-$(date +%s)"
+ESM_IID="a1b2c3d4"
+ESM_PROJECT="${SANDBOX}/esm-project"
+ESM_INSTANCE_DIR="${ESM_PROJECT}/.claude/deepwork/${ESM_IID}"
+mkdir -p "$ESM_INSTANCE_DIR"
+ESM_STATE="${ESM_INSTANCE_DIR}/state.json"
+ESM_EVENTS="${ESM_INSTANCE_DIR}/events.jsonl"
+ESM_LOG="${ESM_INSTANCE_DIR}/log.md"
+STATE_DRIFT_MARKER="${PLUGIN_ROOT}/hooks/state-drift-marker.sh"
+
+# Bootstrap a clean instance using state-transition.sh init
+"$STATE_TRANSITION" --state-file "$ESM_STATE" init - <<EOF
+{
+  "session_id": "${ESM_SESSION}",
+  "instance_id": "${ESM_IID}",
+  "phase": "work",
+  "team_name": "esm-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1",
+  "banners": []
+}
+EOF
+printf '# log\n' > "$ESM_LOG"
+
+# Seed events.jsonl via a real subcommand
+"$STATE_TRANSITION" --state-file "$ESM_STATE" stamp_last_updated
+
+# Step 1: PreToolUse — snapshot state.json before writing bad banners
+cp "$ESM_STATE" "${ESM_INSTANCE_DIR}/.state-snapshot"
+
+# Step 2: Write bad banners directly to state.json (bypassing state-transition.sh),
+# simulating a rogue Write that state-drift-marker will detect and revert.
+jq '.banners = [{"artifact_path":"x.md","banner_type":"BAD_TYPE","reason":"r","added_at":"2026-01-01T00:00:00Z","added_by":"test"}]' \
+  "$ESM_STATE" > "${ESM_STATE}.tmp" && mv "${ESM_STATE}.tmp" "$ESM_STATE"
+
+# Step 3: Run state-drift-marker PostToolUse leg — detect violation and revert.
+# Pass the canonical path to state.json as file_path so the Write branch matches.
+_ESM_SF_CANON=$(cd "$(dirname "$ESM_STATE")" && pwd -P)/$(basename "$ESM_STATE")
+HOOK_EVENT_NAME="PostToolUse" CLAUDE_CODE_SESSION_ID="$ESM_SESSION" \
+  CLAUDE_PROJECT_DIR="$ESM_PROJECT" \
+  bash "$STATE_DRIFT_MARKER" \
+  <<< "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${_ESM_SF_CANON}\",\"content\":\"\"}}" \
+  2>/dev/null
+
+# Step 4: Walk events.jsonl — confirm state_reverted event present
+ESM_REVERTED_COUNT=0
+while IFS= read -r _esm_l; do
+  [[ -z "$_esm_l" ]] && continue
+  _et=$(printf '%s' "$_esm_l" | jq -r '.event_type // ""' 2>/dev/null)
+  [[ "$_et" == "state_reverted" ]] && ESM_REVERTED_COUNT=$(( ESM_REVERTED_COUNT + 1 ))
+done < "$ESM_EVENTS"
+if [[ "$ESM_REVERTED_COUNT" -ge 1 ]]; then
+  _pass "ES-m: state_reverted event present in events.jsonl"
+else
+  _fail "ES-m: state_reverted event NOT found in events.jsonl"
+fi
+
+# Step 5: Run replay — confirm bad banners are gone from replayed state
+ESM_REPLAY_OUT="${ESM_INSTANCE_DIR}/replay-out.json"
+cp "$ESM_STATE" "$ESM_REPLAY_OUT"
+"$STATE_TRANSITION" --state-file "$ESM_REPLAY_OUT" replay > /dev/null 2>&1
+ESM_REPLAY_RC=$?
+_assert_exit "ES-m: replay exits 0 after revert" "0" "$ESM_REPLAY_RC"
+
+ESM_BAD_BANNERS=$(jq -r '[.banners[]? | select(.banner_type == "BAD_TYPE")] | length' \
+  "$ESM_REPLAY_OUT" 2>/dev/null || echo "0")
+if [[ "$ESM_BAD_BANNERS" -eq 0 ]]; then
+  _pass "ES-m: replay state has no bad banners (revert was replayed correctly)"
+else
+  _fail "ES-m: replay state still contains ${ESM_BAD_BANNERS} bad banner(s)"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"
