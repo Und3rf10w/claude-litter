@@ -104,6 +104,23 @@ if [[ -n "$PLAN_FILE_REF" ]]; then
   fi
 fi
 
+# --- Gate G5: new-file test coverage ---
+# If the target file is NOT in state.execute.test_manifest, require pending-change.json
+# to contain a non-empty no_test_reason field.
+TEST_MANIFEST=$(jq -r --arg fp "$FILE_PATH" '
+  .execute.test_manifest // [] | map(select(. == $fp)) | length
+' "$STATE_FILE" 2>/dev/null || echo "0")
+
+if [[ "$TEST_MANIFEST" == "0" ]]; then
+  NO_TEST_REASON=$(printf '%s' "$PENDING_JSON" | jq -r '.no_test_reason // ""' 2>/dev/null || echo "")
+  if [[ -z "$NO_TEST_REASON" ]] || [[ "$NO_TEST_REASON" == "null" ]]; then
+    printf 'BLOCKED (G5): no test coverage and no documented exception.\n' >&2
+    printf 'File "%s" is not in state.execute.test_manifest.\n' "$FILE_PATH" >&2
+    printf 'Add a test_manifest entry or set '"'"'no_test_reason'"'"' in pending-change.json.\n' >&2
+    exit 2
+  fi
+fi
+
 # --- Gate G4 EP3: pending-test block ---
 # Read test-results.jsonl. Find entries whose covering_files[] includes FILE_PATH.
 # If any such entry has exit_code != 0 (fail/error), block until tests pass.
