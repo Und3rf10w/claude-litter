@@ -90,6 +90,13 @@
       "timeout": 5
     },
     {
+      "script": "hooks/batch-gate.sh",
+      "event": "PostToolBatch",
+      "matcher": ".*",
+      "modes": ["both"],
+      "_note": "W3-b: consolidates state-drift-marker Pre leg into one PostToolBatch subprocess. Runs in parallel with existing Pre state-drift-marker during shadow period (§7). Requires CC >= 2.1.118; pre-2.1.118 installs silently ignore unknown events. Feature flag: state.batch_gate_enabled (default true)."
+    },
+    {
       "script": "hooks/verdict-version-gate.sh",
       "event": "PreToolUse",
       "matcher": "SendMessage",

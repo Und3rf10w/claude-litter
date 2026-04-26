@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 107 nodes, 165 edges
+Graph: 111 nodes, 178 edges
 
 ## Mermaid Flowchart
 
@@ -15,6 +15,7 @@ flowchart LR
     FileChanged["FileChanged"]
     PermissionDenied["PermissionDenied"]
     PermissionRequest["PermissionRequest"]
+    PostToolBatch["PostToolBatch"]
     PostToolUse["PostToolUse"]
     PostToolUseFailure["PostToolUseFailure"]
     PreCompact["PreCompact"]
@@ -28,6 +29,7 @@ flowchart LR
   end
   subgraph Hooks_Design
     approve_archive["approve-archive"]
+    batch_gate["batch-gate"]
     critique_version_gate["critique-version-gate"]
     deliver_gate["deliver-gate"]
     frontmatter_gate["frontmatter-gate"]
@@ -50,6 +52,7 @@ flowchart LR
   subgraph Hooks_Execute
     approve_archive["approve-archive"]
     bash_gate["bash-gate"]
+    batch_gate["batch-gate"]
     critique_version_gate["critique-version-gate"]
     deliver_gate["deliver-gate"]
     frontmatter_gate["frontmatter-gate"]
@@ -80,6 +83,7 @@ flowchart LR
     authorized_push(([".authorized_push"]))
     banners(([".banners"]))
     bar(([".bar"]))
+    batch_gate_enabled(([".batch_gate_enabled"]))
     change_id(([".change_id"]))
     critic_verdict(([".critic_verdict"]))
     current_version(([".current_version"]))
@@ -117,6 +121,7 @@ flowchart LR
     single_writer_enabled(([".single_writer_enabled"]))
     source_file(([".source_file"]))
     team_name(([".team_name"]))
+    tool_calls(([".tool_calls"]))
     tool_response_data_file_path(([".tool_response.data.file_path"]))
     tool_response_data_interrupted(([".tool_response.data.interrupted"]))
     tool_response_data_stderr(([".tool_response.data.stderr"]))
@@ -151,6 +156,7 @@ flowchart LR
   FileChanged -->|".claude/deepwork"| wiki_log_append
   PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
+  PostToolBatch --> batch_gate
   PostToolUse -->|"Write|Edit"| retest_dispatch
   PostToolUse -->|"Write|Edit"| state_drift_marker
   PostToolUse -->|"Bash"| test_capture
@@ -188,6 +194,12 @@ flowchart LR
   bash_gate -.->|"reads"| execute_plan_drift_detected
   bash_gate -.->|"reads"| secret_scan_waived
   bash_gate -.->|"reads"| setup_flags_snapshot
+  batch_gate -.->|"reads"| bar
+  batch_gate -.->|"reads"| batch_gate_enabled
+  batch_gate -.->|"reads"| id
+  batch_gate -.->|"reads"| phase
+  batch_gate -.->|"reads"| tool_calls
+  batch_gate -.->|"reads"| verdict
   critique_version_gate -.->|"reads"| current_version
   critique_version_gate -.->|"reads"| guardrails
   critique_version_gate -.->|"reads"| team_name
@@ -269,8 +281,12 @@ flowchart LR
   bash_gate -.->|"reads"| critique_v
   bash_gate -.->|"reads"| pending_change_json
   bash_gate -.->|"reads"| rollback
+  batch_gate -.->|"reads"| state_snapshot
+  batch_gate -.->|"reads"| state_json
   critique_version_gate -.->|"reads"| version_sentinel_json
   deliver_gate -.->|"reads"| proposals
+  frontmatter_gate -.->|"reads"| state_snapshot
+  frontmatter_gate -.->|"reads"| state_json
   incident_detector -.->|"reads"| incidents_jsonl
   plan_citation_gate -.->|"reads"| pending_change_json
   plan_citation_gate -.->|"reads"| test_results_jsonl
@@ -298,6 +314,8 @@ flowchart LR
   approve_archive -->|"writes"| events_archived_jsonl
   approve_archive -->|"writes"| events_jsonl
   approve_archive -->|"writes"| state_archived_json
+  frontmatter_gate -->|"writes"| state_snapshot
+  frontmatter_gate -->|"writes"| state_json
   incident_detector -->|"writes"| incidents_jsonl
   retest_dispatch -->|"writes"| test_results_jsonl
   stale_warn -->|"writes"| drift_log
@@ -381,6 +399,35 @@ flowchart LR
       },
       "source_refs": ["hooks/execute/bash-gate.sh"]
     },
+    "batch-gate.sh": {
+      "triggered_by": [
+      "PostToolBatch"
+      ],
+      "mode": "shared",
+      "reads": {
+        "state": [
+          ".bar",
+          ".batch_gate_enabled",
+          ".id",
+          ".phase",
+          ".tool_calls",
+          ".verdict"
+        ],
+        "markers": [
+          ".state-snapshot",
+          "state.json"
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/batch-gate.sh"]
+    },
     "critique-version-gate.sh": {
       "triggered_by": [
       "TaskCompleted"
@@ -440,7 +487,8 @@ flowchart LR
           ".single_writer_enabled"
         ],
         "markers": [
-          ""
+          ".state-snapshot",
+          "state.json"
         ]
       },
       "writes": {
@@ -448,7 +496,8 @@ flowchart LR
           ""
         ],
         "markers": [
-          ""
+          ".state-snapshot",
+          "state.json"
         ]
       },
       "source_refs": ["hooks/frontmatter-gate.sh"]

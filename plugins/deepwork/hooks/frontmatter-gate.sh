@@ -30,6 +30,8 @@ if [[ "$FILE_PATH" == */state.json ]]; then
   # W7 event_head integrity check — delegates to shared helper in instance-lib.sh.
   _verify_event_head_or_block || exit 2
   if [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]]; then
+    # §9.1: snapshot before the write so batch-gate.sh can diff phase/bar after the batch
+    cp "${INSTANCE_DIR}/state.json" "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || true
     exit 0
   fi
   printf 'frontmatter-gate: SINGLE_WRITER_VIOLATION — direct Write to state.json is blocked; use state-transition.sh\n' >&2
