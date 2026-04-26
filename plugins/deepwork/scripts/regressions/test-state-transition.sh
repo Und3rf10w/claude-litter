@@ -27,6 +27,7 @@
 # PCS-a: pending_change_set writes correct JSON to pending-change.json
 # PCS-b: pending_change_set missing required arg exits 3
 # PCS-c: pending_change_set event replays idempotently
+# PCS-d: pending_change_set strips leading/trailing whitespace from plan_section
 # EV-a: _emit_event rejects malformed jq_path (no leading dot) before writing
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
@@ -745,6 +746,18 @@ else
   _fail "PCS-c: pending-change.json not recreated by replay"
 fi
 rm -rf "$_PCSC_DIR"
+
+# ── PCS-d: plan_section whitespace is stripped ────────────────────────────────
+echo ""
+echo "── PCS-d: pending_change_set strips leading/trailing whitespace from plan_section ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "  S4.1  " \
+  --files '["src/foo.sh"]' \
+  --rationale "whitespace canonicalization test"
+_assert_exit "PCS-d: exit 0" "0" "$?"
+_assert_jq_eq "PCS-d: plan_section stripped" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S4.1"
 
 # ── EV-a: _emit_event rejects malformed jq_path before writing ───────────────
 echo ""

@@ -1356,6 +1356,9 @@ case "$SUBCOMMAND" in
         *) shift ;;
       esac
     done
+    # Canonicalize plan_section: strip leading/trailing whitespace
+    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION#"${_PCS_PLAN_SECTION%%[! ]*}"}"
+    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION%"${_PCS_PLAN_SECTION##*[! ]}"}"
     [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
     [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
     [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }
