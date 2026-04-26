@@ -502,6 +502,67 @@ else
   _fail "ES-i: event_head absent after first call on legacy instance"
 fi
 
+# ── ES-j: 5 concurrent transitions — hash chain must be intact ──────────────
+echo ""
+echo "── ES-j: 5 concurrent phase_advance calls leave chain intact (flock race guard) ──"
+_make_state "scope"
+
+# Advance to 'work' first so all 5 parallel append_array calls can proceed
+# without tripping the phase gate.
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+
+BASE_COUNT=$(_event_count)
+
+# 5 concurrent append_array mutations — each must emit its own unique event
+for _i in 1 2 3 4 5; do
+  "$STATE_TRANSITION" --state-file "$SF" append_array '.hook_warnings' \
+    "{\"event\":\"race\",\"seq\":${_i}}" &
+done
+wait
+
+NEW_COUNT=$(_event_count)
+DELTA=$(( NEW_COUNT - BASE_COUNT ))
+if [[ "$DELTA" -eq 5 ]]; then
+  _pass "ES-j: all 5 concurrent events landed (count delta=${DELTA})"
+else
+  _fail "ES-j: expected 5 new events, got ${DELTA} (total=${NEW_COUNT}, base=${BASE_COUNT})"
+fi
+
+# Walk the full chain: each event's prev_event_hash must equal SHA256 of the previous line.
+# This assertion only runs when flock is available; without it the race is known and
+# documented (warning is emitted to stderr by _emit_event).
+if ! command -v flock >/dev/null 2>&1; then
+  _pass "ES-j: hash chain integrity check skipped (flock unavailable on this platform)"
+else
+  _CHAIN_BROKEN=0
+  _PREV_LINE=""
+  _LINE_NUM=0
+  while IFS= read -r _L; do
+    [[ -z "$_L" ]] && continue
+    _LINE_NUM=$(( _LINE_NUM + 1 ))
+    if [[ $_LINE_NUM -eq 1 ]]; then
+      _PREV_HASH=$(printf '%s' "$_L" | jq -r '.prev_event_hash // ""' 2>/dev/null)
+      if [[ "$_PREV_HASH" != "GENESIS" ]]; then
+        _fail "ES-j: line 1 prev_event_hash is '${_PREV_HASH}', expected GENESIS"
+        _CHAIN_BROKEN=$(( _CHAIN_BROKEN + 1 ))
+      fi
+    else
+      _EXPECTED_PREV=$(_compute_hash "$_PREV_LINE")
+      _ACTUAL_PREV=$(printf '%s' "$_L" | jq -r '.prev_event_hash // ""' 2>/dev/null)
+      if [[ "$_EXPECTED_PREV" != "$_ACTUAL_PREV" ]]; then
+        _CHAIN_BROKEN=$(( _CHAIN_BROKEN + 1 ))
+      fi
+    fi
+    _PREV_LINE="$_L"
+  done < "$EVENTS_F"
+
+  if [[ "$_CHAIN_BROKEN" -eq 0 ]]; then
+    _pass "ES-j: hash chain integrity verified (no sibling events)"
+  else
+    _fail "ES-j: hash chain broken at ${_CHAIN_BROKEN} point(s) — sibling events detected"
+  fi
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"

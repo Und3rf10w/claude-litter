@@ -122,12 +122,21 @@ _append_event_raw() {
 # Builds and appends a full event envelope to ${INSTANCE_DIR}/events.jsonl.
 # Ordering: events.jsonl write happens BEFORE state.json write (Q1: Option A).
 # If state.json write later fails, reducer self-heals on next invocation.
+#
+# The entire read-prev_hash-through-append block is held under an exclusive
+# flock on events.jsonl.lock to prevent concurrent processes from reading the
+# same prev_event_hash and producing sibling events (hash chain race, W8 H1).
 _emit_event() {
   local event_type="$1"
   local payload_json="$2"
   local events_file="${INSTANCE_DIR}/events.jsonl"
+  local lock_file="${INSTANCE_DIR}/events.jsonl.lock"
 
-  # Generate event_id: prefer uuidgen (macOS) or /proc/uuid (Linux)
+  if ! command -v flock >/dev/null 2>&1; then
+    printf '_emit_event: flock unavailable — hash chain may be unsafe under concurrency\n' >&2
+  fi
+
+  # Generate event_id before acquiring the lock (no shared state involved).
   local event_id
   if command -v uuidgen >/dev/null 2>&1; then
     event_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -137,26 +146,34 @@ _emit_event() {
     event_id="$(date +%s)-$$-$(printf '%04d' $((RANDOM % 10000)))"
   fi
 
-  local prev_hash
-  prev_hash=$(_read_event_head)
-
-  local timestamp
-  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-
   local actor="${_DW_CALLER:-$(basename "$0")}"
 
-  local event_json
-  event_json=$(jq -cn \
-    --arg eid "$event_id" \
-    --arg etype "$event_type" \
-    --arg phash "$prev_hash" \
-    --arg ts "$timestamp" \
-    --arg actor "$actor" \
-    --argjson payload "$payload_json" \
-    '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
-      timestamp: $ts, actor: $actor, payload: $payload}') || return 1
+  # Hold an exclusive lock from _read_event_head through _append_event_raw so
+  # no two concurrent callers can read the same prev_event_hash.
+  (
+    if command -v flock >/dev/null 2>&1; then
+      flock -x 200 || exit 1
+    fi
 
-  _append_event_raw "$events_file" "$event_json"
+    local prev_hash
+    prev_hash=$(_read_event_head)
+
+    local timestamp
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+    local event_json
+    event_json=$(jq -cn \
+      --arg eid "$event_id" \
+      --arg etype "$event_type" \
+      --arg phash "$prev_hash" \
+      --arg ts "$timestamp" \
+      --arg actor "$actor" \
+      --argjson payload "$payload_json" \
+      '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
+        timestamp: $ts, actor: $actor, payload: $payload}') || exit 1
+
+    _append_event_raw "$events_file" "$event_json"
+  ) 200>"$lock_file"
 }
 
 # _ensure_event_log
