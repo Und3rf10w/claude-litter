@@ -143,7 +143,7 @@ gates:
 ## Notes for SYNTHESIZE phase
 
 - `state.kind = "plan-to-execute"` or `state.kind = null` (default) triggers this template.
-- After SYNTHESIZE completes, the user may invoke execute mode: `/deepwork --mode execute --plan-ref .claude/deepwork/<id>/proposals/v<N>-final.md`
+- After SYNTHESIZE completes, the user may invoke execute mode: `/deepwork --mode execute --plan-ref ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/proposals/v<N>-final.md`
 - The `execute-mode ready` field in the proposal header is informational — execute mode can consume any plan format.
 - The Execution Manifest section is consumed directly by execute mode SETUP if present; otherwise SETUP extracts an internal manifest from prose.
 - Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format (§9.4 degrade path).

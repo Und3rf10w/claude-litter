@@ -226,7 +226,7 @@ if [[ -z "$SESSION_ID" ]]; then
 fi
 
 # Atomic lockfile (TOCTOU-safe)
-LOCKFILE=".claude/deepwork.local.lock"
+LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
 if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
   if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -236,7 +236,7 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
       exit 1
     fi
   else
-    for _sf in .claude/deepwork/*/state.json; do
+    for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
       [[ -f "$_sf" ]] || continue
       _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
       if [[ "$_existing_session" == "$SESSION_ID" ]]; then
@@ -259,7 +259,7 @@ fi
 trap 'rm -f "$LOCKFILE" ".claude/settings.local.json.tmp.$$"' EXIT
 
 # Check for already-active instance (lockfile was stale from a crashed setup)
-for _sf in .claude/deepwork/*/state.json; do
+for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
   [[ -f "$_sf" ]] || continue
   _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
   if [[ "$_existing_session" == "$SESSION_ID" ]]; then

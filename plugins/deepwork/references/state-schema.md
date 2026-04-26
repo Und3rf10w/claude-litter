@@ -114,9 +114,9 @@ Object capturing the `authorized_*` flag values at SETUP time: `authorized_push`
 The state file lives at `${INSTANCE_DIR}/state.json`. Use `jq` for safe reads:
 
 ```bash
-INSTANCE_DIR="$(ls -d .claude/deepwork/*/state.json 2>/dev/null | head -1 | xargs dirname)"
+INSTANCE_DIR="$(ls -d "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json 2>/dev/null | head -1 | xargs dirname)"
 jq '.execute.phase' "$INSTANCE_DIR/state.json"
 jq '.execute.change_log[] | select(.merged_at == null)' "$INSTANCE_DIR/state.json"
 ```
 
-For the instance directory path, use `ls .claude/deepwork/*/state.json` or `/deepwork-execute-status`.
+For the instance directory path, use `ls "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json` or `/deepwork-execute-status`.

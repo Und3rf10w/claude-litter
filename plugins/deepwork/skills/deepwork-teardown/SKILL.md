@@ -1,6 +1,6 @@
 ---
 description: "Tear down an active deepwork session — deletes the team, archives state, and restores settings. Works for both mid-flight abort and post-HALT cleanup."
-allowed-tools: ["Bash(ls .claude/deepwork/*/state.json:*)", "Bash(rm .claude/deepwork/**:*)", "Bash(rm -f .claude/deepwork/**:*)", "Bash(rm -rf .claude/deepwork/**:*)", "Bash(mv .claude/deepwork/**:*)", "Bash(ls .claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
+allowed-tools: ["Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json:*)", "Bash(rm ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -f ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -rf ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(mv ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
 ---
 
 # Teardown Deepwork
@@ -9,7 +9,7 @@ Tear down a deepwork session — delete the team, archive state, and restore set
 
 1. Use Glob to find all active instances:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 
 2. If no files are found, report that no deepwork session is running and stop.
@@ -24,7 +24,7 @@ Glob: .claude/deepwork/*/state.json
 
 Then use `AskUserQuestion` to ask the user which instance to tear down.
 
-5. Once the target instance is selected, note its directory path: `.claude/deepwork/<id>/`.
+5. Once the target instance is selected, note its directory path: `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/`.
 
 6. Read the state file to get team_name. Then call `TaskList` to get current task status for the summary report.
 
@@ -37,12 +37,12 @@ Then use `AskUserQuestion` to ask the user which instance to tear down.
 8. Archive runtime state via the canonical writer, then clean up transient files:
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
-  --state-file ".claude/deepwork/<id>/state.json" archive_state
-rm -f .claude/deepwork/<id>/heartbeat.json
-rm -f .claude/deepwork/<id>/.idle-retry.*
+  --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/state.json" archive_state
+rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/heartbeat.json"
+rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/.idle-retry.*"
 ```
 
-`archive_state` emits a `state_archived` event, renames `state.json` → `state.archived.json`, and renames `events.jsonl` → `events.archived.jsonl`. The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
+`archive_state` emits a `state_archived` event, renames `state.json` → `state.archived.json`, and renames `events.jsonl` → `events.archived.jsonl`. The rename (not delete) of `state.json` stops all active-session globs (`${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
 
 Do NOT delete the artifacts — they capture the *why* behind the session (what was explored, what failed, what was rejected) and remain useful after teardown for historical analysis and future decisions:
 - `log.md` — narrative history
@@ -54,7 +54,7 @@ Do NOT delete the artifacts — they capture the *why* behind the session (what 
 
 9. Check if any other instances remain (informational only — the teardown script in step 10 performs the same check internally):
 ```bash
-ls .claude/deepwork/*/state.json 2>/dev/null
+ls "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json 2>/dev/null
 ```
 
 10. Restore settings via the centralized teardown script. Pass the instance ID so only this instance's hooks are removed (sibling-instance hooks are preserved). Falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
@@ -67,4 +67,4 @@ ls .claude/deepwork/*/state.json 2>/dev/null
     - Goal that was being worked on
     - Phase at time of teardown (the phase field in archived state is preserved as-is — `done` for post-APPROVE plan-mode cleanup, `halt` for post-HALT execute-mode cleanup, or whichever phase was live for mid-flight abort)
     - Task status summary from TaskList (completed / in_progress / pending)
-    - Confirm teardown; note that the full instance is preserved at `.claude/deepwork/<id>/` including `state.archived.json` (structured record), `log.md`, `proposals/`, and all teammate artifacts — queryable via `jq` across past sessions
+    - Confirm teardown; note that the full instance is preserved at `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/` including `state.archived.json` (structured record), `log.md`, `proposals/`, and all teammate artifacts — queryable via `jq` across past sessions

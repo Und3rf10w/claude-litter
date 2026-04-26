@@ -1,7 +1,7 @@
 ---
 description: "Add, remove, or list written-bar criteria for the active deepwork session"
 argument-hint: "add '<criterion>' [--categorical-ban] | remove <id> | list"
-allowed-tools: ["Read(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Edit(.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)"]
 ---
 
 # Deepwork Bar Management
@@ -19,7 +19,7 @@ Manually manage the `state.json.bar[]` array — the gate criteria CRITIC verdic
 
 1. Use Glob to find active instance state:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 
 2. If no active session, report "No active deepwork session."
@@ -39,7 +39,7 @@ Glob: .claude/deepwork/*/state.json
 Compute next id (max existing + 1, starting at G1), then call the canonical writer:
 
 ```bash
-STATE=".claude/deepwork/<id>/state.json"
+STATE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/state.json"
 NEXT_ID=$(jq -r '
   if (.bar // []) | length == 0 then "G1"
   else

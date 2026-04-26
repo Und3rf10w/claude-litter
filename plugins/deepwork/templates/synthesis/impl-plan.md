@@ -168,7 +168,7 @@ gates:
 ## Notes for SYNTHESIZE phase
 
 - `state.kind = "impl-plan"` triggers this template.
-- After SYNTHESIZE completes, the user invokes: `/deepwork --mode execute --plan-ref .claude/deepwork/<id>/proposals/v<N>-final.md`
+- After SYNTHESIZE completes, the user invokes: `/deepwork --mode execute --plan-ref ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/proposals/v<N>-final.md`
 - The Execution Manifest section, if present, is consumed directly by execute mode SETUP. If absent, execute mode SETUP extracts an internal manifest from prose (RU9 — documented default behavior).
 - `execute-mode ready: partial` is valid and should be used when the plan is detailed enough for SETUP-phase prose extraction but lacks explicit gate-level YAML.
 - Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format (§9.4 degrade path).
