@@ -226,7 +226,7 @@ if [[ -z "$SESSION_ID" ]]; then
 fi
 
 # Atomic lockfile (TOCTOU-safe)
-LOCKFILE=".claude/deepwork.local.lock"
+LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
 if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
   if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -236,7 +236,7 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
       exit 1
     fi
   else
-    for _sf in .claude/deepwork/*/state.json; do
+    for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
       [[ -f "$_sf" ]] || continue
       _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
       if [[ "$_existing_session" == "$SESSION_ID" ]]; then
@@ -259,7 +259,7 @@ fi
 trap 'rm -f "$LOCKFILE" ".claude/settings.local.json.tmp.$$"' EXIT
 
 # Check for already-active instance (lockfile was stale from a crashed setup)
-for _sf in .claude/deepwork/*/state.json; do
+for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
   [[ -f "$_sf" ]] || continue
   _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
   if [[ "$_existing_session" == "$SESSION_ID" ]]; then
@@ -297,9 +297,16 @@ INSTANCE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/${INSTANCE_ID}"
 mkdir -p "$INSTANCE_DIR"
 mkdir -p "${INSTANCE_DIR}/proposals"
 
+_SETUP_COMPLETE=false
+
 trap '
   _rc=$?
   rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"
+  if [ "$_SETUP_COMPLETE" != "true" ] && [ $_rc -ne 0 ]; then
+    # Transactional rollback: remove the partial instance dir so discover_instance
+    # never picks up a half-initialised state.json.
+    rm -rf "${INSTANCE_DIR}" 2>/dev/null || true
+  fi
   # On non-zero exit, remove only the hook blocks inserted by this instance.
   # Backup is last-resort manual recovery only (not automatic primary path).
   if [ $_rc -ne 0 ] && [ -f ".claude/settings.local.json" ] && command -v jq >/dev/null 2>&1; then
@@ -696,4 +703,5 @@ cat "${PLUGIN_ROOT}/references/written-bar-template.md"
 # when-not-to-use, failure-modes) are loaded on demand via Read during the orchestrator's
 # phase pipeline. Per principle: progressive disclosure keeps the initial prompt lean.
 
+_SETUP_COMPLETE=true
 exit 0

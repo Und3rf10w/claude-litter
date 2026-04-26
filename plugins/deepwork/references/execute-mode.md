@@ -167,7 +167,7 @@ Before any Write/Edit to a plan-authorized file, executor writes `pending-change
 
 `plan-citation-gate.sh` reads this file before each write. A null `plan_section` or a target file not in `files[]` results in a blocked write.
 
-**GAP-10 protection**: the instance directory's log files (`test-results.jsonl`, `change_log.jsonl`, `rollback_log.jsonl`, `discoveries.jsonl`, `pending-change.json` itself) are unconditionally blocked from Write/Edit — they are append-only via hooks. See `hooks/execute/plan-citation-gate.sh:48-53`.
+**GAP-10 protection**: the instance directory's log files (`test-results.jsonl`, `discoveries.jsonl`, `pending-change.json`, `log.md`, `hook-timing.jsonl`, `incidents.jsonl`, `metrics-violations.jsonl`) are unconditionally blocked from Write/Edit — they are append-only via hooks. See `hooks/execute/plan-citation-gate.sh:74-80`. (`change_log` and `rollback_log` are `state.json` fields, not files.)
 
 ---
 

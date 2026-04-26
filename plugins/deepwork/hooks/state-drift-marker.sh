@@ -59,7 +59,11 @@ case "$HOOK_EVENT_NAME" in
     # For Bash: only proceed if a snapshot exists (pre-leg fired for this command)
     if [[ "$TOOL_NAME" == "Bash" ]]; then
       [[ -f "$_SNAPSHOT" ]] || exit 0
-      [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
+      # state.json gone after archive_state (mv → state.archived.json): clean up orphan snapshot.
+      if [[ ! -f "${INSTANCE_DIR}/state.json" ]]; then
+        rm -f "$_SNAPSHOT" 2>/dev/null || true
+        exit 0
+      fi
       # Only run if command mentioned state.json
       BASH_CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
       printf '%s' "$BASH_CMD" | grep -q 'state\.json' || exit 0
@@ -126,6 +130,9 @@ case "$HOOK_EVENT_NAME" in
           "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
           --reason "banner_schema_violation" \
           --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
+        # Clean up snapshot — must happen on this early-return revert path because
+        # the normal cleanup at line 167 is never reached.
+        rm -f "$_SNAPSHOT" 2>/dev/null || true
         # Append blocker line to log.md
         BLOCKER_LINE="> [banner-corruption ${NOW}] ${VALIDATION_RESULT}"
         printf '%s\n' "$BLOCKER_LINE" >> "$LOG_FILE" 2>/dev/null || true

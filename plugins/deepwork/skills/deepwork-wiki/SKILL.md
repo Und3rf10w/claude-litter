@@ -1,21 +1,21 @@
 ---
-description: "Synthesize the deepwork wiki — rewrites Overview, Session Index, and Cross-refs in .claude/deepwork/DEEPWORK_WIKI.md from archived sessions. Preserves the # Log section verbatim (hook owns it)."
-allowed-tools: ["Glob", "Grep", "Read(.claude/deepwork/**)", "Read(.claude/deepwork/DEEPWORK_WIKI.md)", "Write(.claude/deepwork/DEEPWORK_WIKI.md)", "Edit(.claude/deepwork/DEEPWORK_WIKI.md)", "Bash(ls .claude/deepwork/:*)"]
+description: "Synthesize the deepwork wiki — rewrites Overview, Session Index, and Cross-refs in ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md from archived sessions. Preserves the # Log section verbatim (hook owns it)."
+allowed-tools: ["Glob", "Grep", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)"]
 ---
 
 # Deepwork Wiki Synthesis
 
-Regenerate the synthesis sections of `.claude/deepwork/DEEPWORK_WIKI.md` from every archived deepwork session in this project.
+Regenerate the synthesis sections of `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md` from every archived deepwork session in this project.
 
 ## Steps
 
 1. Find archived sessions:
 ```
-Glob: .claude/deepwork/*/state.archived.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.archived.json
 ```
 If none, report "No archived deepwork sessions found. Run `/deepwork` and complete a session first." and stop.
 
-2. Read `.claude/deepwork/DEEPWORK_WIKI.md` if it exists. **Extract the entire `# Log` section verbatim** — everything from the `# Log` heading to EOF. You must preserve this byte-for-byte (the hook owns it). If DEEPWORK_WIKI.md doesn't exist, the Log is empty; the hook creates the file on the first archive event.
+2. Read `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md` if it exists. **Extract the entire `# Log` section verbatim** — everything from the `# Log` heading to EOF. You must preserve this byte-for-byte (the hook owns it). If DEEPWORK_WIKI.md doesn't exist, the Log is empty; the hook creates the file on the first archive event.
 
 3. For each archived state file, read and extract:
    - `id` — the 8-hex directory basename
@@ -75,7 +75,7 @@ If none, report "No archived deepwork sessions found. Run `/deepwork` and comple
    <verbatim Log section from step 2 — do not modify>
    ```
 
-8. Write the result to `.claude/deepwork/DEEPWORK_WIKI.md` via the `Write` tool.
+8. Write the result to `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md` via the `Write` tool.
 
 9. Report to the user:
    - Number of sessions synthesized
@@ -83,7 +83,7 @@ If none, report "No archived deepwork sessions found. Run `/deepwork` and comple
    - A 1-line summary of the Overview
 
 10. **Sources graph** (Step 6 — runs after step 8, appended as a new section):
-   A. Glob all `.md` files in each archived instance dir: `.claude/deepwork/<id>/*.md`
+   A. Glob all `.md` files in each archived instance dir: `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/*.md`
    B. For each file, read the first ~30 lines with the Read tool and extract the YAML
       frontmatter block (from first `---` to the second `---`).
    C. From each parsed frontmatter block, collect:

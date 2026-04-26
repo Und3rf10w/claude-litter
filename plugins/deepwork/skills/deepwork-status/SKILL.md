@@ -1,6 +1,6 @@
 ---
 description: "View deepwork session status — phase, team, bar verdicts, proposals, guardrails"
-allowed-tools: ["Read(.claude/deepwork/**)", "Glob", "TaskList"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList"]
 ---
 
 # Deepwork Status
@@ -9,7 +9,7 @@ Display the current status of all active deepwork sessions.
 
 1. Use Glob to find all active instances:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 If no files are found, report that no deepwork session is currently active and stop.
 
@@ -66,7 +66,7 @@ If no files are found, report that no deepwork session is currently active and s
    **Proposal versions** (list `proposals/*.md` files with their `version:` and `delta_from_prior:` front-matter if available).
 
 4. **Cross-check state** (runs after step 3, before TaskList):
-   A. Glob the active instance dir: `.claude/deepwork/<id>/*.md` (NOT archived — live session).
+   A. Glob the active instance dir: `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/*.md` (NOT archived — live session).
    B. For each file, extract the frontmatter (first `---` block).
    C. From each parsed frontmatter, collect:
         - `artifact_type`
@@ -96,7 +96,7 @@ If no files are found, report that no deepwork session is currently active and s
 
 6. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owner and metadata.bar_id where available.
 
-7. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
+7. Read the last 50 lines of `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
 
 8. If `state.json.hook_warnings[]` is non-empty, display under **Hook Warnings** (these are incident signals that triggered guardrail auto-append).
 

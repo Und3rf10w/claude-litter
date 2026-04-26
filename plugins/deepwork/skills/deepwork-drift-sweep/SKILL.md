@@ -5,7 +5,7 @@ allowed-tools: ["Read", "Glob", "Grep", "Bash", "Write"]
 
 # Deepwork Drift Sweep
 
-Addresses drift class (g) from [proposals/v3-final.md](.claude/deepwork/055fdc4f/proposals/v3-final.md): partial / cluster-scoped drift sweeps miss items outside the scope the drift agent identified. This skill enumerates ALL workstreams so a secondary pass catches what the primary drift agent omitted.
+Addresses drift class (g) from proposals/v3-final.md (session `055fdc4f`): partial / cluster-scoped drift sweeps miss items outside the scope the drift agent identified. This skill enumerates ALL workstreams so a secondary pass catches what the primary drift agent omitted.
 
 ## When to use
 
@@ -13,7 +13,7 @@ Run at SYNTHESIZE step 1 before consolidating the proposal. Also run on demand w
 
 ## Steps
 
-1. **Locate the active instance.** Glob `.claude/deepwork/*/state.json` and pick the one whose `session_id` matches the current `$CLAUDE_CODE_SESSION_ID`, or (if unavailable) the most-recently-updated. Call its directory `INSTANCE_DIR`.
+1. **Locate the active instance.** Glob `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json` and pick the one whose `session_id` matches the current `$CLAUDE_CODE_SESSION_ID`, or (if unavailable) the most-recently-updated. Call its directory `INSTANCE_DIR`.
 
 2. **Enumerate workstreams.** Read these sources in order:
    - `coverage.mapper.md` (if present) — each plan_section row names a workstream.

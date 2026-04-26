@@ -1,7 +1,7 @@
 ---
 description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
 argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Read(.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
 # Deepwork — Research/Design Convergence or Plan Execution
@@ -13,7 +13,7 @@ mkdir -p .claude
 # Write arguments to a PID-unique file using a quoted heredoc to prevent shell
 # expansion of $, backticks, braces, parens in user prompts. The setup script's
 # --prompt-file flag reads the goal from this file and parses flags from it.
-_prompt_file=".claude/deepwork.local.prompt.$$.md"
+_prompt_file="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.$$.md"
 cat <<'__DEEPWORK_PROMPT_EOF__' > "$_prompt_file"
 $ARGUMENTS
 __DEEPWORK_PROMPT_EOF__

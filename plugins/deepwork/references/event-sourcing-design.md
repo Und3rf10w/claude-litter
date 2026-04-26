@@ -20,7 +20,7 @@ This spike mirrors the structure of `single-writer-state-design.md` (W5.5) and s
 
 **Survey baselines (run 2026-04-25):**
 - `state-transition.sh` LOC: 539
-- JSONL-shaped files already in use: `test-results.jsonl`, `discoveries.jsonl`, `incidents.jsonl`, `metrics-violations.jsonl`, `hook-timing.jsonl`, `change_log.jsonl`, `rollback_log.jsonl` — all written via `>>` (O_APPEND). Pattern is established.
+- JSONL-shaped files already in use: `test-results.jsonl`, `discoveries.jsonl`, `incidents.jsonl`, `metrics-violations.jsonl`, `hook-timing.jsonl` — all written via `>>` (O_APPEND). Pattern is established. (`change_log` and `rollback_log` are `state.json` fields, not files.)
 - All 4 hooks that previously called `_write_state_atomic` directly have been migrated to `state-transition.sh` in W6 (`deliver-gate.sh:74`, `execute/plan-drift-detector.sh:61`, `pre-compact.sh:36–38`, `execute/test-capture.sh:149`).
 - Zero `event|append|jsonl` hits inside `state-transition.sh` itself — event emission is entirely new work for W7.
 

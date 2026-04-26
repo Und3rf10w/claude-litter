@@ -9,12 +9,12 @@
 #   events.jsonl
 #   pending-change.json
 #   discoveries.jsonl
-#   rollback_log.jsonl
 #   incidents.jsonl
 #   metrics-violations.jsonl
 #   test-results.jsonl
 #   hook-timing.jsonl
 #   override-tokens.json
+# Note: change_log and rollback_log are state.json fields, not files — not listed here.
 #
 # Blocked patterns (case-insensitive):
 #   > .*<file>       redirect
@@ -52,7 +52,7 @@ fi
 [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]] && exit 0
 
 # Protected file pattern — matches any of the audit-trail filenames.
-_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|rollback_log\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
+_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
 
 # pending-change.json writes get a discriminated error with actionable instruction.
 _PENDING_CHANGE='pending-change\.json'

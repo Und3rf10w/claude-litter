@@ -1,7 +1,7 @@
 ---
 description: "Lightweight single-gate amendment for execute mode — spawns MICRO-TEAM (CRITIC + 1 specialist) for re-verdict without full deepwork re-run"
 argument-hint: "<gate-id> [--reason 'description of scope delta']"
-allowed-tools: ["Read(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Edit(.claude/deepwork/**)", "Glob", "TaskList", "TaskCreate", "TaskUpdate", "TaskGet", "SendMessage", "Agent"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList", "TaskCreate", "TaskUpdate", "TaskGet", "SendMessage", "Agent"]
 trigger-keywords: ["amend execute plan", "re-verdict gate", "lightweight amendment", "scope delta", "plan gap"]
 ---
 
@@ -30,7 +30,7 @@ In these cases, output a HALT recommendation and ask the user via AskUserQuestio
 
 1. Read the active execute session state:
    ```
-   Glob: .claude/deepwork/*/state.json
+   Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
    ```
    Filter for the instance with `execute.phase` not null and not "halt". Read `state.json.execute.plan_ref`, `plan_hash`, `change_log`, `scope_amendments`.
 
@@ -55,19 +55,19 @@ In these cases, output a HALT recommendation and ask the user via AskUserQuestio
 8. **If CRITIC PASS on the amendment**:
    - Append the scope amendment record via `state-transition.sh append_array`:
      ```bash
-     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
-       --state-file .claude/deepwork/<instance-id>/state.json \
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+       --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<instance-id>/state.json" \
        append_array .execute.scope_amendments \
        '{"id":"SA-<N>","gate_id":"<gate-id>","amendment_file":"proposals/amendments/amendment.v<N>.md","reason":"<description>","approved_at":"<ISO>","triggered_by":"<discovery-id or null>"}'
      ```
    - If the amendment modifies the plan file, recompute and store `plan_hash` and clear drift via `set_field`:
      ```bash
      NEW_HASH=$(sha256sum "$plan_ref" | cut -d' ' -f1)
-     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
-       --state-file .claude/deepwork/<instance-id>/state.json \
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+       --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<instance-id>/state.json" \
        set_field .execute.plan_hash "$NEW_HASH"
-     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
-       --state-file .claude/deepwork/<instance-id>/state.json \
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+       --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<instance-id>/state.json" \
        set_field .execute.plan_drift_detected false
      ```
    - Mark the discovery entry's `resolution` field: `"resolved via SA-<N>"`

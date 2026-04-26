@@ -1,6 +1,6 @@
 ---
 description: "View execute-mode session status — phase, plan_hash, drift, change_log, test results, 3-dimension verdict table, rollback log, discoveries"
-allowed-tools: ["Read(.claude/deepwork/**)", "Glob", "TaskList"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList"]
 ---
 
 # Deepwork Execute Status
@@ -9,7 +9,7 @@ Display the current status of the active execute-mode deepwork session.
 
 1. Use Glob to find active instances:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 If no files are found, report "no deepwork session is currently active" and stop. If multiple are found, identify the execute-mode instance by `state.json.execute.phase` being non-null and not "halt". If none has execute mode active, report "no execute-mode session is currently active" and stop.
 
@@ -92,7 +92,7 @@ If no files are found, report "no deepwork session is currently active" and stop
 
     Read `discoveries.jsonl` as newline-delimited JSON. Show "(none)" if file absent or empty. Show `resolution` as "(open)" if null or absent.
 
-13. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
+13. Read the last 50 lines of `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
 
 14. If `execute.plan_drift_detected` is `true`, close with a highlighted notice:
 

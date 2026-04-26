@@ -1,6 +1,6 @@
 ---
 description: "Karpathy-style 40-word recap of deepwork history — reads DEEPWORK_WIKI.md Overview and the last 3 log entries, outputs 30-50 plain-text words"
-allowed-tools: ["Read(.claude/deepwork/DEEPWORK_WIKI.md)"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)"]
 ---
 
 # Deepwork Recap
@@ -9,7 +9,7 @@ Produce a brief plain-text recap of the project's deepwork history. Modeled on C
 
 ## Steps
 
-1. Read `.claude/deepwork/DEEPWORK_WIKI.md`. If the file is absent or empty, respond: `"No deepwork sessions recorded yet."` and stop.
+1. Read `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md`. If the file is absent or empty, respond: `"No deepwork sessions recorded yet."` and stop.
 
 2. Extract:
    - The body of the `## Overview` section (everything between `## Overview` and the next `##` heading)

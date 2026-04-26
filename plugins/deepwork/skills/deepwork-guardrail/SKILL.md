@@ -1,7 +1,7 @@
 ---
 description: "Add, remove, replace, or list hard guardrails for the active deepwork session"
 argument-hint: "add [--source <src>] '<rule>' | remove <index> | replace <index> [--source <src>] '<rule>' | list"
-allowed-tools: ["Read(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Edit(.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)", "Bash(date:*)"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)", "Bash(date:*)"]
 ---
 
 # Deepwork Guardrail Management
@@ -20,7 +20,7 @@ Manually manage the `state.json.guardrails[]` array for the active deepwork sess
 
 1. Use Glob to find active instance state:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 
 2. If no active session, report "No active deepwork session. Run `/deepwork <goal>` first."
@@ -45,7 +45,7 @@ Glob: .claude/deepwork/*/state.json
 Append a guardrail entry via the canonical writer:
 
 ```bash
-STATE=".claude/deepwork/<id>/state.json"
+STATE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/state.json"
 SOURCE="${SOURCE_OVERRIDE:-user}"  # parsed from --source, default "user"
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
   --state-file "$STATE" guardrail_add \

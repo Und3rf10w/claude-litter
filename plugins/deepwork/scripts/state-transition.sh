@@ -1293,6 +1293,10 @@ case "$SUBCOMMAND" in
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
     mv "$STATE_FILE" "$_ARCHIVE_JSON" || { printf 'archive_state: failed to rename state.json\n' >&2; exit 4; }
     [[ -f "$_EVENTS_FILE" ]] && mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || true
+    rm -f "${INSTANCE_DIR}/pending-change.json"
+    # Pre-leg snapshots keyed to the archive_state Bash call are orphaned after mv
+    # (PostToolUse can't find the instance when state.json is gone). Clean them here.
+    rm -f "${INSTANCE_DIR}"/.state-snapshot* 2>/dev/null || true
     exit 0
     ;;
 
@@ -1352,6 +1356,9 @@ case "$SUBCOMMAND" in
         *) shift ;;
       esac
     done
+    # Canonicalize plan_section: strip leading/trailing whitespace
+    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION#"${_PCS_PLAN_SECTION%%[! ]*}"}"
+    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION%"${_PCS_PLAN_SECTION##*[! ]}"}"
     [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
     [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
     [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }
