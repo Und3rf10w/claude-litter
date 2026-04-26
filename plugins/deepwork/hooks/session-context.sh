@@ -20,7 +20,7 @@ source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 _parse_hook_input
 
 # Parse the SessionStart trigger type from hook stdin
-SESSION_TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // ""' 2>/dev/null || echo "")
+SESSION_TRIGGER=$(printf '%s' "$INPUT" | jq -r '.source // ""' 2>/dev/null || echo "")
 
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
