@@ -12,6 +12,11 @@
 #   PHASE_TRANSITION_POST — phase changed in batch; logged to log.md (non-blocking)
 #   BAR_VERDICT_POST      — bar verdict changed in batch; logged to log.md (non-blocking)
 #
+# Per-tool snapshots: frontmatter-gate.sh writes .state-snapshot.<TOOL_USE_ID>.json before
+# each state.json write (keyed by tool_use_id for parallel-batch safety). This hook reads the
+# matching snapshot per tool call and deletes it after diffing. Falls back to .state-snapshot
+# when TOOL_USE_ID is absent (pre-2.1.118 or non-Write paths).
+#
 # Requires CC >= 2.1.118 (PostToolBatch event introduced). Older CC silently ignores
 # unknown events — this hook will never fire on pre-2.1.118 installs (§4 of design doc).
 #
@@ -46,16 +51,23 @@ for i in $(seq 0 $((CALL_COUNT - 1))); do
   CALL=$(printf '%s' "$TOOL_CALLS" | jq -c ".[$i]" 2>/dev/null)
   TOOL_NAME=$(printf '%s' "$CALL" | jq -r '.tool_name // ""' 2>/dev/null)
   FILE_PATH=$(printf '%s' "$CALL" | jq -r '.tool_input.file_path // .tool_input.path // ""' 2>/dev/null)
+  CALL_TOOL_USE_ID=$(printf '%s' "$CALL" | jq -r '.tool_use_id // ""' 2>/dev/null)
 
   case "$TOOL_NAME" in
     Write|Edit)
       # Only act on state.json writes in this instance
       [[ "$FILE_PATH" == "${INSTANCE_DIR}/state.json" ]] || continue
 
-      # Compare pre-write snapshot with committed state (snapshot written by frontmatter-gate §9.1)
-      [[ -f "${INSTANCE_DIR}/.state-snapshot" ]] || continue
+      # Resolve per-tool snapshot (keyed by TOOL_USE_ID); fall back to shared snapshot
+      _SNAPSHOT_FILE=""
+      if [[ -n "$CALL_TOOL_USE_ID" ]] && [[ -f "${INSTANCE_DIR}/.state-snapshot.${CALL_TOOL_USE_ID}.json" ]]; then
+        _SNAPSHOT_FILE="${INSTANCE_DIR}/.state-snapshot.${CALL_TOOL_USE_ID}.json"
+      elif [[ -f "${INSTANCE_DIR}/.state-snapshot" ]]; then
+        _SNAPSHOT_FILE="${INSTANCE_DIR}/.state-snapshot"
+      fi
+      [[ -n "$_SNAPSHOT_FILE" ]] || continue
 
-      OLD_PHASE=$(jq -r '.phase // ""' "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || echo "")
+      OLD_PHASE=$(jq -r '.phase // ""' "$_SNAPSHOT_FILE" 2>/dev/null || echo "")
       NEW_PHASE=$(jq -r '.phase // ""' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
       if [[ -n "$OLD_PHASE" && "$OLD_PHASE" != "$NEW_PHASE" ]]; then
         MARKER="> [phase-transition ${NOW}] ${OLD_PHASE} → ${NEW_PHASE}"
@@ -65,7 +77,7 @@ for i in $(seq 0 $((CALL_COUNT - 1))); do
       fi
 
       OLD_BAR=$(jq -r '.bar[]? | "\(.id)\t\(.verdict // "null")"' \
-        "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || echo "")
+        "$_SNAPSHOT_FILE" 2>/dev/null || echo "")
       NEW_BAR=$(jq -r '.bar[]? | "\(.id)\t\(.verdict // "null")"' \
         "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
       if [[ "$OLD_BAR" != "$NEW_BAR" ]]; then
@@ -81,8 +93,30 @@ for i in $(seq 0 $((CALL_COUNT - 1))); do
         done < <(printf '%s\n' "$NEW_BAR")
       fi
 
-      rm -f "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || true
+      rm -f "$_SNAPSHOT_FILE" 2>/dev/null || true
       ;;
+
+    Bash)
+      # Bash state.json writes go via state-transition.sh which also triggers frontmatter-gate
+      # (when _DW_STATE_TRANSITION_WRITER=1). Resolve snapshot the same way.
+      _SNAPSHOT_FILE=""
+      if [[ -n "$CALL_TOOL_USE_ID" ]] && [[ -f "${INSTANCE_DIR}/.state-snapshot.${CALL_TOOL_USE_ID}.json" ]]; then
+        _SNAPSHOT_FILE="${INSTANCE_DIR}/.state-snapshot.${CALL_TOOL_USE_ID}.json"
+      fi
+      [[ -n "$_SNAPSHOT_FILE" ]] || continue
+
+      OLD_PHASE=$(jq -r '.phase // ""' "$_SNAPSHOT_FILE" 2>/dev/null || echo "")
+      NEW_PHASE=$(jq -r '.phase // ""' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
+      if [[ -n "$OLD_PHASE" && "$OLD_PHASE" != "$NEW_PHASE" ]]; then
+        MARKER="> [phase-transition ${NOW}] ${OLD_PHASE} → ${NEW_PHASE}"
+        if [[ -f "$LOG_FILE" ]] && ! tail -50 "$LOG_FILE" 2>/dev/null | grep -qF "$MARKER"; then
+          printf '%s\n' "$MARKER" >> "$LOG_FILE" 2>/dev/null || true
+        fi
+      fi
+
+      rm -f "$_SNAPSHOT_FILE" 2>/dev/null || true
+      ;;
+
     # ExitPlanMode and SendMessage remain gated by their Pre hooks — no Post action needed
     *) continue ;;
   esac
