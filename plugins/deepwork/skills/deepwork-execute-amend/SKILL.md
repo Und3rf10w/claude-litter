@@ -53,22 +53,23 @@ In these cases, output a HALT recommendation and ask the user via AskUserQuestio
 7. Wait for the micro-team to complete. The specialist produces `proposals/amendments/amendment.v<N>.md`. CRITIC verdicts it.
 
 8. **If CRITIC PASS on the amendment**:
-   - Append to `state.json.execute.scope_amendments[]`:
-     ```json
-     {
-       "id": "SA-<N>",
-       "gate_id": "<gate-id>",
-       "amendment_file": "proposals/amendments/amendment.v<N>.md",
-       "reason": "<description>",
-       "approved_at": "<ISO>",
-       "triggered_by": "<discovery-id or null>"
-     }
-     ```
-   - Recompute `plan_hash` from the updated plan file (if the amendment modifies the plan):
+   - Append the scope amendment record via `state-transition.sh append_array`:
      ```bash
-     sha256sum "$plan_ref" | cut -d' ' -f1
+     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
+       --state-file .claude/deepwork/<instance-id>/state.json \
+       append_array .execute.scope_amendments \
+       '{"id":"SA-<N>","gate_id":"<gate-id>","amendment_file":"proposals/amendments/amendment.v<N>.md","reason":"<description>","approved_at":"<ISO>","triggered_by":"<discovery-id or null>"}'
      ```
-     Write the new hash to `state.json.execute.plan_hash`. Reset `plan_drift_detected` to `false`.
+   - If the amendment modifies the plan file, recompute and store `plan_hash` and clear drift via `set_field`:
+     ```bash
+     NEW_HASH=$(sha256sum "$plan_ref" | cut -d' ' -f1)
+     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
+       --state-file .claude/deepwork/<instance-id>/state.json \
+       set_field .execute.plan_hash "$NEW_HASH"
+     bash .claude/deepwork/<instance-id>/../../scripts/state-transition.sh \
+       --state-file .claude/deepwork/<instance-id>/state.json \
+       set_field .execute.plan_drift_detected false
+     ```
    - Mark the discovery entry's `resolution` field: `"resolved via SA-<N>"`
    - Report to user: amendment approved, session may resume.
 
