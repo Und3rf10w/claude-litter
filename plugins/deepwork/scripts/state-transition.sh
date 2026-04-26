@@ -74,6 +74,121 @@ if [[ -n "$_STATE_FILE_OVERRIDE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Event log helpers (W7)
+# ---------------------------------------------------------------------------
+
+# _compute_event_hash <line>
+# Returns SHA256 hex of "<line>\n" — same bytes written to events.jsonl.
+_compute_event_hash() {
+  local line="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n' "$line" | sha256sum | cut -d' ' -f1
+  else
+    printf '%s\n' "$line" | shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+# _read_event_head
+# Returns SHA256 of the last line of events.jsonl, or "GENESIS" if missing/empty.
+_read_event_head() {
+  local events_file="${INSTANCE_DIR}/events.jsonl"
+  local last_line
+  last_line=$(tail -1 "$events_file" 2>/dev/null || echo "")
+  if [[ -z "$last_line" ]]; then
+    printf 'GENESIS'
+    return
+  fi
+  _compute_event_hash "$last_line"
+}
+
+# _append_event_raw <events_file> <event_json>
+# Appends event_json + newline to events_file. Uses >> for short events
+# (POSIX O_APPEND atomic for writes < PIPE_BUF). For payloads >= 512 bytes,
+# falls back to tmp+cat+rm to avoid torn writes (not atomic under concurrency,
+# but bootstrap events are never concurrent).
+_append_event_raw() {
+  local events_file="$1"
+  local event_json="$2"
+  local byte_count=${#event_json}
+  if [[ $byte_count -lt 512 ]]; then
+    printf '%s\n' "$event_json" >> "$events_file"
+  else
+    local tmp="${events_file}.tmp.$$"
+    printf '%s\n' "$event_json" > "$tmp" && cat "$tmp" >> "$events_file" && rm -f "$tmp"
+  fi
+}
+
+# _emit_event <event_type> <payload_json>
+# Builds and appends a full event envelope to ${INSTANCE_DIR}/events.jsonl.
+# Ordering: events.jsonl write happens BEFORE state.json write (Q1: Option A).
+# If state.json write later fails, reducer self-heals on next invocation.
+_emit_event() {
+  local event_type="$1"
+  local payload_json="$2"
+  local events_file="${INSTANCE_DIR}/events.jsonl"
+
+  # Generate event_id: prefer uuidgen (macOS) or /proc/uuid (Linux)
+  local event_id
+  if command -v uuidgen >/dev/null 2>&1; then
+    event_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    event_id=$(cat /proc/sys/kernel/random/uuid)
+  else
+    event_id="$(date +%s)-$$-$(printf '%04d' $((RANDOM % 10000)))"
+  fi
+
+  local prev_hash
+  prev_hash=$(_read_event_head)
+
+  local timestamp
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+  local actor="${_DW_CALLER:-$(basename "$0")}"
+
+  local event_json
+  event_json=$(jq -cn \
+    --arg eid "$event_id" \
+    --arg etype "$event_type" \
+    --arg phash "$prev_hash" \
+    --arg ts "$timestamp" \
+    --arg actor "$actor" \
+    --argjson payload "$payload_json" \
+    '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
+      timestamp: $ts, actor: $actor, payload: $payload}') || return 1
+
+  _append_event_raw "$events_file" "$event_json"
+}
+
+# _ensure_event_log
+# Seeds events.jsonl with a bootstrap event from the current state.json if
+# events.jsonl is absent. Called at the top of each subcommand (after
+# _require_state_file, before _verify_integrity_hash) to handle in-flight
+# sessions that predate W7.
+_ensure_event_log() {
+  local events_file="${INSTANCE_DIR}/events.jsonl"
+  [[ -f "$events_file" ]] && return 0
+  local state_snap
+  state_snap=$(cat "$STATE_FILE" 2>/dev/null) || return 1
+  local now event_id boot_event
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  if command -v uuidgen >/dev/null 2>&1; then
+    event_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    event_id=$(cat /proc/sys/kernel/random/uuid)
+  else
+    event_id="$(date +%s)-$$-bootstrap"
+  fi
+  boot_event=$(jq -cn \
+    --arg eid "$event_id" \
+    --arg ts "$now" \
+    --arg actor "${_DW_CALLER:-state-transition.sh}" \
+    --argjson snap "$state_snap" \
+    '{event_id: $eid, event_type: "bootstrap", prev_event_hash: "GENESIS",
+      timestamp: $ts, actor: $actor, payload: {state_snapshot: $snap}}') || return 1
+  _append_event_raw "$events_file" "$boot_event"
+}
+
+# ---------------------------------------------------------------------------
 # Integrity hash helpers
 # ---------------------------------------------------------------------------
 
@@ -119,15 +234,21 @@ _verify_integrity_hash() {
 }
 
 # Write with hash: applies $jq_filter (+ extra _write_state_atomic args) then
-# immediately recomputes and writes the integrity hash in one atomic update.
+# immediately recomputes and writes the integrity hash + event_head in one atomic update.
 _write_with_hash() {
   local sf="$1"; shift
   # First pass: apply the mutation filter
   _write_state_atomic "$sf" "$@" || return 4
-  # Second pass: recompute and write hash
-  local new_hash
-  new_hash=$(_compute_integrity_hash "$sf") || return 0  # hash unavailable: leave absent
-  _write_state_atomic "$sf" --arg h "$new_hash" '.state_integrity_hash = $h' || return 4
+  # Second pass: recompute integrity hash and event_head atomically
+  local new_hash event_head
+  new_hash=$(_compute_integrity_hash "$sf") || new_hash=""
+  event_head=$(_read_event_head 2>/dev/null || echo "")
+  if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
+    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" \
+      '.state_integrity_hash = $h | .event_head = $eh' || return 4
+  elif [[ -n "$new_hash" ]]; then
+    _write_state_atomic "$sf" --arg h "$new_hash" '.state_integrity_hash = $h' || return 4
+  fi
   return 0
 }
 
@@ -258,6 +379,10 @@ _require_state_file() {
     printf 'state-transition.sh: STATE_FILE is not valid JSON: %s\n' "$STATE_FILE" >&2
     exit 1
   fi
+  # Ensure INSTANCE_DIR is set (may already be set by discover_instance in hook context)
+  if [[ -z "${INSTANCE_DIR:-}" ]]; then
+    INSTANCE_DIR="$(dirname "$STATE_FILE")"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -349,6 +474,9 @@ case "$SUBCOMMAND" in
 
     [[ $DRY_RUN -eq 1 ]] && exit 0
 
+    _ensure_event_log
+    _emit_event "phase_advanced" \
+      "$(jq -cn --arg fp "$current_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')"
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.phase = $phase'
     rc=$?
     [[ $rc -eq 0 ]] || exit 4
@@ -369,6 +497,10 @@ case "$SUBCOMMAND" in
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
+    _current_exec_phase=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
+    _ensure_event_log
+    _emit_event "exec_phase_advanced" \
+      "$(jq -cn --arg fp "$_current_exec_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')"
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.execute.phase = $phase'
     rc=$?; [[ $rc -eq 0 ]] || exit 4
     exit 0
@@ -386,7 +518,10 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    # Apply field set + audit log + hash atomically
+    _ensure_event_log
+    _emit_event "field_set" \
+      "$(jq -cn --arg p "$JQ_PATH" --argjson v "$JSON_VALUE" '{jq_path: $p, json_value: $v}')"
+    # Apply field set + audit log + hash atomically (hook_warnings kept per §9.6 Option B)
     _write_with_hash "$STATE_FILE" \
       --arg path "$JQ_PATH" \
       --argjson val "$JSON_VALUE" \
@@ -408,6 +543,9 @@ case "$SUBCOMMAND" in
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
+    _ensure_event_log
+    _emit_event "array_appended" \
+      "$(jq -cn --arg p "$JQ_PATH" --argjson o "$JSON_OBJ" '{jq_path: $p, json_object: $o}')"
     _write_with_hash "$STATE_FILE" \
       --argjson obj "$JSON_OBJ" \
       '('"$JQ_PATH"') += [$obj]'
@@ -423,6 +561,9 @@ case "$SUBCOMMAND" in
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
+    _ensure_event_log
+    _emit_event "merged" \
+      "$(jq -cn --argjson f "$JSON_FRAG" '{json_fragment: $f}')"
     _write_with_hash "$STATE_FILE" \
       --argjson frag "$JSON_FRAG" \
       '. * $frag'
@@ -454,6 +595,9 @@ case "$SUBCOMMAND" in
     fi
 
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _ensure_event_log
+    _emit_event "halt_recorded" \
+      "$(jq -cn --arg s "$SUMMARY" --argjson b "$BLOCKERS_JSON" '{summary: $s, blockers: $b}')"
     _write_with_hash "$STATE_FILE" \
       --arg summary "$SUMMARY" \
       --argjson blockers "$BLOCKERS_JSON" \
@@ -484,6 +628,9 @@ case "$SUBCOMMAND" in
       exit 0
     fi
 
+    _ensure_event_log
+    _emit_event "session_backfilled" \
+      "$(jq -cn --arg sid "$SESSION_ID_ARG" '{session_id: $sid}')"
     _write_with_hash "$STATE_FILE" \
       --arg sid "$SESSION_ID_ARG" \
       '.session_id = $sid'
@@ -511,6 +658,9 @@ case "$SUBCOMMAND" in
     already=$(jq -r --arg cmd "$CMD_ARG" '(.execute.flaky_tests // []) | map(select(. == $cmd)) | length' "$STATE_FILE" 2>/dev/null || echo "0")
     [[ "$already" -gt 0 ]] && exit 0
 
+    _ensure_event_log
+    _emit_event "flaky_test_added" \
+      "$(jq -cn --arg cmd "$CMD_ARG" '{command: $cmd}')"
     _write_with_hash "$STATE_FILE" \
       --arg cmd "$CMD_ARG" \
       '.execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd])'
@@ -524,6 +674,8 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _ensure_event_log
+    _emit_event "last_updated_stamped" '{}'
     _write_with_hash "$STATE_FILE" \
       --arg now "$NOW" \
       '.last_updated = $now'
@@ -531,9 +683,291 @@ case "$SUBCOMMAND" in
     exit 0
     ;;
 
+  # ---- replay ---------------------------------------------------------------
+  # replay [--from-genesis] [--output <path>]
+  # Reads events.jsonl, replays all events into a state object, writes state.json.
+  # Verifies hash chain integrity during replay; exits non-zero on mismatch.
+  # Used by /deepwork-reconcile and for self-healing after partial writes.
+  #
+  # TODO(W8): automatic snapshot generation every 500 events to bound replay cost.
+  replay)
+    _require_state_file
+    REPLAY_OUTPUT="$STATE_FILE"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --from-genesis) shift ;;  # default behaviour; accepted for explicitness
+        --output) REPLAY_OUTPUT="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+
+    _events_file="${INSTANCE_DIR}/events.jsonl"
+    if [[ ! -f "$_events_file" ]]; then
+      printf 'state-transition.sh replay: events.jsonl not found: %s\n' "$_events_file" >&2
+      exit 1
+    fi
+
+    # --- replay engine (Python fast-path) ---
+    # Python avoids O(N) subshell spawns for sha256sum; falls back to bash loop.
+    if command -v python3 >/dev/null 2>&1; then
+      _py_err_file=$(mktemp /tmp/dw-replay-err.XXXXXX)
+      _py_out=$(python3 - "$_events_file" "$REPLAY_OUTPUT" 2>"$_py_err_file" <<'PYEOF'
+import hashlib, json, sys
+
+EVENTS_FILE, OUTPUT_FILE = sys.argv[1], sys.argv[2]
+
+def sha256_line(line):
+    return hashlib.sha256((line + "\n").encode()).hexdigest()
+
+with open(EVENTS_FILE) as f:
+    raw_lines = [l.rstrip("\n") for l in f if l.strip()]
+
+if not raw_lines:
+    print("state-transition.sh replay: events.jsonl is empty", file=sys.stderr)
+    sys.exit(1)
+
+prev_hash = "GENESIS"
+working = {}
+last_line = ""
+
+for idx, line in enumerate(raw_lines, 1):
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        print(f"state-transition.sh replay: invalid JSON at line {idx}", file=sys.stderr)
+        sys.exit(1)
+
+    actual_prev = ev.get("prev_event_hash", "")
+    if actual_prev != prev_hash:
+        print(f"state-transition.sh replay: HASH_CHAIN_BROKEN at event {idx}", file=sys.stderr)
+        print(f"  expected prev_event_hash: {prev_hash}", file=sys.stderr)
+        print(f"  actual   prev_event_hash: {actual_prev}", file=sys.stderr)
+        print(f"  event_id: {ev.get('event_id', '?')}", file=sys.stderr)
+        sys.exit(1)
+
+    etype = ev.get("event_type", "")
+    ts = ev.get("timestamp", "")
+    payload = ev.get("payload", {})
+
+    if etype in ("bootstrap", "state_snapshot"):
+        working = payload.get("state_snapshot", {})
+    elif etype == "phase_advanced":
+        working["phase"] = payload.get("to_phase", "")
+    elif etype == "exec_phase_advanced":
+        working.setdefault("execute", {})["phase"] = payload.get("to_phase", "")
+    elif etype == "field_set":
+        jq_path = payload.get("jq_path", "")
+        json_val = payload.get("json_value")
+        # Simple top-level .key = val only (jq paths with nesting not supported in py fast-path)
+        if jq_path.startswith(".") and "." not in jq_path[1:] and "[" not in jq_path:
+            working[jq_path[1:]] = json_val
+    elif etype == "array_appended":
+        jq_path = payload.get("jq_path", "")
+        json_obj = payload.get("json_object")
+        if jq_path.startswith(".") and "." not in jq_path[1:] and "[" not in jq_path:
+            key = jq_path[1:]
+            if key not in working or not isinstance(working[key], list):
+                working[key] = []
+            working[key].append(json_obj)
+    elif etype == "merged":
+        frag = payload.get("json_fragment", {})
+        if isinstance(frag, dict):
+            working.update(frag)
+    elif etype == "halt_recorded":
+        working["halt_reason"] = {
+            "summary": payload.get("summary", ""),
+            "blockers": payload.get("blockers", []),
+            "recorded_at": ts,
+        }
+    elif etype == "session_backfilled":
+        working["session_id"] = payload.get("session_id", "")
+    elif etype == "flaky_test_added":
+        cmd = payload.get("command", "")
+        ex = working.setdefault("execute", {})
+        flaky = ex.setdefault("flaky_tests", [])
+        if cmd not in flaky:
+            flaky.append(cmd)
+    elif etype == "last_updated_stamped":
+        working["last_updated"] = ts
+
+    prev_hash = sha256_line(line)
+    last_line = line
+
+# event_head = sha256 of last raw line + "\n"
+event_head = sha256_line(last_line)
+working["event_head"] = event_head
+
+print(json.dumps(working, separators=(',', ':')))
+print(f"replay: {len(raw_lines)} events processed, event_head={event_head}")
+PYEOF
+      )
+      _py_rc=$?
+      if [[ $_py_rc -eq 0 ]]; then
+        # First line = JSON state, second line = status message
+        _py_state=$(printf '%s\n' "$_py_out" | head -1)
+        _py_msg=$(printf '%s\n' "$_py_out" | tail -1)
+        _replay_tmp="${REPLAY_OUTPUT}.tmp.$$"
+        printf '%s\n' "$_py_state" > "$_replay_tmp" || { rm -f "$_replay_tmp"; exit 4; }
+        [[ -s "$_replay_tmp" ]] || { rm -f "$_replay_tmp"; exit 4; }
+        mv "$_replay_tmp" "$REPLAY_OUTPUT" || exit 4
+        _new_hash=$(_compute_integrity_hash "$REPLAY_OUTPUT") || _new_hash=""
+        if [[ -n "$_new_hash" ]]; then
+          _py_head=$(printf '%s' "$_py_state" | jq -r '.event_head // ""' 2>/dev/null)
+          _write_state_atomic "$REPLAY_OUTPUT" \
+            --arg h "$_new_hash" --arg eh "$_py_head" \
+            '.state_integrity_hash = $h | .event_head = $eh' || true
+        fi
+        rm -f "$_py_err_file"
+        printf '%s\n' "$_py_msg"
+        exit 0
+      elif [[ $_py_rc -ne 0 ]]; then
+        # Python detected an error (hash chain broken, invalid JSON, etc.) — propagate
+        cat "$_py_err_file" >&2
+        rm -f "$_py_err_file"
+        exit 1
+      fi
+      rm -f "$_py_err_file"
+    fi
+
+    # --- replay engine (bash fallback) ---
+    # O(N) subshell spawns for sha256sum; used only when python3 is unavailable.
+    # Outputs final state JSON to REPLAY_OUTPUT.
+
+    _prev_line=""
+    _event_count=0
+    _working_state="{}"
+    _last_event_hash=""
+
+    while IFS= read -r _line; do
+      [[ -z "$_line" ]] && continue
+      _event_count=$((_event_count + 1))
+
+      # Verify hash chain
+      if [[ $_event_count -eq 1 ]]; then
+        _expected_prev="GENESIS"
+      else
+        _expected_prev=$(_compute_event_hash "$_prev_line")
+      fi
+
+      _actual_prev=$(printf '%s' "$_line" | jq -r '.prev_event_hash // ""' 2>/dev/null || echo "")
+      if [[ "$_actual_prev" != "$_expected_prev" ]]; then
+        printf 'state-transition.sh replay: HASH_CHAIN_BROKEN at event %d\n' "$_event_count" >&2
+        printf '  expected prev_event_hash: %s\n' "$_expected_prev" >&2
+        printf '  actual   prev_event_hash: %s\n' "$_actual_prev" >&2
+        printf '  event_id: %s\n' "$(printf '%s' "$_line" | jq -r '.event_id // "?"' 2>/dev/null)" >&2
+        exit 1
+      fi
+
+      # Validate JSON
+      if ! printf '%s' "$_line" | jq empty 2>/dev/null; then
+        printf 'state-transition.sh replay: invalid JSON at line %d\n' "$_event_count" >&2
+        exit 1
+      fi
+
+      _etype=$(printf '%s' "$_line" | jq -r '.event_type // ""' 2>/dev/null)
+      _ts=$(printf '%s' "$_line" | jq -r '.timestamp // ""' 2>/dev/null)
+
+      # Apply reduction rules (§4.3)
+      case "$_etype" in
+        bootstrap|state_snapshot)
+          # state_snapshot at non-genesis position: start fresh from snapshot payload.
+          # bootstrap: payload.state_snapshot is the full state.
+          _working_state=$(printf '%s' "$_line" | jq -c '.payload.state_snapshot' 2>/dev/null) || {
+            printf 'state-transition.sh replay: failed to extract state_snapshot at event %d\n' "$_event_count" >&2
+            exit 1
+          }
+          ;;
+        phase_advanced)
+          _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | jq -c --arg v "$_to" '.phase = $v' 2>/dev/null)
+          ;;
+        exec_phase_advanced)
+          _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | jq -c --arg v "$_to" '.execute.phase = $v' 2>/dev/null)
+          ;;
+        field_set)
+          _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
+          _json_val=$(printf '%s' "$_line" | jq -c '.payload.json_value' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --argjson val "$_json_val" "${_jq_path} = \$val" 2>/dev/null)
+          ;;
+        array_appended)
+          _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
+          _json_obj=$(printf '%s' "$_line" | jq -c '.payload.json_object' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --argjson obj "$_json_obj" "(${_jq_path}) += [\$obj]" 2>/dev/null)
+          ;;
+        merged)
+          _frag=$(printf '%s' "$_line" | jq -c '.payload.json_fragment' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --argjson frag "$_frag" '. * $frag' 2>/dev/null)
+          ;;
+        halt_recorded)
+          _summary=$(printf '%s' "$_line" | jq -r '.payload.summary // ""' 2>/dev/null)
+          _blockers=$(printf '%s' "$_line" | jq -c '.payload.blockers // []' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg s "$_summary" --argjson b "$_blockers" --arg ts "$_ts" \
+            '.halt_reason = {summary: $s, blockers: $b, recorded_at: $ts}' 2>/dev/null)
+          ;;
+        session_backfilled)
+          _sid=$(printf '%s' "$_line" | jq -r '.payload.session_id // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg v "$_sid" '.session_id = $v' 2>/dev/null)
+          ;;
+        flaky_test_added)
+          _cmd=$(printf '%s' "$_line" | jq -r '.payload.command // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg cmd "$_cmd" \
+            'if (.execute.flaky_tests // []) | map(select(. == $cmd)) | length > 0
+             then . else .execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd]) end' \
+            2>/dev/null)
+          ;;
+        last_updated_stamped)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          ;;
+        *)
+          printf 'state-transition.sh replay: unknown event type "%s" at event %d — skipping\n' \
+            "$_etype" "$_event_count" >&2
+          ;;
+      esac
+
+      _prev_line="$_line"
+    done < "$_events_file"
+
+    if [[ $_event_count -eq 0 ]]; then
+      printf 'state-transition.sh replay: events.jsonl is empty\n' >&2
+      exit 1
+    fi
+
+    # Compute event_head from the last line
+    _last_event_hash=$(_compute_event_hash "$_prev_line")
+
+    # Write reduced state with integrity hash + event_head
+    _replay_tmp="${REPLAY_OUTPUT}.tmp.$$"
+    printf '%s\n' "$_working_state" > "$_replay_tmp" || { rm -f "$_replay_tmp"; exit 4; }
+    [[ -s "$_replay_tmp" ]] || { rm -f "$_replay_tmp"; exit 4; }
+    mv "$_replay_tmp" "$REPLAY_OUTPUT" || exit 4
+
+    # Recompute integrity hash on the written file
+    _new_hash=$(_compute_integrity_hash "$REPLAY_OUTPUT") || _new_hash=""
+    if [[ -n "$_new_hash" ]]; then
+      _write_state_atomic "$REPLAY_OUTPUT" \
+        --arg h "$_new_hash" --arg eh "$_last_event_hash" \
+        '.state_integrity_hash = $h | .event_head = $eh' || true
+    else
+      _write_state_atomic "$REPLAY_OUTPUT" \
+        --arg eh "$_last_event_hash" \
+        '.event_head = $eh' || true
+    fi
+
+    printf 'replay: %d events processed, event_head=%s\n' "$_event_count" "$_last_event_hash"
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay\n' >&2
     exit 3
     ;;
 esac
