@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 105 nodes, 165 edges
+Graph: 106 nodes, 166 edges
 
 ## Mermaid Flowchart
 
@@ -118,6 +118,7 @@ flowchart LR
     tool_response_data_interrupted(([".tool_response.data.interrupted"]))
     tool_response_data_stderr(([".tool_response.data.stderr"]))
     tool_response_data_stdout(([".tool_response.data.stdout"]))
+    trigger(([".trigger"]))
     verdict(([".verdict"]))
     state_archived_json((["state.archived.json"]))
   end
@@ -216,6 +217,7 @@ flowchart LR
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
   session_context -.->|"reads"| team_name
+  session_context -.->|"reads"| trigger
   state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
   stop_hook -.->|"reads"| execute_phase
@@ -686,7 +688,8 @@ flowchart LR
           ".goal",
           ".mode",
           ".phase",
-          ".team_name"
+          ".team_name",
+          ".trigger"
         ],
         "markers": [
           "proposals"
