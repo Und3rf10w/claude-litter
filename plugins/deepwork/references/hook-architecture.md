@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 105 nodes, 165 edges
+Graph: 106 nodes, 166 edges
 
 ## Mermaid Flowchart
 
@@ -112,6 +112,7 @@ flowchart LR
     metadata_wave(([".metadata.wave"]))
     mode(([".mode"]))
     phase(([".phase"]))
+    source(([".source"]))
     team_name(([".team_name"]))
     tool_calls(([".tool_calls"]))
     tool_response_data_file_path(([".tool_response.data.file_path"]))
@@ -145,8 +146,8 @@ flowchart LR
     version_sentinel_json[/"  version-sentinel.json"/]
   end
   FileChanged -->|"&lt;plan_ref&gt;"| plan_drift_detector
-  FileChanged -->|"proposals"| stale_warn
-  FileChanged -->|"proposals"| version_bump_notify
+  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| stale_warn
+  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| version_bump_notify
   FileChanged -->|".claude/deepwork"| wiki_log_append
   PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
@@ -215,6 +216,7 @@ flowchart LR
   session_context -.->|"reads"| goal
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
+  session_context -.->|"reads"| source
   session_context -.->|"reads"| team_name
   state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
@@ -686,6 +688,7 @@ flowchart LR
           ".goal",
           ".mode",
           ".phase",
+          ".source",
           ".team_name"
         ],
         "markers": [
