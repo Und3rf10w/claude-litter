@@ -706,6 +706,105 @@ else
   _fail "ES-m: replay state still contains ${ESM_BAD_BANNERS} bad banner(s)"
 fi
 
+# ── ES-n: delete state.json → replay succeeds, regenerates from events ────────
+echo ""
+echo "── ES-n: delete state.json → replay succeeds, regenerates from events ──"
+
+ESN_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/e5f6a7b8"
+mkdir -p "$ESN_INSTANCE_DIR"
+ESN_STATE="${ESN_INSTANCE_DIR}/state.json"
+ESN_EVENTS="${ESN_INSTANCE_DIR}/events.jsonl"
+
+"$STATE_TRANSITION" --state-file "$ESN_STATE" init \
+  '{"session_id":"es-n-session","phase":"scope","team_name":"esn-team"}' 2>/dev/null
+
+"$STATE_TRANSITION" --state-file "$ESN_STATE" phase_advance --to "explore" 2>/dev/null
+rm -f "$ESN_STATE"
+
+ESN_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESN_STATE" replay > /dev/null 2>&1 || ESN_REPLAY_RC=$?
+_assert_exit "ES-n: replay exits 0 when state.json absent" "0" "$ESN_REPLAY_RC"
+
+if [[ -f "$ESN_STATE" ]]; then
+  _pass "ES-n: state.json regenerated from events"
+else
+  _fail "ES-n: state.json not created by replay"
+fi
+
+ESN_PHASE=$(jq -r '.phase // ""' "$ESN_STATE" 2>/dev/null || echo "")
+if [[ "$ESN_PHASE" == "explore" ]]; then
+  _pass "ES-n: replayed state.phase == explore"
+else
+  _fail "ES-n: replayed state.phase expected 'explore', got '${ESN_PHASE}'"
+fi
+
+# ── ES-o: corrupt state.json (invalid JSON) → replay succeeds, overwrites ──────
+echo ""
+echo "── ES-o: corrupt state.json → replay succeeds, overwrites ──"
+
+ESO_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/c9d0e1f2"
+mkdir -p "$ESO_INSTANCE_DIR"
+ESO_STATE="${ESO_INSTANCE_DIR}/state.json"
+ESO_EVENTS="${ESO_INSTANCE_DIR}/events.jsonl"
+
+"$STATE_TRANSITION" --state-file "$ESO_STATE" init \
+  '{"session_id":"es-o-session","phase":"scope","team_name":"eso-team"}' 2>/dev/null
+
+"$STATE_TRANSITION" --state-file "$ESO_STATE" phase_advance --to "explore" 2>/dev/null
+
+# Corrupt state.json with invalid JSON
+printf '{this is not valid json\n' > "$ESO_STATE"
+
+ESO_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESO_STATE" replay > /dev/null 2>&1 || ESO_REPLAY_RC=$?
+_assert_exit "ES-o: replay exits 0 with corrupt state.json" "0" "$ESO_REPLAY_RC"
+
+if jq empty "$ESO_STATE" 2>/dev/null; then
+  _pass "ES-o: state.json is valid JSON after replay overwrites corrupt file"
+else
+  _fail "ES-o: state.json still corrupt after replay"
+fi
+
+ESO_PHASE=$(jq -r '.phase // ""' "$ESO_STATE" 2>/dev/null || echo "")
+if [[ "$ESO_PHASE" == "explore" ]]; then
+  _pass "ES-o: replayed state.phase == explore (corrupt state overwritten)"
+else
+  _fail "ES-o: replayed state.phase expected 'explore', got '${ESO_PHASE}'"
+fi
+
+# ── ES-p: corrupt events.jsonl → replay fails without overwriting state.json ───
+echo ""
+echo "── ES-p: corrupt events.jsonl → replay fails, state.json preserved ──"
+
+ESP_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/a3b4c5d6"
+mkdir -p "$ESP_INSTANCE_DIR"
+ESP_STATE="${ESP_INSTANCE_DIR}/state.json"
+ESP_EVENTS="${ESP_INSTANCE_DIR}/events.jsonl"
+
+"$STATE_TRANSITION" --state-file "$ESP_STATE" init \
+  '{"session_id":"es-p-session","phase":"scope","team_name":"esp-team"}' 2>/dev/null
+
+ESP_BEFORE=$(jq -c '.' "$ESP_STATE" 2>/dev/null || echo "")
+
+# Corrupt events.jsonl — partially valid then garbage
+printf '{not valid json at all\n' > "$ESP_EVENTS"
+
+ESP_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESP_STATE" replay > /dev/null 2>&1 || ESP_REPLAY_RC=$?
+
+if [[ "$ESP_REPLAY_RC" -ne 0 ]]; then
+  _pass "ES-p: replay exits non-zero on corrupt events.jsonl (exit=${ESP_REPLAY_RC})"
+else
+  _fail "ES-p: replay should have failed on corrupt events.jsonl, got exit 0"
+fi
+
+ESP_AFTER=$(jq -c '.' "$ESP_STATE" 2>/dev/null || echo "")
+if [[ "$ESP_BEFORE" == "$ESP_AFTER" ]]; then
+  _pass "ES-p: state.json unchanged after failed replay"
+else
+  _fail "ES-p: state.json was modified by a failed replay (before != after)"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"

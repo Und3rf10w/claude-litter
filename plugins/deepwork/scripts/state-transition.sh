@@ -715,7 +715,17 @@ case "$SUBCOMMAND" in
   #
   # TODO(W8): automatic snapshot generation every 500 events to bound replay cost.
   replay)
-    _require_state_file
+    # Lighter pre-check: STATE_FILE path must be set and events.jsonl must exist.
+    # We do NOT require state.json to exist or be valid — replay rebuilds it from
+    # events.jsonl even when state.json is missing or corrupt (the /deepwork-reconcile
+    # use-case). INSTANCE_DIR is derived from STATE_FILE when not already set.
+    if [[ -z "${STATE_FILE:-}" ]]; then
+      printf 'state-transition.sh replay: STATE_FILE is not set (use --state-file or discover_instance)\n' >&2
+      exit 1
+    fi
+    if [[ -z "${INSTANCE_DIR:-}" ]]; then
+      INSTANCE_DIR="$(dirname "$STATE_FILE")"
+    fi
     REPLAY_OUTPUT="$STATE_FILE"
     while [[ $# -gt 0 ]]; do
       case "$1" in
