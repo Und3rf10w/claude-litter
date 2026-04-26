@@ -57,11 +57,11 @@ Do NOT delete the artifacts — they capture the *why* behind the session (what 
 ls .claude/deepwork/*/state.json 2>/dev/null
 ```
 
-10. Restore settings via the centralized teardown script. It checks for remaining active instances, performs selective jq removal of `_deepwork: true`-tagged entries (preserving hooks added by the user or sibling plugins), and falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
+10. Restore settings via the centralized teardown script. Pass the instance ID so only this instance's hooks are removed (sibling-instance hooks are preserved). Falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
     ```bash
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/settings-teardown.sh" "${CLAUDE_PROJECT_DIR:-$PWD}"
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/settings-teardown.sh" "${CLAUDE_PROJECT_DIR:-$PWD}" "${INSTANCE_ID}"
     ```
-    The same script is invoked by `hooks/approve-archive.sh` on APPROVE, so both teardown paths use identical restore semantics.
+    `INSTANCE_ID` is the 8-hex identifier read from the archived state.json (`.instance_id` field) in a prior step. The same script is invoked by `hooks/approve-archive.sh` on APPROVE, so both teardown paths use identical restore semantics.
 
 11. Report to the user:
     - Goal that was being worked on

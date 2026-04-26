@@ -273,12 +273,24 @@ for _sf in .claude/deepwork/*/state.json; do
   fi
 done
 
-# Compute instance ID
+# Compute a collision-safe random 8-hex instance ID.
+# Retry up to 8 times if the directory already exists (2^32 space; collisions
+# are astronomically rare but a retry loop costs nothing).
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-INSTANCE_ID=$(printf '%s' "$SESSION_ID" | shasum -a 256 2>/dev/null || printf '%s' "$SESSION_ID" | sha256sum 2>/dev/null)
-INSTANCE_ID="${INSTANCE_ID:0:8}"
-if [[ ! "$INSTANCE_ID" =~ ^[0-9a-f]{8}$ ]]; then
-  INSTANCE_ID=$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+_DW_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"
+INSTANCE_ID=""
+for _attempt in 1 2 3 4 5 6 7 8; do
+  _cand=$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 8)
+  if [[ ! "$_cand" =~ ^[0-9a-f]{8}$ ]]; then
+    continue
+  fi
+  if [[ ! -d "${_DW_ROOT}/${_cand}" ]]; then
+    INSTANCE_ID="$_cand"
+    break
+  fi
+done
+if [[ -z "$INSTANCE_ID" ]]; then
+  INSTANCE_ID=$(date +%s | head -c 8 | od -A n -t x1 | tr -d ' \n' | head -c 8)
 fi
 
 INSTANCE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/${INSTANCE_ID}"
@@ -531,6 +543,7 @@ jq -n \
   --arg mode "$MODE" \
   --argjson safe_mode "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
   --arg plan_ref "$PLAN_REF" \
+  --arg instance_id "$INSTANCE_ID" \
   '
   def build_hook_entry(entry):
     if (entry | has("command_override")) then
@@ -565,7 +578,7 @@ jq -n \
       . as $hooks
       | effective_matcher($entry) as $m
       | $entry.event as $ev
-      | {"matcher": $m, "hooks": [build_hook_entry($entry)], "_deepwork": true} as $block
+      | {"matcher": $m, "hooks": [build_hook_entry($entry)], "_deepwork": true, "_deepwork_instance": $instance_id} as $block
       | ($hooks[$ev] // [] | . + [$block]) as $merged
       | $hooks | .[$ev] = $merged
     )

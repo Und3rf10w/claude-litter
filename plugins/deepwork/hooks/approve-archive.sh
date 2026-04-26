@@ -47,7 +47,7 @@ if [[ -f "$_archived_state" ]]; then
     | bash "${_PLUGIN_ROOT}/hooks/wiki-log-append.sh" 2>/dev/null || true
 fi
 
-# Settings teardown — no-ops if other active instances remain
-bash "${_PLUGIN_ROOT}/scripts/settings-teardown.sh" "$PROJECT_ROOT" 2>/dev/null || true
+# Settings teardown — pass INSTANCE_ID so only this instance's hooks are removed
+bash "${_PLUGIN_ROOT}/scripts/settings-teardown.sh" "$PROJECT_ROOT" "$INSTANCE_ID" 2>/dev/null || true
 
 exit 0

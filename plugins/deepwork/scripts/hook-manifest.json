@@ -20,7 +20,7 @@
     {
       "script": "hooks/session-context.sh",
       "event": "SessionStart",
-      "matcher": "clear|compact",
+      "matcher": "startup|resume|clear|compact",
       "modes": ["both"]
     },
     {
