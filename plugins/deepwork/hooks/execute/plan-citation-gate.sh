@@ -109,8 +109,10 @@ PLAN_FILE_REF=$(printf '%s' "$PLAN_SECTION" | cut -d'#' -f1)
 if [[ -n "$PLAN_FILE_REF" ]]; then
   if [[ "$PLAN_FILE_REF" == /* ]]; then
     PLAN_FILE_PATH="$PLAN_FILE_REF"
-  elif [[ -n "$STATE_PLAN_REF" ]]; then
+  elif [[ -n "$STATE_PLAN_REF" && "$STATE_PLAN_REF" == /* ]]; then
     PLAN_FILE_PATH="$STATE_PLAN_REF"
+  elif [[ -n "$STATE_PLAN_REF" ]]; then
+    PLAN_FILE_PATH="${INSTANCE_DIR}/${STATE_PLAN_REF}"
   else
     PLAN_FILE_PATH="${INSTANCE_DIR}/${PLAN_FILE_REF}"
   fi
@@ -132,7 +134,7 @@ while IFS= read -r _tm_entry; do
     TEST_MANIFEST="1"
     break
   fi
-done < <(jq -r '.execute.test_manifest // [] | map(.source_file // .) | .[]' "$STATE_FILE" 2>/dev/null || true)
+done < <(jq -r '.execute.test_manifest // [] | map(if type == "object" then (.source_file // .) else . end) | .[]' "$STATE_FILE" 2>/dev/null || true)
 
 if [[ "$TEST_MANIFEST" == "0" ]]; then
   NO_TEST_REASON=$(printf '%s' "$PENDING_JSON" | jq -r '.no_test_reason // ""' 2>/dev/null || echo "")

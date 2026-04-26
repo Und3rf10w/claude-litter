@@ -68,8 +68,9 @@ else
 fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Read change_id from pending-change.json
+# Read change_id and covering_files from pending-change.json
 CHANGE_ID=$(jq -r '.change_id // ""' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "")
+COVERING_FILES=$(jq -c '.files // []' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "[]")
 
 # Parse pass/fail counts from stdout
 PASSED_COUNT=0
@@ -125,6 +126,7 @@ ENTRY=$(jq -n \
   --argjson failed "$FAILED_COUNT" \
   --argjson dur "$DURATION_MS" \
   --arg change_id "$CHANGE_ID" \
+  --argjson covering_files "$COVERING_FILES" \
   --arg stdout_tail "$STDOUT_TAIL" \
   --arg stderr_tail "$STDERR_TAIL" \
   '{
@@ -136,7 +138,7 @@ ENTRY=$(jq -n \
     flaky_suspected: false,
     duration_ms: $dur,
     change_id: $change_id,
-    covering_files: [],
+    covering_files: $covering_files,
     stdout_tail: $stdout_tail,
     stderr_tail: $stderr_tail
   }' 2>/dev/null)
