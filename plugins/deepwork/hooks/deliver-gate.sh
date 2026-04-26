@@ -71,10 +71,10 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
       if [[ -z "$FRONT_MATTER_CHECK" ]]; then
         if [[ -f "$STATE_FILE" ]]; then
           _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          _write_state_atomic "$STATE_FILE" --arg ts "$_NOW" --arg v "$LATEST_V" \
-            '.hook_warnings += [{event: "deliver-gate",
-                                 timestamp: $ts,
-                                 note: ("pre-fix proposal delivered; frontmatter presence not enforced (proposals/v" + $v + "*.md)")}]'
+          STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+            append_array .hook_warnings \
+            "{\"event\":\"deliver-gate\",\"timestamp\":\"${_NOW}\",\"note\":\"pre-fix proposal delivered; frontmatter presence not enforced (proposals/v${LATEST_V}*.md)\"}" \
+            2>/dev/null || true
         fi
         exit 0
       fi

@@ -32,13 +32,12 @@ fi
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
 [[ -z "$NOW" ]] && exit 0
 
-# Atomic stamp: update last_updated in state.json
-_TMP="${STATE_FILE}.precompact.$$"
-jq --arg t "$NOW" '.last_updated = $t
-  | .hook_warnings += [("PreCompact fired at " + $t + " — state.json stamped")]' \
-  "$STATE_FILE" > "$_TMP" \
-  && mv "$_TMP" "$STATE_FILE" \
-  || rm -f "$_TMP"
+# Stamp last_updated and record audit entry via state-transition.sh
+STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+  "{\"last_updated\":\"${NOW}\"}" 2>/dev/null || true
+STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  append_array .hook_warnings \
+  "\"PreCompact fired at ${NOW} — state.json stamped\"" 2>/dev/null || true
 
 # Append freshness marker to log.md
 if [[ -f "$LOG_FILE" ]]; then

@@ -145,19 +145,9 @@ if [[ -f "$TEST_RESULTS" ]] && [[ -s "$TEST_RESULTS" ]]; then
   ' "$TEST_RESULTS" 2>/dev/null || echo "null")
 
   if [[ -n "$FLAKY_CMD" ]] && [[ "$FLAKY_CMD" != "null" ]]; then
-    # Append to state.execute.flaky_tests[] if not already present
-    _TMP="${STATE_FILE}.tmp.$$"
-    jq --arg cmd "$FLAKY_CMD" '
-      .execute.flaky_tests = (
-        (.execute.flaky_tests // []) |
-        if map(. == $cmd) | any then . else . + [$cmd] end
-      )
-    ' "$STATE_FILE" > "$_TMP" 2>/dev/null
-    if [[ -s "$_TMP" ]]; then
-      mv "$_TMP" "$STATE_FILE"
-    else
-      rm -f "$_TMP"
-    fi
+    # Append to state.execute.flaky_tests[] via state-transition.sh (deduplicates)
+    STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+      flaky_test_append --cmd "$FLAKY_CMD" 2>/dev/null || true
 
     # Update flaky_suspected flag on the entry just written
     if [[ -n "$ENTRY" ]] && [[ -f "$TEST_RESULTS" ]]; then

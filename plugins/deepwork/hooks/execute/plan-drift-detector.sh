@@ -7,7 +7,7 @@
 #
 # On any mutation, computes sha256 of the current plan file content and compares
 # against state.execute.plan_hash. On mismatch, sets state.execute.plan_drift_detected=true
-# atomically via jq+tmp+mv pattern (same pattern as scripts/setup-deepwork.sh:310-324).
+# via state-transition.sh merge (W6 single-writer).
 #
 # Advisory only — FileChanged hooks cannot block operations. The drift flag is checked
 # by EXECUTOR during the next write/verify cycle (plan-citation-gate reads state and
@@ -56,12 +56,10 @@ fi
 # If hashes match, no drift
 [[ "$CURRENT_HASH" == "$PLAN_HASH" ]] && exit 0
 
-# Hash mismatch — set plan_drift_detected=true atomically
-_write_state_atomic "$STATE_FILE" \
-  --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg new_hash "$CURRENT_HASH" \
-  '.execute.plan_drift_detected = true |
-   .execute.plan_drift_detected_at = $now |
-   .execute.plan_hash_at_drift = $new_hash'
+# Hash mismatch — set plan_drift_detected=true via state-transition.sh
+_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+  "{\"execute\":{\"plan_drift_detected\":true,\"plan_drift_detected_at\":\"${_NOW}\",\"plan_hash_at_drift\":\"${CURRENT_HASH}\"}}" \
+  2>/dev/null || true
 
 exit 0
