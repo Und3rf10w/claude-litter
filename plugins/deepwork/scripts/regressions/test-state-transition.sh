@@ -18,6 +18,8 @@
 # ST-q: init guard fires when instance_id already present
 # ST-r: started_at mutation detected by integrity hash (W9 M2)
 # ST-s: source_of_truth mutation detected by integrity hash (W9 M2)
+# ST-z: concurrent set_field leaves state + events consistent
+# ST-aa: archive_state event_head matches last event in events.archived.jsonl
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -444,6 +446,82 @@ if [[ ! -f "${INSTANCE_DIR}/events.jsonl" ]]; then
   _pass "ST-y: events.jsonl no longer present"
 else
   _fail "ST-y: events.jsonl still exists after archive_state"
+fi
+
+# ── ST-z: concurrent set_field leaves state + events consistent ──────────────
+echo ""
+echo "── ST-z: concurrent set_field leaves consistent state + events ──"
+STZ_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stz00000"
+mkdir -p "$STZ_INSTANCE_DIR"
+STZ_SF="${STZ_INSTANCE_DIR}/state.json"
+rm -f "$STZ_SF"
+"$STATE_TRANSITION" --state-file "$STZ_SF" init \
+  '{"session_id":"stz-session","phase":"work","team_name":"stz-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STZ_SF" phase_advance --to "work" >/dev/null 2>&1 || true
+
+STZ_PIDS=()
+for _i in 1 2 3 4 5; do
+  (
+    INSTANCE_DIR="$STZ_INSTANCE_DIR" \
+    STATE_FILE="$STZ_SF" \
+      "$STATE_TRANSITION" --state-file "$STZ_SF" \
+        set_field ".hook_warnings" "[]" >/dev/null 2>&1
+  ) &
+  STZ_PIDS+=($!)
+done
+for _pid in "${STZ_PIDS[@]}"; do wait "$_pid" 2>/dev/null || true; done
+
+if jq empty "$STZ_SF" 2>/dev/null; then
+  _pass "ST-z: state.json is valid JSON after concurrent writes"
+else
+  _fail "ST-z: state.json is not valid JSON after concurrent writes"
+fi
+
+STZ_EVENT_COUNT=$(wc -l < "${STZ_INSTANCE_DIR}/events.jsonl" 2>/dev/null | tr -d ' ')
+if [[ "${STZ_EVENT_COUNT:-0}" -ge 5 ]]; then
+  _pass "ST-z: events.jsonl has >= 5 events (got ${STZ_EVENT_COUNT})"
+else
+  _fail "ST-z: events.jsonl has ${STZ_EVENT_COUNT:-0} events, expected >= 5"
+fi
+
+# ── ST-aa: archive_state event_head matches last event in archived log ────────
+echo ""
+echo "── ST-aa: archive_state event_head matches last event ──"
+STAA_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/staa0000"
+mkdir -p "$STAA_INSTANCE_DIR"
+STAA_SF="${STAA_INSTANCE_DIR}/state.json"
+rm -f "$STAA_SF"
+"$STATE_TRANSITION" --state-file "$STAA_SF" init \
+  '{"session_id":"staa-session","phase":"work","team_name":"staa-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STAA_SF" phase_advance --to "work" >/dev/null 2>&1 || true
+"$STATE_TRANSITION" --state-file "$STAA_SF" archive_state
+STAA_RC=$?
+_assert_exit "ST-aa: archive_state exits 0" "0" "$STAA_RC"
+
+STAA_ARCHIVED="${STAA_INSTANCE_DIR}/state.archived.json"
+STAA_EVENTS="${STAA_INSTANCE_DIR}/events.archived.jsonl"
+
+if [[ -f "$STAA_ARCHIVED" ]] && [[ -f "$STAA_EVENTS" ]]; then
+  STAA_STORED_HEAD=$(jq -r '.event_head // ""' "$STAA_ARCHIVED" 2>/dev/null)
+  STAA_LAST_LINE=$(tail -1 "$STAA_EVENTS")
+  if command -v sha256sum >/dev/null 2>&1; then
+    STAA_ACTUAL_HEAD=$(printf '%s\n' "$STAA_LAST_LINE" | sha256sum | cut -d' ' -f1)
+  else
+    STAA_ACTUAL_HEAD=$(printf '%s\n' "$STAA_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+  fi
+  STAA_LAST_TYPE=$(printf '%s' "$STAA_LAST_LINE" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$STAA_LAST_TYPE" == "state_archived" ]]; then
+    _pass "ST-aa: last event in archive is state_archived"
+  else
+    _fail "ST-aa: last event type expected state_archived, got ${STAA_LAST_TYPE}"
+  fi
+  if [[ "$STAA_STORED_HEAD" == "$STAA_ACTUAL_HEAD" ]]; then
+    _pass "ST-aa: archived state.json event_head matches hash of last event"
+  else
+    _fail "ST-aa: event_head mismatch — stored=${STAA_STORED_HEAD:0:12} actual=${STAA_ACTUAL_HEAD:0:12}"
+  fi
+else
+  _fail "ST-aa: state.archived.json or events.archived.jsonl missing"
 fi
 
 # ── Summary ──

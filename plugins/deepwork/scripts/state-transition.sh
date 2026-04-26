@@ -1170,7 +1170,13 @@ case "$SUBCOMMAND" in
   archive_state)
     _require_state_file
     _ensure_event_log
-    _emit_event "state_archived" '{}'
+    _emit_event "state_archived" '{}' || exit 5
+    # Stamp event_head in state.json AFTER state_archived is appended so the
+    # archived copy's event_head reflects the final event (the archive itself).
+    _arch_event_head=$(_read_event_head 2>/dev/null || echo "")
+    if [[ -n "$_arch_event_head" ]]; then
+      _write_state_atomic "$STATE_FILE" --arg eh "$_arch_event_head" '.event_head = $eh' || true
+    fi
     _ARCHIVE_JSON="${INSTANCE_DIR}/state.archived.json"
     _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
