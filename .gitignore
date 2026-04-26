@@ -1,5 +1,7 @@
 __pycache__/
 .claude/*.local.*
+.claude/deepwork/
+.claude/worktrees/
 *.pyc
 *.pyo
 *.egg-info/

@@ -20,16 +20,12 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
-# Only fire for ExitPlanMode; other PreToolUse fires pass through.
-[[ "$TOOL_NAME" == "ExitPlanMode" ]] || exit 0
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+# Only fire for ExitPlanMode; other PreToolUse fires pass through.
+[[ "$TOOL_NAME" == "ExitPlanMode" ]] || exit 0
 
 # Scope to active deepwork instance only; skip if none.
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
@@ -71,13 +67,10 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
       if [[ -z "$FRONT_MATTER_CHECK" ]]; then
         if [[ -f "$STATE_FILE" ]]; then
           _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          jq --arg ts "$_NOW" --arg v "$LATEST_V" \
-            '.hook_warnings += [{event: "deliver-gate",
-                                 timestamp: $ts,
-                                 note: ("pre-fix proposal delivered; frontmatter presence not enforced (proposals/v" + $v + "*.md)")}]' \
-            "$STATE_FILE" > "${STATE_FILE}.tmp.$$" 2>/dev/null \
-            && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" \
-            || rm -f "${STATE_FILE}.tmp.$$"
+          STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+            append_array .hook_warnings \
+            "{\"event\":\"deliver-gate\",\"timestamp\":\"${_NOW}\",\"note\":\"pre-fix proposal delivered; frontmatter presence not enforced (proposals/v${LATEST_V}*.md)\"}" \
+            2>/dev/null || true
         fi
         exit 0
       fi

@@ -135,6 +135,7 @@ For the full pipeline, all 8 execute hooks, state fields, and amendment mechanic
 | `/deepwork-wiki` | Regenerate Overview, Session Index, and Cross-refs in DEEPWORK_WIKI.md | `skills/deepwork-wiki/SKILL.md` |
 | `/deepwork-recap` | 30-50-word plain-text recap of deepwork history | `skills/deepwork-recap/SKILL.md` |
 | `/deepwork-drift-sweep` | Exhaustive drift sweep: enumerate ALL workstreams in the active session and diff each artifact against its source-of-truth; write `drift-report.v<N>.md` | `skills/deepwork-drift-sweep/SKILL.md` |
+| `/deepwork-reconcile` | Rebuild `state.json` from `events.jsonl` via full hash-chain replay; prints reconciliation report (events processed, chain valid/broken, divergence diff) | `skills/deepwork-reconcile/SKILL.md` |
 
 ---
 
@@ -219,6 +220,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `incident-detector.sh` | SubagentStop | Appends to `incidents.jsonl` on teammate failures | `hooks/incident-detector.sh` |
 | `session-context.sh` | SessionStart(clear\|compact) | Re-injects orchestrator identity after /clear or /compact | `hooks/session-context.sh` |
 | `task-completed-gate.sh` | TaskCompleted | Artifact-existence + cross-check count enforcement | `hooks/task-completed-gate.sh` |
+| `wave-gate.sh` | TaskCreated | Phase-authority gate: blocks teammates from creating tasks for phases they don't own; allows orchestrator/team-lead unconditionally; audit entry in log.md on override | `hooks/wave-gate.sh` |
 | `incident-detector.sh` | PermissionDenied | Appends to `incidents.jsonl` on denied operations | `hooks/incident-detector.sh` |
 | `deliver-gate.sh` | PreToolUse:ExitPlanMode | Lints ExitPlanMode content; enforces "Residual unknowns" + delta_from_prior | `hooks/deliver-gate.sh` |
 | `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |

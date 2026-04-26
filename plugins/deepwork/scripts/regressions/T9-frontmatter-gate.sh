@@ -44,7 +44,8 @@ mkdir -p "$INSTANCE_DIR"
 SESSION_ID="test-session-$(date +%s)"
 
 # state.json with frontmatter_schema_version=1 (enforcement enabled)
-cat > "$INSTANCE_DIR/state.json" <<EOF
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -52,8 +53,6 @@ cat > "$INSTANCE_DIR/state.json" <<EOF
   "frontmatter_schema_version": "1"
 }
 EOF
-
-export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
 
 _run_gate() {
   local tool_name="$1" file_path="$2" content="$3"
@@ -63,7 +62,7 @@ _run_gate() {
     --arg tn "$tool_name" \
     --arg fp "$file_path" \
     --arg c  "$content" \
-    '{session_id: $sid, tool_name: $tn, tool_input: {file_path: $fp, content: $c}}')
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: $tn, tool_input: {file_path: $fp, content: $c}}')
   printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
   echo $?
 }
@@ -75,7 +74,7 @@ _run_gate_edit() {
     --arg sid "$SESSION_ID" \
     --arg fp  "$file_path" \
     --arg ns  "$new_string" \
-    '{session_id: $sid, tool_name: "Edit", tool_input: {file_path: $fp, new_string: $ns}}')
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {file_path: $fp, new_string: $ns}}')
   printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
   echo $?
 }
@@ -199,7 +198,9 @@ _assert_exit "T9-h: bar_ids plural accepted" "0" "$(_run_gate "Write" "$TARGET_M
 # ── (i) ADV: pre-fix session (no schema_version) → gate should warn-only, exit 0 ──
 echo ""
 echo "── T9-i (ADV): pre-fix session (no frontmatter_schema_version) → warn-only, exit 0 ──"
-cat > "$INSTANCE_DIR/state.json" <<EOF
+rm -f "$INSTANCE_DIR/state.json"
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -209,7 +210,9 @@ EOF
 _assert_exit "T9-i: pre-fix session fail-open" "0" "$(_run_gate "Write" "$TARGET_MD" "$CONTENT_NO_ATYPE")"
 
 # Restore schema version for remaining tests
-cat > "$INSTANCE_DIR/state.json" <<EOF
+rm -f "$INSTANCE_DIR/state.json"
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -224,11 +227,153 @@ echo "── T9-j (ADV): Write to prompt.md → allowed (exempt like log.md) ─
 PROMPT_MD="${INSTANCE_DIR}/prompt.md"
 _assert_exit "T9-j: Write to prompt.md allowed" "0" "$(_run_gate "Write" "$PROMPT_MD" "# Initial prompt")"
 
-# ── (k) ADV: non-.md file in instance dir → not matched, allowed ──
+# ── (k) Single-writer gate: direct Write to state.json → blocked (exit 2) ──
 echo ""
-echo "── T9-k (ADV): Write to .json file in instance dir → not matched, allowed ──"
+echo "── T9-k (single-writer): direct Write to state.json without sentinel → blocked ──"
 STATE_WRITE="${INSTANCE_DIR}/state.json"
-_assert_exit "T9-k: Write to .json in instance dir" "0" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+_assert_exit "T9-k: Write to state.json blocked by single-writer gate" "2" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+
+# ── (T9-sw-h) Single-writer gate: Write WITH sentinel → allowed ──
+echo ""
+echo "── T9-sw-h: Write to state.json WITH _DW_STATE_TRANSITION_WRITER=1 → allowed ──"
+_run_gate_with_sentinel() {
+  local tool_name="$1" file_path="$2" content="$3"
+  local payload
+  payload=$(jq -cn \
+    --arg sid "$SESSION_ID" \
+    --arg tn  "$tool_name" \
+    --arg fp  "$file_path" \
+    --arg ct  "$content" \
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: $tn, tool_input: {file_path: $fp, content: $ct}}')
+  printf '%s' "$payload" \
+    | _DW_STATE_TRANSITION_WRITER=1 \
+      CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "$GATE" 2>/dev/null
+  printf '%s' "$?"
+}
+_assert_exit "T9-sw-h: Write to state.json with sentinel allowed" "0" "$(_run_gate_with_sentinel "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+
+# ── (T9-sw-i) Single-writer gate: Write without sentinel → blocked ──
+echo ""
+echo "── T9-sw-i: Write to state.json WITHOUT sentinel → blocked (exit 2) ──"
+_assert_exit "T9-sw-i: Write to state.json without sentinel blocked" "2" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+
+# ── (T9-ot-a) override-tokens.json single-writer gate: direct Write → blocked ──
+echo ""
+echo "── T9-ot-a: direct Write to override-tokens.json → blocked (exit 2) ──"
+OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+_assert_exit "T9-ot-a: Write to override-tokens.json blocked" "2" \
+  "$(_run_gate "Write" "$OT_FILE" '{"tokens":[]}')"
+
+# ── (T9-ot-b) override-tokens.json single-writer gate: Write WITH sentinel → allowed ──
+echo ""
+echo "── T9-ot-b: Write to override-tokens.json WITH _DW_STATE_TRANSITION_WRITER=1 → allowed ──"
+_assert_exit "T9-ot-b: Write to override-tokens.json with sentinel allowed" "0" \
+  "$(_run_gate_with_sentinel "Write" "$OT_FILE" '{"tokens":[]}')"
+
+# ── (T9-ot-c) override-tokens.json gate: Edit without sentinel → blocked ──
+echo ""
+echo "── T9-ot-c: Edit to override-tokens.json without sentinel → blocked (exit 2) ──"
+_assert_exit "T9-ot-c: Edit to override-tokens.json without sentinel blocked" "2" \
+  "$(_run_gate_edit "$OT_FILE" '{"tokens":[]}')"
+
+# ── W15 FG-a: prefix match — sibling-dir substring match must NOT pass ──
+# A path like /some/parent-ab12cd34-extra/file.md matches the old substring
+# check but should NOT match the new prefix check.
+echo ""
+echo "── FG-a (W15): sibling dir with instance-ID substring — NOT matched ──"
+SIBLING_DIR="$SANDBOX/.claude/deepwork/sibling-${INSTANCE_ID}-suffix"
+mkdir -p "$SIBLING_DIR"
+SIBLING_FILE="$SIBLING_DIR/findings.md"
+# This must exit 0 (not in scope) rather than trying to validate frontmatter
+_assert_exit "FG-a: sibling dir not matched by prefix check" "0" \
+  "$(_run_gate "Write" "$SIBLING_FILE" "no frontmatter here")"
+
+# ── W15 FG-b: body-text fields do NOT satisfy frontmatter requirement ──
+# A file where artifact_type, author etc. appear in the document body (after
+# the closing ---) must still be rejected if the frontmatter block is absent/empty.
+echo ""
+echo "── FG-b (W15): required fields only in body, not in frontmatter → blocked ──"
+CONTENT_FIELDS_IN_BODY=$(cat <<'EOF'
+no frontmatter here
+
+artifact_type: findings
+author: test-agent
+instance: ab12cd34
+task_id: "1"
+bar_id: G1
+sources: []
+EOF
+)
+_assert_exit "FG-b: body-only fields rejected (no frontmatter block)" "2" \
+  "$(_run_gate "Write" "$TARGET_MD" "$CONTENT_FIELDS_IN_BODY")"
+
+# ── W15 FG-c: Edit that removes artifact_type is blocked ──
+# File on disk has valid frontmatter. Edit replaces artifact_type line with empty.
+echo ""
+echo "── FG-c (W15): Edit that removes artifact_type → blocked (exit 2) ──"
+printf '%s\n' "$CONTENT_VALID" > "$TARGET_MD"
+_run_gate_edit_full() {
+  local file_path="$1" old_string="$2" new_string="$3"
+  local payload
+  payload=$(jq -cn \
+    --arg sid "$SESSION_ID" \
+    --arg fp  "$file_path" \
+    --arg os  "$old_string" \
+    --arg ns  "$new_string" \
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {file_path: $fp, old_string: $os, new_string: $ns}}')
+  printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
+  echo $?
+}
+_assert_exit "FG-c: Edit removing artifact_type blocked" "2" \
+  "$(_run_gate_edit_full "$TARGET_MD" "artifact_type: findings" "")"
+
+# ── W15 FG-d: Edit that preserves artifact_type passes ──
+echo ""
+echo "── FG-d (W15): Edit that preserves artifact_type → allowed (exit 0) ──"
+_assert_exit "FG-d: Edit preserving artifact_type passes" "0" \
+  "$(_run_gate_edit_full "$TARGET_MD" "Valid artifact body." "Updated artifact body.")"
+
+# ── FG-e: proposals artifact_type accepted ──
+# proposals/v1.md with artifact_type: proposals must pass frontmatter-gate.
+echo ""
+echo "── FG-e (W16c): proposals artifact_type accepted ──"
+PROPOSALS_DIR="${INSTANCE_DIR}/proposals"
+mkdir -p "$PROPOSALS_DIR"
+PROPOSALS_MD="${PROPOSALS_DIR}/v1.md"
+CONTENT_PROPOSALS=$(cat <<'EOF2'
+---
+artifact_type: proposals
+version: "v1"
+delta_from_prior: null
+author: "SYNTHESIZE"
+instance: "ab12cd34"
+sources: []
+task_ids: []
+bar_ids: []
+---
+Proposal body text.
+EOF2
+)
+_assert_exit "FG-e: proposals with artifact_type:proposals passes" "0" \
+  "$(_run_gate "Write" "$PROPOSALS_MD" "$CONTENT_PROPOSALS")"
+
+# proposals without artifact_type must be blocked
+CONTENT_PROPOSALS_NOAT=$(cat <<'EOF2'
+---
+version: "v1"
+delta_from_prior: null
+author: "SYNTHESIZE"
+instance: "ab12cd34"
+sources: []
+task_ids: []
+bar_ids: []
+---
+Proposal body text.
+EOF2
+)
+_assert_exit "FG-e: proposals missing artifact_type blocked" "2" \
+  "$(_run_gate "Write" "$PROPOSALS_MD" "$CONTENT_PROPOSALS_NOAT")"
 
 # ── Summary ──
 echo ""

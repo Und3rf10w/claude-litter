@@ -7,13 +7,14 @@
 #
 # On any mutation, computes sha256 of the current plan file content and compares
 # against state.execute.plan_hash. On mismatch, sets state.execute.plan_drift_detected=true
-# atomically via jq+tmp+mv pattern (same pattern as scripts/setup-deepwork.sh:310-324).
+# via state-transition.sh merge (W6 single-writer).
 #
-# Advisory only — FileChanged hooks cannot block operations. The drift flag is checked
-# by EXECUTOR during the next write/verify cycle (plan-citation-gate reads state and
-# the model is expected to surface the drift warning). This partially mitigates GAP-4
-# (multi-agent plan-hash coherence) for the single-EXECUTOR V0 case by detecting
-# external mutations (e.g., user edits the plan file while EXECUTOR is running).
+# On mismatch, sets state.execute.plan_drift_detected=true (post-W1/PR-A behaviour).
+# plan-citation-gate.sh and bash-gate.sh then BLOCK any Write/Edit/Bash that does not
+# cite plan-drift evidence in its tool input — the orchestrator must run
+# /deepwork-execute-amend to clear the flag and resume normal writes.
+# This partially mitigates GAP-4 (multi-agent plan-hash coherence) for the
+# single-EXECUTOR V0 case by detecting external mutations (e.g., user edits the plan).
 #
 # CC source: cli_formatted_2.1.116.js:265956 (FileChanged event literal),
 # :269399-269416 (matcher → watch path via chokidar glob), :269417 (awaitWriteFinish debounce).
@@ -23,12 +24,10 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances
@@ -56,20 +55,10 @@ fi
 # If hashes match, no drift
 [[ "$CURRENT_HASH" == "$PLAN_HASH" ]] && exit 0
 
-# Hash mismatch — set plan_drift_detected=true atomically
-_TMP="${STATE_FILE}.tmp.$$"
-jq \
-  --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg new_hash "$CURRENT_HASH" \
-  '.execute.plan_drift_detected = true |
-   .execute.plan_drift_detected_at = $now |
-   .execute.plan_hash_at_drift = $new_hash' \
-  "$STATE_FILE" > "$_TMP" 2>/dev/null
-
-if [[ -s "$_TMP" ]]; then
-  mv "$_TMP" "$STATE_FILE"
-else
-  rm -f "$_TMP"
-fi
+# Hash mismatch — set plan_drift_detected=true via state-transition.sh
+_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+  "{\"execute\":{\"plan_drift_detected\":true,\"plan_drift_detected_at\":\"${_NOW}\",\"plan_hash_at_drift\":\"${CURRENT_HASH}\"}}" \
+  2>/dev/null || true
 
 exit 0

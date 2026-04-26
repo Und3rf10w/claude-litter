@@ -1,0 +1,229 @@
+{
+  "_comment": "Single source of truth for all dynamically-injected deepwork hooks. Each entry is registered into settings.local.json by setup-deepwork.sh. TeammateIdle and PreCompact hooks are excluded — they live in hooks/hooks.json and are loaded by the CC runtime directly. The 'modes' field controls when a hook is registered: 'design' = design sessions only, 'execute' = execute sessions only, 'both' = all sessions. Execute mode is a superset: all 'design' and 'both' hooks also register in execute sessions.",
+  "hooks": [
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "PermissionRequest",
+      "matcher": "Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate",
+      "modes": ["both"],
+      "safe_mode_only": true,
+      "command_override": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'",
+      "_note": "PermissionRequest auto-approve: only registered when SAFE_MODE=true. Command is a literal echo, not a script invocation."
+    },
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "SubagentStop",
+      "matcher": ".*",
+      "modes": ["both"],
+      "args": "--event SubagentStop",
+      "writes_state": [".hook_warnings"]
+    },
+    {
+      "script": "hooks/session-context.sh",
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|compact",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/task-completed-gate.sh",
+      "event": "TaskCompleted",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/incident-detector.sh",
+      "event": "PermissionDenied",
+      "matcher": ".*",
+      "modes": ["both"],
+      "args": "--event PermissionDenied",
+      "writes_state": [".hook_warnings"]
+    },
+    {
+      "script": "hooks/deliver-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "ExitPlanMode",
+      "modes": ["both"],
+      "reads_state": [".phase", ".bar", ".empirical_unknowns"]
+    },
+    {
+      "script": "hooks/frontmatter-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["both"],
+      "reads_state": [".phase", ".instance_id", ".frontmatter_schema_version"]
+    },
+    {
+      "script": "hooks/integrity-always-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit|Bash|TaskCreate|TaskUpdate|SendMessage",
+      "modes": ["both"],
+      "_note": "Always-on event_head integrity check (W9 M1). Fires on every tool use. Fail-open when no active instance."
+    },
+    {
+      "script": "hooks/state-bash-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["both"],
+      "_note": "Blocks shell-redirect writes to state.json that bypass frontmatter-gate.sh (W8 H2)."
+    },
+    {
+      "script": "hooks/phase-advance-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Edit|Write",
+      "modes": ["both"],
+      "reads_state": [".phase"]
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["both"],
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["both"],
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
+      "event": "PostToolUse",
+      "matcher": "Write|Edit|Bash",
+      "modes": ["both"],
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
+    },
+    {
+      "script": "hooks/batch-gate.sh",
+      "event": "PostToolBatch",
+      "matcher": ".*",
+      "modes": ["both"],
+      "_note": "W3-b: consolidates state-drift-marker Pre leg into one PostToolBatch subprocess. Runs in parallel with existing Pre state-drift-marker during shadow period (§7). Requires CC >= 2.1.118; pre-2.1.118 installs silently ignore unknown events. Feature flag: state.batch_gate_enabled (default true)."
+    },
+    {
+      "script": "hooks/verdict-version-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "SendMessage",
+      "modes": ["both"],
+      "reads_state": [".phase", ".bar"]
+    },
+    {
+      "script": "hooks/version-bump-notify.sh",
+      "event": "FileChanged",
+      "matcher": "^v[0-9]+(-final)?\\.md$",
+      "modes": ["both"],
+      "_note": "W16b: restored regex matcher ^v[0-9]+(-final)?\\.md$ (was 'proposals' substring in W14). session-context.sh now registers concrete watchPaths via hookSpecificOutput so chokidar watches real paths; the regex matcher correctly gates the FileChanged handler on basename."
+    },
+    {
+      "script": "hooks/stale-warn.sh",
+      "event": "FileChanged",
+      "matcher": "^v[0-9]+(-final)?\\.md$",
+      "modes": ["both"],
+      "_note": "W16b: see version-bump-notify.sh note above."
+    },
+    {
+      "script": "hooks/critique-version-gate.sh",
+      "event": "TaskCompleted",
+      "matcher": ".*",
+      "modes": ["both"],
+      "reads_state": [".phase"]
+    },
+    {
+      "script": "hooks/halt-gate.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["both"],
+      "_note": "Registered once for all sessions. Must appear before approve-archive.sh in the Stop array (array-index ordering maintained by position in this manifest).",
+      "reads_state": [".phase", ".execute", ".halt_reason"]
+    },
+    {
+      "script": "hooks/approve-archive.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["both"],
+      "reads_state": [".phase", ".execute.phase", ".halt_reason"],
+      "writes_state": ["state.archived.json"]
+    },
+    {
+      "script": "hooks/wiki-log-append.sh",
+      "event": "FileChanged",
+      "matcher": ".claude/deepwork",
+      "modes": ["both"],
+      "_note": "W14: directory-level matcher; kept as secondary trigger. approve-archive.sh now calls wiki-log-append.sh synchronously (primary path) to guarantee wiki entry regardless of chokidar directory-watcher availability."
+    },
+    {
+      "script": "hooks/execute/plan-citation-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["execute"],
+      "reads_state": [".execute.plan_ref", ".execute.plan_hash"]
+    },
+    {
+      "script": "hooks/execute/retest-dispatch.sh",
+      "event": "PostToolUse",
+      "matcher": "Write|Edit",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/bash-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["execute"],
+      "reads_state": [".execute.authorized_force_push", ".execute.authorized_push", ".execute.authorized_prod_deploy", ".execute.authorized_local_destructive", ".execute.setup_flags_snapshot"]
+    },
+    {
+      "script": "hooks/execute/test-capture.sh",
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "modes": ["execute"],
+      "async": true
+    },
+    {
+      "script": "hooks/execute/test-capture.sh",
+      "event": "PostToolUseFailure",
+      "matcher": "Bash",
+      "modes": ["execute"],
+      "async": true,
+      "_note": "Captures test-runner exit-code failures (W11 H6). PostToolUseFailure schema: .error, .is_interrupt — no .tool_response."
+    },
+    {
+      "script": "hooks/execute/plan-drift-detector.sh",
+      "event": "FileChanged",
+      "matcher": "__plan_ref__",
+      "modes": ["execute"],
+      "_note": "Matcher is the absolute plan file path, substituted at registration time from $PLAN_REF."
+    },
+    {
+      "script": "hooks/execute/file-changed-retest.sh",
+      "event": "FileChanged",
+      "matcher": "__src_glob__",
+      "modes": ["execute"],
+      "async": true,
+      "_note": "Matcher is <project_root>/src/** substituted at registration time. Triggers advisory retest of covering test from test_manifest[] on src file changes. Per-instance: registered and torn down with instance lifecycle."
+    },
+    {
+      "script": "hooks/wave-gate.sh",
+      "event": "TaskCreated",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
+      "script": "hooks/execute/task-scope-gate.sh",
+      "event": "TaskCreated",
+      "matcher": ".*",
+      "modes": ["execute"]
+    },
+    {
+      "script": "hooks/execute/stop-hook.sh",
+      "event": "Stop",
+      "matcher": ".*",
+      "modes": ["execute"],
+      "reads_state": [".execute.phase"],
+      "writes_state": [".execute.phase", ".execute.halt_reason"]
+    }
+  ]
+}

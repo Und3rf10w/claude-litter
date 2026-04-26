@@ -34,14 +34,15 @@ Then use `AskUserQuestion` to ask the user which instance to tear down.
    - **This is the ONLY place TeamDelete is called.** `hooks/approve-archive.sh` archives state + restores settings on APPROVE but leaves the team intact for inspection; a full teardown (team deletion) only happens when this skill runs.
    - If TeamDelete fails (team already gone), continue anyway.
 
-8. Archive runtime state; preserve all artifacts for audit and future reference:
+8. Archive runtime state via the canonical writer, then clean up transient files:
 ```bash
-mv .claude/deepwork/<id>/state.json .claude/deepwork/<id>/state.archived.json
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file ".claude/deepwork/<id>/state.json" archive_state
 rm -f .claude/deepwork/<id>/heartbeat.json
 rm -f .claude/deepwork/<id>/.idle-retry.*
 ```
 
-The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
+`archive_state` emits a `state_archived` event, renames `state.json` → `state.archived.json`, and renames `events.jsonl` → `events.archived.jsonl`. The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
 
 Do NOT delete the artifacts — they capture the *why* behind the session (what was explored, what failed, what was rejected) and remain useful after teardown for historical analysis and future decisions:
 - `log.md` — narrative history
@@ -56,11 +57,11 @@ Do NOT delete the artifacts — they capture the *why* behind the session (what 
 ls .claude/deepwork/*/state.json 2>/dev/null
 ```
 
-10. Restore settings via the centralized teardown script. It checks for remaining active instances, performs selective jq removal of `_deepwork: true`-tagged entries (preserving hooks added by the user or sibling plugins), and falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
+10. Restore settings via the centralized teardown script. Pass the instance ID so only this instance's hooks are removed (sibling-instance hooks are preserved). Falls back to `.deepwork-backup` if jq fails. No-ops if other active instances remain:
     ```bash
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/settings-teardown.sh" "${CLAUDE_PROJECT_DIR:-$PWD}"
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/settings-teardown.sh" "${CLAUDE_PROJECT_DIR:-$PWD}" "${INSTANCE_ID}"
     ```
-    The same script is invoked by `hooks/approve-archive.sh` on APPROVE, so both teardown paths use identical restore semantics.
+    `INSTANCE_ID` is the 8-hex identifier read from the archived state.json (`.instance_id` field) in a prior step. The same script is invoked by `hooks/approve-archive.sh` on APPROVE, so both teardown paths use identical restore semantics.
 
 11. Report to the user:
     - Goal that was being worked on

@@ -15,7 +15,7 @@
 # with type=scope-delta and proposed_outcome=escalate, directing to /deepwork-execute-amend.
 #
 # CC source: cli_formatted_2.1.116.js:51984 (TaskCreated in event enum),
-# :265837 (TaskCreated hook schema — stdin fields: task_id, task_subject, task_description, metadata.*),
+# :265837 (TaskCreated hook schema — stdin fields: task_id, task_subject, task_description, team_name?, teammate_name? — no metadata),
 # :564690 (exit 2 → blockingError).
 # Fail-open if no active execute instance.
 
@@ -23,12 +23,10 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances
@@ -38,7 +36,15 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
 TASK_SUBJECT=$(printf '%s' "$INPUT" | jq -r '.task_subject // ""' 2>/dev/null || echo "")
 TASK_DESC=$(printf '%s' "$INPUT" | jq -r '.task_description // ""' 2>/dev/null || echo "")
-TASK_SCOPE=$(printf '%s' "$INPUT" | jq -r '.metadata.scope // ""' 2>/dev/null || echo "")
+TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
+
+# Read task metadata from task file (W11 H7: not from hook INPUT — no metadata in v2.1.118 schema)
+TASK_SCOPE=""
+if [[ -n "$TEAM_NAME" && -n "$TASK_ID" ]]; then
+  if _load_task_file "$TEAM_NAME" "$TASK_ID" 2>/dev/null; then
+    TASK_SCOPE=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.scope // ""' 2>/dev/null || echo "")
+  fi
+fi
 
 [[ -n "$TASK_SUBJECT" ]] || exit 0
 
@@ -105,11 +111,20 @@ if [[ $MATCH_COUNT -eq 0 ]] || [[ "$SCOPE_MATCH" == "false" ]]; then
     printf '%s\n' "$DISCOVERY_ENTRY" >> "${INSTANCE_DIR}/discoveries.jsonl"
   fi
 
-  printf 'BLOCKED (scope-gate): task "%s" does not appear to be within the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
-  printf 'No significant words from the task subject were found in the plan.\n' >&2
-  printf 'Use /deepwork-execute-amend to extend the approved scope before creating this task.\n' >&2
-  printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta, proposed_outcome=escalate).\n' "$INSTANCE_DIR" >&2
-  exit 2
+  # Default: advisory mode (warn-only). Strict blocking requires scope_gate_strict=true
+  # in state.execute to reduce false-positive interruptions on legitimate work.
+  STRICT=$(jq -r '.execute.scope_gate_strict // false' "$STATE_FILE" 2>/dev/null || echo "false")
+  if [[ "$STRICT" == "true" ]]; then
+    printf 'BLOCKED (scope-gate): task "%s" does not appear to be within the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
+    printf 'No significant words from the task subject were found in the plan.\n' >&2
+    printf 'Use /deepwork-execute-amend to extend the approved scope before creating this task.\n' >&2
+    printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta, proposed_outcome=escalate).\n' "$INSTANCE_DIR" >&2
+    exit 2
+  fi
+
+  printf 'WARNING (scope-gate): task "%s" may be outside the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
+  printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta).\n' "$INSTANCE_DIR" >&2
+  printf 'Set state.execute.scope_gate_strict=true to enforce blocking, or use /deepwork-execute-amend to extend scope.\n' >&2
 fi
 
 exit 0

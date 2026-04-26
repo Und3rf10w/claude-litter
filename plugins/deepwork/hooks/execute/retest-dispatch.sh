@@ -28,12 +28,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 # Emit async handshake with explicit 30s timeout override
 printf '{"async": true, "asyncTimeout": 30000}\n'
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances
@@ -41,7 +39,7 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -n "$EXEC_PHASE" ]] || exit 0
 
 # Get the file that was written
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_result.file_path // .tool_input.file_path // ""' 2>/dev/null || echo "")
+FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_response.data.file_path // .tool_input.file_path // ""' 2>/dev/null || echo "")")
 [[ -n "$FILE_PATH" ]] || exit 0
 
 # Look up covering test from test_manifest[]

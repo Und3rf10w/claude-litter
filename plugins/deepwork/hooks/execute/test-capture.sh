@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-capture.sh — PostToolUse(Bash) advisory test-result capture hook.
+# test-capture.sh — PostToolUse(Bash) and PostToolUseFailure(Bash) advisory test-result
+# capture hook.
 #
 # This hook is exclusively a data capture hook — PostToolUse CANNOT block any future
 # operation (cli_formatted_2.1.116.js:266053-266058: PostToolUse hookSpecificOutput has no
@@ -7,14 +8,15 @@
 # plan-citation-gate.sh (PreToolUse Write|Edit) which reads test-results.jsonl before
 # the next write.
 #
-# Async pattern: emit {"async": true} as the first line so CC backgrounds this script
-# immediately (cli_formatted_2.1.116.js:266009 async schema; :264193 asyncTimeout default 15000ms;
-# omitting asyncTimeout here accepts the 15000ms default which is sufficient for capture).
-# After the async handshake, async stdout is discarded by CC
-# (cli_formatted_2.1.116.js:565249-565328) — all results must go to test-results.jsonl on disk.
+# v2.1.118 tool response shape (W11 H6):
+#   PostToolUse(Bash):         .tool_response.data.{stdout, stderr, interrupted}
+#   PostToolUseFailure(Bash):  .error (string), .is_interrupt (bool) — no tool_response
+#
+# Async is a hooks.json config-time property ("async": true on the registration entry),
+# NOT a stdout signal. Do not emit {"async":true} from this script.
 #
 # Test runner detection: regex match on tool_input.command for common runners.
-# Pass/fail parsing: scan tool_result.stdout for counts; fall back to exit_code.
+# Pass/fail parsing: scan stdout for counts; fall back to exit_code / interrupted.
 # Flaky detection: after each capture, check last 6 entries for same command with mixed
 # pass/fail — if ≥3 entries with alternating exit_code, append to state.execute.flaky_tests[].
 #
@@ -24,15 +26,10 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Emit async handshake immediately so CC backgrounds us
-printf '{"async": true}\n'
-
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances
@@ -47,13 +44,33 @@ if ! printf '%s' "$COMMAND" | grep -qE '^[[:space:]]*(npm[[:space:]]+test|pytest
   exit 0
 fi
 
-STDOUT=$(printf '%s' "$INPUT" | jq -r '.tool_result.stdout // ""' 2>/dev/null || echo "")
-STDERR=$(printf '%s' "$INPUT" | jq -r '.tool_result.stderr // ""' 2>/dev/null || echo "")
-EXIT_CODE=$(printf '%s' "$INPUT" | jq -r '.tool_result.exit_code // 0' 2>/dev/null || echo "0")
+# Extract stdout/stderr/exit_code from v2.1.118 response shapes:
+#   PostToolUse:        .tool_response.data.{stdout,stderr,interrupted}
+#   PostToolUseFailure: .error, .is_interrupt (no tool_response)
+if [[ "$HOOK_EVENT_NAME" == "PostToolUseFailure" ]]; then
+  STDOUT=""
+  STDERR=$(printf '%s' "$INPUT" | jq -r '.error // ""' 2>/dev/null || echo "")
+  IS_INTERRUPT=$(printf '%s' "$INPUT" | jq -r '.is_interrupt // false' 2>/dev/null || echo "false")
+  if [[ "$IS_INTERRUPT" == "true" ]]; then
+    EXIT_CODE=130
+  else
+    EXIT_CODE=1
+  fi
+else
+  STDOUT=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.stdout // ""' 2>/dev/null || echo "")
+  STDERR=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.stderr // ""' 2>/dev/null || echo "")
+  INTERRUPTED=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.interrupted // false' 2>/dev/null || echo "false")
+  if [[ "$INTERRUPTED" == "true" ]]; then
+    EXIT_CODE=130
+  else
+    EXIT_CODE=0
+  fi
+fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Read change_id from pending-change.json
+# Read change_id and covering_files from pending-change.json
 CHANGE_ID=$(jq -r '.change_id // ""' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "")
+COVERING_FILES=$(jq -c '.files // []' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "[]")
 
 # Parse pass/fail counts from stdout
 PASSED_COUNT=0
@@ -109,6 +126,7 @@ ENTRY=$(jq -n \
   --argjson failed "$FAILED_COUNT" \
   --argjson dur "$DURATION_MS" \
   --arg change_id "$CHANGE_ID" \
+  --argjson covering_files "$COVERING_FILES" \
   --arg stdout_tail "$STDOUT_TAIL" \
   --arg stderr_tail "$STDERR_TAIL" \
   '{
@@ -120,13 +138,32 @@ ENTRY=$(jq -n \
     flaky_suspected: false,
     duration_ms: $dur,
     change_id: $change_id,
-    covering_files: [],
+    covering_files: $covering_files,
     stdout_tail: $stdout_tail,
     stderr_tail: $stderr_tail
   }' 2>/dev/null)
 
 if [[ -n "$ENTRY" ]]; then
   printf '%s\n' "$ENTRY" >> "$TEST_RESULTS"
+fi
+
+# --- test_manifest_updated event: update last_result/last_run_at for matching manifest entry ---
+if [[ -n "$ENTRY" ]]; then
+  _MANIFEST_MATCH=$(jq -r --arg cmd "$COMMAND" \
+    '.execute.test_manifest // [] | map(select(.test_command == $cmd)) | if length > 0 then .[0].id else "" end' \
+    "$STATE_FILE" 2>/dev/null || echo "")
+  if [[ -n "$_MANIFEST_MATCH" ]]; then
+    if [[ "$EXIT_CODE" -eq 0 ]] && [[ "$FAILED_COUNT" -eq 0 ]]; then
+      _TM_RESULT="pass"
+    elif [[ "$EXIT_CODE" -eq 130 ]]; then
+      _TM_RESULT="error"
+    else
+      _TM_RESULT="fail"
+    fi
+    STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
+      bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+      test_manifest_update --id "$_MANIFEST_MATCH" --result "$_TM_RESULT" --ts "$TS" 2>/dev/null || true
+  fi
 fi
 
 # --- Flaky detection: scan last 6 entries for same command with mixed pass/fail ---
@@ -145,39 +182,19 @@ if [[ -f "$TEST_RESULTS" ]] && [[ -s "$TEST_RESULTS" ]]; then
   ' "$TEST_RESULTS" 2>/dev/null || echo "null")
 
   if [[ -n "$FLAKY_CMD" ]] && [[ "$FLAKY_CMD" != "null" ]]; then
-    # Append to state.execute.flaky_tests[] if not already present
-    _TMP="${STATE_FILE}.tmp.$$"
-    jq --arg cmd "$FLAKY_CMD" '
-      .execute.flaky_tests = (
-        (.execute.flaky_tests // []) |
-        if map(. == $cmd) | any then . else . + [$cmd] end
-      )
-    ' "$STATE_FILE" > "$_TMP" 2>/dev/null
-    if [[ -s "$_TMP" ]]; then
-      mv "$_TMP" "$STATE_FILE"
-    else
-      rm -f "$_TMP"
-    fi
+    # Append to state.execute.flaky_tests[] via state-transition.sh (deduplicates)
+    STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+      flaky_test_append --cmd "$FLAKY_CMD" 2>/dev/null || true
 
-    # Update flaky_suspected flag on the entry just written
+    # Append a flaky_suspected marker event rather than rewriting the last line
+    # (rewriting a shared append-only log with head/tail/mv creates a race window).
     if [[ -n "$ENTRY" ]] && [[ -f "$TEST_RESULTS" ]]; then
-      _TMP_RESULTS="${TEST_RESULTS}.tmp.$$"
-      # Replace the last line with flaky_suspected:true
-      jq -rs --arg cmd "$COMMAND" --arg ts "$TS" '
-        . as $entries |
-        $entries | (length - 1) as $last_idx |
-        $entries[$last_idx:] | .[0] |
-        if .command == $cmd and .timestamp == $ts then
-          .flaky_suspected = true
-        else . end
-      ' "$TEST_RESULTS" > /dev/null 2>/dev/null || true
-      # Simpler approach: rewrite last line
-      _LAST_LINE=$(tail -1 "$TEST_RESULTS")
-      _UPDATED=$(printf '%s' "$_LAST_LINE" | jq '.flaky_suspected = true' 2>/dev/null || echo "$_LAST_LINE")
-      if [[ -n "$_UPDATED" ]] && [[ "$_UPDATED" != "$_LAST_LINE" ]]; then
-        head -n -1 "$TEST_RESULTS" > "${TEST_RESULTS}.tmp.$$" 2>/dev/null
-        printf '%s\n' "$_UPDATED" >> "${TEST_RESULTS}.tmp.$$"
-        mv "${TEST_RESULTS}.tmp.$$" "$TEST_RESULTS" 2>/dev/null || rm -f "${TEST_RESULTS}.tmp.$$"
+      FLAKY_ENTRY=$(jq -n \
+        --arg ts "$TS" \
+        --arg cmd "$COMMAND" \
+        '{timestamp: $ts, command: $cmd, flaky_suspected: true, _marker: true}' 2>/dev/null)
+      if [[ -n "$FLAKY_ENTRY" ]]; then
+        printf '%s\n' "$FLAKY_ENTRY" >> "$TEST_RESULTS"
       fi
     fi
   fi

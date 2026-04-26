@@ -39,12 +39,10 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances apply these gates
@@ -62,6 +60,12 @@ _deny() {
     '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": $reason}}'
   exit 0
 }
+
+# Drift block: if plan_drift_detected is true, ALL bash commands are blocked
+DRIFT=$(jq -r '.execute.plan_drift_detected // false' "$STATE_FILE" 2>/dev/null || echo "false")
+if [[ "$DRIFT" == "true" ]]; then
+  _deny "DRIFT BLOCKED — run /deepwork-execute-amend before proceeding."
+fi
 
 # --- Read execute state flags ---
 STATE_JSON=$(jq '.' "$STATE_FILE" 2>/dev/null || echo "{}")
@@ -224,8 +228,8 @@ if printf '%s' "$COMMAND" | grep -qE '(kubectl[[:space:]]+apply|terraform[[:spac
   fi
 fi
 
-# irreversible-remote: git push (non-force already handled above), npm publish, docker push
-if printf '%s' "$COMMAND" | grep -qE '(git[[:space:]]+push(?![[:space:]].*(-f|--force))|npm[[:space:]]+publish|docker[[:space:]]+push)'; then
+# irreversible-remote: git push (force-push already denied above), npm publish, docker push
+if printf '%s' "$COMMAND" | grep -qE '(git[[:space:]]+push|npm[[:space:]]+publish|docker[[:space:]]+push)'; then
   if [[ "$AUTH_PUSH_VALID" != "true" ]]; then
     _deny "Irreversible-remote blocked (G2): push/publish operations require state.execute.authorized_push:true set at setup time, CRITIC approval in critique.v*.md, and a green CI attestation in state.execute.env_attestations[]."
   fi

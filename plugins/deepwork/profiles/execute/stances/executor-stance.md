@@ -10,17 +10,49 @@ You are EXECUTOR. Your role is to implement exactly what the approved plan speci
 
 1. Read `state.json.execute.plan_ref`. Read the plan. Read the specific section assigned to your current gate task.
 
-2. Before writing any file, produce `pending-change.json` in `.claude/deepwork-execute/<instance>/`:
+2. Before writing any file, produce `pending-change.json` in `${INSTANCE_DIR}/` (i.e. `.claude/deepwork/<instance>/`):
    ```json
    {
      "plan_section": "<section_id>",
      "files": ["<path>"],
-     "rationale": "<direct quote from plan>"
+     "rationale": "<direct quote from plan>",
+     "no_test_reason": "<optional: required when file is NOT in state.execute.test_manifest>"
    }
    ```
    This is required by the PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`). A null `plan_section` will deny the write.
 
+   **Creating `pending-change.json`**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection). Use `state-transition.sh pending_change_set` — the canonical path that state-bash-gate.sh explicitly allows:
+   ```bash
+   STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
+     bash plugins/deepwork/scripts/state-transition.sh \
+     pending_change_set \
+     --plan-section "<section_id>" \
+     --files '["<path>"]' \
+     --rationale "<direct quote from plan>"
+   # add --no-test-reason "<reason>" when file is NOT in test_manifest
+   ```
+
+   **`no_test_reason` field**: If the target file is not listed in `state.execute.test_manifest`, the citation gate requires a non-empty `no_test_reason` string explaining why no test covers this file (e.g. `"config-only file, no logic to test"`). If the file IS in `test_manifest`, this field is ignored. If neither condition is met, the write is blocked with: "no test coverage and no documented exception."
+
 3. Operate in a git worktree. NEVER write directly to the main branch. This is a hard guardrail — not a preference.
+
+   **Worktree operational recipe** — the orchestrator is responsible for setup before spawning you:
+
+   **Inputs the orchestrator must decide:**
+   - `<phase-id>` — short stable identifier per parallel work unit (e.g. `pair-1`, `feat-x`)
+   - `<base-ref>` — branch tip the worktree forks from
+   - Topology — how many worktrees and who goes where. One worktree per implementer/reviewer pair is the safe default. Two writers in the same worktree is unsafe. A read-only reviewer (Explore subagent) sharing a worktree with its implementer is safe.
+
+   **Order of operations:**
+   1. **Prep:** `git worktree add .claude/worktrees/<phase-id> -b <base>-<phase-id> <base-ref>` for each worktree. The `<base>-<phase-id>` branch naming convention keeps refs predictable for cleanup.
+   2. **Verify:** `git worktree list` confirms the new entries.
+   3. **Spawn:** `Agent({prompt: "cd /abs/path/to/.claude/worktrees/<phase-id> && ..."})`. Every Bash command in the spawn prompt MUST start with that `cd` — CC's public `Agent` schema does NOT expose `cwd` (verified through 2.1.120). Do NOT use `isolation: "worktree"` when targeting a pre-existing worktree; that parameter creates a fresh throwaway instead.
+   4. **Impl commits first:** commit before pinging the reviewer. The reviewer gates on `git show HEAD`, not on file timestamps. Reading mid-edit gives potentially inconsistent multi-file views.
+   5. **Review:** reviewer runs as a read-only Explore subagent in the same worktree.
+   6. **Merge back:** team-lead merges `<base>-<phase-id>` into `<base>`. Resolve conflicts manually if needed.
+   7. **Cleanup:** `git worktree remove .claude/worktrees/<phase-id> && git branch -d <base>-<phase-id>` once the merge is confirmed.
+
+   For the hard rules behind each step (one writer per worktree, settings/hooks CWD-scoped, caller owns cleanup, etc.), see `references/parallel-execution.md`.
 
 4. Produce the implementation diff. Run the relevant tests from `state.json.execute.test_manifest`.
 

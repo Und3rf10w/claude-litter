@@ -46,7 +46,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    ```
    Write to `state.json.execute.plan_hash`. Write `state.json.execute.plan_ref`. This is single-writer — only the orchestrator writes `plan_hash`.
 
-3. **Build test manifest** from the plan's test acceptance criteria. Write `state.json.execute.test_manifest[]` entries with `{id, test_cmd, last_result: "unknown", last_run_at: null, env}`.
+3. **Build test manifest** from the plan's test acceptance criteria. Write `state.json.execute.test_manifest[]` entries with `{id, source_file, test_command, env, last_result: "unknown", last_run_at: null}`.
 
 4. **Identify plan gates**. Each plan section that requires a CRITIC verdict is a gate. Create one TaskCreate per gate with:
    ```json
@@ -60,12 +60,27 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    ```
 
 5. **Compose the team**. 5 core + 1 optional:
+
+   **Parallel-pair worktree isolation**: when this phase runs multiple implementer/reviewer pairs concurrently (e.g., two plan gates in parallel), each pair MUST be placed in a dedicated git worktree; use the prompt-based `cd` workaround (NOT `cwd:` on `Agent` — not in public schema as of CC 2.1.118+). Full pattern and hard rules: `references/parallel-execution.md`.
    - `critic` (CRITIC, invariant) — include `references/critic-stance.md` verbatim
    - `executor` (MECHANISM) — include `profiles/execute/stances/executor-stance.md` verbatim
    - `adversary` (FALSIFIER) — include `profiles/execute/stances/adversary-stance.md` verbatim
    - `auditor` (COVERAGE) — include `profiles/execute/stances/auditor-stance.md` verbatim
    - `scope-guard` (REFRAMER) — include `profiles/execute/stances/scope-guard-stance.md` verbatim
    - `chaos-monkey` (CHAOS-MONKEY, optional) — spawn ONLY when goal mentions services, networks, databases, queues, distributed components, or deployment infrastructure. Use `--chaos-monkey` opt-in; `--no-chaos-monkey` opt-out. Include `profiles/execute/stances/chaos-monkey-stance.md` verbatim.
+
+   **AGENT SCOPE CONSTRAINT**: every agent spawn prompt MUST include this block verbatim:
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json directly — all mutations MUST go through `bash scripts/state-transition.sh <subcommand>` for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+
+   Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
+
+   **STATUS CLAIM RULE**: every agent spawn prompt MUST include this block verbatim. It addresses drift class (f) — status reports generated from cached mental model instead of fresh Read.
+
+   > **STATUS CLAIM RULE**: Any claim about the current status of a workstream, task, or artifact (e.g., "task #88 is complete", "the gate is at G-exec-3", "the test is passing", "the change covers gate G-exec-1") MUST be grounded in a fresh Read or grep made in THIS response. Cite the specific `file:line` that grounds the claim. Status claims not grounded in a fresh Read in the same response are unreliable and MUST be prefaced with `From memory (unverified):` — never presented as current ground truth.
+   >
+   > **COVERAGE CLAIM COROLLARY**: Any claim that a specific mechanism, drift class, or section is present in an artifact MUST be verified by a grep or Read in the same response; the grep result (including line numbers) MUST be included in the status message. Stating "the file contains X" without a live grep result is a STATUS CLAIM RULE violation.
+   >
+   > **EXEMPT from this rule**: architectural inference, design reasoning, analytical conclusions, and prospective proposals. You may reason about what SHOULD exist, how a mechanism SHOULD work, or what an invariant implies without a file:line citation — those are design outputs, not status claims. The rule targets retrospective/current-state claims specifically.
 
 6. **Write authorized flags to state**. The four `authorized_*` flags (`authorized_push`, `authorized_force_push`, `authorized_prod_deploy`, `authorized_local_destructive`) plus `secret_scan_waived` are written ONCE during SETUP from the invocation flags. They are NEVER updated post-SETUP — `bash-gate.sh` refuses to honor any mutation after `state.execute.phase` transitions out of "setup".
 
@@ -81,7 +96,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
 
 1. Orchestrator sends the current gate task to `executor` via SendMessage. Include: gate ID, plan section, test_manifest entries relevant to this gate, current change_log.
 
-2. Before any Write/Edit to source files, executor produces `pending-change.json` in `.claude/deepwork-execute/<instance>/`:
+2. Before any Write/Edit to source files, executor produces `pending-change.json` in `${INSTANCE_DIR}/` (i.e. `.claude/deepwork/<instance>/`):
    ```json
    {
      "plan_section": "<section_id>",
@@ -89,7 +104,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
      "rationale": "<quote from plan>"
    }
    ```
-   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations.
+   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations. **Note**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection); use `state-transition.sh pending_change_set` to create/update it. See `profiles/execute/stances/executor-stance.md` for the full recipe.
 
 3. PostToolUse(Bash test) captures results to `test-results.jsonl`. PreToolUse(Write|Edit) reads `test-results.jsonl` and blocks if any covering test shows `last_result: "fail"` or `last_result: "pending"`. This is the GAP-8 two-hook enforcement pattern — the synchronous PreToolUse gate is the enforcement; the advisory PostToolUse capture provides the data.
 
@@ -200,8 +215,34 @@ WRITE → VERIFY → CRITIQUE → (REFINE → CRITIQUE)* → LAND → (CONTINUOU
 
 **Actions**:
 1. Set `state.json.execute.phase = "halt"`
-2. Archive state (the Stop hook / approve-archive.sh fires on session end)
-3. Write final log.md entry with completion summary and any open discoveries
+
+2. Set `state.json.halt_reason` to a structured object describing why this session is halting. Schema:
+
+   ```json
+   {
+     "summary": "<one-line explanation — non-empty string>",
+     "blockers": ["<open question or blocker>", ...]
+   }
+   ```
+
+   Examples:
+
+   | Halt type | Example halt_reason |
+   |---|---|
+   | Normal completion | `{"summary": "All plan gates APPROVED and LANDed; execution complete", "blockers": []}` |
+   | User cancel | `{"summary": "Session cancelled by user at phase=write", "blockers": []}` |
+   | Mid-flight abort | `{"summary": "Halted on unresolved discoveries requiring user input", "blockers": ["D3: irreversible operation blocked", "D4: test environment unavailable"]}` |
+
+   Write via `state-transition.sh`:
+
+   ```bash
+   bash scripts/state-transition.sh halt_reason --summary "<text>"
+   # With blockers:
+   bash scripts/state-transition.sh halt_reason --summary "<text>" --blocker "<blocker1>" --blocker "<blocker2>"
+   ```
+
+3. Archive state (the Stop hook / approve-archive.sh fires on session end)
+4. Write final log.md entry with completion summary citing `halt_reason.summary` and any open discoveries
 
 **Do NOT restart SETUP** if state already has `plan_hash`. Do NOT re-spawn the team — it persists across clears.
 

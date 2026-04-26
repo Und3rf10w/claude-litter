@@ -62,9 +62,11 @@ start. They must NOT be registered statically in `hooks/hooks.json` — doing so
 them to fire globally for every Claude Code session that loads the deepwork plugin, not
 just active deepwork sessions.
 
-The ONLY hook registered in `hooks.json` is `pre-compact.sh` (PreCompact event), which
-gracefully no-ops outside an active deepwork session and must fire before `settings.local.json`
-is available (e.g., compaction-during-setup edge case).
+Three hooks are statically registered in `hooks.json` and fire for every session that loads the deepwork plugin:
+
+- `pre-compact.sh` (PreCompact) — must fire before `settings.local.json` is available (e.g., compaction-during-setup edge case); no-ops gracefully outside active deepwork sessions.
+- `teammate-idle-gate.sh` (TeammateIdle) — enforces liveness checks on idle teammates; must fire globally because TeammateIdle is not mediated by settings.local.json injection.
+- `status-claim-regex-precheck.sh` (TeammateIdle, async) — logs status-claim metrics; async and non-blocking so safe to fire globally.
 
 This architecture is intentional (G7 attested in proposals/v3-final.md Part D). If you
 encounter a hook that appears to be firing outside deepwork sessions, check whether it was

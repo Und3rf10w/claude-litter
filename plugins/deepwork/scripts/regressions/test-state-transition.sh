@@ -1,0 +1,778 @@
+#!/usr/bin/env bash
+# test-state-transition.sh — regression tests for state-transition.sh (W6).
+#
+# ST-a: phase_advance to valid next phase succeeds + hash updated
+# ST-b: phase_advance to same phase (no gate block) succeeds + hash updated
+# ST-c: append_array .hook_warnings appends + hash updated
+# ST-d: merge multi-field JSON updates all fields + hash updated
+# ST-e: halt_reason writes correct schema + hash updated
+# ST-f: concurrent invocations leave valid JSON (flock test)
+# ST-g: init writes bare state without hash
+# ST-j: integrity gate fires on hash mismatch (external edit)
+# ST-k: absent .state_integrity_hash (pre-W6 instance) passes integrity gate
+# ST-l: exec_phase_advance updates .execute.phase + hash updated
+# ST-m: set_field updates field + appends hook_warnings audit entry + hash updated
+# ST-n: flaky_test_append deduplicates
+# ST-o: backfill_session backfills placeholder, ignores non-placeholder
+# ST-p: invalid subcommand exits 3
+# ST-q: init guard fires when instance_id already present
+# ST-r: started_at mutation detected by integrity hash (W9 M2)
+# ST-s: source_of_truth mutation detected by integrity hash (W9 M2)
+# ST-z: concurrent set_field leaves state + events consistent
+# ST-aa: archive_state event_head matches last event in events.archived.jsonl
+# ST-bb: _emit_event failure (blocked events.jsonl) → exits 5, state.json unchanged
+# ST-cc: replay produces correct top-level .phase from phase_advanced events
+# ST-dd: last_updated advances on every mutation (live state + replay output)
+# ST-ee: test_manifest_update subcommand updates execute.test_manifest and appends event
+# PCS-a: pending_change_set writes correct JSON to pending-change.json
+# PCS-b: pending_change_set missing required arg exits 3
+# PCS-c: pending_change_set event replays idempotently
+# EV-a: _emit_event rejects malformed jq_path (no leading dot) before writing
+#
+# Exit 0 = all pass; Exit 1 = one or more failures
+
+set +e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+STATE_TRANSITION="${PLUGIN_ROOT}/scripts/state-transition.sh"
+
+PASS=0
+FAIL=0
+
+_pass() { printf 'pass: %s\n' "$1"; PASS=$((PASS + 1)); }
+_fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+
+_assert_exit() {
+  local name="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    _pass "${name} (exit=${actual})"
+  else
+    _fail "${name} — expected exit ${expected}, got ${actual}"
+  fi
+}
+
+_assert_contains() {
+  local name="$1" needle="$2" haystack="$3"
+  if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    _pass "${name} (found \"${needle}\")"
+  else
+    _fail "${name} — did not find \"${needle}\" in: ${haystack}"
+  fi
+}
+
+_assert_jq_eq() {
+  local name="$1" file="$2" jq_filter="$3" expected="$4"
+  local actual
+  actual=$(jq -r "$jq_filter" "$file" 2>/dev/null)
+  if [[ "$actual" == "$expected" ]]; then
+    _pass "${name} (jq=${actual})"
+  else
+    _fail "${name} — expected '${expected}', got '${actual}'"
+  fi
+}
+
+_assert_hash_present() {
+  local name="$1" file="$2"
+  local h
+  h=$(jq -r '.state_integrity_hash // ""' "$file" 2>/dev/null)
+  if [[ -n "$h" ]] && [[ "$h" != "null" ]]; then
+    _pass "${name} (hash present: ${h:0:12}...)"
+  else
+    _fail "${name} — state_integrity_hash absent or null"
+  fi
+}
+
+_assert_hash_absent() {
+  local name="$1" file="$2"
+  local h
+  h=$(jq -r '.state_integrity_hash // ""' "$file" 2>/dev/null)
+  if [[ -z "$h" ]] || [[ "$h" == "null" ]]; then
+    _pass "${name} (hash absent as expected)"
+  else
+    _fail "${name} — expected hash absent, got ${h}"
+  fi
+}
+
+# ── Fixture setup ──
+SANDBOX=$(mktemp -d)
+# Resolve through symlinks (macOS /var → /private/var)
+SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+trap 'rm -rf "$SANDBOX"' EXIT
+
+INSTANCE_ID="deadc0de"
+INSTANCE_DIR="${SANDBOX}/.claude/deepwork/${INSTANCE_ID}"
+mkdir -p "$INSTANCE_DIR"
+SESSION_ID="test-st-$(date +%s)"
+
+_make_state() {
+  local phase="${1:-scope}"
+  local sf="${INSTANCE_DIR}/state.json"
+  rm -f "$sf"
+  "$STATE_TRANSITION" --state-file "$sf" init - <<EOF
+{
+  "session_id": "${SESSION_ID}",
+  "instance_id": "${INSTANCE_ID}",
+  "phase": "${phase}",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOF
+}
+
+# ── ST-g: init writes bare state without hash ──
+echo ""
+echo "── ST-g: init writes state; no integrity hash ──"
+_make_state "scope"
+SF="${INSTANCE_DIR}/state.json"
+_assert_jq_eq "ST-g: phase written" "$SF" '.phase' "scope"
+_assert_hash_absent "ST-g: no hash after init" "$SF"
+
+# ── ST-a: phase_advance to valid next phase succeeds + hash updated ──
+echo ""
+echo "── ST-a: phase_advance succeeds + hash updated ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+RC=$?
+_assert_exit "ST-a: exit 0" "0" "$RC"
+_assert_jq_eq "ST-a: phase=work" "$SF" '.phase' "work"
+_assert_hash_present "ST-a: hash written after phase_advance" "$SF"
+
+# ── ST-b: phase_advance to same phase succeeds (gate doesn't block on non-forward phases) ──
+echo ""
+echo "── ST-b: phase_advance to unguarded phase succeeds ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "scope"
+RC=$?
+_assert_exit "ST-b: exit 0" "0" "$RC"
+_assert_jq_eq "ST-b: phase unchanged" "$SF" '.phase' "scope"
+_assert_hash_present "ST-b: hash written" "$SF"
+
+# ── ST-c: append_array .hook_warnings appends + hash updated ──
+echo ""
+echo "── ST-c: append_array .hook_warnings ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" append_array '.hook_warnings' \
+  '{"event":"test","message":"hello"}'
+RC=$?
+_assert_exit "ST-c: exit 0" "0" "$RC"
+_assert_jq_eq "ST-c: hook_warnings length=1" "$SF" '.hook_warnings | length' "1"
+_assert_jq_eq "ST-c: entry event=test" "$SF" '.hook_warnings[0].event' "test"
+_assert_hash_present "ST-c: hash updated" "$SF"
+
+# Append a second entry to verify accumulation
+"$STATE_TRANSITION" --state-file "$SF" append_array '.hook_warnings' \
+  '{"event":"second","message":"world"}'
+_assert_jq_eq "ST-c: hook_warnings length=2 after second append" "$SF" '.hook_warnings | length' "2"
+
+# ── ST-d: merge multi-field JSON updates all fields + hash updated ──
+echo ""
+echo "── ST-d: merge updates multiple fields ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"custom_field":"hello","another_field":42}'
+RC=$?
+_assert_exit "ST-d: exit 0" "0" "$RC"
+_assert_jq_eq "ST-d: custom_field set" "$SF" '.custom_field' "hello"
+_assert_jq_eq "ST-d: another_field set" "$SF" '.another_field' "42"
+_assert_hash_present "ST-d: hash updated after merge" "$SF"
+
+# ── ST-e: halt_reason writes correct schema + hash updated ──
+echo ""
+echo "── ST-e: halt_reason writes correct schema ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" halt_reason \
+  --summary "blocked on external dep" \
+  --blocker "waiting for API" \
+  --blocker "legal review"
+RC=$?
+_assert_exit "ST-e: exit 0" "0" "$RC"
+_assert_jq_eq "ST-e: halt_reason.summary" "$SF" '.halt_reason.summary' "blocked on external dep"
+_assert_jq_eq "ST-e: blockers count=2" "$SF" '.halt_reason.blockers | length' "2"
+_assert_jq_eq "ST-e: blocker[0]" "$SF" '.halt_reason.blockers[0]' "waiting for API"
+_assert_jq_eq "ST-e: recorded_at present" "$SF" '.halt_reason.recorded_at | test("^[0-9]{4}-")' "true"
+_assert_hash_present "ST-e: hash updated" "$SF"
+
+# ── ST-f: concurrent invocations leave valid JSON ──
+echo ""
+echo "── ST-f: concurrent invocations (flock test) ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Fire 5 concurrent appends; expect valid JSON afterward
+for i in 1 2 3 4 5; do
+  "$STATE_TRANSITION" --state-file "$SF" append_array '.hook_warnings' \
+    "{\"event\":\"concurrent\",\"n\":${i}}" &
+done
+wait
+# state.json must still be valid JSON
+if jq empty "$SF" 2>/dev/null; then
+  _pass "ST-f: state.json is valid JSON after concurrent writes"
+else
+  _fail "ST-f: state.json is invalid JSON after concurrent writes"
+fi
+_assert_hash_present "ST-f: hash present after concurrent writes" "$SF"
+
+# ── ST-j: integrity gate fires on hash mismatch (external edit) ──
+echo ""
+echo "── ST-j: integrity gate fires on external hash mismatch ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Tamper with the file externally (bypassing the single-writer path)
+TMP_SF="${SF}.tamper.$$"
+jq '.phase = "synthesize"' "$SF" > "$TMP_SF" && mv "$TMP_SF" "$SF"
+# Now attempt another transition — integrity gate should fire (exit 2)
+OUT=$("$STATE_TRANSITION" --state-file "$SF" append_array '.hook_warnings' \
+  '{"event":"post-tamper"}' 2>&1)
+RC=$?
+_assert_exit "ST-j: integrity gate blocks (exit=2)" "2" "$RC"
+_assert_contains "ST-j: error mentions INTEGRITY" "INTEGRITY_HASH_MISMATCH" "$OUT"
+
+# ── ST-k: absent .state_integrity_hash (pre-W6 instance) passes integrity gate ──
+echo ""
+echo "── ST-k: absent hash (pre-W6) passes integrity gate ──"
+_make_state "scope"
+# init writes no hash; verify phase_advance succeeds without hash field
+_assert_hash_absent "ST-k: pre-condition: hash absent after init" "$SF"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+RC=$?
+_assert_exit "ST-k: phase_advance succeeds without hash (exit=0)" "0" "$RC"
+_assert_jq_eq "ST-k: phase advanced" "$SF" '.phase' "work"
+
+# ── ST-l: exec_phase_advance updates .execute.phase ──
+echo ""
+echo "── ST-l: exec_phase_advance updates .execute.phase ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Seed an execute sub-object
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"execute":{"phase":"plan","plan_drift_detected":false}}'
+"$STATE_TRANSITION" --state-file "$SF" exec_phase_advance --to "execute"
+RC=$?
+_assert_exit "ST-l: exit 0" "0" "$RC"
+_assert_jq_eq "ST-l: execute.phase=execute" "$SF" '.execute.phase' "execute"
+_assert_hash_present "ST-l: hash updated" "$SF"
+
+# ── ST-m: set_field updates field + appends hook_warnings audit entry ──
+echo ""
+echo "── ST-m: set_field updates field + audit log ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" set_field '.user_feedback' '"approved"'
+RC=$?
+_assert_exit "ST-m: exit 0" "0" "$RC"
+_assert_jq_eq "ST-m: user_feedback=approved" "$SF" '.user_feedback' "approved"
+_assert_jq_eq "ST-m: hook_warnings has set_field entry" "$SF" \
+  '[.hook_warnings[] | select(.event == "set_field")] | length > 0' "true"
+_assert_hash_present "ST-m: hash updated" "$SF"
+
+# ── ST-n: flaky_test_append deduplicates ──
+echo ""
+echo "── ST-n: flaky_test_append deduplicates ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"execute":{"phase":"execute","flaky_tests":[]}}'
+"$STATE_TRANSITION" --state-file "$SF" flaky_test_append --cmd "pytest tests/test_foo.py"
+"$STATE_TRANSITION" --state-file "$SF" flaky_test_append --cmd "pytest tests/test_foo.py"
+RC=$?
+_assert_exit "ST-n: exit 0 on second (dedup no-op)" "0" "$RC"
+_assert_jq_eq "ST-n: flaky_tests has exactly 1 entry" "$SF" \
+  '.execute.flaky_tests | length' "1"
+
+# ── ST-o: backfill_session backfills placeholder, ignores non-placeholder ──
+echo ""
+echo "── ST-o: backfill_session ──"
+_make_state "scope"
+# Seed a placeholder session_id
+"$STATE_TRANSITION" --state-file "$SF" merge '{"session_id":"deepwork-placeholder-001"}'
+"$STATE_TRANSITION" --state-file "$SF" backfill_session --session-id "real-session-abc"
+RC=$?
+_assert_exit "ST-o: exit 0 on backfill" "0" "$RC"
+_assert_jq_eq "ST-o: session_id backfilled" "$SF" '.session_id' "real-session-abc"
+
+# Run again with a non-placeholder id — should no-op
+"$STATE_TRANSITION" --state-file "$SF" backfill_session --session-id "should-not-overwrite"
+_assert_jq_eq "ST-o: non-placeholder not overwritten" "$SF" '.session_id' "real-session-abc"
+
+# ── ST-p: invalid subcommand exits 3 ──
+echo ""
+echo "── ST-p: invalid subcommand exits 3 ──"
+_make_state "scope"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" no_such_subcommand 2>&1)
+RC=$?
+_assert_exit "ST-p: exit 3" "3" "$RC"
+_assert_contains "ST-p: error mentions unknown subcommand" "unknown subcommand" "$OUT"
+
+# ── ST-q: init guard fires when instance_id already present ──
+echo ""
+echo "── ST-q: init guard fires when instance_id present ──"
+_make_state "scope"
+# Seed an instance_id in the file by merging it after init
+"$STATE_TRANSITION" --state-file "$SF" merge "{\"instance_id\":\"${INSTANCE_ID}\"}"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" init - 2>&1 <<< '{"session_id":"x"}')
+RC=$?
+_assert_exit "ST-q: exit 1 (guard fired)" "1" "$RC"
+_assert_contains "ST-q: error mentions instance_id" "instance_id" "$OUT"
+
+# ── ST-r: started_at is included in integrity hash projection (W9 M2) ──
+# Verify that mutating started_at outside state-transition.sh causes hash mismatch.
+echo ""
+echo "── ST-r: started_at change detected by integrity hash ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Capture hash after legitimate transition
+HASH_BEFORE=$(jq -r '.state_integrity_hash // ""' "$SF" 2>/dev/null)
+# Inject a started_at change bypassing state-transition.sh
+tmp="${SF}.tmp.$$"
+jq '.started_at = "2099-01-01T00:00:00Z"' "$SF" > "$tmp" && mv "$tmp" "$SF"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" phase_advance --to "execute" 2>&1)
+RC=$?
+_assert_exit "ST-r: exit 2 (hash mismatch after started_at mutation)" "2" "$RC"
+
+# ── ST-s: source_of_truth change detected by integrity hash (W9 M2) ──
+# Verify that adding an entry to source_of_truth outside state-transition.sh triggers mismatch.
+echo ""
+echo "── ST-s: source_of_truth structural change detected by integrity hash ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Inject a source_of_truth entry bypassing state-transition.sh
+tmp="${SF}.tmp.$$"
+jq '.source_of_truth = ["injected-file.md"]' "$SF" > "$tmp" && mv "$tmp" "$SF"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" phase_advance --to "execute" 2>&1)
+RC=$?
+_assert_exit "ST-s: exit 2 (hash mismatch after source_of_truth mutation)" "2" "$RC"
+
+# ── ST-t: bar_add appends to .bar[] + hash updated ──────────────────────────
+echo ""
+echo "── ST-t: bar_add appends bar criterion ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G1" --statement "graceful rollback path exists"
+RC=$?
+_assert_exit "ST-t: exit 0" "0" "$RC"
+_assert_jq_eq "ST-t: bar length=1" "$SF" '.bar | length' "1"
+_assert_jq_eq "ST-t: bar[0].id=G1" "$SF" '.bar[0].id' "G1"
+_assert_jq_eq "ST-t: bar[0].criterion set" "$SF" '.bar[0].criterion' "graceful rollback path exists"
+_assert_jq_eq "ST-t: categorical_ban=false" "$SF" '.bar[0].categorical_ban' "false"
+_assert_hash_present "ST-t: hash updated" "$SF"
+# Verify bar_added event emitted
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+if grep -q '"event_type":"bar_added"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-t: bar_added event in events.jsonl"
+else
+  _fail "ST-t: bar_added event missing from events.jsonl"
+fi
+
+# ── ST-u: bar_remove removes entry + hash updated ────────────────────────────
+echo ""
+echo "── ST-u: bar_remove deletes bar criterion ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G1" --statement "criterion one"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G2" --statement "criterion two"
+"$STATE_TRANSITION" --state-file "$SF" bar_remove --id "G1"
+RC=$?
+_assert_exit "ST-u: exit 0" "0" "$RC"
+_assert_jq_eq "ST-u: bar length=1 after remove" "$SF" '.bar | length' "1"
+_assert_jq_eq "ST-u: remaining entry is G2" "$SF" '.bar[0].id' "G2"
+_assert_hash_present "ST-u: hash updated" "$SF"
+
+# ── ST-v: guardrail_add appends guardrail + hash updated ─────────────────────
+echo ""
+echo "── ST-v: guardrail_add appends guardrail ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "no kill signals" --source "user"
+RC=$?
+_assert_exit "ST-v: exit 0" "0" "$RC"
+_assert_jq_eq "ST-v: guardrails length=1" "$SF" '.guardrails | length' "1"
+_assert_jq_eq "ST-v: rule set" "$SF" '.guardrails[0].rule' "no kill signals"
+_assert_jq_eq "ST-v: source=user" "$SF" '.guardrails[0].source' "user"
+_assert_hash_present "ST-v: hash updated" "$SF"
+if grep -q '"event_type":"guardrail_added"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-v: guardrail_added event in events.jsonl"
+else
+  _fail "ST-v: guardrail_added event missing from events.jsonl"
+fi
+
+# ── ST-w: guardrail_replace overwrites rule + hash updated ───────────────────
+echo ""
+echo "── ST-w: guardrail_replace overwrites guardrail at index ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "old rule" --source "user"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_replace --index 0 --statement "new rule" --source "orchestrator"
+RC=$?
+_assert_exit "ST-w: exit 0" "0" "$RC"
+_assert_jq_eq "ST-w: rule updated" "$SF" '.guardrails[0].rule' "new rule"
+_assert_jq_eq "ST-w: source updated" "$SF" '.guardrails[0].source' "orchestrator"
+_assert_hash_present "ST-w: hash updated" "$SF"
+
+# ── ST-x: guardrail_remove deletes at index + hash updated ───────────────────
+echo ""
+echo "── ST-x: guardrail_remove removes guardrail at index ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "rule zero"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "rule one"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_remove --index 0
+RC=$?
+_assert_exit "ST-x: exit 0" "0" "$RC"
+_assert_jq_eq "ST-x: guardrails length=1 after remove" "$SF" '.guardrails | length' "1"
+_assert_jq_eq "ST-x: remaining rule is rule one" "$SF" '.guardrails[0].rule' "rule one"
+_assert_hash_present "ST-x: hash updated" "$SF"
+
+# ── ST-y: archive_state renames state.json + events.jsonl ────────────────────
+echo ""
+echo "── ST-y: archive_state renames state.json and events.jsonl ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" archive_state
+RC=$?
+_assert_exit "ST-y: exit 0" "0" "$RC"
+if [[ ! -f "$SF" ]]; then
+  _pass "ST-y: state.json no longer present"
+else
+  _fail "ST-y: state.json still exists after archive_state"
+fi
+if [[ -f "${INSTANCE_DIR}/state.archived.json" ]]; then
+  _pass "ST-y: state.archived.json created"
+else
+  _fail "ST-y: state.archived.json not found"
+fi
+if [[ -f "${INSTANCE_DIR}/events.archived.jsonl" ]]; then
+  _pass "ST-y: events.archived.jsonl created"
+else
+  _fail "ST-y: events.archived.jsonl not found"
+fi
+if [[ ! -f "${INSTANCE_DIR}/events.jsonl" ]]; then
+  _pass "ST-y: events.jsonl no longer present"
+else
+  _fail "ST-y: events.jsonl still exists after archive_state"
+fi
+
+# ── ST-z: concurrent set_field leaves state + events consistent ──────────────
+echo ""
+echo "── ST-z: concurrent set_field leaves consistent state + events ──"
+STZ_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stz00000"
+mkdir -p "$STZ_INSTANCE_DIR"
+STZ_SF="${STZ_INSTANCE_DIR}/state.json"
+rm -f "$STZ_SF"
+"$STATE_TRANSITION" --state-file "$STZ_SF" init \
+  '{"session_id":"stz-session","phase":"work","team_name":"stz-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STZ_SF" phase_advance --to "work" >/dev/null 2>&1 || true
+
+STZ_PIDS=()
+for _i in 1 2 3 4 5; do
+  (
+    INSTANCE_DIR="$STZ_INSTANCE_DIR" \
+    STATE_FILE="$STZ_SF" \
+      "$STATE_TRANSITION" --state-file "$STZ_SF" \
+        set_field ".hook_warnings" "[]" >/dev/null 2>&1
+  ) &
+  STZ_PIDS+=($!)
+done
+for _pid in "${STZ_PIDS[@]}"; do wait "$_pid" 2>/dev/null || true; done
+
+if jq empty "$STZ_SF" 2>/dev/null; then
+  _pass "ST-z: state.json is valid JSON after concurrent writes"
+else
+  _fail "ST-z: state.json is not valid JSON after concurrent writes"
+fi
+
+STZ_EVENT_COUNT=$(wc -l < "${STZ_INSTANCE_DIR}/events.jsonl" 2>/dev/null | tr -d ' ')
+if [[ "${STZ_EVENT_COUNT:-0}" -ge 5 ]]; then
+  _pass "ST-z: events.jsonl has >= 5 events (got ${STZ_EVENT_COUNT})"
+else
+  _fail "ST-z: events.jsonl has ${STZ_EVENT_COUNT:-0} events, expected >= 5"
+fi
+
+# ── ST-aa: archive_state event_head matches last event in archived log ────────
+echo ""
+echo "── ST-aa: archive_state event_head matches last event ──"
+STAA_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/staa0000"
+mkdir -p "$STAA_INSTANCE_DIR"
+STAA_SF="${STAA_INSTANCE_DIR}/state.json"
+rm -f "$STAA_SF"
+"$STATE_TRANSITION" --state-file "$STAA_SF" init \
+  '{"session_id":"staa-session","phase":"work","team_name":"staa-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STAA_SF" phase_advance --to "work" >/dev/null 2>&1 || true
+"$STATE_TRANSITION" --state-file "$STAA_SF" archive_state
+STAA_RC=$?
+_assert_exit "ST-aa: archive_state exits 0" "0" "$STAA_RC"
+
+STAA_ARCHIVED="${STAA_INSTANCE_DIR}/state.archived.json"
+STAA_EVENTS="${STAA_INSTANCE_DIR}/events.archived.jsonl"
+
+if [[ -f "$STAA_ARCHIVED" ]] && [[ -f "$STAA_EVENTS" ]]; then
+  STAA_STORED_HEAD=$(jq -r '.event_head // ""' "$STAA_ARCHIVED" 2>/dev/null)
+  STAA_LAST_LINE=$(tail -1 "$STAA_EVENTS")
+  if command -v sha256sum >/dev/null 2>&1; then
+    STAA_ACTUAL_HEAD=$(printf '%s\n' "$STAA_LAST_LINE" | sha256sum | cut -d' ' -f1)
+  else
+    STAA_ACTUAL_HEAD=$(printf '%s\n' "$STAA_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+  fi
+  STAA_LAST_TYPE=$(printf '%s' "$STAA_LAST_LINE" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$STAA_LAST_TYPE" == "state_archived" ]]; then
+    _pass "ST-aa: last event in archive is state_archived"
+  else
+    _fail "ST-aa: last event type expected state_archived, got ${STAA_LAST_TYPE}"
+  fi
+  if [[ "$STAA_STORED_HEAD" == "$STAA_ACTUAL_HEAD" ]]; then
+    _pass "ST-aa: archived state.json event_head matches hash of last event"
+  else
+    _fail "ST-aa: event_head mismatch — stored=${STAA_STORED_HEAD:0:12} actual=${STAA_ACTUAL_HEAD:0:12}"
+  fi
+else
+  _fail "ST-aa: state.archived.json or events.archived.jsonl missing"
+fi
+
+# ── ST-bb: _emit_event failure (broken events.jsonl) → exit 5, state.json not advanced ──
+echo ""
+echo "── ST-bb: _emit_event failure → exit 5, state.json unchanged ──"
+STBB_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stbb0000"
+mkdir -p "$STBB_INSTANCE_DIR"
+STBB_SF="${STBB_INSTANCE_DIR}/state.json"
+rm -f "$STBB_SF"
+"$STATE_TRANSITION" --state-file "$STBB_SF" init \
+  '{"session_id":"stbb-session","phase":"work","team_name":"stbb-team","hook_warnings":[]}'
+
+# Capture the phase before attempted transition
+STBB_PHASE_BEFORE=$(jq -r '.phase' "$STBB_SF" 2>/dev/null)
+
+# Make events.jsonl a directory so writes fail
+STBB_EVENTS="${STBB_INSTANCE_DIR}/events.jsonl"
+rm -f "$STBB_EVENTS"
+mkdir -p "$STBB_EVENTS"
+
+"$STATE_TRANSITION" --state-file "$STBB_SF" set_field ".phase" '"synthesize"' 2>/dev/null
+STBB_RC=$?
+
+# Remove the dir so subsequent reads work
+rmdir "$STBB_EVENTS" 2>/dev/null || true
+
+if [[ "$STBB_RC" -eq 5 ]]; then
+  _pass "ST-bb: exits 5 when _emit_event fails"
+else
+  _fail "ST-bb: expected exit 5, got ${STBB_RC}"
+fi
+
+STBB_PHASE_AFTER=$(jq -r '.phase' "$STBB_SF" 2>/dev/null)
+if [[ "$STBB_PHASE_AFTER" == "$STBB_PHASE_BEFORE" ]]; then
+  _pass "ST-bb: state.json phase unchanged after _emit_event failure"
+else
+  _fail "ST-bb: state.json phase changed (${STBB_PHASE_BEFORE} → ${STBB_PHASE_AFTER}), should not have advanced"
+fi
+
+# ── ST-cc: replay produces correct top-level .phase from phase_advanced events ──
+echo ""
+echo "── ST-cc: replay produces correct top-level .phase ──"
+STCC_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stcc0000"
+mkdir -p "$STCC_INSTANCE_DIR"
+STCC_SF="${STCC_INSTANCE_DIR}/state.json"
+rm -f "$STCC_SF"
+"$STATE_TRANSITION" --state-file "$STCC_SF" init \
+  '{"session_id":"stcc-session","phase":"work","team_name":"stcc-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STCC_SF" phase_advance --to "synthesize" >/dev/null 2>&1
+"$STATE_TRANSITION" --state-file "$STCC_SF" phase_advance --to "critique" >/dev/null 2>&1
+
+STCC_REPLAY="${STCC_INSTANCE_DIR}/state.replay.json"
+"$STATE_TRANSITION" --state-file "$STCC_SF" replay --output "$STCC_REPLAY"
+STCC_RC=$?
+_assert_exit "ST-cc: replay exits 0" "0" "$STCC_RC"
+
+STCC_LIVE_PHASE=$(jq -r '.phase' "$STCC_SF" 2>/dev/null)
+STCC_REPLAY_PHASE=$(jq -r '.phase' "$STCC_REPLAY" 2>/dev/null)
+if [[ "$STCC_REPLAY_PHASE" == "critique" ]]; then
+  _pass "ST-cc: replay phase=critique matches expected"
+else
+  _fail "ST-cc: replay phase=${STCC_REPLAY_PHASE}, expected critique"
+fi
+if [[ "$STCC_REPLAY_PHASE" == "$STCC_LIVE_PHASE" ]]; then
+  _pass "ST-cc: replay phase matches live state.json phase"
+else
+  _fail "ST-cc: replay phase (${STCC_REPLAY_PHASE}) != live phase (${STCC_LIVE_PHASE})"
+fi
+
+# ── ST-dd: last_updated advances on every mutation via replay ──
+echo ""
+echo "── ST-dd: replay last_updated advances on every mutation ──"
+STDD_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stdd0000"
+mkdir -p "$STDD_INSTANCE_DIR"
+STDD_SF="${STDD_INSTANCE_DIR}/state.json"
+rm -f "$STDD_SF"
+"$STATE_TRANSITION" --state-file "$STDD_SF" init \
+  '{"session_id":"stdd-session","phase":"work","team_name":"stdd-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STDD_SF" set_field ".team_name" '"stdd-team-v2"' >/dev/null 2>&1
+"$STATE_TRANSITION" --state-file "$STDD_SF" phase_advance --to "synthesize" >/dev/null 2>&1
+
+STDD_REPLAY="${STDD_INSTANCE_DIR}/state.replay.json"
+"$STATE_TRANSITION" --state-file "$STDD_SF" replay --output "$STDD_REPLAY"
+STDD_RC=$?
+_assert_exit "ST-dd: replay exits 0" "0" "$STDD_RC"
+
+STDD_LU=$(jq -r '.last_updated // ""' "$STDD_REPLAY" 2>/dev/null)
+if [[ -n "$STDD_LU" && "$STDD_LU" != "null" ]]; then
+  _pass "ST-dd: replay state has last_updated set (${STDD_LU})"
+else
+  _fail "ST-dd: replay state missing last_updated"
+fi
+
+STDD_LIVE_LU=$(jq -r '.last_updated // ""' "$STDD_SF" 2>/dev/null)
+if [[ -n "$STDD_LIVE_LU" && "$STDD_LIVE_LU" != "null" ]]; then
+  _pass "ST-dd: live state.json has last_updated set"
+else
+  _fail "ST-dd: live state.json missing last_updated"
+fi
+
+# ── ST-ee: test_manifest_update updates execute.test_manifest and appends event ─
+echo ""
+echo "── ST-ee: test_manifest_update updates execute.test_manifest and appends event ──"
+_make_state "execute"
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+# Seed execute.test_manifest with one entry via merge
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"execute":{"test_manifest":[{"id":"suite_a","last_result":null,"last_run_at":null}]}}' \
+  2>/dev/null
+"$STATE_TRANSITION" --state-file "$SF" test_manifest_update --id "suite_a" --result "pass"
+RC=$?
+_assert_exit "ST-ee: exit 0" "0" "$RC"
+_assert_jq_eq "ST-ee: test_manifest[0].last_result == pass" "$SF" '.execute.test_manifest[0].last_result' "pass"
+_assert_jq_eq "ST-ee: test_manifest[0].id unchanged" "$SF" '.execute.test_manifest[0].id' "suite_a"
+_assert_hash_present "ST-ee: hash updated" "$SF"
+if grep -q '"event_type":"test_manifest_updated"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-ee: test_manifest_updated event in events.jsonl"
+else
+  _fail "ST-ee: test_manifest_updated event missing from events.jsonl"
+fi
+STZ_RUN_AT=$(jq -r '.execute.test_manifest[0].last_run_at // ""' "$SF" 2>/dev/null || echo "")
+if [[ -n "$STZ_RUN_AT" ]]; then
+  _pass "ST-ee: last_run_at is non-empty (${STZ_RUN_AT})"
+else
+  _fail "ST-ee: last_run_at is empty after test_manifest_update"
+fi
+
+# ── PCS-a: pending_change_set writes correct JSON to pending-change.json ──────
+echo ""
+echo "── PCS-a: pending_change_set writes correct JSON ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S3.2" \
+  --files '["src/foo.sh","src/bar.sh"]' \
+  --rationale "Direct quote from plan section 3.2"
+RC=$?
+_assert_exit "PCS-a: exit 0" "0" "$RC"
+_PCS_FILE="${INSTANCE_DIR}/pending-change.json"
+if [[ -f "$_PCS_FILE" ]]; then
+  _pass "PCS-a: pending-change.json created"
+else
+  _fail "PCS-a: pending-change.json not found"
+fi
+_assert_jq_eq "PCS-a: plan_section" "$_PCS_FILE" '.plan_section' "S3.2"
+_assert_jq_eq "PCS-a: files[0]" "$_PCS_FILE" '.files[0]' "src/foo.sh"
+_assert_jq_eq "PCS-a: files[1]" "$_PCS_FILE" '.files[1]' "src/bar.sh"
+_assert_jq_eq "PCS-a: rationale" "$_PCS_FILE" '.rationale' "Direct quote from plan section 3.2"
+_assert_jq_eq "PCS-a: no_test_reason absent" "$_PCS_FILE" '.no_test_reason // "absent"' "absent"
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+if grep -q '"event_type":"pending_change_set"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "PCS-a: pending_change_set event appended to events.jsonl"
+else
+  _fail "PCS-a: pending_change_set event missing from events.jsonl"
+fi
+
+# with --no-test-reason
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S3.3" \
+  --files '["config/x.yml"]' \
+  --rationale "Config-only change" \
+  --no-test-reason "config-only file, no logic to test"
+RC=$?
+_assert_exit "PCS-a (no-test-reason): exit 0" "0" "$RC"
+_assert_jq_eq "PCS-a: no_test_reason set" "$_PCS_FILE" '.no_test_reason' "config-only file, no logic to test"
+_assert_jq_eq "PCS-a: plan_section overwritten" "$_PCS_FILE" '.plan_section' "S3.3"
+
+# ── PCS-b: missing required arg exits 3 ──────────────────────────────────────
+echo ""
+echo "── PCS-b: pending_change_set missing required arg exits 3 ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --files '["a.sh"]' --rationale "some text" 2>/dev/null
+_assert_exit "PCS-b: missing --plan-section → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --rationale "some text" 2>/dev/null
+_assert_exit "PCS-b: missing --files → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --files '["a.sh"]' 2>/dev/null
+_assert_exit "PCS-b: missing --rationale → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --files 'not-json-array' --rationale "r" 2>/dev/null
+_assert_exit "PCS-b: non-array --files → exit 3" "3" "$?"
+
+# ── PCS-c: pending_change_set event replays idempotently ─────────────────────
+echo ""
+echo "── PCS-c: replay of pending_change_set event reproduces pending-change.json ──"
+_PCSC_DIR=$(mktemp -d)
+_PCSC_IDIR="${_PCSC_DIR}/.claude/deepwork/pcs-replay-inst"
+mkdir -p "$_PCSC_IDIR"
+_PCSC_SF="${_PCSC_IDIR}/state.json"
+_PCSC_SID="pcs-replay-$(date +%s)"
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" init - <<'EOF2'
+{"session_id":"pcs-c-session","instance_id":"pcs-replay-inst","phase":"work","team_name":"t","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF2
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" pending_change_set \
+  --plan-section "P1" --files '["x.py"]' --rationale "quote from plan" 2>/dev/null
+rm -f "${_PCSC_IDIR}/pending-change.json"
+# Replay should recreate pending-change.json
+REPLAY_OUT="${_PCSC_IDIR}/replayed-state.json"
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" replay --output "$REPLAY_OUT" 2>/dev/null
+RC=$?
+_assert_exit "PCS-c: replay exits 0" "0" "$RC"
+if [[ -f "${_PCSC_IDIR}/pending-change.json" ]]; then
+  _pass "PCS-c: pending-change.json recreated by replay"
+  _assert_jq_eq "PCS-c: plan_section matches" "${_PCSC_IDIR}/pending-change.json" '.plan_section' "P1"
+  _assert_jq_eq "PCS-c: files[0] matches" "${_PCSC_IDIR}/pending-change.json" '.files[0]' "x.py"
+else
+  _fail "PCS-c: pending-change.json not recreated by replay"
+fi
+rm -rf "$_PCSC_DIR"
+
+# ── EV-a: _emit_event rejects malformed jq_path before writing ───────────────
+echo ""
+echo "── EV-a: emit-side jq_path validation (no leading dot) ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+_EVENTS_BEFORE=$(wc -l < "${INSTANCE_DIR}/events.jsonl" 2>/dev/null || echo 0)
+# set_field with a path missing leading dot — should fail at _emit_event, not at replay
+"$STATE_TRANSITION" --state-file "$SF" set_field "execute.test_results" '"bad-path"' 2>/dev/null
+EV_A_RC=$?
+_EVENTS_AFTER=$(wc -l < "${INSTANCE_DIR}/events.jsonl" 2>/dev/null || echo 0)
+if [[ "$EV_A_RC" -ne 0 ]]; then
+  _pass "EV-a: set_field with bad jq_path exits non-zero (exit=${EV_A_RC})"
+else
+  _fail "EV-a: set_field with bad jq_path should have failed, got exit 0"
+fi
+if [[ "$_EVENTS_AFTER" -eq "$_EVENTS_BEFORE" ]]; then
+  _pass "EV-a: no event written to events.jsonl on bad jq_path"
+else
+  _fail "EV-a: event was written despite bad jq_path (before=${_EVENTS_BEFORE}, after=${_EVENTS_AFTER})"
+fi
+
+# ── Summary ──
+echo ""
+echo "─────────────────────────────────────"
+printf "Passed: %d | Failed: %d\n" "$PASS" "$FAIL"
+
+if [[ $FAIL -gt 0 ]]; then
+  exit 1
+fi
+exit 0

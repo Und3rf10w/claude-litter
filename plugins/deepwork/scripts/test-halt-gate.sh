@@ -21,6 +21,13 @@
 # hook blocks the turn before later hooks run) are not testable at shell
 # level. The array-index order is preserved by setup for clarity, but the
 # "before approve-archive" claim in docs is empirical, not enforced here.
+#
+# Runtime ordering caveat (W15 #16, deferred): the CC runtime dispatches Stop
+# hooks in array order but does not guarantee halt-gate exit 2 blocks
+# approve-archive execution — this depends on CC version chain semantics.
+# A stop-dispatch.sh consolidation (single entry invoking both in sequence
+# with explicit exit-code threading) would remove the ambiguity; deferred to
+# a future wave pending CC chain-semantics clarification.
 
 set -uo pipefail
 
@@ -36,16 +43,20 @@ fi
 
 # Branch detection — presence of _settings-lock.sh indicates parallelism branch
 # (added in M1 of the parallelism work). On hygiene (off main), this helper
-# doesn't exist and bare `_deepwork: true` tags are expected.
+# doesn't exist. Since C3, all branches emit dual-tag scheme:
+#   _deepwork: true          (required — identity tag for bulk-remove)
+#   _deepwork_instance: <8hex>  (required since C3 — per-instance teardown tag)
+# EXPECTED_TAG_REGEX allows both keys. A key matching neither is a FAIL.
 if [[ -f "${PLUGIN_ROOT}/scripts/_settings-lock.sh" ]]; then
   BRANCH_KIND="parallelism"
-  EXPECTED_TAG_REGEX='^_deepwork_[0-9a-f]{8}$'
-  EXPECTED_TAG_DESC='_deepwork_<8hex> per-instance tag'
 else
   BRANCH_KIND="hygiene"
-  EXPECTED_TAG_REGEX='^_deepwork$'
-  EXPECTED_TAG_DESC='bare _deepwork tag'
 fi
+# Both branches now use the dual-tag scheme introduced in C3 (W15 #31).
+# Each hook block has two keys: _deepwork (identity) and _deepwork_instance (per-instance teardown).
+# The regex accepts exactly these two key names; any other _deepwork* key is a FAIL.
+EXPECTED_TAG_REGEX='^_deepwork(_instance)?$'
+EXPECTED_TAG_DESC='_deepwork (identity) + _deepwork_instance (per-instance) dual-tag scheme'
 
 PASS=0
 FAIL=0
@@ -158,9 +169,8 @@ _run_registration_test() {
   local sandbox goal session_id settings_file
   sandbox=$(mktemp -d)
   export CLAUDE_PROJECT_DIR="$sandbox"
-  export CLAUDE_CODE_SESSION_ID="halt-gate-reg-$$-${RANDOM}"
   export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
-  session_id="$CLAUDE_CODE_SESSION_ID"
+  session_id="halt-gate-reg-$$-${RANDOM}"
 
   mkdir -p "$sandbox/.claude"
   # Per executor: pre-populate settings.local.json with empty hooks object
@@ -227,12 +237,12 @@ _run_registration_test() {
   done <<<"$tag_keys"
 
   if (( tag_ok == 1 )); then
-    printf '✔ TM-HALT-REGISTRATION/tag (%s scheme — all keys matched /%s/)\n' "$BRANCH_KIND" "$EXPECTED_TAG_REGEX"
+    printf '✔ TM-HALT-REGISTRATION/tag (%s — all keys matched /%s/)\n' "$EXPECTED_TAG_DESC" "$EXPECTED_TAG_REGEX"
     PASS=$((PASS + 1))
   else
-    printf '✘ TM-HALT-REGISTRATION/tag — found tag %q on %s branch; expected %s\n' \
-      "$wrong_tag" "$BRANCH_KIND" "$EXPECTED_TAG_DESC" >&2
-    printf '  On parallelism, bare _deepwork indicates M2 tag-migration regression.\n' >&2
+    printf '✘ TM-HALT-REGISTRATION/tag — found unexpected tag key %q; expected %s\n' \
+      "$wrong_tag" "$EXPECTED_TAG_DESC" >&2
+    printf '  Unexpected tag key on halt-gate block indicates tag-scheme regression (C3/W15 #31).\n' >&2
     FAIL=$((FAIL + 1))
     FAILED_CASES+=("TM-HALT-REGISTRATION/tag")
   fi
@@ -247,6 +257,26 @@ _run_registration_test() {
     select(.value.hooks // [] | any(.command | test("approve-archive\\.sh"))) | .key] | first // null' "$settings_file" 2>/dev/null)
   printf '  (info) halt-gate Stop-array index=%s, approve-archive Stop-array index=%s — CC runtime ordering is not tested here\n' \
     "$halt_idx" "$archive_idx"
+
+  # 4. Assert halt-gate Stop-array index < approve-archive Stop-array index.
+  # This catches a source reorder in setup-deepwork.sh that would put
+  # approve-archive before halt-gate (archive renames state.json, making
+  # halt_reason unreadable for a concurrent halt-phase Stop event).
+  if [[ "$halt_idx" =~ ^[0-9]+$ ]] && [[ "$archive_idx" =~ ^[0-9]+$ ]]; then
+    if [[ "$halt_idx" -lt "$archive_idx" ]]; then
+      printf '✔ TM-HALT-REGISTRATION/order (halt-gate idx=%s < approve-archive idx=%s)\n' \
+        "$halt_idx" "$archive_idx"
+      PASS=$((PASS + 1))
+    else
+      printf '✘ TM-HALT-REGISTRATION/order — halt-gate idx=%s >= approve-archive idx=%s; ' \
+        "$halt_idx" "$archive_idx" >&2
+      printf 'setup-deepwork.sh Stop registration order was changed\n' >&2
+      FAIL=$((FAIL + 1))
+      FAILED_CASES+=("TM-HALT-REGISTRATION/order")
+    fi
+  else
+    printf '  (skip) TM-HALT-REGISTRATION/order — one or both hooks absent from Stop array (already caught above)\n'
+  fi
 
   rm -rf "$sandbox"
 }

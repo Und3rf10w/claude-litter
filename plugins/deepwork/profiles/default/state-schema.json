@@ -10,5 +10,8 @@
   "user_feedback": null,
   "hook_warnings": [],
   "halt_reason": null,
-  "iteration_queue": []
+  "iteration_queue": [],
+  "state_integrity_hash": null,
+  "single_writer_enabled": true,
+  "started_at": null
 }
