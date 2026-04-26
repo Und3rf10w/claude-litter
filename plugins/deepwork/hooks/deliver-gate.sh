@@ -71,13 +71,10 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
       if [[ -z "$FRONT_MATTER_CHECK" ]]; then
         if [[ -f "$STATE_FILE" ]]; then
           _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          jq --arg ts "$_NOW" --arg v "$LATEST_V" \
+          _write_state_atomic "$STATE_FILE" --arg ts "$_NOW" --arg v "$LATEST_V" \
             '.hook_warnings += [{event: "deliver-gate",
                                  timestamp: $ts,
-                                 note: ("pre-fix proposal delivered; frontmatter presence not enforced (proposals/v" + $v + "*.md)")}]' \
-            "$STATE_FILE" > "${STATE_FILE}.tmp.$$" 2>/dev/null \
-            && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" \
-            || rm -f "${STATE_FILE}.tmp.$$"
+                                 note: ("pre-fix proposal delivered; frontmatter presence not enforced (proposals/v" + $v + "*.md)")}]'
         fi
         exit 0
       fi

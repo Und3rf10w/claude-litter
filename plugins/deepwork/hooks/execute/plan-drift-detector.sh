@@ -57,19 +57,11 @@ fi
 [[ "$CURRENT_HASH" == "$PLAN_HASH" ]] && exit 0
 
 # Hash mismatch — set plan_drift_detected=true atomically
-_TMP="${STATE_FILE}.tmp.$$"
-jq \
+_write_state_atomic "$STATE_FILE" \
   --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg new_hash "$CURRENT_HASH" \
   '.execute.plan_drift_detected = true |
    .execute.plan_drift_detected_at = $now |
-   .execute.plan_hash_at_drift = $new_hash' \
-  "$STATE_FILE" > "$_TMP" 2>/dev/null
-
-if [[ -s "$_TMP" ]]; then
-  mv "$_TMP" "$STATE_FILE"
-else
-  rm -f "$_TMP"
-fi
+   .execute.plan_hash_at_drift = $new_hash'
 
 exit 0
