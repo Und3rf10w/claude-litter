@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 106 nodes, 170 edges
+Graph: 107 nodes, 171 edges
 
 ## Mermaid Flowchart
 
@@ -76,6 +76,7 @@ flowchart LR
     version_bump_notify["version-bump-notify"]
     wave_gate["wave-gate"]
     wiki_log_append["wiki-log-append"]
+    worktree_cd_warn["worktree-cd-warn"]
   end
   subgraph State
     bar(([".bar"]))
@@ -167,6 +168,7 @@ flowchart LR
   PreToolUse -->|"Bash"| state_bash_gate
   PreToolUse -->|"Write|Edit"| state_drift_marker
   PreToolUse -->|"SendMessage"| verdict_version_gate
+  PreToolUse -->|"Bash"| worktree_cd_warn
   SessionStart -->|"startup|resume|clear|compact"| session_context
   Stop --> approve_archive
   Stop --> halt_gate
@@ -1046,6 +1048,29 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/wiki-log-append.sh"]
+    },
+    "worktree-cd-warn.sh": {
+      "triggered_by": [
+      "PreToolUse"
+      ],
+      "mode": "execute",
+      "reads": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/execute/worktree-cd-warn.sh"]
     }
   },
   "orchestrator_writes": {
