@@ -6,7 +6,7 @@
 #
 # For each matched pattern from §5 of the design, checks whether the same turn
 # contains a grounding tool use (Read, Grep, or Bash). Ungrounded matches
-# increment .status_claim_violations[teammate_name][YYYY-MM-DD] in metrics.json.
+# append one JSONL record to metrics-violations.jsonl per turn-with-violations.
 #
 # Always exits 0 (fail-open). Any error at any stage silently no-ops.
 
@@ -121,25 +121,13 @@ printf '%s\n' '{"async":true}'
   [[ $VIOLATION_COUNT -gt 0 ]] || exit 0
 
   TODAY=$(date -u +%Y-%m-%d)
-  METRICS_FILE="${INSTANCE_DIR}/metrics.json"
+  NOW_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  JSONL_FILE="${INSTANCE_DIR}/metrics-violations.jsonl"
 
-  # Bootstrap metrics.json if absent
-  if [[ ! -f "$METRICS_FILE" ]]; then
-    printf '%s\n' '{}' > "$METRICS_FILE" 2>/dev/null || exit 0
-  fi
-
-  # Validate existing metrics.json is parseable
-  jq -e . "$METRICS_FILE" >/dev/null 2>&1 || printf '%s\n' '{}' > "$METRICS_FILE" 2>/dev/null || exit 0
-
-  # Atomic increment: jq + tmp + mv
-  TMP_FILE="${METRICS_FILE}.tmp.$$"
-  jq --arg teammate "$TEAMMATE" --arg date "$TODAY" --argjson count "$VIOLATION_COUNT" '
-    .status_claim_violations //= {}
-    | .status_claim_violations[$teammate] //= {}
-    | .status_claim_violations[$teammate][$date] = ((.status_claim_violations[$teammate][$date] // 0) + $count)
-  ' "$METRICS_FILE" > "$TMP_FILE" 2>/dev/null \
-    && mv "$TMP_FILE" "$METRICS_FILE" 2>/dev/null \
-    || rm -f "$TMP_FILE" 2>/dev/null
+  # Append one record per turn-with-violations (atomic under POSIX PIPE_BUF for ≤512 byte lines)
+  LINE=$(printf '{"teammate":"%s","date":"%s","ts":"%s","violations":%d}' \
+    "$TEAMMATE" "$TODAY" "$NOW_TS" "$VIOLATION_COUNT")
+  printf '%s\n' "$LINE" >> "$JSONL_FILE" 2>/dev/null || true
 
   exit 0
 ) &>/dev/null &

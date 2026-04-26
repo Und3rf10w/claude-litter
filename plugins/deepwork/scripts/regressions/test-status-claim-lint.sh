@@ -49,22 +49,13 @@ _assert_eq() {
   fi
 }
 
-_assert_ge() {
-  local name="$1" threshold="$2" actual="$3"
-  if [[ "$actual" -ge "$threshold" ]]; then
-    _pass "$name"
-  else
-    _fail "$name" "expected >= $threshold, got $actual"
-  fi
-}
-
 # ── Sandbox ──
 SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 
 INSTANCE_DIR="$SANDBOX/instance"
 mkdir -p "$INSTANCE_DIR"
-METRICS="$INSTANCE_DIR/metrics.json"
+JSONL_FILE="$INSTANCE_DIR/metrics-violations.jsonl"
 
 TRANSCRIPT="$SANDBOX/transcript.jsonl"
 
@@ -113,24 +104,29 @@ _payload() {
     '{"team_name":"test-team","teammate_name":$teammate,"transcript_path":$transcript}'
 }
 
-# Wait up to 2s for the background subshell to write metrics.json.
+# Wait up to 2s for the background subshell to write metrics-violations.jsonl.
 _wait_metrics() {
   local i=0
   while [[ $i -lt 20 ]]; do
-    [[ -f "$METRICS" ]] && jq -e . "$METRICS" >/dev/null 2>&1 && return 0
+    [[ -f "$JSONL_FILE" ]] && return 0
     sleep 0.1
     i=$((i + 1))
   done
   return 1
 }
 
-# Wait up to 2s for metrics.json count to reach expected value.
+# Wait up to 2s for violation count to reach expected value.
 _wait_count() {
   local expected_ge="$1" i=0
+  local T D
+  T="alice"
+  D=$(date -u +%Y-%m-%d)
   while [[ $i -lt 20 ]]; do
-    if [[ -f "$METRICS" ]]; then
+    if [[ -f "$JSONL_FILE" ]]; then
       local cnt
-      cnt=$(jq -r '.status_claim_violations.alice["'"$(date -u +%Y-%m-%d)"'"] // 0' "$METRICS" 2>/dev/null || echo 0)
+      cnt=$(jq -s --arg t "$T" --arg d "$D" \
+        'map(select(.teammate==$t and .date==$d)) | map(.violations) | add // 0' \
+        "$JSONL_FILE" 2>/dev/null || echo 0)
       [[ "$cnt" -ge "$expected_ge" ]] && return 0
     fi
     sleep 0.1
@@ -140,14 +136,18 @@ _wait_count() {
 }
 
 _get_count() {
-  local today
-  today=$(date -u +%Y-%m-%d)
-  jq -r --arg d "$today" '.status_claim_violations.alice[$d] // 0' "$METRICS" 2>/dev/null || echo 0
+  local T D
+  T="alice"
+  D=$(date -u +%Y-%m-%d)
+  [[ -f "$JSONL_FILE" ]] || { echo 0; return; }
+  jq -s --arg t "$T" --arg d "$D" \
+    'map(select(.teammate==$t and .date==$d)) | map(.violations) | add // 0' \
+    "$JSONL_FILE" 2>/dev/null || echo 0
 }
 
-# Reset metrics.json and transcript between groups.
+# Reset JSONL file and transcript between groups.
 _reset() {
-  rm -f "$METRICS" "$TRANSCRIPT"
+  rm -f "$JSONL_FILE" "$TRANSCRIPT"
 }
 
 
@@ -236,7 +236,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
     _pass "SC-3-P${i}: pattern ${i} triggers counter (count=${COUNT})"
   else
     _fail "SC-3-P${i}: pattern ${i} should trigger counter" \
-      "text='${TEXT}' count=${COUNT} metrics=$(cat "$METRICS" 2>/dev/null || echo '<absent>')"
+      "text='${TEXT}' count=${COUNT} jsonl=$(cat "$JSONL_FILE" 2>/dev/null || echo '<absent>')"
   fi
 done
 
@@ -279,8 +279,8 @@ printf '%s' "$NO_TRANSCRIPT_PAYLOAD" \
   | INSTANCE_DIR="$INSTANCE_DIR" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" >/dev/null 2>/dev/null
 _assert_eq "SC-5a: transcript_path missing exits 0" "0" "$?"
 sleep 0.3
-[[ ! -f "$METRICS" ]] && _pass "SC-5a: no metrics written when transcript_path missing" \
-  || _fail "SC-5a: no metrics written when transcript_path missing" "metrics.json exists unexpectedly"
+[[ ! -f "$JSONL_FILE" ]] && _pass "SC-5a: no metrics written when transcript_path missing" \
+  || _fail "SC-5a: no metrics written when transcript_path missing" "metrics-violations.jsonl exists unexpectedly"
 
 # SC-5b: transcript file absent (empty string path) → no counter increment
 _reset
@@ -315,8 +315,8 @@ printf '%s' "$PAYLOAD_NODISCOVERY" \
   | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" >/dev/null 2>/dev/null
 _assert_eq "SC-5e: INSTANCE_DIR unset exits 0" "0" "$?"
 sleep 0.3
-[[ ! -f "$METRICS" ]] && _pass "SC-5e: no metrics written when INSTANCE_DIR unset" \
-  || _fail "SC-5e: no metrics written when INSTANCE_DIR unset" "metrics.json exists unexpectedly"
+[[ ! -f "$JSONL_FILE" ]] && _pass "SC-5e: no metrics written when INSTANCE_DIR unset" \
+  || _fail "SC-5e: no metrics written when INSTANCE_DIR unset" "metrics-violations.jsonl exists unexpectedly"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -333,27 +333,31 @@ for _i in 1 2 3 4 5; do
 done
 wait
 
-# Wait for all background subshells to write metrics
+# Wait for all background subshells to write JSONL
 _wait_count 5 || true
 sleep 0.3
 
-if [[ -f "$METRICS" ]]; then
-  # metrics.json must be valid JSON
-  if jq -e . "$METRICS" >/dev/null 2>&1; then
-    _pass "SC-6a: metrics.json is valid JSON after 5 parallel invocations"
+if [[ -f "$JSONL_FILE" ]]; then
+  # Every line must be valid JSON
+  INVALID_LINES=$(grep -c . "$JSONL_FILE" 2>/dev/null || echo 0)
+  VALID_LINES=0
+  while IFS= read -r _line; do
+    [[ -n "$_line" ]] && printf '%s' "$_line" | jq -e . >/dev/null 2>&1 && VALID_LINES=$((VALID_LINES + 1))
+  done < "$JSONL_FILE"
+  if [[ "$VALID_LINES" -ge 1 ]]; then
+    _pass "SC-6a: metrics-violations.jsonl has valid JSON lines after 5 parallel invocations (valid_lines=${VALID_LINES})"
   else
-    _fail "SC-6a: metrics.json is valid JSON after 5 parallel invocations" \
-      "content: $(cat "$METRICS" 2>/dev/null)"
+    _fail "SC-6a: metrics-violations.jsonl has valid JSON lines after 5 parallel invocations" \
+      "content: $(cat "$JSONL_FILE" 2>/dev/null)"
   fi
 
   COUNT=$(_get_count)
-  # jq+tmp+mv is atomic per-write but concurrent reads can produce last-writer-wins;
-  # the spec says "count reflects 5 writes (or correct aggregate)".
-  # Assert >= 1: at least one write landed and no counter was lost entirely.
-  _assert_ge "SC-6b: count reflects parallel writes (>= 1, valid atomic aggregate)" "1" "$COUNT"
+  # JSONL append is atomic per POSIX PIPE_BUF; all 5 writes should land.
+  # Assert == 5: each invocation contributes exactly 1 violation (pattern 1 matches once).
+  _assert_eq "SC-6b: count reflects exactly 5 parallel writes" "5" "$COUNT"
 else
-  _fail "SC-6a: metrics.json is valid JSON after 5 parallel invocations" "file absent"
-  _fail "SC-6b: count reflects 5 writes (>= 5)" "file absent"
+  _fail "SC-6a: metrics-violations.jsonl has valid JSON lines after 5 parallel invocations" "file absent"
+  _fail "SC-6b: count reflects exactly 5 parallel writes" "file absent"
 fi
 
 
