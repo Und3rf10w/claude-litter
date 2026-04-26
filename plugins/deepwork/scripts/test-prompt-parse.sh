@@ -31,6 +31,15 @@ _reset() {
   SAFE_MODE="true"
   MODE="default"
   TEAM_NAME=""
+  PLAN_REF=""
+  AUTHORIZED_PUSH="false"
+  AUTHORIZED_FORCE_PUSH="false"
+  AUTHORIZED_PROD_DEPLOY="false"
+  AUTHORIZED_LOCAL_DESTRUCTIVE="false"
+  SECRET_SCAN_WAIVED="false"
+  CHAOS_MONKEY="auto"
+  ALLOW_NO_HOOKS="false"
+  SINGLE_WRITER_ENABLED="true"
 }
 
 _run() {
@@ -123,6 +132,60 @@ _assert_eq "--validate stays in goal" \
   '"The auth flow should --validate inputs and --sanitize outputs"' \
   "${PROMPT_PARTS[0]:-}"
 _assert_eq "anchor still parsed"   "src/a:1" "${ANCHORS[0]:-}"
+
+# ─────────────────────────────────────────────────────────────────────
+# PP-* Fixtures — execute-mode flags (W12 #2)
+# ─────────────────────────────────────────────────────────────────────
+
+# PP-1 — --plan-ref
+_run "PP-1: --plan-ref" '"my goal" --plan-ref /tmp/plan.md'
+_assert_eq "plan-ref" "/tmp/plan.md" "${PLAN_REF:-}"
+
+# PP-2 — --authorized-push (boolean flag, no value)
+_run "PP-2: --authorized-push" '"my goal" --authorized-push'
+_assert_eq "authorized-push" "true" "${AUTHORIZED_PUSH:-}"
+
+# PP-3 — --authorized-force-push
+_run "PP-3: --authorized-force-push" '"my goal" --authorized-force-push'
+_assert_eq "authorized-force-push" "true" "${AUTHORIZED_FORCE_PUSH:-}"
+
+# PP-4 — --authorized-prod-deploy
+_run "PP-4: --authorized-prod-deploy" '"my goal" --authorized-prod-deploy'
+_assert_eq "authorized-prod-deploy" "true" "${AUTHORIZED_PROD_DEPLOY:-}"
+
+# PP-5 — --authorized-local-destructive
+_run "PP-5: --authorized-local-destructive" '"my goal" --authorized-local-destructive'
+_assert_eq "authorized-local-destructive" "true" "${AUTHORIZED_LOCAL_DESTRUCTIVE:-}"
+
+# PP-6 — --secret-scan-waive
+_run "PP-6: --secret-scan-waive" '"my goal" --secret-scan-waive'
+_assert_eq "secret-scan-waive" "true" "${SECRET_SCAN_WAIVED:-}"
+
+# PP-7 — --chaos-monkey
+_run "PP-7: --chaos-monkey" '"my goal" --chaos-monkey'
+_assert_eq "chaos-monkey" "true" "${CHAOS_MONKEY:-}"
+
+# PP-8 — --no-chaos-monkey
+_run "PP-8: --no-chaos-monkey" '"my goal" --no-chaos-monkey'
+_assert_eq "no-chaos-monkey" "false" "${CHAOS_MONKEY:-}"
+
+# PP-9 — --allow-no-hooks
+_run "PP-9: --allow-no-hooks" '"my goal" --allow-no-hooks'
+_assert_eq "allow-no-hooks" "true" "${ALLOW_NO_HOOKS:-}"
+
+# PP-10 — --enable-single-writer
+_run "PP-10: --enable-single-writer" '"my goal" --enable-single-writer'
+_assert_eq "enable-single-writer" "true" "${SINGLE_WRITER_ENABLED:-}"
+
+# PP-11 — --disable-single-writer
+_run "PP-11: --disable-single-writer" '"my goal" --disable-single-writer'
+_assert_eq "disable-single-writer" "false" "${SINGLE_WRITER_ENABLED:-}"
+
+# PP-12 — combined execute flags (single-line)
+_run "PP-12: combined execute flags" '"execute goal" --mode execute --plan-ref /tmp/plan.md --authorized-push'
+_assert_eq "PP-12: MODE=execute"       "execute"       "${MODE:-}"
+_assert_eq "PP-12: PLAN_REF set"       "/tmp/plan.md"  "${PLAN_REF:-}"
+_assert_eq "PP-12: AUTHORIZED_PUSH"    "true"          "${AUTHORIZED_PUSH:-}"
 
 # ─────────────────────────────────────────────────────────────────────
 echo ""
