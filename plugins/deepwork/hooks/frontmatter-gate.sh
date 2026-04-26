@@ -22,8 +22,19 @@ FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_pa
 # Only validate files in this instance's directory
 [[ "$FILE_PATH" == *"${INSTANCE_DIR}"* ]] || exit 0
 
-# Skip state.json — banners[] enforced post-write by state-drift-marker.sh
-[[ "$FILE_PATH" == */state.json ]] && exit 0
+# state.json single-writer gate: only state-transition.sh may write it.
+if [[ "$FILE_PATH" == */state.json ]]; then
+  # Honour single_writer_enabled from state.json (default on; gate fires unless field is false).
+  sw_enabled=$(jq -r '.single_writer_enabled // true' "$STATE_FILE" 2>/dev/null)
+  if [[ "$sw_enabled" == "false" ]]; then
+    exit 0
+  fi
+  if [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]]; then
+    exit 0
+  fi
+  printf 'frontmatter-gate: SINGLE_WRITER_VIOLATION — direct Write to state.json is blocked; use state-transition.sh\n' >&2
+  exit 2
+fi
 
 # ── .md frontmatter enforcement ──────────────────────────────────────────────
 [[ "$FILE_PATH" == *.md ]] || exit 0
