@@ -379,6 +379,11 @@ else
   BAR_JSON='[]'
 fi
 
+# Bootstrap path — the ONLY place state.json is written outside state-transition.sh.
+# After bootstrap, state-transition.sh's _ensure_event_log seeds events.jsonl with a
+# bootstrap event that projects from this initial state, anchoring the hash chain.
+# All subsequent mutations MUST go through state-transition.sh; direct writes are
+# blocked by frontmatter-gate.sh (event_head check) and state-bash-gate.sh (sentinel).
 # Write state.json — base fields; profile schema merged after
 jq -n \
   --arg goal "$GOAL" \
