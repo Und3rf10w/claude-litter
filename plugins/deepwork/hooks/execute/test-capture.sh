@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-capture.sh — PostToolUse(Bash) advisory test-result capture hook.
+# test-capture.sh — PostToolUse(Bash) and PostToolUseFailure(Bash) advisory test-result
+# capture hook.
 #
 # This hook is exclusively a data capture hook — PostToolUse CANNOT block any future
 # operation (cli_formatted_2.1.116.js:266053-266058: PostToolUse hookSpecificOutput has no
@@ -7,14 +8,15 @@
 # plan-citation-gate.sh (PreToolUse Write|Edit) which reads test-results.jsonl before
 # the next write.
 #
-# Async pattern: emit {"async": true} as the first line so CC backgrounds this script
-# immediately (cli_formatted_2.1.116.js:266009 async schema; :264193 asyncTimeout default 15000ms;
-# omitting asyncTimeout here accepts the 15000ms default which is sufficient for capture).
-# After the async handshake, async stdout is discarded by CC
-# (cli_formatted_2.1.116.js:565249-565328) — all results must go to test-results.jsonl on disk.
+# v2.1.118 tool response shape (W11 H6):
+#   PostToolUse(Bash):         .tool_response.data.{stdout, stderr, interrupted}
+#   PostToolUseFailure(Bash):  .error (string), .is_interrupt (bool) — no tool_response
+#
+# Async is a hooks.json config-time property ("async": true on the registration entry),
+# NOT a stdout signal. Do not emit {"async":true} from this script.
 #
 # Test runner detection: regex match on tool_input.command for common runners.
-# Pass/fail parsing: scan tool_result.stdout for counts; fall back to exit_code.
+# Pass/fail parsing: scan stdout for counts; fall back to exit_code / interrupted.
 # Flaky detection: after each capture, check last 6 entries for same command with mixed
 # pass/fail — if ≥3 entries with alternating exit_code, append to state.execute.flaky_tests[].
 #
@@ -24,15 +26,10 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Emit async handshake immediately so CC backgrounds us
-printf '{"async": true}\n'
-
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Only active execute instances
@@ -47,9 +44,28 @@ if ! printf '%s' "$COMMAND" | grep -qE '^[[:space:]]*(npm[[:space:]]+test|pytest
   exit 0
 fi
 
-STDOUT=$(printf '%s' "$INPUT" | jq -r '.tool_result.stdout // ""' 2>/dev/null || echo "")
-STDERR=$(printf '%s' "$INPUT" | jq -r '.tool_result.stderr // ""' 2>/dev/null || echo "")
-EXIT_CODE=$(printf '%s' "$INPUT" | jq -r '.tool_result.exit_code // 0' 2>/dev/null || echo "0")
+# Extract stdout/stderr/exit_code from v2.1.118 response shapes:
+#   PostToolUse:        .tool_response.data.{stdout,stderr,interrupted}
+#   PostToolUseFailure: .error, .is_interrupt (no tool_response)
+if [[ "$HOOK_EVENT_NAME" == "PostToolUseFailure" ]]; then
+  STDOUT=""
+  STDERR=$(printf '%s' "$INPUT" | jq -r '.error // ""' 2>/dev/null || echo "")
+  IS_INTERRUPT=$(printf '%s' "$INPUT" | jq -r '.is_interrupt // false' 2>/dev/null || echo "false")
+  if [[ "$IS_INTERRUPT" == "true" ]]; then
+    EXIT_CODE=130
+  else
+    EXIT_CODE=1
+  fi
+else
+  STDOUT=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.stdout // ""' 2>/dev/null || echo "")
+  STDERR=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.stderr // ""' 2>/dev/null || echo "")
+  INTERRUPTED=$(printf '%s' "$INPUT" | jq -r '.tool_response.data.interrupted // false' 2>/dev/null || echo "false")
+  if [[ "$INTERRUPTED" == "true" ]]; then
+    EXIT_CODE=130
+  else
+    EXIT_CODE=0
+  fi
+fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Read change_id from pending-change.json

@@ -154,7 +154,16 @@
       "script": "hooks/execute/test-capture.sh",
       "event": "PostToolUse",
       "matcher": "Bash",
-      "modes": ["execute"]
+      "modes": ["execute"],
+      "async": true
+    },
+    {
+      "script": "hooks/execute/test-capture.sh",
+      "event": "PostToolUseFailure",
+      "matcher": "Bash",
+      "modes": ["execute"],
+      "async": true,
+      "_note": "Captures test-runner exit-code failures (W11 H6). PostToolUseFailure schema: .error, .is_interrupt — no .tool_response."
     },
     {
       "script": "hooks/execute/file-changed-retest.sh",

@@ -1,8 +1,9 @@
 #!/bin/bash
 # status-claim-regex-precheck.sh — Async regex lint for STATUS CLAIM RULE violations.
 #
-# Fires on TeammateIdle. Emits {"async":true} immediately so it is non-blocking
-# (hooks.md:358), then runs violation pattern checks in the background.
+# Fires on TeammateIdle. Registered with "async": true in hook-manifest.json so CC
+# backgrounds this script immediately (v2.1.118: async is a hooks.json config property,
+# NOT a stdout signal).
 #
 # For each matched pattern from §5 of the design, checks whether the same turn
 # contains a grounding tool use (Read, Grep, or Bash). Ungrounded matches
@@ -12,21 +13,15 @@
 
 set +e
 
-# Capture stdin before emitting async marker — stdin is consumed once
-_INPUT=$(cat 2>/dev/null) || _INPUT=""
-
-printf '%s\n' '{"async":true}'
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${_PLUGIN_ROOT}/scripts/instance-lib.sh" 2>/dev/null || exit 0
+_parse_hook_input
 
 (
   command -v jq >/dev/null 2>&1 || exit 0
 
-  INPUT="$_INPUT"
-
-  _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-  # shellcheck source=scripts/instance-lib.sh
-  source "${_PLUGIN_ROOT}/scripts/instance-lib.sh" 2>/dev/null || exit 0
-
-  # If INSTANCE_DIR is already set (e.g., test harness), skip discovery
+  # If INSTANCE_DIR is already set (e.g., test harness), skip discovery.
+  # Otherwise use team_name-based discovery (TeammateIdle provides team_name, not session_id).
   if [[ -z "${INSTANCE_DIR:-}" ]]; then
     TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
     [[ -n "$TEAM_NAME" ]] || exit 0

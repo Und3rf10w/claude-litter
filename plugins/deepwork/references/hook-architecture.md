@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 99 nodes, 157 edges
+Graph: 104 nodes, 162 edges
 
 ## Mermaid Flowchart
 
@@ -16,6 +16,7 @@ flowchart LR
     PermissionDenied["PermissionDenied"]
     PermissionRequest["PermissionRequest"]
     PostToolUse["PostToolUse"]
+    PostToolUseFailure["PostToolUseFailure"]
     PreCompact["PreCompact"]
     PreToolUse["PreToolUse"]
     SessionStart["SessionStart"]
@@ -96,6 +97,7 @@ flowchart LR
     halt_reason(([".halt_reason"]))
     id(([".id"]))
     instance_id(([".instance_id"]))
+    is_interrupt(([".is_interrupt"]))
     metadata_artifact(([".metadata.artifact"]))
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
@@ -113,6 +115,9 @@ flowchart LR
     setup_flags_snapshot(([".setup_flags_snapshot"]))
     single_writer_enabled(([".single_writer_enabled"]))
     team_name(([".team_name"]))
+    tool_response_data_interrupted(([".tool_response.data.interrupted"]))
+    tool_response_data_stderr(([".tool_response.data.stderr"]))
+    tool_response_data_stdout(([".tool_response.data.stdout"]))
     verdict(([".verdict"]))
   end
   subgraph Markers
@@ -147,6 +152,7 @@ flowchart LR
   PostToolUse -->|"Write|Edit"| retest_dispatch
   PostToolUse -->|"Write|Edit"| state_drift_marker
   PostToolUse -->|"Bash"| test_capture
+  PostToolUseFailure -->|"Bash"| test_capture
   PreCompact --> pre_compact
   PreToolUse -->|"Bash"| bash_gate
   PreToolUse -->|"ExitPlanMode"| deliver_gate
@@ -234,6 +240,10 @@ flowchart LR
   teammate_idle_gate -.->|"reads"| team_name
   test_capture -.->|"reads"| change_id
   test_capture -.->|"reads"| execute_phase
+  test_capture -.->|"reads"| is_interrupt
+  test_capture -.->|"reads"| tool_response_data_interrupted
+  test_capture -.->|"reads"| tool_response_data_stderr
+  test_capture -.->|"reads"| tool_response_data_stdout
   verdict_version_gate -.->|"reads"| current_version
   version_bump_notify -.->|"reads"| current_version
   wave_gate -.->|"reads"| execute_phase
@@ -877,13 +887,18 @@ flowchart LR
     },
     "test-capture.sh": {
       "triggered_by": [
-      "PostToolUse"
+      "PostToolUse",
+      "PostToolUseFailure"
       ],
       "mode": "execute",
       "reads": {
         "state": [
           ".change_id",
-          ".execute.phase"
+          ".execute.phase",
+          ".is_interrupt",
+          ".tool_response.data.interrupted",
+          ".tool_response.data.stderr",
+          ".tool_response.data.stdout"
         ],
         "markers": [
           "pending-change.json",

@@ -536,11 +536,13 @@ jq -n \
     if (entry | has("command_override")) then
       {"type": "command", "command": entry.command_override}
       | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
+      | if (entry | has("async")) then . + {"async": entry.async} else . end
     else
       (("bash " + ($plugin_root + "/" + entry.script | @sh))
         + (if (entry | has("args")) then " " + entry.args else "" end)) as $cmd
       | {"type": "command", "command": $cmd}
       | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
+      | if (entry | has("async")) then . + {"async": entry.async} else . end
     end;
 
   def active_for_mode(entry):

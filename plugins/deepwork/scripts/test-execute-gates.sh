@@ -226,6 +226,91 @@ fi
 
 rm -rf "$_TMP_PROJECT"
 
+# ---- TC-a: test-capture.sh reads .tool_response.data.stdout (PostToolUse, v2.1.118) ----
+echo ""
+echo "── TC-a: test-capture.sh reads .tool_response.data.stdout (PostToolUse) ──"
+_TC_PROJECT=$(mktemp -d)
+_TC_INST_DIR="${_TC_PROJECT}/.claude/deepwork/ab12cd34"
+mkdir -p "$_TC_INST_DIR"
+cat > "${_TC_INST_DIR}/state.json" <<'TCSTATE'
+{
+  "session_id": "tc-test-session",
+  "execute": {
+    "phase": "execute",
+    "plan_ref": "PLAN.md"
+  }
+}
+TCSTATE
+_TC_INPUT=$(jq -cn \
+  --arg sid "tc-test-session" \
+  '{
+    session_id: $sid,
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_use_id: "uid-tc-a",
+    tool_input: {command: "pytest tests/"},
+    tool_response: {data: {stdout: "5 passed, 0 failed in 1.23s", stderr: "", interrupted: false}}
+  }')
+_TC_OUT=$(printf '%s' "$_TC_INPUT" \
+  | HOME="$_TC_PROJECT" CLAUDE_PROJECT_DIR="$_TC_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/test-capture.sh" 2>&1)
+_TC_RC=$?
+if [[ "$_TC_RC" -eq 0 ]]; then
+  _pass "TC-a: test-capture.sh PostToolUse exits 0"
+else
+  _fail "TC-a: test-capture.sh PostToolUse exits 0 — got RC=${_TC_RC}: ${_TC_OUT}"
+fi
+# Verify test-results.jsonl was written with parsed counts
+_TC_JSONL="${_TC_INST_DIR}/test-results.jsonl"
+if [[ -f "$_TC_JSONL" ]]; then
+  _TC_PASSED=$(jq -r '.passed_count' "$_TC_JSONL" 2>/dev/null || echo "")
+  if [[ "$_TC_PASSED" == "5" ]]; then
+    _pass "TC-a: test-results.jsonl written with passed_count=5"
+  else
+    _fail "TC-a: test-results.jsonl passed_count — expected 5, got ${_TC_PASSED}: $(cat "$_TC_JSONL" 2>/dev/null)"
+  fi
+else
+  _fail "TC-a: test-results.jsonl not written by test-capture.sh"
+fi
+
+# ---- TC-b: test-capture.sh handles PostToolUseFailure (exit_code=1, stderr=.error) ----
+echo ""
+echo "── TC-b: test-capture.sh handles PostToolUseFailure (W11 H6) ──"
+_TCB_JSONL="${_TC_INST_DIR}/test-results-failure.jsonl"
+_TCB_INPUT=$(jq -cn \
+  --arg sid "tc-test-session" \
+  '{
+    session_id: $sid,
+    hook_event_name: "PostToolUseFailure",
+    tool_name: "Bash",
+    tool_use_id: "uid-tc-b",
+    tool_input: {command: "pytest tests/"},
+    error: "Tool execution failed: command not found",
+    is_interrupt: false
+  }')
+_TCB_OUT=$(printf '%s' "$_TCB_INPUT" \
+  | HOME="$_TC_PROJECT" CLAUDE_PROJECT_DIR="$_TC_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/test-capture.sh" 2>&1)
+_TCB_RC=$?
+if [[ "$_TCB_RC" -eq 0 ]]; then
+  _pass "TC-b: test-capture.sh PostToolUseFailure exits 0 (fail-open)"
+else
+  _fail "TC-b: test-capture.sh PostToolUseFailure exits 0 — got RC=${_TCB_RC}: ${_TCB_OUT}"
+fi
+# Verify a second entry was written with exit_code=1
+if [[ -f "$_TC_JSONL" ]]; then
+  _TCB_EXITCODE=$(jq -rs '.[1].exit_code // empty' "$_TC_JSONL" 2>/dev/null || echo "")
+  if [[ "$_TCB_EXITCODE" == "1" ]]; then
+    _pass "TC-b: test-results.jsonl second entry has exit_code=1 for PostToolUseFailure"
+  else
+    _fail "TC-b: test-results.jsonl exit_code — expected 1, got ${_TCB_EXITCODE}: $(cat "$_TC_JSONL" 2>/dev/null)"
+  fi
+else
+  _fail "TC-b: test-results.jsonl not found after PostToolUseFailure"
+fi
+
+rm -rf "$_TC_PROJECT"
+
 # ---- Tests 16-17: PR-A bash syntax ----
 for f in "hooks/execute/plan-citation-gate.sh" "hooks/execute/bash-gate.sh" "scripts/setup-deepwork.sh"; do
   if bash -n "${PLUGIN_ROOT}/${f}" 2>/dev/null; then
