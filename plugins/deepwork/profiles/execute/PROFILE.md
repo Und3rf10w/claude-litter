@@ -68,7 +68,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    - `chaos-monkey` (CHAOS-MONKEY, optional) — spawn ONLY when goal mentions services, networks, databases, queues, distributed components, or deployment infrastructure. Use `--chaos-monkey` opt-in; `--no-chaos-monkey` opt-out. Include `profiles/execute/stances/chaos-monkey-stance.md` verbatim.
 
    **AGENT SCOPE CONSTRAINT**: every agent spawn prompt MUST include this block verbatim:
-   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json except via the explicit jq+tmp+mv protocol for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json directly — all mutations MUST go through `bash scripts/state-transition.sh <subcommand>` for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
 
    Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
 
@@ -102,7 +102,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
      "rationale": "<quote from plan>"
    }
    ```
-   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations. **Note**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection); use Bash redirection or jq+tmp+mv to create/update it. See `profiles/execute/stances/executor-stance.md` for the full recipe.
+   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations. **Note**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection); use Bash redirection to create/update it. See `profiles/execute/stances/executor-stance.md` for the full recipe.
 
 3. PostToolUse(Bash test) captures results to `test-results.jsonl`. PreToolUse(Write|Edit) reads `test-results.jsonl` and blocks if any covering test shows `last_result: "fail"` or `last_result: "pending"`. This is the GAP-8 two-hook enforcement pattern — the synchronous PreToolUse gate is the enforcement; the advisory PostToolUse capture provides the data.
 
@@ -231,10 +231,12 @@ WRITE → VERIFY → CRITIQUE → (REFINE → CRITIQUE)* → LAND → (CONTINUOU
    | User cancel | `{"summary": "Session cancelled by user at phase=write", "blockers": []}` |
    | Mid-flight abort | `{"summary": "Halted on unresolved discoveries requiring user input", "blockers": ["D3: irreversible operation blocked", "D4: test environment unavailable"]}` |
 
-   Write via atomic jq+tmp+mv:
+   Write via `state-transition.sh`:
 
    ```bash
-   jq '.halt_reason = {summary: "<text>", blockers: []}' state.json > state.json.tmp && mv state.json.tmp state.json
+   bash scripts/state-transition.sh halt_reason --summary "<text>"
+   # With blockers:
+   bash scripts/state-transition.sh halt_reason --summary "<text>" --blocker "<blocker1>" --blocker "<blocker2>"
    ```
 
 3. Archive state (the Stop hook / approve-archive.sh fires on session end)

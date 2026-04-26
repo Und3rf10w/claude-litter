@@ -47,7 +47,7 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 3. **When-not-to-use check**. Does the goal look like an execution task (known mechanism, clear steps), a documented answer, or a no-falsifiable-structure problem? If yes, use `AskUserQuestion` to confirm deepwork is the right tool (reference `references/when-not-to-use.md`). User can override.
 
-4. **Populate the written bar**. Minimum 6 criteria with at least 1 `categorical_ban: true`. Use `references/written-bar-template.md` archetype as the skeleton — functional / UX / scope / coverage / degrade / maintainability. Seed from user `--bar` flags, then augment. Atomic update via jq+tmp+mv on state.json. If the goal is ambiguous, `AskUserQuestion` to confirm/refine the bar.
+4. **Populate the written bar**. Minimum 6 criteria with at least 1 `categorical_ban: true`. Use `references/written-bar-template.md` archetype as the skeleton — functional / UX / scope / coverage / degrade / maintainability. Seed from user `--bar` flags, then augment. Write via `bash scripts/state-transition.sh merge <json>`. If the goal is ambiguous, `AskUserQuestion` to confirm/refine the bar.
 
 5. **Identify empirical unknowns**. 1-2 load-bearing unknowns that must be tested on real infrastructure before SYNTHESIZE. Write to `state.json.empirical_unknowns[]` with `{id, description, artifact, owner: null, result: null}`. If none exist (the design has no empirical hinge), that's fine — leave the array empty.
 
@@ -63,7 +63,7 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 8. **Call TeamCreate** with team_name from state.json. Spawn all teammates in parallel via a single message containing multiple Agent tool calls. Each spawn passes the fully-rendered role template in `prompt:` — resolve the HARD_GUARDRAILS, SOURCE_OF_TRUTH, ANCHORS, WRITTEN_BAR, and TEAM_ROSTER template slots from state.json values before calling. For CRITIC and REFRAMER, include their invariant stance text from `references/critic-stance.md` / `references/reframer-stance.md` verbatim.
 
    **AGENT SCOPE CONSTRAINT (M8, drift class j)**: every agent spawn prompt MUST include this block verbatim:
-   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json except via the explicit jq+tmp+mv protocol for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
+   > You are authorized to create files within the INSTANCE_DIR and to read any file in SOURCE_OF_TRUTH. You are NOT authorized to rename, move, or delete any file in any location. You are NOT authorized to modify state.json directly — all mutations MUST go through `bash scripts/state-transition.sh <subcommand>` for fields assigned to your role. If you believe a file rename or state.json restructuring is needed, send a message to team-lead describing the proposed change — do NOT take the action unilaterally.
 
    Addresses the tidier-renamed-state.json incident (D10 in rca-f289898a): without the scope constraint, agents sometimes take filesystem housekeeping actions beyond their task scope. The constraint is prompt-level; it relies on model compliance and is backstopped by [hooks/task-completed-gate.sh](../../hooks/task-completed-gate.sh) path-traversal and absolute-path rejection (Gate 1).
 
@@ -79,9 +79,9 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 2. **Live empirical tests** — MECHANISM (or appropriate specialist) must produce `empirical_results.<id>.md` for each empirical_unknown. These are live tests on real infrastructure, not documentation reading. Block SYNTHESIZE until all empirical_results files exist.
 
-   **Result backfill protocol** (per [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist A): when an `empirical_results.<id>.md` file lands, the orchestrator MUST set `empirical_unknowns[<id>].result` to a brief verdict string (e.g., `"PRESENT — async, 500ms delay"`) and update `owner` to the agent name. Atomic write via jq+tmp+mv. Phase advance is blocked until every `result` is non-null AND its cited artifact exists at `${INSTANCE_DIR}/${artifact}` (drift class a from proposals/v3-final.md).
+   **Result backfill protocol** (per [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist A): when an `empirical_results.<id>.md` file lands, the orchestrator MUST set `empirical_unknowns[<id>].result` to a brief verdict string (e.g., `"PRESENT — async, 500ms delay"`) and update `owner` to the agent name. Write via `bash scripts/state-transition.sh set_field <path> <value>`. Phase advance is blocked until every `result` is non-null AND its cited artifact exists at `${INSTANCE_DIR}/${artifact}` (drift class a from proposals/v3-final.md).
 
-   **source_of_truth refresh protocol**: when a teammate's findings cite a file not already in `state.json.source_of_truth[]`, the orchestrator MUST append it via atomic jq+tmp+mv before the next phase advance. [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist B emits non-blocking warnings listing candidate omissions at each transition attempt.
+   **source_of_truth refresh protocol**: when a teammate's findings cite a file not already in `state.json.source_of_truth[]`, the orchestrator MUST append it via `bash scripts/state-transition.sh append_array .source_of_truth <value>` before the next phase advance. [hooks/phase-advance-gate.sh](../../hooks/phase-advance-gate.sh) Checklist B emits non-blocking warnings listing candidate omissions at each transition attempt.
 
 3. **Cross-check gates** — for any task with `metadata.cross_check_required: true`, ≥2 independent completions required. The task-completed-gate hook enforces; you don't need to check manually.
 
@@ -132,7 +132,7 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 
 5. Write `gate-list-v1.md` — bar criteria restated with per-gate evidence pointers (for CRITIC's convenience).
 
-6. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via atomic jq+tmp+mv: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
+6. **Banners protocol (synthesis-deviation-backpointer)**: for each teammate recommendation the proposal overrules or weighs differently than the author proposed, append an entry to `state.json.banners[]` via `bash scripts/state-transition.sh append_array .banners <json>`: `{artifact_path, banner_type: "synthesis-deviation-backpointer", reason, added_at, added_by}`. Also write a one-line note at the top of the overruled artifact pointing to the proposal section that demotes it (e.g., `> NOTE: SYNTHESIZE overruled — see proposals/v1.md §<section>`). Preserves invariant 4 (synthesizer freedom) + invariant 7 (author voice): the banner is a structural annotation, not an edit to the analysis text. `banners[]` is advisory metadata — no hook reads it as a blocking signal.
 
 7. Advance `state.json.phase = "critique"`.
 
@@ -227,10 +227,12 @@ Deepwork does not cross into implementation. Your deliverable is the approved pl
    | User cancel | `{"summary": "Session cancelled by user at phase=explore", "blockers": []}` |
    | Mid-flight abort | `{"summary": "Halted on open design questions requiring user input", "blockers": ["OD3: which DB library?", "OD4: public API shape?"]}` |
 
-   Write via atomic jq+tmp+mv:
+   Write via `state-transition.sh`:
 
    ```bash
-   jq '.halt_reason = {summary: "<text>", blockers: []}' state.json > state.json.tmp && mv state.json.tmp state.json
+   bash scripts/state-transition.sh halt_reason --summary "<text>"
+   # With blockers:
+   bash scripts/state-transition.sh halt_reason --summary "<text>" --blocker "<blocker1>" --blocker "<blocker2>"
    ```
 
 2. Append a final status line to `log.md` that cites `halt_reason.summary`.
