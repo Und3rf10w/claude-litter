@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 104 nodes, 162 edges
+Graph: 108 nodes, 169 edges
 
 ## Mermaid Flowchart
 
@@ -82,6 +82,7 @@ flowchart LR
     banners(([".banners"]))
     bar(([".bar"]))
     change_id(([".change_id"]))
+    critic_verdict(([".critic_verdict"]))
     current_version(([".current_version"]))
     event_id(([".event_id"]))
     execute(([".execute"]))
@@ -98,6 +99,7 @@ flowchart LR
     id(([".id"]))
     instance_id(([".instance_id"]))
     is_interrupt(([".is_interrupt"]))
+    merged_at(([".merged_at"]))
     metadata_artifact(([".metadata.artifact"]))
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
@@ -114,7 +116,9 @@ flowchart LR
     secret_scan_waived(([".secret_scan_waived"]))
     setup_flags_snapshot(([".setup_flags_snapshot"]))
     single_writer_enabled(([".single_writer_enabled"]))
+    source_file(([".source_file"]))
     team_name(([".team_name"]))
+    tool_response_data_file_path(([".tool_response.data.file_path"]))
     tool_response_data_interrupted(([".tool_response.data.interrupted"]))
     tool_response_data_stderr(([".tool_response.data.stderr"]))
     tool_response_data_stdout(([".tool_response.data.stdout"]))
@@ -173,6 +177,8 @@ flowchart LR
   TaskCreated --> task_scope_gate
   TaskCreated --> wave_gate
   TeammateIdle --> teammate_idle_gate
+  approve_archive -.->|"reads"| execute_phase
+  approve_archive -.->|"reads"| halt_reason
   approve_archive -.->|"reads"| phase
   bash_gate -.->|"reads"| authorized_force_push
   bash_gate -.->|"reads"| authorized_local_destructive
@@ -199,9 +205,11 @@ flowchart LR
   plan_citation_gate -.->|"reads"| change_id
   plan_citation_gate -.->|"reads"| execute_phase
   plan_citation_gate -.->|"reads"| execute_plan_drift_detected
+  plan_citation_gate -.->|"reads"| execute_plan_ref
   plan_citation_gate -.->|"reads"| execute_test_manifest
   plan_citation_gate -.->|"reads"| no_test_reason
   plan_citation_gate -.->|"reads"| plan_section
+  plan_citation_gate -.->|"reads"| source_file
   plan_drift_detector -.->|"reads"| execute_phase
   plan_drift_detector -.->|"reads"| execute_plan_hash
   plan_drift_detector -.->|"reads"| execute_plan_ref
@@ -210,6 +218,7 @@ flowchart LR
   pre_compact -.->|"reads"| phase
   retest_dispatch -.->|"reads"| change_id
   retest_dispatch -.->|"reads"| execute_phase
+  retest_dispatch -.->|"reads"| tool_response_data_file_path
   session_context -.->|"reads"| goal
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
@@ -220,11 +229,12 @@ flowchart LR
   state_drift_marker -.->|"reads"| id
   state_drift_marker -.->|"reads"| phase
   state_drift_marker -.->|"reads"| verdict
+  stop_hook -.->|"reads"| critic_verdict
   stop_hook -.->|"reads"| execute_change_log
   stop_hook -.->|"reads"| execute_phase
   stop_hook -.->|"reads"| execute_plan_drift_detected
   stop_hook -.->|"reads"| execute_plan_ref
-  stop_hook -.->|"reads"| verdict
+  stop_hook -.->|"reads"| merged_at
   task_completed_gate -.->|"reads"| id
   task_completed_gate -.->|"reads"| metadata_artifact
   task_completed_gate -.->|"reads"| metadata_bar_id
@@ -236,6 +246,7 @@ flowchart LR
   task_scope_gate -.->|"reads"| execute_phase
   task_scope_gate -.->|"reads"| execute_plan_ref
   task_scope_gate -.->|"reads"| metadata_scope
+  task_scope_gate -.->|"reads"| team_name
   teammate_idle_gate -.->|"reads"| id
   teammate_idle_gate -.->|"reads"| team_name
   test_capture -.->|"reads"| change_id
@@ -318,6 +329,8 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
+          ".execute.phase",
+          ".halt_reason",
           ".phase"
         ],
         "markers": [
@@ -576,9 +589,11 @@ flowchart LR
           ".change_id",
           ".execute.phase",
           ".execute.plan_drift_detected",
+          ".execute.plan_ref",
           ".execute.test_manifest",
           ".no_test_reason",
-          ".plan_section"
+          ".plan_section",
+          ".source_file"
         ],
         "markers": [
           "pending-change.json",
@@ -653,7 +668,8 @@ flowchart LR
       "reads": {
         "state": [
           ".change_id",
-          ".execute.phase"
+          ".execute.phase",
+          ".tool_response.data.file_path"
         ],
         "markers": [
           "pending-change.json",
@@ -781,11 +797,12 @@ flowchart LR
       "mode": "execute",
       "reads": {
         "state": [
+          ".critic_verdict",
           ".execute.change_log",
           ".execute.phase",
           ".execute.plan_drift_detected",
           ".execute.plan_ref",
-          ".verdict"
+          ".merged_at"
         ],
         "markers": [
           "execute-done.sentinel"
@@ -841,7 +858,8 @@ flowchart LR
         "state": [
           ".execute.phase",
           ".execute.plan_ref",
-          ".metadata.scope"
+          ".metadata.scope",
+          ".team_name"
         ],
         "markers": [
           "discoveries.jsonl"
