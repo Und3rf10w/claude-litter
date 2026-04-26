@@ -254,6 +254,101 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ── (i) Archive cycle: orphan snapshots cleaned by archive_state ──
+# Regression for W18-b: PreToolUse Bash snapshots state.json when archive_state runs.
+# After mv state.json→state.archived.json, PostToolUse can't find the instance (glob
+# only matches state.json), so state-transition.sh archive_state itself must remove
+# any .state-snapshot* files to prevent orphans accumulating in the instance dir.
+echo ""
+echo "── T11-i: archive_state → orphan snapshots cleaned up ──"
+
+ARCHIVE_SB=$(mktemp -d)
+trap 'rm -rf "$ARCHIVE_SB"' EXIT
+export CLAUDE_PROJECT_DIR="$ARCHIVE_SB"
+ARCH_ID="cdef0123"
+ARCH_DIR="$ARCHIVE_SB/.claude/deepwork/$ARCH_ID"
+mkdir -p "$ARCH_DIR"
+ARCH_SID="test-archive-$(date +%s)"
+ARCH_STATE="${ARCH_DIR}/state.json"
+
+STATE_FILE="$ARCH_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$ARCH_SID","phase":"done","team_name":"test-team"}
+EOF
+
+# Simulate two per-tool snapshots (as PreToolUse:Bash would create)
+ARCH_SNAP1="${ARCH_DIR}/.state-snapshot.tool-abc.json"
+ARCH_SNAP2="${ARCH_DIR}/.state-snapshot.tool-def.json"
+cp "$ARCH_STATE" "$ARCH_SNAP1"
+cp "$ARCH_STATE" "$ARCH_SNAP2"
+
+# Run archive_state — should clean snapshots as part of the operation
+_ARCH_RC=$(STATE_FILE="$ARCH_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1; echo $?)
+_assert_exit "T11-i: archive_state exits 0" "0" "$_ARCH_RC"
+
+if [[ -f "$ARCH_SNAP1" ]] || [[ -f "$ARCH_SNAP2" ]]; then
+  printf 'FAIL: T11-i: orphan snapshot(s) NOT cleaned up after archive_state\n' >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-i: orphan snapshots cleaned up by archive_state\n'
+  PASS=$((PASS + 1))
+fi
+
+if [[ -f "${ARCH_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-i: state.archived.json exists\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-i: state.archived.json missing\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# ── (j) Banner violation revert: snapshot cleaned up on early-return revert path ──
+# Regression for W18-b: when banners[] validation fails, state-drift-marker.sh reverts
+# state.json from snapshot then exits early — the snapshot must be removed before exit.
+echo ""
+echo "── T11-j: banner violation revert → snapshot cleaned up on early exit ──"
+
+BANNER_SB=$(mktemp -d)
+trap 'rm -rf "$BANNER_SB"' EXIT
+export CLAUDE_PROJECT_DIR="$BANNER_SB"
+BAN_ID="ef012345"
+BAN_DIR="$BANNER_SB/.claude/deepwork/$BAN_ID"
+mkdir -p "$BAN_DIR"
+BAN_SID="test-banner-$(date +%s)"
+BAN_STATE="${BAN_DIR}/state.json"
+BAN_EVENTS="${BAN_DIR}/events.jsonl"
+BAN_LOG="${BAN_DIR}/log.md"
+touch "$BAN_LOG"
+
+STATE_FILE="$BAN_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$BAN_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Snapshot = good state (no banners)
+BAN_SNAP="${BAN_DIR}/.state-snapshot.ban-tool-id.json"
+cp "$BAN_STATE" "$BAN_SNAP"
+
+# Write a bad banner (missing required fields) directly into state.json
+printf '%s\n' '{"session_id":"'"$BAN_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}' \
+  > "$BAN_STATE"
+
+# Run PostToolUse:Write — banner violation should trigger revert and clean up snapshot
+_BAN_RC=$(printf '%s' \
+  "{\"session_id\":\"$BAN_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"ban-tool-id\",\"tool_input\":{\"file_path\":\"$BAN_STATE\"}}" \
+  | INSTANCE_DIR="$BAN_DIR" LOG_FILE="$BAN_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" >/dev/null 2>&1; echo $?)
+_assert_exit "T11-j: exits 0 after banner violation revert" "0" "$_BAN_RC"
+
+if [[ -f "$BAN_SNAP" ]]; then
+  printf 'FAIL: T11-j: snapshot NOT cleaned up after banner violation revert at %s\n' "$BAN_SNAP" >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-j: snapshot cleaned up after banner violation revert\n'
+  PASS=$((PASS + 1))
+fi
+
+# Snapshot cleanup restores original CLAUDE_PROJECT_DIR for remaining tests
+export CLAUDE_PROJECT_DIR="$SANDBOX"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

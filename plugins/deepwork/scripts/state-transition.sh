@@ -1293,6 +1293,10 @@ case "$SUBCOMMAND" in
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
     mv "$STATE_FILE" "$_ARCHIVE_JSON" || { printf 'archive_state: failed to rename state.json\n' >&2; exit 4; }
     [[ -f "$_EVENTS_FILE" ]] && mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || true
+    rm -f "${INSTANCE_DIR}/pending-change.json"
+    # Pre-leg snapshots keyed to the archive_state Bash call are orphaned after mv
+    # (PostToolUse can't find the instance when state.json is gone). Clean them here.
+    rm -f "${INSTANCE_DIR}"/.state-snapshot* 2>/dev/null || true
     exit 0
     ;;
 
