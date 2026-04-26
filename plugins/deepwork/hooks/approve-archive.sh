@@ -22,10 +22,11 @@ discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 PHASE=$(jq -r '.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
-HALT_REASON=$(jq -r '.halt_reason // ""' "$STATE_FILE" 2>/dev/null || echo "")
 if [[ "$PHASE" != "done" ]]; then
-  # Also archive execute sessions that halted with a reason (irrecoverable halt)
-  [[ "$EXEC_PHASE" == "halt" && -n "$HALT_REASON" && "$HALT_REASON" != "null" ]] || exit 0
+  # Also archive execute sessions that halted with a valid halt_reason object
+  [[ "$EXEC_PHASE" == "halt" ]] || exit 0
+  _HALT_VALID=$(jq -r 'if (.halt_reason | type == "object") and ((.halt_reason.summary // "") | length > 0) then "yes" else "no" end' "$STATE_FILE" 2>/dev/null || echo "no")
+  [[ "$_HALT_VALID" == "yes" ]] || exit 0
 fi
 
 mv "$STATE_FILE" "${INSTANCE_DIR}/state.archived.json" 2>/dev/null || exit 0
