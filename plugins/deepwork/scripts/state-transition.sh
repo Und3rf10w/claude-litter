@@ -132,10 +132,6 @@ _emit_event() {
   local events_file="${INSTANCE_DIR}/events.jsonl"
   local lock_file="${INSTANCE_DIR}/events.jsonl.lock"
 
-  if ! command -v flock >/dev/null 2>&1; then
-    printf '_emit_event: flock unavailable — hash chain may be unsafe under concurrency\n' >&2
-  fi
-
   # Generate event_id before acquiring the lock (no shared state involved).
   local event_id
   if command -v uuidgen >/dev/null 2>&1; then
@@ -150,30 +146,31 @@ _emit_event() {
 
   # Hold an exclusive lock from _read_event_head through _append_event_raw so
   # no two concurrent callers can read the same prev_event_hash.
-  (
-    if command -v flock >/dev/null 2>&1; then
-      flock -x 200 || exit 1
-    fi
+  # Uses portable _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
+  _acquire_lock "$lock_file" || return 1
 
-    local prev_hash
-    prev_hash=$(_read_event_head)
+  local prev_hash
+  prev_hash=$(_read_event_head)
 
-    local timestamp
-    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  local timestamp
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-    local event_json
-    event_json=$(jq -cn \
-      --arg eid "$event_id" \
-      --arg etype "$event_type" \
-      --arg phash "$prev_hash" \
-      --arg ts "$timestamp" \
-      --arg actor "$actor" \
-      --argjson payload "$payload_json" \
-      '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
-        timestamp: $ts, actor: $actor, payload: $payload}') || exit 1
+  local event_json
+  event_json=$(jq -cn \
+    --arg eid "$event_id" \
+    --arg etype "$event_type" \
+    --arg phash "$prev_hash" \
+    --arg ts "$timestamp" \
+    --arg actor "$actor" \
+    --argjson payload "$payload_json" \
+    '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
+      timestamp: $ts, actor: $actor, payload: $payload}')
+  local _ej_rc=$?
 
-    _append_event_raw "$events_file" "$event_json"
-  ) 200>"$lock_file"
+  _release_lock "$lock_file"
+
+  [[ $_ej_rc -eq 0 ]] || return 1
+  _append_event_raw "$events_file" "$event_json"
 }
 
 # _ensure_event_log
