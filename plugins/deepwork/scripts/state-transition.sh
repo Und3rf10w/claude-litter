@@ -211,12 +211,19 @@ _ensure_event_log() {
 
 _compute_integrity_hash() {
   local sf="$1"
-  local proj hash
-  proj=$(jq -c '{
+  local proj hash sot_digest
+  # Structural digest of source_of_truth: sort array by value, hash as JSON.
+  # Null/missing field hashes to the empty-array digest for pre-W9 compat.
+  sot_digest=$(jq -r '(.source_of_truth // []) | sort | tojson' "$sf" 2>/dev/null \
+    | { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; \
+        else shasum -a 256 | cut -d' ' -f1; fi }) || sot_digest=""
+  proj=$(jq -c --arg sot_digest "$sot_digest" '{
     phase,
     team_name,
     instance_id,
     frontmatter_schema_version,
+    started_at,
+    source_of_truth_digest: $sot_digest,
     bar: ([.bar[]? | {id, verdict}] | sort_by(.id)),
     execute_plan_drift_detected: .execute.plan_drift_detected,
     execute_plan_hash: .execute.plan_hash

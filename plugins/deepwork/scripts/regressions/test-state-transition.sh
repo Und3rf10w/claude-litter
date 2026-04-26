@@ -16,6 +16,8 @@
 # ST-o: backfill_session backfills placeholder, ignores non-placeholder
 # ST-p: invalid subcommand exits 3
 # ST-q: init guard fires when instance_id already present
+# ST-r: started_at mutation detected by integrity hash (W9 M2)
+# ST-s: source_of_truth mutation detected by integrity hash (W9 M2)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -306,6 +308,34 @@ OUT=$("$STATE_TRANSITION" --state-file "$SF" init - 2>&1 <<< '{"session_id":"x"}
 RC=$?
 _assert_exit "ST-q: exit 1 (guard fired)" "1" "$RC"
 _assert_contains "ST-q: error mentions instance_id" "instance_id" "$OUT"
+
+# ── ST-r: started_at is included in integrity hash projection (W9 M2) ──
+# Verify that mutating started_at outside state-transition.sh causes hash mismatch.
+echo ""
+echo "── ST-r: started_at change detected by integrity hash ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Capture hash after legitimate transition
+HASH_BEFORE=$(jq -r '.state_integrity_hash // ""' "$SF" 2>/dev/null)
+# Inject a started_at change bypassing state-transition.sh
+tmp="${SF}.tmp.$$"
+jq '.started_at = "2099-01-01T00:00:00Z"' "$SF" > "$tmp" && mv "$tmp" "$SF"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" phase_advance --to "execute" 2>&1)
+RC=$?
+_assert_exit "ST-r: exit 2 (hash mismatch after started_at mutation)" "2" "$RC"
+
+# ── ST-s: source_of_truth change detected by integrity hash (W9 M2) ──
+# Verify that adding an entry to source_of_truth outside state-transition.sh triggers mismatch.
+echo ""
+echo "── ST-s: source_of_truth structural change detected by integrity hash ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+# Inject a source_of_truth entry bypassing state-transition.sh
+tmp="${SF}.tmp.$$"
+jq '.source_of_truth = ["injected-file.md"]' "$SF" > "$tmp" && mv "$tmp" "$SF"
+OUT=$("$STATE_TRANSITION" --state-file "$SF" phase_advance --to "execute" 2>&1)
+RC=$?
+_assert_exit "ST-s: exit 2 (hash mismatch after source_of_truth mutation)" "2" "$RC"
 
 # ── Summary ──
 echo ""
