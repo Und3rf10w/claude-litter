@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 98 nodes, 155 edges
+Graph: 99 nodes, 157 edges
 
 ## Mermaid Flowchart
 
@@ -82,6 +82,7 @@ flowchart LR
     bar(([".bar"]))
     change_id(([".change_id"]))
     current_version(([".current_version"]))
+    event_id(([".event_id"]))
     execute(([".execute"]))
     execute_change_log(([".execute.change_log"]))
     execute_phase(([".execute.phase"]))
@@ -209,6 +210,7 @@ flowchart LR
   session_context -.->|"reads"| team_name
   state_drift_marker -.->|"reads"| banners
   state_drift_marker -.->|"reads"| bar
+  state_drift_marker -.->|"reads"| event_id
   state_drift_marker -.->|"reads"| id
   state_drift_marker -.->|"reads"| phase
   state_drift_marker -.->|"reads"| verdict
@@ -260,6 +262,7 @@ flowchart LR
   retest_dispatch -.->|"reads"| test_results_jsonl
   stale_warn -.->|"reads"| drift_log
   state_drift_marker -.->|"reads"| state_snapshot
+  state_drift_marker -.->|"reads"| events_jsonl
   state_drift_marker -.->|"reads"| state_json
   stop_hook -.->|"reads"| execute_done_sentinel
   task_completed_gate -.->|"reads"| gate_blocked
@@ -739,12 +742,14 @@ flowchart LR
         "state": [
           ".banners",
           ".bar",
+          ".event_id",
           ".id",
           ".phase",
           ".verdict"
         ],
         "markers": [
           ".state-snapshot",
+          "events.jsonl",
           "state.json"
         ]
       },
