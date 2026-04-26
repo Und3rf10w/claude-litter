@@ -611,6 +611,9 @@ ANCHORS=$(render_anchors "${INSTANCE_DIR}/state.json")
 WRITTEN_BAR=$(render_bar "${INSTANCE_DIR}/state.json")
 ROLE_DEFINITIONS=$(render_role_definitions "${INSTANCE_DIR}/state.json")
 TEAM_ROSTER=$(render_team_roster "${INSTANCE_DIR}/state.json")
+# Execute-mode placeholders (PLAN_REF and PLAN_HASH already set by flag parsing above)
+TEST_MANIFEST_SUMMARY=$(render_test_manifest_summary "${INSTANCE_DIR}/state.json")
+CHANGE_LOG_SUMMARY=$(render_change_log_summary "${INSTANCE_DIR}/state.json")
 PHASE="scope"
 
 # Sanitize goal (defense-in-depth; the SKILL.md quoted heredoc already neutralized $/backtick)

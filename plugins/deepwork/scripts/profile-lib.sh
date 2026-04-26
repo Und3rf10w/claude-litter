@@ -35,6 +35,12 @@ load_profile() {
 #   ROLE_DEFINITIONS      — rendered multi-line list of role definitions
 #   TEAM_ROSTER           — rendered multi-line list "<name> (<archetype>)"
 #
+# Execute-mode additional env vars (only meaningful when MODE=execute):
+#   PLAN_REF              — absolute path to the approved plan document
+#   PLAN_HASH             — sha256 of the plan file at setup time
+#   TEST_MANIFEST_SUMMARY — derived from state.json (call render_test_manifest_summary)
+#   CHANGE_LOG_SUMMARY    — derived from state.json (call render_change_log_summary)
+#
 # For teammate-spawn prompts (not orchestrator prompts), additionally:
 #   ROLE_NAME, ARCHETYPE, ARCHETYPE_MANDATE, STANCE, RESPONSIBILITIES,
 #   ARTIFACT_PATH, TASK_DESCRIPTION
@@ -49,6 +55,10 @@ substitute_profile_template() {
     WRITTEN_BAR="${WRITTEN_BAR:-(not yet populated — orchestrator must populate in SCOPE phase)}" \
     ROLE_DEFINITIONS="${ROLE_DEFINITIONS:-(not yet populated)}" \
     TEAM_ROSTER="${TEAM_ROSTER:-(not yet populated)}" \
+    PLAN_REF="${PLAN_REF:-}" \
+    PLAN_HASH="${PLAN_HASH:-}" \
+    TEST_MANIFEST_SUMMARY="${TEST_MANIFEST_SUMMARY:-(not populated)}" \
+    CHANGE_LOG_SUMMARY="${CHANGE_LOG_SUMMARY:-(not populated)}" \
     ROLE_NAME="${ROLE_NAME:-}" ARCHETYPE="${ARCHETYPE:-}" \
     ARCHETYPE_MANDATE="${ARCHETYPE_MANDATE:-}" STANCE="${STANCE:-}" \
     RESPONSIBILITIES="${RESPONSIBILITIES:-}" ARTIFACT_PATH="${ARTIFACT_PATH:-}" \
@@ -64,6 +74,10 @@ substitute_profile_template() {
       s/\{\{WRITTEN_BAR\}\}/$ENV{WRITTEN_BAR}/g;
       s/\{\{ROLE_DEFINITIONS\}\}/$ENV{ROLE_DEFINITIONS}/g;
       s/\{\{TEAM_ROSTER\}\}/$ENV{TEAM_ROSTER}/g;
+      s/\{\{PLAN_REF\}\}/$ENV{PLAN_REF}/g;
+      s/\{\{PLAN_HASH\}\}/$ENV{PLAN_HASH}/g;
+      s/\{\{TEST_MANIFEST_SUMMARY\}\}/$ENV{TEST_MANIFEST_SUMMARY}/g;
+      s/\{\{CHANGE_LOG_SUMMARY\}\}/$ENV{CHANGE_LOG_SUMMARY}/g;
       s/\{\{ROLE_NAME\}\}/$ENV{ROLE_NAME}/g;
       s/\{\{ARCHETYPE\}\}/$ENV{ARCHETYPE}/g;
       s/\{\{ARCHETYPE_MANDATE\}\}/$ENV{ARCHETYPE_MANDATE}/g;
@@ -72,6 +86,37 @@ substitute_profile_template() {
       s/\{\{ARTIFACT_PATH\}\}/$ENV{ARTIFACT_PATH}/g;
       s/\{\{TASK_DESCRIPTION\}\}/$ENV{TASK_DESCRIPTION}/g;
     '
+}
+
+# render_test_manifest_summary <state.json path>
+# Outputs a one-line summary like "3 entries" or "(empty)" for {{TEST_MANIFEST_SUMMARY}}.
+render_test_manifest_summary() {
+  local state_file="$1"
+  [[ -f "$state_file" ]] || { printf '(not populated)'; return 0; }
+  local count
+  count=$(jq -r '(.execute.test_manifest // []) | length' "$state_file" 2>/dev/null || echo "0")
+  if [[ "$count" == "0" ]]; then
+    printf '(empty)'
+  else
+    printf '%s entries' "$count"
+  fi
+}
+
+# render_change_log_summary <state.json path>
+# Outputs a one-line summary like "2 entries (1 approved, 1 pending)" for {{CHANGE_LOG_SUMMARY}}.
+render_change_log_summary() {
+  local state_file="$1"
+  [[ -f "$state_file" ]] || { printf '(not populated)'; return 0; }
+  local summary
+  summary=$(jq -r '
+    (.execute.change_log // []) as $log |
+    ($log | length) as $total |
+    ($log | map(select(.critic_verdict == "APPROVED" and .merged_at != null)) | length) as $approved |
+    if $total == 0 then "(empty)"
+    else "\($total) entries (\($approved) approved and landed, \($total - $approved) pending)"
+    end
+  ' "$state_file" 2>/dev/null || echo "(not populated)")
+  printf '%s' "$summary"
 }
 
 # render_guardrails <state.json path>
