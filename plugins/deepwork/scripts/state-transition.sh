@@ -911,6 +911,20 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
           ;;
+        test_manifest_updated)
+          _tmu_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
+          _tmu_result=$(printf '%s' "$_line" | jq -r '.payload.result // "unknown"' 2>/dev/null)
+          _tmu_ts=$(printf '%s' "$_line" | jq -r '.payload.timestamp // ""' 2>/dev/null)
+          [[ -n "$_tmu_ts" ]] || _tmu_ts="$_ts"
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg id "$_tmu_id" --arg result "$_tmu_result" --arg run_ts "$_tmu_ts" --arg ts "$_ts" \
+            '(.execute.test_manifest // []) |= map(
+               if .id == $id then
+                 . + {last_result: $result, last_run_at: $run_ts}
+               else . end
+             ) | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
         *)
           printf 'state-transition.sh replay: unknown event type "%s" at event %d — skipping\n' \
             "$_etype" "$_event_count" >&2
@@ -1230,9 +1244,46 @@ case "$SUBCOMMAND" in
     exit 0
     ;;
 
+  # ---- test_manifest_update --------------------------------------------------
+  # test_manifest_update --id <id> --result <pass|fail|error|unknown> [--ts <iso8601>]
+  # Updates test_manifest entry last_result and last_run_at, emits test_manifest_updated.
+  test_manifest_update)
+    _TMU_ID=""
+    _TMU_RESULT=""
+    _TMU_TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --id) _TMU_ID="$2"; shift 2 ;;
+        --result) _TMU_RESULT="$2"; shift 2 ;;
+        --ts) _TMU_TS="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_TMU_ID" ]] || { printf 'test_manifest_update: --id <id> required\n' >&2; exit 3; }
+    [[ -n "$_TMU_RESULT" ]] || { printf 'test_manifest_update: --result <pass|fail|error|unknown> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _ensure_event_log
+    _emit_event "test_manifest_updated" \
+      "$(jq -cn --arg id "$_TMU_ID" --arg result "$_TMU_RESULT" --arg ts "$_TMU_TS" \
+          '{id: $id, result: $result, timestamp: $ts}')" \
+      || exit 5
+    _write_with_hash "$STATE_FILE" \
+      --arg id "$_TMU_ID" \
+      --arg result "$_TMU_RESULT" \
+      --arg ts "$_TMU_TS" \
+      '(.execute.test_manifest // []) |= map(
+         if .id == $id then
+           . + {last_result: $result, last_run_at: $ts}
+         else . end
+       )'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state, test_manifest_update\n' >&2
     exit 3
     ;;
 esac
