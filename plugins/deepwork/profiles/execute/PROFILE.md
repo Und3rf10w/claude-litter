@@ -94,7 +94,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
 
 1. Orchestrator sends the current gate task to `executor` via SendMessage. Include: gate ID, plan section, test_manifest entries relevant to this gate, current change_log.
 
-2. Before any Write/Edit to source files, executor produces `pending-change.json` in `.claude/deepwork-execute/<instance>/`:
+2. Before any Write/Edit to source files, executor produces `pending-change.json` in `${INSTANCE_DIR}/` (i.e. `.claude/deepwork/<instance>/`):
    ```json
    {
      "plan_section": "<section_id>",

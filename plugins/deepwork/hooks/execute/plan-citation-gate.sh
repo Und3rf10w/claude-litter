@@ -99,10 +99,21 @@ if [[ "$FILE_IN_LIST" == "0" ]]; then
   exit 2
 fi
 
-# Verify referenced plan file exists (e.g. "v3-final.md#M4" → check v3-final.md)
+# Verify the plan file referenced by plan_section exists.
+# plan_section form: "<plan_ref>#<section>" | "#<section>" | bare section id.
+# Canonical plan path comes from state.execute.plan_ref (set at SETUP and never mutated).
+# If plan_section contains a path component before '#', that path is checked as an absolute
+# path first; if not absolute, we fall back to state.execute.plan_ref.
+STATE_PLAN_REF=$(jq -r '.execute.plan_ref // ""' "$STATE_FILE" 2>/dev/null || echo "")
 PLAN_FILE_REF=$(printf '%s' "$PLAN_SECTION" | cut -d'#' -f1)
 if [[ -n "$PLAN_FILE_REF" ]]; then
-  PLAN_FILE_PATH="${INSTANCE_DIR}/${PLAN_FILE_REF}"
+  if [[ "$PLAN_FILE_REF" == /* ]]; then
+    PLAN_FILE_PATH="$PLAN_FILE_REF"
+  elif [[ -n "$STATE_PLAN_REF" ]]; then
+    PLAN_FILE_PATH="$STATE_PLAN_REF"
+  else
+    PLAN_FILE_PATH="${INSTANCE_DIR}/${PLAN_FILE_REF}"
+  fi
   if [[ ! -f "$PLAN_FILE_PATH" ]]; then
     printf 'BLOCKED (G3): referenced plan file "%s" not found at %s.\n' "$PLAN_FILE_REF" "$PLAN_FILE_PATH" >&2
     exit 2

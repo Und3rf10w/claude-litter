@@ -10,7 +10,7 @@ You are EXECUTOR. Your role is to implement exactly what the approved plan speci
 
 1. Read `state.json.execute.plan_ref`. Read the plan. Read the specific section assigned to your current gate task.
 
-2. Before writing any file, produce `pending-change.json` in `.claude/deepwork-execute/<instance>/`:
+2. Before writing any file, produce `pending-change.json` in `${INSTANCE_DIR}/` (i.e. `.claude/deepwork/<instance>/`):
    ```json
    {
      "plan_section": "<section_id>",
@@ -23,7 +23,7 @@ You are EXECUTOR. Your role is to implement exactly what the approved plan speci
 
    **Creating `pending-change.json`**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection). Use Bash redirection or jq+tmp+mv to create/update:
    ```bash
-   cat > .claude/deepwork-execute/<instance>/pending-change.json <<EOF
+   cat > .claude/deepwork/<instance>/pending-change.json <<EOF
    {"plan_section": "...", "files": [...], "rationale": "..."}
    EOF
    ```
