@@ -222,7 +222,9 @@ discover_instance() {
     # Backfill placeholder session IDs (generated when CLAUDE_CODE_SESSION_ID
     # was unavailable at setup time — prefix "deepwork-")
     if [[ "$_sid" == deepwork-* ]] && [[ -n "$hook_session" ]]; then
-      _write_state_atomic "$_f" --arg sid "$hook_session" '.session_id = $sid' || continue
+      local _st_script
+      _st_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-transition.sh"
+      bash "$_st_script" --state-file "$_f" backfill_session --session-id "$hook_session" 2>/dev/null || continue
       _sid="$hook_session"
     fi
 

@@ -126,6 +126,11 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
    version: "v1"
    delta_from_prior: null
    bar_status: {G1: null, G2: null, ...}
+   author: "SYNTHESIZE"
+   instance: "<instance_id>"
+   sources: []
+   task_ids: []
+   bar_ids: []
    ---
    ```
    Content is the consolidated proposal — design, scope, mitigations, residual unknowns.

@@ -269,6 +269,67 @@ _assert_eq "WSA-g: state.json updated via fallback" "done" "$_val"
 
 rm -rf "$_sandbox"
 
+# ── WSA-h: discover_instance backfill routes through state-transition.sh ─────
+#
+# After W13 Commit 3, the backfill inside discover_instance() calls
+# state-transition.sh backfill_session instead of _write_state_atomic directly.
+# That means the resulting state.json gains a state_integrity_hash (because
+# backfill_session goes through _write_with_hash).  The old direct
+# _write_state_atomic path left no hash.  So the test verifies:
+#   1. discover_instance succeeds when session_id is a placeholder
+#   2. state.json ends up with state_integrity_hash present after backfill
+
+echo ""
+echo "── WSA-h: discover_instance backfill writes integrity hash ──"
+
+_sandbox=$(mktemp -d)
+_sandbox="$(cd "$_sandbox" && pwd -P)"
+_iid="deadc0de"
+_idir="${_sandbox}/.claude/deepwork/${_iid}"
+mkdir -p "$_idir"
+_state="${_idir}/state.json"
+
+STATE_TRANSITION="${PLUGIN_ROOT}/scripts/state-transition.sh"
+"$STATE_TRANSITION" --state-file "$_state" init - <<'EOJS'
+{
+  "session_id": "deepwork-placeholder-001",
+  "instance_id": "deadc0de",
+  "phase": "scope",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOJS
+
+# Advance state so the file has a hash (phase_advance writes one), then
+# reset session_id to a placeholder to simulate a pre-backfill instance.
+"$STATE_TRANSITION" --state-file "$_state" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$_state" merge '{"session_id":"deepwork-placeholder-001"}'
+(
+  unset _DW_TIMING_TRAP_INSTALLED
+  unset INSTANCE_DIR
+  export CLAUDE_PROJECT_DIR="${_sandbox}"
+  # shellcheck source=/dev/null
+  source "$INSTANCE_LIB"
+  discover_instance "real-session-abc"
+) >/dev/null 2>&1
+_rc=$?
+
+# session_id should be backfilled to the real session id
+_sid=$(jq -r '.session_id // ""' "$_state" 2>/dev/null)
+_assert_eq "WSA-h: session_id backfilled to real session" "real-session-abc" "$_sid"
+
+# Integrity hash must now be present (backfill_session uses _write_with_hash)
+_h_after=$(jq -r '.state_integrity_hash // ""' "$_state" 2>/dev/null)
+if [[ -n "$_h_after" ]] && [[ "$_h_after" != "null" ]]; then
+  _pass "WSA-h: state_integrity_hash present after backfill"
+else
+  _fail "WSA-h: state_integrity_hash absent after backfill — old direct-write path still active"
+fi
+
+rm -rf "$_sandbox"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""
