@@ -34,14 +34,15 @@ Then use `AskUserQuestion` to ask the user which instance to tear down.
    - **This is the ONLY place TeamDelete is called.** `hooks/approve-archive.sh` archives state + restores settings on APPROVE but leaves the team intact for inspection; a full teardown (team deletion) only happens when this skill runs.
    - If TeamDelete fails (team already gone), continue anyway.
 
-8. Archive runtime state; preserve all artifacts for audit and future reference:
+8. Archive runtime state via the canonical writer, then clean up transient files:
 ```bash
-mv .claude/deepwork/<id>/state.json .claude/deepwork/<id>/state.archived.json
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file ".claude/deepwork/<id>/state.json" archive_state
 rm -f .claude/deepwork/<id>/heartbeat.json
 rm -f .claude/deepwork/<id>/.idle-retry.*
 ```
 
-The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
+`archive_state` emits a `state_archived` event, renames `state.json` → `state.archived.json`, and renames `events.jsonl` → `events.archived.jsonl`. The rename (not delete) of `state.json` stops all active-session globs (`.claude/deepwork/*/state.json`) from picking up this instance — so `setup-deepwork.sh`, `session-context.sh`, `deepwork-status`, `deepwork-bar`, `deepwork-guardrail`, and this skill all correctly skip it — while preserving the full structured record (bar verdicts, empirical_unknowns, user_feedback, guardrails, role_definitions, anchors) for programmatic query across past deepwork sessions. The archived filename is neutral because this skill runs on mid-flight abort, post-APPROVE cleanup, and post-HALT cleanup; the `phase` field inside the archived state distinguishes them.
 
 Do NOT delete the artifacts — they capture the *why* behind the session (what was explored, what failed, what was rejected) and remain useful after teardown for historical analysis and future decisions:
 - `log.md` — narrative history

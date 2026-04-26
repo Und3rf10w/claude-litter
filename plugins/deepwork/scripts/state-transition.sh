@@ -1139,9 +1139,176 @@ PYEOF
     exit 0
     ;;
 
+  # ---- bar_add ---------------------------------------------------------------
+  # bar_add --id <id> --statement <text> [--categorical-ban]
+  # Appends to .bars[] (or .bar[] for compat), emits bar_added event.
+  bar_add)
+    _BA_ID=""
+    _BA_STMT=""
+    _BA_CAT_BAN="false"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --id) _BA_ID="$2"; shift 2 ;;
+        --statement) _BA_STMT="$2"; shift 2 ;;
+        --categorical-ban) _BA_CAT_BAN="true"; shift ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_BA_ID" ]] || { printf 'bar_add: --id <id> required\n' >&2; exit 3; }
+    [[ -n "$_BA_STMT" ]] || { printf 'bar_add: --statement <text> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _ensure_event_log
+    _emit_event "bar_added" \
+      "$(jq -cn --arg id "$_BA_ID" --arg stmt "$_BA_STMT" --argjson cat "$_BA_CAT_BAN" \
+          '{id: $id, statement: $stmt, categorical_ban: $cat}')"
+    _write_with_hash "$STATE_FILE" \
+      --arg id "$_BA_ID" \
+      --arg stmt "$_BA_STMT" \
+      --argjson cat "$_BA_CAT_BAN" \
+      '.bar = ((.bar // []) + [{id: $id, criterion: $stmt, verdict: null, categorical_ban: $cat, evidence_required: "user-specified criterion"}])'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
+  # ---- bar_remove ------------------------------------------------------------
+  # bar_remove --id <id>
+  # Removes from .bar[], emits bar_removed event.
+  bar_remove)
+    _BR_ID=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --id) _BR_ID="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_BR_ID" ]] || { printf 'bar_remove: --id <id> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _ensure_event_log
+    _emit_event "bar_removed" \
+      "$(jq -cn --arg id "$_BR_ID" '{id: $id}')"
+    _write_with_hash "$STATE_FILE" \
+      --arg id "$_BR_ID" \
+      '.bar = [(.bar // [])[] | select(.id != $id)]'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
+  # ---- guardrail_add ---------------------------------------------------------
+  # guardrail_add --statement <text> [--source <src>]
+  # Appends to .guardrails[], emits guardrail_added event.
+  guardrail_add)
+    _GA_STMT=""
+    _GA_SRC="user"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --statement) _GA_STMT="$2"; shift 2 ;;
+        --source) _GA_SRC="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_GA_STMT" ]] || { printf 'guardrail_add: --statement <text> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _ensure_event_log
+    _emit_event "guardrail_added" \
+      "$(jq -cn --arg stmt "$_GA_STMT" --arg src "$_GA_SRC" '{statement: $stmt, source: $src}')"
+    _write_with_hash "$STATE_FILE" \
+      --arg stmt "$_GA_STMT" \
+      --arg src "$_GA_SRC" \
+      --arg ts "$_NOW" \
+      '.guardrails = ((.guardrails // []) + [{rule: $stmt, source: $src, timestamp: $ts}])'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
+  # ---- guardrail_replace -----------------------------------------------------
+  # guardrail_replace --index <n> --statement <text> [--source <src>]
+  # Replaces .guardrails[n], emits guardrail_replaced event.
+  guardrail_replace)
+    _GRP_IDX=""
+    _GRP_STMT=""
+    _GRP_SRC=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --index) _GRP_IDX="$2"; shift 2 ;;
+        --statement) _GRP_STMT="$2"; shift 2 ;;
+        --source) _GRP_SRC="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_GRP_IDX" ]] || { printf 'guardrail_replace: --index <n> required\n' >&2; exit 3; }
+    [[ -n "$_GRP_STMT" ]] || { printf 'guardrail_replace: --statement <text> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _ensure_event_log
+    _emit_event "guardrail_replaced" \
+      "$(jq -cn --argjson idx "$_GRP_IDX" --arg stmt "$_GRP_STMT" --arg src "$_GRP_SRC" \
+          '{index: $idx, statement: $stmt, source: $src}')"
+    _write_with_hash "$STATE_FILE" \
+      --argjson idx "$_GRP_IDX" \
+      --arg stmt "$_GRP_STMT" \
+      --arg src "$_GRP_SRC" \
+      --arg ts "$_NOW" \
+      'if ($idx < 0) or ($idx >= ((.guardrails // []) | length)) then
+         error("guardrail_replace: index \($idx) out of range")
+       else
+         .guardrails[$idx].rule = $stmt
+         | if $src == "" then .
+           else .guardrails[$idx].source = $src
+                | .guardrails[$idx].timestamp = $ts
+           end
+       end'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
+  # ---- guardrail_remove ------------------------------------------------------
+  # guardrail_remove --index <n>
+  # Removes .guardrails[n], emits guardrail_removed event.
+  guardrail_remove)
+    _GRM_IDX=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --index) _GRM_IDX="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_GRM_IDX" ]] || { printf 'guardrail_remove: --index <n> required\n' >&2; exit 3; }
+    _require_state_file
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
+    _ensure_event_log
+    _emit_event "guardrail_removed" \
+      "$(jq -cn --argjson idx "$_GRM_IDX" '{index: $idx}')"
+    _write_with_hash "$STATE_FILE" \
+      --argjson idx "$_GRM_IDX" \
+      'del(.guardrails[$idx])'
+    rc=$?; [[ $rc -eq 0 ]] || exit 4
+    exit 0
+    ;;
+
+  # ---- archive_state ---------------------------------------------------------
+  # archive_state
+  # Emits state_archived event, renames state.json → state.archived.json,
+  # renames events.jsonl → events.archived.jsonl.
+  archive_state)
+    _require_state_file
+    _ensure_event_log
+    _emit_event "state_archived" '{}'
+    _ARCHIVE_JSON="${INSTANCE_DIR}/state.archived.json"
+    _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+    _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
+    mv "$STATE_FILE" "$_ARCHIVE_JSON" || { printf 'archive_state: failed to rename state.json\n' >&2; exit 4; }
+    [[ -f "$_EVENTS_FILE" ]] && mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || true
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state\n' >&2
     exit 3
     ;;
 esac

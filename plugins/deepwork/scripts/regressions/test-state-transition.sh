@@ -337,6 +337,115 @@ OUT=$("$STATE_TRANSITION" --state-file "$SF" phase_advance --to "execute" 2>&1)
 RC=$?
 _assert_exit "ST-s: exit 2 (hash mismatch after source_of_truth mutation)" "2" "$RC"
 
+# ── ST-t: bar_add appends to .bar[] + hash updated ──────────────────────────
+echo ""
+echo "── ST-t: bar_add appends bar criterion ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G1" --statement "graceful rollback path exists"
+RC=$?
+_assert_exit "ST-t: exit 0" "0" "$RC"
+_assert_jq_eq "ST-t: bar length=1" "$SF" '.bar | length' "1"
+_assert_jq_eq "ST-t: bar[0].id=G1" "$SF" '.bar[0].id' "G1"
+_assert_jq_eq "ST-t: bar[0].criterion set" "$SF" '.bar[0].criterion' "graceful rollback path exists"
+_assert_jq_eq "ST-t: categorical_ban=false" "$SF" '.bar[0].categorical_ban' "false"
+_assert_hash_present "ST-t: hash updated" "$SF"
+# Verify bar_added event emitted
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+if grep -q '"event_type":"bar_added"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-t: bar_added event in events.jsonl"
+else
+  _fail "ST-t: bar_added event missing from events.jsonl"
+fi
+
+# ── ST-u: bar_remove removes entry + hash updated ────────────────────────────
+echo ""
+echo "── ST-u: bar_remove deletes bar criterion ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G1" --statement "criterion one"
+"$STATE_TRANSITION" --state-file "$SF" bar_add --id "G2" --statement "criterion two"
+"$STATE_TRANSITION" --state-file "$SF" bar_remove --id "G1"
+RC=$?
+_assert_exit "ST-u: exit 0" "0" "$RC"
+_assert_jq_eq "ST-u: bar length=1 after remove" "$SF" '.bar | length' "1"
+_assert_jq_eq "ST-u: remaining entry is G2" "$SF" '.bar[0].id' "G2"
+_assert_hash_present "ST-u: hash updated" "$SF"
+
+# ── ST-v: guardrail_add appends guardrail + hash updated ─────────────────────
+echo ""
+echo "── ST-v: guardrail_add appends guardrail ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "no kill signals" --source "user"
+RC=$?
+_assert_exit "ST-v: exit 0" "0" "$RC"
+_assert_jq_eq "ST-v: guardrails length=1" "$SF" '.guardrails | length' "1"
+_assert_jq_eq "ST-v: rule set" "$SF" '.guardrails[0].rule' "no kill signals"
+_assert_jq_eq "ST-v: source=user" "$SF" '.guardrails[0].source' "user"
+_assert_hash_present "ST-v: hash updated" "$SF"
+if grep -q '"event_type":"guardrail_added"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-v: guardrail_added event in events.jsonl"
+else
+  _fail "ST-v: guardrail_added event missing from events.jsonl"
+fi
+
+# ── ST-w: guardrail_replace overwrites rule + hash updated ───────────────────
+echo ""
+echo "── ST-w: guardrail_replace overwrites guardrail at index ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "old rule" --source "user"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_replace --index 0 --statement "new rule" --source "orchestrator"
+RC=$?
+_assert_exit "ST-w: exit 0" "0" "$RC"
+_assert_jq_eq "ST-w: rule updated" "$SF" '.guardrails[0].rule' "new rule"
+_assert_jq_eq "ST-w: source updated" "$SF" '.guardrails[0].source' "orchestrator"
+_assert_hash_present "ST-w: hash updated" "$SF"
+
+# ── ST-x: guardrail_remove deletes at index + hash updated ───────────────────
+echo ""
+echo "── ST-x: guardrail_remove removes guardrail at index ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "rule zero"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_add --statement "rule one"
+"$STATE_TRANSITION" --state-file "$SF" guardrail_remove --index 0
+RC=$?
+_assert_exit "ST-x: exit 0" "0" "$RC"
+_assert_jq_eq "ST-x: guardrails length=1 after remove" "$SF" '.guardrails | length' "1"
+_assert_jq_eq "ST-x: remaining rule is rule one" "$SF" '.guardrails[0].rule' "rule one"
+_assert_hash_present "ST-x: hash updated" "$SF"
+
+# ── ST-y: archive_state renames state.json + events.jsonl ────────────────────
+echo ""
+echo "── ST-y: archive_state renames state.json and events.jsonl ──"
+_make_state "scope"
+"$STATE_TRANSITION" --state-file "$SF" phase_advance --to "work"
+"$STATE_TRANSITION" --state-file "$SF" archive_state
+RC=$?
+_assert_exit "ST-y: exit 0" "0" "$RC"
+if [[ ! -f "$SF" ]]; then
+  _pass "ST-y: state.json no longer present"
+else
+  _fail "ST-y: state.json still exists after archive_state"
+fi
+if [[ -f "${INSTANCE_DIR}/state.archived.json" ]]; then
+  _pass "ST-y: state.archived.json created"
+else
+  _fail "ST-y: state.archived.json not found"
+fi
+if [[ -f "${INSTANCE_DIR}/events.archived.jsonl" ]]; then
+  _pass "ST-y: events.archived.jsonl created"
+else
+  _fail "ST-y: events.archived.jsonl not found"
+fi
+if [[ ! -f "${INSTANCE_DIR}/events.jsonl" ]]; then
+  _pass "ST-y: events.jsonl no longer present"
+else
+  _fail "ST-y: events.jsonl still exists after archive_state"
+fi
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

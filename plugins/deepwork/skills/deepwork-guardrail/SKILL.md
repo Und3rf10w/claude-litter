@@ -42,65 +42,41 @@ Glob: .claude/deepwork/*/state.json
 
 ### `add [--source <src>] "<rule>"`
 
-Append a guardrail entry with the given (or default `"user"`) source, atomic tmp+mv:
+Append a guardrail entry via the canonical writer:
 
 ```bash
-NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 STATE=".claude/deepwork/<id>/state.json"
 SOURCE="${SOURCE_OVERRIDE:-user}"  # parsed from --source, default "user"
-jq --arg rule "<rule>" --arg source "$SOURCE" --arg ts "$NOW" \
-  '.guardrails = (.guardrails // []) + [{
-    rule: $rule,
-    source: $source,
-    timestamp: $ts
-  }]' "$STATE" > "${STATE}.tmp.$$"
-if [ -s "${STATE}.tmp.$$" ]; then
-  mv "${STATE}.tmp.$$" "$STATE"
-else
-  rm -f "${STATE}.tmp.$$"
-  exit 1
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file "$STATE" guardrail_add \
+  --statement "<rule>" \
+  --source "$SOURCE"
 ```
 
 Report: "Added guardrail [source: <src>]: <rule>. Applies to all subsequent teammate spawns. Existing teammates don't see it until you re-spawn or DM them."
 
 ### `remove <index>`
 
-Remove the guardrail at 0-based index:
+Remove the guardrail at 0-based index via the canonical writer:
 
 ```bash
-jq --argjson idx <index> \
-  '.guardrails = (.guardrails // []) | del(.guardrails[$idx])' "$STATE" > "${STATE}.tmp.$$"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file "$STATE" guardrail_remove --index <index>
 ```
 
 Report which rule was removed, or error if the index was out of range.
 
 ### `replace <index> [--source <src>] "<rule>"`
 
-Overwrite the rule at 0-based index. Attribution is preserved by default — if `--source` is not supplied, the entry's existing `source` field is kept. If `--source` is supplied, it replaces the source AND the timestamp is refreshed to `now()` (because re-attribution is itself an event worth timestamping). The original rule text is lost; use `list` first if you want to log it before replacement.
+Overwrite the rule at 0-based index via the canonical writer. Attribution is preserved by default — if `--source` is not supplied, the entry's existing `source` field is kept. If `--source` is supplied, the timestamp is refreshed to reflect re-attribution.
 
 ```bash
-NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # SOURCE_OVERRIDE is empty if --source was not supplied
-jq --argjson idx <index> --arg rule "<rule>" --arg src "${SOURCE_OVERRIDE:-}" --arg ts "$NOW" \
-  '
-  .guardrails = (.guardrails // []) |
-  if ($idx < 0) or ($idx >= (.guardrails | length)) then
-    error("replace: index \($idx) out of range (0..\(.guardrails | length - 1))")
-  else
-    .guardrails[$idx].rule = $rule
-    | if $src == "" then .
-      else .guardrails[$idx].source = $src
-           | .guardrails[$idx].timestamp = $ts
-      end
-  end
-  ' "$STATE" > "${STATE}.tmp.$$"
-if [ -s "${STATE}.tmp.$$" ]; then
-  mv "${STATE}.tmp.$$" "$STATE"
-else
-  rm -f "${STATE}.tmp.$$"
-  exit 1
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file "$STATE" guardrail_replace \
+  --index <index> \
+  --statement "<rule>" \
+  $( [[ -n "${SOURCE_OVERRIDE:-}" ]] && echo "--source $SOURCE_OVERRIDE" )
 ```
 
 Report: "Replaced guardrail [<index>] — source: <src>, new rule: <rule>."

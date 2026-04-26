@@ -36,7 +36,7 @@ Glob: .claude/deepwork/*/state.json
 
 ### `add "<criterion>" [--categorical-ban]`
 
-Compute next id (max existing + 1, starting at G1), then append:
+Compute next id (max existing + 1, starting at G1), then call the canonical writer:
 
 ```bash
 STATE=".claude/deepwork/<id>/state.json"
@@ -48,29 +48,22 @@ NEXT_ID=$(jq -r '
   end
 ' "$STATE")
 
-jq --arg id "$NEXT_ID" \
-   --arg criterion "<criterion>" \
-   --argjson cat_ban "<true|false>" \
-  '.bar = (.bar // []) + [{
-    id: $id,
-    criterion: $criterion,
-    evidence_required: "user-specified criterion — CRITIC should infer evidence type or ask orchestrator",
-    verdict: null,
-    categorical_ban: $cat_ban
-  }]' "$STATE" > "${STATE}.tmp.$$"
-
-[ -s "${STATE}.tmp.$$" ] && mv "${STATE}.tmp.$$" "$STATE" || rm -f "${STATE}.tmp.$$"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file "$STATE" bar_add \
+  --id "$NEXT_ID" \
+  --statement "<criterion>" \
+  $( [[ "<categorical-ban-flag>" == "--categorical-ban" ]] && echo "--categorical-ban" )
 ```
 
 Report: "Added bar criterion <id>: <criterion>. CRITIC will verdict against this on the next CRITIQUE cycle."
 
 ### `remove <id>`
 
-Delete the entry with matching id:
+Delete the entry with matching id via the canonical writer:
 
 ```bash
-jq --arg id "<id>" \
-  '.bar = (.bar // []) | .bar |= map(select(.id != $id))' "$STATE" > "${STATE}.tmp.$$"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
+  --state-file "$STATE" bar_remove --id "<id>"
 ```
 
 Report the removed criterion, or error if not found.
