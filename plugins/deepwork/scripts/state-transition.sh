@@ -497,7 +497,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "phase_advanced" \
-      "$(jq -cn --arg fp "$current_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')"
+      "$(jq -cn --arg fp "$current_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" || exit 5
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.phase = $phase'
     rc=$?
     [[ $rc -eq 0 ]] || exit 4
@@ -521,7 +521,7 @@ case "$SUBCOMMAND" in
     _current_exec_phase=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
     _ensure_event_log
     _emit_event "exec_phase_advanced" \
-      "$(jq -cn --arg fp "$_current_exec_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')"
+      "$(jq -cn --arg fp "$_current_exec_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" || exit 5
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.execute.phase = $phase'
     rc=$?; [[ $rc -eq 0 ]] || exit 4
     exit 0
@@ -541,7 +541,7 @@ case "$SUBCOMMAND" in
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "field_set" \
-      "$(jq -cn --arg p "$JQ_PATH" --argjson v "$JSON_VALUE" '{jq_path: $p, json_value: $v}')"
+      "$(jq -cn --arg p "$JQ_PATH" --argjson v "$JSON_VALUE" '{jq_path: $p, json_value: $v}')" || exit 5
     # Apply field set + audit log + hash atomically (hook_warnings kept per §9.6 Option B)
     _write_with_hash "$STATE_FILE" \
       --arg path "$JQ_PATH" \
@@ -566,7 +566,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "array_appended" \
-      "$(jq -cn --arg p "$JQ_PATH" --argjson o "$JSON_OBJ" '{jq_path: $p, json_object: $o}')"
+      "$(jq -cn --arg p "$JQ_PATH" --argjson o "$JSON_OBJ" '{jq_path: $p, json_object: $o}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson obj "$JSON_OBJ" \
       '('"$JQ_PATH"') += [$obj]'
@@ -584,7 +584,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "merged" \
-      "$(jq -cn --argjson f "$JSON_FRAG" '{json_fragment: $f}')"
+      "$(jq -cn --argjson f "$JSON_FRAG" '{json_fragment: $f}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson frag "$JSON_FRAG" \
       '. * $frag'
@@ -618,7 +618,7 @@ case "$SUBCOMMAND" in
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "halt_recorded" \
-      "$(jq -cn --arg s "$SUMMARY" --argjson b "$BLOCKERS_JSON" '{summary: $s, blockers: $b}')"
+      "$(jq -cn --arg s "$SUMMARY" --argjson b "$BLOCKERS_JSON" '{summary: $s, blockers: $b}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg summary "$SUMMARY" \
       --argjson blockers "$BLOCKERS_JSON" \
@@ -651,7 +651,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "session_backfilled" \
-      "$(jq -cn --arg sid "$SESSION_ID_ARG" '{session_id: $sid}')"
+      "$(jq -cn --arg sid "$SESSION_ID_ARG" '{session_id: $sid}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg sid "$SESSION_ID_ARG" \
       '.session_id = $sid'
@@ -681,7 +681,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "flaky_test_added" \
-      "$(jq -cn --arg cmd "$CMD_ARG" '{command: $cmd}')"
+      "$(jq -cn --arg cmd "$CMD_ARG" '{command: $cmd}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg cmd "$CMD_ARG" \
       '.execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd])'
@@ -696,7 +696,7 @@ case "$SUBCOMMAND" in
 
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
-    _emit_event "last_updated_stamped" '{}'
+    _emit_event "last_updated_stamped" '{}' || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg now "$NOW" \
       '.last_updated = $now'
@@ -1008,7 +1008,7 @@ case "$SUBCOMMAND" in
     _emit_event "state_reverted" \
       "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
           --argjson snap "$_REVERT_SNAP" \
-          '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')"
+          '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" || exit 5
     exit 0
     ;;
 
@@ -1034,7 +1034,7 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _emit_event "bar_added" \
       "$(jq -cn --arg id "$_BA_ID" --arg stmt "$_BA_STMT" --argjson cat "$_BA_CAT_BAN" \
-          '{id: $id, statement: $stmt, categorical_ban: $cat}')"
+          '{id: $id, statement: $stmt, categorical_ban: $cat}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg id "$_BA_ID" \
       --arg stmt "$_BA_STMT" \
@@ -1060,7 +1060,7 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
     _ensure_event_log
     _emit_event "bar_removed" \
-      "$(jq -cn --arg id "$_BR_ID" '{id: $id}')"
+      "$(jq -cn --arg id "$_BR_ID" '{id: $id}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg id "$_BR_ID" \
       '.bar = [(.bar // [])[] | select(.id != $id)]'
@@ -1087,7 +1087,7 @@ case "$SUBCOMMAND" in
     _NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "guardrail_added" \
-      "$(jq -cn --arg stmt "$_GA_STMT" --arg src "$_GA_SRC" '{statement: $stmt, source: $src}')"
+      "$(jq -cn --arg stmt "$_GA_STMT" --arg src "$_GA_SRC" '{statement: $stmt, source: $src}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg stmt "$_GA_STMT" \
       --arg src "$_GA_SRC" \
@@ -1120,7 +1120,7 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _emit_event "guardrail_replaced" \
       "$(jq -cn --argjson idx "$_GRP_IDX" --arg stmt "$_GRP_STMT" --arg src "$_GRP_SRC" \
-          '{index: $idx, statement: $stmt, source: $src}')"
+          '{index: $idx, statement: $stmt, source: $src}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson idx "$_GRP_IDX" \
       --arg stmt "$_GRP_STMT" \
@@ -1155,7 +1155,7 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
     _ensure_event_log
     _emit_event "guardrail_removed" \
-      "$(jq -cn --argjson idx "$_GRM_IDX" '{index: $idx}')"
+      "$(jq -cn --argjson idx "$_GRM_IDX" '{index: $idx}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson idx "$_GRM_IDX" \
       'del(.guardrails[$idx])'

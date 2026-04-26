@@ -20,6 +20,7 @@
 # ST-s: source_of_truth mutation detected by integrity hash (W9 M2)
 # ST-z: concurrent set_field leaves state + events consistent
 # ST-aa: archive_state event_head matches last event in events.archived.jsonl
+# ST-bb: _emit_event failure (blocked events.jsonl) → exits 5, state.json unchanged
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -522,6 +523,43 @@ if [[ -f "$STAA_ARCHIVED" ]] && [[ -f "$STAA_EVENTS" ]]; then
   fi
 else
   _fail "ST-aa: state.archived.json or events.archived.jsonl missing"
+fi
+
+# ── ST-bb: _emit_event failure (broken events.jsonl) → exit 5, state.json not advanced ──
+echo ""
+echo "── ST-bb: _emit_event failure → exit 5, state.json unchanged ──"
+STBB_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stbb0000"
+mkdir -p "$STBB_INSTANCE_DIR"
+STBB_SF="${STBB_INSTANCE_DIR}/state.json"
+rm -f "$STBB_SF"
+"$STATE_TRANSITION" --state-file "$STBB_SF" init \
+  '{"session_id":"stbb-session","phase":"work","team_name":"stbb-team","hook_warnings":[]}'
+
+# Capture the phase before attempted transition
+STBB_PHASE_BEFORE=$(jq -r '.phase' "$STBB_SF" 2>/dev/null)
+
+# Make events.jsonl a directory so writes fail
+STBB_EVENTS="${STBB_INSTANCE_DIR}/events.jsonl"
+rm -f "$STBB_EVENTS"
+mkdir -p "$STBB_EVENTS"
+
+"$STATE_TRANSITION" --state-file "$STBB_SF" set_field ".phase" '"synthesize"' 2>/dev/null
+STBB_RC=$?
+
+# Remove the dir so subsequent reads work
+rmdir "$STBB_EVENTS" 2>/dev/null || true
+
+if [[ "$STBB_RC" -eq 5 ]]; then
+  _pass "ST-bb: exits 5 when _emit_event fails"
+else
+  _fail "ST-bb: expected exit 5, got ${STBB_RC}"
+fi
+
+STBB_PHASE_AFTER=$(jq -r '.phase' "$STBB_SF" 2>/dev/null)
+if [[ "$STBB_PHASE_AFTER" == "$STBB_PHASE_BEFORE" ]]; then
+  _pass "ST-bb: state.json phase unchanged after _emit_event failure"
+else
+  _fail "ST-bb: state.json phase changed (${STBB_PHASE_BEFORE} → ${STBB_PHASE_AFTER}), should not have advanced"
 fi
 
 # ── Summary ──
