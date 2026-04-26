@@ -15,7 +15,7 @@
 # with type=scope-delta and proposed_outcome=escalate, directing to /deepwork-execute-amend.
 #
 # CC source: cli_formatted_2.1.116.js:51984 (TaskCreated in event enum),
-# :265837 (TaskCreated hook schema — stdin fields: task_id, task_subject, task_description, metadata.*),
+# :265837 (TaskCreated hook schema — stdin fields: task_id, task_subject, task_description, team_name?, teammate_name? — no metadata),
 # :564690 (exit 2 → blockingError).
 # Fail-open if no active execute instance.
 
@@ -36,7 +36,15 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
 TASK_SUBJECT=$(printf '%s' "$INPUT" | jq -r '.task_subject // ""' 2>/dev/null || echo "")
 TASK_DESC=$(printf '%s' "$INPUT" | jq -r '.task_description // ""' 2>/dev/null || echo "")
-TASK_SCOPE=$(printf '%s' "$INPUT" | jq -r '.metadata.scope // ""' 2>/dev/null || echo "")
+TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
+
+# Read task metadata from task file (W11 H7: not from hook INPUT — no metadata in v2.1.118 schema)
+TASK_SCOPE=""
+if [[ -n "$TEAM_NAME" && -n "$TASK_ID" ]]; then
+  if _load_task_file "$TEAM_NAME" "$TASK_ID" 2>/dev/null; then
+    TASK_SCOPE=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.scope // ""' 2>/dev/null || echo "")
+  fi
+fi
 
 [[ -n "$TASK_SUBJECT" ]] || exit 0
 
