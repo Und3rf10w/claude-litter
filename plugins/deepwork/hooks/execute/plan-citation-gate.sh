@@ -42,6 +42,28 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")")
 [[ -n "$FILE_PATH" ]] || exit 0
 
+# W14: synchronous plan-hash recomputation. plan-drift-detector.sh relies on a
+# FileChanged(__plan_ref__) registration which may not fire on all installations.
+# Re-checking the plan hash here on every Write|Edit guarantees drift is detected
+# even without a working FileChanged watcher.
+_PLAN_REF=$(jq -r '.execute.plan_ref // ""' "$STATE_FILE" 2>/dev/null || echo "")
+_PLAN_HASH=$(jq -r '.execute.plan_hash // ""' "$STATE_FILE" 2>/dev/null || echo "")
+if [[ -n "$_PLAN_REF" && -n "$_PLAN_HASH" && -f "$_PLAN_REF" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    _CURRENT_PLAN_HASH=$(sha256sum "$_PLAN_REF" 2>/dev/null | awk '{print $1}' || echo "")
+  elif command -v shasum >/dev/null 2>&1; then
+    _CURRENT_PLAN_HASH=$(shasum -a 256 "$_PLAN_REF" 2>/dev/null | awk '{print $1}' || echo "")
+  else
+    _CURRENT_PLAN_HASH=""
+  fi
+  if [[ -n "$_CURRENT_PLAN_HASH" && "$_CURRENT_PLAN_HASH" != "$_PLAN_HASH" ]]; then
+    _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+      "{\"execute\":{\"plan_drift_detected\":true,\"plan_drift_detected_at\":\"${_NOW}\",\"plan_hash_at_drift\":\"${_CURRENT_PLAN_HASH}\"}}" \
+      2>/dev/null || true
+  fi
+fi
+
 # Drift block: if plan_drift_detected is true, all writes are blocked until amended
 DRIFT=$(jq -r '.execute.plan_drift_detected // false' "$STATE_FILE" 2>/dev/null || echo "false")
 if [[ "$DRIFT" == "true" ]]; then

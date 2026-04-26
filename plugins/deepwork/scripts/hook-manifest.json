@@ -98,14 +98,16 @@
     {
       "script": "hooks/version-bump-notify.sh",
       "event": "FileChanged",
-      "matcher": "^v[0-9]+(-final)?\\.md$",
-      "modes": ["both"]
+      "matcher": "proposals",
+      "modes": ["both"],
+      "_note": "W14: original regex matcher ^v[0-9]+(-final)?\\.md$ treated as literal path by chokidar, never matched. Now uses 'proposals' substring; session-context.sh outputs hookSpecificOutput.watchPaths for each proposals/v*.md file found on disk at session start so chokidar watches the concrete paths."
     },
     {
       "script": "hooks/stale-warn.sh",
       "event": "FileChanged",
-      "matcher": "^v[0-9]+(-final)?\\.md$",
-      "modes": ["both"]
+      "matcher": "proposals",
+      "modes": ["both"],
+      "_note": "W14: see version-bump-notify.sh note above."
     },
     {
       "script": "hooks/critique-version-gate.sh",
@@ -130,7 +132,8 @@
       "script": "hooks/wiki-log-append.sh",
       "event": "FileChanged",
       "matcher": ".claude/deepwork",
-      "modes": ["both"]
+      "modes": ["both"],
+      "_note": "W14: directory-level matcher; kept as secondary trigger. approve-archive.sh now calls wiki-log-append.sh synchronously (primary path) to guarantee wiki entry regardless of chokidar directory-watcher availability."
     },
     {
       "script": "hooks/execute/plan-citation-gate.sh",
@@ -164,12 +167,6 @@
       "modes": ["execute"],
       "async": true,
       "_note": "Captures test-runner exit-code failures (W11 H6). PostToolUseFailure schema: .error, .is_interrupt — no .tool_response."
-    },
-    {
-      "script": "hooks/execute/file-changed-retest.sh",
-      "event": "FileChanged",
-      "matcher": "src/**",
-      "modes": ["execute"]
     },
     {
       "script": "hooks/execute/plan-drift-detector.sh",

@@ -45,3 +45,19 @@ source "${PROFILE_DIR}/reinject.sh"
 # STATE_FILE, INSTANCE_DIR, GOAL, TEAM_NAME, PHASE to produce REINJECT_PROMPT.
 build_reinject_prompt
 printf '%s\n' "$REINJECT_PROMPT"
+
+# W14: emit hookSpecificOutput.watchPaths for concrete proposal files so chokidar
+# watches them directly. The FileChanged hooks for version-bump-notify and stale-warn
+# used regex matchers (^v[0-9]+(-final)?\.md$) which chokidar treated as literal
+# paths and never resolved — registering real paths here fixes the broken watch.
+_watch_paths=()
+if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
+  while IFS= read -r -d '' _pf; do
+    _watch_paths+=("$_pf")
+  done < <(find "${INSTANCE_DIR}/proposals" -maxdepth 1 -name 'v*.md' -print0 2>/dev/null)
+fi
+
+if [[ ${#_watch_paths[@]} -gt 0 ]]; then
+  _watch_json=$(printf '%s\n' "${_watch_paths[@]}" | jq -R . | jq -sc '.')
+  printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"watchPaths\":${_watch_json}}}"
+fi

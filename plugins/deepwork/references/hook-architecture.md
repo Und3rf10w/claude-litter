@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 108 nodes, 169 edges
+Graph: 107 nodes, 165 edges
 
 ## Mermaid Flowchart
 
@@ -52,7 +52,6 @@ flowchart LR
     bash_gate["bash-gate"]
     critique_version_gate["critique-version-gate"]
     deliver_gate["deliver-gate"]
-    file_changed_retest["file-changed-retest"]
     frontmatter_gate["frontmatter-gate"]
     halt_gate["halt-gate"]
     incident_detector["incident-detector"]
@@ -146,10 +145,9 @@ flowchart LR
     test_results_jsonl[/"  test-results.jsonl"/]
     version_sentinel_json[/"  version-sentinel.json"/]
   end
-  FileChanged -->|"src/**"| file_changed_retest
   FileChanged -->|"&lt;plan_ref&gt;"| plan_drift_detector
-  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| stale_warn
-  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| version_bump_notify
+  FileChanged -->|"proposals"| stale_warn
+  FileChanged -->|"proposals"| version_bump_notify
   FileChanged -->|".claude/deepwork"| wiki_log_append
   PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
@@ -193,8 +191,6 @@ flowchart LR
   critique_version_gate -.->|"reads"| current_version
   critique_version_gate -.->|"reads"| guardrails
   critique_version_gate -.->|"reads"| team_name
-  file_changed_retest -.->|"reads"| change_id
-  file_changed_retest -.->|"reads"| execute_phase
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   frontmatter_gate -.->|"reads"| single_writer_enabled
   halt_gate -.->|"reads"| execute_phase
@@ -205,6 +201,7 @@ flowchart LR
   plan_citation_gate -.->|"reads"| change_id
   plan_citation_gate -.->|"reads"| execute_phase
   plan_citation_gate -.->|"reads"| execute_plan_drift_detected
+  plan_citation_gate -.->|"reads"| execute_plan_hash
   plan_citation_gate -.->|"reads"| execute_plan_ref
   plan_citation_gate -.->|"reads"| execute_test_manifest
   plan_citation_gate -.->|"reads"| no_test_reason
@@ -274,13 +271,12 @@ flowchart LR
   bash_gate -.->|"reads"| rollback
   critique_version_gate -.->|"reads"| version_sentinel_json
   deliver_gate -.->|"reads"| proposals
-  file_changed_retest -.->|"reads"| pending_change_json
-  file_changed_retest -.->|"reads"| test_results_jsonl
   incident_detector -.->|"reads"| incidents_jsonl
   plan_citation_gate -.->|"reads"| pending_change_json
   plan_citation_gate -.->|"reads"| test_results_jsonl
   retest_dispatch -.->|"reads"| pending_change_json
   retest_dispatch -.->|"reads"| test_results_jsonl
+  session_context -.->|"reads"| proposals
   stale_warn -.->|"reads"| drift_log
   state_drift_marker -.->|"reads"| state_snapshot
   state_drift_marker -.->|"reads"| events_jsonl
@@ -302,7 +298,6 @@ flowchart LR
   approve_archive -->|"writes"| events_archived_jsonl
   approve_archive -->|"writes"| events_jsonl
   approve_archive -->|"writes"| state_archived_json
-  file_changed_retest -->|"writes"| test_results_jsonl
   incident_detector -->|"writes"| incidents_jsonl
   retest_dispatch -->|"writes"| test_results_jsonl
   stale_warn -->|"writes"| drift_log
@@ -434,31 +429,6 @@ flowchart LR
       },
       "source_refs": ["hooks/deliver-gate.sh"]
     },
-    "file-changed-retest.sh": {
-      "triggered_by": [
-      "FileChanged"
-      ],
-      "mode": "execute",
-      "reads": {
-        "state": [
-          ".change_id",
-          ".execute.phase"
-        ],
-        "markers": [
-          "pending-change.json",
-          "test-results.jsonl"
-        ]
-      },
-      "writes": {
-        "state": [
-          ""
-        ],
-        "markers": [
-          "test-results.jsonl"
-        ]
-      },
-      "source_refs": ["hooks/execute/file-changed-retest.sh"]
-    },
     "frontmatter-gate.sh": {
       "triggered_by": [
       "PreToolUse"
@@ -589,6 +559,7 @@ flowchart LR
           ".change_id",
           ".execute.phase",
           ".execute.plan_drift_detected",
+          ".execute.plan_hash",
           ".execute.plan_ref",
           ".execute.test_manifest",
           ".no_test_reason",
@@ -699,7 +670,7 @@ flowchart LR
           ".team_name"
         ],
         "markers": [
-          ""
+          "proposals"
         ]
       },
       "writes": {

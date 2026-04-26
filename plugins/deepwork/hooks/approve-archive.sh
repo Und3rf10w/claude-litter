@@ -37,6 +37,16 @@ rm -f "${INSTANCE_DIR}"/.idle-retry.* 2>/dev/null || true
 printf '\n> ✅ approve-archive: session %s archived (phase=done)\n' "$INSTANCE_ID" \
   >> "$LOG_FILE" 2>/dev/null || true
 
+# W14: synchronous wiki-log-append trigger. The FileChanged(.claude/deepwork) watcher
+# may miss the state.archived.json addition on some installations; calling directly
+# here guarantees the wiki entry regardless of chokidar directory-watcher availability.
+# Construct a synthetic FileChanged input for the archived state file.
+_archived_state="${INSTANCE_DIR}/state.archived.json"
+if [[ -f "$_archived_state" ]]; then
+  printf '%s' "{\"hook_event_name\":\"FileChanged\",\"session_id\":\"${SESSION_ID:-}\",\"file_path\":\"${_archived_state}\",\"event\":\"add\"}" \
+    | bash "${_PLUGIN_ROOT}/hooks/wiki-log-append.sh" 2>/dev/null || true
+fi
+
 # Settings teardown — no-ops if other active instances remain
 bash "${_PLUGIN_ROOT}/scripts/settings-teardown.sh" "$PROJECT_ROOT" 2>/dev/null || true
 

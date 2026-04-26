@@ -182,6 +182,47 @@ _assert_eq "HC-d: _load_task_file returns 1 for missing file" "1" "$_result_d2"
 
 rm -rf "$_TASKS_DIR"
 
+# ── HC-e: session-context.sh emits hookSpecificOutput.watchPaths for proposals/v*.md files ──
+echo ""
+echo "── HC-e: session-context.sh emits watchPaths JSON for proposals/v*.md files ──"
+
+SANDBOX_E=$(mktemp -d)
+trap 'rm -rf "$SANDBOX_C" "$SANDBOX_E"' EXIT
+
+_sid_e="hc-e-session-$(date +%s)"
+# Instance ID must be exactly 8 lowercase hex chars (validated by discover_instance)
+INST_DIR_E="${SANDBOX_E}/.claude/deepwork/ab12cd34"
+mkdir -p "${INST_DIR_E}/proposals"
+printf 'v1.md content\n' > "${INST_DIR_E}/proposals/v1.md"
+printf 'v2-final.md content\n' > "${INST_DIR_E}/proposals/v2-final.md"
+# non-matching file — should not appear in watchPaths
+printf 'notes content\n' > "${INST_DIR_E}/proposals/notes.md"
+
+STATE_FILE_E="${INST_DIR_E}/state.json"
+STATE_FILE="$STATE_FILE_E" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init \
+  "{\"session_id\":\"${_sid_e}\",\"phase\":\"scope\",\"team_name\":\"hce-team\",\"goal\":\"test goal\",\"mode\":\"default\"}" 2>/dev/null
+
+_sc_output=$(
+  printf '%s' "{\"session_id\":\"${_sid_e}\",\"hook_event_name\":\"SessionStart\"}" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX_E" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "${PLUGIN_ROOT}/hooks/session-context.sh" 2>/dev/null || true
+)
+
+# Extract the hookSpecificOutput line — may be last line of output
+_watch_line=$(printf '%s' "$_sc_output" | grep -o '{"hookSpecificOutput".*}' | head -1)
+_watch_paths_json=$(printf '%s' "$_watch_line" | jq -r '.hookSpecificOutput.watchPaths // empty' 2>/dev/null)
+_path_count=$(printf '%s' "$_watch_paths_json" | jq 'length' 2>/dev/null || echo "0")
+_has_v1=$(printf '%s' "$_watch_paths_json" | jq -r '.[] | select(endswith("v1.md"))' 2>/dev/null)
+_has_v2=$(printf '%s' "$_watch_paths_json" | jq -r '.[] | select(endswith("v2-final.md"))' 2>/dev/null)
+_has_notes=$(printf '%s' "$_watch_paths_json" | jq -r '.[] | select(endswith("notes.md"))' 2>/dev/null)
+
+_assert_eq "HC-e: watchPaths contains exactly 2 entries" "2" "$_path_count"
+_assert_nonempty "HC-e: watchPaths includes v1.md" "$_has_v1"
+_assert_nonempty "HC-e: watchPaths includes v2-final.md" "$_has_v2"
+_assert_eq "HC-e: watchPaths excludes notes.md" "" "$_has_notes"
+
+rm -rf "$SANDBOX_E"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
