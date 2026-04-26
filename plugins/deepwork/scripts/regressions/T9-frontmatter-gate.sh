@@ -277,6 +277,63 @@ echo "── T9-ot-c: Edit to override-tokens.json without sentinel → blocked 
 _assert_exit "T9-ot-c: Edit to override-tokens.json without sentinel blocked" "2" \
   "$(_run_gate_edit "$OT_FILE" '{"tokens":[]}')"
 
+# ── W15 FG-a: prefix match — sibling-dir substring match must NOT pass ──
+# A path like /some/parent-ab12cd34-extra/file.md matches the old substring
+# check but should NOT match the new prefix check.
+echo ""
+echo "── FG-a (W15): sibling dir with instance-ID substring — NOT matched ──"
+SIBLING_DIR="$SANDBOX/.claude/deepwork/sibling-${INSTANCE_ID}-suffix"
+mkdir -p "$SIBLING_DIR"
+SIBLING_FILE="$SIBLING_DIR/findings.md"
+# This must exit 0 (not in scope) rather than trying to validate frontmatter
+_assert_exit "FG-a: sibling dir not matched by prefix check" "0" \
+  "$(_run_gate "Write" "$SIBLING_FILE" "no frontmatter here")"
+
+# ── W15 FG-b: body-text fields do NOT satisfy frontmatter requirement ──
+# A file where artifact_type, author etc. appear in the document body (after
+# the closing ---) must still be rejected if the frontmatter block is absent/empty.
+echo ""
+echo "── FG-b (W15): required fields only in body, not in frontmatter → blocked ──"
+CONTENT_FIELDS_IN_BODY=$(cat <<'EOF'
+no frontmatter here
+
+artifact_type: findings
+author: test-agent
+instance: ab12cd34
+task_id: "1"
+bar_id: G1
+sources: []
+EOF
+)
+_assert_exit "FG-b: body-only fields rejected (no frontmatter block)" "2" \
+  "$(_run_gate "Write" "$TARGET_MD" "$CONTENT_FIELDS_IN_BODY")"
+
+# ── W15 FG-c: Edit that removes artifact_type is blocked ──
+# File on disk has valid frontmatter. Edit replaces artifact_type line with empty.
+echo ""
+echo "── FG-c (W15): Edit that removes artifact_type → blocked (exit 2) ──"
+printf '%s\n' "$CONTENT_VALID" > "$TARGET_MD"
+_run_gate_edit_full() {
+  local file_path="$1" old_string="$2" new_string="$3"
+  local payload
+  payload=$(jq -cn \
+    --arg sid "$SESSION_ID" \
+    --arg fp  "$file_path" \
+    --arg os  "$old_string" \
+    --arg ns  "$new_string" \
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {file_path: $fp, old_string: $os, new_string: $ns}}')
+  printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
+  echo $?
+}
+_assert_exit "FG-c: Edit removing artifact_type blocked" "2" \
+  "$(_run_gate_edit_full "$TARGET_MD" "artifact_type: findings" "")"
+
+# ── W15 FG-d: Edit that preserves artifact_type passes ──
+echo ""
+echo "── FG-d (W15): Edit that preserves artifact_type → allowed (exit 0) ──"
+_assert_exit "FG-d: Edit preserving artifact_type passes" "0" \
+  "$(_run_gate_edit_full "$TARGET_MD" "Valid artifact body." "Updated artifact body.")"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
