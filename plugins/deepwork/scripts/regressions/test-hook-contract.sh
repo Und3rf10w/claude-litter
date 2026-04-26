@@ -223,6 +223,55 @@ _assert_eq "HC-e: watchPaths excludes notes.md" "" "$_has_notes"
 
 rm -rf "$SANDBOX_E"
 
+# ── HC-f: session-context.sh emits a single JSON object (hookSpecificOutput), not prose + JSON ──
+echo ""
+echo "── HC-f: session-context.sh output is exactly one JSON line (no prose output) ──"
+
+SANDBOX_F=$(mktemp -d)
+trap 'rm -rf "$SANDBOX_C" "$SANDBOX_F"' EXIT
+
+_sid_f="hc-f-session-$(date +%s)"
+INST_DIR_F="${SANDBOX_F}/.claude/deepwork/ab12cd34"
+mkdir -p "${INST_DIR_F}/proposals"
+
+STATE_FILE_F="${INST_DIR_F}/state.json"
+STATE_FILE="$STATE_FILE_F" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init \
+  "{\"session_id\":\"${_sid_f}\",\"phase\":\"scope\",\"team_name\":\"hcf-team\",\"goal\":\"test goal\",\"mode\":\"default\"}" 2>/dev/null
+
+# startup trigger — should emit single JSON
+_sc_startup=$(
+  printf '%s' "{\"session_id\":\"${_sid_f}\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX_F" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "${PLUGIN_ROOT}/hooks/session-context.sh" 2>/dev/null || true
+)
+_startup_line_count=$(printf '%s\n' "$_sc_startup" | grep -c '^{' 2>/dev/null || echo "0")
+_startup_is_valid_json=$(printf '%s' "$_sc_startup" | grep '^{' | head -1 | jq empty 2>/dev/null && echo "yes" || echo "no")
+_startup_event=$(printf '%s' "$_sc_startup" | grep '^{' | head -1 | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null)
+_startup_ctx=$(printf '%s' "$_sc_startup" | grep '^{' | head -1 | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+_startup_ctx_nonempty=$([[ -n "$_startup_ctx" ]] && echo "yes" || echo "no")
+
+_assert_eq "HC-f startup: exactly one JSON line emitted" "1" "$_startup_line_count"
+_assert_eq "HC-f startup: output is valid JSON"          "yes" "$_startup_is_valid_json"
+_assert_eq "HC-f startup: hookEventName is SessionStart" "SessionStart" "$_startup_event"
+_assert_eq "HC-f startup: additionalContext is non-empty" "yes" "$_startup_ctx_nonempty"
+
+# resume trigger — additionalContext should contain resume text
+_sc_resume=$(
+  printf '%s' "{\"session_id\":\"${_sid_f}\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX_F" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "${PLUGIN_ROOT}/hooks/session-context.sh" 2>/dev/null || true
+)
+_resume_line_count=$(printf '%s\n' "$_sc_resume" | grep -c '^{' 2>/dev/null || echo "0")
+_resume_event=$(printf '%s' "$_sc_resume" | grep '^{' | head -1 | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null)
+_resume_ctx=$(printf '%s' "$_sc_resume" | grep '^{' | head -1 | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+_resume_has_text=$(printf '%s' "$_resume_ctx" | grep -qi 'session\|resume\|recovery' && echo "yes" || echo "no")
+
+_assert_eq "HC-f resume: exactly one JSON line emitted"  "1" "$_resume_line_count"
+_assert_eq "HC-f resume: hookEventName is SessionStart"  "SessionStart" "$_resume_event"
+_assert_eq "HC-f resume: additionalContext has resume text" "yes" "$_resume_has_text"
+
+rm -rf "$SANDBOX_F"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
