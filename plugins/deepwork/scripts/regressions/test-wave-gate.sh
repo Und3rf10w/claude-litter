@@ -14,7 +14,7 @@
 #   WG-j: TaskCreate without teammate_name and no resolvable owner → blocked (UNKNOWN_ACTOR, W9 M3)
 #   WG-k: grant_override issues token into override-tokens.json (W9 M4)
 #   WG-l: consume_override removes the token (one-time-use)
-#   WG-m: re-consuming already-consumed token → exit 1 (replay attack blocked)
+#   WG-m: token granted to teammate-A consumed by teammate-B → blocked (wrong actor)
 #   WG-n: wave mismatch with invalid/consumed token → blocked (WAVE_MISMATCH + INVALID_OVERRIDE_TOKEN)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
@@ -166,9 +166,9 @@ echo ""
 echo "── WG-e: teammate with valid override_token_id → allowed + audit in log.md ──"
 _write_design_state "explore"
 > "$LOG_FILE"
-# Grant an override token as orchestrator
+# Grant an override token as orchestrator — actor-bound to W1-researcher
 STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
-  grant_override --id "tok-wg-e" --description "pre-emptive work approved by lead" >/dev/null
+  grant_override --id "tok-wg-e" --to "W1-researcher" --description "pre-emptive work approved by lead" >/dev/null
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-5" \
@@ -270,7 +270,7 @@ echo "── WG-k: grant_override creates token in override-tokens.json ──"
 _write_design_state "explore"
 rm -f "${INSTANCE_DIR}/override-tokens.json"
 STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
-  grant_override --id "tok-wg-k" --description "test token" --granted-by "orchestrator" >/dev/null
+  grant_override --id "tok-wg-k" --to "W2-analyst" --description "test token" --granted-by "orchestrator" >/dev/null
 RC=$?
 _assert_exit "WG-k: grant_override exits 0" "0" "$RC"
 _OT_CONTENT=$(cat "${INSTANCE_DIR}/override-tokens.json" 2>/dev/null || echo "{}")
@@ -280,19 +280,24 @@ _assert_contains "WG-k: token id in file" "tok-wg-k" "$_OT_CONTENT"
 echo ""
 echo "── WG-l: consume_override removes token ──"
 STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
-  consume_override --id "tok-wg-k" >/dev/null
+  consume_override --id "tok-wg-k" --actor "W2-analyst" >/dev/null
 RC=$?
 _assert_exit "WG-l: consume_override exits 0" "0" "$RC"
 _OT_AFTER=$(cat "${INSTANCE_DIR}/override-tokens.json" 2>/dev/null || echo "{}")
 _assert_not_contains "WG-l: token removed from file" "tok-wg-k" "$_OT_AFTER"
 
-# ── WG-m: consume_override on already-consumed token → exit 1 (replay attack blocked) ──
+# ── WG-m: token granted to teammate-A, used by teammate-B → blocked (wrong actor) ──
 echo ""
-echo "── WG-m: re-consuming already-consumed token → blocked (exit 1) ──"
+echo "── WG-m: token granted to teammate-A consumed by teammate-B → blocked (exit 1) ──"
+# Grant a token to W3-writer
+STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
+  grant_override --id "tok-wg-m" --to "W3-writer" --description "wrong-actor test" >/dev/null
+# Attempt consume by a different actor
 OUT=$(STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
-  consume_override --id "tok-wg-k" 2>&1)
+  consume_override --id "tok-wg-m" --actor "W4-reviewer" 2>&1)
 RC=$?
-_assert_exit "WG-m: second consume exits 1" "1" "$RC"
+_assert_exit "WG-m: wrong actor blocked (exit=1)" "1" "$RC"
+_assert_contains "WG-m: error mentions granted_to mismatch" "W3-writer" "$OUT"
 
 # ── WG-n: wave-gate with consumed/invalid token → WAVE_MISMATCH blocked (exit 2) ──
 echo ""

@@ -38,6 +38,19 @@ if [[ "$FILE_PATH" == */state.json ]]; then
   exit 2
 fi
 
+# override-tokens.json single-writer gate: only state-transition.sh may write it.
+if [[ "$FILE_PATH" == */override-tokens.json ]]; then
+  sw_enabled=$(jq -r '.single_writer_enabled // true' "$STATE_FILE" 2>/dev/null)
+  if [[ "$sw_enabled" == "false" ]]; then
+    exit 0
+  fi
+  if [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]]; then
+    exit 0
+  fi
+  printf 'frontmatter-gate: SINGLE_WRITER_VIOLATION — direct Write to override-tokens.json is blocked; use state-transition.sh grant_override/consume_override\n' >&2
+  exit 2
+fi
+
 # ── .md frontmatter enforcement ──────────────────────────────────────────────
 [[ "$FILE_PATH" == *.md ]] || exit 0
 

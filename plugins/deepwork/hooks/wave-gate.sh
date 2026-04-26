@@ -116,7 +116,7 @@ fi
 # WAVE_MISMATCH with override_token_id: validate + consume token, then allow + audit
 if [[ -n "$OVERRIDE_TOKEN_ID" ]]; then
   if "${_PLUGIN_ROOT}/scripts/state-transition.sh" --state-file "$STATE_FILE" \
-       consume_override --id "$OVERRIDE_TOKEN_ID" >/dev/null 2>&1; then
+       consume_override --id "$OVERRIDE_TOKEN_ID" --actor "$ACTOR" >/dev/null 2>&1; then
     TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     printf '> wave-gate WAVE_OVERRIDE: teammate=%s task=%s wave=%s active_phase=%s token=%s (%s)\n' \
       "$ACTOR" "$TASK_ID" "$WAVE" "$ACTIVE_PHASE" "$OVERRIDE_TOKEN_ID" "$TS" \

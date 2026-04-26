@@ -12,5 +12,6 @@
   "halt_reason": null,
   "iteration_queue": [],
   "state_integrity_hash": null,
-  "single_writer_enabled": true
+  "single_writer_enabled": true,
+  "started_at": null
 }

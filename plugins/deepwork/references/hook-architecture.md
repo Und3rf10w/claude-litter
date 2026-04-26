@@ -99,7 +99,7 @@ flowchart LR
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
     metadata_cross_check_required(([".metadata.cross_check_required"]))
-    metadata_override_reason(([".metadata.override_reason"]))
+    metadata_override_token_id(([".metadata.override_token_id"]))
     metadata_scope(([".metadata.scope"]))
     metadata_scope_items(([".metadata.scope_items"]))
     metadata_scope_strict(([".metadata.scope_strict"]))
@@ -235,7 +235,7 @@ flowchart LR
   verdict_version_gate -.->|"reads"| current_version
   version_bump_notify -.->|"reads"| current_version
   wave_gate -.->|"reads"| execute_phase
-  wave_gate -.->|"reads"| metadata_override_reason
+  wave_gate -.->|"reads"| metadata_override_token_id
   wave_gate -.->|"reads"| metadata_wave
   wave_gate -.->|"reads"| phase
   wave_gate -.->|"reads"| team_name
@@ -950,7 +950,7 @@ flowchart LR
       "reads": {
         "state": [
           ".execute.phase",
-          ".metadata.override_reason",
+          ".metadata.override_token_id",
           ".metadata.wave",
           ".phase",
           ".team_name"

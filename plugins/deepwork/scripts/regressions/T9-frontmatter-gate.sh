@@ -260,6 +260,25 @@ echo ""
 echo "── T9-sw-i: Write to state.json WITHOUT sentinel → blocked (exit 2) ──"
 _assert_exit "T9-sw-i: Write to state.json without sentinel blocked" "2" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
 
+# ── (T9-ot-a) override-tokens.json single-writer gate: direct Write → blocked ──
+echo ""
+echo "── T9-ot-a: direct Write to override-tokens.json → blocked (exit 2) ──"
+OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+_assert_exit "T9-ot-a: Write to override-tokens.json blocked" "2" \
+  "$(_run_gate "Write" "$OT_FILE" '{"tokens":[]}')"
+
+# ── (T9-ot-b) override-tokens.json single-writer gate: Write WITH sentinel → allowed ──
+echo ""
+echo "── T9-ot-b: Write to override-tokens.json WITH _DW_STATE_TRANSITION_WRITER=1 → allowed ──"
+_assert_exit "T9-ot-b: Write to override-tokens.json with sentinel allowed" "0" \
+  "$(_run_gate_with_sentinel "Write" "$OT_FILE" '{"tokens":[]}')"
+
+# ── (T9-ot-c) override-tokens.json gate: Edit without sentinel → blocked ──
+echo ""
+echo "── T9-ot-c: Edit to override-tokens.json without sentinel → blocked (exit 2) ──"
+_assert_exit "T9-ot-c: Edit to override-tokens.json without sentinel blocked" "2" \
+  "$(_run_gate_edit "$OT_FILE" '{"tokens":[]}')"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

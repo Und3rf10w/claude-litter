@@ -1020,24 +1020,27 @@ PYEOF
 
   # ---- grant_override -------------------------------------------------------
   # Orchestrator-only: issue a one-time-use override token stored in
-  # ${INSTANCE_DIR}/override-tokens.json.  Tokens carry a description and
-  # are consumed atomically by wave-gate via consume_override.
+  # ${INSTANCE_DIR}/override-tokens.json.  Tokens carry a granted_to field
+  # that is enforced by consume_override — tokens are actor-bound.
   #
-  # Usage: grant_override --id <token_id> [--description <text>] [--granted-by <name>]
+  # Usage: grant_override --id <token_id> --to <teammate> [--description <text>] [--granted-by <name>]
   grant_override)
     _require_state_file
     _OT_ID=""
+    _OT_TO=""
     _OT_DESC=""
     _OT_BY="orchestrator"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --id) _OT_ID="$2"; shift 2 ;;
+        --to) _OT_TO="$2"; shift 2 ;;
         --description) _OT_DESC="$2"; shift 2 ;;
         --granted-by) _OT_BY="$2"; shift 2 ;;
         *) printf 'grant_override: unknown arg: %s\n' "$1" >&2; exit 3 ;;
       esac
     done
     [[ -n "$_OT_ID" ]] || { printf 'grant_override: --id is required\n' >&2; exit 3; }
+    [[ -n "$_OT_TO" ]] || { printf 'grant_override: --to <teammate> is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
     _OT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     # Initialise file if absent
@@ -1048,31 +1051,36 @@ PYEOF
       exit 1
     fi
     _OT_TMP="${_OT_FILE}.tmp.$$"
-    jq --arg id "$_OT_ID" --arg ts "$_OT_TS" --arg by "$_OT_BY" --arg desc "$_OT_DESC" \
-      '.tokens += [{id: $id, granted_at: $ts, granted_by: $by, description: $desc}]' \
+    jq --arg id "$_OT_ID" --arg to "$_OT_TO" --arg ts "$_OT_TS" --arg by "$_OT_BY" --arg desc "$_OT_DESC" \
+      '.tokens += [{id: $id, granted_to: $to, granted_at: $ts, granted_by: $by, description: $desc}]' \
       "$_OT_FILE" > "$_OT_TMP" 2>/dev/null \
       && mv "$_OT_TMP" "$_OT_FILE" \
       || { rm -f "$_OT_TMP"; printf 'grant_override: failed to write token\n' >&2; exit 1; }
-    printf 'grant_override: token "%s" issued at %s\n' "$_OT_ID" "$_OT_TS"
+    printf 'grant_override: token "%s" issued to "%s" at %s\n' "$_OT_ID" "$_OT_TO" "$_OT_TS"
     exit 0
     ;;
 
   # ---- consume_override -----------------------------------------------------
-  # Atomically validate and remove a one-time-use token from override-tokens.json.
-  # Returns 0 if token found and consumed; 1 if token not found or file missing.
+  # Atomically validate (token exists AND granted_to == actor) and remove a
+  # one-time-use token from override-tokens.json.
+  # Returns 0 if token found, actor matches, and token consumed.
+  # Returns 1 if token not found, already consumed, or actor mismatch.
   # Called by wave-gate.sh to validate override_token_id in task metadata.
   #
-  # Usage: consume_override --id <token_id>
+  # Usage: consume_override --id <token_id> --actor <teammate>
   consume_override)
     _require_state_file
     _CO_ID=""
+    _CO_ACTOR=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --id) _CO_ID="$2"; shift 2 ;;
+        --actor) _CO_ACTOR="$2"; shift 2 ;;
         *) printf 'consume_override: unknown arg: %s\n' "$1" >&2; exit 3 ;;
       esac
     done
     [[ -n "$_CO_ID" ]] || { printf 'consume_override: --id is required\n' >&2; exit 3; }
+    [[ -n "$_CO_ACTOR" ]] || { printf 'consume_override: --actor is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
     [[ -f "$_OT_FILE" ]] || { printf 'consume_override: no override-tokens.json\n' >&2; exit 1; }
     # Check token exists
@@ -1080,12 +1088,18 @@ PYEOF
       printf 'consume_override: token "%s" not found or already consumed\n' "$_CO_ID" >&2
       exit 1
     fi
+    # Enforce actor binding: granted_to must match the requesting actor
+    _CO_GRANTED_TO=$(jq -r --arg id "$_CO_ID" '.tokens[] | select(.id == $id) | .granted_to // ""' "$_OT_FILE" 2>/dev/null || echo "")
+    if [[ "$_CO_GRANTED_TO" != "$_CO_ACTOR" ]]; then
+      printf 'consume_override: token "%s" is granted to "%s", not "%s"\n' "$_CO_ID" "$_CO_GRANTED_TO" "$_CO_ACTOR" >&2
+      exit 1
+    fi
     _CO_TMP="${_OT_FILE}.tmp.$$"
     jq --arg id "$_CO_ID" '.tokens = [.tokens[] | select(.id != $id)]' \
       "$_OT_FILE" > "$_CO_TMP" 2>/dev/null \
       && mv "$_CO_TMP" "$_OT_FILE" \
       || { rm -f "$_CO_TMP"; printf 'consume_override: failed to remove token\n' >&2; exit 1; }
-    printf 'consume_override: token "%s" consumed\n' "$_CO_ID"
+    printf 'consume_override: token "%s" consumed by "%s"\n' "$_CO_ID" "$_CO_ACTOR"
     exit 0
     ;;
 
