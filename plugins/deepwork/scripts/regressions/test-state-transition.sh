@@ -18,6 +18,7 @@
 # ST-q: init guard fires when instance_id already present
 # ST-r: started_at mutation detected by integrity hash (W9 M2)
 # ST-s: source_of_truth mutation detected by integrity hash (W9 M2)
+# ST-z: test_manifest_update subcommand updates execute.test_manifest and appends event
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -444,6 +445,33 @@ if [[ ! -f "${INSTANCE_DIR}/events.jsonl" ]]; then
   _pass "ST-y: events.jsonl no longer present"
 else
   _fail "ST-y: events.jsonl still exists after archive_state"
+fi
+
+# ── ST-z: test_manifest_update updates execute.test_manifest and appends event ─
+echo ""
+echo "── ST-z: test_manifest_update updates execute.test_manifest and appends event ──"
+_make_state "execute"
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+# Seed execute.test_manifest with one entry via merge
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"execute":{"test_manifest":[{"id":"suite_a","last_result":null,"last_run_at":null}]}}' \
+  2>/dev/null
+"$STATE_TRANSITION" --state-file "$SF" test_manifest_update --id "suite_a" --result "pass"
+RC=$?
+_assert_exit "ST-z: exit 0" "0" "$RC"
+_assert_jq_eq "ST-z: test_manifest[0].last_result == pass" "$SF" '.execute.test_manifest[0].last_result' "pass"
+_assert_jq_eq "ST-z: test_manifest[0].id unchanged" "$SF" '.execute.test_manifest[0].id' "suite_a"
+_assert_hash_present "ST-z: hash updated" "$SF"
+if grep -q '"event_type":"test_manifest_updated"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-z: test_manifest_updated event in events.jsonl"
+else
+  _fail "ST-z: test_manifest_updated event missing from events.jsonl"
+fi
+STZ_RUN_AT=$(jq -r '.execute.test_manifest[0].last_run_at // ""' "$SF" 2>/dev/null || echo "")
+if [[ -n "$STZ_RUN_AT" ]]; then
+  _pass "ST-z: last_run_at is non-empty (${STZ_RUN_AT})"
+else
+  _fail "ST-z: last_run_at is empty after test_manifest_update"
 fi
 
 # ── Summary ──
