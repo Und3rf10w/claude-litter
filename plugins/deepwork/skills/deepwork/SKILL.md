@@ -30,7 +30,7 @@ You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the set
 
 Delivery happens via `ExitPlanMode`. The team NEVER crosses into implementation — the deliverable is an approved plan document.
 
-**Execute mode:** `/deepwork <goal> --mode execute --plan-ref <path>` delegates to the execute profile at `${CLAUDE_PLUGIN_ROOT}/profiles/execute/PROFILE.md`. This mode drives faithful implementation of an already-approved plan via role-asymmetric agents (PLANNER / IMPLEMENTER / VERIFIER). The `--plan-ref` flag is required in execute mode and points to the approved plan file. Execute mode reads `state.json` and appends events to `events.jsonl` using `state-transition.sh pending_change_set` for all file-change proposals — direct Bash redirects to `pending-change.json` are blocked.
+**Execute mode:** `/deepwork <goal> --mode execute --plan-ref <path>` delegates to the execute profile at `${CLAUDE_PLUGIN_ROOT}/profiles/execute/PROFILE.md`. This mode drives faithful implementation of an already-approved plan via role-asymmetric agents (PLANNER / IMPLEMENTER / VERIFIER). The `--plan-ref` flag is required in execute mode and points to the approved plan file. Execute mode reads `state.json` and appends events to `events.jsonl` using `state-transition.sh pending_change_set` for all file-change proposals — direct Bash redirects to `pending-change.json` are blocked. For the worktree isolation setup the orchestrator must perform before spawning implementers, see step 3 of `${CLAUDE_PLUGIN_ROOT}/profiles/execute/stances/executor-stance.md`.
 
 ## When to use it
 
