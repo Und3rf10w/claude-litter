@@ -43,7 +43,8 @@ printf '\n> ✅ approve-archive: session %s archived (phase=done)\n' "$INSTANCE_
 # Construct a synthetic FileChanged input for the archived state file.
 _archived_state="${INSTANCE_DIR}/state.archived.json"
 if [[ -f "$_archived_state" ]]; then
-  printf '%s' "{\"hook_event_name\":\"FileChanged\",\"session_id\":\"${SESSION_ID:-}\",\"file_path\":\"${_archived_state}\",\"event\":\"add\"}" \
+  jq -cn --arg sid "${SESSION_ID:-}" --arg fp "$_archived_state" \
+    '{hook_event_name:"FileChanged",session_id:$sid,file_path:$fp,event:"add"}' \
     | bash "${_PLUGIN_ROOT}/hooks/wiki-log-append.sh" 2>/dev/null || true
 fi
 
