@@ -21,7 +21,12 @@ _parse_hook_input
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 PHASE=$(jq -r '.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
-[[ "$PHASE" == "done" ]] || exit 0
+EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
+HALT_REASON=$(jq -r '.halt_reason // ""' "$STATE_FILE" 2>/dev/null || echo "")
+if [[ "$PHASE" != "done" ]]; then
+  # Also archive execute sessions that halted with a reason (irrecoverable halt)
+  [[ "$EXEC_PHASE" == "halt" && -n "$HALT_REASON" && "$HALT_REASON" != "null" ]] || exit 0
+fi
 
 mv "$STATE_FILE" "${INSTANCE_DIR}/state.archived.json" 2>/dev/null || exit 0
 mv "${INSTANCE_DIR}/events.jsonl" "${INSTANCE_DIR}/events.archived.jsonl" 2>/dev/null || true

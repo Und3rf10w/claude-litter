@@ -57,9 +57,9 @@ if [[ "$STOP_HOOK_ACTIVE" == "true" ]]; then
   exit 0
 fi
 
-# Check for unfinished work: change_log entries without verdict=="completed"
+# Check for unfinished work: change_log entries not yet APPROVED and merged
 CHANGE_LOG=$(jq '.execute.change_log // []' "$STATE_FILE" 2>/dev/null || echo "[]")
-UNFINISHED_COUNT=$(printf '%s' "$CHANGE_LOG" | jq '[.[] | select(.verdict != "completed")] | length' 2>/dev/null || echo "0")
+UNFINISHED_COUNT=$(printf '%s' "$CHANGE_LOG" | jq '[.[] | select(.critic_verdict != "APPROVED" or .merged_at == null)] | length' 2>/dev/null || echo "0")
 
 if [[ "$UNFINISHED_COUNT" == "0" ]]; then
   # All change_log entries have verdicts — allow stop
@@ -78,7 +78,7 @@ WARNING: plan drift detected — the plan file at ${PLAN_REF} has been modified 
 fi
 
 UNFINISHED_SUMMARY=$(printf '%s' "$CHANGE_LOG" | jq -r '
-  [.[] | select(.verdict != "completed") | "  - " + (.change_id // "?") + ": " + (.description // "no description")] |
+  [.[] | select(.critic_verdict != "APPROVED" or .merged_at == null) | "  - " + (.id // .change_id // "?") + ": " + (.description // "no description")] |
   join("\n")
 ' 2>/dev/null || echo "  (unable to read change_log)")
 

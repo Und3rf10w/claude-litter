@@ -121,7 +121,7 @@ while IFS= read -r _tm_entry; do
     TEST_MANIFEST="1"
     break
   fi
-done < <(jq -r '.execute.test_manifest // [] | .[]' "$STATE_FILE" 2>/dev/null || true)
+done < <(jq -r '.execute.test_manifest // [] | map(.source_file // .) | .[]' "$STATE_FILE" 2>/dev/null || true)
 
 if [[ "$TEST_MANIFEST" == "0" ]]; then
   NO_TEST_REASON=$(printf '%s' "$PENDING_JSON" | jq -r '.no_test_reason // ""' 2>/dev/null || echo "")

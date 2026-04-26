@@ -46,7 +46,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    ```
    Write to `state.json.execute.plan_hash`. Write `state.json.execute.plan_ref`. This is single-writer — only the orchestrator writes `plan_hash`.
 
-3. **Build test manifest** from the plan's test acceptance criteria. Write `state.json.execute.test_manifest[]` entries with `{id, test_cmd, last_result: "unknown", last_run_at: null, env}`.
+3. **Build test manifest** from the plan's test acceptance criteria. Write `state.json.execute.test_manifest[]` entries with `{id, source_file, test_command, env, last_result: "unknown", last_run_at: null}`.
 
 4. **Identify plan gates**. Each plan section that requires a CRITIC verdict is a gate. Create one TaskCreate per gate with:
    ```json
