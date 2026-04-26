@@ -821,8 +821,8 @@ ESQ_STATE="${ESQ_INSTANCE_DIR}/state.json"
 ESQ_FRAG='{"execute":{"plan_ref":"plans/v1.md","authorized_push":false},"custom_field":"qval"}'
 "$STATE_TRANSITION" --state-file "$ESQ_STATE" merge "$ESQ_FRAG" 2>/dev/null
 
-# Capture live state for comparison
-ESQ_LIVE=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+# Capture live state for comparison — sort keys to normalize insertion-order differences
+ESQ_LIVE=$(jq -cS 'del(.event_head,.integrity_hash,.state_integrity_hash,.last_updated)' "$ESQ_STATE" 2>/dev/null || echo "")
 
 # Now replay from scratch and compare
 rm -f "$ESQ_STATE"
@@ -830,7 +830,7 @@ ESQ_REPLAY_RC=0
 "$STATE_TRANSITION" --state-file "$ESQ_STATE" replay >/dev/null 2>&1 || ESQ_REPLAY_RC=$?
 _assert_exit "ES-q: replay exits 0" "0" "$ESQ_REPLAY_RC"
 
-ESQ_REPLAYED=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+ESQ_REPLAYED=$(jq -cS 'del(.event_head,.integrity_hash,.state_integrity_hash,.last_updated)' "$ESQ_STATE" 2>/dev/null || echo "")
 if [[ "$ESQ_LIVE" == "$ESQ_REPLAYED" ]]; then
   _pass "ES-q: replayed state matches live state after merge (recursive merge equivalence)"
 else

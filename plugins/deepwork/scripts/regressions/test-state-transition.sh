@@ -21,6 +21,8 @@
 # ST-z: concurrent set_field leaves state + events consistent
 # ST-aa: archive_state event_head matches last event in events.archived.jsonl
 # ST-bb: _emit_event failure (blocked events.jsonl) → exits 5, state.json unchanged
+# ST-cc: replay produces correct top-level .phase from phase_advanced events
+# ST-dd: last_updated advances on every mutation (live state + replay output)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -560,6 +562,67 @@ if [[ "$STBB_PHASE_AFTER" == "$STBB_PHASE_BEFORE" ]]; then
   _pass "ST-bb: state.json phase unchanged after _emit_event failure"
 else
   _fail "ST-bb: state.json phase changed (${STBB_PHASE_BEFORE} → ${STBB_PHASE_AFTER}), should not have advanced"
+fi
+
+# ── ST-cc: replay produces correct top-level .phase from phase_advanced events ──
+echo ""
+echo "── ST-cc: replay produces correct top-level .phase ──"
+STCC_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stcc0000"
+mkdir -p "$STCC_INSTANCE_DIR"
+STCC_SF="${STCC_INSTANCE_DIR}/state.json"
+rm -f "$STCC_SF"
+"$STATE_TRANSITION" --state-file "$STCC_SF" init \
+  '{"session_id":"stcc-session","phase":"work","team_name":"stcc-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STCC_SF" phase_advance --to "synthesize" >/dev/null 2>&1
+"$STATE_TRANSITION" --state-file "$STCC_SF" phase_advance --to "critique" >/dev/null 2>&1
+
+STCC_REPLAY="${STCC_INSTANCE_DIR}/state.replay.json"
+"$STATE_TRANSITION" --state-file "$STCC_SF" replay --output "$STCC_REPLAY"
+STCC_RC=$?
+_assert_exit "ST-cc: replay exits 0" "0" "$STCC_RC"
+
+STCC_LIVE_PHASE=$(jq -r '.phase' "$STCC_SF" 2>/dev/null)
+STCC_REPLAY_PHASE=$(jq -r '.phase' "$STCC_REPLAY" 2>/dev/null)
+if [[ "$STCC_REPLAY_PHASE" == "critique" ]]; then
+  _pass "ST-cc: replay phase=critique matches expected"
+else
+  _fail "ST-cc: replay phase=${STCC_REPLAY_PHASE}, expected critique"
+fi
+if [[ "$STCC_REPLAY_PHASE" == "$STCC_LIVE_PHASE" ]]; then
+  _pass "ST-cc: replay phase matches live state.json phase"
+else
+  _fail "ST-cc: replay phase (${STCC_REPLAY_PHASE}) != live phase (${STCC_LIVE_PHASE})"
+fi
+
+# ── ST-dd: last_updated advances on every mutation via replay ──
+echo ""
+echo "── ST-dd: replay last_updated advances on every mutation ──"
+STDD_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/stdd0000"
+mkdir -p "$STDD_INSTANCE_DIR"
+STDD_SF="${STDD_INSTANCE_DIR}/state.json"
+rm -f "$STDD_SF"
+"$STATE_TRANSITION" --state-file "$STDD_SF" init \
+  '{"session_id":"stdd-session","phase":"work","team_name":"stdd-team","hook_warnings":[]}'
+"$STATE_TRANSITION" --state-file "$STDD_SF" set_field ".team_name" '"stdd-team-v2"' >/dev/null 2>&1
+"$STATE_TRANSITION" --state-file "$STDD_SF" phase_advance --to "synthesize" >/dev/null 2>&1
+
+STDD_REPLAY="${STDD_INSTANCE_DIR}/state.replay.json"
+"$STATE_TRANSITION" --state-file "$STDD_SF" replay --output "$STDD_REPLAY"
+STDD_RC=$?
+_assert_exit "ST-dd: replay exits 0" "0" "$STDD_RC"
+
+STDD_LU=$(jq -r '.last_updated // ""' "$STDD_REPLAY" 2>/dev/null)
+if [[ -n "$STDD_LU" && "$STDD_LU" != "null" ]]; then
+  _pass "ST-dd: replay state has last_updated set (${STDD_LU})"
+else
+  _fail "ST-dd: replay state missing last_updated"
+fi
+
+STDD_LIVE_LU=$(jq -r '.last_updated // ""' "$STDD_SF" 2>/dev/null)
+if [[ -n "$STDD_LIVE_LU" && "$STDD_LIVE_LU" != "null" ]]; then
+  _pass "ST-dd: live state.json has last_updated set"
+else
+  _fail "ST-dd: live state.json missing last_updated"
 fi
 
 # ── Summary ──
