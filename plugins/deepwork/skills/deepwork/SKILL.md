@@ -1,10 +1,10 @@
 ---
-description: "Start a deepwork research/design convergence session with a 5-archetype oppositional team"
-argument-hint: "<goal> [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
+description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
+argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Read(.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
-# Deepwork — Research/Design Convergence
+# Deepwork — Research/Design Convergence or Plan Execution
 
 Execute the setup script to initialize the deepwork session:
 
@@ -24,24 +24,33 @@ You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the set
 
 ## What this command does
 
-`/deepwork` spawns a 5-archetype oppositional team (FALSIFIER / COVERAGE / MECHANISM / REFRAMER / CRITIC) that converges on a research or design question. The team runs a phase pipeline:
+**Design mode (default):** `/deepwork <goal>` spawns a 5-archetype oppositional team (FALSIFIER / COVERAGE / MECHANISM / REFRAMER / CRITIC) that converges on a research or design question. The team runs a phase pipeline:
 
 **SCOPE → EXPLORE → SYNTHESIZE → CRITIQUE → (REFINE → CRITIQUE)* → DELIVER → HALT**
 
-Delivery happens via `ExitPlanMode`. The team NEVER crosses into implementation — the deliverable is an approved plan document. You proceed from there (possibly via `/swarm-loop` on the plan, or directly).
+Delivery happens via `ExitPlanMode`. The team NEVER crosses into implementation — the deliverable is an approved plan document.
+
+**Execute mode:** `/deepwork <goal> --mode execute --plan-ref <path>` delegates to the execute profile at `${CLAUDE_PLUGIN_ROOT}/profiles/execute/PROFILE.md`. This mode drives faithful implementation of an already-approved plan via role-asymmetric agents (PLANNER / IMPLEMENTER / VERIFIER). The `--plan-ref` flag is required in execute mode and points to the approved plan file. Execute mode reads `state.json` and appends events to `events.jsonl` using `state-transition.sh pending_change_set` for all file-change proposals — direct Bash redirects to `pending-change.json` are blocked.
 
 ## When to use it
 
-Use `/deepwork` when:
+Use `/deepwork` (design mode) when:
 - The mechanism or answer is genuinely unknown and you're betting architecture on it
 - Stakes are high (production, cross-plugin coupling, irreversible design)
 - A solo agent has tried and gotten stuck or produced a fragile answer
 - You need the confidence of independent cross-verification (especially for nulls)
 
-Do NOT use `/deepwork` for execution tasks, documented answers, or small reversible changes. See `${CLAUDE_PLUGIN_ROOT}/references/when-not-to-use.md` for the full decision flowchart.
+Use `/deepwork --mode execute` when:
+- You have an approved plan from a prior design-mode session (or a manually authored plan)
+- You want structured, auditable, role-separated implementation with integrity guarantees
+- The plan is non-trivial enough that solo execution risks drift or silent scope expansion
+
+Do NOT use `/deepwork` (design mode) for execution tasks, documented answers, or small reversible changes. See `${CLAUDE_PLUGIN_ROOT}/references/when-not-to-use.md` for the full decision flowchart.
 
 ## Flags
 
+- `--mode execute`: switch to execution mode; requires `--plan-ref`. Delegates to `profiles/execute/PROFILE.md`.
+- `--plan-ref PATH`: (execute mode only, required) path to the approved plan document.
 - `--source-of-truth PATH` (repeatable): authoritative doc/bundle/spec. Every teammate prompt renders these.
 - `--anchor FILE:LINE` (repeatable): starting point for investigation. Seeds `state.json.anchors[]`.
 - `--guardrail '<rule>'` (repeatable): hard-safety constraint. Every teammate spawn renders these.

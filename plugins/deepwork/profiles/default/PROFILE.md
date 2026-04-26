@@ -123,6 +123,7 @@ You run exactly six phases. Do not skip, do not loop the whole pipeline — only
 4. Write `proposals/v1.md` with front-matter:
    ```yaml
    ---
+   artifact_type: proposals
    version: "v1"
    delta_from_prior: null
    bar_status: {G1: null, G2: null, ...}

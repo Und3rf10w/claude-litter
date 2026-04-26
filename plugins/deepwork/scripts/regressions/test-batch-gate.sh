@@ -5,6 +5,7 @@
 # BG-b: batch_gate_enabled=false in state.json → exits 0, log.md unchanged
 # BG-c: Write to state.json with phase change → phase-transition marker appended to log.md
 # BG-d: Write to state.json with bar verdict change → bar-verdict marker appended to log.md
+# BG-e: per-tool snapshot (.state-snapshot.<TOOL_USE_ID>.json) used for phase diff
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -173,6 +174,49 @@ _assert_exit "BG-d: exits 0 with bar verdict change" "0" "$BGD_RC"
 BGD_LOG_CONTENT=$(cat "$BGD_LOG" 2>/dev/null)
 _assert_contains "BG-d: bar-verdict marker in log.md" "bar-verdict" "$BGD_LOG_CONTENT"
 _assert_contains "BG-d: B1 in bar-verdict marker" "B1" "$BGD_LOG_CONTENT"
+
+# ── BG-e: per-tool snapshot (keyed by TOOL_USE_ID) used for phase diff ────────
+echo ""
+echo "── BG-e: per-tool snapshot (.state-snapshot.<TOOL_USE_ID>.json) used ──"
+
+BGE_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/c1d2e3f4"
+mkdir -p "$BGE_INSTANCE_DIR"
+BGE_STATE="${BGE_INSTANCE_DIR}/state.json"
+BGE_LOG="${BGE_INSTANCE_DIR}/log.md"
+BGE_SID="bg-e-session-$(date +%s)"
+BGE_TID="tool-use-id-bge-001"
+
+"$STATE_TRANSITION" --state-file "$BGE_STATE" init \
+  "{\"session_id\":\"${BGE_SID}\",\"phase\":\"scope\",\"team_name\":\"bg-e-team\"}" 2>/dev/null
+printf '# log\n' > "$BGE_LOG"
+
+# Write per-TOOL_USE_ID snapshot (as frontmatter-gate now does)
+cp "$BGE_STATE" "${BGE_INSTANCE_DIR}/.state-snapshot.${BGE_TID}.json"
+
+# Advance phase to explore
+"$STATE_TRANSITION" --state-file "$BGE_STATE" phase_advance --to "explore" 2>/dev/null
+
+BGE_TOOL_CALLS=$(jq -cn \
+  --arg fp "$BGE_STATE" --arg tid "$BGE_TID" \
+  '[{tool_name:"Write",tool_use_id:$tid,tool_input:{file_path:$fp}}]')
+BGE_INPUT=$(jq -cn --arg sid "$BGE_SID" --argjson tc "$BGE_TOOL_CALLS" \
+  '{session_id:$sid,tool_calls:$tc}')
+
+BGE_RC=0
+printf '%s' "$BGE_INPUT" | \
+  CLAUDE_PROJECT_DIR="$SANDBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  bash "$BATCH_GATE" >/dev/null 2>&1 || BGE_RC=$?
+_assert_exit "BG-e: exits 0 with per-tool snapshot" "0" "$BGE_RC"
+
+BGE_LOG_CONTENT=$(cat "$BGE_LOG" 2>/dev/null)
+_assert_contains "BG-e: phase-transition marker from per-tool snapshot" "scope → explore" "$BGE_LOG_CONTENT"
+
+# Per-TOOL_USE_ID snapshot must be cleaned up
+if [[ ! -f "${BGE_INSTANCE_DIR}/.state-snapshot.${BGE_TID}.json" ]]; then
+  _pass "BG-e: per-tool snapshot cleaned up after processing"
+else
+  _fail "BG-e: per-tool snapshot still present after processing"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""

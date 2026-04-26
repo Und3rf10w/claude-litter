@@ -24,6 +24,10 @@
 # ST-cc: replay produces correct top-level .phase from phase_advanced events
 # ST-dd: last_updated advances on every mutation (live state + replay output)
 # ST-ee: test_manifest_update subcommand updates execute.test_manifest and appends event
+# PCS-a: pending_change_set writes correct JSON to pending-change.json
+# PCS-b: pending_change_set missing required arg exits 3
+# PCS-c: pending_change_set event replays idempotently
+# EV-a: _emit_event rejects malformed jq_path (no leading dot) before writing
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -651,6 +655,116 @@ if [[ -n "$STZ_RUN_AT" ]]; then
   _pass "ST-ee: last_run_at is non-empty (${STZ_RUN_AT})"
 else
   _fail "ST-ee: last_run_at is empty after test_manifest_update"
+fi
+
+# ── PCS-a: pending_change_set writes correct JSON to pending-change.json ──────
+echo ""
+echo "── PCS-a: pending_change_set writes correct JSON ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S3.2" \
+  --files '["src/foo.sh","src/bar.sh"]' \
+  --rationale "Direct quote from plan section 3.2"
+RC=$?
+_assert_exit "PCS-a: exit 0" "0" "$RC"
+_PCS_FILE="${INSTANCE_DIR}/pending-change.json"
+if [[ -f "$_PCS_FILE" ]]; then
+  _pass "PCS-a: pending-change.json created"
+else
+  _fail "PCS-a: pending-change.json not found"
+fi
+_assert_jq_eq "PCS-a: plan_section" "$_PCS_FILE" '.plan_section' "S3.2"
+_assert_jq_eq "PCS-a: files[0]" "$_PCS_FILE" '.files[0]' "src/foo.sh"
+_assert_jq_eq "PCS-a: files[1]" "$_PCS_FILE" '.files[1]' "src/bar.sh"
+_assert_jq_eq "PCS-a: rationale" "$_PCS_FILE" '.rationale' "Direct quote from plan section 3.2"
+_assert_jq_eq "PCS-a: no_test_reason absent" "$_PCS_FILE" '.no_test_reason // "absent"' "absent"
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+if grep -q '"event_type":"pending_change_set"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "PCS-a: pending_change_set event appended to events.jsonl"
+else
+  _fail "PCS-a: pending_change_set event missing from events.jsonl"
+fi
+
+# with --no-test-reason
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S3.3" \
+  --files '["config/x.yml"]' \
+  --rationale "Config-only change" \
+  --no-test-reason "config-only file, no logic to test"
+RC=$?
+_assert_exit "PCS-a (no-test-reason): exit 0" "0" "$RC"
+_assert_jq_eq "PCS-a: no_test_reason set" "$_PCS_FILE" '.no_test_reason' "config-only file, no logic to test"
+_assert_jq_eq "PCS-a: plan_section overwritten" "$_PCS_FILE" '.plan_section' "S3.3"
+
+# ── PCS-b: missing required arg exits 3 ──────────────────────────────────────
+echo ""
+echo "── PCS-b: pending_change_set missing required arg exits 3 ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --files '["a.sh"]' --rationale "some text" 2>/dev/null
+_assert_exit "PCS-b: missing --plan-section → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --rationale "some text" 2>/dev/null
+_assert_exit "PCS-b: missing --files → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --files '["a.sh"]' 2>/dev/null
+_assert_exit "PCS-b: missing --rationale → exit 3" "3" "$?"
+
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "S1" --files 'not-json-array' --rationale "r" 2>/dev/null
+_assert_exit "PCS-b: non-array --files → exit 3" "3" "$?"
+
+# ── PCS-c: pending_change_set event replays idempotently ─────────────────────
+echo ""
+echo "── PCS-c: replay of pending_change_set event reproduces pending-change.json ──"
+_PCSC_DIR=$(mktemp -d)
+_PCSC_IDIR="${_PCSC_DIR}/.claude/deepwork/pcs-replay-inst"
+mkdir -p "$_PCSC_IDIR"
+_PCSC_SF="${_PCSC_IDIR}/state.json"
+_PCSC_SID="pcs-replay-$(date +%s)"
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" init - <<'EOF2'
+{"session_id":"pcs-c-session","instance_id":"pcs-replay-inst","phase":"work","team_name":"t","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF2
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" pending_change_set \
+  --plan-section "P1" --files '["x.py"]' --rationale "quote from plan" 2>/dev/null
+rm -f "${_PCSC_IDIR}/pending-change.json"
+# Replay should recreate pending-change.json
+REPLAY_OUT="${_PCSC_IDIR}/replayed-state.json"
+"$STATE_TRANSITION" --state-file "$_PCSC_SF" replay --output "$REPLAY_OUT" 2>/dev/null
+RC=$?
+_assert_exit "PCS-c: replay exits 0" "0" "$RC"
+if [[ -f "${_PCSC_IDIR}/pending-change.json" ]]; then
+  _pass "PCS-c: pending-change.json recreated by replay"
+  _assert_jq_eq "PCS-c: plan_section matches" "${_PCSC_IDIR}/pending-change.json" '.plan_section' "P1"
+  _assert_jq_eq "PCS-c: files[0] matches" "${_PCSC_IDIR}/pending-change.json" '.files[0]' "x.py"
+else
+  _fail "PCS-c: pending-change.json not recreated by replay"
+fi
+rm -rf "$_PCSC_DIR"
+
+# ── EV-a: _emit_event rejects malformed jq_path before writing ───────────────
+echo ""
+echo "── EV-a: emit-side jq_path validation (no leading dot) ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+_EVENTS_BEFORE=$(wc -l < "${INSTANCE_DIR}/events.jsonl" 2>/dev/null || echo 0)
+# set_field with a path missing leading dot — should fail at _emit_event, not at replay
+"$STATE_TRANSITION" --state-file "$SF" set_field "execute.test_results" '"bad-path"' 2>/dev/null
+EV_A_RC=$?
+_EVENTS_AFTER=$(wc -l < "${INSTANCE_DIR}/events.jsonl" 2>/dev/null || echo 0)
+if [[ "$EV_A_RC" -ne 0 ]]; then
+  _pass "EV-a: set_field with bad jq_path exits non-zero (exit=${EV_A_RC})"
+else
+  _fail "EV-a: set_field with bad jq_path should have failed, got exit 0"
+fi
+if [[ "$_EVENTS_AFTER" -eq "$_EVENTS_BEFORE" ]]; then
+  _pass "EV-a: no event written to events.jsonl on bad jq_path"
+else
+  _fail "EV-a: event was written despite bad jq_path (before=${_EVENTS_BEFORE}, after=${_EVENTS_AFTER})"
 fi
 
 # ── Summary ──

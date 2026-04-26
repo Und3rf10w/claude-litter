@@ -104,7 +104,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
      "rationale": "<quote from plan>"
    }
    ```
-   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations. **Note**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection); use Bash redirection to create/update it. See `profiles/execute/stances/executor-stance.md` for the full recipe.
+   The PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`) reads this file and blocks writes with missing or null citations. **Note**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection); use `state-transition.sh pending_change_set` to create/update it. See `profiles/execute/stances/executor-stance.md` for the full recipe.
 
 3. PostToolUse(Bash test) captures results to `test-results.jsonl`. PreToolUse(Write|Edit) reads `test-results.jsonl` and blocks if any covering test shows `last_result: "fail"` or `last_result: "pending"`. This is the GAP-8 two-hook enforcement pattern — the synchronous PreToolUse gate is the enforcement; the advisory PostToolUse capture provides the data.
 

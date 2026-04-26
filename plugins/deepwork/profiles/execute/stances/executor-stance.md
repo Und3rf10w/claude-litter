@@ -21,11 +21,15 @@ You are EXECUTOR. Your role is to implement exactly what the approved plan speci
    ```
    This is required by the PreToolUse citation gate (`hooks/execute/plan-citation-gate.sh`). A null `plan_section` will deny the write.
 
-   **Creating `pending-change.json`**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection). Use Bash redirection or jq+tmp+mv to create/update:
+   **Creating `pending-change.json`**: Direct Write/Edit to `pending-change.json` is denied by `plan-citation-gate.sh` (audit-trail protection). Use `state-transition.sh pending_change_set` — the canonical path that state-bash-gate.sh explicitly allows:
    ```bash
-   cat > .claude/deepwork/<instance>/pending-change.json <<EOF
-   {"plan_section": "...", "files": [...], "rationale": "..."}
-   EOF
+   STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
+     bash plugins/deepwork/scripts/state-transition.sh \
+     pending_change_set \
+     --plan-section "<section_id>" \
+     --files '["<path>"]' \
+     --rationale "<direct quote from plan>"
+   # add --no-test-reason "<reason>" when file is NOT in test_manifest
    ```
 
    **`no_test_reason` field**: If the target file is not listed in `state.execute.test_manifest`, the citation gate requires a non-empty `no_test_reason` string explaining why no test covers this file (e.g. `"config-only file, no logic to test"`). If the file IS in `test_manifest`, this field is ignored. If neither condition is met, the write is blocked with: "no test coverage and no documented exception."

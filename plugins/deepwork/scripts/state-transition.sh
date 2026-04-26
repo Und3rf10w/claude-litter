@@ -22,6 +22,11 @@
 #   backfill_session --session-id <id> Set .session_id (one-shot backfill of placeholder IDs).
 #   flaky_test_append --cmd <cmd>      Append to .execute.flaky_tests if not already present.
 #   stamp_last_updated                 Set .last_updated = now.
+#   pending_change_set                 Write pending-change.json in INSTANCE_DIR.
+#                 --plan-section <id>  Required. Plan section citation.
+#                 --files <json-array> Required. JSON array of file paths, e.g. '["a.py"]'.
+#                 --rationale <text>   Required. Direct quote from plan.
+#                 [--no-test-reason <text>]  Why the changed file is not in test_manifest.
 #
 # Exit codes (§2.2 of single-writer-state-design.md):
 #   0   success; state.json updated atomically
@@ -131,6 +136,19 @@ _emit_event() {
   local payload_json="$2"
   local events_file="${INSTANCE_DIR}/events.jsonl"
   local lock_file="${INSTANCE_DIR}/events.jsonl.lock"
+
+  # Validate jq_path at emit time if payload carries one — prevents shlyuz-class
+  # deadlock where a malformed path reaches events.jsonl and corrupts the hash
+  # chain, causing integrity-gate to block recovery.
+  local _emit_jq_path
+  _emit_jq_path=$(printf '%s' "$payload_json" | jq -r '.jq_path // empty' 2>/dev/null || true)
+  if [[ -n "$_emit_jq_path" ]]; then
+    if ! printf '%s' "$_emit_jq_path" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$'; then
+      printf '_emit_event: INVALID_JQ_PATH — "%s" does not match allowlist; refusing to write event\n' \
+        "$_emit_jq_path" >&2
+      return 1
+    fi
+  fi
 
   # Generate event_id before acquiring the lock (no shared state involved).
   local event_id
@@ -934,6 +952,25 @@ case "$SUBCOMMAND" in
              ) | .last_updated = $ts' \
             2>/dev/null)
           ;;
+        pending_change_set)
+          # Idempotent: replaying writes the same pending-change.json. REPLAY_OUTPUT
+          # already points to the state file location; pending-change.json lives beside it.
+          _pcs_dir=$(dirname "$REPLAY_OUTPUT")
+          _pcs_ps=$(printf '%s' "$_line" | jq -r '.payload.plan_section // ""' 2>/dev/null)
+          _pcs_files=$(printf '%s' "$_line" | jq -c '.payload.files // []' 2>/dev/null)
+          _pcs_rat=$(printf '%s' "$_line" | jq -r '.payload.rationale // ""' 2>/dev/null)
+          _pcs_ntr=$(printf '%s' "$_line" | jq -r '.payload.no_test_reason // ""' 2>/dev/null)
+          _pcs_json=$(jq -cn \
+            --arg ps "$_pcs_ps" \
+            --argjson files "$_pcs_files" \
+            --arg rat "$_pcs_rat" \
+            --arg ntr "$_pcs_ntr" \
+            'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
+             else {plan_section:$ps, files:$files, rationale:$rat} end' 2>/dev/null)
+          if [[ -n "$_pcs_json" && -n "$_pcs_dir" ]]; then
+            printf '%s\n' "$_pcs_json" > "${_pcs_dir}/pending-change.json" 2>/dev/null || true
+          fi
+          ;;
         *)
           printf 'state-transition.sh replay: unknown event type "%s" at event %d — skipping\n' \
             "$_etype" "$_event_count" >&2
@@ -1296,9 +1333,57 @@ case "$SUBCOMMAND" in
     exit 0
     ;;
 
+  # ---- pending_change_set -------------------------------------------------------
+  # pending_change_set --plan-section <id> --files <json-array> --rationale <text>
+  #                     [--no-test-reason <text>]
+  # Atomically writes INSTANCE_DIR/pending-change.json via tmp+mv.
+  # Also appends a pending_change_set event to events.jsonl for replay idempotency.
+  pending_change_set)
+    _PCS_PLAN_SECTION=""
+    _PCS_FILES=""
+    _PCS_RATIONALE=""
+    _PCS_NO_TEST_REASON=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --plan-section)   _PCS_PLAN_SECTION="$2";   shift 2 ;;
+        --files)          _PCS_FILES="$2";           shift 2 ;;
+        --rationale)      _PCS_RATIONALE="$2";       shift 2 ;;
+        --no-test-reason) _PCS_NO_TEST_REASON="$2";  shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
+    [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
+    [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }
+    printf '%s' "$_PCS_FILES" | jq -e 'if type == "array" then . else error end' >/dev/null 2>&1 \
+      || { printf 'pending_change_set: --files must be a valid JSON array\n' >&2; exit 3; }
+    _require_state_file
+    _PCS_JSON=$(jq -cn \
+      --arg ps  "$_PCS_PLAN_SECTION" \
+      --argjson files "$_PCS_FILES" \
+      --arg rat "$_PCS_RATIONALE" \
+      --arg ntr "$_PCS_NO_TEST_REASON" \
+      'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
+       else {plan_section:$ps, files:$files, rationale:$rat} end')
+    _PCS_TMP="${INSTANCE_DIR}/pending-change.json.tmp.$$"
+    _ensure_event_log
+    _emit_event "pending_change_set" \
+      "$(jq -cn \
+          --arg ps "$_PCS_PLAN_SECTION" \
+          --argjson files "$_PCS_FILES" \
+          --arg rat "$_PCS_RATIONALE" \
+          --arg ntr "$_PCS_NO_TEST_REASON" \
+          'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
+           else {plan_section:$ps, files:$files, rationale:$rat} end')" || exit 5
+    printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
+      && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
+      || { rm -f "$_PCS_TMP"; exit 4; }
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state, test_manifest_update\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state, test_manifest_update, pending_change_set\n' >&2
     exit 3
     ;;
 esac

@@ -6,6 +6,7 @@
 # SBG-c: `bash scripts/state-transition.sh phase_advance --to synthesize` → allowed (exit 0)
 # SBG-d: command not touching state.json            → allowed (exit 0)
 # SBG-e: `grep state.json README.md` (no redirect)  → allowed (exit 0)
+# SBG-l: pending-change.json write emits EXIT_PENDING_CHANGE_DIRECT_WRITE error
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -103,6 +104,27 @@ echo ""
 echo "── SBG-k: tee hook-timing.jsonl → blocked ──"
 RC=$(_run_gate "echo '{}' | tee hook-timing.jsonl")
 _assert_exit "SBG-k" "2" "$RC"
+
+# ── SBG-l: pending-change.json write emits discriminated error ───────────────
+echo ""
+echo "── SBG-l: cat > pending-change.json emits EXIT_PENDING_CHANGE_DIRECT_WRITE ──"
+SBG_L_ERR=$(printf '%s' \
+  "$(jq -cn --arg cmd "cat > .claude/deepwork/abc/pending-change.json <<EOF
+{}
+EOF" '{tool_name:"Bash",tool_input:{command:$cmd}}')" \
+  | bash "$GATE" 2>&1)
+SBG_L_RC=$?
+_assert_exit "SBG-l: blocked (exit 2)" "2" "$SBG_L_RC"
+if printf '%s' "$SBG_L_ERR" | grep -q "EXIT_PENDING_CHANGE_DIRECT_WRITE"; then
+  _pass "SBG-l: EXIT_PENDING_CHANGE_DIRECT_WRITE in stderr"
+else
+  _fail "SBG-l: EXIT_PENDING_CHANGE_DIRECT_WRITE not found in stderr: ${SBG_L_ERR}"
+fi
+if printf '%s' "$SBG_L_ERR" | grep -q "pending_change_set"; then
+  _pass "SBG-l: pending_change_set instruction present in stderr"
+else
+  _fail "SBG-l: pending_change_set instruction missing from stderr: ${SBG_L_ERR}"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""

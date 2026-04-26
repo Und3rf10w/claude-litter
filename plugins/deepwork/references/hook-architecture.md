@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 106 nodes, 167 edges
+Graph: 106 nodes, 170 edges
 
 ## Mermaid Flowchart
 
@@ -266,11 +266,13 @@ flowchart LR
   bash_gate -.->|"reads"| pending_change_json
   bash_gate -.->|"reads"| rollback
   batch_gate -.->|"reads"| state_snapshot
+  batch_gate -.->|"reads"| state_snapshot
   batch_gate -.->|"reads"| state_json
   critique_version_gate -.->|"reads"| version_sentinel_json
   deliver_gate -.->|"reads"| proposals
   file_changed_retest -.->|"reads"| pending_change_json
   file_changed_retest -.->|"reads"| test_results_jsonl
+  frontmatter_gate -.->|"reads"| state_snapshot
   frontmatter_gate -.->|"reads"| state_snapshot
   frontmatter_gate -.->|"reads"| state_json
   incident_detector -.->|"reads"| incidents_jsonl
@@ -299,6 +301,7 @@ flowchart LR
   version_bump_notify -.->|"reads"| version_sentinel_json
   wiki_log_append -.->|"reads"| log_md
   file_changed_retest -->|"writes"| test_results_jsonl
+  frontmatter_gate -->|"writes"| state_snapshot
   frontmatter_gate -->|"writes"| state_snapshot
   frontmatter_gate -->|"writes"| state_json
   incident_detector -->|"writes"| incidents_jsonl
@@ -390,6 +393,7 @@ flowchart LR
         ],
         "markers": [
           ".state-snapshot",
+          ".state-snapshot.",
           "state.json"
         ]
       },
@@ -489,6 +493,7 @@ flowchart LR
         ],
         "markers": [
           ".state-snapshot",
+          ".state-snapshot.",
           "state.json"
         ]
       },
@@ -498,6 +503,7 @@ flowchart LR
         ],
         "markers": [
           ".state-snapshot",
+          ".state-snapshot.",
           "state.json"
         ]
       },
