@@ -48,18 +48,13 @@ source "${PROFILE_DIR}/reinject.sh"
 # Resume trigger: emit recovery checklist instead of standard reinject
 if [[ "$SESSION_TRIGGER" == "resume" ]]; then
   build_resume_prompt
-  printf '%s\n' "$REINJECT_PROMPT"
 else
   # build_reinject_prompt is defined in the profile's reinject.sh; it uses
   # STATE_FILE, INSTANCE_DIR, GOAL, TEAM_NAME, PHASE to produce REINJECT_PROMPT.
   build_reinject_prompt
-  printf '%s\n' "$REINJECT_PROMPT"
 fi
 
-# W14: emit hookSpecificOutput.watchPaths for concrete proposal files so chokidar
-# watches them directly. The FileChanged hooks for version-bump-notify and stale-warn
-# used regex matchers (^v[0-9]+(-final)?\.md$) which chokidar treated as literal
-# paths and never resolved — registering real paths here fixes the broken watch.
+# W14: collect watchPaths for concrete proposal files so chokidar watches them directly.
 _watch_paths=()
 if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
   while IFS= read -r -d '' _pf; do
@@ -67,7 +62,13 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
   done < <(find "${INSTANCE_DIR}/proposals" -maxdepth 1 -name 'v*.md' -print0 2>/dev/null)
 fi
 
+# Emit a single JSON hookSpecificOutput object per cli_formatted_2.1.118.js:265720.
+# additionalContext carries the reinject text; watchPaths registers proposal files.
+_watch_json="[]"
 if [[ ${#_watch_paths[@]} -gt 0 ]]; then
   _watch_json=$(printf '%s\n' "${_watch_paths[@]}" | jq -R . | jq -sc '.')
-  printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"watchPaths\":${_watch_json}}}"
 fi
+jq -cn \
+  --arg ctx "$REINJECT_PROMPT" \
+  --argjson wp "$_watch_json" \
+  '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx, watchPaths: $wp}}'
