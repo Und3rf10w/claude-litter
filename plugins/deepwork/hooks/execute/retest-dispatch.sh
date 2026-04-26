@@ -39,7 +39,7 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -n "$EXEC_PHASE" ]] || exit 0
 
 # Get the file that was written
-FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_result.file_path // .tool_input.file_path // ""' 2>/dev/null || echo "")")
+FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_response.data.file_path // .tool_input.file_path // ""' 2>/dev/null || echo "")")
 [[ -n "$FILE_PATH" ]] || exit 0
 
 # Look up covering test from test_manifest[]
