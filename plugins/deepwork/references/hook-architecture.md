@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 98 nodes, 156 edges
+Graph: 98 nodes, 155 edges
 
 ## Mermaid Flowchart
 
@@ -32,6 +32,7 @@ flowchart LR
     frontmatter_gate["frontmatter-gate"]
     halt_gate["halt-gate"]
     incident_detector["incident-detector"]
+    integrity_always_gate["integrity-always-gate"]
     phase_advance_gate["phase-advance-gate"]
     pre_compact["pre-compact"]
     session_context["session-context"]
@@ -54,6 +55,7 @@ flowchart LR
     frontmatter_gate["frontmatter-gate"]
     halt_gate["halt-gate"]
     incident_detector["incident-detector"]
+    integrity_always_gate["integrity-always-gate"]
     phase_advance_gate["phase-advance-gate"]
     plan_citation_gate["plan-citation-gate"]
     plan_drift_detector["plan-drift-detector"]
@@ -80,7 +82,6 @@ flowchart LR
     bar(([".bar"]))
     change_id(([".change_id"]))
     current_version(([".current_version"]))
-    event_head(([".event_head"]))
     execute(([".execute"]))
     execute_change_log(([".execute.change_log"]))
     execute_phase(([".execute.phase"]))
@@ -149,6 +150,7 @@ flowchart LR
   PreToolUse -->|"Bash"| bash_gate
   PreToolUse -->|"ExitPlanMode"| deliver_gate
   PreToolUse -->|"Write|Edit"| frontmatter_gate
+  PreToolUse -->|"Write|Edit|Bash|TaskCreate|TaskUpdate|SendMessage"| integrity_always_gate
   PreToolUse -->|"Edit|Write"| phase_advance_gate
   PreToolUse -->|"Write|Edit"| plan_citation_gate
   PreToolUse -->|"Bash"| state_bash_gate
@@ -180,7 +182,6 @@ flowchart LR
   critique_version_gate -.->|"reads"| team_name
   file_changed_retest -.->|"reads"| change_id
   file_changed_retest -.->|"reads"| execute_phase
-  frontmatter_gate -.->|"reads"| event_head
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   frontmatter_gate -.->|"reads"| single_writer_enabled
   halt_gate -.->|"reads"| execute_phase
@@ -252,7 +253,6 @@ flowchart LR
   deliver_gate -.->|"reads"| proposals
   file_changed_retest -.->|"reads"| pending_change_json
   file_changed_retest -.->|"reads"| test_results_jsonl
-  frontmatter_gate -.->|"reads"| events_jsonl
   incident_detector -.->|"reads"| incidents_jsonl
   plan_citation_gate -.->|"reads"| pending_change_json
   plan_citation_gate -.->|"reads"| test_results_jsonl
@@ -440,12 +440,11 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".event_head",
           ".frontmatter_schema_version",
           ".single_writer_enabled"
         ],
         "markers": [
-          "events.jsonl"
+          ""
         ]
       },
       "writes": {
@@ -507,6 +506,29 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/incident-detector.sh"]
+    },
+    "integrity-always-gate.sh": {
+      "triggered_by": [
+      "PreToolUse"
+      ],
+      "mode": "shared",
+      "reads": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/integrity-always-gate.sh"]
     },
     "phase-advance-gate.sh": {
       "triggered_by": [

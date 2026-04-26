@@ -119,6 +119,42 @@ _write_state_atomic() {
   fi
 }
 
+# _verify_event_head_or_block
+# Returns 0 (pass) or 2 (block). Writes diagnostic to stderr on mismatch.
+# Absent event_head in state.json = pass (pre-W7 instance).
+# Missing events.jsonl when event_head present = block.
+_verify_event_head_or_block() {
+  [[ -n "${STATE_FILE:-}" ]] || return 0  # no state context — fail-open
+  [[ -f "$STATE_FILE" ]] || return 0
+
+  local _event_head_stored
+  _event_head_stored=$(jq -r '.event_head // ""' "$STATE_FILE" 2>/dev/null || echo "")
+  [[ -n "$_event_head_stored" ]] || return 0  # pre-W7 instance: pass
+
+  local _events_jsonl="${INSTANCE_DIR}/events.jsonl"
+  if [[ ! -f "$_events_jsonl" ]]; then
+    printf 'integrity-gate: STATE_DIVERGENCE — event_head present in state.json but events.jsonl is missing.\n' >&2
+    printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
+    return 2
+  fi
+
+  local _last_line _actual_head
+  _last_line=$(tail -1 "$_events_jsonl" 2>/dev/null || echo "")
+  if [[ -n "$_last_line" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
+    else
+      _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    if [[ "$_event_head_stored" != "$_actual_head" ]]; then
+      printf 'integrity-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
+      printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
+      return 2
+    fi
+  fi
+  return 0
+}
+
 discover_instance() {
   # Capture start time on first call; subsequent calls (rare) don't overwrite it
   [[ -n "${_HOOK_START_NS:-}" ]] || _HOOK_START_NS=$(_dw_ns_now)

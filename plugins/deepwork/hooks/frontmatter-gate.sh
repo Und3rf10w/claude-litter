@@ -29,30 +29,8 @@ if [[ "$FILE_PATH" == */state.json ]]; then
   if [[ "$sw_enabled" == "false" ]]; then
     exit 0
   fi
-  # W7 event_head integrity check — fires before sentinel check.
-  # Absent event_head (pre-W7 instance) is treated as pass per §6.3 backward compat.
-  _event_head_stored=$(jq -r '.event_head // ""' "$STATE_FILE" 2>/dev/null || echo "")
-  if [[ -n "$_event_head_stored" ]]; then
-    _events_jsonl="${INSTANCE_DIR}/events.jsonl"
-    if [[ ! -f "$_events_jsonl" ]]; then
-      printf 'frontmatter-gate: STATE_DIVERGENCE — event_head present in state.json but events.jsonl is missing.\n' >&2
-      printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
-      exit 2
-    fi
-    _last_line=$(tail -1 "$_events_jsonl" 2>/dev/null || echo "")
-    if [[ -n "$_last_line" ]]; then
-      if command -v sha256sum >/dev/null 2>&1; then
-        _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
-      else
-        _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
-      fi
-      if [[ "$_event_head_stored" != "$_actual_head" ]]; then
-        printf 'frontmatter-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
-        printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
-        exit 2
-      fi
-    fi
-  fi
+  # W7 event_head integrity check — delegates to shared helper in instance-lib.sh.
+  _verify_event_head_or_block || exit 2
   if [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]]; then
     exit 0
   fi

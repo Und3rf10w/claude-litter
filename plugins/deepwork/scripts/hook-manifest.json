@@ -49,6 +49,13 @@
       "modes": ["both"]
     },
     {
+      "script": "hooks/integrity-always-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Write|Edit|Bash|TaskCreate|TaskUpdate|SendMessage",
+      "modes": ["both"],
+      "_note": "Always-on event_head integrity check (W9 M1). Fires on every tool use. Fail-open when no active instance."
+    },
+    {
       "script": "hooks/state-bash-gate.sh",
       "event": "PreToolUse",
       "matcher": "Bash",
