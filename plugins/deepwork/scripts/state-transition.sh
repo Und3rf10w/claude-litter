@@ -863,6 +863,54 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
           ;;
+        bar_added)
+          _ba_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
+          _ba_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
+          _ba_cat=$(printf '%s' "$_line" | jq -c '.payload.categorical_ban // false' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg id "$_ba_id" --arg stmt "$_ba_stmt" --argjson cat "$_ba_cat" --arg ts "$_ts" \
+            '.bar = ((.bar // []) + [{id: $id, criterion: $stmt, verdict: null, categorical_ban: $cat, evidence_required: "user-specified criterion"}]) | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
+        bar_removed)
+          _br_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg id "$_br_id" --arg ts "$_ts" \
+            '.bar = [(.bar // [])[] | select(.id != $id)] | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
+        guardrail_added)
+          _gra_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
+          _gra_src=$(printf '%s' "$_line" | jq -r '.payload.source // "user"' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg stmt "$_gra_stmt" --arg src "$_gra_src" --arg ts "$_ts" \
+            '.guardrails = ((.guardrails // []) + [{rule: $stmt, source: $src, timestamp: $ts}]) | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
+        guardrail_replaced)
+          _grp_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
+          _grp_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
+          _grp_src=$(printf '%s' "$_line" | jq -r '.payload.source // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --argjson idx "$_grp_idx" --arg stmt "$_grp_stmt" --arg src "$_grp_src" --arg ts "$_ts" \
+            '.guardrails[$idx].rule = $stmt
+             | if $src == "" then . else .guardrails[$idx].source = $src | .guardrails[$idx].timestamp = $ts end
+             | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
+        guardrail_removed)
+          _grm_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --argjson idx "$_grm_idx" --arg ts "$_ts" \
+            'del(.guardrails[$idx]) | .last_updated = $ts' \
+            2>/dev/null)
+          ;;
+        state_archived)
+          # Terminal event — replay stops here; state is considered archived.
+          # No field mutations; last_updated stamp reflects the archive timestamp.
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          ;;
         *)
           printf 'state-transition.sh replay: unknown event type "%s" at event %d — skipping\n' \
             "$_etype" "$_event_count" >&2
