@@ -71,10 +71,10 @@ If no files are found, report "no deepwork session is currently active" and stop
 
 9. Display **Test Manifest** (`execute.test_manifest[]`). For each entry:
 
-   | Test ID | Command | Last Result | Last Run At | Environment |
-   |---|---|---|---|---|
+   | Source File | Command | Last Result | Last Run At |
+   |---|---|---|---|
 
-   Read `test-results.jsonl` from the instance directory if present. Show the most recent result per `test_id` in the Last Result column. Display "(not yet populated)" if `test_manifest` is empty.
+   Read `test-results.jsonl` from the instance directory if present. For each manifest entry, match the most recent `test-results.jsonl` record whose `covering_files[0]` equals the entry's `source_file`. Show the matched record's `exit_code` (pass/fail) and `timestamp` in Last Result and Last Run At. Truncate `test_command` to ~40 chars for display. Display "(not yet populated)" if `execute.test_manifest` is empty.
 
 10. Display **Environment Attestations** (`execute.env_attestations[]`):
 
