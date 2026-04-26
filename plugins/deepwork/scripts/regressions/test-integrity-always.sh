@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-integrity-always.sh — regression tests for hooks/integrity-always-gate.sh (W9 M1)
 #
-# Cases IA-a through IA-e verify the always-on event_head integrity gate.
+# Cases IA-a through IA-f verify the always-on event_head integrity gate.
+# IA-f: replay bypass — mismatched event_head, but command is state-transition.sh replay → pass
 # Exit 0 = all cases passed.
 # Exit 1 = one or more cases failed.
 
@@ -102,6 +103,18 @@ echo "── IA-e: Mismatched event_head vs events.jsonl tail → blocked (exit 
 printf '%s\n' '{"type":"tampered","id":"e2"}' >> "${INSTANCE_DIR}/events.jsonl"
 # event_head still points to old line — now a mismatch
 _assert_exit "IA-e: mismatched event_head blocked" "2" "$(_run_gate "Bash")"
+
+# ── IA-f: replay command bypasses integrity gate despite mismatch ─────────────
+# (event_head still mismatched from IA-e setup above)
+echo ""
+echo "── IA-f: replay command bypasses integrity gate (exit 0) despite mismatch ──"
+_IA_F_CMD="bash plugins/deepwork/scripts/state-transition.sh replay --output /tmp/out.json"
+_IA_F_PAYLOAD=$(jq -cn \
+  --arg sid "$SESSION_ID" \
+  --arg cmd "$_IA_F_CMD" \
+  '{session_id:$sid, hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:$cmd}}')
+_IA_F_RC=$(printf '%s' "$_IA_F_PAYLOAD" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1; echo $?)
+_assert_exit "IA-f: replay bypass passes despite mismatch" "0" "$_IA_F_RC"
 
 # ── Summary ──
 echo ""
