@@ -164,6 +164,12 @@ scope_strict
 artifact
 goal
 frontmatter_schema_version
+event_head
+event_id
+event_type
+prev_event_hash
+payload
+custom_e2e
 X"
 
 _is_exempt() {
