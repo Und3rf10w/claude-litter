@@ -63,8 +63,15 @@
     },
     {
       "script": "hooks/state-drift-marker.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["both"],
+      "timeout": 5
+    },
+    {
+      "script": "hooks/state-drift-marker.sh",
       "event": "PostToolUse",
-      "matcher": "Write|Edit",
+      "matcher": "Write|Edit|Bash",
       "modes": ["both"],
       "timeout": 5
     },

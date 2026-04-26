@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # hooks/frontmatter-gate.sh
 # Registered: PreToolUse:Write|Edit via setup-deepwork.sh (path-scoped)
-# Fires before any .md write in the active instance directory, and validates
-# banners[] schema on state.json writes.
+# Fires before any .md write in the active instance directory and validates
+# .md frontmatter fields. banners[] schema is enforced post-write by
+# state-drift-marker.sh (PostToolUse) which reverts on violation.
 
 set +e
 
@@ -21,67 +22,8 @@ FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.p
 # Only validate files in this instance's directory
 [[ "$FILE_PATH" == *"${INSTANCE_DIR}"* ]] || exit 0
 
-# ── banners[] schema enforcement (state.json writes only) ───────────────────
-# Validates every entry in banners[] before any state.json write.
-# Fail-open on malformed JSON — let another hook catch that.
-# Schema: references/schemas/banner-schema.json
-if [[ "$FILE_PATH" == */state.json ]]; then
-  SJSON_CONTENT=$(printf '%s' "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // ""')
-
-  # Fail-open if content is empty or not valid JSON
-  if [[ -n "$SJSON_CONTENT" ]]; then
-    if printf '%s' "$SJSON_CONTENT" | jq -e . >/dev/null 2>&1; then
-      BANNER_COUNT=$(printf '%s' "$SJSON_CONTENT" | jq -r '(.banners // []) | length' 2>/dev/null)
-      if [[ -n "$BANNER_COUNT" && "$BANNER_COUNT" != "0" ]]; then
-        VALIDATION_RESULT=$(printf '%s' "$SJSON_CONTENT" | jq -r '
-          .banners // [] | to_entries[] |
-          .key as $i | .value as $b |
-          (
-            if ($b | type) != "object" then
-              "[\($i)] BANNER_NOT_OBJECT"
-            elif ($b | has("artifact_path") | not) then
-              "[\($i)] MISSING_ARTIFACT_PATH"
-            elif ($b.artifact_path == null or ($b.artifact_path | type) != "string" or ($b.artifact_path | length) == 0) then
-              "[\($i)] ARTIFACT_PATH_NOT_STRING"
-            elif ($b | has("banner_type") | not) then
-              "[\($i)] MISSING_BANNER_TYPE"
-            elif ($b.banner_type == null or ($b.banner_type | type) != "string") then
-              "[\($i)] BANNER_TYPE_NOT_STRING"
-            elif (["pre-reconciliation-draft","synthesis-deviation-backpointer"] | index($b.banner_type)) == null then
-              "[\($i)] UNKNOWN_BANNER_TYPE:\($b.banner_type)"
-            elif ($b | has("reason") | not) then
-              "[\($i)] MISSING_REASON"
-            elif ($b.reason == null or ($b.reason | type) != "string" or ($b.reason | length) == 0) then
-              "[\($i)] REASON_NOT_STRING"
-            elif ($b | has("added_at") | not) then
-              "[\($i)] MISSING_ADDED_AT"
-            elif ($b.added_at == null or ($b.added_at | type) != "string") then
-              "[\($i)] ADDED_AT_NOT_STRING"
-            elif ($b.added_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}") | not) then
-              "[\($i)] ADDED_AT_NOT_ISO8601:\($b.added_at)"
-            elif ($b | has("added_by") | not) then
-              "[\($i)] MISSING_ADDED_BY"
-            elif ($b.added_by == null or ($b.added_by | type) != "string" or ($b.added_by | length) == 0) then
-              "[\($i)] ADDED_BY_NOT_STRING"
-            else
-              (
-                $b | keys[] | select(. != "artifact_path" and . != "banner_type" and . != "reason" and . != "added_at" and . != "added_by")
-                | "[\($i)] UNKNOWN_FIELD:\(.)"
-              )
-            end
-          )
-        ' 2>/dev/null)
-
-        if [[ -n "$VALIDATION_RESULT" ]]; then
-          printf 'frontmatter-gate: banners[] schema violation in %s\n%s\n' \
-            "$FILE_PATH" "$VALIDATION_RESULT" >&2
-          exit 2
-        fi
-      fi
-    fi
-  fi
-  exit 0
-fi
+# Skip state.json — banners[] enforced post-write by state-drift-marker.sh
+[[ "$FILE_PATH" == */state.json ]] && exit 0
 
 # ── .md frontmatter enforcement ──────────────────────────────────────────────
 [[ "$FILE_PATH" == *.md ]] || exit 0

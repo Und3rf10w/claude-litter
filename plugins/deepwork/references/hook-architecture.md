@@ -171,7 +171,6 @@ flowchart LR
   critique_version_gate -.->|"reads"| team_name
   file_changed_retest -.->|"reads"| change_id
   file_changed_retest -.->|"reads"| execute_phase
-  frontmatter_gate -.->|"reads"| banners
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   halt_gate -.->|"reads"| execute_phase
   halt_gate -.->|"reads"| halt_reason
@@ -198,6 +197,7 @@ flowchart LR
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
   session_context -.->|"reads"| team_name
+  state_drift_marker -.->|"reads"| banners
   state_drift_marker -.->|"reads"| bar
   state_drift_marker -.->|"reads"| id
   state_drift_marker -.->|"reads"| phase
@@ -424,7 +424,6 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".banners",
           ".frontmatter_schema_version"
         ],
         "markers": [
@@ -681,6 +680,7 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
+          ".banners",
           ".bar",
           ".id",
           ".phase",
