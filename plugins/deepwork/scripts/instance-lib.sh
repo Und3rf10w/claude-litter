@@ -83,6 +83,42 @@ _canonical_path() {
   printf '%s/%s' "$dir" "$base"
 }
 
+# _write_state_atomic <state-file> <jq-filter> [<jq-arg>...]
+#
+# Atomically applies a jq filter to the state file using flock + tmp + mv.
+# Falls back to plain tmp + mv if flock unavailable (preserves existing semantics).
+# Returns 0 on success, non-zero on failure (caller decides whether to fail open).
+#
+# Example:
+#   _write_state_atomic "$STATE_FILE" '.execute.plan_drift_detected = true'
+#   _write_state_atomic "$STATE_FILE" --arg id "$ID" '.change_log += [{id: $id}]'
+_write_state_atomic() {
+  local state_file="$1"; shift
+  [[ -f "$state_file" ]] || return 1
+  local tmp="${state_file}.tmp.$$"
+  local lock="${state_file}.lock"
+
+  if command -v flock >/dev/null 2>&1; then
+    (
+      flock -x 200 || exit 1
+      jq "$@" "$state_file" > "$tmp" 2>/dev/null || exit 2
+      [[ -s "$tmp" ]] || exit 3
+      mv "$tmp" "$state_file" || exit 4
+    ) 200>"$lock"
+    local rc=$?
+    rm -f "$tmp" 2>/dev/null
+    return $rc
+  else
+    jq "$@" "$state_file" > "$tmp" 2>/dev/null
+    if [[ -s "$tmp" ]]; then
+      mv "$tmp" "$state_file"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+}
+
 discover_instance() {
   # Capture start time on first call; subsequent calls (rare) don't overwrite it
   [[ -n "${_HOOK_START_NS:-}" ]] || _HOOK_START_NS=$(_dw_ns_now)
@@ -111,8 +147,7 @@ discover_instance() {
     # Backfill placeholder session IDs (generated when CLAUDE_CODE_SESSION_ID
     # was unavailable at setup time — prefix "deepwork-")
     if [[ "$_sid" == deepwork-* ]] && [[ -n "$hook_session" ]]; then
-      jq --arg sid "$hook_session" '.session_id = $sid' "$_f" > "${_f}.tmp.$$" \
-        && mv "${_f}.tmp.$$" "$_f" || { rm -f "${_f}.tmp.$$"; continue; }
+      _write_state_atomic "$_f" --arg sid "$hook_session" '.session_id = $sid' || continue
       _sid="$hook_session"
     fi
 
