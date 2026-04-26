@@ -53,7 +53,7 @@ SESSION_ID="test-pr-a-$(date +%s)"
 _write_state() {
   local drift="${1:-false}"
   local test_manifest="${2:-[]}"
-  cat > "${INSTANCE_DIR}/state.json" <<EOF
+  STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "${SESSION_ID}",
   "execute": {

@@ -71,7 +71,7 @@ STATE_FILE="${INSTANCE_DIR}/state.json"
 LOG_FILE="${INSTANCE_DIR}/log.md"
 SNAPSHOT="${INSTANCE_DIR}/.state-snapshot"
 
-cat > "$STATE_FILE" <<EOF
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -120,7 +120,7 @@ echo "── T11-b: PostToolUse after phase change → log.md phase-transition l
 
 # Snapshot is already at "explore" phase (from T11-a)
 # Now update state.json to "synthesize"
-jq '.phase = "synthesize"' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" set_field .phase '"synthesize"'
 
 _assert_exit "T11-b: exits 0" "0" "$(_run_hook "PostToolUse" "Write" "$STATE_FILE")"
 
@@ -176,18 +176,18 @@ echo ""
 echo "── T11-e: PostToolUse twice for same phase → only one phase-transition entry ──"
 
 # Reset state to a known phase
-jq '.phase = "critique"' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" set_field .phase '"critique"'
 # Create snapshot at same phase (no actual transition)
 cp "$STATE_FILE" "$SNAPSHOT"
 # Now change phase
-jq '.phase = "deliver"' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" set_field .phase '"deliver"'
 
 # First PostToolUse → should log once
 _run_hook "PostToolUse" "Write" "$STATE_FILE" >/dev/null 2>&1
 
 # Recreate snapshot at same state (dedup scenario: same transition repeated)
 cp "$STATE_FILE" "$SNAPSHOT"
-jq '.phase = "deliver"' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" set_field .phase '"deliver"'
 
 # Second PostToolUse with identical transition
 _run_hook "PostToolUse" "Write" "$STATE_FILE" >/dev/null 2>&1
@@ -207,11 +207,13 @@ echo ""
 echo "── T11-f (ADV): bar verdict change → verdict-change line in log.md ──"
 
 # Reset to clean snapshot with G1=null
-jq '.phase = "deliver" | .bar[0].verdict = null' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+  '{"phase":"deliver","bar":[{"id":"G1","verdict":null},{"id":"G2","verdict":null}]}'
 cp "$STATE_FILE" "$SNAPSHOT"
 
 # Update G1 verdict to PASS
-jq '.bar[0].verdict = "PASS"' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+STATE_FILE="$STATE_FILE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" merge \
+  '{"bar":[{"id":"G1","verdict":"PASS"},{"id":"G2","verdict":null}]}'
 
 _assert_exit "T11-f: exits 0" "0" "$(_run_hook "PostToolUse" "Write" "$STATE_FILE")"
 

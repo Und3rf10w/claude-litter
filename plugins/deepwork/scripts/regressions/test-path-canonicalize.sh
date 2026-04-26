@@ -53,7 +53,7 @@ mkdir -p "$INSTANCE_DIR"
 SESSION_ID="test-pc-$(date +%s)"
 
 # Write a valid execute state.json
-cat > "${INSTANCE_DIR}/state.json" <<EOF
+STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "${SESSION_ID}",
   "execute": {

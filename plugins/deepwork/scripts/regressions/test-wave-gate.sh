@@ -66,7 +66,7 @@ touch "$LOG_FILE"
 
 _write_design_state() {
   local phase="${1:-explore}"
-  cat > "${INSTANCE_DIR}/state.json" <<EOF
+  STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "test-wg-session",
   "team_name": "${TEAM_NAME}",
@@ -77,7 +77,7 @@ EOF
 
 _write_execute_state() {
   local phase="${1:-execute}"
-  cat > "${INSTANCE_DIR}/state.json" <<EOF
+  STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "test-wg-session",
   "team_name": "${TEAM_NAME}",

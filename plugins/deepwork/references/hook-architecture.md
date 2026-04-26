@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 99 nodes, 161 edges
+Graph: 94 nodes, 149 edges
 
 ## Mermaid Flowchart
 
@@ -78,24 +78,19 @@ flowchart LR
     bar(([".bar"]))
     change_id(([".change_id"]))
     current_version(([".current_version"]))
-    empirical_unknowns(([".empirical_unknowns"]))
     execute(([".execute"]))
     execute_change_log(([".execute.change_log"]))
     execute_phase(([".execute.phase"]))
     execute_plan_drift_detected(([".execute.plan_drift_detected"]))
-    execute_plan_drift_detected_at(([".execute.plan_drift_detected_at"]))
     execute_plan_hash(([".execute.plan_hash"]))
-    execute_plan_hash_at_drift(([".execute.plan_hash_at_drift"]))
     execute_plan_ref(([".execute.plan_ref"]))
     execute_test_manifest(([".execute.test_manifest"]))
     frontmatter_schema_version(([".frontmatter_schema_version"]))
     goal(([".goal"]))
     guardrails(([".guardrails"]))
     halt_reason(([".halt_reason"]))
-    hook_warnings(([".hook_warnings"]))
     id(([".id"]))
     instance_id(([".instance_id"]))
-    last_updated(([".last_updated"]))
     metadata_artifact(([".metadata.artifact"]))
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
@@ -111,7 +106,7 @@ flowchart LR
     plan_section(([".plan_section"]))
     secret_scan_waived(([".secret_scan_waived"]))
     setup_flags_snapshot(([".setup_flags_snapshot"]))
-    source_of_truth(([".source_of_truth"]))
+    single_writer_enabled(([".single_writer_enabled"]))
     team_name(([".team_name"]))
     verdict(([".verdict"]))
   end
@@ -180,16 +175,12 @@ flowchart LR
   file_changed_retest -.->|"reads"| change_id
   file_changed_retest -.->|"reads"| execute_phase
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
+  frontmatter_gate -.->|"reads"| single_writer_enabled
   halt_gate -.->|"reads"| execute_phase
   halt_gate -.->|"reads"| halt_reason
   halt_gate -.->|"reads"| phase
   incident_detector -.->|"reads"| team_name
-  phase_advance_gate -.->|"reads"| current_version
-  phase_advance_gate -.->|"reads"| empirical_unknowns
-  phase_advance_gate -.->|"reads"| instance_id
   phase_advance_gate -.->|"reads"| phase
-  phase_advance_gate -.->|"reads"| source_of_truth
-  phase_advance_gate -.->|"reads"| team_name
   plan_citation_gate -.->|"reads"| change_id
   plan_citation_gate -.->|"reads"| execute_phase
   plan_citation_gate -.->|"reads"| execute_plan_drift_detected
@@ -243,11 +234,6 @@ flowchart LR
   wiki_log_append -.->|"reads"| bar
   wiki_log_append -.->|"reads"| goal
   wiki_log_append -.->|"reads"| phase
-  deliver_gate -->|"writes"| hook_warnings
-  plan_drift_detector -->|"writes"| execute_plan_drift_detected_at
-  plan_drift_detector -->|"writes"| execute_plan_hash_at_drift
-  pre_compact -->|"writes"| hook_warnings
-  pre_compact -->|"writes"| last_updated
   approve_archive -.->|"reads"| heartbeat_json
   approve_archive -.->|"reads"| state_archived_json
   bash_gate -.->|"reads"| critique_v
@@ -258,9 +244,6 @@ flowchart LR
   file_changed_retest -.->|"reads"| pending_change_json
   file_changed_retest -.->|"reads"| test_results_jsonl
   incident_detector -.->|"reads"| incidents_jsonl
-  phase_advance_gate -.->|"reads"| log_md
-  phase_advance_gate -.->|"reads"| proposals
-  phase_advance_gate -.->|"reads"| version_sentinel_json
   plan_citation_gate -.->|"reads"| pending_change_json
   plan_citation_gate -.->|"reads"| test_results_jsonl
   retest_dispatch -.->|"reads"| pending_change_json
@@ -401,7 +384,7 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ".hook_warnings"
+          ""
         ],
         "markers": [
           ""
@@ -441,7 +424,8 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".frontmatter_schema_version"
+          ".frontmatter_schema_version",
+          ".single_writer_enabled"
         ],
         "markers": [
           ""
@@ -514,17 +498,10 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".current_version",
-          ".empirical_unknowns",
-          ".instance_id",
-          ".phase",
-          ".source_of_truth",
-          ".team_name"
+          ".phase"
         ],
         "markers": [
-          "log.md",
-          "proposals",
-          "version-sentinel.json"
+          ""
         ]
       },
       "writes": {
@@ -583,8 +560,7 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ".execute.plan_drift_detected_at",
-          ".execute.plan_hash_at_drift"
+          ""
         ],
         "markers": [
           ""
@@ -609,8 +585,7 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ".hook_warnings",
-          ".last_updated"
+          ""
         ],
         "markers": [
           ""

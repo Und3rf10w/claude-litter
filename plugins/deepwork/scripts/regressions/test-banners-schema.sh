@@ -138,7 +138,7 @@ _run_post_hook() {
     --argjson banners "$banners_json" \
     '{session_id: $sid, phase: "synthesize", team_name: "test-team",
       frontmatter_schema_version: "1", banners: $banners}' \
-    > "$STATE_JSON"
+    | STATE_FILE="$STATE_JSON" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init -
 
   stderr_file=$(mktemp)
   local payload
@@ -173,7 +173,7 @@ _run_bash_path() {
     --argjson banners "$banners_json" \
     '{session_id: $sid, phase: "synthesize", team_name: "test-team",
       frontmatter_schema_version: "1", banners: $banners}' \
-    > "$STATE_JSON"
+    | STATE_FILE="$STATE_JSON" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init -
 
   # Invoke PostToolUse:Bash (snapshot already exists from Pre leg)
   stderr_file=$(mktemp)
@@ -369,7 +369,7 @@ jq -cn --arg sid "$SESSION_ID" \
 jq -cn --arg sid "$SESSION_ID" --argjson banners "[$BANNER_EDIT_BAD]" \
   '{session_id: $sid, phase: "synthesize", team_name: "test-team",
     frontmatter_schema_version: "1", banners: $banners}' \
-  > "$STATE_JSON"
+  | STATE_FILE="$STATE_JSON" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init -
 
 _LAST_STDERR_L=""
 stderr_file_l=$(mktemp)
@@ -409,7 +409,7 @@ rm -f "$SNAPSHOT"
 jq -cn --arg sid "$SESSION_ID" \
   '{session_id: $sid, phase: "synthesize", team_name: "test-team",
     frontmatter_schema_version: "1", banners: []}' \
-  > "$STATE_JSON"
+  | STATE_FILE="$STATE_JSON" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init -
 stderr_file_n=$(mktemp)
 payload_n=$(jq -cn --arg sid "$SESSION_ID" --arg fp "$STATE_JSON" \
   '{session_id: $sid, tool_name: "Write", tool_input: {file_path: $fp}}')

@@ -66,8 +66,8 @@ _make_instance() {
   local inst_id="deadbeef"
   local inst_dir="${base_dir}/.claude/deepwork/${inst_id}"
   mkdir -p "$inst_dir"
-  printf '{"session_id":"%s","phase":"work","team_name":"test"}\n' "$session_id" \
-    > "${inst_dir}/state.json"
+  STATE_FILE="${inst_dir}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init \
+    "{\"session_id\":\"${session_id}\",\"phase\":\"work\",\"team_name\":\"test\"}"
   printf '%s' "$inst_dir"
 }
 

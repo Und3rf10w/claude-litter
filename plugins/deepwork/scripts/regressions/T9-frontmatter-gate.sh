@@ -44,7 +44,8 @@ mkdir -p "$INSTANCE_DIR"
 SESSION_ID="test-session-$(date +%s)"
 
 # state.json with frontmatter_schema_version=1 (enforcement enabled)
-cat > "$INSTANCE_DIR/state.json" <<EOF
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -199,7 +200,9 @@ _assert_exit "T9-h: bar_ids plural accepted" "0" "$(_run_gate "Write" "$TARGET_M
 # ── (i) ADV: pre-fix session (no schema_version) → gate should warn-only, exit 0 ──
 echo ""
 echo "── T9-i (ADV): pre-fix session (no frontmatter_schema_version) → warn-only, exit 0 ──"
-cat > "$INSTANCE_DIR/state.json" <<EOF
+rm -f "$INSTANCE_DIR/state.json"
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -209,7 +212,9 @@ EOF
 _assert_exit "T9-i: pre-fix session fail-open" "0" "$(_run_gate "Write" "$TARGET_MD" "$CONTENT_NO_ATYPE")"
 
 # Restore schema version for remaining tests
-cat > "$INSTANCE_DIR/state.json" <<EOF
+rm -f "$INSTANCE_DIR/state.json"
+STATE_FILE="$INSTANCE_DIR/state.json" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
 {
   "session_id": "$SESSION_ID",
   "phase": "explore",
@@ -224,11 +229,36 @@ echo "── T9-j (ADV): Write to prompt.md → allowed (exempt like log.md) ─
 PROMPT_MD="${INSTANCE_DIR}/prompt.md"
 _assert_exit "T9-j: Write to prompt.md allowed" "0" "$(_run_gate "Write" "$PROMPT_MD" "# Initial prompt")"
 
-# ── (k) ADV: non-.md file in instance dir → not matched, allowed ──
+# ── (k) Single-writer gate: direct Write to state.json → blocked (exit 2) ──
 echo ""
-echo "── T9-k (ADV): Write to .json file in instance dir → not matched, allowed ──"
+echo "── T9-k (single-writer): direct Write to state.json without sentinel → blocked ──"
 STATE_WRITE="${INSTANCE_DIR}/state.json"
-_assert_exit "T9-k: Write to .json in instance dir" "0" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+_assert_exit "T9-k: Write to state.json blocked by single-writer gate" "2" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+
+# ── (T9-sw-h) Single-writer gate: Write WITH sentinel → allowed ──
+echo ""
+echo "── T9-sw-h: Write to state.json WITH _DW_STATE_TRANSITION_WRITER=1 → allowed ──"
+_run_gate_with_sentinel() {
+  local tool_name="$1" file_path="$2" content="$3"
+  local payload
+  payload=$(jq -cn \
+    --arg sid "$SESSION_ID" \
+    --arg tn  "$tool_name" \
+    --arg fp  "$file_path" \
+    --arg ct  "$content" \
+    '{session_id: $sid, tool_name: $tn, tool_input: {file_path: $fp, content: $ct}}')
+  printf '%s' "$payload" \
+    | _DW_STATE_TRANSITION_WRITER=1 \
+      HOOK_EVENT_NAME="PreToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "$GATE" 2>/dev/null
+  printf '%s' "$?"
+}
+_assert_exit "T9-sw-h: Write to state.json with sentinel allowed" "0" "$(_run_gate_with_sentinel "Write" "$STATE_WRITE" '{"phase":"explore"}')"
+
+# ── (T9-sw-i) Single-writer gate: Write without sentinel → blocked ──
+echo ""
+echo "── T9-sw-i: Write to state.json WITHOUT sentinel → blocked (exit 2) ──"
+_assert_exit "T9-sw-i: Write to state.json without sentinel blocked" "2" "$(_run_gate "Write" "$STATE_WRITE" '{"phase":"explore"}')"
 
 # ── Summary ──
 echo ""
