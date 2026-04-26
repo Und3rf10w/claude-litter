@@ -25,10 +25,12 @@ INSTANCE_ID="${2:-}"
 SETTINGS_FILE="${PROJECT_ROOT}/.claude/settings.local.json"
 BACKUP_FILE="${PROJECT_ROOT}/.claude/settings.local.json.deepwork-backup"
 
-# Skip restore if any active instance remains
-for _sf in "${PROJECT_ROOT}"/.claude/deepwork/*/state.json; do
-  [[ -f "$_sf" ]] && exit 0
-done
+# Skip restore if any active instance remains (only relevant for legacy no-ID path)
+if [[ -z "$INSTANCE_ID" ]]; then
+  for _sf in "${PROJECT_ROOT}"/.claude/deepwork/*/state.json; do
+    [[ -f "$_sf" ]] && exit 0
+  done
+fi
 
 [[ -f "$SETTINGS_FILE" ]] || exit 0
 
