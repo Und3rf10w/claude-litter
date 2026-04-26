@@ -26,6 +26,7 @@ AUTHORIZED_PROD_DEPLOY="false"
 AUTHORIZED_LOCAL_DESTRUCTIVE="false"
 SECRET_SCAN_WAIVED="false"
 CHAOS_MONKEY="auto"  # auto | true | false
+ALLOW_NO_HOOKS="false"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -74,6 +75,8 @@ EXECUTE-MODE OPTIONS (only meaningful with --mode execute):
   --chaos-monkey                 Explicitly spawn chaos-monkey archetype (fault injection).
                                  Default: auto-enabled for distributed/infra goals.
   --no-chaos-monkey              Explicitly disable chaos-monkey spawn.
+  --allow-no-hooks               Allow setup to proceed even if hook injection fails (debugging
+                                 only; enforcement will be absent without hooks).
 
   -h, --help                     Show this help
 
@@ -164,6 +167,10 @@ HELP_EOF
       ;;
     --no-chaos-monkey)
       CHAOS_MONKEY="false"
+      shift
+      ;;
+    --allow-no-hooks)
+      ALLOW_NO_HOOKS="true"
       shift
       ;;
     *)
@@ -552,6 +559,11 @@ if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
   mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
+  if [[ "$ALLOW_NO_HOOKS" != "true" ]]; then
+    rm -rf "${INSTANCE_DIR}"
+    echo "Hook injection failed; programmatic enforcement is absent. Re-run with --allow-no-hooks to override (debugging only)." >&2
+    exit 1
+  fi
   echo "Warning: failed to write hooks into $SETTINGS_LOCAL (proceeding without dynamic hooks)" >&2
 fi
 

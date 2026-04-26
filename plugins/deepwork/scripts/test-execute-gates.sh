@@ -226,6 +226,22 @@ fi
 
 rm -rf "$_TMP_PROJECT"
 
+# ---- Tests 16-17: PR-A bash syntax ----
+for f in "hooks/execute/plan-citation-gate.sh" "hooks/execute/bash-gate.sh" "scripts/setup-deepwork.sh"; do
+  if bash -n "${PLUGIN_ROOT}/${f}" 2>/dev/null; then
+    _pass "bash syntax (PR-A): ${f}"
+  else
+    _fail "bash syntax (PR-A): ${f}"
+  fi
+done
+
+# ---- Test 18: setup-deepwork.sh help text mentions --allow-no-hooks ----
+if bash "${PLUGIN_ROOT}/scripts/setup-deepwork.sh" --help 2>&1 | grep -q -- '--allow-no-hooks'; then
+  _pass "help text mentions --allow-no-hooks"
+else
+  _fail "help text does not mention --allow-no-hooks"
+fi
+
 # ---- Summary ----
 printf '\n' >&2
 printf '%d passed, %d failed\n' "$PASSES" "$FAILS" >&2

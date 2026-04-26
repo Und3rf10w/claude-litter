@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 94 nodes, 151 edges
+Graph: 95 nodes, 154 edges
 
 ## Mermaid Flowchart
 
@@ -101,6 +101,7 @@ flowchart LR
     metadata_scope_items(([".metadata.scope_items"]))
     metadata_scope_strict(([".metadata.scope_strict"]))
     mode(([".mode"]))
+    no_test_reason(([".no_test_reason"]))
     phase(([".phase"]))
     plan_section(([".plan_section"]))
     secret_scan_waived(([".secret_scan_waived"]))
@@ -164,6 +165,7 @@ flowchart LR
   bash_gate -.->|"reads"| change_id
   bash_gate -.->|"reads"| execute
   bash_gate -.->|"reads"| execute_phase
+  bash_gate -.->|"reads"| execute_plan_drift_detected
   bash_gate -.->|"reads"| secret_scan_waived
   bash_gate -.->|"reads"| setup_flags_snapshot
   critique_version_gate -.->|"reads"| current_version
@@ -184,6 +186,8 @@ flowchart LR
   phase_advance_gate -.->|"reads"| team_name
   plan_citation_gate -.->|"reads"| change_id
   plan_citation_gate -.->|"reads"| execute_phase
+  plan_citation_gate -.->|"reads"| execute_plan_drift_detected
+  plan_citation_gate -.->|"reads"| no_test_reason
   plan_citation_gate -.->|"reads"| plan_section
   plan_drift_detector -.->|"reads"| execute_phase
   plan_drift_detector -.->|"reads"| execute_plan_hash
@@ -325,6 +329,7 @@ flowchart LR
           ".change_id",
           ".execute",
           ".execute.phase",
+          ".execute.plan_drift_detected",
           ".secret_scan_waived",
           ".setup_flags_snapshot"
         ],
@@ -529,6 +534,8 @@ flowchart LR
         "state": [
           ".change_id",
           ".execute.phase",
+          ".execute.plan_drift_detected",
+          ".no_test_reason",
           ".plan_section"
         ],
         "markers": [
