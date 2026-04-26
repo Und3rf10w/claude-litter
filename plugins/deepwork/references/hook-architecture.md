@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 97 nodes, 155 edges
+Graph: 98 nodes, 156 edges
 
 ## Mermaid Flowchart
 
@@ -36,6 +36,7 @@ flowchart LR
     pre_compact["pre-compact"]
     session_context["session-context"]
     stale_warn["stale-warn"]
+    state_bash_gate["state-bash-gate"]
     state_drift_marker["state-drift-marker"]
     task_completed_gate["task-completed-gate"]
     teammate_idle_gate["teammate-idle-gate"]
@@ -59,6 +60,7 @@ flowchart LR
     retest_dispatch["retest-dispatch"]
     session_context["session-context"]
     stale_warn["stale-warn"]
+    state_bash_gate["state-bash-gate"]
     state_drift_marker["state-drift-marker"]
     stop_hook["stop-hook"]
     task_completed_gate["task-completed-gate"]
@@ -149,6 +151,7 @@ flowchart LR
   PreToolUse -->|"Write|Edit"| frontmatter_gate
   PreToolUse -->|"Edit|Write"| phase_advance_gate
   PreToolUse -->|"Write|Edit"| plan_citation_gate
+  PreToolUse -->|"Bash"| state_bash_gate
   PreToolUse -->|"Write|Edit"| state_drift_marker
   PreToolUse -->|"SendMessage"| verdict_version_gate
   SessionStart -->|"clear|compact"| session_context
@@ -680,6 +683,29 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/stale-warn.sh"]
+    },
+    "state-bash-gate.sh": {
+      "triggered_by": [
+      "PreToolUse"
+      ],
+      "mode": "shared",
+      "reads": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/state-bash-gate.sh"]
     },
     "state-drift-marker.sh": {
       "triggered_by": [

@@ -49,6 +49,13 @@
       "modes": ["both"]
     },
     {
+      "script": "hooks/state-bash-gate.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["both"],
+      "_note": "Blocks shell-redirect writes to state.json that bypass frontmatter-gate.sh (W8 H2)."
+    },
+    {
       "script": "hooks/phase-advance-gate.sh",
       "event": "PreToolUse",
       "matcher": "Edit|Write",
