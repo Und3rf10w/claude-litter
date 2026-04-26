@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 111 nodes, 178 edges
+Graph: 105 nodes, 165 edges
 
 ## Mermaid Flowchart
 
@@ -77,32 +77,30 @@ flowchart LR
     wiki_log_append["wiki-log-append"]
   end
   subgraph State
-    authorized_force_push(([".authorized_force_push"]))
-    authorized_local_destructive(([".authorized_local_destructive"]))
-    authorized_prod_deploy(([".authorized_prod_deploy"]))
-    authorized_push(([".authorized_push"]))
-    banners(([".banners"]))
     bar(([".bar"]))
     batch_gate_enabled(([".batch_gate_enabled"]))
     change_id(([".change_id"]))
-    critic_verdict(([".critic_verdict"]))
     current_version(([".current_version"]))
-    event_id(([".event_id"]))
+    empirical_unknowns(([".empirical_unknowns"]))
     execute(([".execute"]))
-    execute_change_log(([".execute.change_log"]))
+    execute_authorized_force_push(([".execute.authorized_force_push"]))
+    execute_authorized_local_destructive(([".execute.authorized_local_destructive"]))
+    execute_authorized_prod_deploy(([".execute.authorized_prod_deploy"]))
+    execute_authorized_push(([".execute.authorized_push"]))
+    execute_halt_reason(([".execute.halt_reason"]))
     execute_phase(([".execute.phase"]))
-    execute_plan_drift_detected(([".execute.plan_drift_detected"]))
     execute_plan_hash(([".execute.plan_hash"]))
     execute_plan_ref(([".execute.plan_ref"]))
-    execute_test_manifest(([".execute.test_manifest"]))
+    execute_scope_gate_strict(([".execute.scope_gate_strict"]))
+    execute_setup_flags_snapshot(([".execute.setup_flags_snapshot"]))
     frontmatter_schema_version(([".frontmatter_schema_version"]))
     goal(([".goal"]))
-    guardrails(([".guardrails"]))
     halt_reason(([".halt_reason"]))
+    hook_warnings(([".hook_warnings"]))
     id(([".id"]))
     instance_id(([".instance_id"]))
     is_interrupt(([".is_interrupt"]))
-    merged_at(([".merged_at"]))
+    last_updated(([".last_updated"]))
     metadata_artifact(([".metadata.artifact"]))
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
@@ -113,13 +111,7 @@ flowchart LR
     metadata_scope_strict(([".metadata.scope_strict"]))
     metadata_wave(([".metadata.wave"]))
     mode(([".mode"]))
-    no_test_reason(([".no_test_reason"]))
     phase(([".phase"]))
-    plan_section(([".plan_section"]))
-    secret_scan_waived(([".secret_scan_waived"]))
-    setup_flags_snapshot(([".setup_flags_snapshot"]))
-    single_writer_enabled(([".single_writer_enabled"]))
-    source_file(([".source_file"]))
     team_name(([".team_name"]))
     tool_calls(([".tool_calls"]))
     tool_response_data_file_path(([".tool_response.data.file_path"]))
@@ -127,12 +119,14 @@ flowchart LR
     tool_response_data_stderr(([".tool_response.data.stderr"]))
     tool_response_data_stdout(([".tool_response.data.stdout"]))
     verdict(([".verdict"]))
+    state_archived_json((["state.archived.json"]))
   end
   subgraph Markers
     gate_blocked[/"  .gate-blocked-"/]
     gate_blocked_task_id[/"  .gate-blocked-&lt;task_id"/]
     idle_retry[/"  .idle-retry."/]
     state_snapshot[/"  .state-snapshot"/]
+    state_snapshot[/"  .state-snapshot."/]
     critique_v[/"  critique.v"/]
     discoveries_jsonl[/"  discoveries.jsonl"/]
     drift_log[/"  drift.log"/]
@@ -171,7 +165,7 @@ flowchart LR
   PreToolUse -->|"Bash"| state_bash_gate
   PreToolUse -->|"Write|Edit"| state_drift_marker
   PreToolUse -->|"SendMessage"| verdict_version_gate
-  SessionStart -->|"clear|compact"| session_context
+  SessionStart -->|"startup|resume|clear|compact"| session_context
   Stop --> approve_archive
   Stop --> halt_gate
   Stop --> stop_hook
@@ -184,41 +178,31 @@ flowchart LR
   approve_archive -.->|"reads"| execute_phase
   approve_archive -.->|"reads"| halt_reason
   approve_archive -.->|"reads"| phase
-  bash_gate -.->|"reads"| authorized_force_push
-  bash_gate -.->|"reads"| authorized_local_destructive
-  bash_gate -.->|"reads"| authorized_prod_deploy
-  bash_gate -.->|"reads"| authorized_push
-  bash_gate -.->|"reads"| change_id
-  bash_gate -.->|"reads"| execute
-  bash_gate -.->|"reads"| execute_phase
-  bash_gate -.->|"reads"| execute_plan_drift_detected
-  bash_gate -.->|"reads"| secret_scan_waived
-  bash_gate -.->|"reads"| setup_flags_snapshot
+  bash_gate -.->|"reads"| execute_authorized_force_push
+  bash_gate -.->|"reads"| execute_authorized_local_destructive
+  bash_gate -.->|"reads"| execute_authorized_prod_deploy
+  bash_gate -.->|"reads"| execute_authorized_push
+  bash_gate -.->|"reads"| execute_setup_flags_snapshot
   batch_gate -.->|"reads"| bar
   batch_gate -.->|"reads"| batch_gate_enabled
   batch_gate -.->|"reads"| id
   batch_gate -.->|"reads"| phase
   batch_gate -.->|"reads"| tool_calls
   batch_gate -.->|"reads"| verdict
-  critique_version_gate -.->|"reads"| current_version
-  critique_version_gate -.->|"reads"| guardrails
-  critique_version_gate -.->|"reads"| team_name
+  critique_version_gate -.->|"reads"| phase
+  deliver_gate -.->|"reads"| bar
+  deliver_gate -.->|"reads"| empirical_unknowns
+  deliver_gate -.->|"reads"| phase
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
-  frontmatter_gate -.->|"reads"| single_writer_enabled
-  halt_gate -.->|"reads"| execute_phase
+  frontmatter_gate -.->|"reads"| instance_id
+  frontmatter_gate -.->|"reads"| phase
+  halt_gate -.->|"reads"| execute
   halt_gate -.->|"reads"| halt_reason
   halt_gate -.->|"reads"| phase
   incident_detector -.->|"reads"| team_name
   phase_advance_gate -.->|"reads"| phase
-  plan_citation_gate -.->|"reads"| change_id
-  plan_citation_gate -.->|"reads"| execute_phase
-  plan_citation_gate -.->|"reads"| execute_plan_drift_detected
   plan_citation_gate -.->|"reads"| execute_plan_hash
   plan_citation_gate -.->|"reads"| execute_plan_ref
-  plan_citation_gate -.->|"reads"| execute_test_manifest
-  plan_citation_gate -.->|"reads"| no_test_reason
-  plan_citation_gate -.->|"reads"| plan_section
-  plan_citation_gate -.->|"reads"| source_file
   plan_drift_detector -.->|"reads"| execute_phase
   plan_drift_detector -.->|"reads"| execute_plan_hash
   plan_drift_detector -.->|"reads"| execute_plan_ref
@@ -232,18 +216,9 @@ flowchart LR
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
   session_context -.->|"reads"| team_name
-  state_drift_marker -.->|"reads"| banners
-  state_drift_marker -.->|"reads"| bar
-  state_drift_marker -.->|"reads"| event_id
-  state_drift_marker -.->|"reads"| id
+  state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
-  state_drift_marker -.->|"reads"| verdict
-  stop_hook -.->|"reads"| critic_verdict
-  stop_hook -.->|"reads"| execute_change_log
   stop_hook -.->|"reads"| execute_phase
-  stop_hook -.->|"reads"| execute_plan_drift_detected
-  stop_hook -.->|"reads"| execute_plan_ref
-  stop_hook -.->|"reads"| merged_at
   task_completed_gate -.->|"reads"| id
   task_completed_gate -.->|"reads"| metadata_artifact
   task_completed_gate -.->|"reads"| metadata_bar_id
@@ -254,6 +229,7 @@ flowchart LR
   task_completed_gate -.->|"reads"| team_name
   task_scope_gate -.->|"reads"| execute_phase
   task_scope_gate -.->|"reads"| execute_plan_ref
+  task_scope_gate -.->|"reads"| execute_scope_gate_strict
   task_scope_gate -.->|"reads"| metadata_scope
   task_scope_gate -.->|"reads"| team_name
   teammate_idle_gate -.->|"reads"| id
@@ -264,7 +240,8 @@ flowchart LR
   test_capture -.->|"reads"| tool_response_data_interrupted
   test_capture -.->|"reads"| tool_response_data_stderr
   test_capture -.->|"reads"| tool_response_data_stdout
-  verdict_version_gate -.->|"reads"| current_version
+  verdict_version_gate -.->|"reads"| bar
+  verdict_version_gate -.->|"reads"| phase
   version_bump_notify -.->|"reads"| current_version
   wave_gate -.->|"reads"| execute_phase
   wave_gate -.->|"reads"| metadata_override_token_id
@@ -274,6 +251,10 @@ flowchart LR
   wiki_log_append -.->|"reads"| bar
   wiki_log_append -.->|"reads"| goal
   wiki_log_append -.->|"reads"| phase
+  approve_archive -->|"writes"| state_archived_json
+  incident_detector -->|"writes"| hook_warnings
+  stop_hook -->|"writes"| execute_halt_reason
+  stop_hook -->|"writes"| execute_phase
   approve_archive -.->|"reads"| events_archived_jsonl
   approve_archive -.->|"reads"| events_jsonl
   approve_archive -.->|"reads"| heartbeat_json
@@ -294,6 +275,7 @@ flowchart LR
   retest_dispatch -.->|"reads"| test_results_jsonl
   session_context -.->|"reads"| proposals
   stale_warn -.->|"reads"| drift_log
+  state_drift_marker -.->|"reads"| state_snapshot
   state_drift_marker -.->|"reads"| state_snapshot
   state_drift_marker -.->|"reads"| events_jsonl
   state_drift_marker -.->|"reads"| state_json
@@ -319,7 +301,6 @@ flowchart LR
   incident_detector -->|"writes"| incidents_jsonl
   retest_dispatch -->|"writes"| test_results_jsonl
   stale_warn -->|"writes"| drift_log
-  state_drift_marker -->|"writes"| state_snapshot
   state_drift_marker -->|"writes"| state_json
   task_completed_gate -->|"writes"| gate_blocked
   task_scope_gate -->|"writes"| discoveries_jsonl
@@ -355,7 +336,7 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ""
+          "state.archived.json"
         ],
         "markers": [
           "events.archived.jsonl",
@@ -372,16 +353,11 @@ flowchart LR
       "mode": "execute",
       "reads": {
         "state": [
-          ".authorized_force_push",
-          ".authorized_local_destructive",
-          ".authorized_prod_deploy",
-          ".authorized_push",
-          ".change_id",
-          ".execute",
-          ".execute.phase",
-          ".execute.plan_drift_detected",
-          ".secret_scan_waived",
-          ".setup_flags_snapshot"
+          ".execute.authorized_force_push",
+          ".execute.authorized_local_destructive",
+          ".execute.authorized_prod_deploy",
+          ".execute.authorized_push",
+          ".execute.setup_flags_snapshot"
         ],
         "markers": [
           "critique.v",
@@ -435,9 +411,7 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".current_version",
-          ".guardrails",
-          ".team_name"
+          ".phase"
         ],
         "markers": [
           "version-sentinel.json"
@@ -460,7 +434,9 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ""
+          ".bar",
+          ".empirical_unknowns",
+          ".phase"
         ],
         "markers": [
           "proposals"
@@ -484,7 +460,8 @@ flowchart LR
       "reads": {
         "state": [
           ".frontmatter_schema_version",
-          ".single_writer_enabled"
+          ".instance_id",
+          ".phase"
         ],
         "markers": [
           ".state-snapshot",
@@ -509,7 +486,7 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".execute.phase",
+          ".execute",
           ".halt_reason",
           ".phase"
         ],
@@ -544,7 +521,7 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ""
+          ".hook_warnings"
         ],
         "markers": [
           "incidents.jsonl"
@@ -605,15 +582,8 @@ flowchart LR
       "mode": "execute",
       "reads": {
         "state": [
-          ".change_id",
-          ".execute.phase",
-          ".execute.plan_drift_detected",
           ".execute.plan_hash",
-          ".execute.plan_ref",
-          ".execute.test_manifest",
-          ".no_test_reason",
-          ".plan_section",
-          ".source_file"
+          ".execute.plan_ref"
         ],
         "markers": [
           "pending-change.json",
@@ -786,15 +756,12 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".banners",
-          ".bar",
-          ".event_id",
-          ".id",
-          ".phase",
-          ".verdict"
+          ".last_updated",
+          ".phase"
         ],
         "markers": [
           ".state-snapshot",
+          ".state-snapshot.",
           "events.jsonl",
           "state.json"
         ]
@@ -804,7 +771,6 @@ flowchart LR
           ""
         ],
         "markers": [
-          ".state-snapshot",
           "state.json"
         ]
       },
@@ -817,12 +783,7 @@ flowchart LR
       "mode": "execute",
       "reads": {
         "state": [
-          ".critic_verdict",
-          ".execute.change_log",
-          ".execute.phase",
-          ".execute.plan_drift_detected",
-          ".execute.plan_ref",
-          ".merged_at"
+          ".execute.phase"
         ],
         "markers": [
           "execute-done.sentinel"
@@ -830,7 +791,8 @@ flowchart LR
       },
       "writes": {
         "state": [
-          ""
+          ".execute.halt_reason",
+          ".execute.phase"
         ],
         "markers": [
           ""
@@ -878,6 +840,7 @@ flowchart LR
         "state": [
           ".execute.phase",
           ".execute.plan_ref",
+          ".execute.scope_gate_strict",
           ".metadata.scope",
           ".team_name"
         ],
@@ -960,7 +923,8 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ".current_version"
+          ".bar",
+          ".phase"
         ],
         "markers": [
           "version-sentinel.json"

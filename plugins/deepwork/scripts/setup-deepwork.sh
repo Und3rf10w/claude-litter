@@ -300,10 +300,24 @@ mkdir -p "${INSTANCE_DIR}/proposals"
 trap '
   _rc=$?
   rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"
-  # On non-zero exit, restore settings.local.json from backup so a failed setup
-  # does not leave half-wired hooks behind.
-  if [ $_rc -ne 0 ] && [ -f ".claude/settings.local.json.deepwork-backup" ]; then
-    mv ".claude/settings.local.json.deepwork-backup" ".claude/settings.local.json" 2>/dev/null || true
+  # On non-zero exit, remove only the hook blocks inserted by this instance.
+  # Backup is last-resort manual recovery only (not automatic primary path).
+  if [ $_rc -ne 0 ] && [ -f ".claude/settings.local.json" ] && command -v jq >/dev/null 2>&1; then
+    _iid="$INSTANCE_ID"
+    if [ -n "$_iid" ]; then
+      _tmp_rollback=".claude/settings.local.json.rollback.$$"
+      jq --arg iid "$_iid" "
+        if .hooks then
+          .hooks |= with_entries(.value = [.value[]? | select(._deepwork_instance != \$iid)] | select(.value | length > 0))
+          | if (.hooks | length) == 0 then del(.hooks) else . end
+        else . end
+      " ".claude/settings.local.json" > "$_tmp_rollback" 2>/dev/null
+      if [ -s "$_tmp_rollback" ]; then
+        mv "$_tmp_rollback" ".claude/settings.local.json" 2>/dev/null || true
+      else
+        rm -f "$_tmp_rollback" 2>/dev/null || true
+      fi
+    fi
   fi
 ' EXIT
 
@@ -515,6 +529,8 @@ printf '%s\n' "$GOAL" > "${INSTANCE_DIR}/prompt.md"
 # ---- Settings.local.json hook wiring ----
 SETTINGS_LOCAL=".claude/settings.local.json"
 
+# Backup kept as last-resort manual recovery only — transactional rollback (trap above)
+# removes only this instance's injected blocks on failure without touching the backup.
 if [[ -f "$SETTINGS_LOCAL" ]] && [[ ! -f "${SETTINGS_LOCAL}.deepwork-backup" ]]; then
   cp "$SETTINGS_LOCAL" "${SETTINGS_LOCAL}.deepwork-backup"
 fi
@@ -588,6 +604,19 @@ jq -n \
 
 if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
   mv "${SETTINGS_LOCAL}.tmp.$$" "$SETTINGS_LOCAL"
+  # Record successful injection into state for health-check visibility
+  _HOOK_BLOCK_COUNT=$(jq '[.hooks[][]? | select(._deepwork_instance == $iid)] | length' \
+    --arg iid "$INSTANCE_ID" "$SETTINGS_LOCAL" 2>/dev/null || echo "0")
+  jq \
+    --arg ts "$NOW" \
+    --argjson count "${_HOOK_BLOCK_COUNT:-0}" \
+    '.hooks_inject_status = {"timestamp": $ts, "block_count": $count}' \
+    "${INSTANCE_DIR}/state.json" > "${INSTANCE_DIR}/state.json.tmp.$$"
+  if [[ -s "${INSTANCE_DIR}/state.json.tmp.$$" ]]; then
+    mv "${INSTANCE_DIR}/state.json.tmp.$$" "${INSTANCE_DIR}/state.json"
+  else
+    rm -f "${INSTANCE_DIR}/state.json.tmp.$$"
+  fi
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
   if [[ "$ALLOW_NO_HOOKS" != "true" ]]; then

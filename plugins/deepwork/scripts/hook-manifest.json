@@ -15,7 +15,8 @@
       "event": "SubagentStop",
       "matcher": ".*",
       "modes": ["both"],
-      "args": "--event SubagentStop"
+      "args": "--event SubagentStop",
+      "writes_state": [".hook_warnings"]
     },
     {
       "script": "hooks/session-context.sh",
@@ -34,19 +35,22 @@
       "event": "PermissionDenied",
       "matcher": ".*",
       "modes": ["both"],
-      "args": "--event PermissionDenied"
+      "args": "--event PermissionDenied",
+      "writes_state": [".hook_warnings"]
     },
     {
       "script": "hooks/deliver-gate.sh",
       "event": "PreToolUse",
       "matcher": "ExitPlanMode",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase", ".bar", ".empirical_unknowns"]
     },
     {
       "script": "hooks/frontmatter-gate.sh",
       "event": "PreToolUse",
       "matcher": "Write|Edit",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase", ".instance_id", ".frontmatter_schema_version"]
     },
     {
       "script": "hooks/integrity-always-gate.sh",
@@ -66,28 +70,32 @@
       "script": "hooks/phase-advance-gate.sh",
       "event": "PreToolUse",
       "matcher": "Edit|Write",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase"]
     },
     {
       "script": "hooks/state-drift-marker.sh",
       "event": "PreToolUse",
       "matcher": "Write|Edit",
       "modes": ["both"],
-      "timeout": 5
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
     },
     {
       "script": "hooks/state-drift-marker.sh",
       "event": "PreToolUse",
       "matcher": "Bash",
       "modes": ["both"],
-      "timeout": 5
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
     },
     {
       "script": "hooks/state-drift-marker.sh",
       "event": "PostToolUse",
       "matcher": "Write|Edit|Bash",
       "modes": ["both"],
-      "timeout": 5
+      "timeout": 5,
+      "reads_state": [".phase", ".last_updated"]
     },
     {
       "script": "hooks/batch-gate.sh",
@@ -100,7 +108,8 @@
       "script": "hooks/verdict-version-gate.sh",
       "event": "PreToolUse",
       "matcher": "SendMessage",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase", ".bar"]
     },
     {
       "script": "hooks/version-bump-notify.sh",
@@ -120,20 +129,24 @@
       "script": "hooks/critique-version-gate.sh",
       "event": "TaskCompleted",
       "matcher": ".*",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase"]
     },
     {
       "script": "hooks/halt-gate.sh",
       "event": "Stop",
       "matcher": ".*",
       "modes": ["both"],
-      "_note": "Registered once for all sessions. Must appear before approve-archive.sh in the Stop array (array-index ordering maintained by position in this manifest)."
+      "_note": "Registered once for all sessions. Must appear before approve-archive.sh in the Stop array (array-index ordering maintained by position in this manifest).",
+      "reads_state": [".phase", ".execute", ".halt_reason"]
     },
     {
       "script": "hooks/approve-archive.sh",
       "event": "Stop",
       "matcher": ".*",
-      "modes": ["both"]
+      "modes": ["both"],
+      "reads_state": [".phase", ".execute.phase", ".halt_reason"],
+      "writes_state": ["state.archived.json"]
     },
     {
       "script": "hooks/wiki-log-append.sh",
@@ -146,7 +159,8 @@
       "script": "hooks/execute/plan-citation-gate.sh",
       "event": "PreToolUse",
       "matcher": "Write|Edit",
-      "modes": ["execute"]
+      "modes": ["execute"],
+      "reads_state": [".execute.plan_ref", ".execute.plan_hash"]
     },
     {
       "script": "hooks/execute/retest-dispatch.sh",
@@ -158,7 +172,8 @@
       "script": "hooks/execute/bash-gate.sh",
       "event": "PreToolUse",
       "matcher": "Bash",
-      "modes": ["execute"]
+      "modes": ["execute"],
+      "reads_state": [".execute.authorized_force_push", ".execute.authorized_push", ".execute.authorized_prod_deploy", ".execute.authorized_local_destructive", ".execute.setup_flags_snapshot"]
     },
     {
       "script": "hooks/execute/test-capture.sh",
@@ -198,7 +213,9 @@
       "script": "hooks/execute/stop-hook.sh",
       "event": "Stop",
       "matcher": ".*",
-      "modes": ["execute"]
+      "modes": ["execute"],
+      "reads_state": [".execute.phase"],
+      "writes_state": [".execute.phase", ".execute.halt_reason"]
     }
   ]
 }

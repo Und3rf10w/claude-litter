@@ -129,18 +129,18 @@ extract_state_reads() {
   grep -oE "jq[[:space:]]+-[a-z]*r?[a-z]*[[:space:]]+'[^']*'" "$file" 2>/dev/null \
     | grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]*' \
     | grep -vE "$_HOOK_FIELD_BLOCKLIST" \
-    | sort -u
+    | sort -u || true
   # Pattern 2: jq 'expr' without -r flags
   grep -oE "jq[[:space:]]+'[^']*'" "$file" 2>/dev/null \
     | grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]*' \
     | grep -vE "$_HOOK_FIELD_BLOCKLIST" \
-    | sort -u
+    | sort -u || true
   # Pattern 3: echo/printf VAR | jq -r/n 'expr'  (session-context.sh pattern)
   grep -oE '(echo|printf)[[:space:]]+[^|]+\|[[:space:]]*jq[[:space:]]+-?[a-z]*[[:space:]]+'"'"'[^'"'"']*'"'" "$file" 2>/dev/null \
     | grep -oE "jq[[:space:]]+-?[a-z]*[[:space:]]+'[^']*'" \
     | grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]*' \
     | grep -vE "$_HOOK_FIELD_BLOCKLIST" \
-    | sort -u
+    | sort -u || true
 }
 
 # ----------------------------------------------------------------------------
@@ -151,10 +151,10 @@ extract_state_writes() {
   local file="$1"
   grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]*[[:space:]]*=[[:space:]]*\$[a-zA-Z_]' "$file" 2>/dev/null \
     | grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]+'  \
-    | sort -u
+    | sort -u || true
   grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]*[[:space:]]*\+=[[:space:]]' "$file" 2>/dev/null \
     | grep -oE '\.[a-zA-Z_][a-zA-Z0-9_.]+'  \
-    | sort -u
+    | sort -u || true
 }
 
 # ----------------------------------------------------------------------------
@@ -167,29 +167,29 @@ _extract_instance_filename() {
   grep -oE '\$\{?INSTANCE_DIR\}?/[^"'"'"' $}{>|;&,]+' \
     | sed 's|\${INSTANCE_DIR}/||; s|\$INSTANCE_DIR/||' \
     | sed 's|["/'"'"',].*||' \
-    | grep -v '^$'
+    | grep -v '^$' || true
 }
 
 extract_marker_reads() {
   local file="$1"
   # Direct: [[ -f "${INSTANCE_DIR}/name" ]] or [[ -f "$INSTANCE_DIR/name" ]]
   grep -oE '\[\[[[:space:]]+-f[[:space:]]+"[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Direct: test -f "${INSTANCE_DIR}/name"
   grep -oE 'test -f "[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Direct: cat / jq ... "${INSTANCE_DIR}/name"
   grep -oE '(cat|jq)[[:space:]]+[^$]*"[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Indirect: VAR="${INSTANCE_DIR}/name" or VAR="$INSTANCE_DIR/name"
   # Then the var is read via cat, jq, [[ -f etc. Capture the name from the assignment.
   grep -oE '[A-Z_]+="[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Unquoted: $INSTANCE_DIR/name (no surrounding quotes)
   grep -oE '\$\{?INSTANCE_DIR\}?/[^"'"'"' $}{>|;&,]+' "$file" 2>/dev/null \
     | sed 's|\${INSTANCE_DIR}/||; s|\$INSTANCE_DIR/||' \
     | sed 's|[/"'"'"',].*||; s|[")].*||' \
-    | grep -v '^$' | sort -u
+    | grep -v '^$' | sort -u || true
 }
 
 # ----------------------------------------------------------------------------
@@ -199,10 +199,10 @@ extract_marker_writes() {
   local file="$1"
   # Direct: > "${INSTANCE_DIR}/name" or >> "${INSTANCE_DIR}/name" or mv src "${INSTANCE_DIR}/name"
   grep -oE '(>>?|mv[[:space:]]+[^[:space:]]+)[[:space:]]+"[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Direct: cp src "${INSTANCE_DIR}/name"
   grep -oE 'cp[[:space:]]+[^[:space:]]+[[:space:]]+"[^"]*\$\{?INSTANCE_DIR\}?/[^"]+' "$file" 2>/dev/null \
-    | _extract_instance_filename | sort -u
+    | _extract_instance_filename | sort -u || true
   # Indirect via named variable: VAR="${INSTANCE_DIR}/name", then >> "$VAR"
   # Collect assignments like FOO="${INSTANCE_DIR}/test-results.jsonl"
   while IFS= read -r _assign; do
@@ -220,7 +220,7 @@ extract_marker_writes() {
     | sed 's|>>*[[:space:]]*||' \
     | sed 's|\${INSTANCE_DIR}/||; s|\$INSTANCE_DIR/||' \
     | sed 's|[/"'"'"',].*||; s|[")].*||' \
-    | grep -v '^$' | sort -u
+    | grep -v '^$' | sort -u || true
 }
 
 # ----------------------------------------------------------------------------
@@ -230,7 +230,7 @@ extract_orchestrator_obligations() {
   local file="$1"
   grep -E '#[[:space:]]*(Orchestrator obligation:|Depends on: orchestrator)' "$file" 2>/dev/null \
     | sed 's/^[^#]*#[[:space:]]*//' \
-    | sort -u
+    | sort -u || true
 }
 
 # ----------------------------------------------------------------------------
@@ -302,7 +302,30 @@ done < <(parse_registrations)
 ALL_EVENTS_SORTED=$(printf '%s\n' $ALL_EVENTS_SET | sort -u | grep -v '^$')
 ALL_HOOKS_SORTED=$(printf '%s\n' $ALL_HOOKS_SET | sort -u | grep -v '^$')
 
-# For each hook, extract reads/writes/markers/obligations from source
+# ----------------------------------------------------------------------------
+# Pull reads_state / writes_state declarations from the manifest (declarative).
+# Returns space-separated field lists for a given hook basename.
+# Falls back to "" when the hook has no manifest entry or no declaration.
+# ----------------------------------------------------------------------------
+_manifest_state_reads() {
+  local _base="$1"
+  [[ -f "$MANIFEST" ]] || return 0
+  jq -r --arg b "$_base" '
+    [.hooks[] | select((.script | split("/") | last) == $b) | .reads_state // []] | flatten | .[]
+  ' "$MANIFEST" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+_manifest_state_writes() {
+  local _base="$1"
+  [[ -f "$MANIFEST" ]] || return 0
+  jq -r --arg b "$_base" '
+    [.hooks[] | select((.script | split("/") | last) == $b) | .writes_state // []] | flatten | .[]
+  ' "$MANIFEST" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+# For each hook, extract reads/writes/markers/obligations from source.
+# reads_state / writes_state: manifest declarations are authoritative when present;
+# grep-based extraction fills any gaps and flags disagreements as warnings.
 while IFS= read -r _hook; do
   [[ -n "$_hook" ]] || continue
 
@@ -323,8 +346,45 @@ while IFS= read -r _hook; do
 
   [[ -f "$_hookpath" ]] || continue
 
-  _map_set STATE_READS  "$_hook" "$(extract_state_reads  "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')"
-  _map_set STATE_WRITES "$_hook" "$(extract_state_writes "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  # State reads: prefer manifest; merge grep results as supplemental
+  _mreads=$(_manifest_state_reads "$_hook")
+  _greads=$(extract_state_reads "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')
+  if [[ -n "$_mreads" ]]; then
+    # Manifest is authoritative; warn if grep finds fields not declared
+    _undeclared=""
+    for _gf in $_greads; do
+      if ! printf ' %s ' " $_mreads " | grep -qF " ${_gf} "; then
+        _undeclared="${_undeclared} ${_gf}"
+      fi
+    done
+    if [[ -n "$_undeclared" ]]; then
+      printf '<!-- hook-graph warning: %s grep-reads not in manifest reads_state:%s -->\n' \
+        "$_hook" "$_undeclared" >&2
+    fi
+    _map_set STATE_READS "$_hook" "$_mreads"
+  else
+    _map_set STATE_READS "$_hook" "$_greads"
+  fi
+
+  # State writes: prefer manifest; merge grep results as supplemental
+  _mwrites=$(_manifest_state_writes "$_hook")
+  _gwrites=$(extract_state_writes "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')
+  if [[ -n "$_mwrites" ]]; then
+    _undeclared=""
+    for _gf in $_gwrites; do
+      if ! printf ' %s ' " $_mwrites " | grep -qF " ${_gf} "; then
+        _undeclared="${_undeclared} ${_gf}"
+      fi
+    done
+    if [[ -n "$_undeclared" ]]; then
+      printf '<!-- hook-graph warning: %s grep-writes not in manifest writes_state:%s -->\n' \
+        "$_hook" "$_undeclared" >&2
+    fi
+    _map_set STATE_WRITES "$_hook" "$_mwrites"
+  else
+    _map_set STATE_WRITES "$_hook" "$_gwrites"
+  fi
+
   _map_set MARKER_READS  "$_hook" "$(extract_marker_reads  "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')"
   _map_set MARKER_WRITES "$_hook" "$(extract_marker_writes "$_hookpath" | sort -u | tr '\n' ' ' | sed 's/ $//')"
   _map_set OBLIGATIONS  "$_hook" "$(extract_orchestrator_obligations "$_hookpath" | tr '\n' '|' | sed 's/|$//')"

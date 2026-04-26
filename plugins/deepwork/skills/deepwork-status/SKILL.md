@@ -89,12 +89,17 @@ If no files are found, report that no deepwork session is currently active and s
         | Unknown | Result |
         | `<empirical_id>` | `<result>` |
 
-5. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owner and metadata.bar_id where available.
+5. **Hooks health check**: Read `state.json.hooks_inject_status`. Display under **Hooks** section:
+   - If `hooks_inject_status` is present: `Injected: <block_count> blocks at <timestamp>` — no action needed.
+   - If `hooks_inject_status` is absent or null: display a warning: `WARNING: hooks_inject_status missing — hooks may not have been injected. Run /deepwork-teardown and restart the session if enforcement hooks are required.`
+   - Compare `hooks_inject_status.timestamp` against `started_at`: if the inject timestamp predates `started_at` by more than 60 seconds, display: `WARNING: hooks_inject_status is older than session start — may reflect a prior session's injection.`
 
-6. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
+6. Call `TaskList` to get live task status. Display tasks grouped by status (in_progress, pending, completed) with their owner and metadata.bar_id where available.
 
-7. If `state.json.hook_warnings[]` is non-empty, display under **Hook Warnings** (these are incident signals that triggered guardrail auto-append).
+7. Read the last 50 lines of `.claude/deepwork/<id>/log.md` and display as **Recent Activity**.
 
-8. If `state.json.user_feedback` is set, display it under **User Feedback** (from a prior ExitPlanMode rejection).
+8. If `state.json.hook_warnings[]` is non-empty, display under **Hook Warnings** (these are incident signals that triggered guardrail auto-append).
+
+9. If `state.json.user_feedback` is set, display it under **User Feedback** (from a prior ExitPlanMode rejection).
 
 Format all of this as a clean, readable dashboard. Use markdown tables; keep the overall output scannable.
