@@ -11,6 +11,7 @@
 #   WG-g: execute mode — uses state.execute.phase
 #   WG-h: malformed state.json → fail-open (allowed)
 #   WG-i: no active instance → fail-open (allowed)
+#   WG-j: TaskCreate without teammate_name and no resolvable owner → blocked (UNKNOWN_ACTOR, W9 M3)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -255,6 +256,20 @@ RC2=$(printf '%s' "$INPUT" \
     bash "$HOOK" 2>/dev/null; echo $?)
 RC=$(printf '%s' "$RC2" | tail -1)
 _assert_exit "WG-i: no instance fail-open (exit=0)" "0" "$RC"
+
+# ── WG-j: TaskCreate without teammate_name AND without resolvable owner → blocked (UNKNOWN_ACTOR, W9 M3) ──
+echo ""
+echo "── WG-j: no teammate_name, no resolvable task owner → blocked (UNKNOWN_ACTOR) ──"
+_write_design_state "explore"
+INPUT=$(jq -cn \
+  --arg team "$TEAM_NAME" \
+  --arg tid "task-unknown-$(date +%s)" \
+  '{team_name: $team, task_id: $tid, task_subject: "orphan task",
+    metadata: {wave: "explore"}}')
+OUT=$(_run_hook "$INPUT")
+RC=$(printf '%s' "$OUT" | tail -1)
+_assert_exit "WG-j: unknown actor blocked (exit=2)" "2" "$RC"
+_assert_contains "WG-j: UNKNOWN_ACTOR in stderr" "UNKNOWN_ACTOR" "$OUT"
 
 # ── Summary ──
 echo ""

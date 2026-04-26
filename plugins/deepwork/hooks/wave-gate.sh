@@ -10,7 +10,7 @@
 #     teammate_name — actor identity (may be absent on orchestrator-originated tasks)
 #     team_name     — team anchor used for instance discovery
 #   Fallback: if teammate_name is absent, read task file owner field by task_id.
-#   If actor identity cannot be determined: fail-open (exit 0).
+#   If actor identity cannot be determined: UNKNOWN_ACTOR (block, exit 2).
 #
 # Authority model:
 #   - Orchestrator/team-lead (teammate_name == "team-lead" or empty) → allowed any phase.
@@ -18,14 +18,16 @@
 #       design mode:  state.phase
 #       execute mode: state.execute.phase
 #   - No metadata.wave on teammate-originated task → MISSING_WAVE_METADATA (block, exit 2)
-#   - metadata.wave != active phase, no override_reason → WAVE_MISMATCH (block, exit 2)
-#   - metadata.wave != active phase, with override_reason → WAVE_OVERRIDE (allow + audit)
+#   - metadata.wave != active phase, no override_token_id → WAVE_MISMATCH (block, exit 2)
+#   - metadata.wave != active phase, valid override token → WAVE_OVERRIDE (allow + audit)
 #
 # Exit conventions (hooks.ts:236):
 #   0 — allow / fail-open
 #   2 — block (stderr shown to teammate)
 #
-# Fail-open conditions: malformed state, no active instance, actor identity unavailable.
+# Fail-open conditions: malformed state, no active instance, no team_name.
+# Fail-CLOSED conditions: active instance found but actor identity cannot be determined
+#   (distinguishes UNKNOWN_ACTOR from no-instance, which should fail-open).
 
 set +e
 
@@ -81,8 +83,13 @@ if [[ -z "$ACTOR" ]] && [[ -n "$TASK_ID" ]]; then
   fi
 fi
 
-# If actor identity still unknown, fail-open
-[[ -n "$ACTOR" ]] || exit 0
+# If actor identity still unknown, fail-CLOSED (W9 M3: UNKNOWN_ACTOR)
+# We have an active instance + team_name, so a missing actor is suspicious.
+if [[ -z "$ACTOR" ]]; then
+  printf 'wave-gate UNKNOWN_ACTOR: TaskCreated with no teammate_name and no resolvable owner in task file.\n' >&2
+  printf 'Only orchestrator/team-lead may create tasks without a discernible actor identity.\n' >&2
+  exit 2
+fi
 
 # Orchestrator/team-lead bypass — allowed to create tasks for any phase
 if [[ "$ACTOR" == "team-lead" ]] || [[ "$ACTOR" == "orchestrator" ]]; then
