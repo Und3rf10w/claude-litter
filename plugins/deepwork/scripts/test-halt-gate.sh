@@ -43,16 +43,20 @@ fi
 
 # Branch detection — presence of _settings-lock.sh indicates parallelism branch
 # (added in M1 of the parallelism work). On hygiene (off main), this helper
-# doesn't exist and bare `_deepwork: true` tags are expected.
+# doesn't exist. Since C3, all branches emit dual-tag scheme:
+#   _deepwork: true          (required — identity tag for bulk-remove)
+#   _deepwork_instance: <8hex>  (required since C3 — per-instance teardown tag)
+# EXPECTED_TAG_REGEX allows both keys. A key matching neither is a FAIL.
 if [[ -f "${PLUGIN_ROOT}/scripts/_settings-lock.sh" ]]; then
   BRANCH_KIND="parallelism"
-  EXPECTED_TAG_REGEX='^_deepwork_[0-9a-f]{8}$'
-  EXPECTED_TAG_DESC='_deepwork_<8hex> per-instance tag'
 else
   BRANCH_KIND="hygiene"
-  EXPECTED_TAG_REGEX='^_deepwork$'
-  EXPECTED_TAG_DESC='bare _deepwork tag'
 fi
+# Both branches now use the dual-tag scheme introduced in C3 (W15 #31).
+# Each hook block has two keys: _deepwork (identity) and _deepwork_instance (per-instance teardown).
+# The regex accepts exactly these two key names; any other _deepwork* key is a FAIL.
+EXPECTED_TAG_REGEX='^_deepwork(_instance)?$'
+EXPECTED_TAG_DESC='_deepwork (identity) + _deepwork_instance (per-instance) dual-tag scheme'
 
 PASS=0
 FAIL=0
@@ -233,12 +237,12 @@ _run_registration_test() {
   done <<<"$tag_keys"
 
   if (( tag_ok == 1 )); then
-    printf '✔ TM-HALT-REGISTRATION/tag (%s scheme — all keys matched /%s/)\n' "$BRANCH_KIND" "$EXPECTED_TAG_REGEX"
+    printf '✔ TM-HALT-REGISTRATION/tag (%s — all keys matched /%s/)\n' "$EXPECTED_TAG_DESC" "$EXPECTED_TAG_REGEX"
     PASS=$((PASS + 1))
   else
-    printf '✘ TM-HALT-REGISTRATION/tag — found tag %q on %s branch; expected %s\n' \
-      "$wrong_tag" "$BRANCH_KIND" "$EXPECTED_TAG_DESC" >&2
-    printf '  On parallelism, bare _deepwork indicates M2 tag-migration regression.\n' >&2
+    printf '✘ TM-HALT-REGISTRATION/tag — found unexpected tag key %q; expected %s\n' \
+      "$wrong_tag" "$EXPECTED_TAG_DESC" >&2
+    printf '  Unexpected tag key on halt-gate block indicates tag-scheme regression (C3/W15 #31).\n' >&2
     FAIL=$((FAIL + 1))
     FAILED_CASES+=("TM-HALT-REGISTRATION/tag")
   fi

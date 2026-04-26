@@ -82,3 +82,47 @@ If execute_phase is 'critique': send CRITIC the current gate context to resume v
 If plan_drift_detected is DETECTED: do not advance any gate — resolve drift via /deepwork-execute-amend first.
 If execute_phase is 'halt' or 'halting': read log.md for the halt reason; do not restart execution."
 }
+
+# build_resume_prompt — recovery checklist injected when trigger=resume in execute mode.
+build_resume_prompt() {
+  local execute_phase plan_ref drift_flag bar_status
+  execute_phase=$(jq -r '.execute.phase // "unknown"' "$STATE_FILE" 2>/dev/null)
+  [[ -z "$execute_phase" ]] && execute_phase="unknown"
+  plan_ref=$(jq -r '.execute.plan_ref // "(not set)"' "$STATE_FILE" 2>/dev/null)
+  drift_flag=$(jq -r 'if .execute.plan_drift_detected then "DETECTED" else "none" end' "$STATE_FILE" 2>/dev/null)
+  [[ -z "$drift_flag" ]] && drift_flag="none"
+  bar_status=$(jq -r '
+    if (.bar // []) | length == 0 then
+      "(not yet populated)"
+    else
+      (.bar[] | "- \(.id): \(.verdict // "pending")")
+    end
+  ' "$STATE_FILE" 2>/dev/null)
+  [[ -z "$bar_status" ]] && bar_status="(not yet populated)"
+
+  REINJECT_PROMPT="You are the DEEPWORK ORCHESTRATOR (EXECUTE MODE) for team \"${TEAM_NAME}\".
+
+SESSION RESUMED — run this recovery checklist before continuing:
+
+1. Read ${INSTANCE_DIR}/state.json — verify execute.phase, plan_ref, plan_hash, and drift status.
+2. Run TaskList — verify which executor tasks are open/in-progress.
+   - If the executor team appears gone, run TeamCreate to spawn a new team. Do NOT
+     assume the prior team persists after a resume — it may have been lost on disconnect.
+   - If no team_name is set in state.json, run /deepwork --mode execute to reinitialize.
+3. Read ${INSTANCE_DIR}/log.md — review the last 20 lines for context on where execution stopped.
+4. Read ${INSTANCE_DIR}/discoveries.jsonl — check for any unresolved scope-delta discoveries.
+5. Reconcile: if execute.phase reports an active gate but TaskList shows no gate tasks,
+   re-seed the gate from the plan at ${plan_ref}.
+
+GOAL: ${GOAL}
+EXECUTE PHASE: ${execute_phase}
+PLAN REF: ${plan_ref}
+PLAN DRIFT: ${drift_flag}
+
+Bar status:
+${bar_status}
+
+After completing the checklist, continue the execute phase pipeline from execute.phase=${execute_phase}.
+If plan_drift_detected is DETECTED, resolve via /deepwork-execute-amend before advancing.
+If the prior team is gone, create a NEW team and re-assign the current gate's tasks."
+}

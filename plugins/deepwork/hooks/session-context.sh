@@ -1,10 +1,11 @@
 #!/bin/bash
-# session-context.sh — Re-injects orchestrator identity after /clear or /compact
+# session-context.sh — Re-injects orchestrator identity on SessionStart events.
 #
-# Called by the SessionStart(clear|compact) hook generated in settings.local.json
-# by setup-deepwork.sh. Reads the deepwork state file and outputs a minimal
-# orchestrator-identity prompt pointing at disk-backed truth (state.json + log.md
-# + PROFILE.md + references/).
+# Handles four trigger types from the CC runtime:
+#   startup  — fresh session start
+#   resume   — session resumed after disconnect; emits recovery checklist
+#   clear    — user ran /clear; emits compact reinject prompt
+#   compact  — auto-compaction; emits compact reinject prompt
 #
 # Output goes to stdout and is injected into Claude's context.
 
@@ -17,6 +18,9 @@ fi
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 _parse_hook_input
+
+# Parse the SessionStart trigger type from hook stdin
+SESSION_TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // ""' 2>/dev/null || echo "")
 
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
@@ -41,10 +45,16 @@ load_profile "$MODE" "$_PLUGIN_ROOT"
 MODE="$RESOLVED_MODE"
 source "${PROFILE_DIR}/reinject.sh"
 
-# build_reinject_prompt is defined in the profile's reinject.sh; it uses
-# STATE_FILE, INSTANCE_DIR, GOAL, TEAM_NAME, PHASE to produce REINJECT_PROMPT.
-build_reinject_prompt
-printf '%s\n' "$REINJECT_PROMPT"
+# Resume trigger: emit recovery checklist instead of standard reinject
+if [[ "$SESSION_TRIGGER" == "resume" ]]; then
+  build_resume_prompt
+  printf '%s\n' "$REINJECT_PROMPT"
+else
+  # build_reinject_prompt is defined in the profile's reinject.sh; it uses
+  # STATE_FILE, INSTANCE_DIR, GOAL, TEAM_NAME, PHASE to produce REINJECT_PROMPT.
+  build_reinject_prompt
+  printf '%s\n' "$REINJECT_PROMPT"
+fi
 
 # W14: emit hookSpecificOutput.watchPaths for concrete proposal files so chokidar
 # watches them directly. The FileChanged hooks for version-bump-notify and stale-warn
