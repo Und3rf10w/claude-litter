@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 98 nodes, 160 edges
+Graph: 99 nodes, 161 edges
 
 ## Mermaid Flowchart
 
@@ -87,6 +87,7 @@ flowchart LR
     execute_plan_hash(([".execute.plan_hash"]))
     execute_plan_hash_at_drift(([".execute.plan_hash_at_drift"]))
     execute_plan_ref(([".execute.plan_ref"]))
+    execute_test_manifest(([".execute.test_manifest"]))
     frontmatter_schema_version(([".frontmatter_schema_version"]))
     goal(([".goal"]))
     guardrails(([".guardrails"]))
@@ -192,6 +193,7 @@ flowchart LR
   plan_citation_gate -.->|"reads"| change_id
   plan_citation_gate -.->|"reads"| execute_phase
   plan_citation_gate -.->|"reads"| execute_plan_drift_detected
+  plan_citation_gate -.->|"reads"| execute_test_manifest
   plan_citation_gate -.->|"reads"| no_test_reason
   plan_citation_gate -.->|"reads"| plan_section
   plan_drift_detector -.->|"reads"| execute_phase
@@ -545,6 +547,7 @@ flowchart LR
           ".change_id",
           ".execute.phase",
           ".execute.plan_drift_detected",
+          ".execute.test_manifest",
           ".no_test_reason",
           ".plan_section"
         ],

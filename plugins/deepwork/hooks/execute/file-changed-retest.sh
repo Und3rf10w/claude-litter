@@ -36,7 +36,7 @@ discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -n "$EXEC_PHASE" ]] || exit 0
 
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.file_path // ""' 2>/dev/null || echo "")")
 EVENT=$(printf '%s' "$INPUT" | jq -r '.event // ""' 2>/dev/null || echo "")
 
 [[ -n "$FILE_PATH" ]] || exit 0

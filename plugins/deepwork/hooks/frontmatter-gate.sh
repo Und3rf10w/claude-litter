@@ -17,7 +17,7 @@ source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 discover_instance || exit 0   # no active instance = skip
 
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""')
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // ""')")
 
 # Only validate files in this instance's directory
 [[ "$FILE_PATH" == *"${INSTANCE_DIR}"* ]] || exit 0

@@ -41,7 +41,7 @@ discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ -n "$EXEC_PHASE" ]] || exit 0
 
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
+FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")")
 [[ -n "$FILE_PATH" ]] || exit 0
 
 # Drift block: if plan_drift_detected is true, all writes are blocked until amended
@@ -81,10 +81,17 @@ if [[ -z "$PLAN_SECTION" ]] || [[ "$PLAN_SECTION" == "null" ]]; then
   exit 2
 fi
 
-# Check file is in pending-change.json files[]
-FILE_IN_LIST=$(printf '%s' "$PENDING_JSON" | jq -r --arg fp "$FILE_PATH" '
-  .files // [] | map(select(. == $fp)) | length
-' 2>/dev/null || echo "0")
+# Check file is in pending-change.json files[] — canonicalize each entry before comparing
+# so that unresolved symlinks in files[] (e.g. /tmp on macOS) match the canonicalized FILE_PATH.
+FILE_IN_LIST="0"
+while IFS= read -r _entry; do
+  [[ -z "$_entry" ]] && continue
+  _canon_entry=$(_canonical_path "$_entry")
+  if [[ "$_canon_entry" == "$FILE_PATH" ]]; then
+    FILE_IN_LIST="1"
+    break
+  fi
+done < <(printf '%s' "$PENDING_JSON" | jq -r '.files // [] | .[]' 2>/dev/null || true)
 
 if [[ "$FILE_IN_LIST" == "0" ]]; then
   printf 'BLOCKED (G3): file "%s" is not listed in pending-change.json.files[].\n' "$FILE_PATH" >&2
@@ -107,9 +114,16 @@ fi
 # --- Gate G5: new-file test coverage ---
 # If the target file is NOT in state.execute.test_manifest, require pending-change.json
 # to contain a non-empty no_test_reason field.
-TEST_MANIFEST=$(jq -r --arg fp "$FILE_PATH" '
-  .execute.test_manifest // [] | map(select(. == $fp)) | length
-' "$STATE_FILE" 2>/dev/null || echo "0")
+# Canonicalize each test_manifest entry before comparing (same reason as G3 above).
+TEST_MANIFEST="0"
+while IFS= read -r _tm_entry; do
+  [[ -z "$_tm_entry" ]] && continue
+  _canon_tm=$(_canonical_path "$_tm_entry")
+  if [[ "$_canon_tm" == "$FILE_PATH" ]]; then
+    TEST_MANIFEST="1"
+    break
+  fi
+done < <(jq -r '.execute.test_manifest // [] | .[]' "$STATE_FILE" 2>/dev/null || true)
 
 if [[ "$TEST_MANIFEST" == "0" ]]; then
   NO_TEST_REASON=$(printf '%s' "$PENDING_JSON" | jq -r '.no_test_reason // ""' 2>/dev/null || echo "")

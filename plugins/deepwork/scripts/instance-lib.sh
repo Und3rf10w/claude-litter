@@ -72,6 +72,17 @@ if [[ "${_DW_TIMING_TRAP_INSTALLED:-0}" != "1" ]]; then
   _DW_TIMING_TRAP_INSTALLED=1
 fi
 
+# Canonicalizes a path: resolves symlinks in dirname, normalizes . and .., works for non-existent files.
+# Falls back to original path if dirname doesn't exist (best-effort).
+_canonical_path() {
+  local p="$1"
+  [[ -z "$p" ]] && { printf '%s' ""; return; }
+  local dir base
+  dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || { printf '%s' "$p"; return; }
+  base="$(basename "$p")"
+  printf '%s/%s' "$dir" "$base"
+}
+
 discover_instance() {
   # Capture start time on first call; subsequent calls (rare) don't overwrite it
   [[ -n "${_HOOK_START_NS:-}" ]] || _HOOK_START_NS=$(_dw_ns_now)
@@ -112,10 +123,10 @@ discover_instance() {
     [[ "$_id" =~ ^[0-9a-f]{8}$ ]] || continue
 
     INSTANCE_ID="$_id"
-    INSTANCE_DIR="$_dir"
-    STATE_FILE="${_dir}/state.json"
-    LOG_FILE="${_dir}/log.md"
-    HEARTBEAT_FILE="${_dir}/heartbeat.json"
+    INSTANCE_DIR="$(_canonical_path "$_dir")"
+    STATE_FILE="${INSTANCE_DIR}/state.json"
+    LOG_FILE="${INSTANCE_DIR}/log.md"
+    HEARTBEAT_FILE="${INSTANCE_DIR}/heartbeat.json"
     PROJECT_ROOT="$_project_root"
     return 0
   done
@@ -168,10 +179,10 @@ discover_instance_by_team_name() {
     [[ "$_tname" == "$team_name" ]] || continue
 
     INSTANCE_ID="$_id"
-    INSTANCE_DIR="$_dir"
-    STATE_FILE="${_dir}/state.json"
-    LOG_FILE="${_dir}/log.md"
-    HEARTBEAT_FILE="${_dir}/heartbeat.json"
+    INSTANCE_DIR="$(_canonical_path "$_dir")"
+    STATE_FILE="${INSTANCE_DIR}/state.json"
+    LOG_FILE="${INSTANCE_DIR}/log.md"
+    HEARTBEAT_FILE="${INSTANCE_DIR}/heartbeat.json"
     PROJECT_ROOT="$_project_root"
     return 0
   done
