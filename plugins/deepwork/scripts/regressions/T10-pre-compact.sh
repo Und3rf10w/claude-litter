@@ -88,10 +88,10 @@ _build_payload() {
   local session_id="$1" agent_id="${2:-}"
   if [[ -n "$agent_id" ]]; then
     jq -cn --arg sid "$session_id" --arg aid "$agent_id" \
-      '{session_id: $sid, agent_id: $aid}'
+      '{session_id: $sid, hook_event_name: "PreCompact", agent_id: $aid}'
   else
     jq -cn --arg sid "$session_id" \
-      '{session_id: $sid}'
+      '{session_id: $sid, hook_event_name: "PreCompact"}'
   fi
 }
 
@@ -100,7 +100,7 @@ echo ""
 echo "── T10-a: valid session → stamps last_updated + appends log.md ──"
 
 PAYLOAD_VALID=$(_build_payload "$SESSION_ID")
-STDOUT_A=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" bash "$HOOK" 2>/dev/null)
+STDOUT_A=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" 2>/dev/null)
 RC_A=$?
 _assert_exit "T10-a: exit 0 on valid session" "0" "$RC_A"
 
@@ -136,7 +136,7 @@ BEFORE_MTIME=$(stat -f '%m' "$INSTANCE_DIR/state.json" 2>/dev/null || stat -c '%
 sleep 1
 
 PAYLOAD_SUBAGENT=$(_build_payload "$SESSION_ID" "subagent-12345")
-RC_B=$(printf '%s' "$PAYLOAD_SUBAGENT" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" bash "$HOOK" >/dev/null 2>&1; echo $?)
+RC_B=$(printf '%s' "$PAYLOAD_SUBAGENT" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)
 _assert_exit "T10-b: subagent exits 0" "0" "$RC_B"
 
 AFTER_MTIME=$(stat -f '%m' "$INSTANCE_DIR/state.json" 2>/dev/null || stat -c '%Y' "$INSTANCE_DIR/state.json" 2>/dev/null)
@@ -154,14 +154,14 @@ echo "── T10-c: unknown session_id → exits 0, no writes ──"
 
 UNKNOWN_SESSION="no-such-session-$(date +%s)"
 PAYLOAD_UNKNOWN=$(_build_payload "$UNKNOWN_SESSION")
-RC_C=$(printf '%s' "$PAYLOAD_UNKNOWN" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$UNKNOWN_SESSION" bash "$HOOK" >/dev/null 2>&1; echo $?)
+RC_C=$(printf '%s' "$PAYLOAD_UNKNOWN" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)
 _assert_exit "T10-c: unknown session exits 0" "0" "$RC_C"
 
 # ── (d) Stdout emits compact instructions pointing at state.json + log.md + instance dir ──
 echo ""
 echo "── T10-d: stdout compact instructions mention state.json, log.md, instance dir ──"
 
-STDOUT_D=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" bash "$HOOK" 2>/dev/null)
+STDOUT_D=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" 2>/dev/null)
 _assert_contains "T10-d: stdout mentions state.json" "state.json" "$STDOUT_D"
 _assert_contains "T10-d: stdout mentions log.md" "log.md" "$STDOUT_D"
 _assert_contains "T10-d: stdout mentions instance dir" "$INSTANCE_DIR" "$STDOUT_D"
@@ -172,8 +172,8 @@ _assert_contains "T10-d: stdout mentions instance dir" "$INSTANCE_DIR" "$STDOUT_
 echo ""
 echo "── T10-e (ADV): non-deepwork session → exits 0 gracefully ──"
 EMPTY_SANDBOX=$(mktemp -d)
-RC_E=$(printf '{"session_id":"orphan-session"}' \
-  | CLAUDE_PROJECT_DIR="$EMPTY_SANDBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="orphan-session" \
+RC_E=$(printf '{"session_id":"orphan-session","hook_event_name":"PreCompact"}' \
+  | CLAUDE_PROJECT_DIR="$EMPTY_SANDBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
     bash "$HOOK" >/dev/null 2>&1; echo $?)
 rm -rf "$EMPTY_SANDBOX"
 _assert_exit "T10-e: non-deepwork session exits 0" "0" "$RC_E"
@@ -184,7 +184,7 @@ _assert_exit "T10-e: non-deepwork session exits 0" "0" "$RC_E"
 # timestamp), and log.md should get a second PreCompact entry OR be idempotent.
 echo ""
 echo "── T10-f (ADV): double-fire idempotency ──"
-RC_F=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" bash "$HOOK" >/dev/null 2>&1; echo $?)
+RC_F=$(printf '%s' "$PAYLOAD_VALID" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)
 _assert_exit "T10-f: second fire exits 0" "0" "$RC_F"
 # state.json must still be valid JSON
 if jq -e . "$INSTANCE_DIR/state.json" >/dev/null 2>&1; then

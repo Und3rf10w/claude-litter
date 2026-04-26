@@ -18,7 +18,9 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 

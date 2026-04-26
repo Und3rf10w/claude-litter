@@ -16,10 +16,9 @@ fi
 
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-HOOK_INPUT=$(cat)
-HOOK_SESSION=$(echo "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
-discover_instance "$HOOK_SESSION" 2>/dev/null || exit 0
+discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 # Read state
 STATE_JSON=$(cat "$STATE_FILE" 2>/dev/null)

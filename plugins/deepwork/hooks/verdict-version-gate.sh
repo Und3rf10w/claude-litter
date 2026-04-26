@@ -26,11 +26,10 @@
 set +e
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null)
 [[ "$TOOL_NAME" == "SendMessage" ]] || exit 0
 
 TO=$(printf '%s' "$INPUT" | jq -r '.tool_input.to // ""' 2>/dev/null)
@@ -54,7 +53,6 @@ fi
 
 # Discover instance via session_id (hook base input). If we can't resolve, let
 # it through — we don't want to block non-deepwork SendMessage traffic.
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 SENTINEL="${INSTANCE_DIR}/version-sentinel.json"

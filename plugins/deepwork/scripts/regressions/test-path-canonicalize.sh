@@ -87,10 +87,9 @@ _citation_gate() {
 # state-drift-marker.sh helper: runs the PreToolUse leg against a given file_path
 _drift_marker_pre() {
   local file_path="$1"
-  printf '{"session_id":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' \
+  printf '{"session_id":"%s","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"%s"}}' \
     "$SESSION_ID" "$file_path" \
     | CLAUDE_PROJECT_DIR="$SANDBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-      HOOK_EVENT_NAME="PreToolUse" \
       bash "${PLUGIN_ROOT}/hooks/state-drift-marker.sh" 2>&1
   echo $?
 }
@@ -99,11 +98,10 @@ _drift_marker_pre() {
 _frontmatter_gate() {
   local file_path="$1" content="$2"
   local payload
-  payload=$(printf '{"session_id":"%s","tool_name":"Write","tool_input":{"file_path":"%s","content":"%s"}}' \
+  payload=$(printf '{"session_id":"%s","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"%s","content":"%s"}}' \
     "$SESSION_ID" "$file_path" "$content")
   printf '%s' "$payload" \
     | CLAUDE_PROJECT_DIR="$SANDBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-      CLAUDE_CODE_SESSION_ID="$SESSION_ID" \
       bash "${PLUGIN_ROOT}/hooks/frontmatter-gate.sh" 2>&1
   echo $?
 }

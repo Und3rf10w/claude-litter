@@ -11,11 +11,10 @@
 set +e
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")")
 
 # Pass-through for non-target tools / non-state.json paths.

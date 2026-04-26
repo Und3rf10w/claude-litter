@@ -158,9 +158,8 @@ _run_registration_test() {
   local sandbox goal session_id settings_file
   sandbox=$(mktemp -d)
   export CLAUDE_PROJECT_DIR="$sandbox"
-  export CLAUDE_CODE_SESSION_ID="halt-gate-reg-$$-${RANDOM}"
   export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
-  session_id="$CLAUDE_CODE_SESSION_ID"
+  session_id="halt-gate-reg-$$-${RANDOM}"
 
   mkdir -p "$sandbox/.claude"
   # Per executor: pre-populate settings.local.json with empty hooks object

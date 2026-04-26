@@ -51,12 +51,10 @@ STATE_FILE="${INSTANCE_DIR}/state.json" \
 }
 EOF
 
-export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
-
 _run_gate() {
   local tool_name="${1:-Write}"
   local payload
-  payload=$(jq -cn --arg tn "$tool_name" '{tool_name: $tn, tool_input: {}}')
+  payload=$(jq -cn --arg sid "$SESSION_ID" --arg tn "$tool_name" '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: $tn, tool_input: {}}')
   printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
   echo $?
 }
@@ -65,8 +63,8 @@ _run_gate() {
 echo ""
 echo "── IA-a: No active instance → fail-open (exit 0) ──"
 UNSET_SESSION="no-such-session-$(date +%s)"
-payload=$(jq -cn '{tool_name: "Write", tool_input: {}}')
-result=$(printf '%s' "$payload" | CLAUDE_CODE_SESSION_ID="$UNSET_SESSION" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1; echo $?)
+payload=$(jq -cn --arg sid "$UNSET_SESSION" '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {}}')
+result=$(printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1; echo $?)
 _assert_exit "IA-a: no instance fail-open" "0" "$result"
 
 # ── IA-b: Active instance, no event_head in state.json → pass (pre-W7 compat) ──

@@ -86,10 +86,9 @@ for _code in 0 1 2 127; do
       unset _DW_TIMING_TRAP_INSTALLED
       unset INSTANCE_DIR
       export CLAUDE_PROJECT_DIR="$_sandbox"
-      export CLAUDE_CODE_SESSION_ID="$_sid"
       # shellcheck source=/dev/null
       source "$INSTANCE_LIB"
-      discover_instance
+      discover_instance "$_sid"
       exit $_code
     )
     echo $?
@@ -113,11 +112,10 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset _DW_TIMING_TRAP_INSTALLED
   unset INSTANCE_DIR
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   export HOOK_EVENT_NAME="PreToolUse"
   export TOOL_NAME="Write"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 0
 ) >/dev/null 2>&1
 
@@ -175,11 +173,10 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset _DW_TIMING_TRAP_INSTALLED
   unset INSTANCE_DIR
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   export HOOK_EVENT_NAME="PreToolUse"
   export TOOL_NAME="Write"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 2
 ) >/dev/null 2>&1
 
@@ -206,10 +203,9 @@ _stderr_file=$(mktemp)
   unset _DW_TIMING_TRAP_INSTALLED
   unset INSTANCE_DIR
   unset CLAUDE_PROJECT_DIR
-  unset CLAUDE_CODE_SESSION_ID
   source "$INSTANCE_LIB"
   # discover_instance returns 1 here (no session), but INSTANCE_DIR stays unset
-  discover_instance 2>/dev/null || true
+  discover_instance "" 2>/dev/null || true
   exit 0
 ) 2>"$_stderr_file" >/dev/null
 
@@ -240,11 +236,10 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset _DW_TIMING_TRAP_INSTALLED
   unset INSTANCE_DIR
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   # Source twice — guard must prevent duplicate trap
   source "$INSTANCE_LIB"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 0
 ) >/dev/null 2>&1
 
@@ -311,11 +306,10 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset _DW_TIMING_TRAP_INSTALLED
   unset INSTANCE_DIR
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   export HOOK_EVENT_NAME="PostToolUse"
   export TOOL_NAME="Read"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 0
 ) >/dev/null 2>&1
 
@@ -342,9 +336,8 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset HOOK_EVENT_NAME
   unset TOOL_NAME
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 0
 ) >/dev/null 2>&1
 
@@ -370,10 +363,9 @@ _inst_dir=$(_make_instance "$_sandbox" "$_sid")
   unset INSTANCE_DIR
   unset TOOL_NAME
   export CLAUDE_PROJECT_DIR="$_sandbox"
-  export CLAUDE_CODE_SESSION_ID="$_sid"
   export HOOK_EVENT_NAME="Stop"
   source "$INSTANCE_LIB"
-  discover_instance
+  discover_instance "$_sid"
   exit 0
 ) >/dev/null 2>&1
 

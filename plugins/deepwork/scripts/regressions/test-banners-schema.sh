@@ -100,7 +100,6 @@ SESSION_ID="test-banners-$(date +%s)"
 LOG_FILE="${INSTANCE_DIR}/log.md"
 touch "$LOG_FILE"
 
-export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
 export INSTANCE_DIR
 export LOG_FILE
 
@@ -145,9 +144,9 @@ _run_post_hook() {
   payload=$(jq -cn \
     --arg sid "$SESSION_ID" \
     --arg fp  "$STATE_JSON" \
-    '{session_id: $sid, tool_name: "Write", tool_input: {file_path: $fp}}')
+    '{session_id: $sid, hook_event_name: "PostToolUse", tool_name: "Write", tool_input: {file_path: $fp}}')
   printf '%s' "$payload" \
-    | HOOK_EVENT_NAME="PostToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       bash "$HOOK" 2>"$stderr_file" >/dev/null
   _LAST_EXIT=$?
   _LAST_STDERR=$(cat "$stderr_file")
@@ -180,10 +179,10 @@ _run_bash_path() {
   local payload
   payload=$(jq -cn \
     --arg sid "$SESSION_ID" \
-    '{session_id: $sid, tool_name: "Bash",
+    '{session_id: $sid, hook_event_name: "PostToolUse", tool_name: "Bash",
       tool_input: {command: "jq \".banners += [...]\" state.json > tmp && mv tmp state.json"}}')
   printf '%s' "$payload" \
-    | HOOK_EVENT_NAME="PostToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       bash "$HOOK" 2>"$stderr_file" >/dev/null
   _LAST_EXIT=$?
   _LAST_STDERR=$(cat "$stderr_file")
@@ -374,9 +373,9 @@ jq -cn --arg sid "$SESSION_ID" --argjson banners "[$BANNER_EDIT_BAD]" \
 _LAST_STDERR_L=""
 stderr_file_l=$(mktemp)
 payload_l=$(jq -cn --arg sid "$SESSION_ID" --arg fp "$STATE_JSON" \
-  '{session_id: $sid, tool_name: "Edit", tool_input: {file_path: $fp}}')
+  '{session_id: $sid, hook_event_name: "PostToolUse", tool_name: "Edit", tool_input: {file_path: $fp}}')
 printf '%s' "$payload_l" \
-  | HOOK_EVENT_NAME="PostToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
     bash "$HOOK" 2>"$stderr_file_l" >/dev/null
 _LAST_STDERR_L=$(cat "$stderr_file_l")
 rm -f "$stderr_file_l"
@@ -412,9 +411,9 @@ jq -cn --arg sid "$SESSION_ID" \
   | STATE_FILE="$STATE_JSON" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init -
 stderr_file_n=$(mktemp)
 payload_n=$(jq -cn --arg sid "$SESSION_ID" --arg fp "$STATE_JSON" \
-  '{session_id: $sid, tool_name: "Write", tool_input: {file_path: $fp}}')
+  '{session_id: $sid, hook_event_name: "PostToolUse", tool_name: "Write", tool_input: {file_path: $fp}}')
 printf '%s' "$payload_n" \
-  | HOOK_EVENT_NAME="PostToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
     bash "$HOOK" 2>"$stderr_file_n" >/dev/null
 _assert_eq "TB-n: no snapshot → exit 0" "0" "$?"
 rm -f "$stderr_file_n"

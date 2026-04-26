@@ -33,15 +33,13 @@ done
 
 [[ -n "$EVENT_NAME" ]] || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
 # Discovery: for teammate-origin events, discover by team_name. For orchestrator-
 # origin events (PermissionDenied in orchestrator session), discover by session_id.
-TEAM_NAME=$(echo "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
 
 if [[ -n "$TEAM_NAME" ]]; then
   discover_instance_by_team_name "$TEAM_NAME" 2>/dev/null || exit 0

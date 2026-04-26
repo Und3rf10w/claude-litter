@@ -4,8 +4,8 @@
 # Provides discover_instance() which finds the active deepwork instance
 # for a given session ID by globbing state files and matching session_id.
 #
-# Usage: source this file, then call discover_instance [session_id]
-#   - If session_id argument is omitted, falls back to $CLAUDE_CODE_SESSION_ID
+# Usage: source this file, then call discover_instance <session_id>
+#   - session_id is required (no env fallback — v2.1.118 contract)
 #   - On success (return 0), sets globals:
 #       INSTANCE_ID, INSTANCE_DIR, STATE_FILE, LOG_FILE, HEARTBEAT_FILE, PROJECT_ROOT
 #   - On failure (return 1), no globals are set
@@ -15,6 +15,45 @@
 # Handles worktree teammates via git-common-dir fallback.
 
 # Requires jq — caller should verify before sourcing if needed
+
+# ---------------------------------------------------------------------------
+# _parse_hook_input — read stdin JSON once, export hook contract vars (v2.1.118)
+#
+# Exports: INPUT (raw JSON), HOOK_EVENT_NAME, TOOL_NAME, SESSION_ID, TOOL_USE_ID.
+# Never falls back to env vars. Missing fields are exported as empty strings.
+# Call immediately after sourcing instance-lib.sh, before any other logic.
+_parse_hook_input() {
+  INPUT=$(cat)
+  export INPUT
+  HOOK_EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null || echo "")
+  export HOOK_EVENT_NAME
+  TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+  export TOOL_NAME
+  SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+  export SESSION_ID
+  TOOL_USE_ID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // ""' 2>/dev/null || echo "")
+  export TOOL_USE_ID
+}
+
+# ---------------------------------------------------------------------------
+# _load_task_file <team_name> <task_id>
+#
+# Resolves the task JSON file path and reads it into TASK_FILE_PATH and TASK_JSON.
+# Returns 0 on success (TASK_JSON is valid JSON), 1 if file not found or invalid.
+_load_task_file() {
+  local team_name="$1" task_id="$2"
+  [[ -n "$team_name" && -n "$task_id" ]] || return 1
+  local sanitized_team task_safe tasks_dir candidate
+  sanitized_team=$(printf '%s' "$team_name" | tr '/' '_' | tr ' ' '_')
+  task_safe=$(printf '%s' "$task_id" | tr '/' '_')
+  tasks_dir="${HOME}/.claude/tasks/${sanitized_team}"
+  candidate="${tasks_dir}/${task_safe}.json"
+  [[ -f "$candidate" ]] || return 1
+  TASK_FILE_PATH="$candidate"
+  TASK_JSON=$(jq '.' "$candidate" 2>/dev/null) || return 1
+  [[ -n "$TASK_JSON" ]] || return 1
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # Hook latency instrumentation — installed once per sourcing hook.
@@ -159,7 +198,7 @@ discover_instance() {
   # Capture start time on first call; subsequent calls (rare) don't overwrite it
   [[ -n "${_HOOK_START_NS:-}" ]] || _HOOK_START_NS=$(_dw_ns_now)
 
-  local hook_session="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
+  local hook_session="${1:-}"
   [[ -n "$hook_session" ]] || return 1
   local _f _sid _id _dir _project_root
 

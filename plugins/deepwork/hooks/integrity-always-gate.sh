@@ -8,12 +8,11 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-discover_instance || exit 0   # no active instance = fail-open
+discover_instance "$SESSION_ID" || exit 0   # no active instance = fail-open
 
 _verify_event_head_or_block || exit 2
 

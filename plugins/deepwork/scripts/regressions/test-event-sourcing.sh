@@ -233,12 +233,12 @@ jq '.event_head = "000000000000000000000000000000000000000000000000000000000000d
 # Use the canonical (resolved) path so _canonical_path() in the gate matches INSTANCE_DIR.
 _SF_CANON=$(cd "$(dirname "$SF")" 2>/dev/null && pwd -P)/$(basename "$SF")
 _PAYLOAD_FILE="${SANDBOX}/es-d-payload.json"
-jq -cn --arg fp "$_SF_CANON" \
-  '{tool_name: "Write", tool_input: {file_path: $fp, content: "---\ntitle: test\n---\n"}}' \
+jq -cn --arg sid "$SESSION_ID" --arg fp "$_SF_CANON" \
+  '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {file_path: $fp, content: "---\ntitle: test\n---\n"}}' \
   > "$_PAYLOAD_FILE"
 
 # Run gate: pipe payload via a wrapper so env vars land on the gate process, not printf.
-GATE_STDERR=$(env CLAUDE_CODE_SESSION_ID="$SESSION_ID" CLAUDE_PROJECT_DIR="$SANDBOX" \
+GATE_STDERR=$(env CLAUDE_PROJECT_DIR="$SANDBOX" \
   bash -c "cat '$_PAYLOAD_FILE' | bash '$FRONTMATTER_GATE'" 2>&1)
 GATE_RC=$?
 rm -f "$_PAYLOAD_FILE"
@@ -673,11 +673,10 @@ jq '.banners = [{"artifact_path":"x.md","banner_type":"BAD_TYPE","reason":"r","a
 # Step 3: Run state-drift-marker PostToolUse leg — detect violation and revert.
 # Pass the canonical path to state.json as file_path so the Write branch matches.
 _ESM_SF_CANON=$(cd "$(dirname "$ESM_STATE")" && pwd -P)/$(basename "$ESM_STATE")
-HOOK_EVENT_NAME="PostToolUse" CLAUDE_CODE_SESSION_ID="$ESM_SESSION" \
-  CLAUDE_PROJECT_DIR="$ESM_PROJECT" \
-  bash "$STATE_DRIFT_MARKER" \
-  <<< "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${_ESM_SF_CANON}\",\"content\":\"\"}}" \
-  2>/dev/null
+printf '%s' "{\"session_id\":\"${ESM_SESSION}\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${_ESM_SF_CANON}\",\"content\":\"\"}}" \
+  | CLAUDE_PROJECT_DIR="$ESM_PROJECT" \
+    bash "$STATE_DRIFT_MARKER" \
+    2>/dev/null
 
 # Step 4: Walk events.jsonl — confirm state_reverted event present
 ESM_REVERTED_COUNT=0

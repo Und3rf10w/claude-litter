@@ -54,8 +54,6 @@ STATE_FILE="$INSTANCE_DIR/state.json" \
 }
 EOF
 
-export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
-
 _run_gate() {
   local tool_name="$1" file_path="$2" content="$3"
   local payload
@@ -64,7 +62,7 @@ _run_gate() {
     --arg tn "$tool_name" \
     --arg fp "$file_path" \
     --arg c  "$content" \
-    '{session_id: $sid, tool_name: $tn, tool_input: {file_path: $fp, content: $c}}')
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: $tn, tool_input: {file_path: $fp, content: $c}}')
   printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
   echo $?
 }
@@ -76,7 +74,7 @@ _run_gate_edit() {
     --arg sid "$SESSION_ID" \
     --arg fp  "$file_path" \
     --arg ns  "$new_string" \
-    '{session_id: $sid, tool_name: "Edit", tool_input: {file_path: $fp, new_string: $ns}}')
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {file_path: $fp, new_string: $ns}}')
   printf '%s' "$payload" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash "$GATE" >/dev/null 2>&1
   echo $?
 }
@@ -246,10 +244,10 @@ _run_gate_with_sentinel() {
     --arg tn  "$tool_name" \
     --arg fp  "$file_path" \
     --arg ct  "$content" \
-    '{session_id: $sid, tool_name: $tn, tool_input: {file_path: $fp, content: $ct}}')
+    '{session_id: $sid, hook_event_name: "PreToolUse", tool_name: $tn, tool_input: {file_path: $fp, content: $ct}}')
   printf '%s' "$payload" \
     | _DW_STATE_TRANSITION_WRITER=1 \
-      HOOK_EVENT_NAME="PreToolUse" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       bash "$GATE" 2>/dev/null
   printf '%s' "$?"
 }

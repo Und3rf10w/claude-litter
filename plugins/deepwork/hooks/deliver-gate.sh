@@ -20,16 +20,12 @@ set +e
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
-# Only fire for ExitPlanMode; other PreToolUse fires pass through.
-[[ "$TOOL_NAME" == "ExitPlanMode" ]] || exit 0
-
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
+_parse_hook_input
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+# Only fire for ExitPlanMode; other PreToolUse fires pass through.
+[[ "$TOOL_NAME" == "ExitPlanMode" ]] || exit 0
 
 # Scope to active deepwork instance only; skip if none.
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0

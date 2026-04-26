@@ -85,18 +85,17 @@ EOF
 
 printf '# Log\n\n' > "$LOG_FILE"
 
-export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
-
 _run_hook() {
   local event="$1" tool_name="$2" file_path="$3"
   local payload
   payload=$(jq -cn \
     --arg sid "$SESSION_ID" \
+    --arg hen "$event" \
     --arg tn  "$tool_name" \
     --arg fp  "$file_path" \
-    '{session_id: $sid, tool_name: $tn, tool_input: {file_path: $fp}}')
+    '{session_id: $sid, hook_event_name: $hen, tool_name: $tn, tool_input: {file_path: $fp}}')
   printf '%s' "$payload" \
-    | HOOK_EVENT_NAME="$event" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" \
+    | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       bash "$HOOK" >/dev/null 2>&1
   echo $?
 }
@@ -230,9 +229,9 @@ fi
 # ── (g) ADV: unknown event name → exits 0 gracefully ──
 echo ""
 echo "── T11-g (ADV): unknown HOOK_EVENT_NAME → exits 0 ──"
-RC_G=$(printf '{"session_id":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' \
+RC_G=$(printf '{"session_id":"%s","hook_event_name":"UnknownEvent","tool_name":"Write","tool_input":{"file_path":"%s"}}' \
   "$SESSION_ID" "$STATE_FILE" \
-  | HOOK_EVENT_NAME="UnknownEvent" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_CODE_SESSION_ID="$SESSION_ID" \
+  | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
     bash "$HOOK" >/dev/null 2>&1; echo $?)
 _assert_exit "T11-g: unknown event exits 0" "0" "$RC_G"
 
