@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 94 nodes, 149 edges
+Graph: 97 nodes, 155 edges
 
 ## Mermaid Flowchart
 
@@ -78,6 +78,7 @@ flowchart LR
     bar(([".bar"]))
     change_id(([".change_id"]))
     current_version(([".current_version"]))
+    event_head(([".event_head"]))
     execute(([".execute"]))
     execute_change_log(([".execute.change_log"]))
     execute_phase(([".execute.phase"]))
@@ -118,6 +119,8 @@ flowchart LR
     critique_v[/"  critique.v"/]
     discoveries_jsonl[/"  discoveries.jsonl"/]
     drift_log[/"  drift.log"/]
+    events_archived_jsonl[/"  events.archived.jsonl"/]
+    events_jsonl[/"  events.jsonl"/]
     execute_done_sentinel[/"  execute-done.sentinel"/]
     heartbeat_json[/"  heartbeat.json"/]
     incidents_jsonl[/"  incidents.jsonl"/]
@@ -174,6 +177,7 @@ flowchart LR
   critique_version_gate -.->|"reads"| team_name
   file_changed_retest -.->|"reads"| change_id
   file_changed_retest -.->|"reads"| execute_phase
+  frontmatter_gate -.->|"reads"| event_head
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   frontmatter_gate -.->|"reads"| single_writer_enabled
   halt_gate -.->|"reads"| execute_phase
@@ -234,6 +238,8 @@ flowchart LR
   wiki_log_append -.->|"reads"| bar
   wiki_log_append -.->|"reads"| goal
   wiki_log_append -.->|"reads"| phase
+  approve_archive -.->|"reads"| events_archived_jsonl
+  approve_archive -.->|"reads"| events_jsonl
   approve_archive -.->|"reads"| heartbeat_json
   approve_archive -.->|"reads"| state_archived_json
   bash_gate -.->|"reads"| critique_v
@@ -243,6 +249,7 @@ flowchart LR
   deliver_gate -.->|"reads"| proposals
   file_changed_retest -.->|"reads"| pending_change_json
   file_changed_retest -.->|"reads"| test_results_jsonl
+  frontmatter_gate -.->|"reads"| events_jsonl
   incident_detector -.->|"reads"| incidents_jsonl
   plan_citation_gate -.->|"reads"| pending_change_json
   plan_citation_gate -.->|"reads"| test_results_jsonl
@@ -265,6 +272,8 @@ flowchart LR
   version_bump_notify -.->|"reads"| drift_log
   version_bump_notify -.->|"reads"| version_sentinel_json
   wiki_log_append -.->|"reads"| log_md
+  approve_archive -->|"writes"| events_archived_jsonl
+  approve_archive -->|"writes"| events_jsonl
   approve_archive -->|"writes"| state_archived_json
   file_changed_retest -->|"writes"| test_results_jsonl
   incident_detector -->|"writes"| incidents_jsonl
@@ -296,6 +305,8 @@ flowchart LR
           ".phase"
         ],
         "markers": [
+          "events.archived.jsonl",
+          "events.jsonl",
           "heartbeat.json",
           "state.archived.json"
         ]
@@ -305,6 +316,8 @@ flowchart LR
           ""
         ],
         "markers": [
+          "events.archived.jsonl",
+          "events.jsonl",
           "state.archived.json"
         ]
       },
@@ -424,11 +437,12 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
+          ".event_head",
           ".frontmatter_schema_version",
           ".single_writer_enabled"
         ],
         "markers": [
-          ""
+          "events.jsonl"
         ]
       },
       "writes": {

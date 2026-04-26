@@ -25,6 +25,7 @@ PHASE=$(jq -r '.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 [[ "$PHASE" == "done" ]] || exit 0
 
 mv "$STATE_FILE" "${INSTANCE_DIR}/state.archived.json" 2>/dev/null || exit 0
+mv "${INSTANCE_DIR}/events.jsonl" "${INSTANCE_DIR}/events.archived.jsonl" 2>/dev/null || true
 
 rm -f "${INSTANCE_DIR}/heartbeat.json" 2>/dev/null || true
 rm -f "${INSTANCE_DIR}"/.idle-retry.* 2>/dev/null || true
