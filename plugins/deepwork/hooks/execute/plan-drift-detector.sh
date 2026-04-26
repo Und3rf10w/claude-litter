@@ -9,11 +9,12 @@
 # against state.execute.plan_hash. On mismatch, sets state.execute.plan_drift_detected=true
 # via state-transition.sh merge (W6 single-writer).
 #
-# Advisory only — FileChanged hooks cannot block operations. The drift flag is checked
-# by EXECUTOR during the next write/verify cycle (plan-citation-gate reads state and
-# the model is expected to surface the drift warning). This partially mitigates GAP-4
-# (multi-agent plan-hash coherence) for the single-EXECUTOR V0 case by detecting
-# external mutations (e.g., user edits the plan file while EXECUTOR is running).
+# On mismatch, sets state.execute.plan_drift_detected=true (post-W1/PR-A behaviour).
+# plan-citation-gate.sh and bash-gate.sh then BLOCK any Write/Edit/Bash that does not
+# cite plan-drift evidence in its tool input — the orchestrator must run
+# /deepwork-execute-amend to clear the flag and resume normal writes.
+# This partially mitigates GAP-4 (multi-agent plan-hash coherence) for the
+# single-EXECUTOR V0 case by detecting external mutations (e.g., user edits the plan).
 #
 # CC source: cli_formatted_2.1.116.js:265956 (FileChanged event literal),
 # :269399-269416 (matcher → watch path via chokidar glob), :269417 (awaitWriteFinish debounce).
