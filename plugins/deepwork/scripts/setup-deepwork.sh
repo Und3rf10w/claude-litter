@@ -552,6 +552,8 @@ if [[ -f "$SETTINGS_LOCAL" ]]; then
   CURRENT_SETTINGS=$(jq '.' "$SETTINGS_LOCAL" 2>/dev/null || echo '{}')
 fi
 
+_SETUP_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"
+
 jq -n \
   --argjson current "$CURRENT_SETTINGS" \
   --argjson manifest "$(jq '.' "$MANIFEST")" \
@@ -560,6 +562,7 @@ jq -n \
   --argjson safe_mode "$([ "$SAFE_MODE" = "true" ] && echo true || echo false)" \
   --arg plan_ref "$PLAN_REF" \
   --arg instance_id "$INSTANCE_ID" \
+  --arg project_root "$_SETUP_PROJECT_ROOT" \
   '
   def build_hook_entry(entry):
     if (entry | has("command_override")) then
@@ -584,6 +587,7 @@ jq -n \
 
   def effective_matcher(entry):
     if entry.matcher == "__plan_ref__" then $plan_ref
+    elif entry.matcher == "__src_glob__" then ($project_root + "/src/**")
     else entry.matcher
     end;
 

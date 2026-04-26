@@ -198,6 +198,14 @@
       "_note": "Matcher is the absolute plan file path, substituted at registration time from $PLAN_REF."
     },
     {
+      "script": "hooks/execute/file-changed-retest.sh",
+      "event": "FileChanged",
+      "matcher": "__src_glob__",
+      "modes": ["execute"],
+      "async": true,
+      "_note": "Matcher is <project_root>/src/** substituted at registration time. Triggers advisory retest of covering test from test_manifest[] on src file changes. Per-instance: registered and torn down with instance lifecycle."
+    },
+    {
       "script": "hooks/wave-gate.sh",
       "event": "TaskCreated",
       "matcher": ".*",
