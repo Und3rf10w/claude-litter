@@ -563,6 +563,72 @@ else
   fi
 fi
 
+# ── ES-k: malicious jq_path in field_set event → replay exits non-zero ───────
+echo ""
+echo "── ES-k: malicious jq_path in field_set → INVALID_JQ_PATH ──"
+ESK_DIR="${SANDBOX}/esk-test"
+mkdir -p "$ESK_DIR"
+ESK_STATE="${ESK_DIR}/state.json"
+ESK_EVENTS="${ESK_DIR}/events.jsonl"
+
+printf '{"phase":"scope","instance_id":"esk0001","session_id":"esk-session","team_name":"esk"}' \
+  > "$ESK_STATE"
+
+NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+_E1=$(jq -cn --arg ts "$NOW" --argjson snap "$(cat "$ESK_STATE")" \
+  '{event_id: "esk-e1", event_type: "bootstrap", prev_event_hash: "GENESIS",
+    timestamp: $ts, actor: "test", payload: {state_snapshot: $snap}}')
+printf '%s\n' "$_E1" >> "$ESK_EVENTS"
+
+# field_set with malicious jq_path
+_E1_HASH=$(_compute_hash "$_E1")
+_E2=$(jq -cn --arg phash "$_E1_HASH" --arg ts "$NOW" \
+  '{event_id: "esk-e2", event_type: "field_set", prev_event_hash: $phash,
+    timestamp: $ts, actor: "test",
+    payload: {jq_path: ". | input_filename", json_value: true}}')
+printf '%s\n' "$_E2" >> "$ESK_EVENTS"
+
+ESKA_ERR=$("$STATE_TRANSITION" --state-file "$ESK_STATE" replay 2>&1)
+ESKA_RC=$?
+if [[ $ESKA_RC -ne 0 ]]; then
+  _pass "ES-k: replay exits non-zero on malicious jq_path"
+else
+  _fail "ES-k: replay should have exited non-zero but returned 0"
+fi
+if printf '%s' "$ESKA_ERR" | grep -qF "INVALID_JQ_PATH"; then
+  _pass "ES-k: stderr contains INVALID_JQ_PATH"
+else
+  _fail "ES-k: stderr did not contain INVALID_JQ_PATH — got: ${ESKA_ERR}"
+fi
+
+# ── ES-l: legitimate field_set with .execute.plan_drift_detected → succeeds ──
+echo ""
+echo "── ES-l: legitimate jq_path .execute.plan_drift_detected → replay succeeds ──"
+ESL_DIR="${SANDBOX}/esl-test"
+mkdir -p "$ESL_DIR"
+ESL_STATE="${ESL_DIR}/state.json"
+ESL_EVENTS="${ESL_DIR}/events.jsonl"
+
+printf '{"phase":"scope","instance_id":"esl0001","session_id":"esl-session","team_name":"esl","execute":{}}' \
+  > "$ESL_STATE"
+
+_L1=$(jq -cn --arg ts "$NOW" --argjson snap "$(cat "$ESL_STATE")" \
+  '{event_id: "esl-e1", event_type: "bootstrap", prev_event_hash: "GENESIS",
+    timestamp: $ts, actor: "test", payload: {state_snapshot: $snap}}')
+printf '%s\n' "$_L1" >> "$ESL_EVENTS"
+
+_L1_HASH=$(_compute_hash "$_L1")
+_L2=$(jq -cn --arg phash "$_L1_HASH" --arg ts "$NOW" \
+  '{event_id: "esl-e2", event_type: "field_set", prev_event_hash: $phash,
+    timestamp: $ts, actor: "test",
+    payload: {jq_path: ".execute.plan_drift_detected", json_value: true}}')
+printf '%s\n' "$_L2" >> "$ESL_EVENTS"
+
+"$STATE_TRANSITION" --state-file "$ESL_STATE" replay > /dev/null 2>&1
+ESLRC=$?
+_assert_exit "ES-l: replay exits 0 on valid jq_path" "0" "$ESLRC"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"

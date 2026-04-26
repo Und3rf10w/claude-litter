@@ -729,12 +729,20 @@ case "$SUBCOMMAND" in
     if command -v python3 >/dev/null 2>&1; then
       _py_err_file=$(mktemp /tmp/dw-replay-err.XXXXXX)
       _py_out=$(python3 - "$_events_file" "$REPLAY_OUTPUT" 2>"$_py_err_file" <<'PYEOF'
-import hashlib, json, sys
+import hashlib, json, re, sys
 
 EVENTS_FILE, OUTPUT_FILE = sys.argv[1], sys.argv[2]
 
+_JQ_PATH_RE = re.compile(r'^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$')
+
 def sha256_line(line):
     return hashlib.sha256((line + "\n").encode()).hexdigest()
+
+def validate_jq_path(path, lineno):
+    if not _JQ_PATH_RE.match(path):
+        print(f"state-transition.sh replay: INVALID_JQ_PATH at event {lineno} — \"{path}\" does not match allowlist",
+              file=sys.stderr)
+        sys.exit(1)
 
 with open(EVENTS_FILE) as f:
     raw_lines = [l.rstrip("\n") for l in f if l.strip()]
@@ -774,13 +782,18 @@ for idx, line in enumerate(raw_lines, 1):
         working.setdefault("execute", {})["phase"] = payload.get("to_phase", "")
     elif etype == "field_set":
         jq_path = payload.get("jq_path", "")
+        validate_jq_path(jq_path, idx)
         json_val = payload.get("json_value")
+        # jq path injection is structurally impossible here: the path is parsed as a
+        # plain Python string and only used as a dict key after slicing the leading dot.
         # Simple top-level .key = val only (jq paths with nesting not supported in py fast-path)
         if jq_path.startswith(".") and "." not in jq_path[1:] and "[" not in jq_path:
             working[jq_path[1:]] = json_val
     elif etype == "array_appended":
         jq_path = payload.get("jq_path", "")
+        validate_jq_path(jq_path, idx)
         json_obj = payload.get("json_object")
+        # Same structural safety as field_set above — path used as dict key only.
         if jq_path.startswith(".") and "." not in jq_path[1:] and "[" not in jq_path:
             key = jq_path[1:]
             if key not in working or not isinstance(working[key], list):
@@ -850,6 +863,20 @@ PYEOF
     # O(N) subshell spawns for sha256sum; used only when python3 is unavailable.
     # Outputs final state JSON to REPLAY_OUTPUT.
 
+    # _validate_jq_path <path> <event_line_number>
+    # Allowlist: paths must match ^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$
+    # Returns 0 when valid; exits the replay subcommand non-zero with INVALID_JQ_PATH on violation.
+    _validate_jq_path() {
+      local _path="$1"
+      local _lineno="${2:-?}"
+      if printf '%s' "$_path" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$'; then
+        return 0
+      fi
+      printf 'state-transition.sh replay: INVALID_JQ_PATH at event %s — "%s" does not match allowlist\n' \
+        "$_lineno" "$_path" >&2
+      exit 1
+    }
+
     _prev_line=""
     _event_count=0
     _working_state="{}"
@@ -904,12 +931,14 @@ PYEOF
           ;;
         field_set)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
+          _validate_jq_path "$_jq_path" "$_event_count"
           _json_val=$(printf '%s' "$_line" | jq -c '.payload.json_value' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson val "$_json_val" "${_jq_path} = \$val" 2>/dev/null)
           ;;
         array_appended)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
+          _validate_jq_path "$_jq_path" "$_event_count"
           _json_obj=$(printf '%s' "$_line" | jq -c '.payload.json_object' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson obj "$_json_obj" "(${_jq_path}) += [\$obj]" 2>/dev/null)
