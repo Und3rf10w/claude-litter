@@ -285,20 +285,26 @@ _verify_integrity_hash() {
 }
 
 # Write with hash: applies $jq_filter (+ extra _write_state_atomic args) then
-# immediately recomputes and writes the integrity hash + event_head in one atomic update.
+# immediately recomputes and writes the integrity hash + event_head + last_updated
+# in one atomic update. last_updated is stamped on every mutation so callers don't
+# need a separate stamp_last_updated invocation for routine writes.
 _write_with_hash() {
   local sf="$1"; shift
   # First pass: apply the mutation filter
   _write_state_atomic "$sf" "$@" || return 4
-  # Second pass: recompute integrity hash and event_head atomically
-  local new_hash event_head
+  # Second pass: recompute integrity hash, event_head, and stamp last_updated atomically
+  local new_hash event_head now
   new_hash=$(_compute_integrity_hash "$sf") || new_hash=""
   event_head=$(_read_event_head 2>/dev/null || echo "")
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" \
-      '.state_integrity_hash = $h | .event_head = $eh' || return 4
+    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" --arg lu "$now" \
+      '.last_updated = $lu | .state_integrity_hash = $h | .event_head = $eh' || return 4
   elif [[ -n "$new_hash" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" '.state_integrity_hash = $h' || return 4
+    _write_state_atomic "$sf" --arg h "$new_hash" --arg lu "$now" \
+      '.last_updated = $lu | .state_integrity_hash = $h' || return 4
+  else
+    _write_state_atomic "$sf" --arg lu "$now" '.last_updated = $lu' || return 4
   fi
   return 0
 }
@@ -844,30 +850,35 @@ case "$SUBCOMMAND" in
           ;;
         phase_advanced)
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | jq -c --arg v "$_to" '.phase = $v' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg v "$_to" --arg ts "$_ts" '.phase = $v | .last_updated = $ts' 2>/dev/null)
           ;;
         exec_phase_advanced)
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | jq -c --arg v "$_to" '.execute.phase = $v' 2>/dev/null)
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg v "$_to" --arg ts "$_ts" '.execute.phase = $v | .last_updated = $ts' 2>/dev/null)
           ;;
         field_set)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
           _validate_jq_path "$_jq_path" "$_event_count"
           _json_val=$(printf '%s' "$_line" | jq -c '.payload.json_value' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --argjson val "$_json_val" "${_jq_path} = \$val" 2>/dev/null)
+            jq -c --argjson val "$_json_val" --arg ts "$_ts" \
+            "${_jq_path} = \$val | .last_updated = \$ts" 2>/dev/null)
           ;;
         array_appended)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
           _validate_jq_path "$_jq_path" "$_event_count"
           _json_obj=$(printf '%s' "$_line" | jq -c '.payload.json_object' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --argjson obj "$_json_obj" "(${_jq_path}) += [\$obj]" 2>/dev/null)
+            jq -c --argjson obj "$_json_obj" --arg ts "$_ts" \
+            "(${_jq_path}) += [\$obj] | .last_updated = \$ts" 2>/dev/null)
           ;;
         merged)
           _frag=$(printf '%s' "$_line" | jq -c '.payload.json_fragment' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --argjson frag "$_frag" '. * $frag' 2>/dev/null)
+            jq -c --argjson frag "$_frag" --arg ts "$_ts" \
+            '. * $frag | .last_updated = $ts' 2>/dev/null)
           ;;
         state_reverted)
           _working_state=$(printf '%s' "$_line" | jq -c '.payload.state_snapshot' 2>/dev/null) || {
@@ -880,19 +891,20 @@ case "$SUBCOMMAND" in
           _blockers=$(printf '%s' "$_line" | jq -c '.payload.blockers // []' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg s "$_summary" --argjson b "$_blockers" --arg ts "$_ts" \
-            '.halt_reason = {summary: $s, blockers: $b, recorded_at: $ts}' 2>/dev/null)
+            '.halt_reason = {summary: $s, blockers: $b, recorded_at: $ts} | .last_updated = $ts' 2>/dev/null)
           ;;
         session_backfilled)
           _sid=$(printf '%s' "$_line" | jq -r '.payload.session_id // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg v "$_sid" '.session_id = $v' 2>/dev/null)
+            jq -c --arg v "$_sid" --arg ts "$_ts" '.session_id = $v | .last_updated = $ts' 2>/dev/null)
           ;;
         flaky_test_added)
           _cmd=$(printf '%s' "$_line" | jq -r '.payload.command // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg cmd "$_cmd" \
+            jq -c --arg cmd "$_cmd" --arg ts "$_ts" \
             'if (.execute.flaky_tests // []) | map(select(. == $cmd)) | length > 0
-             then . else .execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd]) end' \
+             then . else .execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd]) end
+             | .last_updated = $ts' \
             2>/dev/null)
           ;;
         last_updated_stamped)
