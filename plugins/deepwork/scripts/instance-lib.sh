@@ -148,10 +148,24 @@ _write_state_atomic() {
     rm -f "$tmp" 2>/dev/null
     return $rc
   else
+    # macOS: flock unavailable — use POSIX-atomic mkdir for mutual exclusion.
+    local lock_dir="${lock}.dir"
+    local _deadline=$(( $(date +%s) + 5 ))
+    until mkdir "$lock_dir" 2>/dev/null; do
+      [[ $(date +%s) -lt $_deadline ]] || { rm -f "$tmp"; return 1; }
+      sleep 0.1
+    done
+    trap 'rm -rf "$lock_dir"' EXIT
     jq "$@" "$state_file" > "$tmp" 2>/dev/null
-    if [[ -s "$tmp" ]]; then
+    local _jq_rc=$?
+    if [[ $_jq_rc -eq 0 && -s "$tmp" ]]; then
       mv "$tmp" "$state_file"
+      local _mv_rc=$?
+      rm -rf "$lock_dir"
+      rm -f "$tmp" 2>/dev/null
+      return $_mv_rc
     else
+      rm -rf "$lock_dir"
       rm -f "$tmp"
       return 1
     fi

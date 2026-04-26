@@ -132,10 +132,6 @@ _emit_event() {
   local events_file="${INSTANCE_DIR}/events.jsonl"
   local lock_file="${INSTANCE_DIR}/events.jsonl.lock"
 
-  if ! command -v flock >/dev/null 2>&1; then
-    printf '_emit_event: flock unavailable — hash chain may be unsafe under concurrency\n' >&2
-  fi
-
   # Generate event_id before acquiring the lock (no shared state involved).
   local event_id
   if command -v uuidgen >/dev/null 2>&1; then
@@ -150,10 +146,38 @@ _emit_event() {
 
   # Hold an exclusive lock from _read_event_head through _append_event_raw so
   # no two concurrent callers can read the same prev_event_hash.
-  (
-    if command -v flock >/dev/null 2>&1; then
+  if command -v flock >/dev/null 2>&1; then
+    (
       flock -x 200 || exit 1
-    fi
+
+      local prev_hash
+      prev_hash=$(_read_event_head)
+
+      local timestamp
+      timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+      local event_json
+      event_json=$(jq -cn \
+        --arg eid "$event_id" \
+        --arg etype "$event_type" \
+        --arg phash "$prev_hash" \
+        --arg ts "$timestamp" \
+        --arg actor "$actor" \
+        --argjson payload "$payload_json" \
+        '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
+          timestamp: $ts, actor: $actor, payload: $payload}') || exit 1
+
+      _append_event_raw "$events_file" "$event_json"
+    ) 200>"$lock_file"
+  else
+    # macOS: flock unavailable — use POSIX-atomic mkdir for mutual exclusion.
+    local _lock_dir="${lock_file}.dir"
+    local _deadline=$(( $(date +%s) + 5 ))
+    until mkdir "$_lock_dir" 2>/dev/null; do
+      [[ $(date +%s) -lt $_deadline ]] || return 1
+      sleep 0.1
+    done
+    trap 'rm -rf "$_lock_dir"' EXIT
 
     local prev_hash
     prev_hash=$(_read_event_head)
@@ -170,10 +194,13 @@ _emit_event() {
       --arg actor "$actor" \
       --argjson payload "$payload_json" \
       '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
-        timestamp: $ts, actor: $actor, payload: $payload}') || exit 1
+        timestamp: $ts, actor: $actor, payload: $payload}') || { rm -rf "$_lock_dir"; return 1; }
 
     _append_event_raw "$events_file" "$event_json"
-  ) 200>"$lock_file"
+    local _rc=$?
+    rm -rf "$_lock_dir"
+    return $_rc
+  fi
 }
 
 # _ensure_event_log
