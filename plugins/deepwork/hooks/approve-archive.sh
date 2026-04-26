@@ -28,8 +28,8 @@ if [[ "$PHASE" != "done" ]]; then
   [[ "$EXEC_PHASE" == "halt" && -n "$HALT_REASON" && "$HALT_REASON" != "null" ]] || exit 0
 fi
 
-mv "$STATE_FILE" "${INSTANCE_DIR}/state.archived.json" 2>/dev/null || exit 0
-mv "${INSTANCE_DIR}/events.jsonl" "${INSTANCE_DIR}/events.archived.jsonl" 2>/dev/null || true
+STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
+  bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" archive_state 2>/dev/null || exit 0
 
 rm -f "${INSTANCE_DIR}/heartbeat.json" 2>/dev/null || true
 rm -f "${INSTANCE_DIR}"/.idle-retry.* 2>/dev/null || true

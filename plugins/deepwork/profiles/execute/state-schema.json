@@ -21,25 +21,5 @@
     "secret_scan_waived": false,
     "setup_flags_snapshot": {},
     "chaos_monkey_enabled": false
-  },
-  "_schemas": {
-    "test_manifest_entry": {
-      "id": "string — unique identifier, e.g. TM-1",
-      "source_file": "string — absolute path to the source file under test",
-      "test_command": "string — shell command to run the covering test",
-      "env": "object|null — env vars required to run the test",
-      "last_result": "string — 'unknown'|'pass'|'fail'|'error'",
-      "last_run_at": "string|null — ISO 8601 timestamp of last test run"
-    },
-    "change_log_entry": {
-      "id": "string — unique identifier, e.g. CL-1",
-      "plan_section": "string — <plan_file>#<section_id> reference",
-      "files_touched": "array of strings — absolute paths modified",
-      "test_evidence": "string|null — path to test-results.jsonl entry or null",
-      "description": "string — human-readable summary of the change",
-      "critic_verdict": "string|null — null until CRITIC reviews; 'APPROVED'|'REJECTED'",
-      "merged_at": "string|null — ISO 8601 timestamp when merged, null if pending",
-      "worktree": "string — path to the git worktree used for this change"
-    }
   }
 }
