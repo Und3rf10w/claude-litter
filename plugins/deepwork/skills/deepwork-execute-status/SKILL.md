@@ -29,17 +29,17 @@ If no files are found, report "no deepwork session is currently active" and stop
    - **Started**: `started_at`
    - **Last Updated**: `last_updated`
 
-4. Display **Authorization Flags** (`execute.authorized_flags`):
+4. Display **Authorization Flags** (flat fields under `execute`):
 
    | Flag | Value |
    |---|---|
-   | authorized_push | `<value>` |
-   | authorized_force_push | `<value>` |
-   | authorized_prod_deploy | `<value>` |
-   | authorized_local_destructive | `<value>` |
-   | secret_scan_waived | `<value>` |
+   | `execute.authorized_push` | `<value>` |
+   | `execute.authorized_force_push` | `<value>` |
+   | `execute.authorized_prod_deploy` | `<value>` |
+   | `execute.authorized_local_destructive` | `<value>` |
+   | `execute.secret_scan_waived` | `<value>` |
 
-   If the struct is absent, display "(not yet set — SETUP incomplete)".
+   If all flags are absent, display "(not yet set — SETUP incomplete)".
 
 5. Display **Written Bar** (`bar[]`):
 
