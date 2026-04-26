@@ -805,6 +805,129 @@ else
   _fail "ES-p: state.json was modified by a failed replay (before != after)"
 fi
 
+# ── ES-q: recursive merge equivalence ────────────────────────────────────────
+# Write a merged event with a nested fragment; replay; compare with `. * $frag`
+echo ""
+echo "── ES-q: recursive merge equivalence ──"
+
+ESQ_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/1a2b3c4d"
+mkdir -p "$ESQ_INSTANCE_DIR"
+ESQ_STATE="${ESQ_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESQ_STATE" init \
+  '{"session_id":"es-q-session","phase":"scope","team_name":"esq-team"}' 2>/dev/null
+
+ESQ_FRAG='{"execute":{"plan_ref":"plans/v1.md","authorized_push":false},"custom_field":"qval"}'
+"$STATE_TRANSITION" --state-file "$ESQ_STATE" merge "$ESQ_FRAG" 2>/dev/null
+
+# Capture live state for comparison
+ESQ_LIVE=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+
+# Now replay from scratch and compare
+rm -f "$ESQ_STATE"
+ESQ_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESQ_STATE" replay >/dev/null 2>&1 || ESQ_REPLAY_RC=$?
+_assert_exit "ES-q: replay exits 0" "0" "$ESQ_REPLAY_RC"
+
+ESQ_REPLAYED=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+if [[ "$ESQ_LIVE" == "$ESQ_REPLAYED" ]]; then
+  _pass "ES-q: replayed state matches live state after merge (recursive merge equivalence)"
+else
+  _fail "ES-q: replayed state differs from live state after merge"
+  printf '  live:     %s\n' "$ESQ_LIVE" >&2
+  printf '  replayed: %s\n' "$ESQ_REPLAYED" >&2
+fi
+
+ESQ_CUSTOM=$(jq -r '.custom_field // ""' "$ESQ_STATE" 2>/dev/null || echo "")
+if [[ "$ESQ_CUSTOM" == "qval" ]]; then
+  _pass "ES-q: merged field custom_field=qval present in replayed state"
+else
+  _fail "ES-q: merged field custom_field not found in replayed state (got '${ESQ_CUSTOM}')"
+fi
+
+ESQ_PLAN=$(jq -r '.execute.plan_ref // ""' "$ESQ_STATE" 2>/dev/null || echo "")
+if [[ "$ESQ_PLAN" == "plans/v1.md" ]]; then
+  _pass "ES-q: nested merged field execute.plan_ref=plans/v1.md present in replayed state"
+else
+  _fail "ES-q: nested merged field execute.plan_ref not found in replayed state (got '${ESQ_PLAN}')"
+fi
+
+# ── ES-r: nested field_set replays correctly ──────────────────────────────────
+# set_field on a nested path (.execute.plan_drift_detected); verify replay sets it.
+# The Python fast-path silently skipped nested paths — this is the regression test.
+echo ""
+echo "── ES-r: nested field_set replays correctly ──"
+
+ESR_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/5e6f7a8b"
+mkdir -p "$ESR_INSTANCE_DIR"
+ESR_STATE="${ESR_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESR_STATE" init \
+  '{"session_id":"es-r-session","phase":"execute","team_name":"esr-team"}' 2>/dev/null
+
+"$STATE_TRANSITION" --state-file "$ESR_STATE" set_field '.execute.plan_drift_detected' 'true' 2>/dev/null
+
+ESR_LIVE=$(jq -r '.execute.plan_drift_detected // "absent"' "$ESR_STATE" 2>/dev/null || echo "absent")
+if [[ "$ESR_LIVE" == "true" ]]; then
+  _pass "ES-r: live state has execute.plan_drift_detected=true"
+else
+  _fail "ES-r: live state missing execute.plan_drift_detected (got '${ESR_LIVE}')"
+fi
+
+rm -f "$ESR_STATE"
+ESR_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESR_STATE" replay >/dev/null 2>&1 || ESR_REPLAY_RC=$?
+_assert_exit "ES-r: replay exits 0 after nested set_field" "0" "$ESR_REPLAY_RC"
+
+ESR_REPLAYED=$(jq -r '.execute.plan_drift_detected // "absent"' "$ESR_STATE" 2>/dev/null || echo "absent")
+if [[ "$ESR_REPLAYED" == "true" ]]; then
+  _pass "ES-r: replayed state has execute.plan_drift_detected=true (nested field_set replayed)"
+else
+  _fail "ES-r: nested field_set not replayed — execute.plan_drift_detected expected true, got '${ESR_REPLAYED}'"
+fi
+
+# ── ES-s: nested array_appended replays correctly ─────────────────────────────
+# append_array on a nested path (.execute.flaky_tests); verify replay appends item.
+# The Python fast-path silently skipped nested paths — this is the regression test.
+echo ""
+echo "── ES-s: nested array_appended replays correctly ──"
+
+ESS_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/9c0d1e2f"
+mkdir -p "$ESS_INSTANCE_DIR"
+ESS_STATE="${ESS_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESS_STATE" init \
+  '{"session_id":"es-s-session","phase":"execute","team_name":"ess-team"}' 2>/dev/null
+
+ESS_ITEM='{"test":"test_foo.sh","reason":"timing"}'
+"$STATE_TRANSITION" --state-file "$ESS_STATE" append_array '.execute.flaky_tests' "$ESS_ITEM" 2>/dev/null
+
+ESS_LIVE_COUNT=$(jq '[.execute.flaky_tests // [] | .[]] | length' "$ESS_STATE" 2>/dev/null || echo "0")
+if [[ "$ESS_LIVE_COUNT" -eq 1 ]]; then
+  _pass "ES-s: live state has 1 item in execute.flaky_tests"
+else
+  _fail "ES-s: live state execute.flaky_tests expected 1 item, got ${ESS_LIVE_COUNT}"
+fi
+
+rm -f "$ESS_STATE"
+ESS_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$ESS_STATE" replay >/dev/null 2>&1 || ESS_REPLAY_RC=$?
+_assert_exit "ES-s: replay exits 0 after nested array_appended" "0" "$ESS_REPLAY_RC"
+
+ESS_REPLAYED_COUNT=$(jq '[.execute.flaky_tests // [] | .[]] | length' "$ESS_STATE" 2>/dev/null || echo "0")
+if [[ "$ESS_REPLAYED_COUNT" -eq 1 ]]; then
+  _pass "ES-s: replayed state has 1 item in execute.flaky_tests (nested array_appended replayed)"
+else
+  _fail "ES-s: nested array_appended not replayed — execute.flaky_tests expected 1 item, got ${ESS_REPLAYED_COUNT}"
+fi
+
+ESS_REPLAYED_REASON=$(jq -r '.execute.flaky_tests[0].reason // ""' "$ESS_STATE" 2>/dev/null || echo "")
+if [[ "$ESS_REPLAYED_REASON" == "timing" ]]; then
+  _pass "ES-s: replayed execute.flaky_tests[0].reason == timing"
+else
+  _fail "ES-s: replayed execute.flaky_tests[0].reason expected 'timing', got '${ESS_REPLAYED_REASON}'"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results: ${PASS} passed, ${FAIL} failed ──"

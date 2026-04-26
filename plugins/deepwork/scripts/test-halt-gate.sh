@@ -21,6 +21,13 @@
 # hook blocks the turn before later hooks run) are not testable at shell
 # level. The array-index order is preserved by setup for clarity, but the
 # "before approve-archive" claim in docs is empirical, not enforced here.
+#
+# Runtime ordering caveat (W15 #16, deferred): the CC runtime dispatches Stop
+# hooks in array order but does not guarantee halt-gate exit 2 blocks
+# approve-archive execution — this depends on CC version chain semantics.
+# A stop-dispatch.sh consolidation (single entry invoking both in sequence
+# with explicit exit-code threading) would remove the ambiguity; deferred to
+# a future wave pending CC chain-semantics clarification.
 
 set -uo pipefail
 
