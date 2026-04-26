@@ -6,12 +6,16 @@
 #   WG-b: teammate creates same-phase task with metadata.wave → allowed
 #   WG-c: teammate creates task without metadata.wave → blocked (MISSING_WAVE_METADATA)
 #   WG-d: teammate creates task with wave != current_phase, no override_reason → blocked (WAVE_MISMATCH)
-#   WG-e: teammate creates task with wave != current_phase, with override_reason → allowed + audit in log.md
+#   WG-e: teammate creates task with wave != current_phase, with valid override token → allowed + audit in log.md
 #   WG-f: design mode — uses state.phase
 #   WG-g: execute mode — uses state.execute.phase
 #   WG-h: malformed state.json → fail-open (allowed)
 #   WG-i: no active instance → fail-open (allowed)
 #   WG-j: TaskCreate without teammate_name and no resolvable owner → blocked (UNKNOWN_ACTOR, W9 M3)
+#   WG-k: grant_override issues token into override-tokens.json (W9 M4)
+#   WG-l: consume_override removes the token (one-time-use)
+#   WG-m: re-consuming already-consumed token → exit 1 (replay attack blocked)
+#   WG-n: wave mismatch with invalid/consumed token → blocked (WAVE_MISMATCH + INVALID_OVERRIDE_TOKEN)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -157,26 +161,29 @@ RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-d: wave mismatch blocked (exit=2)" "2" "$RC"
 _assert_contains "WG-d: error mentions WAVE_MISMATCH" "WAVE_MISMATCH" "$OUT"
 
-# ── WG-e: teammate creates task with wave != current_phase, with override_reason → allowed + audit ──
+# ── WG-e: teammate creates task with wave != current_phase, with valid override token → allowed + audit ──
 echo ""
-echo "── WG-e: teammate with override_reason → allowed + audit in log.md ──"
+echo "── WG-e: teammate with valid override_token_id → allowed + audit in log.md ──"
 _write_design_state "explore"
 > "$LOG_FILE"
+# Grant an override token as orchestrator
+STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
+  grant_override --id "tok-wg-e" --description "pre-emptive work approved by lead" >/dev/null
 INPUT=$(jq -cn \
   --arg team "$TEAM_NAME" \
   --arg tid "task-5" \
   '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "override task",
-    metadata: {wave: "synthesize", override_reason: "pre-emptive work approved by lead"}}')
+    metadata: {wave: "synthesize", override_token_id: "tok-wg-e"}}')
 OUT=$(_run_hook "$INPUT")
 RC=$(printf '%s' "$OUT" | tail -1)
 _assert_exit "WG-e: override allowed (exit=0)" "0" "$RC"
 # Verify audit entry in log.md
 LOG_CONTENT=$(cat "$LOG_FILE" 2>/dev/null || echo "")
-_assert_contains "WG-e: audit entry in log.md" "wave-gate override" "$LOG_CONTENT"
+_assert_contains "WG-e: audit entry in log.md" "WAVE_OVERRIDE" "$LOG_CONTENT"
 _assert_contains "WG-e: audit entry has teammate name" "W1-researcher" "$LOG_CONTENT"
 _assert_contains "WG-e: audit entry has task id" "task-5" "$LOG_CONTENT"
 _assert_contains "WG-e: audit entry has wave" "synthesize" "$LOG_CONTENT"
-_assert_contains "WG-e: audit entry has override reason" "pre-emptive work approved by lead" "$LOG_CONTENT"
+_assert_contains "WG-e: audit entry has token id" "tok-wg-e" "$LOG_CONTENT"
 
 # ── WG-f: design mode uses state.phase ──
 echo ""
@@ -256,6 +263,50 @@ RC2=$(printf '%s' "$INPUT" \
     bash "$HOOK" 2>/dev/null; echo $?)
 RC=$(printf '%s' "$RC2" | tail -1)
 _assert_exit "WG-i: no instance fail-open (exit=0)" "0" "$RC"
+
+# ── WG-k: grant_override issues a token, token exists in override-tokens.json (W9 M4) ──
+echo ""
+echo "── WG-k: grant_override creates token in override-tokens.json ──"
+_write_design_state "explore"
+rm -f "${INSTANCE_DIR}/override-tokens.json"
+STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
+  grant_override --id "tok-wg-k" --description "test token" --granted-by "orchestrator" >/dev/null
+RC=$?
+_assert_exit "WG-k: grant_override exits 0" "0" "$RC"
+_OT_CONTENT=$(cat "${INSTANCE_DIR}/override-tokens.json" 2>/dev/null || echo "{}")
+_assert_contains "WG-k: token id in file" "tok-wg-k" "$_OT_CONTENT"
+
+# ── WG-l: consume_override removes token (one-time-use) ──
+echo ""
+echo "── WG-l: consume_override removes token ──"
+STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
+  consume_override --id "tok-wg-k" >/dev/null
+RC=$?
+_assert_exit "WG-l: consume_override exits 0" "0" "$RC"
+_OT_AFTER=$(cat "${INSTANCE_DIR}/override-tokens.json" 2>/dev/null || echo "{}")
+_assert_not_contains "WG-l: token removed from file" "tok-wg-k" "$_OT_AFTER"
+
+# ── WG-m: consume_override on already-consumed token → exit 1 (replay attack blocked) ──
+echo ""
+echo "── WG-m: re-consuming already-consumed token → blocked (exit 1) ──"
+OUT=$(STATE_FILE="${INSTANCE_DIR}/state.json" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" \
+  consume_override --id "tok-wg-k" 2>&1)
+RC=$?
+_assert_exit "WG-m: second consume exits 1" "1" "$RC"
+
+# ── WG-n: wave-gate with consumed/invalid token → WAVE_MISMATCH blocked (exit 2) ──
+echo ""
+echo "── WG-n: wave mismatch with invalid token → blocked (exit 2) ──"
+_write_design_state "explore"
+INPUT=$(jq -cn \
+  --arg team "$TEAM_NAME" \
+  --arg tid "task-wg-n" \
+  '{team_name: $team, teammate_name: "W1-researcher", task_id: $tid, task_subject: "replay task",
+    metadata: {wave: "synthesize", override_token_id: "tok-nonexistent"}}')
+OUT=$(_run_hook "$INPUT")
+RC=$(printf '%s' "$OUT" | tail -1)
+_assert_exit "WG-n: invalid token blocked (exit=2)" "2" "$RC"
+_assert_contains "WG-n: INVALID_OVERRIDE_TOKEN in stderr" "INVALID_OVERRIDE_TOKEN" "$OUT"
 
 # ── WG-j: TaskCreate without teammate_name AND without resolvable owner → blocked (UNKNOWN_ACTOR, W9 M3) ──
 echo ""

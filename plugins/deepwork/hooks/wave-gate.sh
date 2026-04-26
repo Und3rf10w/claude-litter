@@ -98,7 +98,7 @@ fi
 
 # Read task metadata
 WAVE=$(printf '%s' "$INPUT" | jq -r '.metadata.wave // ""' 2>/dev/null || echo "")
-OVERRIDE_REASON=$(printf '%s' "$INPUT" | jq -r '.metadata.override_reason // ""' 2>/dev/null || echo "")
+OVERRIDE_TOKEN_ID=$(printf '%s' "$INPUT" | jq -r '.metadata.override_token_id // ""' 2>/dev/null || echo "")
 
 # MISSING_WAVE_METADATA: teammate created a task without metadata.wave
 if [[ -z "$WAVE" ]]; then
@@ -113,18 +113,24 @@ if [[ "$WAVE" == "$ACTIVE_PHASE" ]]; then
   exit 0
 fi
 
-# WAVE_MISMATCH with override_reason: allow + audit entry
-if [[ -n "$OVERRIDE_REASON" ]]; then
-  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '> ⚠️ wave-gate override: teammate=%s task=%s wave=%s active_phase=%s reason=%s (%s)\n' \
-    "$ACTOR" "$TASK_ID" "$WAVE" "$ACTIVE_PHASE" "$OVERRIDE_REASON" "$TS" \
-    >> "$LOG_FILE" 2>/dev/null || true
-  exit 0
+# WAVE_MISMATCH with override_token_id: validate + consume token, then allow + audit
+if [[ -n "$OVERRIDE_TOKEN_ID" ]]; then
+  if "${_PLUGIN_ROOT}/scripts/state-transition.sh" --state-file "$STATE_FILE" \
+       consume_override --id "$OVERRIDE_TOKEN_ID" >/dev/null 2>&1; then
+    TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '> wave-gate WAVE_OVERRIDE: teammate=%s task=%s wave=%s active_phase=%s token=%s (%s)\n' \
+      "$ACTOR" "$TASK_ID" "$WAVE" "$ACTIVE_PHASE" "$OVERRIDE_TOKEN_ID" "$TS" \
+      >> "$LOG_FILE" 2>/dev/null || true
+    exit 0
+  fi
+  # Token invalid or already consumed — fall through to WAVE_MISMATCH
+  printf 'wave-gate INVALID_OVERRIDE_TOKEN: token "%s" not found or already consumed.\n' \
+    "$OVERRIDE_TOKEN_ID" >&2
 fi
 
-# WAVE_MISMATCH: wave != active phase, no override
+# WAVE_MISMATCH: wave != active phase, no valid override
 printf 'wave-gate WAVE_MISMATCH: teammate=%s task=%s wave=%s != active_phase=%s (%s mode).\n' \
   "$ACTOR" "$TASK_ID" "$WAVE" "$ACTIVE_PHASE" "$PHASE_SOURCE" >&2
 printf 'Teammates may only create tasks for the current active phase.\n' >&2
-printf 'To override, set metadata.override_reason with a justification.\n' >&2
+printf 'To override, request an override token from orchestrator/team-lead.\n' >&2
 exit 2

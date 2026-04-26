@@ -1018,9 +1018,80 @@ PYEOF
     exit 0
     ;;
 
+  # ---- grant_override -------------------------------------------------------
+  # Orchestrator-only: issue a one-time-use override token stored in
+  # ${INSTANCE_DIR}/override-tokens.json.  Tokens carry a description and
+  # are consumed atomically by wave-gate via consume_override.
+  #
+  # Usage: grant_override --id <token_id> [--description <text>] [--granted-by <name>]
+  grant_override)
+    _require_state_file
+    _OT_ID=""
+    _OT_DESC=""
+    _OT_BY="orchestrator"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --id) _OT_ID="$2"; shift 2 ;;
+        --description) _OT_DESC="$2"; shift 2 ;;
+        --granted-by) _OT_BY="$2"; shift 2 ;;
+        *) printf 'grant_override: unknown arg: %s\n' "$1" >&2; exit 3 ;;
+      esac
+    done
+    [[ -n "$_OT_ID" ]] || { printf 'grant_override: --id is required\n' >&2; exit 3; }
+    _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+    _OT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Initialise file if absent
+    [[ -f "$_OT_FILE" ]] || printf '{"tokens":[]}\n' > "$_OT_FILE"
+    # Check for duplicate id
+    if jq -e --arg id "$_OT_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      printf 'grant_override: token id "%s" already exists\n' "$_OT_ID" >&2
+      exit 1
+    fi
+    _OT_TMP="${_OT_FILE}.tmp.$$"
+    jq --arg id "$_OT_ID" --arg ts "$_OT_TS" --arg by "$_OT_BY" --arg desc "$_OT_DESC" \
+      '.tokens += [{id: $id, granted_at: $ts, granted_by: $by, description: $desc}]' \
+      "$_OT_FILE" > "$_OT_TMP" 2>/dev/null \
+      && mv "$_OT_TMP" "$_OT_FILE" \
+      || { rm -f "$_OT_TMP"; printf 'grant_override: failed to write token\n' >&2; exit 1; }
+    printf 'grant_override: token "%s" issued at %s\n' "$_OT_ID" "$_OT_TS"
+    exit 0
+    ;;
+
+  # ---- consume_override -----------------------------------------------------
+  # Atomically validate and remove a one-time-use token from override-tokens.json.
+  # Returns 0 if token found and consumed; 1 if token not found or file missing.
+  # Called by wave-gate.sh to validate override_token_id in task metadata.
+  #
+  # Usage: consume_override --id <token_id>
+  consume_override)
+    _require_state_file
+    _CO_ID=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --id) _CO_ID="$2"; shift 2 ;;
+        *) printf 'consume_override: unknown arg: %s\n' "$1" >&2; exit 3 ;;
+      esac
+    done
+    [[ -n "$_CO_ID" ]] || { printf 'consume_override: --id is required\n' >&2; exit 3; }
+    _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+    [[ -f "$_OT_FILE" ]] || { printf 'consume_override: no override-tokens.json\n' >&2; exit 1; }
+    # Check token exists
+    if ! jq -e --arg id "$_CO_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      printf 'consume_override: token "%s" not found or already consumed\n' "$_CO_ID" >&2
+      exit 1
+    fi
+    _CO_TMP="${_OT_FILE}.tmp.$$"
+    jq --arg id "$_CO_ID" '.tokens = [.tokens[] | select(.id != $id)]' \
+      "$_OT_FILE" > "$_CO_TMP" 2>/dev/null \
+      && mv "$_CO_TMP" "$_OT_FILE" \
+      || { rm -f "$_CO_TMP"; printf 'consume_override: failed to remove token\n' >&2; exit 1; }
+    printf 'consume_override: token "%s" consumed\n' "$_CO_ID"
+    exit 0
+    ;;
+
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override\n' >&2
     exit 3
     ;;
 esac
