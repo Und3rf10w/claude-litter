@@ -566,12 +566,18 @@ jq -n \
       {"type": "command", "command": entry.command_override}
       | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
       | if (entry | has("async")) then . + {"async": entry.async} else . end
+      | if (entry | has("asyncRewake")) then . + {"asyncRewake": entry.asyncRewake} else . end
+      | if (entry | has("statusMessage")) then . + {"statusMessage": entry.statusMessage} else . end
+      | if (entry | has("shell")) then . + {"shell": entry.shell} else . end
     else
       (("bash " + ($plugin_root + "/" + entry.script | @sh))
         + (if (entry | has("args")) then " " + entry.args else "" end)) as $cmd
       | {"type": "command", "command": $cmd}
       | if (entry | has("timeout")) then . + {"timeout": entry.timeout} else . end
       | if (entry | has("async")) then . + {"async": entry.async} else . end
+      | if (entry | has("asyncRewake")) then . + {"asyncRewake": entry.asyncRewake} else . end
+      | if (entry | has("statusMessage")) then . + {"statusMessage": entry.statusMessage} else . end
+      | if (entry | has("shell")) then . + {"shell": entry.shell} else . end
     end;
 
   def active_for_mode(entry):
