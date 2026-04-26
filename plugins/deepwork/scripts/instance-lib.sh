@@ -122,10 +122,55 @@ _canonical_path() {
   printf '%s/%s' "$dir" "$base"
 }
 
+# ---------------------------------------------------------------------------
+# Portable lock helpers — prefer flock(1) when available; fall back to
+# POSIX-atomic mkdir on macOS (where flock ships with util-linux, not BSD).
+#
+# _acquire_lock <lock-path>  — acquire exclusive lock; spins up to 5 s.
+#   Returns 0 on success, 1 on timeout.
+#   On flock systems: opens <lock-path> as fd 200 and calls flock -x.
+#   On mkdir systems: creates <lock-path>.dir atomically; registers EXIT trap.
+#
+# _release_lock <lock-path>  — release a lock acquired by _acquire_lock.
+#   On flock systems: closes fd 200 (lock auto-released on fd close).
+#   On mkdir systems: removes <lock-path>.dir.
+#
+# Usage pattern (non-subshell):
+#   _acquire_lock "$lock_path" || return 1
+#   … critical section …
+#   _release_lock "$lock_path"
+# ---------------------------------------------------------------------------
+_acquire_lock() {
+  local _lp="$1"
+  if command -v flock >/dev/null 2>&1; then
+    # Open the lock file on fd 200 and acquire exclusive flock.
+    eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
+    flock -x 200 || { exec 200>&-; return 1; }
+  else
+    local _ld="${_lp}.dir"
+    local _dl=$(( $(date +%s) + 5 ))
+    until mkdir "$_ld" 2>/dev/null; do
+      [[ $(date +%s) -lt $_dl ]] || return 1
+      sleep 0.1
+    done
+    trap 'rm -rf "$_ld"' EXIT
+  fi
+  return 0
+}
+
+_release_lock() {
+  local _lp="$1"
+  if command -v flock >/dev/null 2>&1; then
+    exec 200>&- 2>/dev/null || true
+  else
+    rm -rf "${_lp}.dir" 2>/dev/null || true
+  fi
+}
+
 # _write_state_atomic <state-file> <jq-filter> [<jq-arg>...]
 #
-# Atomically applies a jq filter to the state file using flock + tmp + mv.
-# Falls back to plain tmp + mv if flock unavailable (preserves existing semantics).
+# Atomically applies a jq filter to the state file using portable lock + tmp + mv.
+# Uses _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
 # Returns 0 on success, non-zero on failure (caller decides whether to fail open).
 #
 # Example:
@@ -137,38 +182,19 @@ _write_state_atomic() {
   local tmp="${state_file}.tmp.$$"
   local lock="${state_file}.lock"
 
-  if command -v flock >/dev/null 2>&1; then
-    (
-      flock -x 200 || exit 1
-      jq "$@" "$state_file" > "$tmp" 2>/dev/null || exit 2
-      [[ -s "$tmp" ]] || exit 3
-      mv "$tmp" "$state_file" || exit 4
-    ) 200>"$lock"
-    local rc=$?
+  _acquire_lock "$lock" || return 1
+  jq "$@" "$state_file" > "$tmp" 2>/dev/null
+  local _jq_rc=$?
+  if [[ $_jq_rc -eq 0 && -s "$tmp" ]]; then
+    mv "$tmp" "$state_file"
+    local _mv_rc=$?
+    _release_lock "$lock"
     rm -f "$tmp" 2>/dev/null
-    return $rc
+    return $_mv_rc
   else
-    # macOS: flock unavailable — use POSIX-atomic mkdir for mutual exclusion.
-    local lock_dir="${lock}.dir"
-    local _deadline=$(( $(date +%s) + 5 ))
-    until mkdir "$lock_dir" 2>/dev/null; do
-      [[ $(date +%s) -lt $_deadline ]] || { rm -f "$tmp"; return 1; }
-      sleep 0.1
-    done
-    trap 'rm -rf "$lock_dir"' EXIT
-    jq "$@" "$state_file" > "$tmp" 2>/dev/null
-    local _jq_rc=$?
-    if [[ $_jq_rc -eq 0 && -s "$tmp" ]]; then
-      mv "$tmp" "$state_file"
-      local _mv_rc=$?
-      rm -rf "$lock_dir"
-      rm -f "$tmp" 2>/dev/null
-      return $_mv_rc
-    else
-      rm -rf "$lock_dir"
-      rm -f "$tmp"
-      return 1
-    fi
+    _release_lock "$lock"
+    rm -f "$tmp"
+    return 1
   fi
 }
 

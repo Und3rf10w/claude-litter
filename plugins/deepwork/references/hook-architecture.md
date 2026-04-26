@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 106 nodes, 167 edges
+Graph: 106 nodes, 166 edges
 
 ## Mermaid Flowchart
 
@@ -55,7 +55,6 @@ flowchart LR
     batch_gate["batch-gate"]
     critique_version_gate["critique-version-gate"]
     deliver_gate["deliver-gate"]
-    file_changed_retest["file-changed-retest"]
     frontmatter_gate["frontmatter-gate"]
     halt_gate["halt-gate"]
     incident_detector["incident-detector"]
@@ -113,13 +112,13 @@ flowchart LR
     metadata_wave(([".metadata.wave"]))
     mode(([".mode"]))
     phase(([".phase"]))
-    source(([".source"]))
     team_name(([".team_name"]))
     tool_calls(([".tool_calls"]))
     tool_response_data_file_path(([".tool_response.data.file_path"]))
     tool_response_data_interrupted(([".tool_response.data.interrupted"]))
     tool_response_data_stderr(([".tool_response.data.stderr"]))
     tool_response_data_stdout(([".tool_response.data.stdout"]))
+    trigger(([".trigger"]))
     verdict(([".verdict"]))
     state_archived_json((["state.archived.json"]))
   end
@@ -132,6 +131,7 @@ flowchart LR
     critique_v[/"  critique.v"/]
     discoveries_jsonl[/"  discoveries.jsonl"/]
     drift_log[/"  drift.log"/]
+    events_archived_jsonl[/"  events.archived.jsonl"/]
     events_jsonl[/"  events.jsonl"/]
     execute_done_sentinel[/"  execute-done.sentinel"/]
     heartbeat_json[/"  heartbeat.json"/]
@@ -145,10 +145,9 @@ flowchart LR
     test_results_jsonl[/"  test-results.jsonl"/]
     version_sentinel_json[/"  version-sentinel.json"/]
   end
-  FileChanged -->|"__src_glob__"| file_changed_retest
   FileChanged -->|"&lt;plan_ref&gt;"| plan_drift_detector
-  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| stale_warn
-  FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| version_bump_notify
+  FileChanged -->|"proposals"| stale_warn
+  FileChanged -->|"proposals"| version_bump_notify
   FileChanged -->|".claude/deepwork"| wiki_log_append
   PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
   PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
@@ -195,8 +194,6 @@ flowchart LR
   deliver_gate -.->|"reads"| bar
   deliver_gate -.->|"reads"| empirical_unknowns
   deliver_gate -.->|"reads"| phase
-  file_changed_retest -.->|"reads"| change_id
-  file_changed_retest -.->|"reads"| execute_phase
   frontmatter_gate -.->|"reads"| frontmatter_schema_version
   frontmatter_gate -.->|"reads"| instance_id
   frontmatter_gate -.->|"reads"| phase
@@ -219,8 +216,8 @@ flowchart LR
   session_context -.->|"reads"| goal
   session_context -.->|"reads"| mode
   session_context -.->|"reads"| phase
-  session_context -.->|"reads"| source
   session_context -.->|"reads"| team_name
+  session_context -.->|"reads"| trigger
   state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
   stop_hook -.->|"reads"| execute_phase
@@ -260,6 +257,8 @@ flowchart LR
   incident_detector -->|"writes"| hook_warnings
   stop_hook -->|"writes"| execute_halt_reason
   stop_hook -->|"writes"| execute_phase
+  approve_archive -.->|"reads"| events_archived_jsonl
+  approve_archive -.->|"reads"| events_jsonl
   approve_archive -.->|"reads"| heartbeat_json
   approve_archive -.->|"reads"| state_archived_json
   bash_gate -.->|"reads"| critique_v
@@ -269,8 +268,6 @@ flowchart LR
   batch_gate -.->|"reads"| state_json
   critique_version_gate -.->|"reads"| version_sentinel_json
   deliver_gate -.->|"reads"| proposals
-  file_changed_retest -.->|"reads"| pending_change_json
-  file_changed_retest -.->|"reads"| test_results_jsonl
   frontmatter_gate -.->|"reads"| state_snapshot
   frontmatter_gate -.->|"reads"| state_json
   incident_detector -.->|"reads"| incidents_jsonl
@@ -298,7 +295,9 @@ flowchart LR
   version_bump_notify -.->|"reads"| drift_log
   version_bump_notify -.->|"reads"| version_sentinel_json
   wiki_log_append -.->|"reads"| log_md
-  file_changed_retest -->|"writes"| test_results_jsonl
+  approve_archive -->|"writes"| events_archived_jsonl
+  approve_archive -->|"writes"| events_jsonl
+  approve_archive -->|"writes"| state_archived_json
   frontmatter_gate -->|"writes"| state_snapshot
   frontmatter_gate -->|"writes"| state_json
   incident_detector -->|"writes"| incidents_jsonl
@@ -331,6 +330,8 @@ flowchart LR
           ".phase"
         ],
         "markers": [
+          "events.archived.jsonl",
+          "events.jsonl",
           "heartbeat.json",
           "state.archived.json"
         ]
@@ -340,7 +341,9 @@ flowchart LR
           "state.archived.json"
         ],
         "markers": [
-          ""
+          "events.archived.jsonl",
+          "events.jsonl",
+          "state.archived.json"
         ]
       },
       "source_refs": ["hooks/approve-archive.sh"]
@@ -450,31 +453,6 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/deliver-gate.sh"]
-    },
-    "file-changed-retest.sh": {
-      "triggered_by": [
-      "FileChanged"
-      ],
-      "mode": "execute",
-      "reads": {
-        "state": [
-          ".change_id",
-          ".execute.phase"
-        ],
-        "markers": [
-          "pending-change.json",
-          "test-results.jsonl"
-        ]
-      },
-      "writes": {
-        "state": [
-          ""
-        ],
-        "markers": [
-          "test-results.jsonl"
-        ]
-      },
-      "source_refs": ["hooks/execute/file-changed-retest.sh"]
     },
     "frontmatter-gate.sh": {
       "triggered_by": [
@@ -710,8 +688,8 @@ flowchart LR
           ".goal",
           ".mode",
           ".phase",
-          ".source",
-          ".team_name"
+          ".team_name",
+          ".trigger"
         ],
         "markers": [
           "proposals"

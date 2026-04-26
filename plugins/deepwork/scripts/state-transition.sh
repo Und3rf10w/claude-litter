@@ -146,61 +146,31 @@ _emit_event() {
 
   # Hold an exclusive lock from _read_event_head through _append_event_raw so
   # no two concurrent callers can read the same prev_event_hash.
-  if command -v flock >/dev/null 2>&1; then
-    (
-      flock -x 200 || exit 1
+  # Uses portable _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
+  _acquire_lock "$lock_file" || return 1
 
-      local prev_hash
-      prev_hash=$(_read_event_head)
+  local prev_hash
+  prev_hash=$(_read_event_head)
 
-      local timestamp
-      timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  local timestamp
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-      local event_json
-      event_json=$(jq -cn \
-        --arg eid "$event_id" \
-        --arg etype "$event_type" \
-        --arg phash "$prev_hash" \
-        --arg ts "$timestamp" \
-        --arg actor "$actor" \
-        --argjson payload "$payload_json" \
-        '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
-          timestamp: $ts, actor: $actor, payload: $payload}') || exit 1
+  local event_json
+  event_json=$(jq -cn \
+    --arg eid "$event_id" \
+    --arg etype "$event_type" \
+    --arg phash "$prev_hash" \
+    --arg ts "$timestamp" \
+    --arg actor "$actor" \
+    --argjson payload "$payload_json" \
+    '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
+      timestamp: $ts, actor: $actor, payload: $payload}')
+  local _ej_rc=$?
 
-      _append_event_raw "$events_file" "$event_json"
-    ) 200>"$lock_file"
-  else
-    # macOS: flock unavailable — use POSIX-atomic mkdir for mutual exclusion.
-    local _lock_dir="${lock_file}.dir"
-    local _deadline=$(( $(date +%s) + 5 ))
-    until mkdir "$_lock_dir" 2>/dev/null; do
-      [[ $(date +%s) -lt $_deadline ]] || return 1
-      sleep 0.1
-    done
-    trap 'rm -rf "$_lock_dir"' EXIT
+  _release_lock "$lock_file"
 
-    local prev_hash
-    prev_hash=$(_read_event_head)
-
-    local timestamp
-    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-
-    local event_json
-    event_json=$(jq -cn \
-      --arg eid "$event_id" \
-      --arg etype "$event_type" \
-      --arg phash "$prev_hash" \
-      --arg ts "$timestamp" \
-      --arg actor "$actor" \
-      --argjson payload "$payload_json" \
-      '{event_id: $eid, event_type: $etype, prev_event_hash: $phash,
-        timestamp: $ts, actor: $actor, payload: $payload}') || { rm -rf "$_lock_dir"; return 1; }
-
-    _append_event_raw "$events_file" "$event_json"
-    local _rc=$?
-    rm -rf "$_lock_dir"
-    return $_rc
-  fi
+  [[ $_ej_rc -eq 0 ]] || return 1
+  _append_event_raw "$events_file" "$event_json"
 }
 
 # _ensure_event_log
@@ -285,26 +255,24 @@ _verify_integrity_hash() {
 }
 
 # Write with hash: applies $jq_filter (+ extra _write_state_atomic args) then
-# immediately recomputes and writes the integrity hash + event_head + last_updated
-# in one atomic update. last_updated is stamped on every mutation so callers don't
-# need a separate stamp_last_updated invocation for routine writes.
+# immediately recomputes and writes the integrity hash + event_head in one atomic update.
 _write_with_hash() {
   local sf="$1"; shift
   # First pass: apply the mutation filter
   _write_state_atomic "$sf" "$@" || return 4
-  # Second pass: recompute integrity hash, event_head, and stamp last_updated atomically
+  # Second pass: recompute integrity hash, event_head, and last_updated atomically
   local new_hash event_head now
   new_hash=$(_compute_integrity_hash "$sf") || new_hash=""
   event_head=$(_read_event_head 2>/dev/null || echo "")
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" --arg lu "$now" \
-      '.last_updated = $lu | .state_integrity_hash = $h | .event_head = $eh' || return 4
+    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
+      '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' || return 4
   elif [[ -n "$new_hash" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg lu "$now" \
-      '.last_updated = $lu | .state_integrity_hash = $h' || return 4
+    _write_state_atomic "$sf" --arg h "$new_hash" --arg ts "$now" \
+      '.state_integrity_hash = $h | .last_updated = $ts' || return 4
   else
-    _write_state_atomic "$sf" --arg lu "$now" '.last_updated = $lu' || return 4
+    _write_state_atomic "$sf" --arg ts "$now" '.last_updated = $ts' || return 4
   fi
   return 0
 }
@@ -533,8 +501,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "phase_advanced" \
-      "$(jq -cn --arg fp "$current_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" \
-      || exit 5
+      "$(jq -cn --arg fp "$current_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" || exit 5
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.phase = $phase'
     rc=$?
     [[ $rc -eq 0 ]] || exit 4
@@ -558,8 +525,7 @@ case "$SUBCOMMAND" in
     _current_exec_phase=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
     _ensure_event_log
     _emit_event "exec_phase_advanced" \
-      "$(jq -cn --arg fp "$_current_exec_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" \
-      || exit 5
+      "$(jq -cn --arg fp "$_current_exec_phase" --arg tp "$TO_PHASE" '{from_phase: $fp, to_phase: $tp}')" || exit 5
     _write_with_hash "$STATE_FILE" --arg phase "$TO_PHASE" '.execute.phase = $phase'
     rc=$?; [[ $rc -eq 0 ]] || exit 4
     exit 0
@@ -579,8 +545,7 @@ case "$SUBCOMMAND" in
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "field_set" \
-      "$(jq -cn --arg p "$JQ_PATH" --argjson v "$JSON_VALUE" '{jq_path: $p, json_value: $v}')" \
-      || exit 5
+      "$(jq -cn --arg p "$JQ_PATH" --argjson v "$JSON_VALUE" '{jq_path: $p, json_value: $v}')" || exit 5
     # Apply field set + audit log + hash atomically (hook_warnings kept per §9.6 Option B)
     _write_with_hash "$STATE_FILE" \
       --arg path "$JQ_PATH" \
@@ -605,8 +570,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "array_appended" \
-      "$(jq -cn --arg p "$JQ_PATH" --argjson o "$JSON_OBJ" '{jq_path: $p, json_object: $o}')" \
-      || exit 5
+      "$(jq -cn --arg p "$JQ_PATH" --argjson o "$JSON_OBJ" '{jq_path: $p, json_object: $o}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson obj "$JSON_OBJ" \
       '('"$JQ_PATH"') += [$obj]'
@@ -624,8 +588,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "merged" \
-      "$(jq -cn --argjson f "$JSON_FRAG" '{json_fragment: $f}')" \
-      || exit 5
+      "$(jq -cn --argjson f "$JSON_FRAG" '{json_fragment: $f}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson frag "$JSON_FRAG" \
       '. * $frag'
@@ -659,8 +622,7 @@ case "$SUBCOMMAND" in
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "halt_recorded" \
-      "$(jq -cn --arg s "$SUMMARY" --argjson b "$BLOCKERS_JSON" '{summary: $s, blockers: $b}')" \
-      || exit 5
+      "$(jq -cn --arg s "$SUMMARY" --argjson b "$BLOCKERS_JSON" '{summary: $s, blockers: $b}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg summary "$SUMMARY" \
       --argjson blockers "$BLOCKERS_JSON" \
@@ -693,8 +655,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "session_backfilled" \
-      "$(jq -cn --arg sid "$SESSION_ID_ARG" '{session_id: $sid}')" \
-      || exit 5
+      "$(jq -cn --arg sid "$SESSION_ID_ARG" '{session_id: $sid}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg sid "$SESSION_ID_ARG" \
       '.session_id = $sid'
@@ -724,8 +685,7 @@ case "$SUBCOMMAND" in
 
     _ensure_event_log
     _emit_event "flaky_test_added" \
-      "$(jq -cn --arg cmd "$CMD_ARG" '{command: $cmd}')" \
-      || exit 5
+      "$(jq -cn --arg cmd "$CMD_ARG" '{command: $cmd}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg cmd "$CMD_ARG" \
       '.execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd])'
@@ -740,8 +700,7 @@ case "$SUBCOMMAND" in
 
     NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
-    _emit_event "last_updated_stamped" '{}' \
-      || exit 5
+    _emit_event "last_updated_stamped" '{}' || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg now "$NOW" \
       '.last_updated = $now'
@@ -885,6 +844,8 @@ case "$SUBCOMMAND" in
             printf 'state-transition.sh replay: failed to extract state_snapshot from state_reverted at event %d\n' "$_event_count" >&2
             exit 1
           }
+          _working_state=$(printf '%s' "$_working_state" | \
+            jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
           ;;
         halt_recorded)
           _summary=$(printf '%s' "$_line" | jq -r '.payload.summary // ""' 2>/dev/null)
@@ -910,68 +871,6 @@ case "$SUBCOMMAND" in
         last_updated_stamped)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
-          ;;
-        bar_added)
-          _ba_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
-          _ba_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
-          _ba_cat=$(printf '%s' "$_line" | jq -c '.payload.categorical_ban // false' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg id "$_ba_id" --arg stmt "$_ba_stmt" --argjson cat "$_ba_cat" --arg ts "$_ts" \
-            '.bar = ((.bar // []) + [{id: $id, criterion: $stmt, verdict: null, categorical_ban: $cat, evidence_required: "user-specified criterion"}]) | .last_updated = $ts' \
-            2>/dev/null)
-          ;;
-        bar_removed)
-          _br_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg id "$_br_id" --arg ts "$_ts" \
-            '.bar = [(.bar // [])[] | select(.id != $id)] | .last_updated = $ts' \
-            2>/dev/null)
-          ;;
-        guardrail_added)
-          _gra_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
-          _gra_src=$(printf '%s' "$_line" | jq -r '.payload.source // "user"' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg stmt "$_gra_stmt" --arg src "$_gra_src" --arg ts "$_ts" \
-            '.guardrails = ((.guardrails // []) + [{rule: $stmt, source: $src, timestamp: $ts}]) | .last_updated = $ts' \
-            2>/dev/null)
-          ;;
-        guardrail_replaced)
-          _grp_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
-          _grp_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
-          _grp_src=$(printf '%s' "$_line" | jq -r '.payload.source // ""' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --argjson idx "$_grp_idx" --arg stmt "$_grp_stmt" --arg src "$_grp_src" --arg ts "$_ts" \
-            '.guardrails[$idx].rule = $stmt
-             | if $src == "" then . else .guardrails[$idx].source = $src | .guardrails[$idx].timestamp = $ts end
-             | .last_updated = $ts' \
-            2>/dev/null)
-          ;;
-        guardrail_removed)
-          _grm_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --argjson idx "$_grm_idx" --arg ts "$_ts" \
-            'del(.guardrails[$idx]) | .last_updated = $ts' \
-            2>/dev/null)
-          ;;
-        state_archived)
-          # Terminal event — replay stops here; state is considered archived.
-          # No field mutations; last_updated stamp reflects the archive timestamp.
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
-          ;;
-        test_manifest_updated)
-          _tmu_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
-          _tmu_result=$(printf '%s' "$_line" | jq -r '.payload.result // "unknown"' 2>/dev/null)
-          _tmu_ts=$(printf '%s' "$_line" | jq -r '.payload.timestamp // ""' 2>/dev/null)
-          [[ -n "$_tmu_ts" ]] || _tmu_ts="$_ts"
-          _working_state=$(printf '%s' "$_working_state" | \
-            jq -c --arg id "$_tmu_id" --arg result "$_tmu_result" --arg run_ts "$_tmu_ts" --arg ts "$_ts" \
-            '(.execute.test_manifest // []) |= map(
-               if .id == $id then
-                 . + {last_result: $result, last_run_at: $run_ts}
-               else . end
-             ) | .last_updated = $ts' \
-            2>/dev/null)
           ;;
         *)
           printf 'state-transition.sh replay: unknown event type "%s" at event %d — skipping\n' \
@@ -1121,8 +1020,7 @@ case "$SUBCOMMAND" in
     _emit_event "state_reverted" \
       "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
           --argjson snap "$_REVERT_SNAP" \
-          '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" \
-      || exit 5
+          '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" || exit 5
     exit 0
     ;;
 
@@ -1148,8 +1046,7 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _emit_event "bar_added" \
       "$(jq -cn --arg id "$_BA_ID" --arg stmt "$_BA_STMT" --argjson cat "$_BA_CAT_BAN" \
-          '{id: $id, statement: $stmt, categorical_ban: $cat}')" \
-      || exit 5
+          '{id: $id, statement: $stmt, categorical_ban: $cat}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg id "$_BA_ID" \
       --arg stmt "$_BA_STMT" \
@@ -1175,8 +1072,7 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
     _ensure_event_log
     _emit_event "bar_removed" \
-      "$(jq -cn --arg id "$_BR_ID" '{id: $id}')" \
-      || exit 5
+      "$(jq -cn --arg id "$_BR_ID" '{id: $id}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg id "$_BR_ID" \
       '.bar = [(.bar // [])[] | select(.id != $id)]'
@@ -1203,8 +1099,7 @@ case "$SUBCOMMAND" in
     _NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     _ensure_event_log
     _emit_event "guardrail_added" \
-      "$(jq -cn --arg stmt "$_GA_STMT" --arg src "$_GA_SRC" '{statement: $stmt, source: $src}')" \
-      || exit 5
+      "$(jq -cn --arg stmt "$_GA_STMT" --arg src "$_GA_SRC" '{statement: $stmt, source: $src}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --arg stmt "$_GA_STMT" \
       --arg src "$_GA_SRC" \
@@ -1237,8 +1132,7 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _emit_event "guardrail_replaced" \
       "$(jq -cn --argjson idx "$_GRP_IDX" --arg stmt "$_GRP_STMT" --arg src "$_GRP_SRC" \
-          '{index: $idx, statement: $stmt, source: $src}')" \
-      || exit 5
+          '{index: $idx, statement: $stmt, source: $src}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson idx "$_GRP_IDX" \
       --arg stmt "$_GRP_STMT" \
@@ -1273,8 +1167,7 @@ case "$SUBCOMMAND" in
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
     _ensure_event_log
     _emit_event "guardrail_removed" \
-      "$(jq -cn --argjson idx "$_GRM_IDX" '{index: $idx}')" \
-      || exit 5
+      "$(jq -cn --argjson idx "$_GRM_IDX" '{index: $idx}')" || exit 5
     _write_with_hash "$STATE_FILE" \
       --argjson idx "$_GRM_IDX" \
       'del(.guardrails[$idx])'
@@ -1289,10 +1182,9 @@ case "$SUBCOMMAND" in
   archive_state)
     _require_state_file
     _ensure_event_log
-    _emit_event "state_archived" '{}' \
-      || exit 5
-    # Stamp event_head in state.json before renaming so the archived copy
-    # reflects the state_archived event that was just appended.
+    _emit_event "state_archived" '{}' || exit 5
+    # Stamp event_head in state.json AFTER state_archived is appended so the
+    # archived copy's event_head reflects the final event (the archive itself).
     _arch_event_head=$(_read_event_head 2>/dev/null || echo "")
     if [[ -n "$_arch_event_head" ]]; then
       _write_state_atomic "$STATE_FILE" --arg eh "$_arch_event_head" '.event_head = $eh' || true
@@ -1305,46 +1197,9 @@ case "$SUBCOMMAND" in
     exit 0
     ;;
 
-  # ---- test_manifest_update --------------------------------------------------
-  # test_manifest_update --id <id> --result <pass|fail|error|unknown> [--ts <iso8601>]
-  # Updates test_manifest entry last_result and last_run_at, emits test_manifest_updated.
-  test_manifest_update)
-    _TMU_ID=""
-    _TMU_RESULT=""
-    _TMU_TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --id) _TMU_ID="$2"; shift 2 ;;
-        --result) _TMU_RESULT="$2"; shift 2 ;;
-        --ts) _TMU_TS="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    [[ -n "$_TMU_ID" ]] || { printf 'test_manifest_update: --id <id> required\n' >&2; exit 3; }
-    [[ -n "$_TMU_RESULT" ]] || { printf 'test_manifest_update: --result <pass|fail|error|unknown> required\n' >&2; exit 3; }
-    _require_state_file
-    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
-    _ensure_event_log
-    _emit_event "test_manifest_updated" \
-      "$(jq -cn --arg id "$_TMU_ID" --arg result "$_TMU_RESULT" --arg ts "$_TMU_TS" \
-          '{id: $id, result: $result, timestamp: $ts}')" \
-      || exit 5
-    _write_with_hash "$STATE_FILE" \
-      --arg id "$_TMU_ID" \
-      --arg result "$_TMU_RESULT" \
-      --arg ts "$_TMU_TS" \
-      '(.execute.test_manifest // []) |= map(
-         if .id == $id then
-           . + {last_result: $result, last_run_at: $ts}
-         else . end
-       )'
-    rc=$?; [[ $rc -eq 0 ]] || exit 4
-    exit 0
-    ;;
-
   *)
     printf 'state-transition.sh: unknown subcommand: %s\n' "$SUBCOMMAND" >&2
-    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state, test_manifest_update\n' >&2
+    printf 'Valid subcommands: init, phase_advance, exec_phase_advance, set_field, append_array, merge, halt_reason, backfill_session, flaky_test_append, stamp_last_updated, replay, grant_override, consume_override, emit_revert_event, bar_add, bar_remove, guardrail_add, guardrail_replace, guardrail_remove, archive_state\n' >&2
     exit 3
     ;;
 esac

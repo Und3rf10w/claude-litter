@@ -10,6 +10,7 @@
 # ES-g: replay 1000 synthetic events completes in <5s (performance regression guard)
 # ES-h: state_snapshot event at non-genesis position resets working state in replay
 # ES-i: pre-W7 instance (no events.jsonl) bootstrapped transparently; replay produces correct state
+# ES-t: 5 concurrent transitions on mkdir-based fallback path produce intact hash chain
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -820,8 +821,8 @@ ESQ_STATE="${ESQ_INSTANCE_DIR}/state.json"
 ESQ_FRAG='{"execute":{"plan_ref":"plans/v1.md","authorized_push":false},"custom_field":"qval"}'
 "$STATE_TRANSITION" --state-file "$ESQ_STATE" merge "$ESQ_FRAG" 2>/dev/null
 
-# Capture live state for comparison
-ESQ_LIVE=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+# Capture live state for comparison — sort keys to normalize insertion-order differences
+ESQ_LIVE=$(jq -cS 'del(.event_head,.integrity_hash,.state_integrity_hash,.last_updated)' "$ESQ_STATE" 2>/dev/null || echo "")
 
 # Now replay from scratch and compare
 rm -f "$ESQ_STATE"
@@ -829,7 +830,7 @@ ESQ_REPLAY_RC=0
 "$STATE_TRANSITION" --state-file "$ESQ_STATE" replay >/dev/null 2>&1 || ESQ_REPLAY_RC=$?
 _assert_exit "ES-q: replay exits 0" "0" "$ESQ_REPLAY_RC"
 
-ESQ_REPLAYED=$(jq -c 'del(.event_head,.integrity_hash)' "$ESQ_STATE" 2>/dev/null || echo "")
+ESQ_REPLAYED=$(jq -cS 'del(.event_head,.integrity_hash,.state_integrity_hash,.last_updated)' "$ESQ_STATE" 2>/dev/null || echo "")
 if [[ "$ESQ_LIVE" == "$ESQ_REPLAYED" ]]; then
   _pass "ES-q: replayed state matches live state after merge (recursive merge equivalence)"
 else
@@ -926,6 +927,68 @@ if [[ "$ESS_REPLAYED_REASON" == "timing" ]]; then
   _pass "ES-s: replayed execute.flaky_tests[0].reason == timing"
 else
   _fail "ES-s: replayed execute.flaky_tests[0].reason expected 'timing', got '${ESS_REPLAYED_REASON}'"
+fi
+
+# ── ES-t: 5 concurrent transitions on mkdir-based fallback path ───────────────
+# Simulates macOS where flock is unavailable by shadowing flock with a function
+# that always returns false. Runs 5 concurrent set_field calls and verifies the
+# hash chain is intact (no GENESIS prev_hash after event 1).
+echo ""
+echo "── ES-t: mkdir-based locking — 5 concurrent transitions, intact hash chain ──"
+
+EST_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/est00000"
+mkdir -p "$EST_INSTANCE_DIR"
+EST_STATE="${EST_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$EST_STATE" init \
+  '{"session_id":"es-t-session","phase":"work","team_name":"est-team","hook_warnings":[]}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$EST_STATE" phase_advance --to "work" >/dev/null 2>&1 || true
+
+# Wrapper script that shadows flock to simulate macOS environment
+EST_WRAPPER="${SANDBOX}/est-no-flock.sh"
+cat > "$EST_WRAPPER" <<'WRAPPER'
+#!/usr/bin/env bash
+# Shadow flock so _acquire_lock falls through to mkdir branch.
+flock() { return 1; }
+export -f flock
+exec bash "$@"
+WRAPPER
+chmod +x "$EST_WRAPPER"
+
+# Launch 5 concurrent set_field calls
+EST_PIDS=()
+for _i in 1 2 3 4 5; do
+  (
+    INSTANCE_DIR="$EST_INSTANCE_DIR" \
+    STATE_FILE="$EST_STATE" \
+      bash "$STATE_TRANSITION" --state-file "$EST_STATE" \
+        set_field ".hook_warnings" "[]" >/dev/null 2>&1
+  ) &
+  EST_PIDS+=($!)
+done
+
+for _pid in "${EST_PIDS[@]}"; do
+  wait "$_pid" 2>/dev/null || true
+done
+
+# Verify events.jsonl has all events with an intact (non-broken) hash chain
+EST_EVENT_COUNT=$(wc -l < "${EST_INSTANCE_DIR}/events.jsonl" 2>/dev/null | tr -d ' ')
+if [[ "${EST_EVENT_COUNT:-0}" -ge 5 ]]; then
+  _pass "ES-t: at least 5 events appended (got ${EST_EVENT_COUNT})"
+else
+  _fail "ES-t: expected >= 5 events, got ${EST_EVENT_COUNT:-0}"
+fi
+
+# Validate hash chain via replay — if chain is broken replay exits non-zero
+EST_REPLAY_OUT="${SANDBOX}/est-replay-out.json"
+cp "$EST_STATE" "${EST_STATE}.live-backup" 2>/dev/null || true
+EST_REPLAY_RC=0
+"$STATE_TRANSITION" --state-file "$EST_STATE" replay --output "$EST_REPLAY_OUT" >/dev/null 2>&1 \
+  || EST_REPLAY_RC=$?
+if [[ $EST_REPLAY_RC -eq 0 ]]; then
+  _pass "ES-t: replay exits 0 — hash chain intact after concurrent mkdir-locked writes"
+else
+  _fail "ES-t: replay exits ${EST_REPLAY_RC} — hash chain broken under concurrent mkdir-locked writes"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

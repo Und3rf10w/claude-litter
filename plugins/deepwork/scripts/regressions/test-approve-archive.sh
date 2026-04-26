@@ -3,6 +3,8 @@
 #   ARC-1: phase=done → archives state.json to state.archived.json
 #   ARC-2: execute.phase=halt + halt_reason set → archives
 #   ARC-3: execute.phase=halt, NO halt_reason → does NOT archive
+#   ARC-4: full CC Stop event JSON (hook_event_name + stop_reason) → archives correctly
+#   ARC-5: unknown session_id in Stop event → no-op, state.json preserved
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -145,7 +147,7 @@ fi
 
 # ── ARC-4: full CC Stop event JSON (hook_event_name + stop_reason) → archives ──
 echo ""
-echo "── ARC-4: full CC Stop event JSON format → archives ──"
+echo "── ARC-4: full CC Stop event JSON schema → archives ──"
 
 SANDBOX4=$(mktemp -d)
 trap 'rm -rf "$SANDBOX4"' EXIT
@@ -157,26 +159,28 @@ SESSION4="arc4-$(date +%s)"
 _write_state "${INST_DIR4}/state.json" \
   "{\"session_id\":\"${SESSION4}\",\"phase\":\"done\",\"team_name\":\"test-team\"}"
 
-# Use the exact CC Stop event JSON schema (hook_event_name, stop_reason present)
-OUT4=$(printf '{"hook_event_name":"Stop","session_id":"%s","stop_reason":"end_turn"}' "$SESSION4" \
-  | CLAUDE_PROJECT_DIR="$SANDBOX4" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-    bash "$HOOK" 2>&1; echo $?)
+OUT4=$(
+  printf '{"hook_event_name":"Stop","session_id":"%s","stop_reason":"end_turn"}' "$SESSION4" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX4" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "$HOOK" 2>&1
+  echo $?
+)
 RC4=$(printf '%s' "$OUT4" | tail -1)
-_assert_exit "ARC-4: exits 0 with full Stop event JSON" "0" "$RC4"
+_assert_exit "ARC-4: exits 0" "0" "$RC4"
 
 if [[ -f "${INST_DIR4}/state.archived.json" ]]; then
-  _pass "ARC-4: state.archived.json created (full Stop event JSON)"
+  _pass "ARC-4: state.archived.json created via full CC Stop event JSON"
 else
-  _fail "ARC-4: state.archived.json NOT found — hook failed with full Stop event JSON"
+  _fail "ARC-4: state.archived.json NOT found — hook did not archive with full CC event JSON"
 fi
 
 if [[ ! -f "${INST_DIR4}/state.json" ]]; then
-  _pass "ARC-4: state.json removed after archive (full Stop event JSON)"
+  _pass "ARC-4: state.json removed after archive"
 else
-  _fail "ARC-4: state.json still present — hook did not archive with full Stop event JSON"
+  _fail "ARC-4: state.json still present (should have been moved)"
 fi
 
-# ── ARC-5: unknown session_id → hook exits 0 silently (no-op) ──
+# ── ARC-5: unknown session_id → no-op, state.json preserved ──
 echo ""
 echo "── ARC-5: unknown session_id → no-op, state.json preserved ──"
 
@@ -185,28 +189,31 @@ trap 'rm -rf "$SANDBOX5"' EXIT
 INST_ID5=$(printf '%08x' "$(($(date +%s) + 4))")
 INST_DIR5="${SANDBOX5}/.claude/deepwork/${INST_ID5}"
 mkdir -p "$INST_DIR5"
-SESSION5_STORED="arc5-stored-$(date +%s)"
-SESSION5_UNKNOWN="arc5-unknown-$(date +%s)-NOMATCH"
+SESSION5_REAL="arc5-real-$(date +%s)"
+SESSION5_UNKNOWN="arc5-unknown-$(date +%s)x"
 
 _write_state "${INST_DIR5}/state.json" \
-  "{\"session_id\":\"${SESSION5_STORED}\",\"phase\":\"done\",\"team_name\":\"test-team\"}"
+  "{\"session_id\":\"${SESSION5_REAL}\",\"phase\":\"done\",\"team_name\":\"test-team\"}"
 
-OUT5=$(printf '{"hook_event_name":"Stop","session_id":"%s","stop_reason":"end_turn"}' "$SESSION5_UNKNOWN" \
-  | CLAUDE_PROJECT_DIR="$SANDBOX5" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-    bash "$HOOK" 2>&1; echo $?)
+OUT5=$(
+  printf '{"hook_event_name":"Stop","session_id":"%s","stop_reason":"end_turn"}' "$SESSION5_UNKNOWN" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX5" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "$HOOK" 2>&1
+  echo $?
+)
 RC5=$(printf '%s' "$OUT5" | tail -1)
-_assert_exit "ARC-5: exits 0 on unknown session" "0" "$RC5"
+_assert_exit "ARC-5: exits 0" "0" "$RC5"
 
-if [[ ! -f "${INST_DIR5}/state.archived.json" ]]; then
-  _pass "ARC-5: state.archived.json correctly absent (unknown session → no-op)"
+if [[ -f "${INST_DIR5}/state.archived.json" ]]; then
+  _fail "ARC-5: state.archived.json should NOT exist (wrong session_id)"
 else
-  _fail "ARC-5: state.archived.json exists — hook archived wrong instance"
+  _pass "ARC-5: state.archived.json correctly absent (unknown session_id)"
 fi
 
 if [[ -f "${INST_DIR5}/state.json" ]]; then
-  _pass "ARC-5: state.json preserved (unknown session → no-op)"
+  _pass "ARC-5: state.json preserved (no-op for unknown session_id)"
 else
-  _fail "ARC-5: state.json missing — hook incorrectly removed for unknown session"
+  _fail "ARC-5: state.json missing — hook archived with wrong session_id"
 fi
 
 # ── Summary ──
