@@ -334,6 +334,47 @@ echo "── FG-d (W15): Edit that preserves artifact_type → allowed (exit 0) 
 _assert_exit "FG-d: Edit preserving artifact_type passes" "0" \
   "$(_run_gate_edit_full "$TARGET_MD" "Valid artifact body." "Updated artifact body.")"
 
+# ── FG-e: proposals artifact_type accepted ──
+# proposals/v1.md with artifact_type: proposals must pass frontmatter-gate.
+echo ""
+echo "── FG-e (W16c): proposals artifact_type accepted ──"
+PROPOSALS_DIR="${INSTANCE_DIR}/proposals"
+mkdir -p "$PROPOSALS_DIR"
+PROPOSALS_MD="${PROPOSALS_DIR}/v1.md"
+CONTENT_PROPOSALS=$(cat <<'EOF2'
+---
+artifact_type: proposals
+version: "v1"
+delta_from_prior: null
+author: "SYNTHESIZE"
+instance: "ab12cd34"
+sources: []
+task_ids: []
+bar_ids: []
+---
+Proposal body text.
+EOF2
+)
+_assert_exit "FG-e: proposals with artifact_type:proposals passes" "0" \
+  "$(_run_gate "Write" "$PROPOSALS_MD" "$CONTENT_PROPOSALS")"
+
+# proposals without artifact_type must be blocked
+CONTENT_PROPOSALS_NOAT=$(cat <<'EOF2'
+---
+version: "v1"
+delta_from_prior: null
+author: "SYNTHESIZE"
+instance: "ab12cd34"
+sources: []
+task_ids: []
+bar_ids: []
+---
+Proposal body text.
+EOF2
+)
+_assert_exit "FG-e: proposals missing artifact_type blocked" "2" \
+  "$(_run_gate "Write" "$PROPOSALS_MD" "$CONTENT_PROPOSALS_NOAT")"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
