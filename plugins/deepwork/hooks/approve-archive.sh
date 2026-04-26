@@ -22,10 +22,11 @@ discover_instance "$SESSION_ID" 2>/dev/null || exit 0
 
 PHASE=$(jq -r '.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
-HALT_REASON=$(jq -r '.halt_reason // ""' "$STATE_FILE" 2>/dev/null || echo "")
 if [[ "$PHASE" != "done" ]]; then
-  # Also archive execute sessions that halted with a reason (irrecoverable halt)
-  [[ "$EXEC_PHASE" == "halt" && -n "$HALT_REASON" && "$HALT_REASON" != "null" ]] || exit 0
+  # Also archive execute sessions that halted with a valid halt_reason object
+  [[ "$EXEC_PHASE" == "halt" ]] || exit 0
+  _HALT_VALID=$(jq -r 'if (.halt_reason | type == "object") and ((.halt_reason.summary // "") | length > 0) then "yes" else "no" end' "$STATE_FILE" 2>/dev/null || echo "no")
+  [[ "$_HALT_VALID" == "yes" ]] || exit 0
 fi
 
 STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
@@ -43,7 +44,8 @@ printf '\n> ✅ approve-archive: session %s archived (phase=done)\n' "$INSTANCE_
 # Construct a synthetic FileChanged input for the archived state file.
 _archived_state="${INSTANCE_DIR}/state.archived.json"
 if [[ -f "$_archived_state" ]]; then
-  printf '%s' "{\"hook_event_name\":\"FileChanged\",\"session_id\":\"${SESSION_ID:-}\",\"file_path\":\"${_archived_state}\",\"event\":\"add\"}" \
+  jq -cn --arg sid "${SESSION_ID:-}" --arg fp "$_archived_state" \
+    '{hook_event_name:"FileChanged",session_id:$sid,file_path:$fp,event:"add"}' \
     | bash "${_PLUGIN_ROOT}/hooks/wiki-log-append.sh" 2>/dev/null || true
 fi
 

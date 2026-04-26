@@ -23,6 +23,7 @@
 # ST-bb: _emit_event failure (blocked events.jsonl) → exits 5, state.json unchanged
 # ST-cc: replay produces correct top-level .phase from phase_advanced events
 # ST-dd: last_updated advances on every mutation (live state + replay output)
+# ST-ee: test_manifest_update subcommand updates execute.test_manifest and appends event
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -623,6 +624,33 @@ if [[ -n "$STDD_LIVE_LU" && "$STDD_LIVE_LU" != "null" ]]; then
   _pass "ST-dd: live state.json has last_updated set"
 else
   _fail "ST-dd: live state.json missing last_updated"
+fi
+
+# ── ST-ee: test_manifest_update updates execute.test_manifest and appends event ─
+echo ""
+echo "── ST-ee: test_manifest_update updates execute.test_manifest and appends event ──"
+_make_state "execute"
+EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
+# Seed execute.test_manifest with one entry via merge
+"$STATE_TRANSITION" --state-file "$SF" merge \
+  '{"execute":{"test_manifest":[{"id":"suite_a","last_result":null,"last_run_at":null}]}}' \
+  2>/dev/null
+"$STATE_TRANSITION" --state-file "$SF" test_manifest_update --id "suite_a" --result "pass"
+RC=$?
+_assert_exit "ST-ee: exit 0" "0" "$RC"
+_assert_jq_eq "ST-ee: test_manifest[0].last_result == pass" "$SF" '.execute.test_manifest[0].last_result' "pass"
+_assert_jq_eq "ST-ee: test_manifest[0].id unchanged" "$SF" '.execute.test_manifest[0].id' "suite_a"
+_assert_hash_present "ST-ee: hash updated" "$SF"
+if grep -q '"event_type":"test_manifest_updated"' "$EVENTS_FILE" 2>/dev/null; then
+  _pass "ST-ee: test_manifest_updated event in events.jsonl"
+else
+  _fail "ST-ee: test_manifest_updated event missing from events.jsonl"
+fi
+STZ_RUN_AT=$(jq -r '.execute.test_manifest[0].last_run_at // ""' "$SF" 2>/dev/null || echo "")
+if [[ -n "$STZ_RUN_AT" ]]; then
+  _pass "ST-ee: last_run_at is non-empty (${STZ_RUN_AT})"
+else
+  _fail "ST-ee: last_run_at is empty after test_manifest_update"
 fi
 
 # ── Summary ──

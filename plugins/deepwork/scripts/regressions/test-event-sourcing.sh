@@ -11,6 +11,13 @@
 # ES-h: state_snapshot event at non-genesis position resets working state in replay
 # ES-i: pre-W7 instance (no events.jsonl) bootstrapped transparently; replay produces correct state
 # ES-t: 5 concurrent transitions on mkdir-based fallback path produce intact hash chain
+# ES-u: replay bar_added → .bar updated
+# ES-v: replay bar_removed → bar removed
+# ES-w: replay guardrail_added → .guardrails updated
+# ES-x: replay guardrail_replaced → guardrail at index replaced
+# ES-y: replay guardrail_removed → guardrail removed by index
+# ES-z: replay state_archived → state_archived event present; last_updated set
+# ES-aa: replay test_manifest_updated → .execute.test_manifest updated
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -989,6 +996,232 @@ if [[ $EST_REPLAY_RC -eq 0 ]]; then
   _pass "ES-t: replay exits 0 — hash chain intact after concurrent mkdir-locked writes"
 else
   _fail "ES-t: replay exits ${EST_REPLAY_RC} — hash chain broken under concurrent mkdir-locked writes"
+fi
+
+# ── ES-u: replay bar_added → .progress_bars / .bar updated ──────────────────
+echo ""
+echo "── ES-u: replay bar_added → .bar updated ──"
+
+ESU_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esu11111"
+mkdir -p "$ESU_INSTANCE_DIR"
+ESU_STATE="${ESU_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESU_STATE" init \
+  '{"session_id":"es-u-session","phase":"scope","team_name":"esu-team"}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESU_STATE" bar_add --id "bar1" --statement "must ship" 2>/dev/null
+
+ESU_LIVE_COUNT=$(jq '[.bar // [] | .[]] | length' "$ESU_STATE" 2>/dev/null || echo "0")
+if [[ "$ESU_LIVE_COUNT" -eq 1 ]]; then
+  _pass "ES-u: live state has 1 bar"
+else
+  _fail "ES-u: live state .bar expected 1 item, got ${ESU_LIVE_COUNT}"
+fi
+
+rm -f "$ESU_STATE"
+ESU_RC=0
+"$STATE_TRANSITION" --state-file "$ESU_STATE" replay >/dev/null 2>&1 || ESU_RC=$?
+_assert_exit "ES-u: replay exits 0" "0" "$ESU_RC"
+
+ESU_REPLAYED=$(jq -r '.bar[0].id // ""' "$ESU_STATE" 2>/dev/null || echo "")
+if [[ "$ESU_REPLAYED" == "bar1" ]]; then
+  _pass "ES-u: replayed .bar[0].id == bar1"
+else
+  _fail "ES-u: replayed .bar[0].id expected 'bar1', got '${ESU_REPLAYED}'"
+fi
+
+# ── ES-v: replay bar_removed → bar removed ────────────────────────────────────
+echo ""
+echo "── ES-v: replay bar_removed → bar removed ──"
+
+ESV_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esv22222"
+mkdir -p "$ESV_INSTANCE_DIR"
+ESV_STATE="${ESV_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESV_STATE" init \
+  '{"session_id":"es-v-session","phase":"scope","team_name":"esv-team"}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESV_STATE" bar_add --id "bar2" --statement "must pass" 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESV_STATE" bar_remove --id "bar2" 2>/dev/null
+
+ESV_LIVE=$(jq '[.bar // [] | .[]] | length' "$ESV_STATE" 2>/dev/null || echo "99")
+if [[ "$ESV_LIVE" -eq 0 ]]; then
+  _pass "ES-v: live state .bar is empty after bar_remove"
+else
+  _fail "ES-v: live state .bar expected 0 items, got ${ESV_LIVE}"
+fi
+
+rm -f "$ESV_STATE"
+ESV_RC=0
+"$STATE_TRANSITION" --state-file "$ESV_STATE" replay >/dev/null 2>&1 || ESV_RC=$?
+_assert_exit "ES-v: replay exits 0" "0" "$ESV_RC"
+
+ESV_REPLAYED=$(jq '[.bar // [] | .[]] | length' "$ESV_STATE" 2>/dev/null || echo "99")
+if [[ "$ESV_REPLAYED" -eq 0 ]]; then
+  _pass "ES-v: replayed .bar is empty (bar_removed reducer)"
+else
+  _fail "ES-v: replayed .bar expected 0 items, got ${ESV_REPLAYED}"
+fi
+
+# ── ES-w: replay guardrail_added → .guardrails updated ───────────────────────
+echo ""
+echo "── ES-w: replay guardrail_added → .guardrails updated ──"
+
+ESW_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esw33333"
+mkdir -p "$ESW_INSTANCE_DIR"
+ESW_STATE="${ESW_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESW_STATE" init \
+  '{"session_id":"es-w-session","phase":"scope","team_name":"esw-team"}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESW_STATE" guardrail_add --statement "no side effects" --source "user" 2>/dev/null
+
+rm -f "$ESW_STATE"
+ESW_RC=0
+"$STATE_TRANSITION" --state-file "$ESW_STATE" replay >/dev/null 2>&1 || ESW_RC=$?
+_assert_exit "ES-w: replay exits 0" "0" "$ESW_RC"
+
+ESW_RULE=$(jq -r '.guardrails[0].rule // ""' "$ESW_STATE" 2>/dev/null || echo "")
+if [[ "$ESW_RULE" == "no side effects" ]]; then
+  _pass "ES-w: replayed .guardrails[0].rule == 'no side effects'"
+else
+  _fail "ES-w: replayed .guardrails[0].rule expected 'no side effects', got '${ESW_RULE}'"
+fi
+ESW_SRC=$(jq -r '.guardrails[0].source // ""' "$ESW_STATE" 2>/dev/null || echo "")
+if [[ "$ESW_SRC" == "user" ]]; then
+  _pass "ES-w: replayed .guardrails[0].source == user"
+else
+  _fail "ES-w: replayed .guardrails[0].source expected 'user', got '${ESW_SRC}'"
+fi
+
+# ── ES-x: replay guardrail_replaced → guardrail at index replaced ─────────────
+echo ""
+echo "── ES-x: replay guardrail_replaced → guardrail at index replaced ──"
+
+ESX_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esx44444"
+mkdir -p "$ESX_INSTANCE_DIR"
+ESX_STATE="${ESX_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESX_STATE" init \
+  '{"session_id":"es-x-session","phase":"scope","team_name":"esx-team"}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESX_STATE" guardrail_add --statement "old rule" --source "user" 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESX_STATE" guardrail_replace --index 0 --statement "new rule" --source "orchestrator" 2>/dev/null
+
+rm -f "$ESX_STATE"
+ESX_RC=0
+"$STATE_TRANSITION" --state-file "$ESX_STATE" replay >/dev/null 2>&1 || ESX_RC=$?
+_assert_exit "ES-x: replay exits 0" "0" "$ESX_RC"
+
+ESX_RULE=$(jq -r '.guardrails[0].rule // ""' "$ESX_STATE" 2>/dev/null || echo "")
+if [[ "$ESX_RULE" == "new rule" ]]; then
+  _pass "ES-x: replayed .guardrails[0].rule == 'new rule' (guardrail_replaced reducer)"
+else
+  _fail "ES-x: replayed .guardrails[0].rule expected 'new rule', got '${ESX_RULE}'"
+fi
+
+# ── ES-y: replay guardrail_removed → guardrail removed by index ───────────────
+echo ""
+echo "── ES-y: replay guardrail_removed → guardrail removed by index ──"
+
+ESY_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esy55555"
+mkdir -p "$ESY_INSTANCE_DIR"
+ESY_STATE="${ESY_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESY_STATE" init \
+  '{"session_id":"es-y-session","phase":"scope","team_name":"esy-team"}' 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESY_STATE" guardrail_add --statement "rule zero" 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESY_STATE" guardrail_add --statement "rule one" 2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESY_STATE" guardrail_remove --index 0 2>/dev/null
+
+rm -f "$ESY_STATE"
+ESY_RC=0
+"$STATE_TRANSITION" --state-file "$ESY_STATE" replay >/dev/null 2>&1 || ESY_RC=$?
+_assert_exit "ES-y: replay exits 0" "0" "$ESY_RC"
+
+ESY_COUNT=$(jq '.guardrails | length' "$ESY_STATE" 2>/dev/null || echo "99")
+if [[ "$ESY_COUNT" -eq 1 ]]; then
+  _pass "ES-y: replayed .guardrails length == 1 after guardrail_removed"
+else
+  _fail "ES-y: replayed .guardrails length expected 1, got ${ESY_COUNT}"
+fi
+ESY_REMAINING=$(jq -r '.guardrails[0].rule // ""' "$ESY_STATE" 2>/dev/null || echo "")
+if [[ "$ESY_REMAINING" == "rule one" ]]; then
+  _pass "ES-y: replayed remaining guardrail is 'rule one'"
+else
+  _fail "ES-y: replayed remaining guardrail expected 'rule one', got '${ESY_REMAINING}'"
+fi
+
+# ── ES-z: replay state_archived → last_updated updated ───────────────────────
+# archive_state emits state_archived event and renames files; restore events.jsonl
+# from the archive so replay can process the state_archived reducer.
+echo ""
+echo "── ES-z: replay state_archived → last_updated updated ──"
+
+ESZ_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esz66666"
+mkdir -p "$ESZ_INSTANCE_DIR"
+ESZ_STATE="${ESZ_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESZ_STATE" init \
+  '{"session_id":"es-z-session","phase":"scope","team_name":"esz-team"}' 2>/dev/null
+
+# Capture last_updated before archive
+ESZ_LU_BEFORE=$(jq -r '.last_updated // ""' "$ESZ_STATE" 2>/dev/null || echo "")
+
+# archive_state emits state_archived event then renames state.json + events.jsonl
+"$STATE_TRANSITION" --state-file "$ESZ_STATE" archive_state 2>/dev/null
+
+# Verify state_archived event was appended to the (now renamed) events file
+ESZ_EVENTS="${ESZ_INSTANCE_DIR}/events.archived.jsonl"
+if grep -q '"event_type":"state_archived"' "$ESZ_EVENTS" 2>/dev/null; then
+  _pass "ES-z: state_archived event present in archived events log"
+else
+  _fail "ES-z: state_archived event missing from archived events log"
+fi
+
+# Restore events and replayed state for replay; rename back for replay
+cp "$ESZ_EVENTS" "${ESZ_INSTANCE_DIR}/events.jsonl"
+cp "${ESZ_INSTANCE_DIR}/state.archived.json" "$ESZ_STATE" 2>/dev/null || true
+rm -f "$ESZ_STATE"
+
+ESZ_RC=0
+"$STATE_TRANSITION" --state-file "$ESZ_STATE" replay >/dev/null 2>&1 || ESZ_RC=$?
+_assert_exit "ES-z: replay exits 0 from events with state_archived" "0" "$ESZ_RC"
+
+ESZ_LU_AFTER=$(jq -r '.last_updated // ""' "$ESZ_STATE" 2>/dev/null || echo "")
+if [[ -n "$ESZ_LU_AFTER" ]]; then
+  _pass "ES-z: replayed last_updated is set (state_archived reducer updated timestamp)"
+else
+  _fail "ES-z: replayed last_updated absent after state_archived replay"
+fi
+
+# ── ES-aa: replay test_manifest_updated → .execute.test_manifest updated ─────
+echo ""
+echo "── ES-aa: replay test_manifest_updated → .execute.test_manifest updated ──"
+
+ESAA_INSTANCE_DIR="${SANDBOX}/.claude/deepwork/esaa77777"
+mkdir -p "$ESAA_INSTANCE_DIR"
+ESAA_STATE="${ESAA_INSTANCE_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESAA_STATE" init \
+  '{"session_id":"es-aa-session","phase":"execute","team_name":"esaa-team","execute":{"test_manifest":[{"id":"test_foo","last_result":null,"last_run_at":null}]}}' \
+  2>/dev/null
+"$STATE_TRANSITION" --state-file "$ESAA_STATE" test_manifest_update \
+  --id "test_foo" --result "pass" 2>/dev/null
+
+ESAA_LIVE=$(jq -r '.execute.test_manifest[0].last_result // ""' "$ESAA_STATE" 2>/dev/null || echo "")
+if [[ "$ESAA_LIVE" == "pass" ]]; then
+  _pass "ES-aa: live state test_manifest[0].last_result == pass"
+else
+  _fail "ES-aa: live state test_manifest[0].last_result expected 'pass', got '${ESAA_LIVE}'"
+fi
+
+rm -f "$ESAA_STATE"
+ESAA_RC=0
+"$STATE_TRANSITION" --state-file "$ESAA_STATE" replay >/dev/null 2>&1 || ESAA_RC=$?
+_assert_exit "ES-aa: replay exits 0" "0" "$ESAA_RC"
+
+ESAA_REPLAYED=$(jq -r '.execute.test_manifest[0].last_result // ""' "$ESAA_STATE" 2>/dev/null || echo "")
+if [[ "$ESAA_REPLAYED" == "pass" ]]; then
+  _pass "ES-aa: replayed test_manifest[0].last_result == pass (test_manifest_updated reducer)"
+else
+  _fail "ES-aa: replayed test_manifest[0].last_result expected 'pass', got '${ESAA_REPLAYED}'"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
