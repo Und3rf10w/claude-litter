@@ -25,19 +25,27 @@ discover_instance "$SESSION_ID" || exit 0   # no active instance = skip
 FILE_PATH=$(_canonical_path "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // ""')")
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
 
+# Per-tool snapshot keyed by TOOL_USE_ID prevents concurrent-tool cross-contamination.
+# Falls back to shared name when TOOL_USE_ID is absent (pre-2.1 runtimes, tests).
+if [[ -n "$TOOL_USE_ID" ]]; then
+  _SNAPSHOT="${INSTANCE_DIR}/.state-snapshot.${TOOL_USE_ID}.json"
+else
+  _SNAPSHOT="${INSTANCE_DIR}/.state-snapshot"
+fi
+
 case "$HOOK_EVENT_NAME" in
   PreToolUse)
     # Write|Edit: snapshot when file_path is state.json
     if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
       case "$FILE_PATH" in "${INSTANCE_DIR}/state.json") ;; *) exit 0 ;; esac
-      cp "${INSTANCE_DIR}/state.json" "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || true
+      cp "${INSTANCE_DIR}/state.json" "$_SNAPSHOT" 2>/dev/null || true
       exit 0
     fi
     # Bash: snapshot when command mentions state.json
     if [[ "$TOOL_NAME" == "Bash" ]]; then
       BASH_CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
       if printf '%s' "$BASH_CMD" | grep -q 'state\.json'; then
-        cp "${INSTANCE_DIR}/state.json" "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || true
+        cp "${INSTANCE_DIR}/state.json" "$_SNAPSHOT" 2>/dev/null || true
       fi
       exit 0
     fi
@@ -50,14 +58,14 @@ case "$HOOK_EVENT_NAME" in
     fi
     # For Bash: only proceed if a snapshot exists (pre-leg fired for this command)
     if [[ "$TOOL_NAME" == "Bash" ]]; then
-      [[ -f "${INSTANCE_DIR}/.state-snapshot" ]] || exit 0
+      [[ -f "$_SNAPSHOT" ]] || exit 0
       [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
       # Only run if command mentioned state.json
       BASH_CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
       printf '%s' "$BASH_CMD" | grep -q 'state\.json' || exit 0
     fi
 
-    [[ -f "${INSTANCE_DIR}/.state-snapshot" ]] || exit 0
+    [[ -f "$_SNAPSHOT" ]] || exit 0
     [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
     [[ -f "$LOG_FILE" ]] || exit 0
 
@@ -112,7 +120,7 @@ case "$HOOK_EVENT_NAME" in
         _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
           | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
         # Revert state.json from snapshot
-        cp "${INSTANCE_DIR}/.state-snapshot" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
+        cp "$_SNAPSHOT" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
         # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
         STATE_FILE="${INSTANCE_DIR}/state.json" \
           "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
@@ -129,7 +137,7 @@ case "$HOOK_EVENT_NAME" in
     fi
 
     # Diff phase field
-    OLD_PHASE=$(jq -r '.phase // ""' "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || echo "")
+    OLD_PHASE=$(jq -r '.phase // ""' "$_SNAPSHOT" 2>/dev/null || echo "")
     NEW_PHASE=$(jq -r '.phase // ""' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
     if [[ -n "$OLD_PHASE" ]] && [[ "$OLD_PHASE" != "$NEW_PHASE" ]]; then
       MARKER="> [phase-transition ${NOW}] ${OLD_PHASE} → ${NEW_PHASE}"
@@ -140,7 +148,7 @@ case "$HOOK_EVENT_NAME" in
     fi
 
     # Diff bar verdicts
-    OLD_BAR=$(jq -r '.bar[] | "\(.id)\t\(.verdict // "null")"' "${INSTANCE_DIR}/.state-snapshot" 2>/dev/null || echo "")
+    OLD_BAR=$(jq -r '.bar[] | "\(.id)\t\(.verdict // "null")"' "$_SNAPSHOT" 2>/dev/null || echo "")
     NEW_BAR=$(jq -r '.bar[] | "\(.id)\t\(.verdict // "null")"' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
     if [[ "$OLD_BAR" != "$NEW_BAR" ]]; then
       # Find changed entries: lines in new not in old
@@ -156,6 +164,7 @@ case "$HOOK_EVENT_NAME" in
       done < <(printf '%s\n' "$NEW_BAR")
     fi
 
+    rm -f "$_SNAPSHOT" 2>/dev/null || true
     exit 0
     ;;
   *) exit 0 ;;

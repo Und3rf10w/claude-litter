@@ -167,25 +167,15 @@ if [[ -f "$TEST_RESULTS" ]] && [[ -s "$TEST_RESULTS" ]]; then
     STATE_FILE="$STATE_FILE" bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
       flaky_test_append --cmd "$FLAKY_CMD" 2>/dev/null || true
 
-    # Update flaky_suspected flag on the entry just written
+    # Append a flaky_suspected marker event rather than rewriting the last line
+    # (rewriting a shared append-only log with head/tail/mv creates a race window).
     if [[ -n "$ENTRY" ]] && [[ -f "$TEST_RESULTS" ]]; then
-      _TMP_RESULTS="${TEST_RESULTS}.tmp.$$"
-      # Replace the last line with flaky_suspected:true
-      jq -rs --arg cmd "$COMMAND" --arg ts "$TS" '
-        . as $entries |
-        $entries | (length - 1) as $last_idx |
-        $entries[$last_idx:] | .[0] |
-        if .command == $cmd and .timestamp == $ts then
-          .flaky_suspected = true
-        else . end
-      ' "$TEST_RESULTS" > /dev/null 2>/dev/null || true
-      # Simpler approach: rewrite last line
-      _LAST_LINE=$(tail -1 "$TEST_RESULTS")
-      _UPDATED=$(printf '%s' "$_LAST_LINE" | jq '.flaky_suspected = true' 2>/dev/null || echo "$_LAST_LINE")
-      if [[ -n "$_UPDATED" ]] && [[ "$_UPDATED" != "$_LAST_LINE" ]]; then
-        head -n -1 "$TEST_RESULTS" > "${TEST_RESULTS}.tmp.$$" 2>/dev/null
-        printf '%s\n' "$_UPDATED" >> "${TEST_RESULTS}.tmp.$$"
-        mv "${TEST_RESULTS}.tmp.$$" "$TEST_RESULTS" 2>/dev/null || rm -f "${TEST_RESULTS}.tmp.$$"
+      FLAKY_ENTRY=$(jq -n \
+        --arg ts "$TS" \
+        --arg cmd "$COMMAND" \
+        '{timestamp: $ts, command: $cmd, flaky_suspected: true, _marker: true}' 2>/dev/null)
+      if [[ -n "$FLAKY_ENTRY" ]]; then
+        printf '%s\n' "$FLAKY_ENTRY" >> "$TEST_RESULTS"
       fi
     fi
   fi

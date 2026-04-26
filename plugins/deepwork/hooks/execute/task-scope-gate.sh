@@ -111,11 +111,20 @@ if [[ $MATCH_COUNT -eq 0 ]] || [[ "$SCOPE_MATCH" == "false" ]]; then
     printf '%s\n' "$DISCOVERY_ENTRY" >> "${INSTANCE_DIR}/discoveries.jsonl"
   fi
 
-  printf 'BLOCKED (scope-gate): task "%s" does not appear to be within the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
-  printf 'No significant words from the task subject were found in the plan.\n' >&2
-  printf 'Use /deepwork-execute-amend to extend the approved scope before creating this task.\n' >&2
-  printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta, proposed_outcome=escalate).\n' "$INSTANCE_DIR" >&2
-  exit 2
+  # Default: advisory mode (warn-only). Strict blocking requires scope_gate_strict=true
+  # in state.execute to reduce false-positive interruptions on legitimate work.
+  STRICT=$(jq -r '.execute.scope_gate_strict // false' "$STATE_FILE" 2>/dev/null || echo "false")
+  if [[ "$STRICT" == "true" ]]; then
+    printf 'BLOCKED (scope-gate): task "%s" does not appear to be within the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
+    printf 'No significant words from the task subject were found in the plan.\n' >&2
+    printf 'Use /deepwork-execute-amend to extend the approved scope before creating this task.\n' >&2
+    printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta, proposed_outcome=escalate).\n' "$INSTANCE_DIR" >&2
+    exit 2
+  fi
+
+  printf 'WARNING (scope-gate): task "%s" may be outside the approved plan scope at %s.\n' "$TASK_SUBJECT" "$PLAN_REF" >&2
+  printf 'Discovery logged to %s/discoveries.jsonl (type=scope-delta).\n' "$INSTANCE_DIR" >&2
+  printf 'Set state.execute.scope_gate_strict=true to enforce blocking, or use /deepwork-execute-amend to extend scope.\n' >&2
 fi
 
 exit 0
