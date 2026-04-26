@@ -156,6 +156,12 @@
       "_note": "Matcher is the absolute plan file path, substituted at registration time from $PLAN_REF."
     },
     {
+      "script": "hooks/wave-gate.sh",
+      "event": "TaskCreated",
+      "matcher": ".*",
+      "modes": ["both"]
+    },
+    {
       "script": "hooks/execute/task-scope-gate.sh",
       "event": "TaskCreated",
       "matcher": ".*",

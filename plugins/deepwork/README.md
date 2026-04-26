@@ -219,6 +219,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `incident-detector.sh` | SubagentStop | Appends to `incidents.jsonl` on teammate failures | `hooks/incident-detector.sh` |
 | `session-context.sh` | SessionStart(clear\|compact) | Re-injects orchestrator identity after /clear or /compact | `hooks/session-context.sh` |
 | `task-completed-gate.sh` | TaskCompleted | Artifact-existence + cross-check count enforcement | `hooks/task-completed-gate.sh` |
+| `wave-gate.sh` | TaskCreated | Phase-authority gate: blocks teammates from creating tasks for phases they don't own; allows orchestrator/team-lead unconditionally; audit entry in log.md on override | `hooks/wave-gate.sh` |
 | `incident-detector.sh` | PermissionDenied | Appends to `incidents.jsonl` on denied operations | `hooks/incident-detector.sh` |
 | `deliver-gate.sh` | PreToolUse:ExitPlanMode | Lints ExitPlanMode content; enforces "Residual unknowns" + delta_from_prior | `hooks/deliver-gate.sh` |
 | `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |

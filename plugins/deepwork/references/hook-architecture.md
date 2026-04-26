@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 95 nodes, 154 edges
+Graph: 98 nodes, 160 edges
 
 ## Mermaid Flowchart
 
@@ -41,6 +41,7 @@ flowchart LR
     teammate_idle_gate["teammate-idle-gate"]
     verdict_version_gate["verdict-version-gate"]
     version_bump_notify["version-bump-notify"]
+    wave_gate["wave-gate"]
     wiki_log_append["wiki-log-append"]
   end
   subgraph Hooks_Execute
@@ -65,6 +66,7 @@ flowchart LR
     test_capture["test-capture"]
     verdict_version_gate["verdict-version-gate"]
     version_bump_notify["version-bump-notify"]
+    wave_gate["wave-gate"]
     wiki_log_append["wiki-log-append"]
   end
   subgraph State
@@ -97,9 +99,11 @@ flowchart LR
     metadata_bar_id(([".metadata.bar_id"]))
     metadata_commit_sha(([".metadata.commit_sha"]))
     metadata_cross_check_required(([".metadata.cross_check_required"]))
+    metadata_override_reason(([".metadata.override_reason"]))
     metadata_scope(([".metadata.scope"]))
     metadata_scope_items(([".metadata.scope_items"]))
     metadata_scope_strict(([".metadata.scope_strict"]))
+    metadata_wave(([".metadata.wave"]))
     mode(([".mode"]))
     no_test_reason(([".no_test_reason"]))
     phase(([".phase"]))
@@ -156,6 +160,7 @@ flowchart LR
   TaskCompleted --> critique_version_gate
   TaskCompleted --> task_completed_gate
   TaskCreated --> task_scope_gate
+  TaskCreated --> wave_gate
   TeammateIdle --> teammate_idle_gate
   approve_archive -.->|"reads"| phase
   bash_gate -.->|"reads"| authorized_force_push
@@ -228,6 +233,11 @@ flowchart LR
   test_capture -.->|"reads"| execute_phase
   verdict_version_gate -.->|"reads"| current_version
   version_bump_notify -.->|"reads"| current_version
+  wave_gate -.->|"reads"| execute_phase
+  wave_gate -.->|"reads"| metadata_override_reason
+  wave_gate -.->|"reads"| metadata_wave
+  wave_gate -.->|"reads"| phase
+  wave_gate -.->|"reads"| team_name
   wiki_log_append -.->|"reads"| bar
   wiki_log_append -.->|"reads"| goal
   wiki_log_append -.->|"reads"| phase
@@ -891,6 +901,33 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/version-bump-notify.sh"]
+    },
+    "wave-gate.sh": {
+      "triggered_by": [
+      "TaskCreated"
+      ],
+      "mode": "shared",
+      "reads": {
+        "state": [
+          ".execute.phase",
+          ".metadata.override_reason",
+          ".metadata.wave",
+          ".phase",
+          ".team_name"
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/wave-gate.sh"]
     },
     "wiki-log-append.sh": {
       "triggered_by": [
