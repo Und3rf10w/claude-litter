@@ -44,8 +44,15 @@ EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
 FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
 [[ -n "$FILE_PATH" ]] || exit 0
 
-# GAP-10 mitigation: unconditionally block writes to execute log files
-for _protected in "test-results.jsonl" "change_log.jsonl" "rollback_log.jsonl" "discoveries.jsonl" "pending-change.json"; do
+# Drift block: if plan_drift_detected is true, all writes are blocked until amended
+DRIFT=$(jq -r '.execute.plan_drift_detected // false' "$STATE_FILE" 2>/dev/null || echo "false")
+if [[ "$DRIFT" == "true" ]]; then
+  printf 'DRIFT BLOCKED — run /deepwork-execute-amend before proceeding.\n' >&2
+  exit 2
+fi
+
+# GAP-10 mitigation: unconditionally block writes to execute log files (extended list)
+for _protected in "test-results.jsonl" "change_log.jsonl" "rollback_log.jsonl" "discoveries.jsonl" "pending-change.json" "log.md" "hook-timing.jsonl" "incidents.jsonl" "metrics-violations.jsonl"; do
   if [[ "$FILE_PATH" == "${INSTANCE_DIR}/${_protected}" ]]; then
     printf 'BLOCKED: writes to execute log file %s are not permitted (GAP-10 audit trail protection).\n' "$_protected" >&2
     exit 2

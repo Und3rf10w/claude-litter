@@ -63,6 +63,12 @@ _deny() {
   exit 0
 }
 
+# Drift block: if plan_drift_detected is true, ALL bash commands are blocked
+DRIFT=$(jq -r '.execute.plan_drift_detected // false' "$STATE_FILE" 2>/dev/null || echo "false")
+if [[ "$DRIFT" == "true" ]]; then
+  _deny "DRIFT BLOCKED — run /deepwork-execute-amend before proceeding."
+fi
+
 # --- Read execute state flags ---
 STATE_JSON=$(jq '.' "$STATE_FILE" 2>/dev/null || echo "{}")
 EXEC_JSON=$(printf '%s' "$STATE_JSON" | jq '.execute // {}' 2>/dev/null || echo "{}")
