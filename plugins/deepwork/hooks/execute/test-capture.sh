@@ -147,6 +147,25 @@ if [[ -n "$ENTRY" ]]; then
   printf '%s\n' "$ENTRY" >> "$TEST_RESULTS"
 fi
 
+# --- test_manifest_updated event: update last_result/last_run_at for matching manifest entry ---
+if [[ -n "$ENTRY" ]]; then
+  _MANIFEST_MATCH=$(jq -r --arg cmd "$COMMAND" \
+    '.execute.test_manifest // [] | map(select(.test_command == $cmd)) | if length > 0 then .[0].id else "" end' \
+    "$STATE_FILE" 2>/dev/null || echo "")
+  if [[ -n "$_MANIFEST_MATCH" ]]; then
+    if [[ "$EXIT_CODE" -eq 0 ]] && [[ "$FAILED_COUNT" -eq 0 ]]; then
+      _TM_RESULT="pass"
+    elif [[ "$EXIT_CODE" -eq 130 ]]; then
+      _TM_RESULT="error"
+    else
+      _TM_RESULT="fail"
+    fi
+    STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
+      bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" \
+      test_manifest_update --id "$_MANIFEST_MATCH" --result "$_TM_RESULT" --ts "$TS" 2>/dev/null || true
+  fi
+fi
+
 # --- Flaky detection: scan last 6 entries for same command with mixed pass/fail ---
 if [[ -f "$TEST_RESULTS" ]] && [[ -s "$TEST_RESULTS" ]]; then
   FLAKY_CMD=$(jq -rs --arg cmd "$COMMAND" '
