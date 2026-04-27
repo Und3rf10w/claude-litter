@@ -135,6 +135,13 @@ _append_event_raw() {
 # forking the hash chain (W20 C1 / integration review CRITICAL).
 # jq runs under the lock by design: payload size is bounded and correctness
 # outweighs the marginal latency.
+#
+# W20-c: if _EMIT_STAMP_HEAD=1 is set by the caller, state.json's event_head,
+# state_integrity_hash, and last_updated are stamped atomically inside the same
+# lock span, before _release_lock. This eliminates the window between the event
+# append and the subsequent _write_with_hash call where integrity-always-gate
+# can see a mismatch (events.jsonl tail != state.event_head). Lock ordering:
+# events.jsonl.lock → state.json.lock — consistent with all other callers.
 _emit_event() {
   local event_type="$1"
   local payload_json="$2"
@@ -195,6 +202,40 @@ _emit_event() {
 
   _append_event_raw "$events_file" "$event_json"
   local _append_rc=$?
+
+  # W20-c: if caller requested a state.json head stamp (e.g. emit_revert_event),
+  # do it here while still holding the events.jsonl lock to eliminate the window
+  # between append and the subsequent state.json write.
+  if [[ "${_EMIT_STAMP_HEAD:-0}" == "1" && "$_append_rc" -eq 0 && -f "${STATE_FILE:-}" ]]; then
+    local _new_event_head _stamp_hash _stamp_now _stamp_tmp _stamp_sf_lock
+    _new_event_head=$(_compute_event_hash "$event_json")
+    _stamp_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _stamp_sf_lock="${STATE_FILE}.lock"
+    _stamp_tmp="${STATE_FILE}.emit-stamp.tmp.$$"
+
+    _acquire_lock "$_stamp_sf_lock" 2>/dev/null || true
+
+    # Build a temp copy of state.json with the new event_head so _compute_integrity_hash
+    # sees the right event_head when computing the hash.
+    jq --arg eh "$_new_event_head" --arg ts "$_stamp_now" \
+      '.event_head = $eh | .last_updated = $ts' \
+      "$STATE_FILE" > "$_stamp_tmp" 2>/dev/null
+    if [[ -s "$_stamp_tmp" ]]; then
+      _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
+      if [[ -n "$_stamp_hash" ]]; then
+        local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
+        jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
+          "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
+          && mv "$_stamp_final" "$_stamp_tmp"
+      fi
+      mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+    else
+      rm -f "$_stamp_tmp"
+    fi
+
+    _release_lock "$_stamp_sf_lock" 2>/dev/null || true
+  fi
+
   _release_lock "$lock_file"
   return $_append_rc
 }
@@ -1166,7 +1207,10 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _REVERT_SNAP=$(cat "$STATE_FILE" 2>/dev/null) || { printf 'emit_revert_event: cannot read STATE_FILE\n' >&2; exit 1; }
     printf '%s' "$_REVERT_SNAP" | jq empty 2>/dev/null || { printf 'emit_revert_event: STATE_FILE is not valid JSON\n' >&2; exit 1; }
-    _emit_event "state_reverted" \
+    # W20-c: stamp state.json's event_head + state_integrity_hash atomically
+    # inside the events.jsonl lock so integrity-always-gate never sees a mismatch
+    # between events.jsonl tail and state.event_head after revert.
+    _EMIT_STAMP_HEAD=1 _emit_event "state_reverted" \
       "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
           --argjson snap "$_REVERT_SNAP" \
           '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" || exit 5

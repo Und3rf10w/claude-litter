@@ -494,6 +494,97 @@ fi
 
 rm -rf "$T11M_SB"
 
+# ── (n) emit_revert_event stamps event_head atomically (W20-c regression) ──
+# Regression for W20-c: emit_revert_event must stamp state.json.event_head to
+# the new state_reverted event's hash inside the events.jsonl lock, so that
+# integrity-always-gate never sees a mismatch after a banner-violation revert.
+echo ""
+echo "── T11-n: emit_revert_event stamps event_head + hash atomically (W20-c) ──"
+
+T11N_SB=$(mktemp -d)
+T11N_ID="fe567890"
+T11N_DIR="$T11N_SB/.claude/deepwork/$T11N_ID"
+mkdir -p "$T11N_DIR"
+T11N_SID="t11n-session-$(date +%s)"
+T11N_STATE="${T11N_DIR}/state.json"
+T11N_EVENTS="${T11N_DIR}/events.jsonl"
+
+STATE_FILE="$T11N_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11N_SID","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Seed events.jsonl and build up a proper event_head
+INSTANCE_DIR="$T11N_DIR" STATE_FILE="$T11N_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Record pre-revert event_head and events tail (snapshot's last event)
+T11N_PRE_HEAD=$(jq -r '.event_head // ""' "$T11N_STATE" 2>/dev/null)
+T11N_REVERT_TO=$(tail -1 "$T11N_EVENTS" | jq -r '.event_id // "unknown"' 2>/dev/null)
+
+# Call emit_revert_event (simulates state-drift-marker after snapshot restore)
+INSTANCE_DIR="$T11N_DIR" STATE_FILE="$T11N_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+  --reason "banner_schema_violation" \
+  --reverted_to_event "$T11N_REVERT_TO" >/dev/null 2>&1
+_T11N_REVERT_RC=$?
+
+if [[ $_T11N_REVERT_RC -eq 0 ]]; then
+  printf 'pass: T11-n: emit_revert_event exits 0\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: emit_revert_event exited %d (expected 0)\n' "$_T11N_REVERT_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assert state.json.event_head == SHA256 of the last events.jsonl line
+T11N_LAST_LINE=$(tail -1 "$T11N_EVENTS" 2>/dev/null)
+if command -v sha256sum >/dev/null 2>&1; then
+  T11N_ACTUAL_HEAD=$(printf '%s\n' "$T11N_LAST_LINE" | sha256sum | cut -d' ' -f1)
+else
+  T11N_ACTUAL_HEAD=$(printf '%s\n' "$T11N_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+fi
+T11N_STORED_HEAD=$(jq -r '.event_head // ""' "$T11N_STATE" 2>/dev/null)
+
+if [[ "$T11N_STORED_HEAD" == "$T11N_ACTUAL_HEAD" ]]; then
+  printf 'pass: T11-n: state.json.event_head matches events.jsonl tail hash after revert\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: event_head mismatch after emit_revert_event\n' >&2
+  printf '  state.event_head:       %s\n' "$T11N_STORED_HEAD" >&2
+  printf '  events.jsonl tail hash: %s\n' "$T11N_ACTUAL_HEAD" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assert integrity-always-gate logic passes post-revert (no mismatch block)
+_T11N_GATE_RC=0
+(
+  source "${PLUGIN_ROOT}/scripts/instance-lib.sh"
+  STATE_FILE="$T11N_STATE"
+  INSTANCE_DIR="$T11N_DIR"
+  _verify_event_head_or_block
+) 2>/dev/null
+_T11N_GATE_RC=$?
+
+if [[ $_T11N_GATE_RC -eq 0 ]]; then
+  printf 'pass: T11-n: _verify_event_head_or_block exits 0 after revert (no integrity block)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: _verify_event_head_or_block exits %d after revert — integrity block would fire\n' \
+    "$_T11N_GATE_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Also assert event_head changed from pre-revert (the stamp actually updated it)
+if [[ "$T11N_STORED_HEAD" != "$T11N_PRE_HEAD" ]]; then
+  printf 'pass: T11-n: event_head advanced past pre-revert value (stamp updated)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: event_head unchanged — stamp did not fire or event_head == pre-revert hash\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11N_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
