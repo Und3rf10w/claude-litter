@@ -216,8 +216,8 @@ if [[ "$SAFE_MODE" != "true" ]] && [[ "$SAFE_MODE" != "false" ]]; then
   exit 1
 fi
 
-# Ensure .claude/ exists in CWD (project root)
-mkdir -p .claude
+# Ensure .claude/ exists at project root (CLAUDE_PROJECT_DIR or resolved cwd)
+mkdir -p "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude"
 
 # Resolve SESSION_ID
 SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
@@ -294,9 +294,9 @@ if [[ -z "$INSTANCE_ID" ]]; then
 fi
 
 INSTANCE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/${INSTANCE_ID}"
-mkdir -p "$INSTANCE_DIR"
-mkdir -p "${INSTANCE_DIR}/proposals"
 
+# Register cleanup trap and set _SETUP_COMPLETE BEFORE creating INSTANCE_DIR to
+# close the TOCTOU window where a SIGINT/SIGTERM would leave an orphan directory.
 _SETUP_COMPLETE=false
 
 trap '
@@ -305,7 +305,7 @@ trap '
   if [ "$_SETUP_COMPLETE" != "true" ] && [ $_rc -ne 0 ]; then
     # Transactional rollback: remove the partial instance dir so discover_instance
     # never picks up a half-initialised state.json.
-    rm -rf "${INSTANCE_DIR}" 2>/dev/null || true
+    [[ -d "${INSTANCE_DIR:-}" ]] && rm -rf "${INSTANCE_DIR}" 2>/dev/null || true
   fi
   # On non-zero exit, remove only the hook blocks inserted by this instance.
   # Backup is last-resort manual recovery only (not automatic primary path).
@@ -327,6 +327,9 @@ trap '
     fi
   fi
 ' EXIT
+
+mkdir -p "$INSTANCE_DIR"
+mkdir -p "${INSTANCE_DIR}/proposals"
 
 # Derive team_name
 if [[ -z "$TEAM_NAME" ]]; then
@@ -637,7 +640,6 @@ if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
   if [[ "$ALLOW_NO_HOOKS" != "true" ]]; then
-    rm -rf "${INSTANCE_DIR}"
     echo "Hook injection failed; programmatic enforcement is absent. Re-run with --allow-no-hooks to override (debugging only)." >&2
     exit 1
   fi
