@@ -1131,5 +1131,3 @@ unchanged input produces byte-identical output.
 - Fields written by the orchestrator outside hooks (direct jq+tmp+mv) are not reflected
   here; see orchestrator_writes section for known examples.
 - plan-drift-detector.sh matcher is dynamic (absolute plan_ref path); shown as <plan_ref>.
-
-<!-- regression-test-drift-probe -->
