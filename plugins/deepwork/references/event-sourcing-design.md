@@ -63,6 +63,15 @@ All events share these top-level fields:
 | `flaky_test_added` | `flaky_test_append` | `command` |
 | `last_updated_stamped` | `stamp_last_updated` | _(empty payload — timestamp is in envelope)_ |
 | `bootstrap` | synthetic — see §6 | `state_snapshot` (full state JSON object) |
+| `state_reverted` | `emit_revert_event` | `reason`, `reverted_field` — emitted by `hooks/state-drift-marker.sh` when a `banners[]` schema violation forces a revert of the offending field |
+| `bar_added` | `bar_add` | `criterion` (the full criterion string) — emitted when `/deepwork-bar add` appends a new criterion to `bar[]` |
+| `bar_removed` | `bar_remove` | `criterion` — emitted when `/deepwork-bar remove` pops an entry from `bar[]` |
+| `guardrail_added` | `guardrail_add` | `rule` — emitted when `/deepwork-guardrail add` appends a new hard constraint to `guardrails[]` |
+| `guardrail_replaced` | `guardrail_replace` | `old_rule`, `new_rule` — emitted when `/deepwork-guardrail replace` swaps an existing constraint |
+| `guardrail_removed` | `guardrail_remove` | `rule` — emitted when `/deepwork-guardrail remove` deletes a constraint from `guardrails[]` |
+| `state_archived` | `archive_state` | _(empty payload — event_head + timestamp in envelope)_ — emitted when `/deepwork-teardown` finalises and renames `state.json` → `state.archived.json` |
+| `test_manifest_updated` | `test_manifest_update` | `manifest` (full replacement array) — emitted when the orchestrator replaces `execute.test_manifest[]` |
+| `pending_change_set` | `pending_change_set` | `plan_section`, `files` (array), `rationale`, `no_test_reason` (optional) — emitted each time the executor writes `pending-change.json` before a Write/Edit gate |
 
 **`init` subcommand does NOT emit an event.** `init` is test-fixture-only and writes bare JSON without a hash or event head. W7 does not change this; `bootstrap` is the migration path for pre-W7 instances (see §6).
 

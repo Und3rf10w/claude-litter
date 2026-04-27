@@ -10,13 +10,13 @@ Conventions for TaskCreate metadata in deepwork sessions. [hooks/task-completed-
 
 | Valid | Invalid (rejected by Gate 1) |
 |---|---|
-| `empirical_results.E1.md` | `/Users/foo/.claude/deepwork/055fdc4f/empirical_results.E1.md` (absolute) |
+| `empirical_results.E1.md` | `/Users/foo/.claude/deepwork/<id>/empirical_results.E1.md` (absolute) |
 | `findings.hunter-a.md` | `../../some/other/file.md` (path traversal) |
 | `proposals/v2-final.md` | `empirical_results.E1.md,findings.hunter-a.md` (comma-joined treated as filename) |
 
 If a teammate produces multiple artifacts, create **one TaskCreate per artifact** with the same `bar_id`. Comma-joined paths are treated as a literal filename; the existence check will fail.
 
-**Why relative**: the gate discovers the session instance directory from `team_name` (or session_id) and joins `metadata.artifact` to produce the absolute path. Absolute paths in metadata bypass this discovery and leak orchestrator-host filesystem layout into task state. Addresses drift class (i) from [proposals/v3-final.md](../../../.claude/deepwork/055fdc4f/proposals/v3-final.md).
+**Why relative**: the gate discovers the session instance directory from `team_name` (or session_id) and joins `metadata.artifact` to produce the absolute path. Absolute paths in metadata bypass this discovery and leak orchestrator-host filesystem layout into task state. Addresses drift class (i) from [proposals/v3-final.md](../../../.claude/deepwork/<id>/proposals/v3-final.md).
 
 ---
 

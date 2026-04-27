@@ -5,7 +5,7 @@ allowed-tools: ["Read", "Glob", "Grep", "Bash", "Write"]
 
 # Deepwork Drift Sweep
 
-Addresses drift class (g) from proposals/v3-final.md (session `055fdc4f`): partial / cluster-scoped drift sweeps miss items outside the scope the drift agent identified. This skill enumerates ALL workstreams so a secondary pass catches what the primary drift agent omitted.
+Addresses drift class (g) from proposals/v3-final.md (session `<id>`): partial / cluster-scoped drift sweeps miss items outside the scope the drift agent identified. This skill enumerates ALL workstreams so a secondary pass catches what the primary drift agent omitted.
 
 ## When to use
 

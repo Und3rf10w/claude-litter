@@ -6,6 +6,18 @@ Use `/deepwork-status` (design mode) or `/deepwork-execute-status` (execute mode
 
 ---
 
+## Top-level audit fields
+
+### `event_head`
+
+SHA-256 hash of the most recent event in `events.jsonl`. Written by `state-transition.sh` atomically alongside every mutation. Used by `hooks/integrity-always-gate.sh` to detect out-of-band edits: if `event_head` does not match `sha256sum` of the last line in `events.jsonl`, the integrity gate blocks all tool calls until `/deepwork-reconcile` is run. Absent on pre-W7 instances (those pass the gate without enforcement).
+
+### `mode`
+
+Top-level string field indicating the profile under which the session was started. Values: `"default"` (design mode) or `"execute"`. Written once at SETUP by `setup-deepwork.sh` from the `--mode` flag. Hooks use this to gate execute-only enforcement paths (e.g., `hooks/execute/plan-citation-gate.sh` returns early if `mode != "execute"`).
+
+---
+
 ## Design-mode fields (profiles/default/state-schema.json)
 
 ### `phase`
@@ -102,6 +114,20 @@ Populated by `hooks/execute/test-capture.sh` when ≥2 alternating pass/fail res
 ### `execute.discoveries[]`
 
 Summary of open discoveries. Full detail lives in `discoveries.jsonl` (append-only JSONL at the instance directory). If this array has entries with `resolution: null`, there are unresolved discoveries blocking or pending resolution. The three `proposed_outcome` values route differently — see `references/execute-mode.md` §Discovery Routing Table.
+
+### `execute.test_manifest[]`
+
+Array of coverage mappings built at SETUP and updated via `state-transition.sh test_manifest_update`. Each entry maps a source file to its covering test command:
+
+```json
+{"file": "src/foo.sh", "test_cmd": "bash tests/test-foo.sh"}
+```
+
+Used by two gates:
+- `hooks/execute/plan-citation-gate.sh` (G5): if the file being written is in the manifest, the last test run for `test_cmd` must have passed (no failing covering test).
+- `hooks/execute/retest-dispatch.sh`: on every Write/Edit, dispatches the covering `test_cmd` asynchronously so the next PreToolUse gate has fresh results.
+
+Updated atomically via the `test_manifest_update` subcommand (emits `test_manifest_updated` event). Direct writes to this field via `set_field` are blocked by the integrity gate.
 
 ### `execute.setup_flags_snapshot`
 
