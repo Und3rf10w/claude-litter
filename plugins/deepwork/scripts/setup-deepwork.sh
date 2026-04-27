@@ -224,7 +224,7 @@ fi
 
 # Require a git repository — deepwork uses git for branch safety, worktrees, and
 # CI hooks; without one, sessions will silently fail mid-execute.
-git -C "${CLAUDE_PROJECT_DIR:-$(pwd -P)}" rev-parse --git-dir 2>/dev/null \
+git -C "${CLAUDE_PROJECT_DIR:-$(pwd -P)}" rev-parse --git-dir >/dev/null 2>&1 \
   || { printf 'ERROR: deepwork requires a git repository (run '"'"'git init'"'"' or cd to one)\n' >&2; exit 1; }
 
 # Declare path variables before any mkdir so the EXIT trap below covers cleanup.
