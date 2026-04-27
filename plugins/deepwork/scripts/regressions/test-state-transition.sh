@@ -759,6 +759,18 @@ SF="${INSTANCE_DIR}/state.json"
 _assert_exit "PCS-d: exit 0" "0" "$?"
 _assert_jq_eq "PCS-d: plan_section stripped" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S4.1"
 
+# ── PCS-e: plan_section strips tabs and newlines ─────────────────────────────
+echo ""
+echo "── PCS-e: pending_change_set strips tab and newline whitespace from plan_section ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "$(printf '\t\nS5.2\n\t')" \
+  --files '["src/bar.sh"]' \
+  --rationale "tab/newline canonicalization test"
+_assert_exit "PCS-e: exit 0" "0" "$?"
+_assert_jq_eq "PCS-e: plan_section stripped of tabs/newlines" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S5.2"
+
 # ── DI-a: discover_instance skips orphan dirs (no state.json) ────────────────
 echo ""
 echo "── DI-a: discover_instance skips orphan dirs ──"

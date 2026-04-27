@@ -18,6 +18,7 @@ cat <<'__DEEPWORK_PROMPT_EOF__' > "$_prompt_file"
 $ARGUMENTS
 __DEEPWORK_PROMPT_EOF__
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh" --prompt-file "$_prompt_file"
+rm -f "$_prompt_file"
 ```
 
 You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the setup script exactly.
