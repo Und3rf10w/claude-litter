@@ -213,27 +213,35 @@ _emit_event() {
     _stamp_sf_lock="${STATE_FILE}.lock"
     _stamp_tmp="${STATE_FILE}.emit-stamp.tmp.$$"
 
-    _acquire_lock "$_stamp_sf_lock" 2>/dev/null || true
-
-    # Build a temp copy of state.json with the new event_head so _compute_integrity_hash
-    # sees the right event_head when computing the hash.
-    jq --arg eh "$_new_event_head" --arg ts "$_stamp_now" \
-      '.event_head = $eh | .last_updated = $ts' \
-      "$STATE_FILE" > "$_stamp_tmp" 2>/dev/null
-    if [[ -s "$_stamp_tmp" ]]; then
-      _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
-      if [[ -n "$_stamp_hash" ]]; then
-        local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
-        jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
-          "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
-          && mv "$_stamp_final" "$_stamp_tmp"
+    # W21 #3: only proceed and release if we actually acquired the state.json
+    # lock — `|| true` would have silently written without holding the lock,
+    # and (on macOS mkdir-fallback) `_release_lock` would `rm -rf` another
+    # process's lock dir. On contention failure, skip the stamp and let
+    # integrity-always-gate detect the mismatch on the next tool call.
+    if _acquire_lock "$_stamp_sf_lock" 2>/dev/null; then
+      # Build a temp copy of state.json with the new event_head so _compute_integrity_hash
+      # sees the right event_head when computing the hash.
+      jq --arg eh "$_new_event_head" --arg ts "$_stamp_now" \
+        '.event_head = $eh | .last_updated = $ts' \
+        "$STATE_FILE" > "$_stamp_tmp" 2>/dev/null
+      if [[ -s "$_stamp_tmp" ]]; then
+        _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
+        if [[ -n "$_stamp_hash" ]]; then
+          local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
+          # W21 #4: clean up _stamp_final if jq fails or mv short-circuits.
+          jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
+            "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
+            && mv "$_stamp_final" "$_stamp_tmp" \
+            || rm -f "$_stamp_final"
+        fi
+        mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+      else
+        rm -f "$_stamp_tmp"
       fi
-      mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+      _release_lock "$_stamp_sf_lock" 2>/dev/null || true
     else
-      rm -f "$_stamp_tmp"
+      printf '_emit_event: could not acquire state.json lock; head-stamp skipped (events.jsonl append succeeded; integrity-always-gate will detect mismatch on next call)\n' >&2
     fi
-
-    _release_lock "$_stamp_sf_lock" 2>/dev/null || true
   fi
 
   _release_lock "$lock_file"

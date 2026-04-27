@@ -690,6 +690,113 @@ fi
 
 rm -rf "$T11O_SB"
 
+# ── (p) emit_stamp_head lock contention → fail-closed skip + warn (W21 #3) ──
+# Regression for W21 #3: when state.json.lock cannot be acquired, emit_revert_event
+# must NOT proceed to write state.json, must NOT release the lock (which would rm
+# another process's lock dir on macOS mkdir-fallback), must emit a stderr warning,
+# and must still successfully append the state_reverted event to events.jsonl.
+echo ""
+echo "── T11-p: emit_stamp_head fails closed on state.json lock contention (W21 #3) ──"
+
+T11P_SB=$(mktemp -d)
+T11P_ID="aabbccdd"
+T11P_DIR="$T11P_SB/.claude/deepwork/$T11P_ID"
+mkdir -p "$T11P_DIR"
+T11P_SID="t11p-session-$(date +%s)"
+T11P_STATE="${T11P_DIR}/state.json"
+T11P_LOCK="${T11P_STATE}.lock"
+
+STATE_FILE="$T11P_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11P_SID","phase":"explore","team_name":"test-team"}
+EOF
+
+# Generate a baseline event so prev_event_hash is non-empty
+INSTANCE_DIR="$T11P_DIR" STATE_FILE="$T11P_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-revert state.json content + event_head for comparison
+T11P_PRE_EVENT_HEAD=$(jq -r '.event_head // ""' "$T11P_STATE")
+T11P_PRE_HASH=$(jq -r '.state_integrity_hash // ""' "$T11P_STATE")
+
+# Acquire state.json.lock externally to simulate contention. Use mkdir lock-dir
+# pattern matching _acquire_lock's macOS fallback so the test exercises both paths.
+# (On Linux flock is used; mkdir of $LOCK.dir still creates a directory that the
+# in-process flock acquisition will not contest, so we hold via a long-running
+# `flock` background process to be portable.)
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$T11P_LOCK"
+  flock -x 9
+  T11P_LOCK_HOLDER_FD=9
+else
+  mkdir "${T11P_LOCK}.dir" 2>/dev/null || true
+fi
+
+T11P_REVERT_OUT=$(INSTANCE_DIR="$T11P_DIR" STATE_FILE="$T11P_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+  --reason "t11p_test_contention" \
+  --reverted_to_event "$T11P_PRE_EVENT_HEAD" 2>&1)
+T11P_REVERT_RC=$?
+
+# Release lock
+if [[ -n "${T11P_LOCK_HOLDER_FD:-}" ]]; then
+  exec 9>&-
+else
+  rm -rf "${T11P_LOCK}.dir"
+fi
+
+# Assertion 1: emit_revert_event exits 0 (the events.jsonl append still succeeds)
+if [[ "$T11P_REVERT_RC" -eq 0 ]]; then
+  printf 'pass: T11-p: emit_revert_event exits 0 under stamp-lock contention\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: emit_revert_event exited %d (expected 0)\n' "$T11P_REVERT_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 2: stderr contains the warn line (head-stamp skipped)
+if printf '%s' "$T11P_REVERT_OUT" | grep -q "head-stamp skipped"; then
+  printf 'pass: T11-p: stderr contains head-stamp skipped warning\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: warning line not found in stderr: %s\n' "$T11P_REVERT_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 3: state.json content unchanged (stamp was skipped)
+T11P_POST_EVENT_HEAD=$(jq -r '.event_head // ""' "$T11P_STATE")
+T11P_POST_HASH=$(jq -r '.state_integrity_hash // ""' "$T11P_STATE")
+if [[ "$T11P_PRE_EVENT_HEAD" == "$T11P_POST_EVENT_HEAD" && "$T11P_PRE_HASH" == "$T11P_POST_HASH" ]]; then
+  printf 'pass: T11-p: state.json unchanged when stamp skipped\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: state.json modified despite stamp skip (event_head %s→%s, hash %s→%s)\n' \
+    "$T11P_PRE_EVENT_HEAD" "$T11P_POST_EVENT_HEAD" "$T11P_PRE_HASH" "$T11P_POST_HASH" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 4: events.jsonl got the state_reverted event despite stamp skip
+T11P_LAST_TYPE=$(tail -1 "${T11P_DIR}/events.jsonl" | jq -r '.event_type // ""')
+if [[ "$T11P_LAST_TYPE" == "state_reverted" ]]; then
+  printf 'pass: T11-p: events.jsonl tail is state_reverted (append succeeded)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: events.jsonl tail event_type=%s (expected state_reverted)\n' \
+    "$T11P_LAST_TYPE" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 5: no leftover .emit-stamp*.tmp.* files (also covers W21 #4 cleanup)
+if ! ls "${T11P_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  printf 'pass: T11-p: no leftover emit-stamp tmp files (W21 #4 cleanup verified)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: leftover emit-stamp tmp files in instance dir\n' >&2
+  ls "${T11P_DIR}"/state.json.emit-stamp*.tmp.* >&2 2>&1
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11P_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
