@@ -32,7 +32,7 @@ fi
 SNAPSHOT_TARGET="${PLUGIN_ROOT}/references/hook-architecture.md"
 
 if [[ "$CHECK_MODE" == "true" ]]; then
-  TMPFILE=$(mktemp /tmp/hook-graph-check-XXXXXX.md)
+  TMPFILE=$(mktemp "${TMPDIR:-/tmp}/hook-graph-check-XXXXXX.md")
   bash "${BASH_SOURCE[0]}" >| "$TMPFILE" 2>/dev/null
   if diff -u "$SNAPSHOT_TARGET" "$TMPFILE" >/dev/null 2>&1; then
     rm -f "$TMPFILE"
