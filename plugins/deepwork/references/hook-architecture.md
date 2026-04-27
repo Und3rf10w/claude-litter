@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 107 nodes, 171 edges
+Graph: 106 nodes, 170 edges
 
 ## Mermaid Flowchart
 
@@ -135,7 +135,6 @@ flowchart LR
     drift_log[/"  drift.log"/]
     events_jsonl[/"  events.jsonl"/]
     execute_done_sentinel[/"  execute-done.sentinel"/]
-    heartbeat_json[/"  heartbeat.json"/]
     incidents_jsonl[/"  incidents.jsonl"/]
     log_md[/"  log.md"/]
     pending_change_json[/"  pending-change.json"/]
@@ -262,7 +261,6 @@ flowchart LR
   incident_detector -->|"writes"| hook_warnings
   stop_hook -->|"writes"| execute_halt_reason
   stop_hook -->|"writes"| execute_phase
-  approve_archive -.->|"reads"| heartbeat_json
   approve_archive -.->|"reads"| state_archived_json
   bash_gate -.->|"reads"| critique_v
   bash_gate -.->|"reads"| pending_change_json
@@ -336,7 +334,6 @@ flowchart LR
           ".phase"
         ],
         "markers": [
-          "heartbeat.json",
           "state.archived.json"
         ]
       },
