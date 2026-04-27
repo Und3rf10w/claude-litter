@@ -69,13 +69,19 @@ case "$HOOK_EVENT_NAME" in
       printf '%s' "$BASH_CMD" | grep -q 'state\.json' || exit 0
     fi
 
-    [[ -f "$_SNAPSHOT" ]] || exit 0
     [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
     [[ -f "$LOG_FILE" ]] || exit 0
 
     # ── banners[] schema validation (post-write revert) ─────────────────────
     # Validate banners[] in the committed state.json. On violation, revert from
     # snapshot and log a blocker line to log.md.
+    #
+    # Banner validation runs regardless of snapshot availability (the snapshot is
+    # only needed for revert, not for the schema check itself). This closes the
+    # PostToolBatch shadow-period gap: during a parallel batch, batch-gate.sh
+    # (PostToolBatch) may rm the snapshot before this PostToolUse handler checks
+    # [[ -f "$_SNAPSHOT" ]]. Moving the validation above the snapshot guard ensures
+    # the check always fires even if the snapshot was already cleaned up.
     BANNER_COUNT=$(jq -r '(.banners // []) | length' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "0")
     if [[ -n "$BANNER_COUNT" && "$BANNER_COUNT" != "0" ]]; then
       VALIDATION_RESULT=$(jq -r '
@@ -142,6 +148,10 @@ case "$HOOK_EVENT_NAME" in
         exit 0
       fi
     fi
+
+    # Phase/bar diff requires the snapshot; skip if it was already cleaned up
+    # (e.g., batch-gate fired first in the PostToolBatch shadow period).
+    [[ -f "$_SNAPSHOT" ]] || exit 0
 
     # Diff phase field
     OLD_PHASE=$(jq -r '.phase // ""' "$_SNAPSHOT" 2>/dev/null || echo "")

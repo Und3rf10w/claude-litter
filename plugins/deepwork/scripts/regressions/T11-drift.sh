@@ -349,6 +349,151 @@ fi
 # Snapshot cleanup restores original CLAUDE_PROJECT_DIR for remaining tests
 export CLAUDE_PROJECT_DIR="$SANDBOX"
 
+# ── (k) archive_state: pending-change.json absent after archive ──────────────
+echo ""
+echo "── T11-k: archive_state → pending-change.json absent after archive ──"
+
+T11K_SB=$(mktemp -d)
+T11K_ID="bc234567"
+T11K_DIR="$T11K_SB/.claude/deepwork/$T11K_ID"
+mkdir -p "$T11K_DIR"
+T11K_STATE="${T11K_DIR}/state.json"
+T11K_PENDING="${T11K_DIR}/pending-change.json"
+
+STATE_FILE="$T11K_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"t11k-session","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Create a pending-change.json to simulate mid-session state
+printf '{"change":"test"}\n' > "$T11K_PENDING"
+
+INSTANCE_DIR="$T11K_DIR" STATE_FILE="$T11K_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1
+_T11K_RC=$?
+_assert_exit "T11-k: archive_state exits 0" "0" "$_T11K_RC"
+
+if [[ ! -f "$T11K_PENDING" ]]; then
+  printf 'pass: T11-k: pending-change.json removed after archive\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-k: pending-change.json still present after archive\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ -f "${T11K_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-k: state.archived.json present\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-k: state.archived.json missing\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11K_SB"
+
+# ── (l) archive_state rollback: events.jsonl mv failure → state.json NOT archived ──
+echo ""
+echo "── T11-l: archive_state rollback — events mv fails → state.json remains ──"
+
+T11L_SB=$(mktemp -d)
+T11L_ID="cd345678"
+T11L_DIR="$T11L_SB/.claude/deepwork/$T11L_ID"
+mkdir -p "$T11L_DIR"
+T11L_STATE="${T11L_DIR}/state.json"
+T11L_EVENTS_ARCHIVE="${T11L_DIR}/events.archived.jsonl"
+
+STATE_FILE="$T11L_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"t11l-session","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Ensure events.jsonl is created (stamp_last_updated emits an event)
+INSTANCE_DIR="$T11L_DIR" STATE_FILE="$T11L_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Block mv events.jsonl → events.archived.jsonl by placing a non-writable directory
+# at the destination path. On macOS, mv src dir/ moves src INTO the dir (not replacing it),
+# so we chmod 555 to prevent the write into it, forcing mv to fail.
+mkdir "$T11L_EVENTS_ARCHIVE"
+chmod 555 "$T11L_EVENTS_ARCHIVE"
+
+INSTANCE_DIR="$T11L_DIR" STATE_FILE="$T11L_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1
+_T11L_RC=$?
+chmod 755 "$T11L_EVENTS_ARCHIVE"
+
+# archive_state should fail (exit non-zero) and roll back state.json
+if [[ $_T11L_RC -ne 0 ]]; then
+  printf 'pass: T11-l: archive_state exits non-zero on events mv failure\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: archive_state should exit non-zero but exited 0\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ -f "$T11L_STATE" ]]; then
+  printf 'pass: T11-l: state.json rolled back (present after failed archive)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: state.json missing — rollback did not restore it\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ ! -f "${T11L_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-l: state.archived.json absent (not half-archived)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: state.archived.json present — half-archived state\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11L_SB"
+
+# ── (m) banner validation gap: snapshot absent → banner check still fires ────
+# Regression for W19-c Fix 2: PostToolBatch shadow period. When batch-gate cleans
+# the per-tool snapshot before state-drift-marker's PostToolUse handler runs,
+# banner validation must still fire (it doesn't need the snapshot for the check).
+echo ""
+echo "── T11-m: banner validation fires even without snapshot (shadow-period gap) ──"
+
+T11M_SB=$(mktemp -d)
+T11M_ID="de456789"
+T11M_DIR="$T11M_SB/.claude/deepwork/$T11M_ID"
+mkdir -p "$T11M_DIR"
+T11M_SID="t11m-session-$(date +%s)"
+T11M_STATE="${T11M_DIR}/state.json"
+T11M_LOG="${T11M_DIR}/log.md"
+touch "$T11M_LOG"
+
+STATE_FILE="$T11M_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11M_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Write corrupt banners[] directly (no snapshot present — simulating batch-gate cleanup)
+printf '%s\n' '{"session_id":"'"$T11M_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}' \
+  > "$T11M_STATE"
+
+# No snapshot file present (simulates batch-gate having cleaned it)
+T11M_SNAP="${T11M_DIR}/.state-snapshot.t11m-tool-id.json"
+rm -f "$T11M_SNAP"
+
+_T11M_RC=$(printf '%s' \
+  "{\"session_id\":\"$T11M_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"t11m-tool-id\",\"tool_input\":{\"file_path\":\"$T11M_STATE\"}}" \
+  | CLAUDE_PROJECT_DIR="$T11M_SB" LOG_FILE="$T11M_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" >/dev/null 2>&1; echo $?)
+_assert_exit "T11-m: exits 0 even without snapshot" "0" "$_T11M_RC"
+
+# Banner validation should have logged to log.md (blocker line)
+T11M_LOG_CONTENT=$(cat "$T11M_LOG" 2>/dev/null || echo "")
+if printf '%s' "$T11M_LOG_CONTENT" | grep -q "banner-corruption"; then
+  printf 'pass: T11-m: banner-corruption logged to log.md without snapshot\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-m: banner-corruption NOT logged to log.md (validation skipped?)\n' >&2
+  printf '  log content: %s\n' "$T11M_LOG_CONTENT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11M_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
