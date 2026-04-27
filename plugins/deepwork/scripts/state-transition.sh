@@ -257,6 +257,9 @@ _compute_integrity_hash() {
 # Validate on-disk hash against recomputed value.
 # Returns 0 (pass) or 2 (mismatch / gate violation).
 # Absent hash (pre-W6 instance) is treated as pass.
+# Asymmetry note (W20-e/W21 boundary): writes are hard-fail (return 5 in
+# _write_with_hash else branch) while reads here remain soft (|| return 0 below).
+# Harden reads in W21 once hash coverage is load-bearing for new gates.
 _verify_integrity_hash() {
   local sf="$1"
   local on_disk recomputed
@@ -320,7 +323,7 @@ _write_with_hash() {
       "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
   else
     # hash unavailable — fail-closed: do not write an unauthenticated state
-    printf 'state-transition: _write_with_hash: integrity hash empty, aborting write of %s\n' "$sf" >&2
+    printf '_write_with_hash: hash compute failed — is jq installed?\n' >&2
     _release_lock "$lock"
     rm -f "$tmp" "$stamp_tmp" 2>/dev/null
     return 5
