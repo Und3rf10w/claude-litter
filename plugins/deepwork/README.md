@@ -352,4 +352,4 @@ Run all tests:
 bash scripts/test-deliver-gate.sh && bash scripts/test-execute-gates.sh && bash scripts/test-prompt-parse.sh
 ```
 
-Commit style: conventional commits — `type(scope): description` (e.g., `feat(hooks): add chaos-monkey gate`). Adding a hook requires updating README §10 hooks table. Adding a skill requires updating README §7 commands table. Changing flag parsing requires updating README §8 flags table. See `plugins/deepwork/CLAUDE.md` for the doc sync rule.
+Commit style: conventional commits — `type(scope): description` (e.g., `feat(hooks): add chaos-monkey gate`). Adding a hook requires updating README §13 hooks table. Adding a skill requires updating README §10 commands table. Changing flag parsing requires updating README §11 flags table. See `plugins/deepwork/CLAUDE.md` for the doc sync rule.

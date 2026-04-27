@@ -12,6 +12,12 @@ Use `/deepwork-status` (design mode) or `/deepwork-execute-status` (execute mode
 
 SHA-256 hash of the most recent event in `events.jsonl`. Written by `state-transition.sh` atomically alongside every mutation. Used by `hooks/integrity-always-gate.sh` to detect out-of-band edits: if `event_head` does not match `sha256sum` of the last line in `events.jsonl`, the integrity gate blocks all tool calls until `/deepwork-reconcile` is run. Absent on pre-W7 instances (those pass the gate without enforcement).
 
+### `state_integrity_hash`
+
+SHA-256 hash of a canonical subset of `state.json` fields (phase, team_name, and other projection-correctness fields). Written by `state-transition.sh` via `_write_with_hash` atomically alongside every mutation. Used by `hooks/integrity-always-gate.sh` to detect projection corruption: if the on-disk hash does not match the recomputed value, the integrity gate blocks all tool calls until `/deepwork-reconcile` is run.
+
+`state_integrity_hash` and `event_head` coexist: `state_integrity_hash` protects projection-correctness invariants; `event_head` is the event-log synchronization check. Absent hash (null or missing key) is treated as **pass** — pre-W6 instances have no hash and must not be blocked.
+
 ### `mode`
 
 Top-level string field indicating the profile under which the session was started. Values: `"default"` (design mode) or `"execute"`. Written once at SETUP by `setup-deepwork.sh` from the `--mode` flag. Hooks use this to gate execute-only enforcement paths (e.g., `hooks/execute/plan-citation-gate.sh` returns early if `mode != "execute"`).
@@ -128,6 +134,20 @@ Used by two gates:
 - `hooks/execute/retest-dispatch.sh`: on every Write/Edit, dispatches the covering `test_cmd` asynchronously so the next PreToolUse gate has fresh results.
 
 Updated atomically via the `test_manifest_update` subcommand (emits `test_manifest_updated` event). Direct writes to this field via `set_field` are blocked by the integrity gate.
+
+### `execute.env_attestations[]`
+
+Array of environment attestation records produced by the `auditor` archetype during VERIFY phase. Each entry records the result of running the full test manifest for one gate in one declared environment:
+
+```json
+{"gate_id": "G-exec-1", "environment": "local", "passed": true, "attested_at": "<ISO timestamp>"}
+```
+
+The `auditor` writes entries via `state-transition.sh env_attest`. `hooks/execute/plan-citation-gate.sh` and the CRITIQUE gate check this array: a gate cannot advance to CRITIQUE until it has at least one `passed: true` entry. If no environments were declared in the gate's manifest entry, a single `"environment": "local"` attestation is required.
+
+### `execute.secret_scan_waived`
+
+Boolean. Set to `true` at SETUP when the user invokes `/deepwork --mode execute ... --secret-scan-waive`. Written once by `setup-deepwork.sh` and captured in `setup_flags_snapshot` for replay-safety. When `true`, `hooks/execute/bash-gate.sh` skips the secret-scan enforcement step. Defaults to `false`. Cannot be set to `true` post-SETUP — the bash-gate refuses flag mutations after `execute.phase` leaves `"setup"`.
 
 ### `execute.setup_flags_snapshot`
 

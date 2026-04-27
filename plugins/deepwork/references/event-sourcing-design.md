@@ -278,6 +278,15 @@ The reducer maintains a working state object and applies events in sequence:
 | `session_backfilled` | `state.session_id = payload.session_id` |
 | `flaky_test_added` | `state.execute.flaky_tests += [payload.command]` (if absent) |
 | `last_updated_stamped` | `state.last_updated = timestamp` |
+| `state_reverted` | `state[payload.reverted_field] = previous value` (no-op in full replay — field was never written with the bad value) |
+| `bar_added` | `state.bar += [payload.criterion]` (if absent) |
+| `bar_removed` | `state.bar -= [payload.criterion]` (remove matching entry) |
+| `guardrail_added` | `state.guardrails += [payload.rule]` (if absent) |
+| `guardrail_replaced` | `state.guardrails[i] = payload.new_rule` where `state.guardrails[i] == payload.old_rule` |
+| `guardrail_removed` | `state.guardrails -= [payload.rule]` (remove matching entry) |
+| `state_archived` | no mutation — event marks finalization; `state.json` is renamed externally |
+| `test_manifest_updated` | `state.execute.test_manifest = payload.manifest` |
+| `pending_change_set` | no mutation to `state.json` — event records the write of `pending-change.json` for audit |
 
 `field_set` uses `jq_path` as a jq expression: `jq --argjson val "$json_value" "$jq_path = \$val"`. Since `field_set` paths are logged per `state-transition.sh:396`, the reducer can use the same `jq` path expression directly.
 
@@ -376,7 +385,7 @@ When the gate blocks: `RECONCILIATION_REQUIRED — run /deepwork-reconcile`. Thi
 Post-W6, `state-transition.sh` is the **only writer** of `state.json`. This means the W7 migration is almost entirely **inside `state-transition.sh`**: add event append logic to each subcommand case. No hook call sites need updating — they already call `state-transition.sh`.
 
 Migration cost:
-- `state-transition.sh`: add `_append_event` helper + `_compute_prev_hash` helper + event append call in each of the 9 subcommand cases (not `init`). Estimated: +80–100 LOC on top of the existing 539.
+- `state-transition.sh`: add `_append_event` helper + `_compute_prev_hash` helper + event append call in each of the 22 subcommand cases (not `init`). Estimated: +80–100 LOC on top of the existing 539.
 - `frontmatter-gate.sh`: ~15 lines for the `event_head` check (§5.2).
 - `state.json` schema: add `event_head` field (top-level string). No existing field changes.
 - Test fixtures: no change. `init` does not emit events; fixtures continue to write bare JSON via `state-transition.sh init`.
@@ -439,7 +448,7 @@ Add a comment to `approve-archive.sh` documenting the co-archive requirement for
 
 | Category | Items | Estimated effort |
 |---|---|---|
-| `state-transition.sh` event append logic | 9 subcommand cases + 3 helpers | Medium — core of W7 |
+| `state-transition.sh` event append logic | 22 subcommand cases + 3 helpers | Medium — core of W7 |
 | `frontmatter-gate.sh` `event_head` gate | ~15 lines | Low |
 | `state.json` schema (`event_head` field) | 1 field in `references/state-schema.md` + schemas/ | Low |
 | `approve-archive.sh` co-archive | 1 line + comment | Trivial |
