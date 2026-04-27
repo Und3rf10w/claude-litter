@@ -30,6 +30,10 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null |
 # H2 fix: also match `git -C /abs/.claude/worktrees/<seg>` (no trailing slash) as a
 # separate pattern so the cd-prefix in `cd .../wrong-seg &&` (no slash) does not
 # steal the segment before the actual write-target is seen.
+# Known limitation: `head -1` picks the first segment match in the command text.
+# Commands that reference two different worktree segments in one string may be
+# misclassified (the second-segment write target would go undetected). This is
+# an accepted limitation — multi-segment single-command patterns are uncommon.
 _WORKTREE_SEGMENT=""
 if printf '%s' "$COMMAND" | grep -qE '\.claude/worktrees/[A-Za-z0-9._-]+/'; then
   _WORKTREE_SEGMENT=$(printf '%s' "$COMMAND" \

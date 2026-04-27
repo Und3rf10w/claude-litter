@@ -97,7 +97,7 @@ mkdir -p "$INST_DIR2"
 SESSION2="arc2-$(date +%s)"
 
 _write_state "${INST_DIR2}/state.json" \
-  "{\"session_id\":\"${SESSION2}\",\"phase\":\"execute\",\"execute\":{\"phase\":\"halt\"},\"halt_reason\":\"irrecoverable: secret detected\"}"
+  "{\"session_id\":\"${SESSION2}\",\"phase\":\"execute\",\"execute\":{\"phase\":\"halt\"},\"halt_reason\":{\"summary\":\"irrecoverable: secret detected\"}}"
 
 OUT2=$(_run_hook "$SESSION2" "$SANDBOX2")
 RC2=$(printf '%s' "$OUT2" | tail -1)

@@ -10,8 +10,8 @@
 #   - irreversible-remote (git push non-force, npm publish, docker push): deny unless
 #     state.execute.authorized_push:true AND critic approval present AND CI attestation exists
 #   - irreversible-prod (kubectl apply, terraform apply, helm upgrade): deny unless
-#     state.execute.authorized_prod_deploy:true AND rollback.<change_id>.md exists with
-#     "## Tested procedure" section
+#     state.execute.authorized_prod_deploy:true AND rollback.<plan_section>.md exists with
+#     "## Tested procedure" section (plan_section derived from pending-change.json)
 #
 # G7 (secret-scan, plan §5.3): On git commit commands, run `git diff --cached` and check
 # staged content for secrets (AWS keys, OAuth tokens, JWTs, SSH private keys, API key patterns).
@@ -213,18 +213,23 @@ if printf '%s' "$COMMAND" | grep -qE '(kubectl[[:space:]]+apply|terraform[[:spac
   if [[ "$AUTH_PROD_VALID" != "true" ]]; then
     _deny "Irreversible-prod blocked (G2): production deployment commands (kubectl apply, terraform apply, helm upgrade/install) require state.execute.authorized_prod_deploy:true set at setup time."
   fi
-  # Also require rollback plan with tested procedure
-  CHANGE_ID=$(jq -r '.change_id // ""' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "")
-  if [[ -n "$CHANGE_ID" ]]; then
-    ROLLBACK_FILE="${INSTANCE_DIR}/rollback.${CHANGE_ID}.md"
+  # Also require rollback plan with tested procedure.
+  # pending_change_set writes plan_section (not change_id) — derive rollback filename from it.
+  PLAN_SECTION=$(jq -r '.plan_section // ""' "${INSTANCE_DIR}/pending-change.json" 2>/dev/null || echo "")
+  if [[ -n "$PLAN_SECTION" ]]; then
+    SAFE_PLAN_SECTION=$(printf '%s' "$PLAN_SECTION" | tr -cd '[:alnum:]_-' | cut -c1-64)
+    if [[ -z "$SAFE_PLAN_SECTION" ]]; then
+      _deny "Irreversible-prod blocked (G2): plan_section sanitizes to empty — cannot derive rollback file. Use alphanumeric characters in the plan section name."
+    fi
+    ROLLBACK_FILE="${INSTANCE_DIR}/rollback.${SAFE_PLAN_SECTION}.md"
     if [[ ! -f "$ROLLBACK_FILE" ]]; then
-      _deny "Irreversible-prod blocked (G2): rollback.${CHANGE_ID}.md not found at ${INSTANCE_DIR}. Create a rollback plan with a '## Tested procedure' section before deploying."
+      _deny "Irreversible-prod blocked (G2): rollback.${SAFE_PLAN_SECTION}.md not found at ${INSTANCE_DIR}. Create a rollback plan with a '## Tested procedure' section before deploying."
     fi
     if ! grep -q "## Tested procedure" "$ROLLBACK_FILE" 2>/dev/null; then
-      _deny "Irreversible-prod blocked (G2): rollback.${CHANGE_ID}.md is missing '## Tested procedure' section. Document and test the rollback procedure before deploying."
+      _deny "Irreversible-prod blocked (G2): rollback.${SAFE_PLAN_SECTION}.md is missing '## Tested procedure' section. Document and test the rollback procedure before deploying."
     fi
   else
-    _deny "Irreversible-prod blocked (G2): no change_id in pending-change.json — cannot verify rollback plan exists. Set up a change entry before deploying."
+    _deny "Irreversible-prod blocked (G2): no pending-change.json with plan_section — cannot verify rollback plan exists. Run pending_change_set before deploying."
   fi
 fi
 

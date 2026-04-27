@@ -1,7 +1,7 @@
 # Impl-Plan Synthesis Template
 
 **Kind**: impl-plan
-**Invocation**: `/deepwork --kind impl-plan "..."`
+**Invocation**: `/deepwork "..."` when goal is implementation planning
 **Mode**: plan mode deliverable; signals execute-mode consumer — user invokes `/deepwork --mode execute --plan-ref <path>` after SYNTHESIZE completes
 
 `impl-plan` is structurally identical to `plan-to-execute` with two differences:
@@ -167,8 +167,8 @@ gates:
 
 ## Notes for SYNTHESIZE phase
 
-- `state.kind = "impl-plan"` triggers this template.
+- This template is selected when the session goal is implementation planning.
 - After SYNTHESIZE completes, the user invokes: `/deepwork --mode execute --plan-ref ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/proposals/v<N>-final.md`
 - The Execution Manifest section, if present, is consumed directly by execute mode SETUP. If absent, execute mode SETUP extracts an internal manifest from prose (RU9 — documented default behavior).
 - `execute-mode ready: partial` is valid and should be used when the plan is detailed enough for SETUP-phase prose extraction but lacks explicit gate-level YAML.
-- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format (§9.4 degrade path).
+- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format.

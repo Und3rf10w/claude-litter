@@ -41,21 +41,31 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
 [[ -n "$COMMAND" ]] || exit 0
 
-# Allowlist: canonical writers; let them through.
+# Active-instance guard: only apply gates when a deepwork execute instance is active.
+discover_instance "$SESSION_ID" 2>/dev/null || exit 0
+EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
+[[ -n "$EXEC_PHASE" ]] || exit 0
+
+# Protected file pattern — matches any of the audit-trail filenames.
+_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
+_PENDING_CHANGE='pending-change\.json'
+
+# Allowlist: canonical writers; let them through only if the FULL command
+# does not also contain a direct block-pattern write (bypass via ; && `` $() appending).
+_cmd_has_block_pattern() {
+  printf '%s' "$1" | grep -qiE \
+    ">[[:space:]]*[^;|&]*${_PROTECTED}|>>[[:space:]]*[^;|&]*${_PROTECTED}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|tee[[:space:]]+[^;|&]*${_PROTECTED}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PROTECTED}"
+}
 if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*state-transition\.sh'; then
-  exit 0
+  _cmd_has_block_pattern "$COMMAND" || exit 0
 fi
 if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*test-capture\.sh'; then
-  exit 0
+  _cmd_has_block_pattern "$COMMAND" || exit 0
 fi
 # Subprocess sentinel: state-transition.sh sets this before writing
 [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]] && exit 0
 
-# Protected file pattern — matches any of the audit-trail filenames.
-_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
-
 # pending-change.json writes get a discriminated error with actionable instruction.
-_PENDING_CHANGE='pending-change\.json'
 if printf '%s' "$COMMAND" | grep -qiE \
   ">[[:space:]]*[^;|&]*${_PENDING_CHANGE}|>>[[:space:]]*[^;|&]*${_PENDING_CHANGE}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PENDING_CHANGE}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PENDING_CHANGE}|tee[[:space:]]+[^;|&]*${_PENDING_CHANGE}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PENDING_CHANGE}"; then
   printf 'state-bash-gate: EXIT_PENDING_CHANGE_DIRECT_WRITE — direct Bash write to pending-change.json is blocked.\n' >&2

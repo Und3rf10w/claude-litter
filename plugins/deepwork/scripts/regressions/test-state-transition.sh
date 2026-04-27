@@ -935,6 +935,70 @@ if [[ $_AW_FAIL -eq 0 ]]; then
   _pass "AW-a: all 10 kill-race iterations produced valid state.json (${_AW_PASS} hash-checks passed)"
 fi
 
+# ── AW-b: _write_with_hash fail-closed when jq absent (W20-e) ──
+# Stub PATH to a directory without jq; assert set_field exits non-zero,
+# state.json content unchanged, and stderr contains the actionable message.
+echo ""
+echo "── AW-b: _write_with_hash fail-closed when jq absent ──"
+
+_AWB_SB=$(mktemp -d)
+_AWB_INST_DIR="$_AWB_SB/.claude/deepwork/awb00001"
+mkdir -p "$_AWB_INST_DIR"
+_AWB_SF="${_AWB_INST_DIR}/state.json"
+
+# Init with full jq available
+STATE_FILE="$_AWB_SF" "$STATE_TRANSITION" init - <<'AWBINIT' >/dev/null 2>&1
+{"session_id":"awb-session","phase":"explore","team_name":"awb-team","bar":[]}
+AWBINIT
+
+_AWB_BEFORE=$(cat "$_AWB_SF" 2>/dev/null)
+
+# Fake jq that works for validation/reads but returns empty string for hash
+# computation (_compute_integrity_hash calls: jq -Sc 'del(.state_integrity_hash,...)')
+_AWB_FAKE_BIN=$(mktemp -d)
+cat > "${_AWB_FAKE_BIN}/jq" <<'FAKEJQ'
+#!/usr/bin/env bash
+# Fake jq: pass through unless called with --arg sot_digest (unique to _compute_integrity_hash).
+# This simulates hash-compute failure while leaving startup JSON validation intact.
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+FAKEJQ
+chmod +x "${_AWB_FAKE_BIN}/jq"
+
+_AWB_STDERR_FILE=$(mktemp)
+PATH="${_AWB_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWB_INST_DIR" STATE_FILE="$_AWB_SF" \
+  bash "$STATE_TRANSITION" set_field '.phase' '"synthesize"' 2>"$_AWB_STDERR_FILE"
+_AWB_RC=$?
+
+_AWB_AFTER=$(cat "$_AWB_SF" 2>/dev/null)
+_AWB_STDERR=$(cat "$_AWB_STDERR_FILE")
+
+if [[ "$_AWB_RC" -ne 0 ]]; then
+  _pass "AW-b: set_field exited non-zero (rc=$_AWB_RC) when jq absent"
+else
+  _fail "AW-b: set_field exited 0 despite jq absent — should fail-closed"
+fi
+
+if [[ "$_AWB_BEFORE" == "$_AWB_AFTER" ]]; then
+  _pass "AW-b: state.json content unchanged after jq-absent failure"
+else
+  _fail "AW-b: state.json was modified despite jq-absent failure (content changed)"
+fi
+
+if printf '%s' "$_AWB_STDERR" | grep -q "hash compute failed"; then
+  _pass "AW-b: stderr contains 'hash compute failed' message"
+else
+  _fail "AW-b: stderr missing 'hash compute failed' — got: ${_AWB_STDERR:0:200}"
+fi
+
+rm -rf "$_AWB_SB" "$_AWB_FAKE_BIN" "$_AWB_STDERR_FILE"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

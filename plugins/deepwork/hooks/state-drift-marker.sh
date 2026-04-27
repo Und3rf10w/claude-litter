@@ -151,7 +151,10 @@ case "$HOOK_EVENT_NAME" in
 
     # Phase/bar diff requires the snapshot; skip if it was already cleaned up
     # (e.g., batch-gate fired first in the PostToolBatch shadow period).
-    [[ -f "$_SNAPSHOT" ]] || exit 0
+    if [[ ! -f "$_SNAPSHOT" ]]; then
+      printf 'state-drift-marker: snapshot absent (%s) — skipping phase/bar diff\n' "$_SNAPSHOT" >&2
+      exit 0
+    fi
 
     # Diff phase field
     OLD_PHASE=$(jq -r '.phase // ""' "$_SNAPSHOT" 2>/dev/null || echo "")

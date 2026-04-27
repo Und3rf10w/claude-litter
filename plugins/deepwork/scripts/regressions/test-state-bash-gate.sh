@@ -6,6 +6,12 @@
 # SBG-c: `bash scripts/state-transition.sh phase_advance --to synthesize` → allowed (exit 0)
 # SBG-d: command not touching state.json            → allowed (exit 0)
 # SBG-e: `grep state.json README.md` (no redirect)  → allowed (exit 0)
+# SBG-f: `echo line >> events.jsonl`                → blocked (exit 2)
+# SBG-g: `echo {} > pending-change.json`            → blocked (exit 2)
+# SBG-h: `mv /tmp/x.jsonl incidents.jsonl`          → blocked (exit 2)
+# SBG-i: `bash .../test-capture.sh`                 → allowed (exit 0)
+# SBG-j: `echo {} > override-tokens.json`           → blocked (exit 2)
+# SBG-k: `tee hook-timing.jsonl`                    → blocked (exit 2)
 # SBG-l: pending-change.json write emits EXIT_PENDING_CHANGE_DIRECT_WRITE error
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
@@ -31,10 +37,25 @@ _assert_exit() {
   fi
 }
 
+# ── Shared sandbox: active execute instance so discover_instance() resolves ──
+# W20-h added an active-instance guard (fail-open when no execute instance active).
+# All block-cases require a sandbox instance in execute phase; allow-cases pass
+# regardless since they exit before the guard or match the allowlist.
+SBG_SANDBOX=$(mktemp -d)
+SBG_SESSION="sbg-test-$$-${RANDOM}"
+SBG_INST_DIR="${SBG_SANDBOX}/.claude/deepwork/deadbeef"
+mkdir -p "$SBG_INST_DIR"
+printf '{"session_id":"%s","phase":"execute","execute":{"phase":"execute"}}\n' "$SBG_SESSION" \
+  > "${SBG_INST_DIR}/state.json"
+export CLAUDE_PROJECT_DIR="$SBG_SANDBOX"
+export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
+trap 'rm -rf "$SBG_SANDBOX"' EXIT
+
 _run_gate() {
   local cmd="$1"
   local payload
-  payload=$(jq -cn --arg cmd "$cmd" '{tool_name: "Bash", tool_input: {command: $cmd}}')
+  payload=$(jq -cn --arg cmd "$cmd" --arg sid "$SBG_SESSION" \
+    '{tool_name: "Bash", session_id: $sid, tool_input: {command: $cmd}}')
   printf '%s' "$payload" | bash "$GATE" 2>/dev/null
   printf '%d' $?
 }
@@ -111,7 +132,7 @@ echo "── SBG-l: cat > pending-change.json emits EXIT_PENDING_CHANGE_DIRECT_W
 SBG_L_ERR=$(printf '%s' \
   "$(jq -cn --arg cmd "cat > .claude/deepwork/abc/pending-change.json <<EOF
 {}
-EOF" '{tool_name:"Bash",tool_input:{command:$cmd}}')" \
+EOF" --arg sid "$SBG_SESSION" '{tool_name:"Bash",session_id:$sid,tool_input:{command:$cmd}}')" \
   | bash "$GATE" 2>&1)
 SBG_L_RC=$?
 _assert_exit "SBG-l: blocked (exit 2)" "2" "$SBG_L_RC"

@@ -415,13 +415,10 @@ _END_TS=$(date +%s)
 ELAPSED=$(( _END_TS - _START_TS ))
 
 _assert_exit "ES-g: replay exits 0 on 1000 events" "0" "$REPLAY_RC"
-# Python fast-path achieves <1s for 1000 events (no per-event subshell spawns).
-# Threshold set to 5s to tolerate CI overhead; bash fallback (no python3) is exempt.
-if command -v python3 >/dev/null 2>&1; then
-  _THRESHOLD=5
-else
-  _THRESHOLD=120
-fi
+# Bash replay spawns sha256sum per event (O(N) subshells); ~27ms/event => ~27s for 1000 events.
+# The Python fast-path that would have kept this under 5s was removed in W15 #10.
+# Threshold now matches bash-fallback value unconditionally.
+_THRESHOLD=120
 if [[ "$ELAPSED" -lt "$_THRESHOLD" ]]; then
   _pass "ES-g: 1000-event replay completed in ${ELAPSED}s (<${_THRESHOLD}s threshold)"
 else

@@ -25,18 +25,22 @@
 _parse_hook_input() {
   INPUT=$(cat)
   export INPUT
-  # Single jq pass: extract all four fields in one subprocess instead of four
-  local _jq_out
+  # Single jq pass: extract all four fields in one subprocess instead of four.
+  # Split via bash read instead of 4 sed subprocesses (latency: every hook invocation).
+  local _jq_out _l1 _l2 _l3 _l4
   _jq_out=$(printf '%s' "$INPUT" | jq -r '
     (.hook_event_name // ""),
     (.tool_name       // ""),
     (.session_id      // ""),
     (.tool_use_id     // "")
   ' 2>/dev/null) || _jq_out=$'\n\n\n'
-  HOOK_EVENT_NAME=$(printf '%s' "$_jq_out" | sed -n '1p'); export HOOK_EVENT_NAME
-  TOOL_NAME=$(printf '%s'        "$_jq_out" | sed -n '2p'); export TOOL_NAME
-  SESSION_ID=$(printf '%s'       "$_jq_out" | sed -n '3p'); export SESSION_ID
-  TOOL_USE_ID=$(printf '%s'      "$_jq_out" | sed -n '4p'); export TOOL_USE_ID
+  # Read four newline-delimited lines into separate variables without spawning sed.
+  # || true: read returns 1 at EOF; callers with set -e must not propagate that.
+  { IFS= read -r _l1 || true; IFS= read -r _l2 || true; IFS= read -r _l3 || true; IFS= read -r _l4 || true; } <<< "$_jq_out"
+  HOOK_EVENT_NAME="$_l1"; export HOOK_EVENT_NAME
+  TOOL_NAME="$_l2";       export TOOL_NAME
+  SESSION_ID="$_l3";      export SESSION_ID
+  TOOL_USE_ID="$_l4";     export TOOL_USE_ID
 }
 
 # ---------------------------------------------------------------------------
@@ -157,7 +161,16 @@ _acquire_lock() {
       [[ $(date +%s) -lt $_dl ]] || return 1
       sleep 0.1
     done
-    trap 'rm -rf "$_ld"' EXIT
+    # Append to existing EXIT trap rather than replacing it (macOS accumulation fix)
+    local _prev_trap
+    _prev_trap=$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")
+    if [[ -n "$_prev_trap" ]]; then
+      # shellcheck disable=SC2064
+      trap "${_prev_trap}; rm -rf \"${_ld}\"" EXIT
+    else
+      # shellcheck disable=SC2064
+      trap "rm -rf \"${_ld}\"" EXIT
+    fi
   fi
   return 0
 }
@@ -270,8 +283,14 @@ discover_instance() {
     if [[ "$_sid" == deepwork-* ]] && [[ -n "$hook_session" ]]; then
       local _st_script
       _st_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-transition.sh"
-      bash "$_st_script" --state-file "$_f" backfill_session --session-id "$hook_session" 2>/dev/null || continue
-      _sid="$hook_session"
+      if bash "$_st_script" --state-file "$_f" backfill_session --session-id "$hook_session" 2>/dev/null; then
+        _sid="$hook_session"
+      else
+        printf 'discover_instance: backfill_session failed for %s — continuing session-id match\n' "$_f" >&2
+        # Fall through: use the placeholder _sid for the match below; it won't
+        # equal $hook_session so this instance will be skipped, but we don't
+        # silently abort scanning the remaining instances.
+      fi
     fi
 
     [[ "$_sid" == "$hook_session" ]] || continue

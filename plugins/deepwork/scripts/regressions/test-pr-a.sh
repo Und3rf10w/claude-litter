@@ -409,6 +409,67 @@ fi
 
 rm -rf "$PRA14C_SB"
 
+# ── PRA-14d: settings.local.json rollback — hooks stripped when setup fails after injection ──
+# Verify: when setup-deepwork.sh fails AFTER writing hook entries to settings.local.json,
+# the EXIT trap removes only the deepwork-instance entries (not other hooks) and leaves the
+# file consistent. Uses a fake profile-lib.sh to force failure after the injection step.
+echo ""
+echo "── PRA-14d: settings.local.json rollback — hooks stripped on post-injection failure ──"
+
+PRA14D_SB=$(mktemp -d)
+git -C "$PRA14D_SB" init -q
+git -C "$PRA14D_SB" commit --allow-empty -m "init" -q
+
+# Seed settings.local.json with an unrelated hook block (sentinel: must survive rollback)
+mkdir -p "${PRA14D_SB}/.claude"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo sentinel"}],"matcher":"Bash","_other_plugin":true}]}}\n' \
+  > "${PRA14D_SB}/.claude/settings.local.json"
+
+# Copy plugin scripts; replace profile-lib.sh with one that exits 1 (forces failure after injection)
+PRA14D_SCRIPTS="${PRA14D_SB}/plugins/deepwork/scripts"
+mkdir -p "$PRA14D_SCRIPTS"
+cp -r "${PLUGIN_ROOT}/scripts/." "$PRA14D_SCRIPTS/"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${PRA14D_SCRIPTS}/profile-lib.sh"
+
+PRA14D_SETUP="${PRA14D_SCRIPTS}/setup-deepwork.sh"
+PRA14D_OUT=$(CLAUDE_PLUGIN_ROOT="${PRA14D_SB}/plugins/deepwork" CLAUDE_PROJECT_DIR="$PRA14D_SB" \
+  bash "$PRA14D_SETUP" "test goal pra14d" 2>&1)
+PRA14D_RC=$?
+
+# Should exit non-zero
+if [[ "$PRA14D_RC" -ne 0 ]]; then
+  _pass "PRA-14d: setup exits non-zero after profile-lib.sh failure (exit=${PRA14D_RC})"
+else
+  _fail "PRA-14d: setup-deepwork should have exited non-zero, got 0"
+fi
+
+# settings.local.json must exist (not destroyed, rollback is surgical)
+if [[ -f "${PRA14D_SB}/.claude/settings.local.json" ]]; then
+  _pass "PRA-14d: settings.local.json still present after rollback"
+else
+  _fail "PRA-14d: settings.local.json missing — rollback should not delete the file"
+fi
+
+# No deepwork hook blocks should remain (rollback stripped them)
+PRA14D_DW_BLOCKS=$(jq '[.. | objects | select(._deepwork_instance)] | length' \
+  "${PRA14D_SB}/.claude/settings.local.json" 2>/dev/null || echo "-1")
+if [[ "$PRA14D_DW_BLOCKS" -eq 0 ]]; then
+  _pass "PRA-14d: no deepwork hook blocks remain after rollback"
+else
+  _fail "PRA-14d: ${PRA14D_DW_BLOCKS} deepwork hook block(s) remain after rollback (expected 0)"
+fi
+
+# Sentinel (unrelated hook) must survive
+PRA14D_SENTINEL=$(jq '.hooks.PreToolUse // [] | map(select(._other_plugin == true)) | length' \
+  "${PRA14D_SB}/.claude/settings.local.json" 2>/dev/null || echo "-1")
+if [[ "$PRA14D_SENTINEL" -gt 0 ]]; then
+  _pass "PRA-14d: unrelated hook sentinel preserved after rollback"
+else
+  _fail "PRA-14d: unrelated hook sentinel missing after rollback — rollback was not surgical"
+fi
+
+rm -rf "$PRA14D_SB"
+
 # ── PRA-15: early git-repo check — fail with clear error when not in a git repo ──
 echo ""
 echo "── PRA-15: early git-repo check — not-a-git-repo gives clear error ──"
@@ -432,6 +493,38 @@ else
 fi
 
 rm -rf "$PRA15_DIR"
+
+# ── PRA-15b: SETTINGS_LOCAL anchoring — settings.local.json lands under CLAUDE_PROJECT_DIR, not cwd ──
+echo ""
+echo "── PRA-15b: settings.local.json anchored to CLAUDE_PROJECT_DIR, not cwd ──"
+
+PRA15B_PROJECT=$(mktemp -d)
+PRA15B_CWD=$(mktemp -d)
+
+# Minimal git repo in project dir
+git -C "$PRA15B_PROJECT" init -q
+git -C "$PRA15B_PROJECT" commit --allow-empty -m "init" -q
+
+# Run setup from a DIFFERENT directory (PRA15B_CWD), with CLAUDE_PROJECT_DIR pointing at project
+PRA15B_OUT=$(cd "$PRA15B_CWD" && CLAUDE_PROJECT_DIR="$PRA15B_PROJECT" \
+  bash "${PLUGIN_ROOT}/scripts/setup-deepwork.sh" "test pra15b goal" 2>&1)
+# setup may fail or succeed; we only care about where it tried to write settings.local.json
+
+# Check: settings.local.json (or its tmp) must NOT land under cwd
+if find "$PRA15B_CWD" -name "settings.local.json" -o -name "settings.local.json.tmp.*" 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: settings.local.json fragment found under cwd (${PRA15B_CWD}) — not anchored to CLAUDE_PROJECT_DIR"
+else
+  _pass "PRA-15b: no settings.local.json fragment under cwd — correctly anchored to CLAUDE_PROJECT_DIR"
+fi
+
+# If setup created an instance, verify its .claude dir is under PROJECT_DIR, not cwd
+if find "$PRA15B_CWD/.claude" -maxdepth 0 -type d 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: .claude dir was created under cwd — SETTINGS_LOCAL not anchored"
+else
+  _pass "PRA-15b: .claude dir NOT created under cwd"
+fi
+
+rm -rf "$PRA15B_PROJECT" "$PRA15B_CWD"
 
 # ── Summary ──
 echo ""
