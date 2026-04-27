@@ -151,6 +151,76 @@ else
   _fail "WCD-f: WORKTREE-DISCIPLINE WARNING not found for redirect write: ${WCD_F_OUT}"
 fi
 
+# ── WCD-g: cd with trailing slash → no spurious warning (H1 fix) ──────────────
+echo ""
+echo "── WCD-g: cd /abs/.../w1/ && cp src dst (trailing slash) → no warning, exit 0 ──"
+WCD_G_OUT=$(_run_hook "cd /home/user/.claude/worktrees/w1/ && cp /tmp/src.md proposals/v1.md")
+WCD_G_RC=$?
+if [[ $WCD_G_RC -eq 0 ]]; then
+  _pass "WCD-g: exit 0"
+else
+  _fail "WCD-g: expected exit 0, got $WCD_G_RC"
+fi
+if printf '%s' "$WCD_G_OUT" | grep -q "WORKTREE-DISCIPLINE WARNING"; then
+  _fail "WCD-g: spurious WORKTREE-DISCIPLINE WARNING for trailing-slash cd: ${WCD_G_OUT}"
+else
+  _pass "WCD-g: no spurious warning for trailing-slash cd"
+fi
+
+# ── WCD-h: git -C <worktree> with no cd prefix → warning emitted (H2 fix) ────
+echo ""
+echo "── WCD-h: git -C /abs/.../w1 commit -m msg (no trailing slash, no cd) → warning, exit 0 ──"
+WCD_H_OUT=$(_run_hook "git -C /home/user/.claude/worktrees/w1 commit -m 'wip'")
+WCD_H_RC=$?
+if [[ $WCD_H_RC -eq 0 ]]; then
+  _pass "WCD-h: exit 0"
+else
+  _fail "WCD-h: expected exit 0, got $WCD_H_RC"
+fi
+if printf '%s' "$WCD_H_OUT" | grep -q "WORKTREE-DISCIPLINE WARNING"; then
+  _pass "WCD-h: WORKTREE-DISCIPLINE WARNING emitted for git -C without cd-prefix"
+else
+  _fail "WCD-h: WORKTREE-DISCIPLINE WARNING not found for git -C pattern: ${WCD_H_OUT}"
+fi
+
+# ── WCD-i: tee into worktree path → warning emitted (L2) ──────────────────────
+echo ""
+echo "── WCD-i: echo data | tee /abs/.../w1/file → warning, exit 0 ──"
+WCD_I_OUT=$(_run_hook "echo data | tee /home/user/.claude/worktrees/w1/file.md")
+WCD_I_RC=$?
+if [[ $WCD_I_RC -eq 0 ]]; then
+  _pass "WCD-i: exit 0"
+else
+  _fail "WCD-i: expected exit 0, got $WCD_I_RC"
+fi
+if printf '%s' "$WCD_I_OUT" | grep -q "WORKTREE-DISCIPLINE WARNING"; then
+  _pass "WCD-i: WORKTREE-DISCIPLINE WARNING emitted for tee write"
+else
+  _fail "WCD-i: WORKTREE-DISCIPLINE WARNING not found for tee pattern: ${WCD_I_OUT}"
+fi
+
+# ── WCD-j: subshell (cd /abs/.../w1 && cp src dst) — WONTFIX, no warning ─────
+# When cp uses a relative destination (`proposals/v1.md`) inside a subshell, the
+# write target has no worktree path literal in it. The segment extractor finds
+# nothing and the hook exits early (fail-open). This is a known single-command-
+# analysis limitation: the hook cannot trace relative paths through a cd-in-
+# subshell across a single command string. WONTFIX — document and assert exit 0.
+echo ""
+echo "── WCD-j: (cd /abs/.../w1 && cp src dst) subshell with relative dst — no warning (WONTFIX: relative path in subshell), exit 0 ──"
+WCD_J_OUT=$(_run_hook "(cd /home/user/.claude/worktrees/w1 && cp /tmp/src.md proposals/v1.md)")
+WCD_J_RC=$?
+if [[ $WCD_J_RC -eq 0 ]]; then
+  _pass "WCD-j: exit 0"
+else
+  _fail "WCD-j: expected exit 0, got $WCD_J_RC"
+fi
+# WONTFIX: relative write target inside subshell is undetectable — no warning expected
+if printf '%s' "$WCD_J_OUT" | grep -q "WORKTREE-DISCIPLINE WARNING"; then
+  _fail "WCD-j: unexpected warning — write target was relative (proposals/v1.md) with no worktree path: ${WCD_J_OUT}"
+else
+  _pass "WCD-j: no warning (WONTFIX: relative-path write in subshell is undetectable)"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "─────────────────────────────────────"

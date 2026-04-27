@@ -272,27 +272,69 @@ _verify_integrity_hash() {
   return 0
 }
 
-# Write with hash: applies $jq_filter (+ extra _write_state_atomic args) then
-# immediately recomputes and writes the integrity hash + event_head in one atomic update.
+# Write with hash: applies $jq_filter in a single atomic write that also stamps
+# state_integrity_hash, event_head, and last_updated.
+#
+# Single-pass approach:
+#   1. Apply mutation filter to a tmp file.
+#   2. Compute hash on tmp (hash input excludes state_integrity_hash itself).
+#   3. Stamp hash + event_head + last_updated into the same tmp file.
+#   4. mv tmp → state.json (one atomic rename; no second pass on disk).
+#
+# This eliminates the two-pass window where a SIGKILL between passes left
+# state.json with the mutation but without the updated hash/event_head,
+# causing integrity-always-gate to block all subsequent tool calls.
 _write_with_hash() {
   local sf="$1"; shift
-  # First pass: apply the mutation filter
-  _write_state_atomic "$sf" "$@" || return 4
-  # Second pass: recompute integrity hash, event_head, and last_updated atomically
+  [[ -f "$sf" ]] || return 1
+  local tmp="${sf}.wwh.tmp.$$"
+  local lock="${sf}.lock"
+
+  _acquire_lock "$lock" || return 1
+
+  # Step 1: apply the caller's mutation filter to tmp
+  jq "$@" "$sf" > "$tmp" 2>/dev/null
+  local _jq_rc=$?
+  if [[ $_jq_rc -ne 0 ]] || [[ ! -s "$tmp" ]]; then
+    _release_lock "$lock"
+    rm -f "$tmp"
+    return 4
+  fi
+
+  # Step 2: compute integrity hash on the mutated-but-not-yet-stamped content
+  # (_compute_integrity_hash reads from a file path — pass tmp directly)
   local new_hash event_head now
-  new_hash=$(_compute_integrity_hash "$sf") || new_hash=""
+  new_hash=$(_compute_integrity_hash "$tmp" 2>/dev/null) || new_hash=""
   event_head=$(_read_event_head 2>/dev/null || echo "")
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+  # Step 3: stamp hash + event_head + last_updated into the same tmp in one jq pass
+  local stamp_tmp="${sf}.wwh.stamp.tmp.$$"
   if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
-      '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' || return 4
+    jq --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
+      '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' \
+      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
   elif [[ -n "$new_hash" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg ts "$now" \
-      '.state_integrity_hash = $h | .last_updated = $ts' || return 4
+    jq --arg h "$new_hash" --arg ts "$now" \
+      '.state_integrity_hash = $h | .last_updated = $ts' \
+      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
   else
-    _write_state_atomic "$sf" --arg ts "$now" '.last_updated = $ts' || return 4
+    jq --arg ts "$now" '.last_updated = $ts' \
+      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
   fi
-  return 0
+
+  # Step 4: atomic rename — this is the single point of commitment
+  if [[ -s "$tmp" ]]; then
+    mv "$tmp" "$sf"
+    local _mv_rc=$?
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return $_mv_rc
+  else
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 4
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1292,7 +1334,14 @@ case "$SUBCOMMAND" in
     _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
     mv "$STATE_FILE" "$_ARCHIVE_JSON" || { printf 'archive_state: failed to rename state.json\n' >&2; exit 4; }
-    [[ -f "$_EVENTS_FILE" ]] && mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || true
+    if [[ -f "$_EVENTS_FILE" ]]; then
+      mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || {
+        # Reverse the state.json rename to avoid half-archived state
+        mv "$_ARCHIVE_JSON" "$STATE_FILE" 2>/dev/null || true
+        printf 'archive_state: failed to rename events.jsonl — rolled back state.json\n' >&2
+        exit 4
+      }
+    fi
     rm -f "${INSTANCE_DIR}/pending-change.json"
     # Pre-leg snapshots keyed to the archive_state Bash call are orphaned after mv
     # (PostToolUse can't find the instance when state.json is gone). Clean them here.

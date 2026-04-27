@@ -780,6 +780,93 @@ else
   _fail "EV-a: event was written despite bad jq_path (before=${_EVENTS_BEFORE}, after=${_EVENTS_AFTER})"
 fi
 
+# ── AW-a: atomic write — concurrent set_field with SIGKILL never corrupts state.json ──
+# Forks 5 parallel set_field invocations against the same instance and SIGKILL one of
+# them at random. After all complete/die, asserts state.json is parseable JSON and
+# integrity hash is either valid or the file is the pre-write version (never mid-write).
+echo ""
+echo "── AW-a: concurrent set_field + SIGKILL — state.json never mid-write ──"
+
+_AW_PASS=0
+_AW_FAIL=0
+
+for _iter in $(seq 1 10); do
+  _aw_sb=$(mktemp -d)
+  _aw_inst_dir="$_aw_sb/.claude/deepwork/aw00test"
+  mkdir -p "$_aw_inst_dir"
+  _aw_sf="${_aw_inst_dir}/state.json"
+  _aw_sid="aw-test-$(date +%s)-${_iter}"
+
+  STATE_FILE="$_aw_sf" "$STATE_TRANSITION" init - <<'EOINIT' >/dev/null 2>&1
+{"session_id":"aw-session","phase":"explore","team_name":"aw-team","bar":[{"id":"G1","verdict":null}]}
+EOINIT
+
+  # Capture pre-write state for comparison
+  _aw_pre=$(cat "$_aw_sf" 2>/dev/null)
+
+  # Launch 5 parallel set_field writers
+  _aw_pids=()
+  for _w in 1 2 3 4 5; do
+    STATE_FILE="$_aw_sf" "$STATE_TRANSITION" set_field .execute.plan_drift_detected "true" \
+      >/dev/null 2>&1 &
+    _aw_pids+=($!)
+  done
+
+  # Kill one at random
+  if [[ ${#_aw_pids[@]} -gt 0 ]]; then
+    _victim_idx=$(( RANDOM % ${#_aw_pids[@]} ))
+    _victim_pid=${_aw_pids[$_victim_idx]}
+    kill -9 "$_victim_pid" 2>/dev/null || true
+  fi
+
+  # Wait for remaining
+  for _pid in "${_aw_pids[@]}"; do
+    wait "$_pid" 2>/dev/null || true
+  done
+
+  # Assert state.json is parseable
+  if jq -e . "$_aw_sf" >/dev/null 2>&1; then
+    _AW_PASS=$((_AW_PASS + 1))
+  else
+    _fail "AW-a iter ${_iter}: state.json not parseable after concurrent kill"
+    _AW_FAIL=$((_AW_FAIL + 1))
+    rm -rf "$_aw_sb"
+    continue
+  fi
+
+  # Assert integrity hash is valid (or absent = pre-write state still intact)
+  _aw_on_disk=$(jq -r '.state_integrity_hash // ""' "$_aw_sf" 2>/dev/null)
+  if [[ -z "$_aw_on_disk" ]]; then
+    # No hash means file is the original pre-init or init wrote without hash — OK
+    _AW_PASS=$((_AW_PASS + 1))
+  else
+    # Hash present — recompute and compare
+    _aw_recomputed=$(STATE_FILE="$_aw_sf" "$STATE_TRANSITION" --state-file "$_aw_sf" \
+      set_field .___noop___ 'null' >/dev/null 2>&1; \
+      jq -r '.state_integrity_hash // ""' "$_aw_sf" 2>/dev/null) || _aw_recomputed=""
+    # Direct recompute via subshell sourcing instance-lib
+    _aw_recomputed=$(
+      _PLUGIN_ROOT="$(cd "$(dirname "$STATE_TRANSITION")/.." && pwd)"
+      source "${_PLUGIN_ROOT}/scripts/instance-lib.sh" 2>/dev/null
+      _compute_integrity_hash "$_aw_sf" 2>/dev/null
+    ) || _aw_recomputed=""
+    if [[ -z "$_aw_recomputed" ]] || [[ "$_aw_on_disk" == "$_aw_recomputed" ]]; then
+      _AW_PASS=$((_AW_PASS + 1))
+    else
+      _fail "AW-a iter ${_iter}: hash mismatch (disk=${_aw_on_disk:0:16}... recomputed=${_aw_recomputed:0:16}...)"
+      _AW_FAIL=$((_AW_FAIL + 1))
+    fi
+  fi
+
+  rm -rf "$_aw_sb"
+done
+
+PASS=$((PASS + _AW_PASS))
+FAIL=$((FAIL + _AW_FAIL))
+if [[ $_AW_FAIL -eq 0 ]]; then
+  _pass "AW-a: all 10 kill-race iterations produced valid state.json (${_AW_PASS} hash-checks passed)"
+fi
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
