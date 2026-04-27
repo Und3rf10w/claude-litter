@@ -10,8 +10,8 @@
 #   - irreversible-remote (git push non-force, npm publish, docker push): deny unless
 #     state.execute.authorized_push:true AND critic approval present AND CI attestation exists
 #   - irreversible-prod (kubectl apply, terraform apply, helm upgrade): deny unless
-#     state.execute.authorized_prod_deploy:true AND rollback.<change_id>.md exists with
-#     "## Tested procedure" section
+#     state.execute.authorized_prod_deploy:true AND rollback.<plan_section>.md exists with
+#     "## Tested procedure" section (plan_section derived from pending-change.json)
 #
 # G7 (secret-scan, plan §5.3): On git commit commands, run `git diff --cached` and check
 # staged content for secrets (AWS keys, OAuth tokens, JWTs, SSH private keys, API key patterns).
