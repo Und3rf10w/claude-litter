@@ -157,7 +157,16 @@ _acquire_lock() {
       [[ $(date +%s) -lt $_dl ]] || return 1
       sleep 0.1
     done
-    trap 'rm -rf "$_ld"' EXIT
+    # Append to existing EXIT trap rather than replacing it (macOS accumulation fix)
+    local _prev_trap
+    _prev_trap=$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")
+    if [[ -n "$_prev_trap" ]]; then
+      # shellcheck disable=SC2064
+      trap "${_prev_trap}; rm -rf \"${_ld}\"" EXIT
+    else
+      # shellcheck disable=SC2064
+      trap "rm -rf \"${_ld}\"" EXIT
+    fi
   fi
   return 0
 }
