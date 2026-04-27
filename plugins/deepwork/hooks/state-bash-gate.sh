@@ -41,10 +41,9 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
 [[ -n "$COMMAND" ]] || exit 0
 
-# Active-instance guard: only apply gates when a deepwork execute instance is active.
+# Active-instance guard: only apply gates when a deepwork instance is active
+# (design OR execute). Audit-trail files are equally protected in both modes.
 discover_instance "$SESSION_ID" 2>/dev/null || exit 0
-EXEC_PHASE=$(jq -r '.execute.phase // ""' "$STATE_FILE" 2>/dev/null || echo "")
-[[ -n "$EXEC_PHASE" ]] || exit 0
 
 # Protected file pattern — matches any of the audit-trail filenames.
 _PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'

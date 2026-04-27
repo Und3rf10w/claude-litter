@@ -13,6 +13,8 @@
 # SBG-j: `echo {} > override-tokens.json`           → blocked (exit 2)
 # SBG-k: `tee hook-timing.jsonl`                    → blocked (exit 2)
 # SBG-l: pending-change.json write emits EXIT_PENDING_CHANGE_DIRECT_WRITE error
+# SBG-design-1: design-mode instance (no .execute) blocks state.json write (W21 #2)
+# SBG-design-2: no active instance → gate exits 0 (fail-open per active-instance guard)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -37,10 +39,10 @@ _assert_exit() {
   fi
 }
 
-# ── Shared sandbox: active execute instance so discover_instance() resolves ──
-# W20-h added an active-instance guard (fail-open when no execute instance active).
-# All block-cases require a sandbox instance in execute phase; allow-cases pass
-# regardless since they exit before the guard or match the allowlist.
+# ── Shared sandbox: active instance so discover_instance() resolves ──
+# W20-h added an active-instance guard (fail-open when no instance active).
+# Post-W21 #2: guard fires for any active instance regardless of mode (design or
+# execute). See SBG-design-1/2 below for the cross-mode coverage cases.
 SBG_SANDBOX=$(mktemp -d)
 SBG_SESSION="sbg-test-$$-${RANDOM}"
 SBG_INST_DIR="${SBG_SANDBOX}/.claude/deepwork/deadbeef"
@@ -146,6 +148,29 @@ if printf '%s' "$SBG_L_ERR" | grep -q "pending_change_set"; then
 else
   _fail "SBG-l: pending_change_set instruction missing from stderr: ${SBG_L_ERR}"
 fi
+
+# ── SBG-design-1: design-mode instance blocks state.json redirect (W21 #2) ──
+# State has top-level .phase but NO .execute subobject. Pre-W21 the EXEC_PHASE
+# guard would exit 0 here, leaving design-mode audit-trail unprotected.
+echo ""
+echo "── SBG-design-1: design-mode instance — echo > state.json blocked ──"
+SBG_DESIGN_SESSION="sbg-design-$$-${RANDOM}"
+SBG_DESIGN_INST_DIR="${SBG_SANDBOX}/.claude/deepwork/decafbad"
+mkdir -p "$SBG_DESIGN_INST_DIR"
+printf '{"session_id":"%s","phase":"explore"}\n' "$SBG_DESIGN_SESSION" \
+  > "${SBG_DESIGN_INST_DIR}/state.json"
+SBG_DESIGN_PAYLOAD=$(jq -cn --arg cmd "echo {} > state.json" --arg sid "$SBG_DESIGN_SESSION" \
+  '{tool_name:"Bash",session_id:$sid,tool_input:{command:$cmd}}')
+SBG_DESIGN_RC=$(printf '%s' "$SBG_DESIGN_PAYLOAD" | bash "$GATE" 2>/dev/null; printf '%d' $?)
+_assert_exit "SBG-design-1" "2" "$SBG_DESIGN_RC"
+
+# ── SBG-design-2: no active instance → gate exits 0 (active-instance guard) ──
+echo ""
+echo "── SBG-design-2: no active instance — gate fails open ──"
+SBG_GHOST_PAYLOAD=$(jq -cn --arg cmd "echo {} > state.json" --arg sid "ghost-session-no-such-inst" \
+  '{tool_name:"Bash",session_id:$sid,tool_input:{command:$cmd}}')
+SBG_GHOST_RC=$(printf '%s' "$SBG_GHOST_PAYLOAD" | bash "$GATE" 2>/dev/null; printf '%d' $?)
+_assert_exit "SBG-design-2" "0" "$SBG_GHOST_RC"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
