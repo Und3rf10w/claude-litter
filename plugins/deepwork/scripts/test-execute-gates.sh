@@ -327,6 +327,102 @@ else
   _fail "help text does not mention --allow-no-hooks"
 fi
 
+# ---- Tests G2-a through G2-e: bash-gate G2 rollback-plan checks (W20-b) ----
+echo ""
+echo "── G2: rollback-plan checks for prod deployments ──"
+_G2_PROJECT=$(mktemp -d)
+(cd "$_G2_PROJECT" && git init -q)
+_G2_INST_DIR="${_G2_PROJECT}/.claude/deepwork/ab12cd34"
+mkdir -p "$_G2_INST_DIR"
+cat > "${_G2_INST_DIR}/state.json" <<'G2STATE'
+{
+  "session_id": "test-g2-session",
+  "execute": {
+    "phase": "execute",
+    "plan_ref": "PLAN.md",
+    "plan_hash": "abc123",
+    "plan_drift_detected": false,
+    "authorized_force_push": false,
+    "authorized_push": false,
+    "authorized_prod_deploy": true,
+    "authorized_local_destructive": false,
+    "secret_scan_waived": false,
+    "setup_flags_snapshot": {"authorized_prod_deploy": true}
+  }
+}
+G2STATE
+_G2_CMD_KUBECTL='{"session_id":"test-g2-session","tool_input":{"command":"kubectl apply -f deploy.yaml"}}'
+
+# _g2_deny_check: returns 0 if output contains permissionDecision:deny with G2 message
+_g2_deny_check() { printf '%s' "$1" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | test("G2"))' >/dev/null 2>&1; }
+# _g2_allow_check: returns 0 if output is empty (no deny block emitted) or exit 0 with no permissionDecision
+_g2_allow_check() { [[ -z "$1" ]] || ! printf '%s' "$1" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; }
+
+# G2-a: pending-change present + rollback file exists + Tested procedure → allow
+printf '%s' '{"plan_section":"deploy-v2"}' > "${_G2_INST_DIR}/pending-change.json"
+printf '## Tested procedure\n\nStep 1: kubectl delete\n' > "${_G2_INST_DIR}/rollback.deploy-v2.md"
+OUT=$(printf '%s' "$_G2_CMD_KUBECTL" \
+  | CLAUDE_PROJECT_DIR="$_G2_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && _g2_allow_check "$OUT"; then
+  _pass "G2-a: pending-change + rollback.deploy-v2.md with Tested procedure → allow (exit 0, no deny)"
+else
+  _fail "G2-a: expected allow (exit 0, no deny), got RC=${RC}: ${OUT}"
+fi
+
+# G2-b: pending-change absent → deny
+rm -f "${_G2_INST_DIR}/pending-change.json"
+OUT=$(printf '%s' "$_G2_CMD_KUBECTL" \
+  | CLAUDE_PROJECT_DIR="$_G2_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && _g2_deny_check "$OUT"; then
+  _pass "G2-b: pending-change absent → deny (G2 in permissionDecisionReason)"
+else
+  _fail "G2-b: expected permissionDecision:deny with G2, got RC=${RC}: ${OUT}"
+fi
+
+# G2-c: pending-change present but rollback file absent → deny
+printf '%s' '{"plan_section":"deploy-v2"}' > "${_G2_INST_DIR}/pending-change.json"
+rm -f "${_G2_INST_DIR}/rollback.deploy-v2.md"
+OUT=$(printf '%s' "$_G2_CMD_KUBECTL" \
+  | CLAUDE_PROJECT_DIR="$_G2_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && _g2_deny_check "$OUT"; then
+  _pass "G2-c: rollback file absent → deny (G2 in permissionDecisionReason)"
+else
+  _fail "G2-c: expected permissionDecision:deny with G2, got RC=${RC}: ${OUT}"
+fi
+
+# G2-d: rollback file exists but missing '## Tested procedure' → deny
+printf '## Overview\n\nNo procedure documented.\n' > "${_G2_INST_DIR}/rollback.deploy-v2.md"
+OUT=$(printf '%s' "$_G2_CMD_KUBECTL" \
+  | CLAUDE_PROJECT_DIR="$_G2_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && _g2_deny_check "$OUT"; then
+  _pass "G2-d: rollback missing '## Tested procedure' → deny (G2 in permissionDecisionReason)"
+else
+  _fail "G2-d: expected permissionDecision:deny with G2, got RC=${RC}: ${OUT}"
+fi
+
+# G2-e: plan_section sanitizes to empty → deny
+printf '%s' '{"plan_section":":::///"}' > "${_G2_INST_DIR}/pending-change.json"
+printf '## Tested procedure\n\nStep 1\n' > "${_G2_INST_DIR}/rollback..md"
+OUT=$(printf '%s' "$_G2_CMD_KUBECTL" \
+  | CLAUDE_PROJECT_DIR="$_G2_PROJECT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "${PLUGIN_ROOT}/hooks/execute/bash-gate.sh" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && _g2_deny_check "$OUT"; then
+  _pass "G2-e: plan_section sanitizes to empty → deny (G2 in permissionDecisionReason)"
+else
+  _fail "G2-e: expected permissionDecision:deny with G2 (empty sanitized section), got RC=${RC}: ${OUT}"
+fi
+
+rm -rf "$_G2_PROJECT"
+
 # ---- Summary ----
 printf '\n' >&2
 printf '%d passed, %d failed\n' "$PASSES" "$FAILS" >&2
