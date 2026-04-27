@@ -106,6 +106,7 @@ REGTABLE
   # hooks.json static registrations (TeammateIdle, PreCompact) — always-on, not in manifest
   cat <<'REGTABLE'
 HOOKS_JSON_STATIC:teammate-idle-gate.sh:TeammateIdle:.*:design
+HOOKS_JSON_STATIC:status-claim-regex-precheck.sh:TeammateIdle:.*:design
 HOOKS_JSON_STATIC:pre-compact.sh:PreCompact:(none):design
 REGTABLE
 }

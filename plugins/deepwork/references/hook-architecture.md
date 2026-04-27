@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 106 nodes, 170 edges
+Graph: 106 nodes, 171 edges
 
 ## Mermaid Flowchart
 
@@ -222,6 +222,7 @@ flowchart LR
   session_context -.->|"reads"| phase
   session_context -.->|"reads"| source
   session_context -.->|"reads"| team_name
+  state_bash_gate -.->|"reads"| execute_phase
   state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
   stop_hook -.->|"reads"| execute_phase
@@ -762,7 +763,7 @@ flowchart LR
       "mode": "shared",
       "reads": {
         "state": [
-          ""
+          ".execute.phase"
         ],
         "markers": [
           ""

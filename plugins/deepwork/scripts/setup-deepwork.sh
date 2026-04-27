@@ -216,10 +216,23 @@ if [[ "$SAFE_MODE" != "true" ]] && [[ "$SAFE_MODE" != "false" ]]; then
   exit 1
 fi
 
+# Validate CLAUDE_PROJECT_DIR if set — must be an existing directory.
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]] && [[ ! -d "$CLAUDE_PROJECT_DIR" ]]; then
+  printf 'ERROR: CLAUDE_PROJECT_DIR is set but is not an existing directory: %s\n' "$CLAUDE_PROJECT_DIR" >&2
+  exit 1
+fi
+
 # Require a git repository — deepwork uses git for branch safety, worktrees, and
 # CI hooks; without one, sessions will silently fail mid-execute.
 git -C "${CLAUDE_PROJECT_DIR:-$(pwd -P)}" rev-parse --git-dir 2>/dev/null \
   || { printf 'ERROR: deepwork requires a git repository (run '"'"'git init'"'"' or cd to one)\n' >&2; exit 1; }
+
+# Declare path variables before any mkdir so the EXIT trap below covers cleanup.
+LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
+# Anchored to $CLAUDE_PROJECT_DIR (W20-d): all trap/rollback blocks use this variable.
+SETTINGS_LOCAL="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/settings.local.json"
+# Install EXIT trap before first mkdir so cleanup fires even on early exit.
+trap 'rm -f "$LOCKFILE" "${SETTINGS_LOCAL}.tmp.$$"' EXIT
 
 # Ensure .claude/ exists at project root (CLAUDE_PROJECT_DIR or resolved cwd)
 mkdir -p "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude"
@@ -231,10 +244,6 @@ if [[ -z "$SESSION_ID" ]]; then
 fi
 
 # Atomic lockfile (TOCTOU-safe)
-LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
-# Declare early so all traps and rollback blocks below can use the variable rather
-# than repeated bare ".claude/settings.local.json" literals (W20-d: anchored to project dir).
-SETTINGS_LOCAL="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/settings.local.json"
 if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
   if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -264,7 +273,6 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
     exit 1
   fi
 fi
-trap 'rm -f "$LOCKFILE" "${SETTINGS_LOCAL}.tmp.$$"' EXIT
 
 # Check for already-active instance (lockfile was stale from a crashed setup)
 for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
