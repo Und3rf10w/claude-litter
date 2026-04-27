@@ -319,8 +319,11 @@ _write_with_hash() {
       '.state_integrity_hash = $h | .last_updated = $ts' \
       "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
   else
-    jq --arg ts "$now" '.last_updated = $ts' \
-      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
+    # hash unavailable — fail-closed: do not write an unauthenticated state
+    printf 'state-transition: _write_with_hash: integrity hash empty, aborting write of %s\n' "$sf" >&2
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 5
   fi
 
   # Step 4: atomic rename — this is the single point of commitment
