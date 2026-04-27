@@ -585,6 +585,111 @@ fi
 
 rm -rf "$T11N_SB"
 
+# ── (o) archive_state → state.archived.json carries accurate state_integrity_hash (W20-i) ──
+# Regression for W20-i: archive_state previously used _write_state_atomic which stamped
+# only event_head, leaving state_integrity_hash stale (covering pre-stamp content).
+# After the fix, _write_with_hash must produce a hash that matches _compute_integrity_hash
+# on the archived file content.
+echo ""
+echo "── T11-o: archive_state → state.archived.json has valid state_integrity_hash (W20-i) ──"
+
+T11O_SB=$(mktemp -d)
+T11O_ID="fg678901"
+T11O_DIR="$T11O_SB/.claude/deepwork/$T11O_ID"
+mkdir -p "$T11O_DIR"
+T11O_SID="t11o-session-$(date +%s)"
+T11O_STATE="${T11O_DIR}/state.json"
+T11O_ARCH="${T11O_DIR}/state.archived.json"
+
+STATE_FILE="$T11O_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11O_SID","phase":"done","team_name":"test-team"}
+EOF
+
+# Build up some event history so event_head is non-trivial
+INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+_T11O_RC=$(INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1; echo $?)
+_assert_exit "T11-o: archive_state exits 0" "0" "$_T11O_RC"
+
+if [[ ! -f "$T11O_ARCH" ]]; then
+  printf 'FAIL: T11-o: state.archived.json not present\n' >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-o: state.archived.json present\n'
+  PASS=$((PASS + 1))
+
+  # Recompute integrity hash using _compute_integrity_hash from state-transition.sh.
+  # Source state-transition.sh in a subshell to access the internal helper directly.
+  T11O_STORED_HASH=$(jq -r '.state_integrity_hash // ""' "$T11O_ARCH" 2>/dev/null)
+  T11O_COMPUTED_HASH=$(
+    INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_ARCH" \
+      bash -c '
+        source "'"${PLUGIN_ROOT}/scripts/state-transition.sh"'" --_source_only 2>/dev/null || true
+        _compute_integrity_hash "'"$T11O_ARCH"'" 2>/dev/null
+      ' 2>/dev/null
+  ) || T11O_COMPUTED_HASH=""
+  # Fallback: replicate the projection inline if sourcing is not supported
+  if [[ -z "$T11O_COMPUTED_HASH" ]]; then
+    _T11O_SOT=$(jq -r '(.source_of_truth // []) | sort | tojson' "$T11O_ARCH" 2>/dev/null || echo "")
+    _T11O_SOT_DIGEST=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      _T11O_SOT_DIGEST=$(printf '%s\n' "$_T11O_SOT" | sha256sum | cut -d' ' -f1)
+    else
+      _T11O_SOT_DIGEST=$(printf '%s\n' "$_T11O_SOT" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    _T11O_PROJ=$(jq -c --arg sot_digest "$_T11O_SOT_DIGEST" '{
+      phase, team_name, instance_id, frontmatter_schema_version, started_at,
+      source_of_truth_digest: $sot_digest,
+      bar: ([.bar[]? | {id, verdict}] | sort_by(.id)),
+      execute_plan_drift_detected: .execute.plan_drift_detected,
+      execute_plan_hash: .execute.plan_hash
+    }' "$T11O_ARCH" 2>/dev/null)
+    if [[ -n "$_T11O_PROJ" ]]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        T11O_COMPUTED_HASH=$(printf '%s' "$_T11O_PROJ" | sha256sum | cut -d' ' -f1)
+      else
+        T11O_COMPUTED_HASH=$(printf '%s' "$_T11O_PROJ" | shasum -a 256 | cut -d' ' -f1)
+      fi
+    fi
+  fi
+
+  if [[ -n "$T11O_STORED_HASH" && "$T11O_STORED_HASH" == "$T11O_COMPUTED_HASH" ]]; then
+    printf 'pass: T11-o: state.archived.json.state_integrity_hash is accurate\n'
+    PASS=$((PASS + 1))
+  else
+    printf 'FAIL: T11-o: state_integrity_hash mismatch in archived file\n' >&2
+    printf '  stored:   %s\n' "$T11O_STORED_HASH" >&2
+    printf '  computed: %s\n' "$T11O_COMPUTED_HASH" >&2
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Also verify event_head in archived file matches the tail of events.archived.jsonl
+  T11O_EVENTS_ARCH="${T11O_DIR}/events.archived.jsonl"
+  if [[ -f "$T11O_EVENTS_ARCH" ]]; then
+    T11O_LAST_LINE=$(tail -1 "$T11O_EVENTS_ARCH")
+    T11O_LAST_HASH=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      T11O_LAST_HASH=$(printf '%s\n' "$T11O_LAST_LINE" | sha256sum | cut -d' ' -f1)
+    else
+      T11O_LAST_HASH=$(printf '%s\n' "$T11O_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    T11O_STORED_HEAD=$(jq -r '.event_head // ""' "$T11O_ARCH" 2>/dev/null)
+    if [[ "$T11O_STORED_HEAD" == "$T11O_LAST_HASH" ]]; then
+      printf 'pass: T11-o: state.archived.json.event_head matches events.archived.jsonl tail\n'
+      PASS=$((PASS + 1))
+    else
+      printf 'FAIL: T11-o: event_head mismatch in archived state\n' >&2
+      printf '  archived event_head:          %s\n' "$T11O_STORED_HEAD" >&2
+      printf '  events.archived.jsonl tail:   %s\n' "$T11O_LAST_HASH" >&2
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+fi
+
+rm -rf "$T11O_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

@@ -1059,7 +1059,11 @@ case "$SUBCOMMAND" in
             'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
              else {plan_section:$ps, files:$files, rationale:$rat} end' 2>/dev/null)
           if [[ -n "$_pcs_json" && -n "$_pcs_dir" ]]; then
-            printf '%s\n' "$_pcs_json" > "${_pcs_dir}/pending-change.json" 2>/dev/null || true
+            # tmp+mv to avoid a partial write if interrupted mid-replay (W20-i)
+            _pcs_tmp="${_pcs_dir}/pending-change.json.tmp.$$"
+            printf '%s\n' "$_pcs_json" > "$_pcs_tmp" 2>/dev/null \
+              && mv "$_pcs_tmp" "${_pcs_dir}/pending-change.json" \
+              || { rm -f "$_pcs_tmp"; true; }
           fi
           ;;
         *)
@@ -1376,12 +1380,11 @@ case "$SUBCOMMAND" in
     _require_state_file
     _ensure_event_log
     _emit_event "state_archived" '{}' || exit 5
-    # Stamp event_head in state.json AFTER state_archived is appended so the
-    # archived copy's event_head reflects the final event (the archive itself).
-    _arch_event_head=$(_read_event_head 2>/dev/null || echo "")
-    if [[ -n "$_arch_event_head" ]]; then
-      _write_state_atomic "$STATE_FILE" --arg eh "$_arch_event_head" '.event_head = $eh' || true
-    fi
+    # Stamp event_head + state_integrity_hash + last_updated using _write_with_hash so
+    # the archive record carries an accurate, verifiable hash (W20-i: audit integrity).
+    # _write_with_hash internally reads _read_event_head which now returns the SHA256 of
+    # the just-appended state_archived event — the final event in the chain.
+    _write_with_hash "$STATE_FILE" '.' || true
     _ARCHIVE_JSON="${INSTANCE_DIR}/state.archived.json"
     _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
