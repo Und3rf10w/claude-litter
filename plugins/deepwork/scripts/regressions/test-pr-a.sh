@@ -370,6 +370,69 @@ fi
 
 rm -rf "$TRANS_SB" "$TRANS_SB2"
 
+# ── PRA-14c: real mid-init failure — setup-deepwork.sh EXIT trap removes INSTANCE_DIR ──
+# Real end-to-end: stub state-transition.sh to exit 1 during init, verify trap fires.
+echo ""
+echo "── PRA-14c: real mid-init failure — trap fires and INSTANCE_DIR is absent ──"
+
+PRA14C_SB=$(mktemp -d)
+# Create a minimal git repo so early git check passes
+git -C "$PRA14C_SB" init -q
+git -C "$PRA14C_SB" commit --allow-empty -m "init" -q
+
+# Stub state-transition.sh: replace with a script that exits 1 on 'init'
+PRA14C_SCRIPT_DIR="${PRA14C_SB}/plugins/deepwork/scripts"
+mkdir -p "$PRA14C_SCRIPT_DIR"
+cp -r "${PLUGIN_ROOT}/scripts/." "$PRA14C_SCRIPT_DIR/"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${PRA14C_SCRIPT_DIR}/state-transition.sh"
+chmod +x "${PRA14C_SCRIPT_DIR}/state-transition.sh"
+
+# Run setup-deepwork.sh from the sandbox repo dir; it must fail mid-init
+PRA14C_SETUP="${PRA14C_SCRIPT_DIR}/setup-deepwork.sh"
+PRA14C_OUT=$(CLAUDE_PLUGIN_ROOT="${PRA14C_SB}/plugins/deepwork" CLAUDE_PROJECT_DIR="$PRA14C_SB" bash "$PRA14C_SETUP" "test goal pra14c" 2>&1)
+PRA14C_RC=$?
+
+# Should exit non-zero
+if [[ "$PRA14C_RC" -ne 0 ]]; then
+  _pass "PRA-14c: setup-deepwork exits non-zero on mid-init failure (exit=${PRA14C_RC})"
+else
+  _fail "PRA-14c: setup-deepwork should have exited non-zero, got 0"
+fi
+
+# INSTANCE_DIR must not exist (trap must have cleaned it)
+PRA14C_INST_COUNT=$(find "${PRA14C_SB}/.claude/deepwork" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PRA14C_INST_COUNT" -eq 0 ]]; then
+  _pass "PRA-14c: no INSTANCE_DIR remains after mid-init failure (trap fired)"
+else
+  _fail "PRA-14c: INSTANCE_DIR still exists after mid-init failure (trap did not fire or missed it)"
+fi
+
+rm -rf "$PRA14C_SB"
+
+# ── PRA-15: early git-repo check — fail with clear error when not in a git repo ──
+echo ""
+echo "── PRA-15: early git-repo check — not-a-git-repo gives clear error ──"
+
+PRA15_DIR="/tmp/no-git-here-$$"
+mkdir -p "$PRA15_DIR"
+
+PRA15_SETUP="${PLUGIN_ROOT}/scripts/setup-deepwork.sh"
+PRA15_OUT=$(CLAUDE_PROJECT_DIR="$PRA15_DIR" bash "$PRA15_SETUP" "test goal pra15" 2>&1)
+PRA15_RC=$?
+
+_assert_exit "PRA-15: non-zero exit outside git repo" "1" "$PRA15_RC"
+_assert_contains "PRA-15: error message mentions git repository" "git repository" "$PRA15_OUT"
+
+# No instance dir should have been created
+PRA15_INST_COUNT=$(find "${PRA15_DIR}/.claude/deepwork" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PRA15_INST_COUNT" -eq 0 ]]; then
+  _pass "PRA-15: no INSTANCE_DIR created when not in a git repo"
+else
+  _fail "PRA-15: INSTANCE_DIR was created despite not being in a git repo"
+fi
+
+rm -rf "$PRA15_DIR"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

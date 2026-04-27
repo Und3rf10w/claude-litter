@@ -759,6 +759,74 @@ SF="${INSTANCE_DIR}/state.json"
 _assert_exit "PCS-d: exit 0" "0" "$?"
 _assert_jq_eq "PCS-d: plan_section stripped" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S4.1"
 
+# ── PCS-e: plan_section strips tabs and newlines ─────────────────────────────
+echo ""
+echo "── PCS-e: pending_change_set strips tab and newline whitespace from plan_section ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "$(printf '\t\nS5.2\n\t')" \
+  --files '["src/bar.sh"]' \
+  --rationale "tab/newline canonicalization test"
+_assert_exit "PCS-e: exit 0" "0" "$?"
+_assert_jq_eq "PCS-e: plan_section stripped of tabs/newlines" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S5.2"
+
+# ── DI-a: discover_instance skips orphan dirs (no state.json) ────────────────
+echo ""
+echo "── DI-a: discover_instance skips orphan dirs ──"
+
+DI_A_SB=$(mktemp -d)
+DI_A_SB="$(cd "$DI_A_SB" && pwd -P)"
+DI_A_SESSION="test-di-a-$(date +%s)"
+
+# Create a valid 8-hex instance dir with a proper state.json
+DI_A_VALID_ID="a1b2c3d4"
+DI_A_VALID_DIR="${DI_A_SB}/.claude/deepwork/${DI_A_VALID_ID}"
+mkdir -p "$DI_A_VALID_DIR"
+"$STATE_TRANSITION" --state-file "${DI_A_VALID_DIR}/state.json" init - <<DI_A_EOF
+{
+  "session_id": "${DI_A_SESSION}",
+  "instance_id": "${DI_A_VALID_ID}",
+  "phase": "scope",
+  "team_name": "di-a-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+DI_A_EOF
+
+# Create an orphan dir (no state.json) with a valid-looking 8-hex name
+DI_A_ORPHAN_ID="deadbeef"
+mkdir -p "${DI_A_SB}/.claude/deepwork/${DI_A_ORPHAN_ID}"
+
+# Source instance-lib and call discover_instance
+(
+  INSTANCE_ID=""
+  INSTANCE_DIR=""
+  STATE_FILE=""
+  CLAUDE_PROJECT_DIR="$DI_A_SB"
+  source "${PLUGIN_ROOT}/scripts/instance-lib.sh"
+  if discover_instance "$DI_A_SESSION" 2>/dev/null; then
+    printf '%s\n' "$INSTANCE_ID"
+  else
+    printf 'NOT_FOUND\n'
+  fi
+) > /tmp/di_a_result_$$
+DI_A_FOUND=$(cat /tmp/di_a_result_$$)
+rm -f /tmp/di_a_result_$$
+
+if [[ "$DI_A_FOUND" == "$DI_A_VALID_ID" ]]; then
+  _pass "DI-a: discover_instance returns valid instance (not orphan)"
+elif [[ "$DI_A_FOUND" == "NOT_FOUND" ]]; then
+  _fail "DI-a: discover_instance returned nothing — missed valid instance"
+elif [[ "$DI_A_FOUND" == "$DI_A_ORPHAN_ID" ]]; then
+  _fail "DI-a: discover_instance returned orphan dir (should have skipped it)"
+else
+  _fail "DI-a: unexpected INSTANCE_ID '${DI_A_FOUND}'"
+fi
+
+rm -rf "$DI_A_SB"
+
 # ── EV-a: _emit_event rejects malformed jq_path before writing ───────────────
 echo ""
 echo "── EV-a: emit-side jq_path validation (no leading dot) ──"

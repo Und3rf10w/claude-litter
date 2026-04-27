@@ -1405,9 +1405,8 @@ case "$SUBCOMMAND" in
         *) shift ;;
       esac
     done
-    # Canonicalize plan_section: strip leading/trailing whitespace
-    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION#"${_PCS_PLAN_SECTION%%[! ]*}"}"
-    _PCS_PLAN_SECTION="${_PCS_PLAN_SECTION%"${_PCS_PLAN_SECTION##*[! ]}"}"
+    # Canonicalize plan_section: strip leading/trailing whitespace (tabs, newlines, spaces)
+    _PCS_PLAN_SECTION="$(printf '%s' "$_PCS_PLAN_SECTION" | awk 'BEGIN{s=""} {if(NR==1) s=$0; else s=s"\n"$0} END{gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); printf "%s",s}')"
     [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
     [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
     [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }

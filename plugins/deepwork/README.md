@@ -117,7 +117,7 @@ At SETUP, `plan_hash` (SHA-256 of the plan file) is frozen and never changes. Be
 
 Expected outcome: each plan gate goes through WRITE→VERIFY→CRITIQUE; when all gates are APPROVED and LANDed, the session halts cleanly.
 
-For the full pipeline, all 8 execute hooks, state fields, and amendment mechanics, see `references/execute-mode.md`. For the authoritative orchestrator contract, see `profiles/execute/PROFILE.md`.
+For the full pipeline, all 9 execute hooks, state fields, and amendment mechanics, see `references/execute-mode.md`. For the authoritative orchestrator contract, see `profiles/execute/PROFILE.md`.
 
 ---
 
@@ -248,6 +248,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `retest-dispatch.sh` | PostToolUse(Write\|Edit) | Async dispatch of covering test from `test_manifest` after each write | `hooks/execute/retest-dispatch.sh` |
 | `plan-drift-detector.sh` | FileChanged(\<plan_ref\>) | Advisory: sets `plan_drift_detected=true` on sha256 divergence | `hooks/execute/plan-drift-detector.sh` |
 | `file-changed-retest.sh` | FileChanged(src/**) | Advisory secondary retest trigger on filesystem change events; 500ms debounce | `hooks/execute/file-changed-retest.sh` |
+| `worktree-cd-warn.sh` | PreToolUse(Bash) | Warn-only: detects write-class Bash ops on a worktree path without the required cd-prefix | `hooks/execute/worktree-cd-warn.sh` |
 
 ---
 

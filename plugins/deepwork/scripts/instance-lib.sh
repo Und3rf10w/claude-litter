@@ -25,14 +25,18 @@
 _parse_hook_input() {
   INPUT=$(cat)
   export INPUT
-  HOOK_EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null || echo "")
-  export HOOK_EVENT_NAME
-  TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
-  export TOOL_NAME
-  SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
-  export SESSION_ID
-  TOOL_USE_ID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // ""' 2>/dev/null || echo "")
-  export TOOL_USE_ID
+  # Single jq pass: extract all four fields in one subprocess instead of four
+  local _jq_out
+  _jq_out=$(printf '%s' "$INPUT" | jq -r '
+    (.hook_event_name // ""),
+    (.tool_name       // ""),
+    (.session_id      // ""),
+    (.tool_use_id     // "")
+  ' 2>/dev/null) || _jq_out=$'\n\n\n'
+  HOOK_EVENT_NAME=$(printf '%s' "$_jq_out" | sed -n '1p'); export HOOK_EVENT_NAME
+  TOOL_NAME=$(printf '%s'        "$_jq_out" | sed -n '2p'); export TOOL_NAME
+  SESSION_ID=$(printf '%s'       "$_jq_out" | sed -n '3p'); export SESSION_ID
+  TOOL_USE_ID=$(printf '%s'      "$_jq_out" | sed -n '4p'); export TOOL_USE_ID
 }
 
 # ---------------------------------------------------------------------------
