@@ -128,9 +128,20 @@ _append_event_raw() {
 # Ordering: events.jsonl write happens BEFORE state.json write (Q1: Option A).
 # If state.json write later fails, reducer self-heals on next invocation.
 #
-# The entire read-prev_hash-through-append block is held under an exclusive
-# flock on events.jsonl.lock to prevent concurrent processes from reading the
-# same prev_event_hash and producing sibling events (hash chain race, W8 H1).
+# Lock invariant (W20-a): the exclusive flock spans the full
+# read-prev_hash → build-event-json → append-to-file sequence.
+# Releasing the lock before _append_event_raw would allow a concurrent caller
+# to read the same prev_event_hash and produce a sibling event — silently
+# forking the hash chain (W20 C1 / integration review CRITICAL).
+# jq runs under the lock by design: payload size is bounded and correctness
+# outweighs the marginal latency.
+#
+# W20-c: if _EMIT_STAMP_HEAD=1 is set by the caller, state.json's event_head,
+# state_integrity_hash, and last_updated are stamped atomically inside the same
+# lock span, before _release_lock. This eliminates the window between the event
+# append and the subsequent _write_with_hash call where integrity-always-gate
+# can see a mismatch (events.jsonl tail != state.event_head). Lock ordering:
+# events.jsonl.lock → state.json.lock — consistent with all other callers.
 _emit_event() {
   local event_type="$1"
   local payload_json="$2"
@@ -162,9 +173,8 @@ _emit_event() {
 
   local actor="${_DW_CALLER:-$(basename "$0")}"
 
-  # Hold an exclusive lock from _read_event_head through _append_event_raw so
-  # no two concurrent callers can read the same prev_event_hash.
-  # Uses portable _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
+  # Acquire the lock before reading prev_event_hash; hold it through the
+  # append so no concurrent caller can interleave between read and write.
   _acquire_lock "$lock_file" || return 1
 
   local prev_hash
@@ -185,10 +195,49 @@ _emit_event() {
       timestamp: $ts, actor: $actor, payload: $payload}')
   local _ej_rc=$?
 
-  _release_lock "$lock_file"
+  if [[ $_ej_rc -ne 0 ]]; then
+    _release_lock "$lock_file"
+    return 1
+  fi
 
-  [[ $_ej_rc -eq 0 ]] || return 1
   _append_event_raw "$events_file" "$event_json"
+  local _append_rc=$?
+
+  # W20-c: if caller requested a state.json head stamp (e.g. emit_revert_event),
+  # do it here while still holding the events.jsonl lock to eliminate the window
+  # between append and the subsequent state.json write.
+  if [[ "${_EMIT_STAMP_HEAD:-0}" == "1" && "$_append_rc" -eq 0 && -f "${STATE_FILE:-}" ]]; then
+    local _new_event_head _stamp_hash _stamp_now _stamp_tmp _stamp_sf_lock
+    _new_event_head=$(_compute_event_hash "$event_json")
+    _stamp_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _stamp_sf_lock="${STATE_FILE}.lock"
+    _stamp_tmp="${STATE_FILE}.emit-stamp.tmp.$$"
+
+    _acquire_lock "$_stamp_sf_lock" 2>/dev/null || true
+
+    # Build a temp copy of state.json with the new event_head so _compute_integrity_hash
+    # sees the right event_head when computing the hash.
+    jq --arg eh "$_new_event_head" --arg ts "$_stamp_now" \
+      '.event_head = $eh | .last_updated = $ts' \
+      "$STATE_FILE" > "$_stamp_tmp" 2>/dev/null
+    if [[ -s "$_stamp_tmp" ]]; then
+      _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
+      if [[ -n "$_stamp_hash" ]]; then
+        local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
+        jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
+          "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
+          && mv "$_stamp_final" "$_stamp_tmp"
+      fi
+      mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+    else
+      rm -f "$_stamp_tmp"
+    fi
+
+    _release_lock "$_stamp_sf_lock" 2>/dev/null || true
+  fi
+
+  _release_lock "$lock_file"
+  return $_append_rc
 }
 
 # _ensure_event_log
@@ -1010,7 +1059,11 @@ case "$SUBCOMMAND" in
             'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
              else {plan_section:$ps, files:$files, rationale:$rat} end' 2>/dev/null)
           if [[ -n "$_pcs_json" && -n "$_pcs_dir" ]]; then
-            printf '%s\n' "$_pcs_json" > "${_pcs_dir}/pending-change.json" 2>/dev/null || true
+            # tmp+mv to avoid a partial write if interrupted mid-replay (W20-i)
+            _pcs_tmp="${_pcs_dir}/pending-change.json.tmp.$$"
+            printf '%s\n' "$_pcs_json" > "$_pcs_tmp" 2>/dev/null \
+              && mv "$_pcs_tmp" "${_pcs_dir}/pending-change.json" \
+              || { rm -f "$_pcs_tmp"; true; }
           fi
           ;;
         *)
@@ -1158,7 +1211,10 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _REVERT_SNAP=$(cat "$STATE_FILE" 2>/dev/null) || { printf 'emit_revert_event: cannot read STATE_FILE\n' >&2; exit 1; }
     printf '%s' "$_REVERT_SNAP" | jq empty 2>/dev/null || { printf 'emit_revert_event: STATE_FILE is not valid JSON\n' >&2; exit 1; }
-    _emit_event "state_reverted" \
+    # W20-c: stamp state.json's event_head + state_integrity_hash atomically
+    # inside the events.jsonl lock so integrity-always-gate never sees a mismatch
+    # between events.jsonl tail and state.event_head after revert.
+    _EMIT_STAMP_HEAD=1 _emit_event "state_reverted" \
       "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
           --argjson snap "$_REVERT_SNAP" \
           '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" || exit 5
@@ -1324,12 +1380,11 @@ case "$SUBCOMMAND" in
     _require_state_file
     _ensure_event_log
     _emit_event "state_archived" '{}' || exit 5
-    # Stamp event_head in state.json AFTER state_archived is appended so the
-    # archived copy's event_head reflects the final event (the archive itself).
-    _arch_event_head=$(_read_event_head 2>/dev/null || echo "")
-    if [[ -n "$_arch_event_head" ]]; then
-      _write_state_atomic "$STATE_FILE" --arg eh "$_arch_event_head" '.event_head = $eh' || true
-    fi
+    # Stamp event_head + state_integrity_hash + last_updated using _write_with_hash so
+    # the archive record carries an accurate, verifiable hash (W20-i: audit integrity).
+    # _write_with_hash internally reads _read_event_head which now returns the SHA256 of
+    # the just-appended state_archived event — the final event in the chain.
+    _write_with_hash "$STATE_FILE" '.' || true
     _ARCHIVE_JSON="${INSTANCE_DIR}/state.archived.json"
     _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
