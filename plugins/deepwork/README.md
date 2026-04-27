@@ -339,17 +339,19 @@ Use `/deepwork-recap` for a quick 30-50-word summary of where things stand. DEEP
 
 ## §19 Contributing / tests
 
-Three test scripts for plugin development:
+Run the full test suite with the aggregator (scripts/ + regressions/):
+```
+bash scripts/run-all-tests.sh
+```
+
+Or run individual test scripts:
 
 | Script | Purpose |
 |---|---|
 | `scripts/test-deliver-gate.sh` | Smoke-tests the DESIGN-mode deliver gate (ExitPlanMode linting) |
 | `scripts/test-execute-gates.sh` | Smoke-tests the execute-mode hooks (11 test groups; plan citation, bash gate, task scope, drift detection, etc.) |
 | `scripts/test-prompt-parse.sh` | Smoke-tests goal / flag parsing in `setup-deepwork.sh` |
-
-Run all tests:
-```
-bash scripts/test-deliver-gate.sh && bash scripts/test-execute-gates.sh && bash scripts/test-prompt-parse.sh
-```
+| `scripts/test-halt-gate.sh` | Smoke-tests the Stop-hook halt gate registration and logic |
+| `scripts/regressions/` | Deep regression suites for state machine, event sourcing, hook contracts, schema invariants, and more |
 
 Commit style: conventional commits — `type(scope): description` (e.g., `feat(hooks): add chaos-monkey gate`). Adding a hook requires updating README §13 hooks table. Adding a skill requires updating README §10 commands table. Changing flag parsing requires updating README §11 flags table. See `plugins/deepwork/CLAUDE.md` for the doc sync rule.

@@ -179,6 +179,9 @@ _run_registration_test() {
 
   settings_file="$sandbox/.claude/settings.local.json"
 
+  # setup-deepwork.sh requires a git repo (W19-e early-fails otherwise).
+  (cd "$sandbox" && git init -q) 2>/dev/null || true
+
   # Invoke setup in plan mode with a minimal goal. stderr is noise (setup
   # prints a user-visible banner); only settings.local.json matters.
   (cd "$sandbox" && bash "$SETUP" "test halt-gate registration harness" \
