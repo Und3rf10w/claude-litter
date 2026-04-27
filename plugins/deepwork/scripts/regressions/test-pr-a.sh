@@ -433,6 +433,38 @@ fi
 
 rm -rf "$PRA15_DIR"
 
+# ── PRA-15b: SETTINGS_LOCAL anchoring — settings.local.json lands under CLAUDE_PROJECT_DIR, not cwd ──
+echo ""
+echo "── PRA-15b: settings.local.json anchored to CLAUDE_PROJECT_DIR, not cwd ──"
+
+PRA15B_PROJECT=$(mktemp -d)
+PRA15B_CWD=$(mktemp -d)
+
+# Minimal git repo in project dir
+git -C "$PRA15B_PROJECT" init -q
+git -C "$PRA15B_PROJECT" commit --allow-empty -m "init" -q
+
+# Run setup from a DIFFERENT directory (PRA15B_CWD), with CLAUDE_PROJECT_DIR pointing at project
+PRA15B_OUT=$(cd "$PRA15B_CWD" && CLAUDE_PROJECT_DIR="$PRA15B_PROJECT" \
+  bash "${PLUGIN_ROOT}/scripts/setup-deepwork.sh" "test pra15b goal" 2>&1)
+# setup may fail or succeed; we only care about where it tried to write settings.local.json
+
+# Check: settings.local.json (or its tmp) must NOT land under cwd
+if find "$PRA15B_CWD" -name "settings.local.json" -o -name "settings.local.json.tmp.*" 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: settings.local.json fragment found under cwd (${PRA15B_CWD}) — not anchored to CLAUDE_PROJECT_DIR"
+else
+  _pass "PRA-15b: no settings.local.json fragment under cwd — correctly anchored to CLAUDE_PROJECT_DIR"
+fi
+
+# If setup created an instance, verify its .claude dir is under PROJECT_DIR, not cwd
+if find "$PRA15B_CWD/.claude" -maxdepth 0 -type d 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: .claude dir was created under cwd — SETTINGS_LOCAL not anchored"
+else
+  _pass "PRA-15b: .claude dir NOT created under cwd"
+fi
+
+rm -rf "$PRA15B_PROJECT" "$PRA15B_CWD"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

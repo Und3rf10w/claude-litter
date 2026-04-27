@@ -232,6 +232,9 @@ fi
 
 # Atomic lockfile (TOCTOU-safe)
 LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
+# Declare early so all traps and rollback blocks below can use the variable rather
+# than repeated bare ".claude/settings.local.json" literals (W20-d: anchored to project dir).
+SETTINGS_LOCAL="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/settings.local.json"
 if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
   if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -261,7 +264,7 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
     exit 1
   fi
 fi
-trap 'rm -f "$LOCKFILE" ".claude/settings.local.json.tmp.$$"' EXIT
+trap 'rm -f "$LOCKFILE" "${SETTINGS_LOCAL}.tmp.$$"' EXIT
 
 # Check for already-active instance (lockfile was stale from a crashed setup)
 for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
@@ -306,7 +309,7 @@ _SETUP_COMPLETE=false
 
 trap '
   _rc=$?
-  rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"
+  rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" "${SETTINGS_LOCAL}.tmp.$$"
   if [ "$_SETUP_COMPLETE" != "true" ] && [ $_rc -ne 0 ]; then
     # Transactional rollback: remove the partial instance dir so discover_instance
     # never picks up a half-initialised state.json.
@@ -314,18 +317,18 @@ trap '
   fi
   # On non-zero exit, remove only the hook blocks inserted by this instance.
   # Backup is last-resort manual recovery only (not automatic primary path).
-  if [ $_rc -ne 0 ] && [ -f ".claude/settings.local.json" ] && command -v jq >/dev/null 2>&1; then
+  if [ $_rc -ne 0 ] && [ -f "$SETTINGS_LOCAL" ] && command -v jq >/dev/null 2>&1; then
     _iid="$INSTANCE_ID"
     if [ -n "$_iid" ]; then
-      _tmp_rollback=".claude/settings.local.json.rollback.$$"
+      _tmp_rollback="${SETTINGS_LOCAL}.rollback.$$"
       jq --arg iid "$_iid" "
         if .hooks then
           .hooks |= with_entries(.value = [.value[]? | select(._deepwork_instance != \$iid)] | select(.value | length > 0))
           | if (.hooks | length) == 0 then del(.hooks) else . end
         else . end
-      " ".claude/settings.local.json" > "$_tmp_rollback" 2>/dev/null
+      " "$SETTINGS_LOCAL" > "$_tmp_rollback" 2>/dev/null
       if [ -s "$_tmp_rollback" ]; then
-        mv "$_tmp_rollback" ".claude/settings.local.json" 2>/dev/null || true
+        mv "$_tmp_rollback" "$SETTINGS_LOCAL" 2>/dev/null || true
       else
         rm -f "$_tmp_rollback" 2>/dev/null || true
       fi
@@ -542,7 +545,7 @@ fi
 printf '%s\n' "$GOAL" > "${INSTANCE_DIR}/prompt.md"
 
 # ---- Settings.local.json hook wiring ----
-SETTINGS_LOCAL=".claude/settings.local.json"
+# (SETTINGS_LOCAL already declared above, anchored to $CLAUDE_PROJECT_DIR)
 
 # Backup kept as last-resort manual recovery only — transactional rollback (trap above)
 # removes only this instance's injected blocks on failure without touching the backup.
