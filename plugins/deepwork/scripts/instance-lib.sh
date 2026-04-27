@@ -35,7 +35,8 @@ _parse_hook_input() {
     (.tool_use_id     // "")
   ' 2>/dev/null) || _jq_out=$'\n\n\n'
   # Read four newline-delimited lines into separate variables without spawning sed.
-  { IFS= read -r _l1; IFS= read -r _l2; IFS= read -r _l3; IFS= read -r _l4; } <<< "$_jq_out"
+  # || true: read returns 1 at EOF; callers with set -e must not propagate that.
+  { IFS= read -r _l1 || true; IFS= read -r _l2 || true; IFS= read -r _l3 || true; IFS= read -r _l4 || true; } <<< "$_jq_out"
   HOOK_EVENT_NAME="$_l1"; export HOOK_EVENT_NAME
   TOOL_NAME="$_l2";       export TOOL_NAME
   SESSION_ID="$_l3";      export SESSION_ID
