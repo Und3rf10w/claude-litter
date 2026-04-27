@@ -18,6 +18,7 @@
 # ES-y: replay guardrail_removed → guardrail removed by index
 # ES-z: replay state_archived → state_archived event present; last_updated set
 # ES-aa: replay test_manifest_updated → .execute.test_manifest updated
+# ES-ab: 5 parallel _emit_event subshells — no forked prev_event_hash (W20-a lock regression)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -1223,6 +1224,89 @@ if [[ "$ESAA_REPLAYED" == "pass" ]]; then
 else
   _fail "ES-aa: replayed test_manifest[0].last_result expected 'pass', got '${ESAA_REPLAYED}'"
 fi
+
+# ── ES-ab: 5 parallel _emit_event subshells — no forked prev_event_hash ──────
+# Regression for W20-a (CRITICAL): verifies the lock spans the full
+# read-prev_hash → build-event → append sequence. Without the fix, two
+# concurrent subshells can race on the same prev_event_hash and produce sibling
+# events sharing a parent — silently forking the hash chain.
+echo ""
+echo "── ES-ab: parallel _emit_event — strict prev-hash chain (W20-a regression) ──"
+
+ESAB_SB=$(mktemp -d)
+ESAB_ID="ab012345"
+ESAB_DIR="$ESAB_SB/.claude/deepwork/$ESAB_ID"
+mkdir -p "$ESAB_DIR"
+ESAB_SID="esab-session-$(date +%s)"
+ESAB_STATE="${ESAB_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESAB_STATE" init - <<EOF 2>/dev/null
+{"session_id":"$ESAB_SID","phase":"explore","team_name":"esab-team"}
+EOF
+
+# Pre-seed events.jsonl with a bootstrap event so all parallel workers see an
+# existing file and skip _ensure_event_log. Without this, concurrent callers
+# race on the first-file check, each writing their own bootstrap event with
+# prev_event_hash=GENESIS, producing sibling events before the lock is relevant.
+INSTANCE_DIR="$ESAB_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAB_STATE" stamp_last_updated >/dev/null 2>&1
+
+ESAB_EVENTS="${ESAB_DIR}/events.jsonl"
+
+# Spawn 5 parallel subshells each invoking set_field (which calls _emit_event)
+ESAB_PIDS=()
+for _i in 1 2 3 4 5; do
+  (
+    INSTANCE_DIR="$ESAB_DIR" \
+      "$STATE_TRANSITION" --state-file "$ESAB_STATE" \
+        set_field ".explore_counter_${_i}" "\"event_${_i}\"" 2>/dev/null
+  ) &
+  ESAB_PIDS+=($!)
+done
+for _pid in "${ESAB_PIDS[@]}"; do wait "$_pid" 2>/dev/null || true; done
+
+# Walk events.jsonl: each event's prev_event_hash must equal SHA256 of the
+# previous line. Any duplicate prev_event_hash means the lock was released
+# before the append, allowing two callers to race on the same chain tip.
+ESAB_BROKEN=0
+ESAB_PREV_HASH=""
+ESAB_LINE_NUM=0
+while IFS= read -r _eline; do
+  [[ -z "$_eline" ]] && continue
+  ESAB_LINE_NUM=$((ESAB_LINE_NUM + 1))
+  _actual_prev=$(printf '%s' "$_eline" | jq -r '.prev_event_hash // ""' 2>/dev/null)
+  if [[ $ESAB_LINE_NUM -gt 1 ]]; then
+    if [[ "$_actual_prev" != "$ESAB_PREV_HASH" ]]; then
+      printf 'ES-ab: chain broken at event %d: prev_hash=%s expected=%s\n' \
+        "$ESAB_LINE_NUM" "$_actual_prev" "$ESAB_PREV_HASH" >&2
+      ESAB_BROKEN=$((ESAB_BROKEN + 1))
+    fi
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    ESAB_PREV_HASH=$(printf '%s\n' "$_eline" | sha256sum | cut -d' ' -f1)
+  else
+    ESAB_PREV_HASH=$(printf '%s\n' "$_eline" | shasum -a 256 | cut -d' ' -f1)
+  fi
+done < "$ESAB_EVENTS"
+
+if [[ $ESAB_BROKEN -eq 0 && $ESAB_LINE_NUM -ge 6 ]]; then
+  _pass "ES-ab: all $ESAB_LINE_NUM events form a strict prev-hash chain (no forks)"
+elif [[ $ESAB_BROKEN -gt 0 ]]; then
+  _fail "ES-ab: $ESAB_BROKEN chain break(s) detected — lock-before-append invariant violated"
+else
+  _fail "ES-ab: expected >=6 events (1 bootstrap + 5 parallel), got $ESAB_LINE_NUM"
+fi
+
+# Also verify no two events share the same prev_event_hash (fork detection)
+ESAB_DUP_PARENTS=$(jq -r '.prev_event_hash' "$ESAB_EVENTS" 2>/dev/null \
+  | sort | uniq -d | grep -v '^GENESIS$' | wc -l | tr -d ' ')
+if [[ "${ESAB_DUP_PARENTS:-0}" -eq 0 ]]; then
+  _pass "ES-ab: no duplicate prev_event_hash values (no forked chain)"
+else
+  _fail "ES-ab: $ESAB_DUP_PARENTS duplicate prev_event_hash value(s) — concurrent race detected"
+fi
+
+rm -rf "$ESAB_SB"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""

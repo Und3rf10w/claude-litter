@@ -128,9 +128,13 @@ _append_event_raw() {
 # Ordering: events.jsonl write happens BEFORE state.json write (Q1: Option A).
 # If state.json write later fails, reducer self-heals on next invocation.
 #
-# The entire read-prev_hash-through-append block is held under an exclusive
-# flock on events.jsonl.lock to prevent concurrent processes from reading the
-# same prev_event_hash and producing sibling events (hash chain race, W8 H1).
+# Lock invariant (W20-a): the exclusive flock spans the full
+# read-prev_hash → build-event-json → append-to-file sequence.
+# Releasing the lock before _append_event_raw would allow a concurrent caller
+# to read the same prev_event_hash and produce a sibling event — silently
+# forking the hash chain (W20 C1 / integration review CRITICAL).
+# jq runs under the lock by design: payload size is bounded and correctness
+# outweighs the marginal latency.
 _emit_event() {
   local event_type="$1"
   local payload_json="$2"
@@ -162,9 +166,8 @@ _emit_event() {
 
   local actor="${_DW_CALLER:-$(basename "$0")}"
 
-  # Hold an exclusive lock from _read_event_head through _append_event_raw so
-  # no two concurrent callers can read the same prev_event_hash.
-  # Uses portable _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
+  # Acquire the lock before reading prev_event_hash; hold it through the
+  # append so no concurrent caller can interleave between read and write.
   _acquire_lock "$lock_file" || return 1
 
   local prev_hash
@@ -185,10 +188,15 @@ _emit_event() {
       timestamp: $ts, actor: $actor, payload: $payload}')
   local _ej_rc=$?
 
-  _release_lock "$lock_file"
+  if [[ $_ej_rc -ne 0 ]]; then
+    _release_lock "$lock_file"
+    return 1
+  fi
 
-  [[ $_ej_rc -eq 0 ]] || return 1
   _append_event_raw "$events_file" "$event_json"
+  local _append_rc=$?
+  _release_lock "$lock_file"
+  return $_append_rc
 }
 
 # _ensure_event_log
