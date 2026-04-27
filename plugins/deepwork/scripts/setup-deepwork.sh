@@ -216,6 +216,11 @@ if [[ "$SAFE_MODE" != "true" ]] && [[ "$SAFE_MODE" != "false" ]]; then
   exit 1
 fi
 
+# Require a git repository — deepwork uses git for branch safety, worktrees, and
+# CI hooks; without one, sessions will silently fail mid-execute.
+git -C "${CLAUDE_PROJECT_DIR:-$(pwd -P)}" rev-parse --git-dir 2>/dev/null \
+  || { printf 'ERROR: deepwork requires a git repository (run '"'"'git init'"'"' or cd to one)\n' >&2; exit 1; }
+
 # Ensure .claude/ exists at project root (CLAUDE_PROJECT_DIR or resolved cwd)
 mkdir -p "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude"
 

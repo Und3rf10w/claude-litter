@@ -409,6 +409,30 @@ fi
 
 rm -rf "$PRA14C_SB"
 
+# ── PRA-15: early git-repo check — fail with clear error when not in a git repo ──
+echo ""
+echo "── PRA-15: early git-repo check — not-a-git-repo gives clear error ──"
+
+PRA15_DIR="/tmp/no-git-here-$$"
+mkdir -p "$PRA15_DIR"
+
+PRA15_SETUP="${PLUGIN_ROOT}/scripts/setup-deepwork.sh"
+PRA15_OUT=$(CLAUDE_PROJECT_DIR="$PRA15_DIR" bash "$PRA15_SETUP" "test goal pra15" 2>&1)
+PRA15_RC=$?
+
+_assert_exit "PRA-15: non-zero exit outside git repo" "1" "$PRA15_RC"
+_assert_contains "PRA-15: error message mentions git repository" "git repository" "$PRA15_OUT"
+
+# No instance dir should have been created
+PRA15_INST_COUNT=$(find "${PRA15_DIR}/.claude/deepwork" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PRA15_INST_COUNT" -eq 0 ]]; then
+  _pass "PRA-15: no INSTANCE_DIR created when not in a git repo"
+else
+  _fail "PRA-15: INSTANCE_DIR was created despite not being in a git repo"
+fi
+
+rm -rf "$PRA15_DIR"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"
