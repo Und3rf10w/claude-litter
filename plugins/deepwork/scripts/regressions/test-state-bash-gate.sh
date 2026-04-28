@@ -15,6 +15,10 @@
 # SBG-l: pending-change.json write emits EXIT_PENDING_CHANGE_DIRECT_WRITE error
 # SBG-design-1: design-mode instance (no .execute) blocks state.json write (W21 #2)
 # SBG-design-2: no active instance → gate exits 0 (fail-open per active-instance guard)
+# SBG-m: bash state-transition.sh; > state.json   (semicolon)   → blocked (exit 2) (W22)
+# SBG-n: bash state-transition.sh && > state.json (and-list)    → blocked (exit 2) (W22)
+# SBG-o: bash state-transition.sh `... > state.json` (backtick) → blocked (exit 2) (W22)
+# SBG-p: bash state-transition.sh $(... > state.json) (dollar)  → blocked (exit 2) (W22)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -171,6 +175,31 @@ SBG_GHOST_PAYLOAD=$(jq -cn --arg cmd "echo {} > state.json" --arg sid "ghost-ses
   '{tool_name:"Bash",session_id:$sid,tool_input:{command:$cmd}}')
 SBG_GHOST_RC=$(printf '%s' "$SBG_GHOST_PAYLOAD" | bash "$GATE" 2>/dev/null; printf '%d' $?)
 _assert_exit "SBG-design-2" "0" "$SBG_GHOST_RC"
+
+# ── SBG-m..p: allowlist compound-command bypass vectors (W20-h fix, W22 tests) ──
+# W20-h's token-scan extension blocks any command that matches the allowlist
+# (bash state-transition.sh) AND ALSO contains a protected-file write pattern
+# anywhere else in the command. These 4 tests lock in the 4 confirmed bypass
+# vectors so a regression to the simpler regex-only allowlist would fail.
+echo ""
+echo "── SBG-m: allowlist + semicolon → blocked (exit 2) ──"
+RC=$(_run_gate "bash scripts/state-transition.sh init -; > state.json")
+_assert_exit "SBG-m" "2" "$RC"
+
+echo ""
+echo "── SBG-n: allowlist + and-list → blocked (exit 2) ──"
+RC=$(_run_gate "bash scripts/state-transition.sh init - && > state.json")
+_assert_exit "SBG-n" "2" "$RC"
+
+echo ""
+echo "── SBG-o: allowlist + backtick subshell → blocked (exit 2) ──"
+RC=$(_run_gate 'bash scripts/state-transition.sh init - `echo > state.json`')
+_assert_exit "SBG-o" "2" "$RC"
+
+echo ""
+echo "── SBG-p: allowlist + dollar-paren subshell → blocked (exit 2) ──"
+RC=$(_run_gate 'bash scripts/state-transition.sh init - $(echo > state.json)')
+_assert_exit "SBG-p" "2" "$RC"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
