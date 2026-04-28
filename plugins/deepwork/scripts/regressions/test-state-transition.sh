@@ -991,13 +991,187 @@ else
   _fail "AW-b: state.json was modified despite jq-absent failure (content changed)"
 fi
 
-if printf '%s' "$_AWB_STDERR" | grep -q "hash compute failed"; then
-  _pass "AW-b: stderr contains 'hash compute failed' message"
+if printf '%s' "$_AWB_STDERR" | grep -qE 'hash compute failed|INTEGRITY_HASH_COMPUTE_FAILED'; then
+  _pass "AW-b: stderr contains hash-compute-failure message"
 else
-  _fail "AW-b: stderr missing 'hash compute failed' — got: ${_AWB_STDERR:0:200}"
+  _fail "AW-b: stderr missing hash-compute-failure marker — got: ${_AWB_STDERR:0:200}"
 fi
 
 rm -rf "$_AWB_SB" "$_AWB_FAKE_BIN" "$_AWB_STDERR_FILE"
+
+# ── AW-c: _verify_integrity_hash fail-closed when hash recompute fails (W22 #2) ──
+# Pre-W22, line 325 returned 0 silently when _compute_integrity_hash failed
+# (jq/sha256sum unavailable, file unreadable). That fail-open path undermined
+# W20-e's write-side hardening — a state.json with on_disk hash but a broken
+# environment slipped through every subcommand's _verify_integrity_hash call.
+# Post-W22 #2: returns 5 with INTEGRITY_HASH_COMPUTE_FAILED to stderr.
+echo ""
+echo "── AW-c: _verify_integrity_hash fail-closed when hash compute fails (W22 #2) ──"
+
+_AWC_SB=$(mktemp -d)
+_AWC_INST_DIR="$_AWC_SB/.claude/deepwork/awc00001"
+mkdir -p "$_AWC_INST_DIR"
+_AWC_SF="${_AWC_INST_DIR}/state.json"
+
+# Init while jq is fully working — init writes without a hash (test-fixture mode).
+STATE_FILE="$_AWC_SF" "$STATE_TRANSITION" init - <<'AWCINIT' >/dev/null 2>&1
+{"session_id":"awc-session","phase":"explore","team_name":"awc-team","bar":[]}
+AWCINIT
+
+# Stamp an integrity hash by going through _write_with_hash via stamp_last_updated
+# (only need the hash to be set so _verify_integrity_hash hits the recompute path).
+INSTANCE_DIR="$_AWC_INST_DIR" STATE_FILE="$_AWC_SF" \
+  bash "$STATE_TRANSITION" stamp_last_updated >/dev/null 2>&1
+
+_AWC_HASH=$(jq -r '.state_integrity_hash // ""' "$_AWC_SF" 2>/dev/null || echo "")
+if [[ -z "$_AWC_HASH" ]]; then
+  _fail "AW-c: setup — stamp_last_updated did not produce a state_integrity_hash"
+fi
+
+# Reuse AW-b's fake-jq harness pattern: pass-through except for sot_digest.
+_AWC_FAKE_BIN=$(mktemp -d)
+cat > "${_AWC_FAKE_BIN}/jq" <<'AWCFAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+AWCFAKEJQ
+chmod +x "${_AWC_FAKE_BIN}/jq"
+
+# Read-only subcommand that calls _verify_integrity_hash early: stamp_last_updated
+# is a no-op state mutation that exercises the verify path. Use phase_advance which
+# also calls _verify_integrity_hash before the write side.
+_AWC_STDERR_FILE=$(mktemp)
+PATH="${_AWC_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWC_INST_DIR" STATE_FILE="$_AWC_SF" \
+  bash "$STATE_TRANSITION" phase_advance --to synthesize 2>"$_AWC_STDERR_FILE"
+_AWC_RC=$?
+
+_AWC_STDERR=$(cat "$_AWC_STDERR_FILE")
+
+if [[ "$_AWC_RC" -ne 0 ]]; then
+  _pass "AW-c: phase_advance exited non-zero (rc=$_AWC_RC) when hash recompute fails"
+else
+  _fail "AW-c: phase_advance exited 0 despite hash recompute failure — should fail-closed"
+fi
+
+if printf '%s' "$_AWC_STDERR" | grep -q "INTEGRITY_HASH_COMPUTE_FAILED"; then
+  _pass "AW-c: stderr contains INTEGRITY_HASH_COMPUTE_FAILED"
+else
+  _fail "AW-c: stderr missing INTEGRITY_HASH_COMPUTE_FAILED — got: ${_AWC_STDERR:0:200}"
+fi
+
+rm -rf "$_AWC_SB" "$_AWC_FAKE_BIN" "$_AWC_STDERR_FILE"
+
+# ── AW-d: emit_revert_event stamp fail-closed when hash compute fails (W22 #1) ──
+# Pre-W22 #1, the stamp block proceeded to mv state.json even when
+# _compute_integrity_hash returned empty — committing a new event_head +
+# last_updated alongside a stale state_integrity_hash. Mirror of W20-e for
+# the _emit_event stamp path. Post-W22 #1: skip the mv, emit a warning, leave
+# state.json fully unchanged.
+echo ""
+echo "── AW-d: emit_revert_event stamp fail-closed when hash compute fails (W22 #1) ──"
+
+_AWD_SB=$(mktemp -d)
+_AWD_INST_DIR="$_AWD_SB/.claude/deepwork/awd00001"
+mkdir -p "$_AWD_INST_DIR"
+_AWD_SF="${_AWD_INST_DIR}/state.json"
+_AWD_EVENTS="${_AWD_INST_DIR}/events.jsonl"
+
+STATE_FILE="$_AWD_SF" "$STATE_TRANSITION" init - <<'AWDINIT' >/dev/null 2>&1
+{"session_id":"awd-session","phase":"explore","team_name":"awd-team","bar":[]}
+AWDINIT
+
+# Generate a baseline event so prev_event_hash is non-empty for the revert event
+INSTANCE_DIR="$_AWD_INST_DIR" STATE_FILE="$_AWD_SF" \
+  bash "$STATE_TRANSITION" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-call state for comparison (must be unchanged after fail-closed skip)
+_AWD_PRE_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_HASH=$(jq -r '.state_integrity_hash // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+# Fake jq that lets through everything except integrity-hash compute (sot_digest).
+# This means: events.jsonl event_json build → passes; stamp tmp jq → passes;
+# _compute_integrity_hash on the stamped tmp → fails (returns empty hash);
+# W22 #1 fail-closed branch fires.
+_AWD_FAKE_BIN=$(mktemp -d)
+cat > "${_AWD_FAKE_BIN}/jq" <<'AWDFAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+AWDFAKEJQ
+chmod +x "${_AWD_FAKE_BIN}/jq"
+
+_AWD_STDERR_FILE=$(mktemp)
+# Note: we want phase_advance NOT to fire (which would block on _verify_integrity_hash
+# fail-closed from W22 #2). emit_revert_event has its own _verify_integrity_hash
+# call though — we need to invoke it in a way that bypasses the verify check OR
+# we need a pre-W6-style state with no on_disk hash. Simpler: clear the hash on
+# disk so _verify_integrity_hash hits the early-return-0 branch.
+jq 'del(.state_integrity_hash)' "$_AWD_SF" > "${_AWD_SF}.tmp" && mv "${_AWD_SF}.tmp" "$_AWD_SF"
+_AWD_PRE_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+PATH="${_AWD_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWD_INST_DIR" STATE_FILE="$_AWD_SF" \
+  bash "$STATE_TRANSITION" emit_revert_event \
+    --reason "awd_test_hash_failure" \
+    --reverted_to_event "$_AWD_PRE_HEAD" 2>"$_AWD_STDERR_FILE"
+_AWD_RC=$?
+
+_AWD_STDERR=$(cat "$_AWD_STDERR_FILE")
+_AWD_POST_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_POST_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+# Assertion 1: emit_revert_event still exits 0 (events.jsonl append is independent)
+if [[ "$_AWD_RC" -eq 0 ]]; then
+  _pass "AW-d: emit_revert_event exits 0 when integrity-hash compute fails (events append independent)"
+else
+  _fail "AW-d: emit_revert_event exited $_AWD_RC (expected 0)"
+fi
+
+# Assertion 2: stderr has the integrity-hash-compute-failed warning
+if printf '%s' "$_AWD_STDERR" | grep -q "integrity-hash compute failed"; then
+  _pass "AW-d: stderr contains integrity-hash compute failed warning"
+else
+  _fail "AW-d: stderr missing W22 #1 warning — got: ${_AWD_STDERR:0:200}"
+fi
+
+# Assertion 3: state.json content unchanged (stamp was skipped — the load-bearing invariant)
+if [[ "$_AWD_PRE_HEAD" == "$_AWD_POST_HEAD" && "$_AWD_PRE_TS" == "$_AWD_POST_TS" ]]; then
+  _pass "AW-d: state.json event_head + last_updated unchanged when stamp fail-closed"
+else
+  _fail "AW-d: state.json modified despite W22 #1 fail-closed skip (head $_AWD_PRE_HEAD→$_AWD_POST_HEAD, ts $_AWD_PRE_TS→$_AWD_POST_TS)"
+fi
+
+# Assertion 4: events.jsonl tail is the new state_reverted event (independent of stamp)
+if [[ -f "$_AWD_EVENTS" ]]; then
+  _AWD_LAST_TYPE=$(tail -1 "$_AWD_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$_AWD_LAST_TYPE" == "state_reverted" ]]; then
+    _pass "AW-d: events.jsonl tail is state_reverted (append succeeded despite stamp skip)"
+  else
+    _fail "AW-d: events.jsonl tail event_type=$_AWD_LAST_TYPE (expected state_reverted)"
+  fi
+fi
+
+# Assertion 5: no leftover .emit-stamp*.tmp.* files
+if ! ls "${_AWD_INST_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "AW-d: no leftover emit-stamp tmp files after fail-closed skip"
+else
+  _fail "AW-d: leftover emit-stamp tmp files after fail-closed skip"
+fi
+
+rm -rf "$_AWD_SB" "$_AWD_FAKE_BIN" "$_AWD_STDERR_FILE"
 
 # ── Summary ──
 echo ""

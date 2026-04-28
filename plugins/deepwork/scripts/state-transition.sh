@@ -233,8 +233,16 @@ _emit_event() {
             "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
             && mv "$_stamp_final" "$_stamp_tmp" \
             || rm -f "$_stamp_final"
+          mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+        else
+          # W22 #1: fail-closed mirror of W20-e. If integrity-hash compute fails
+          # we must NOT mv state.json — that would commit a new event_head +
+          # last_updated alongside a stale state_integrity_hash, hiding the
+          # mismatch from integrity-always-gate. Skip the stamp; warn so logs
+          # surface the cause; integrity-always-gate detects on next call.
+          printf '_emit_event: integrity-hash compute failed; head-stamp skipped (events.jsonl append succeeded)\n' >&2
+          rm -f "$_stamp_tmp"
         fi
-        mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
       else
         rm -f "$_stamp_tmp"
       fi
@@ -322,7 +330,18 @@ _verify_integrity_hash() {
   local on_disk recomputed
   on_disk=$(jq -r '.state_integrity_hash // ""' "$sf" 2>/dev/null || echo "")
   [[ -z "$on_disk" ]] && return 0  # pre-W6 instance: pass
-  recomputed=$(_compute_integrity_hash "$sf") || return 0  # hash unavailable: fail-open
+  # W22 #2: fail-closed when hash compute fails. If state.json carries a hash
+  # but we can't recompute (jq/sha256sum unavailable, file unreadable), block
+  # rather than silently passing. The W20-e write-side hardening would have
+  # been undermined by a soft read here: a corruption could be written via
+  # `_write_with_hash` (which now blocks), but a pre-existing hash mismatch
+  # would still pass the read gate. Mirror the write-side posture.
+  recomputed=$(_compute_integrity_hash "$sf")
+  if [[ -z "$recomputed" ]]; then
+    printf 'INTEGRITY_HASH_COMPUTE_FAILED: cannot recompute hash for %s\n' "$sf" >&2
+    printf '  is jq installed and sha256sum/shasum available?\n' >&2
+    return 5
+  fi
   if [[ "$on_disk" != "$recomputed" ]]; then
     printf 'INTEGRITY_HASH_MISMATCH: state.json was modified outside state-transition.sh\n' >&2
     printf '  on_disk:    %s\n' "$on_disk" >&2
