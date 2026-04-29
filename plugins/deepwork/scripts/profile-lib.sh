@@ -21,7 +21,11 @@ load_profile() {
 
 # substitute_profile_template <template_string>
 # Replaces {{PLACEHOLDER}} tokens in a template string with env var values.
-# Uses perl for multiline-safe substitution.
+# Pure-bash parameter expansion — no fork to perl/sed/python. The previous
+# `perl -0777 -pe` with 21 substitutions in a single program was reproducibly
+# SIGKILL'd in some sandboxed Bash-tool environments; bash builtin substitution
+# eliminates the fork-and-compile surface entirely. Multiline-safe (the whole
+# template is one bash variable) and faster (no subprocess).
 #
 # Callers must set these env vars BEFORE invoking (unset vars render as empty strings):
 #   GOAL                  — user's goal text, sanitized
@@ -45,47 +49,29 @@ load_profile() {
 #   ROLE_NAME, ARCHETYPE, ARCHETYPE_MANDATE, STANCE, RESPONSIBILITIES,
 #   ARTIFACT_PATH, TASK_DESCRIPTION
 substitute_profile_template() {
-  local tmpl="$1"
-  printf '%s' "$tmpl" | \
-    GOAL="${GOAL:-}" TEAM_NAME="${TEAM_NAME:-}" INSTANCE_DIR="${INSTANCE_DIR:-}" \
-    PHASE="${PHASE:-scope}" \
-    HARD_GUARDRAILS="${HARD_GUARDRAILS:-(none)}" \
-    SOURCE_OF_TRUTH="${SOURCE_OF_TRUTH:-(none specified)}" \
-    ANCHORS="${ANCHORS:-(none specified)}" \
-    WRITTEN_BAR="${WRITTEN_BAR:-(not yet populated — orchestrator must populate in SCOPE phase)}" \
-    ROLE_DEFINITIONS="${ROLE_DEFINITIONS:-(not yet populated)}" \
-    TEAM_ROSTER="${TEAM_ROSTER:-(not yet populated)}" \
-    PLAN_REF="${PLAN_REF:-}" \
-    PLAN_HASH="${PLAN_HASH:-}" \
-    TEST_MANIFEST_SUMMARY="${TEST_MANIFEST_SUMMARY:-(not populated)}" \
-    CHANGE_LOG_SUMMARY="${CHANGE_LOG_SUMMARY:-(not populated)}" \
-    ROLE_NAME="${ROLE_NAME:-}" ARCHETYPE="${ARCHETYPE:-}" \
-    ARCHETYPE_MANDATE="${ARCHETYPE_MANDATE:-}" STANCE="${STANCE:-}" \
-    RESPONSIBILITIES="${RESPONSIBILITIES:-}" ARTIFACT_PATH="${ARTIFACT_PATH:-}" \
-    TASK_DESCRIPTION="${TASK_DESCRIPTION:-}" \
-    perl -0777 -pe '
-      s/\{\{GOAL\}\}/$ENV{GOAL}/g;
-      s/\{\{TEAM_NAME\}\}/$ENV{TEAM_NAME}/g;
-      s/\{\{INSTANCE_DIR\}\}/$ENV{INSTANCE_DIR}/g;
-      s/\{\{PHASE\}\}/$ENV{PHASE}/g;
-      s/\{\{HARD_GUARDRAILS\}\}/$ENV{HARD_GUARDRAILS}/g;
-      s/\{\{SOURCE_OF_TRUTH\}\}/$ENV{SOURCE_OF_TRUTH}/g;
-      s/\{\{ANCHORS\}\}/$ENV{ANCHORS}/g;
-      s/\{\{WRITTEN_BAR\}\}/$ENV{WRITTEN_BAR}/g;
-      s/\{\{ROLE_DEFINITIONS\}\}/$ENV{ROLE_DEFINITIONS}/g;
-      s/\{\{TEAM_ROSTER\}\}/$ENV{TEAM_ROSTER}/g;
-      s/\{\{PLAN_REF\}\}/$ENV{PLAN_REF}/g;
-      s/\{\{PLAN_HASH\}\}/$ENV{PLAN_HASH}/g;
-      s/\{\{TEST_MANIFEST_SUMMARY\}\}/$ENV{TEST_MANIFEST_SUMMARY}/g;
-      s/\{\{CHANGE_LOG_SUMMARY\}\}/$ENV{CHANGE_LOG_SUMMARY}/g;
-      s/\{\{ROLE_NAME\}\}/$ENV{ROLE_NAME}/g;
-      s/\{\{ARCHETYPE\}\}/$ENV{ARCHETYPE}/g;
-      s/\{\{ARCHETYPE_MANDATE\}\}/$ENV{ARCHETYPE_MANDATE}/g;
-      s/\{\{STANCE\}\}/$ENV{STANCE}/g;
-      s/\{\{RESPONSIBILITIES\}\}/$ENV{RESPONSIBILITIES}/g;
-      s/\{\{ARTIFACT_PATH\}\}/$ENV{ARTIFACT_PATH}/g;
-      s/\{\{TASK_DESCRIPTION\}\}/$ENV{TASK_DESCRIPTION}/g;
-    '
+  local result="$1"
+  result="${result//\{\{GOAL\}\}/${GOAL:-}}"
+  result="${result//\{\{TEAM_NAME\}\}/${TEAM_NAME:-}}"
+  result="${result//\{\{INSTANCE_DIR\}\}/${INSTANCE_DIR:-}}"
+  result="${result//\{\{PHASE\}\}/${PHASE:-scope}}"
+  result="${result//\{\{HARD_GUARDRAILS\}\}/${HARD_GUARDRAILS:-(none)}}"
+  result="${result//\{\{SOURCE_OF_TRUTH\}\}/${SOURCE_OF_TRUTH:-(none specified)}}"
+  result="${result//\{\{ANCHORS\}\}/${ANCHORS:-(none specified)}}"
+  result="${result//\{\{WRITTEN_BAR\}\}/${WRITTEN_BAR:-(not yet populated — orchestrator must populate in SCOPE phase)}}"
+  result="${result//\{\{ROLE_DEFINITIONS\}\}/${ROLE_DEFINITIONS:-(not yet populated)}}"
+  result="${result//\{\{TEAM_ROSTER\}\}/${TEAM_ROSTER:-(not yet populated)}}"
+  result="${result//\{\{PLAN_REF\}\}/${PLAN_REF:-}}"
+  result="${result//\{\{PLAN_HASH\}\}/${PLAN_HASH:-}}"
+  result="${result//\{\{TEST_MANIFEST_SUMMARY\}\}/${TEST_MANIFEST_SUMMARY:-(not populated)}}"
+  result="${result//\{\{CHANGE_LOG_SUMMARY\}\}/${CHANGE_LOG_SUMMARY:-(not populated)}}"
+  result="${result//\{\{ROLE_NAME\}\}/${ROLE_NAME:-}}"
+  result="${result//\{\{ARCHETYPE\}\}/${ARCHETYPE:-}}"
+  result="${result//\{\{ARCHETYPE_MANDATE\}\}/${ARCHETYPE_MANDATE:-}}"
+  result="${result//\{\{STANCE\}\}/${STANCE:-}}"
+  result="${result//\{\{RESPONSIBILITIES\}\}/${RESPONSIBILITIES:-}}"
+  result="${result//\{\{ARTIFACT_PATH\}\}/${ARTIFACT_PATH:-}}"
+  result="${result//\{\{TASK_DESCRIPTION\}\}/${TASK_DESCRIPTION:-}}"
+  printf '%s' "$result"
 }
 
 # render_test_manifest_summary <state.json path>
