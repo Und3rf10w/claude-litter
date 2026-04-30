@@ -134,13 +134,47 @@ _canonical_path() {
 # Portable lock helpers — prefer flock(1) when available; fall back to
 # POSIX-atomic mkdir on macOS (where flock ships with util-linux, not BSD).
 #
+# CONTRIBUTOR REFERENCE: see references/lock-primitives.md for the full
+# rationale, the macOS mkdir-fallback foot-guns, and the third-lock
+# extension recipe. The summary below is the minimum needed to call the API
+# correctly; the reference doc covers WHY each rule exists and what breaks
+# when you violate it.
+#
+# Lock-ordering invariant (W20):
+#   events.jsonl.lock is always acquired BEFORE state.json.lock.
+#   _emit_event with _EMIT_STAMP_HEAD=1 nests state.json.lock inside
+#   events.jsonl.lock. No caller acquires them in the reverse order.
+#
+# Static fd convention (F-B3, W22):
+#   fd 200  — events.jsonl.lock (outer)
+#   fd 201  — state.json.lock   (inner)
+#   default — fd 200 (single-lock callers)
+#
+# Why the convention exists: bash's `exec N>file` rebinds fd N to the new
+# file. If two nested locks both used fd 200, the inner `exec` would close
+# the outer flock (kernel-side flocks live on the file description, which is
+# released when the last fd referencing it closes). Allocating distinct fds
+# per lock keeps each kernel-side flock independent across nested acquires.
+# Empirically reproduced and verified — see proposals/v5-final.md §F-B3 and
+# empirical_results.E6.md.
+#
+# Adding a third lock requires extending this convention (e.g. fd 202).
+# Single-fd nested locks are unsafe by design.
+#
+# macOS-specific traps (mkdir backend):
+#   - NEVER call _release_lock after a failed _acquire_lock — releasing
+#     `<lock>.dir` you do not own deletes another process's lock dir.
+#   - NEVER add `2>/dev/null` to `exec N>&-` lines — see _release_lock note.
+#
 # _acquire_lock <lock-path>  — acquire exclusive lock; spins up to 5 s.
 #   Returns 0 on success, 1 on timeout.
-#   On flock systems: opens <lock-path> as fd 200 and calls flock -x.
+#   On flock systems: opens <lock-path> on the convention-allocated fd
+#     (200 / 201) and calls flock -x.
 #   On mkdir systems: creates <lock-path>.dir atomically; registers EXIT trap.
 #
 # _release_lock <lock-path>  — release a lock acquired by _acquire_lock.
-#   On flock systems: closes fd 200 (lock auto-released on fd close).
+#   On flock systems: closes the convention-allocated fd
+#     (200 / 201; lock auto-released on fd close).
 #   On mkdir systems: removes <lock-path>.dir.
 #
 # Usage pattern (non-subshell):
@@ -151,9 +185,21 @@ _canonical_path() {
 _acquire_lock() {
   local _lp="$1"
   if command -v flock >/dev/null 2>&1; then
-    # Open the lock file on fd 200 and acquire exclusive flock.
-    eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
-    flock -x 200 || { exec 200>&-; return 1; }
+    case "$_lp" in
+      */events.jsonl.lock)
+        eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
+        flock -x 200 || { exec 200>&-; return 1; }
+        ;;
+      */state.json.lock)
+        eval "exec 201>\"$_lp\"" 2>/dev/null || return 1
+        flock -x 201 || { exec 201>&-; return 1; }
+        ;;
+      *)
+        # Default: single-lock callers (no nesting expected). fd 200.
+        eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
+        flock -x 200 || { exec 200>&-; return 1; }
+        ;;
+    esac
   else
     local _ld="${_lp}.dir"
     local _dl=$(( $(date +%s) + 5 ))
@@ -178,7 +224,16 @@ _acquire_lock() {
 _release_lock() {
   local _lp="$1"
   if command -v flock >/dev/null 2>&1; then
-    exec 200>&- 2>/dev/null || true
+    # NOTE: do NOT add `2>/dev/null` to these `exec` lines — `exec`
+    # without a command applies redirections to the *current shell*
+    # permanently, so `2>/dev/null` would silently disable stderr for
+    # all subsequent commands. `exec N>&-` does not write to stderr
+    # anyway, so error suppression is unnecessary.
+    case "$_lp" in
+      */events.jsonl.lock) exec 200>&- ;;
+      */state.json.lock)   exec 201>&- ;;
+      *)                    exec 200>&- ;;
+    esac
   else
     rm -rf "${_lp}.dir" 2>/dev/null || true
   fi

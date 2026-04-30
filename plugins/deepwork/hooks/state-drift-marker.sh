@@ -124,27 +124,43 @@ case "$HOOK_EVENT_NAME" in
       ' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
 
       if [[ -n "$VALIDATION_RESULT" ]]; then
-        # Capture the most recent event_id before overwriting state.json; the bad
-        # write bypassed state-transition.sh so events.jsonl already points to the
-        # last good event — that is the event we're reverting to.
-        _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
-          | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
-        # Revert state.json from snapshot
-        cp "$_SNAPSHOT" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
-        # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
-        STATE_FILE="${INSTANCE_DIR}/state.json" \
-          "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
-          --reason "banner_schema_violation" \
-          --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
-        # Clean up snapshot — must happen on this early-return revert path because
-        # the normal cleanup at line 167 is never reached.
-        rm -f "$_SNAPSHOT" 2>/dev/null || true
-        # Append blocker line to log.md
+        # F-C1 (v5-final): the snapshot may already be absent if a sibling hook
+        # (e.g. batch-gate during the PostToolBatch shadow window) cleaned it up
+        # first. Without the [[ -f $_SNAPSHOT ]] guard, the cp silently no-ops
+        # (2>/dev/null || true) but emit_revert_event still appends a
+        # state_reverted record — leaving events.jsonl claiming a revert that
+        # never happened. Guard the entire revert block on snapshot presence;
+        # warn to stderr and skip the revert+event when it is missing so the
+        # auto-healing path (next state mutation re-stamps state.event_head)
+        # remains the corrective action.
+        if [[ -f "$_SNAPSHOT" ]]; then
+          # Capture the most recent event_id before overwriting state.json; the bad
+          # write bypassed state-transition.sh so events.jsonl already points to the
+          # last good event — that is the event we're reverting to.
+          _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
+            | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
+          # Revert state.json from snapshot
+          cp "$_SNAPSHOT" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
+          # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
+          STATE_FILE="${INSTANCE_DIR}/state.json" \
+            "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+            --reason "banner_schema_violation" \
+            --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
+          # Clean up snapshot — must happen on this early-return revert path because
+          # the normal cleanup at line 167 is never reached.
+          rm -f "$_SNAPSHOT" 2>/dev/null || true
+          # Print error to stderr (non-blocking — revert is the corrective action)
+          printf 'state-drift-marker: banners[] schema violation — reverted state.json\n%s\n' \
+            "$VALIDATION_RESULT" >&2
+        else
+          # No snapshot to revert from. Do NOT emit a state_reverted event:
+          # claiming a revert without performing one corrupts the audit trail.
+          printf 'state-drift-marker: banners[] schema violation but snapshot absent (%s) — skipping revert; no state_reverted event emitted\n%s\n' \
+            "$_SNAPSHOT" "$VALIDATION_RESULT" >&2
+        fi
+        # Append blocker line to log.md regardless of revert path
         BLOCKER_LINE="> [banner-corruption ${NOW}] ${VALIDATION_RESULT}"
         printf '%s\n' "$BLOCKER_LINE" >> "$LOG_FILE" 2>/dev/null || true
-        # Print error to stderr (non-blocking — revert is the corrective action)
-        printf 'state-drift-marker: banners[] schema violation — reverted state.json\n%s\n' \
-          "$VALIDATION_RESULT" >&2
         exit 0
       fi
     fi

@@ -108,7 +108,11 @@ _assert_exit "IA-e: mismatched event_head blocked" "2" "$(_run_gate "Bash")"
 # (event_head still mismatched from IA-e setup above)
 echo ""
 echo "── IA-f: replay command bypasses integrity gate (exit 0) despite mismatch ──"
-_IA_F_CMD="bash plugins/deepwork/scripts/state-transition.sh replay --output /tmp/out.json"
+# F-P6 (v5-final): replay output goes to a unique mktemp path, not bare /tmp/out.json,
+# so concurrent test runs don't clobber each other and orphans don't accumulate.
+_IA_F_OUT=$(mktemp -t dw-replay-out.XXXXXX) || _IA_F_OUT="${TMPDIR:-/tmp}/dw-replay-out.$$"
+trap 'rm -f "$_IA_F_OUT"' EXIT
+_IA_F_CMD="bash plugins/deepwork/scripts/state-transition.sh replay --output ${_IA_F_OUT}"
 _IA_F_PAYLOAD=$(jq -cn \
   --arg sid "$SESSION_ID" \
   --arg cmd "$_IA_F_CMD" \

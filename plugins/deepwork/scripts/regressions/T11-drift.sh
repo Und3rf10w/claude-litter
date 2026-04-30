@@ -797,6 +797,113 @@ fi
 
 rm -rf "$T11P_SB"
 
+# ── (q) T-C1-banner-no-snap: banner violation + no snapshot → warn, no state_reverted ──
+# F-C1 (v5-final): when banner validation fires but the snapshot is absent (e.g.
+# batch-gate cleaned it during the PostToolBatch shadow window), the hook must:
+#   - NOT emit a state_reverted event (claiming a revert without performing one
+#     corrupts the audit trail)
+#   - NOT modify state.json (no fake revert)
+#   - emit a stderr warning citing the missing snapshot
+#   - still log banner-corruption to log.md (validation evidence is preserved)
+echo ""
+echo "── T-C1-banner-no-snap: banner violation + no snapshot → warn, no state_reverted ──"
+
+T11Q_SB=$(mktemp -d)
+T11Q_ID="c1c1c1c1"
+T11Q_DIR="$T11Q_SB/.claude/deepwork/$T11Q_ID"
+mkdir -p "$T11Q_DIR"
+T11Q_SID="t-c1-session-$(date +%s)"
+T11Q_STATE="${T11Q_DIR}/state.json"
+T11Q_EVENTS="${T11Q_DIR}/events.jsonl"
+T11Q_LOG="${T11Q_DIR}/log.md"
+touch "$T11Q_LOG"
+
+STATE_FILE="$T11Q_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11Q_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Generate baseline events to give events.jsonl a non-empty tail
+INSTANCE_DIR="$T11Q_DIR" STATE_FILE="$T11Q_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-hook events.jsonl tail for comparison
+T11Q_PRE_TAIL_TYPE=$(tail -1 "$T11Q_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+T11Q_PRE_LINES=$(wc -l < "$T11Q_EVENTS" 2>/dev/null | tr -d ' ')
+
+# Capture pre-hook state.json content
+T11Q_PRE_STATE=$(cat "$T11Q_STATE")
+
+# Write corrupt banners[] directly (post-write violation)
+T11Q_BAD_STATE='{"session_id":"'"$T11Q_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}'
+printf '%s\n' "$T11Q_BAD_STATE" > "$T11Q_STATE"
+
+# Ensure NO snapshot file is present
+T11Q_SNAP="${T11Q_DIR}/.state-snapshot.t-c1-tool-id.json"
+rm -f "$T11Q_SNAP" "${T11Q_DIR}/.state-snapshot"
+
+# Run PostToolUse:Write — should detect banner violation, find no snapshot,
+# emit stderr warning, NOT emit state_reverted event, NOT modify state.json.
+T11Q_OUT=$(printf '%s' \
+  "{\"session_id\":\"$T11Q_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"t-c1-tool-id\",\"tool_input\":{\"file_path\":\"$T11Q_STATE\"}}" \
+  | CLAUDE_PROJECT_DIR="$T11Q_SB" LOG_FILE="$T11Q_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" 2>&1)
+T11Q_RC=$?
+
+# Assertion 1: hook exits 0 (advisory; never blocks)
+_assert_exit "T-C1: hook exits 0 with no snapshot" "0" "$T11Q_RC"
+
+# Assertion 2: stderr contains "snapshot absent" warning
+if printf '%s' "$T11Q_OUT" | grep -qF "snapshot absent"; then
+  printf 'pass: T-C1: stderr contains snapshot-absent warning\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: stderr missing snapshot-absent warning\n' >&2
+  printf '  stderr: %s\n' "$T11Q_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 3: events.jsonl tail is NOT state_reverted (no fake revert event)
+T11Q_POST_TAIL_TYPE=$(tail -1 "$T11Q_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+T11Q_POST_LINES=$(wc -l < "$T11Q_EVENTS" 2>/dev/null | tr -d ' ')
+if [[ "$T11Q_POST_TAIL_TYPE" != "state_reverted" ]]; then
+  printf 'pass: T-C1: events.jsonl tail is NOT state_reverted (last=%s)\n' "$T11Q_POST_TAIL_TYPE"
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: events.jsonl tail is state_reverted — fake revert leaked into audit trail\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 4: events.jsonl line count unchanged (no event appended)
+if [[ "$T11Q_PRE_LINES" == "$T11Q_POST_LINES" ]]; then
+  printf 'pass: T-C1: events.jsonl line count unchanged (pre=%s post=%s)\n' "$T11Q_PRE_LINES" "$T11Q_POST_LINES"
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: events.jsonl grew (pre=%s post=%s)\n' "$T11Q_PRE_LINES" "$T11Q_POST_LINES" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 5: state.json not overwritten — still contains the bad banner
+T11Q_POST_STATE=$(cat "$T11Q_STATE")
+if printf '%s' "$T11Q_POST_STATE" | grep -qF '"bad_field":"oops"'; then
+  printf 'pass: T-C1: state.json NOT overwritten (bad banner still present)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: state.json was overwritten despite missing snapshot\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 6: banner-corruption logged to log.md (validation evidence preserved)
+T11Q_LOG_CONTENT=$(cat "$T11Q_LOG" 2>/dev/null || echo "")
+if printf '%s' "$T11Q_LOG_CONTENT" | grep -q "banner-corruption"; then
+  printf 'pass: T-C1: banner-corruption logged to log.md (evidence preserved)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: banner-corruption NOT logged to log.md\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11Q_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

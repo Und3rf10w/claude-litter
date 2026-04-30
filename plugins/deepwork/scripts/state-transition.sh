@@ -228,12 +228,28 @@ _emit_event() {
         _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
         if [[ -n "$_stamp_hash" ]]; then
           local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
-          # W21 #4: clean up _stamp_final if jq fails or mv short-circuits.
-          jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
-            "$_stamp_tmp" > "$_stamp_final" 2>/dev/null \
-            && mv "$_stamp_final" "$_stamp_tmp" \
-            || rm -f "$_stamp_final"
-          mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null || rm -f "$_stamp_tmp"
+          # F-A2 (W22 #6): explicit-flag fail-closed for the second jq.
+          # Previously: `jq ... > final && mv final stamp_tmp || rm -f final`,
+          # then unconditional `mv stamp_tmp STATE_FILE`. Failure mode: if
+          # `jq ... > final` exits non-zero (with empty OR partial output),
+          # the rm cleared `_stamp_final` but `mv "$_stamp_tmp" "$STATE_FILE"`
+          # still committed state.json with new event_head + last_updated
+          # alongside the STALE state_integrity_hash from the prior write.
+          # Empirically reproduced in empirical_results.E1.md.
+          local _stamp2_ok=0
+          if jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
+               "$_stamp_tmp" > "$_stamp_final" 2>/dev/null; then
+            [[ -s "$_stamp_final" ]] && _stamp2_ok=1
+          fi
+          if [[ "$_stamp2_ok" -eq 1 ]]; then
+            mv "$_stamp_final" "$_stamp_tmp" \
+              && mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null \
+              || { rm -f "$_stamp_final" "$_stamp_tmp"; }
+          else
+            # F-A2: do NOT mv $_stamp_tmp; cleanup both temp files.
+            printf '_emit_event: state_integrity_hash stamp jq failed; head-stamp skipped (events.jsonl append succeeded; integrity-always-gate will detect mismatch on next call)\n' >&2
+            rm -f "$_stamp_final" "$_stamp_tmp"
+          fi
         else
           # W22 #1: fail-closed mirror of W20-e. If integrity-hash compute fails
           # we must NOT mv state.json — that would commit a new event_head +
@@ -387,19 +403,45 @@ _write_with_hash() {
   event_head=$(_read_event_head 2>/dev/null || echo "")
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-  # Step 3: stamp hash + event_head + last_updated into the same tmp in one jq pass
+  # Step 3: stamp hash + event_head + last_updated into the same tmp in one jq pass.
+  #
+  # F-A1 (W22 #6): explicit-flag fail-closed. Previously the stamp jq used
+  # `jq ... > stamp_tmp 2>/dev/null && mv stamp_tmp tmp`. Failure mode: if
+  # jq exits non-zero AFTER writing partial bytes, `&&` skips the mv but
+  # Step 4's unconditional `mv tmp sf` commits the un-stamped (or partial)
+  # tmp content. The previous `[[ -s "$tmp" ]]` Step-4 guard catches empty
+  # output but NOT partial-then-fail. Empirically reproduced in
+  # empirical_results.E7.md: 49-byte partial output passes `[[ -s ]]`,
+  # state.json ends up as invalid JSON missing the integrity hash.
   local stamp_tmp="${sf}.wwh.stamp.tmp.$$"
+  local _stamp_ok=0
   if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
-    jq --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
-      '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' \
-      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
+    if jq --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
+         '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' \
+         "$tmp" > "$stamp_tmp" 2>/dev/null; then
+      [[ -s "$stamp_tmp" ]] && _stamp_ok=1
+    fi
   elif [[ -n "$new_hash" ]]; then
-    jq --arg h "$new_hash" --arg ts "$now" \
-      '.state_integrity_hash = $h | .last_updated = $ts' \
-      "$tmp" > "$stamp_tmp" 2>/dev/null && mv "$stamp_tmp" "$tmp"
+    if jq --arg h "$new_hash" --arg ts "$now" \
+         '.state_integrity_hash = $h | .last_updated = $ts' \
+         "$tmp" > "$stamp_tmp" 2>/dev/null; then
+      [[ -s "$stamp_tmp" ]] && _stamp_ok=1
+    fi
   else
     # hash unavailable — fail-closed: do not write an unauthenticated state
     printf '_write_with_hash: hash compute failed — is jq installed?\n' >&2
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 5
+  fi
+
+  if [[ "$_stamp_ok" -eq 1 ]]; then
+    mv "$stamp_tmp" "$tmp"
+  else
+    # F-A1 fail-closed: stamp jq failed (rc!=0 or empty output). Do NOT
+    # proceed to Step 4 — committing $tmp without the hash stamp would
+    # write state.json with the mutation but stale integrity_hash.
+    printf '_write_with_hash: integrity stamp jq failed — refusing to commit unhashed state\n' >&2
     _release_lock "$lock"
     rm -f "$tmp" "$stamp_tmp" 2>/dev/null
     return 5
@@ -1493,31 +1535,90 @@ case "$SUBCOMMAND" in
         *) shift ;;
       esac
     done
-    # Canonicalize plan_section: strip leading/trailing whitespace (tabs, newlines, spaces)
-    _PCS_PLAN_SECTION="$(printf '%s' "$_PCS_PLAN_SECTION" | awk 'BEGIN{s=""} {if(NR==1) s=$0; else s=s"\n"$0} END{gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); printf "%s",s}')"
+    # F-B2's `tr -cd '[:alnum:]_-' | cut -c1-64` below strips all whitespace
+    # (including newlines/tabs) as a side effect of the character-class filter,
+    # so a separate trim pass is unnecessary. The required-arg check still
+    # fires when --plan-section is omitted entirely (var initialized "" at top
+    # of subcommand); whitespace-only values pass through here and are caught
+    # by the post-sanitize empty-check below with the more accurate
+    # "empty after sanitize" message.
     [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
     [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
     [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }
     printf '%s' "$_PCS_FILES" | jq -e 'if type == "array" then . else error end' >/dev/null 2>&1 \
       || { printf 'pending_change_set: --files must be a valid JSON array\n' >&2; exit 3; }
     _require_state_file
-    _PCS_JSON=$(jq -cn \
-      --arg ps  "$_PCS_PLAN_SECTION" \
-      --argjson files "$_PCS_FILES" \
-      --arg rat "$_PCS_RATIONALE" \
-      --arg ntr "$_PCS_NO_TEST_REASON" \
-      'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
-       else {plan_section:$ps, files:$files, rationale:$rat} end')
+
+    # F-B2: write-time sanitize of plan_section. bash-gate.sh derives the
+    # rollback filename from `plan_section | tr -cd '[:alnum:]_-' | cut -c1-64`,
+    # but pending-change.json previously stored the value verbatim. As a result
+    # `§5.2` was stored verbatim and the gate looked for `rollback.52.md` —
+    # a silent mismatch. Apply the same transform here so the stored value
+    # is the canonical key. Warn to stderr when sanitization changed the value
+    # so operators see the transform happen.
+    _PCS_PLAN_SECTION_RAW="$_PCS_PLAN_SECTION"
+    _PCS_PLAN_SECTION="$(printf '%s' "$_PCS_PLAN_SECTION_RAW" | tr -cd '[:alnum:]_-' | cut -c1-64)"
+    if [[ "$_PCS_PLAN_SECTION" != "$_PCS_PLAN_SECTION_RAW" ]]; then
+      printf 'pending_change_set: plan_section sanitized from "%s" to "%s" (rollback-key canonicalization)\n' \
+        "$_PCS_PLAN_SECTION_RAW" "$_PCS_PLAN_SECTION" >&2
+    fi
+    [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: plan_section empty after sanitize\n' >&2; exit 3; }
+
+    # F-P3: deterministic change_id. Three downstream consumers
+    # (file-changed-retest, retest-dispatch, plan-citation-gate) read
+    # change_id from pending-change.json; pending_change_set previously
+    # never wrote it, so they all received empty strings. Generate a
+    # 12-char sha256 prefix over the four stable inputs.
+    _PCS_HASH_INPUT="${_PCS_PLAN_SECTION}"$'\n'"${_PCS_FILES}"$'\n'"${_PCS_RATIONALE}"$'\n'"${_PCS_NO_TEST_REASON}"
+    if command -v sha256sum >/dev/null 2>&1; then
+      _PCS_CHANGE_ID=$(printf '%s' "$_PCS_HASH_INPUT" | sha256sum | cut -c1-12)
+    else
+      _PCS_CHANGE_ID=$(printf '%s' "$_PCS_HASH_INPUT" | shasum -a 256 | cut -c1-12)
+    fi
+
+    # F-P1: jq-cn fail-closed. Previous code captured _PCS_JSON without
+    # checking jq's exit status or output validity; if jq -cn failed, the
+    # next `printf '%s\n' "" > $_PCS_TMP && mv` happily wrote an empty
+    # pending-change.json. Now: explicit exit-status check + non-empty
+    # check + valid-object check; exit 5 on any failure.
+    if ! _PCS_JSON=$(jq -cn \
+        --arg ps   "$_PCS_PLAN_SECTION" \
+        --argjson files "$_PCS_FILES" \
+        --arg rat  "$_PCS_RATIONALE" \
+        --arg ntr  "$_PCS_NO_TEST_REASON" \
+        --arg cid  "$_PCS_CHANGE_ID" \
+        'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr, change_id:$cid}
+         else {plan_section:$ps, files:$files, rationale:$rat, change_id:$cid} end' 2>/dev/null); then
+      printf 'pending_change_set: jq -cn failed to build pending-change JSON\n' >&2
+      exit 5
+    fi
+    [[ -n "$_PCS_JSON" ]] || { printf 'pending_change_set: jq -cn produced empty output\n' >&2; exit 5; }
+    printf '%s' "$_PCS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 \
+      || { printf 'pending_change_set: jq -cn produced non-object output\n' >&2; exit 5; }
+
     _PCS_TMP="${INSTANCE_DIR}/pending-change.json.tmp.$$"
     _ensure_event_log
-    _emit_event "pending_change_set" \
+
+    # F-PCS: prefix _emit_event with _EMIT_STAMP_HEAD=1 so state.event_head,
+    # state_integrity_hash, and last_updated are stamped atomically inside
+    # the events.jsonl lock span. Without this prefix, pending_change_set
+    # was the only event-emitting subcommand of 17 that left state.event_head
+    # stale relative to the events.jsonl tail, causing integrity-always-gate
+    # to thrash on the next call. Empirically reproduced + fix verified in
+    # empirical_results.E8.md.
+    #
+    # Safety: depends on PR A (F-B3 static fd convention) and PR B (F-A2
+    # second-jq fail-closed) being landed first — both fix bugs in the W20-c
+    # stamp block this line now routes traffic through.
+    _EMIT_STAMP_HEAD=1 _emit_event "pending_change_set" \
       "$(jq -cn \
           --arg ps "$_PCS_PLAN_SECTION" \
           --argjson files "$_PCS_FILES" \
           --arg rat "$_PCS_RATIONALE" \
           --arg ntr "$_PCS_NO_TEST_REASON" \
-          'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
-           else {plan_section:$ps, files:$files, rationale:$rat} end')" || exit 5
+          --arg cid "$_PCS_CHANGE_ID" \
+          'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr, change_id:$cid}
+           else {plan_section:$ps, files:$files, rationale:$rat, change_id:$cid} end')" || exit 5
     printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
       && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
       || { rm -f "$_PCS_TMP"; exit 4; }

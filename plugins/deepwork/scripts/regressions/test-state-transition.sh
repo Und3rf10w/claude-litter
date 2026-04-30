@@ -675,7 +675,7 @@ if [[ -f "$_PCS_FILE" ]]; then
 else
   _fail "PCS-a: pending-change.json not found"
 fi
-_assert_jq_eq "PCS-a: plan_section" "$_PCS_FILE" '.plan_section' "S3.2"
+_assert_jq_eq "PCS-a: plan_section (sanitized: F-B2 strips '.' from 'S3.2')" "$_PCS_FILE" '.plan_section' "S32"
 _assert_jq_eq "PCS-a: files[0]" "$_PCS_FILE" '.files[0]' "src/foo.sh"
 _assert_jq_eq "PCS-a: files[1]" "$_PCS_FILE" '.files[1]' "src/bar.sh"
 _assert_jq_eq "PCS-a: rationale" "$_PCS_FILE" '.rationale' "Direct quote from plan section 3.2"
@@ -696,7 +696,7 @@ fi
 RC=$?
 _assert_exit "PCS-a (no-test-reason): exit 0" "0" "$RC"
 _assert_jq_eq "PCS-a: no_test_reason set" "$_PCS_FILE" '.no_test_reason' "config-only file, no logic to test"
-_assert_jq_eq "PCS-a: plan_section overwritten" "$_PCS_FILE" '.plan_section' "S3.3"
+_assert_jq_eq "PCS-a: plan_section overwritten (sanitized: F-B2 strips '.')" "$_PCS_FILE" '.plan_section' "S33"
 
 # ── PCS-b: missing required arg exits 3 ──────────────────────────────────────
 echo ""
@@ -757,7 +757,7 @@ SF="${INSTANCE_DIR}/state.json"
   --files '["src/foo.sh"]' \
   --rationale "whitespace canonicalization test"
 _assert_exit "PCS-d: exit 0" "0" "$?"
-_assert_jq_eq "PCS-d: plan_section stripped" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S4.1"
+_assert_jq_eq "PCS-d: plan_section stripped (sanitized: F-B2 strips '.')" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S41"
 
 # ── PCS-e: plan_section strips tabs and newlines ─────────────────────────────
 echo ""
@@ -769,7 +769,7 @@ SF="${INSTANCE_DIR}/state.json"
   --files '["src/bar.sh"]' \
   --rationale "tab/newline canonicalization test"
 _assert_exit "PCS-e: exit 0" "0" "$?"
-_assert_jq_eq "PCS-e: plan_section stripped of tabs/newlines" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S5.2"
+_assert_jq_eq "PCS-e: plan_section stripped of tabs/newlines (sanitized: F-B2 strips '.')" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S52"
 
 # ── DI-a: discover_instance skips orphan dirs (no state.json) ────────────────
 echo ""
@@ -1172,6 +1172,352 @@ else
 fi
 
 rm -rf "$_AWD_SB" "$_AWD_FAKE_BIN" "$_AWD_STDERR_FILE"
+
+# ── T-A1: _write_with_hash Step 3 stamp jq fail-closed ────────────────────
+# Inject a jq wrapper that exits non-zero when called with the Step-3 stamp
+# filter (assigning state_integrity_hash + event_head + last_updated).
+# Other jq invocations pass through to the real jq.
+# Verifies F-A1: state.json must NOT be modified after stamp jq fails;
+# set_field must exit 5; no leftover stamp tmp files.
+echo ""
+echo "── T-A1: _write_with_hash Step 3 stamp jq fail-closed ──"
+_TA1_SB=$(mktemp -d); _TA1_SB="$(cd "$_TA1_SB" && pwd -P)"
+_TA1_INST_DIR="$_TA1_SB/.claude/deepwork/ta100001"
+mkdir -p "$_TA1_INST_DIR"
+_TA1_SF="${_TA1_INST_DIR}/state.json"
+_TA1_EVENTS="${_TA1_INST_DIR}/events.jsonl"
+
+INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" init - <<EOF >/dev/null 2>&1
+{
+  "session_id": "ta1-test",
+  "instance_id": "ta100001",
+  "phase": "scope",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOF
+
+# Do one successful set_field to populate hash + event_head
+INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+_TA1_PRE_PHASE=$(jq -r '.phase' "$_TA1_SF")
+_TA1_PRE_HEAD=$(jq -r '.event_head' "$_TA1_SF")
+_TA1_PRE_HASH=$(jq -r '.state_integrity_hash' "$_TA1_SF")
+
+_TA1_FAKE_BIN=$(mktemp -d)
+cat > "${_TA1_FAKE_BIN}/jq" <<'TA1FAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+# Trigger only on Step-3 stamp jq: assigns all three of
+# state_integrity_hash, event_head, and last_updated together.
+_TA1_STAMP=0
+for arg in "$@"; do
+  case "$arg" in
+    *".state_integrity_hash = \$h | .event_head = \$eh | .last_updated = \$ts"*) _TA1_STAMP=1 ;;
+  esac
+done
+[[ "$_TA1_STAMP" -eq 1 ]] && exit 1
+exec "$_REAL_JQ" "$@"
+TA1FAKEJQ
+chmod +x "${_TA1_FAKE_BIN}/jq"
+
+_TA1_STDERR_FILE=$(mktemp)
+PATH="${_TA1_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" set_field '.phase' '"work"' 2>"$_TA1_STDERR_FILE"
+_TA1_RC=$?
+
+_TA1_STDERR=$(cat "$_TA1_STDERR_FILE")
+_TA1_POST_PHASE=$(jq -r '.phase' "$_TA1_SF")
+_TA1_POST_HEAD=$(jq -r '.event_head' "$_TA1_SF")
+_TA1_POST_HASH=$(jq -r '.state_integrity_hash' "$_TA1_SF")
+
+# Expect rc=4 (set_field's wrapper converts any non-zero from
+# _write_with_hash to exit 4; F-A1 returns 5 internally but the rc=4
+# convention is preserved at the subcommand boundary).
+_assert_exit "T-A1: set_field rc=4 when stamp jq fails" "4" "$_TA1_RC"
+
+# state.json content unchanged
+if [[ "$_TA1_PRE_PHASE" == "$_TA1_POST_PHASE" \
+   && "$_TA1_PRE_HEAD" == "$_TA1_POST_HEAD" \
+   && "$_TA1_PRE_HASH" == "$_TA1_POST_HASH" ]]; then
+  _pass "T-A1: state.json unchanged when Step 3 stamp jq fails"
+else
+  _fail "T-A1: state.json modified despite stamp failure (phase $_TA1_PRE_PHASE→$_TA1_POST_PHASE)"
+fi
+
+# stderr has the F-A1 fail-closed warning
+if printf '%s' "$_TA1_STDERR" | grep -q "integrity stamp jq failed"; then
+  _pass "T-A1: stderr has F-A1 fail-closed warning"
+else
+  _fail "T-A1: stderr missing F-A1 warning — got: ${_TA1_STDERR:0:200}"
+fi
+
+# No leftover .wwh.* tmp files
+if ! ls "${_TA1_INST_DIR}"/state.json.wwh.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "T-A1: no leftover wwh tmp files"
+else
+  _fail "T-A1: leftover wwh tmp files present"
+fi
+
+rm -rf "$_TA1_SB" "$_TA1_FAKE_BIN" "$_TA1_STDERR_FILE"
+
+# ── T-A2: _emit_event W20-c second jq fail-closed ────────────────────────
+# Inject a jq wrapper that fails on the second jq call inside _emit_event's
+# W20-c stamp block — the one that assigns state_integrity_hash from the
+# computed _stamp_hash. F-A2 must skip the mv and leave state.json
+# unchanged when this jq fails.
+echo ""
+echo "── T-A2: _emit_event W20-c second jq fail-closed ──"
+_TA2_SB=$(mktemp -d); _TA2_SB="$(cd "$_TA2_SB" && pwd -P)"
+_TA2_INST_DIR="$_TA2_SB/.claude/deepwork/ta200001"
+mkdir -p "$_TA2_INST_DIR"
+_TA2_SF="${_TA2_INST_DIR}/state.json"
+_TA2_EVENTS="${_TA2_INST_DIR}/events.jsonl"
+
+INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA2_SF" init - <<EOF >/dev/null 2>&1
+{
+  "session_id": "ta2-test",
+  "instance_id": "ta200001",
+  "phase": "scope",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOF
+INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA2_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+# Clear the on-disk hash so _verify_integrity_hash early-returns 0,
+# letting emit_revert_event reach the W20-c stamp block.
+jq 'del(.state_integrity_hash)' "$_TA2_SF" > "${_TA2_SF}.tmp" && mv "${_TA2_SF}.tmp" "$_TA2_SF"
+
+_TA2_PRE_HEAD=$(jq -r '.event_head // ""' "$_TA2_SF")
+_TA2_PRE_TS=$(jq -r '.last_updated // ""' "$_TA2_SF")
+
+_TA2_FAKE_BIN=$(mktemp -d)
+cat > "${_TA2_FAKE_BIN}/jq" <<'TA2FAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+# W20-c second jq is the one that assigns ONLY state_integrity_hash
+# (not event_head, not last_updated). Filter shape: '.state_integrity_hash = $h'
+_TA2_HIT=0
+for arg in "$@"; do
+  case "$arg" in
+    ".state_integrity_hash = \$h") _TA2_HIT=1 ;;
+  esac
+done
+[[ "$_TA2_HIT" -eq 1 ]] && exit 1
+exec "$_REAL_JQ" "$@"
+TA2FAKEJQ
+chmod +x "${_TA2_FAKE_BIN}/jq"
+
+_TA2_STDERR_FILE=$(mktemp)
+PATH="${_TA2_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" emit_revert_event \
+    --reason "ta2_test_second_jq_fail" \
+    --reverted_to_event "$_TA2_PRE_HEAD" 2>"$_TA2_STDERR_FILE"
+_TA2_RC=$?
+
+_TA2_STDERR=$(cat "$_TA2_STDERR_FILE")
+_TA2_POST_HEAD=$(jq -r '.event_head // ""' "$_TA2_SF")
+_TA2_POST_TS=$(jq -r '.last_updated // ""' "$_TA2_SF")
+
+# emit_revert_event should still exit 0 (events.jsonl append is independent)
+_assert_exit "T-A2: emit_revert_event rc=0" "0" "$_TA2_RC"
+
+# state.json head/last_updated must NOT have advanced (stamp was skipped)
+if [[ "$_TA2_PRE_HEAD" == "$_TA2_POST_HEAD" && "$_TA2_PRE_TS" == "$_TA2_POST_TS" ]]; then
+  _pass "T-A2: state.json head/ts unchanged when second jq fails"
+else
+  _fail "T-A2: state.json modified despite F-A2 fail-closed (head $_TA2_PRE_HEAD→$_TA2_POST_HEAD, ts $_TA2_PRE_TS→$_TA2_POST_TS)"
+fi
+
+# stderr has the F-A2 fail-closed warning
+if printf '%s' "$_TA2_STDERR" | grep -q "state_integrity_hash stamp jq failed"; then
+  _pass "T-A2: stderr has F-A2 fail-closed warning"
+else
+  _fail "T-A2: stderr missing F-A2 warning — got: ${_TA2_STDERR:0:200}"
+fi
+
+# events.jsonl tail must be the new state_reverted event
+if [[ -f "$_TA2_EVENTS" ]]; then
+  _TA2_LAST_TYPE=$(tail -1 "$_TA2_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$_TA2_LAST_TYPE" == "state_reverted" ]]; then
+    _pass "T-A2: events.jsonl tail is state_reverted (append succeeded despite stamp skip)"
+  else
+    _fail "T-A2: events.jsonl tail event_type=$_TA2_LAST_TYPE (expected state_reverted)"
+  fi
+fi
+
+# No leftover .emit-stamp* tmp files
+if ! ls "${_TA2_INST_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "T-A2: no leftover emit-stamp tmp files"
+else
+  _fail "T-A2: leftover emit-stamp tmp files present"
+fi
+
+rm -rf "$_TA2_SB" "$_TA2_FAKE_BIN" "$_TA2_STDERR_FILE"
+
+# Helper: hash the last events.jsonl line the same way _read_event_head does.
+_tail_event_hash() {
+  local f="$1"
+  [[ -s "$f" ]] || { printf 'GENESIS'; return; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    tail -1 "$f" | { read -r line; printf '%s\n' "$line" | sha256sum | cut -d' ' -f1; }
+  else
+    tail -1 "$f" | { read -r line; printf '%s\n' "$line" | shasum -a 256 | cut -d' ' -f1; }
+  fi
+}
+
+# ── T-B2: pending_change_set sanitizes plan_section at write time ──────────
+# Verifies F-B2: storage uses the bash-gate's tr -cd '[:alnum:]_-' | cut -c1-64
+# transform, so `§5.2` and `5.2` and `52` all collide on the same canonical
+# value, and the gate's rollback-file lookup matches the stored value.
+echo ""
+echo "── T-B2: pending_change_set sanitizes plan_section ──"
+_TB2_SB=$(mktemp -d); _TB2_SB="$(cd "$_TB2_SB" && pwd -P)"
+_TB2_INST="$_TB2_SB/.claude/deepwork/tb200001"
+mkdir -p "$_TB2_INST"
+_TB2_SF="${_TB2_INST}/state.json"
+
+INSTANCE_DIR="$_TB2_INST" STATE_FILE="$_TB2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TB2_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tb2","instance_id":"tb200001","phase":"plan","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+
+_TB2_STDERR_FILE=$(mktemp)
+INSTANCE_DIR="$_TB2_INST" STATE_FILE="$_TB2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TB2_SF" pending_change_set \
+    --plan-section "§5.2" \
+    --files '["foo.sh"]' \
+    --rationale "test" 2>"$_TB2_STDERR_FILE"
+_TB2_RC=$?
+_TB2_STDERR=$(cat "$_TB2_STDERR_FILE")
+
+_assert_exit "T-B2: pending_change_set rc=0" "0" "$_TB2_RC"
+_assert_jq_eq "T-B2: plan_section stored as '52' (sanitized from §5.2)" "${_TB2_INST}/pending-change.json" '.plan_section' "52"
+
+if printf '%s' "$_TB2_STDERR" | grep -q 'plan_section sanitized'; then
+  _pass "T-B2: stderr warning emitted on sanitize transform"
+else
+  _fail "T-B2: stderr missing sanitize warning"
+fi
+
+rm -rf "$_TB2_SB" "$_TB2_STDERR_FILE"
+
+# ── T-P3: pending_change_set writes a deterministic change_id ──────────────
+# Same inputs → same change_id. Different plan_section → different change_id.
+echo ""
+echo "── T-P3: pending_change_set writes deterministic change_id ──"
+_TP3_SB=$(mktemp -d); _TP3_SB="$(cd "$_TP3_SB" && pwd -P)"
+_TP3_INST="$_TP3_SB/.claude/deepwork/tp300001"
+mkdir -p "$_TP3_INST"
+_TP3_SF="${_TP3_INST}/state.json"
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tp3","instance_id":"tp300001","phase":"plan","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S31" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID1=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S31" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID2=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S32" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID3=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+# Same inputs produce same change_id
+if [[ "$_TP3_CID1" == "$_TP3_CID2" && -n "$_TP3_CID1" ]]; then
+  _pass "T-P3: same inputs → same change_id ($_TP3_CID1)"
+else
+  _fail "T-P3: same inputs produced different change_ids ($_TP3_CID1 vs $_TP3_CID2)"
+fi
+
+# Different plan_section produces different change_id
+if [[ "$_TP3_CID1" != "$_TP3_CID3" ]]; then
+  _pass "T-P3: different plan_section → different change_id ($_TP3_CID1 vs $_TP3_CID3)"
+else
+  _fail "T-P3: different plan_section produced same change_id ($_TP3_CID1)"
+fi
+
+# Format: 12 hex chars
+if printf '%s' "$_TP3_CID1" | grep -qE '^[a-f0-9]{12}$'; then
+  _pass "T-P3: change_id format is 12 hex chars"
+else
+  _fail "T-P3: change_id format unexpected: '$_TP3_CID1'"
+fi
+
+rm -rf "$_TP3_SB"
+
+# ── T-PCS-stamp-head: pending_change_set updates state.event_head ──────────
+# F-PCS: after pending_change_set, state.event_head MUST equal sha256(tail
+# events.jsonl). Without F-PCS, state.event_head stayed at the prior tail
+# and integrity-always-gate would see a mismatch on the next call.
+echo ""
+echo "── T-PCS-stamp-head: pending_change_set stamps event_head ──"
+_TPCS_SB=$(mktemp -d); _TPCS_SB="$(cd "$_TPCS_SB" && pwd -P)"
+_TPCS_INST="$_TPCS_SB/.claude/deepwork/tpcs0001"
+mkdir -p "$_TPCS_INST"
+_TPCS_SF="${_TPCS_INST}/state.json"
+_TPCS_EVENTS="${_TPCS_INST}/events.jsonl"
+
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tpcs","instance_id":"tpcs0001","phase":"scope","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+# Populate event_head with a baseline set_field (uses _write_with_hash).
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+# Sanity: baseline state.event_head matches sha256(tail events.jsonl).
+_TPCS_BASE_HEAD=$(jq -r '.event_head' "$_TPCS_SF")
+_TPCS_BASE_TAIL=$(_tail_event_hash "$_TPCS_EVENTS")
+if [[ "$_TPCS_BASE_HEAD" == "$_TPCS_BASE_TAIL" ]]; then
+  _pass "T-PCS-stamp-head: baseline (set_field) state.event_head matches tail"
+else
+  _fail "T-PCS-stamp-head: baseline mismatch — set_field path is broken (head=${_TPCS_BASE_HEAD:0:12} tail=${_TPCS_BASE_TAIL:0:12})"
+fi
+
+# Action: run pending_change_set; assert state.event_head still matches.
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" pending_change_set \
+    --plan-section "S5" --files '["x.sh"]' --rationale "tpcs test" >/dev/null 2>&1
+
+_TPCS_AFTER_HEAD=$(jq -r '.event_head' "$_TPCS_SF")
+_TPCS_AFTER_TAIL=$(_tail_event_hash "$_TPCS_EVENTS")
+_TPCS_TAIL_TYPE=$(tail -1 "$_TPCS_EVENTS" | jq -r '.event_type')
+
+# The pending_change_set event must be the new tail
+if [[ "$_TPCS_TAIL_TYPE" == "pending_change_set" ]]; then
+  _pass "T-PCS-stamp-head: events.jsonl tail event_type = pending_change_set"
+else
+  _fail "T-PCS-stamp-head: events.jsonl tail event_type = $_TPCS_TAIL_TYPE (expected pending_change_set)"
+fi
+
+# state.event_head must match the new tail (F-PCS load-bearing assertion)
+if [[ "$_TPCS_AFTER_HEAD" == "$_TPCS_AFTER_TAIL" ]]; then
+  _pass "T-PCS-stamp-head: state.event_head matches sha256(tail) after pending_change_set"
+else
+  _fail "T-PCS-stamp-head: state.event_head=${_TPCS_AFTER_HEAD:0:12}... != sha256(tail)=${_TPCS_AFTER_TAIL:0:12}... — F-PCS regression"
+fi
+
+rm -rf "$_TPCS_SB"
 
 # ── Summary ──
 echo ""

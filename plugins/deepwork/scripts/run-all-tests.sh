@@ -48,6 +48,40 @@ for suite in "$REGRESSIONS_DIR"/test-*.sh "$REGRESSIONS_DIR"/T*.sh; do
   _run_suite "$suite"
 done
 
+# ── T-P6-test-tmp-uniqueness ──────────────────────────────────────────────────
+# F-P6 (v5-final): test files must not WRITE to bare /tmp/<word>.<ext> paths
+# (e.g. `>> /tmp/out.json`, `--output /tmp/out.json`) — concurrent test runs
+# collide and orphan files accumulate. Required pattern is mktemp -t
+# <prefix>.XXXXXX. This grep scans every test suite for write-creating uses
+# of bare /tmp/<word>.<ext> paths. STRING LITERAL uses (--plan-ref /tmp/plan.md
+# as parser-test input, ["/tmp/x.ts"] as JSON test data, hook-regex inputs)
+# are intentionally NOT flagged — they exercise parsing/regex code paths and
+# never touch the filesystem.
+printf '── T-P6-test-tmp-uniqueness ──\n'
+_TP6_VIOLATIONS=$(
+  for f in "$SCRIPT_DIR"/test-*.sh "$REGRESSIONS_DIR"/test-*.sh "$REGRESSIONS_DIR"/T*.sh; do
+    [[ -f "$f" ]] || continue
+    # Match shell write-redirects and well-known output flags pointing at bare
+    # /tmp/<word>.<ext>. Excludes lines beginning with #, lines that contain
+    # mktemp on the same line, and the trap rm -f cleanup line (where the
+    # /tmp path is being removed, not written).
+    grep -nE '(>>?[[:space:]]*|--output[[:space:]]+|--out[[:space:]]+|-o[[:space:]]+|tee[[:space:]]+(-a[[:space:]]+)?)/tmp/[A-Za-z0-9_-]+\.[A-Za-z0-9]+' "$f" \
+      | grep -vE '^[^:]*:[[:space:]]*[0-9]+:[[:space:]]*#' \
+      | grep -vE 'mktemp|rm[[:space:]]+-f' \
+      | sed "s|^|${f}: |"
+  done
+)
+if [[ -n "$_TP6_VIOLATIONS" ]]; then
+  printf 'FAIL T-P6-test-tmp-uniqueness — write to bare /tmp/<word>.<ext> path:\n'
+  printf '%s\n' "$_TP6_VIOLATIONS"
+  FAIL_SUITES=$((FAIL_SUITES + 1))
+  FAILED_NAMES+=("T-P6-test-tmp-uniqueness")
+else
+  printf 'PASS T-P6-test-tmp-uniqueness (no write to bare /tmp/<word>.<ext>)\n'
+  PASS_SUITES=$((PASS_SUITES + 1))
+fi
+printf '\n'
+
 printf '═══════════════════════════════════════\n'
 printf 'Suites passed: %d | Suites failed: %d\n' "$PASS_SUITES" "$FAIL_SUITES"
 if [[ ${#FAILED_NAMES[@]} -gt 0 ]]; then
