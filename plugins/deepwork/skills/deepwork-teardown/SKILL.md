@@ -40,7 +40,6 @@ Then use `AskUserQuestion` to ask the user which instance to tear down.
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" \
   --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/state.json" archive_state
 rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/pending-change.json"
-rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/heartbeat.json"
 rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/.idle-retry.*"
 ```
 
