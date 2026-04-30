@@ -82,4 +82,14 @@ if printf '%s' "$COMMAND" | grep -qiE \
   exit 2
 fi
 
+# Block exec-fd write/append/read-write redirections (exec N> / exec N>> / exec N<>).
+# Variable-expansion targets (exec 3>"$ST") evade the literal-filename patterns above.
+# Read-only (exec N<) is NOT matched and remains allowed.
+if printf '%s' "$COMMAND" | grep -qE 'exec[[:space:]]+[0-9]+(>>|<>|>)[^&]'; then
+  _matched=$(printf '%s' "$COMMAND" | grep -oE 'exec[[:space:]]+[0-9]+(>>|<>|>)[^&][^;|&]*' | head -1)
+  printf 'state-bash-gate: SINGLE_WRITER_VIOLATION — exec-fd write redirection is blocked; use state-transition.sh\n' >&2
+  printf '  matched: %s\n' "$_matched" >&2
+  exit 2
+fi
+
 exit 0
