@@ -6,12 +6,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/teammate-idle-gate.sh",
+            "command": "bash -c '[[ -n \"$CLAUDE_PLUGIN_ROOT\" ]] || { echo \"CLAUDE_PLUGIN_ROOT unset — deepwork hooks.json requires this env var\" >&2; exit 1; }; exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/teammate-idle-gate.sh\"'",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-claim-regex-precheck.sh",
+            "command": "bash -c '[[ -n \"$CLAUDE_PLUGIN_ROOT\" ]] || { echo \"CLAUDE_PLUGIN_ROOT unset — deepwork hooks.json requires this env var\" >&2; exit 1; }; exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/status-claim-regex-precheck.sh\"'",
             "timeout": 10,
             "statusMessage": "Logging status claim metrics...",
             "async": true,
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.sh",
+            "command": "bash -c '[[ -n \"$CLAUDE_PLUGIN_ROOT\" ]] || { echo \"CLAUDE_PLUGIN_ROOT unset — deepwork hooks.json requires this env var\" >&2; exit 1; }; exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/pre-compact.sh\"'",
             "timeout": 15
           }
         ]
