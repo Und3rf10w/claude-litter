@@ -563,12 +563,14 @@ _run_phase_advance_gate() {
     sot_json=$(jq -r '.source_of_truth[]? // empty' "$sf" 2>/dev/null)
     for artifact in "${instance_dir}"/findings.*.md "${instance_dir}"/mechanism.*.md "${instance_dir}"/reframe.*.md "${instance_dir}"/coverage.*.md; do
       [[ -f "$artifact" ]] || continue
-      cited=$(grep -oE '\]\([^)]+\)' "$artifact" 2>/dev/null | sed -E 's/^\]\((.*)\)$/\1/' | grep -E '(/|\.(md|js|json|sh|py)$)' || true)
+      cited=$(grep -oE '\]\([^)]+\)' "$artifact" 2>/dev/null | sed -E 's/^\]\((.*)\)$/\1/' | grep -E '\.(md|js|json|sh|py)$' || true)
       while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         case "$path" in http*|\#*|/*|*#*) continue ;; esac
-        if ! printf '%s\n' "$sot_json" | grep -Fqx "$path"; then
-          missing="${missing}${path}"$'\n'
+        local path_norm="$path"
+        while [[ "$path_norm" == ../* ]]; do path_norm="${path_norm#../}"; done
+        if ! printf '%s\n' "$sot_json" | grep -Fqx "$path_norm"; then
+          missing="${missing}${path_norm}"$'\n'
         fi
       done <<< "$cited"
     done

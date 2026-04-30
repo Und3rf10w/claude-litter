@@ -40,10 +40,9 @@ else
   OLD_STRING=$(printf '%s' "$INPUT" | jq -r '.tool_input.old_string // ""' 2>/dev/null)
   NEW_STRING=$(printf '%s' "$INPUT" | jq -r '.tool_input.new_string // ""' 2>/dev/null)
   if [[ -n "$OLD_STRING" && -n "$NEW_STRING" ]]; then
-    PROPOSED_CONTENT=$(awk -v old="$OLD_STRING" -v new="$NEW_STRING" '
-      BEGIN { RS = "\0"; ORS = "" }
-      { sub(old, new); print }
-    ' "$STATE_FILE" 2>/dev/null)
+    PROPOSED_CONTENT=$(OLD_STRING="$OLD_STRING" NEW_STRING="$NEW_STRING" python3 -c \
+      "import sys, os; print(sys.stdin.read().replace(os.environ['OLD_STRING'], os.environ['NEW_STRING']), end='')" \
+      < "$STATE_FILE" 2>/dev/null)
     PROPOSED_PHASE=$(printf '%s' "$PROPOSED_CONTENT" | jq -r '.phase // ""' 2>/dev/null || echo "")
   else
     PROPOSED_PHASE="$CURRENT_PHASE"
