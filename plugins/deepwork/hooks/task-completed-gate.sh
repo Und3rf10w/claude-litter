@@ -52,7 +52,7 @@ if ! discover_instance_by_team_name "$TEAM_NAME"; then
   exit 0
 fi
 
-SANITIZED_TEAM=$(printf '%s' "$TEAM_NAME" | sed 's/[^a-zA-Z0-9_-]/-/g')
+SANITIZED_TEAM=$(_sanitize_team_name "$TEAM_NAME")
 TASK_DIR="$HOME/.claude/tasks/${SANITIZED_TEAM}"
 
 TASK_ID_SAFE=$(printf '%s' "$TASK_ID" | sed 's/[^a-zA-Z0-9_-]/_/g')

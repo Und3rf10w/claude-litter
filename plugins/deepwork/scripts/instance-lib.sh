@@ -44,6 +44,16 @@ _parse_hook_input() {
 }
 
 # ---------------------------------------------------------------------------
+# _sanitize_team_name <team_name>
+#
+# Canonical team-name sanitization: replaces `/` and space with `_`.
+# Prints the sanitized name to stdout. Must match the CC TUI / swarm-loop
+# write path so file lookups find the directory the producer created.
+_sanitize_team_name() {
+  printf '%s' "$1" | tr '/' '_' | tr ' ' '_'
+}
+
+# ---------------------------------------------------------------------------
 # _load_task_file <team_name> <task_id>
 #
 # Resolves the task JSON file path and reads it into TASK_FILE_PATH and TASK_JSON.
@@ -52,7 +62,7 @@ _load_task_file() {
   local team_name="$1" task_id="$2"
   [[ -n "$team_name" && -n "$task_id" ]] || return 1
   local sanitized_team task_safe tasks_dir candidate
-  sanitized_team=$(printf '%s' "$team_name" | tr '/' '_' | tr ' ' '_')
+  sanitized_team=$(_sanitize_team_name "$team_name")
   task_safe=$(printf '%s' "$task_id" | tr '/' '_')
   tasks_dir="${HOME}/.claude/tasks/${sanitized_team}"
   candidate="${tasks_dir}/${task_safe}.json"
