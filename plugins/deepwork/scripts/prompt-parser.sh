@@ -68,7 +68,7 @@ parse_prompt_file() {
   local file="$1"
   [[ -f "$file" ]] || return 1
 
-  _preprocess_prompt_file "$file"
+  _preprocess_prompt_file "$file" || return 1
 
   local _goal_lines=()
   local _line
