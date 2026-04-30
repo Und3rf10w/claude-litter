@@ -22,6 +22,7 @@
     ],
     "PreCompact": [
       {
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

@@ -235,6 +235,9 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `frontmatter-gate.sh` | PreToolUse(Write\|Edit) | Enforces uniform YAML frontmatter on `.md` artifacts written inside the active instance dir; carve-outs: `log.md`, `prompt.md`, `adversarial-tests*.md`; warn-only for pre-fix sessions lacking `frontmatter_schema_version` sentinel | `hooks/frontmatter-gate.sh` |
 | `state-drift-marker.sh` | Pre+PostToolUse(Write\|Edit) | On state.json writes: snapshots pre-write, diffs post-write, appends deduped phase-transition + bar-verdict markers to log.md (removes model dependency for log freshness) | `hooks/state-drift-marker.sh` |
 | `pre-compact.sh` | PreCompact (static, `hooks.json`) | Stamps `state.json.last_updated`, appends freshness line to log.md, emits compact instructions on stdout; no-ops for subagent contexts and when no active session | `hooks/pre-compact.sh` |
+| `integrity-always-gate.sh` | PreToolUse(Write\|Edit\|Bash\|TaskCreate\|TaskUpdate\|SendMessage) | Always-on `event_head` integrity check (W9 M1); fires on every tool use; modes: both; fail-open when no active instance | `hooks/integrity-always-gate.sh` |
+| `state-bash-gate.sh` | PreToolUse(Bash) | Blocks shell-redirect writes to `state.json` that would bypass `frontmatter-gate.sh` (W8 H2); modes: both | `hooks/state-bash-gate.sh` |
+| `batch-gate.sh` | PostToolBatch | W3-b: consolidates state-drift-marker Pre leg into one PostToolBatch subprocess; runs in parallel with existing Pre state-drift-marker during shadow period; modes: both; requires CC >= 2.1.118 (pre-2.1.118 silently ignores unknown event); feature flag `state.batch_gate_enabled` (default true) | `hooks/batch-gate.sh` |
 
 ### Execute-mode hooks (registered at execute SETUP)
 
