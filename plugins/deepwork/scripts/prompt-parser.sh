@@ -41,6 +41,10 @@ _strip_quotes() {
 #   bool_re   — boolean flags with no value (presence sets the flag)
 _preprocess_prompt_file() {
   local file="$1"
+  if ! command -v perl >/dev/null 2>&1; then
+    printf 'prompt-parser.sh: perl is required but not found in PATH; cannot preprocess prompt file\n' >&2
+    return 1
+  fi
   perl -0777 -pe '
     s/\r//g;
     my $value_re = "source-of-truth|anchor|guardrail|bar|safe-mode|mode|team-name|prompt-file|plan-ref";
@@ -49,7 +53,7 @@ _preprocess_prompt_file() {
     s/[^\S\n]+(--(?:$value_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
     # boolean flags: split before --flag (no value follows, or next token starts with --)
     s/[^\S\n]+(--(?:$bool_re))(?=[[:space:]]|$)/\n$1/gx;
-  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file" || { rm -f "${file}.tmp"; return 1; }
 }
 
 # parse_prompt_file <path> — reads flags and goal body, mutates globals.
