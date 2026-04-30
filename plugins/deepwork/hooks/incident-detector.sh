@@ -83,26 +83,33 @@ esac
 
 [[ -n "$RULE" ]] || exit 0
 
-# Append to incidents.jsonl (append-only, atomic via O_APPEND — no lock needed).
-# Dedup on incident_ref: if the same ref is already present, skip the append.
+# Append to incidents.jsonl with dedup on incident_ref.
+# Lock on incidents.jsonl.lock makes the grep check + append atomic so concurrent
+# invocations cannot both pass the dedup check and produce duplicate entries.
 # render_guardrails() consolidates state.json.guardrails[] + incidents.jsonl
 # into the {{HARD_GUARDRAILS}} render, deduped by incident_ref.
 NOW_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 INCIDENTS_FILE="${INSTANCE_DIR}/incidents.jsonl"
+INCIDENTS_LOCK="${INCIDENTS_FILE}.lock"
 
-# Dedup: quick grep for the literal incident_ref string
+_acquire_lock "$INCIDENTS_LOCK" || exit 0
+
+# Dedup: quick grep for the literal incident_ref string (inside lock)
 if [[ -f "$INCIDENTS_FILE" ]] && grep -Fq "\"incident_ref\":\"${INCIDENT_REF}\"" "$INCIDENTS_FILE" 2>/dev/null; then
   # Already recorded — skip
+  _release_lock "$INCIDENTS_LOCK"
   exit 0
 fi
 
-# Compose the incident record and append atomically
+# Compose the incident record and append
 INCIDENT_JSON=$(jq -cn --arg rule "$RULE" --arg src "$SOURCE" --arg ts "$NOW_TS" --arg ref "$INCIDENT_REF" \
   '{rule: $rule, source: $src, timestamp: $ts, incident_ref: $ref}')
 
 if [[ -n "$INCIDENT_JSON" ]]; then
   printf '%s\n' "$INCIDENT_JSON" >> "$INCIDENTS_FILE" 2>/dev/null || true
 fi
+
+_release_lock "$INCIDENTS_LOCK"
 
 # Log for observability
 printf '\n> ⚠️ Incident appended: %s (%s)\n' "$EVENT_NAME" "$INCIDENT_REF" \
