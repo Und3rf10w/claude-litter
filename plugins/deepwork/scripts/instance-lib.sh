@@ -54,6 +54,15 @@ _sanitize_team_name() {
 }
 
 # ---------------------------------------------------------------------------
+# _sanitize_task_id <task_id>
+#
+# Canonical task-ID sanitization: replaces `/` with `_`.
+# Prints the sanitized ID to stdout. Must match _load_task_file's write path.
+_sanitize_task_id() {
+  printf '%s' "$1" | tr '/' '_'
+}
+
+# ---------------------------------------------------------------------------
 # _load_task_file <team_name> <task_id>
 #
 # Resolves the task JSON file path and reads it into TASK_FILE_PATH and TASK_JSON.
@@ -63,7 +72,7 @@ _load_task_file() {
   [[ -n "$team_name" && -n "$task_id" ]] || return 1
   local sanitized_team task_safe tasks_dir candidate
   sanitized_team=$(_sanitize_team_name "$team_name")
-  task_safe=$(printf '%s' "$task_id" | tr '/' '_')
+  task_safe=$(_sanitize_task_id "$task_id")
   tasks_dir="${HOME}/.claude/tasks/${sanitized_team}"
   candidate="${tasks_dir}/${task_safe}.json"
   [[ -f "$candidate" ]] || return 1

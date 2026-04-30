@@ -55,7 +55,7 @@ fi
 SANITIZED_TEAM=$(_sanitize_team_name "$TEAM_NAME")
 TASK_DIR="$HOME/.claude/tasks/${SANITIZED_TEAM}"
 
-TASK_ID_SAFE=$(printf '%s' "$TASK_ID" | sed 's/[^a-zA-Z0-9_-]/_/g')
+TASK_ID_SAFE=$(_sanitize_task_id "$TASK_ID")
 TASK_FILE="${TASK_DIR}/${TASK_ID_SAFE}.json"
 
 [[ -f "$TASK_FILE" ]] || exit 0
