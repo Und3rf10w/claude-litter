@@ -88,8 +88,8 @@ if [[ "$TOOL_NAME" == "Edit" ]]; then
     # Count occurrences of old_string in current file to ensure uniqueness
     OCC_COUNT=$(printf '%s' "$CURRENT_CONTENT" | grep -cF "$OLD_STRING" 2>/dev/null || echo "0")
     if [[ "$OCC_COUNT" -eq 1 ]]; then
-      RECONSTRUCTED=$(printf '%s' "$CURRENT_CONTENT" | awk -v old="$OLD_STRING" -v new="$NEW_STRING" '
-        BEGIN { ofs=ENVIRON["OLD_STRING"]; rest=""; found=0 }
+      RECONSTRUCTED=$(printf '%s' "$CURRENT_CONTENT" | OLD_STRING="$OLD_STRING" NEW_STRING="$NEW_STRING" awk '
+        BEGIN { old=ENVIRON["OLD_STRING"]; new=ENVIRON["NEW_STRING"]; rest="" }
         { rest = rest $0 "\n" }
         END {
           idx = index(rest, old)
@@ -99,7 +99,7 @@ if [[ "$TOOL_NAME" == "Edit" ]]; then
             print rest
           }
         }
-      ' OLD_STRING="$OLD_STRING" 2>/dev/null)
+      ' 2>/dev/null)
       FRONTMATTER_BLOCK=$(printf '%s' "$RECONSTRUCTED" | awk '/^---$/{if(in_fm){exit}else{in_fm=1;next}} in_fm{print}')
     else
       # Reconstruction failed (old_string not unique or absent): fall back + warn
