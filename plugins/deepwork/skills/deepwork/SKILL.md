@@ -2,25 +2,30 @@
 name: deepwork
 description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
 argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(rm:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.md)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
 # Deepwork — Research/Design Convergence or Plan Execution
 
-Execute the setup script to initialize the deepwork session:
+## Initialize the deepwork session
 
-```!
-mkdir -p .claude
-# Write arguments to a PID-unique file using a quoted heredoc to prevent shell
-# expansion of $, backticks, braces, parens in user prompts. The setup script's
-# --prompt-file flag reads the goal from this file and parses flags from it.
-_prompt_file="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.$$.md"
-cat <<'__DEEPWORK_PROMPT_EOF__' > "$_prompt_file"
-$ARGUMENTS
-__DEEPWORK_PROMPT_EOF__
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh" --prompt-file "$_prompt_file"
-rm -f "$_prompt_file"
+This skill is invoked with an `args` string containing the goal and any flags (see `argument-hint` above). To initialize the session, perform these tool calls in order:
+
+**Step 1 — Write the args to a prompt file.** The args may contain shell metacharacters (`$`, backticks, braces, parens, quotes) from user-authored goal text. Routing them through a file rather than a command-line argument prevents shell expansion. Use the Write tool:
+
+- file_path: `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.md`
+- content: the `args` string passed to this skill, verbatim — preserve all whitespace, quoting, and metacharacters; do not interpret or substitute anything.
+
+If `${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/` does not exist, the Write tool will not create the parent directory. Run a Bash `mkdir -p ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude` first if needed.
+
+**Step 2 — Run the setup script.** Use the Bash tool to run the setup script with the prompt file, then remove the prompt file:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh" --prompt-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.md" \
+  && rm -f "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.prompt.md"
 ```
+
+The setup script reads the goal from the file via `--prompt-file` and parses flags from the same file. It prints the orchestrator instructions to stdout. Read that output carefully — it is your operational handoff.
 
 You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the setup script exactly.
 

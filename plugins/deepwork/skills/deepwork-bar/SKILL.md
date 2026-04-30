@@ -11,7 +11,7 @@ Manually manage the `state.json.bar[]` array — the gate criteria CRITIC verdic
 
 ## Arguments
 
-`$ARGUMENTS` is one of:
+The `args` string passed to this skill is one of:
 - `add "<criterion>" [--categorical-ban]` — append a new criterion with auto-assigned id (G<N+1>). Use `--categorical-ban` for hard limits.
 - `remove <id>` — remove the criterion with the given id (e.g., `G3`)
 - `list` — show current bar criteria with verdicts
@@ -27,7 +27,7 @@ Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 
 3. If multiple, `AskUserQuestion` to pick.
 
-4. Parse `$ARGUMENTS`. Examples:
+4. Parse the `args` string. Examples:
    - `add "graceful rollback path exists"`
    - `add "no new dependencies" --categorical-ban`
    - `remove G7`

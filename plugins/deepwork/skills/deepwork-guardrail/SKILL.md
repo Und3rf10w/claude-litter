@@ -11,7 +11,7 @@ Manually manage the `state.json.guardrails[]` array for the active deepwork sess
 
 ## Arguments
 
-`$ARGUMENTS` is one of:
+The `args` string passed to this skill is one of:
 - `add [--source <src>] "<rule text>"` — append a guardrail. `--source` defaults to `"user"`; override with values like `"scope-boundary"`, `"orchestrator"`, `"incident"` when the rule isn't a direct user-authored constraint.
 - `remove <index>` — remove the guardrail at the given 0-based index (0-based to match state.json array order).
 - `replace <index> [--source <src>] "<rule text>"` — overwrite the rule (and optionally the source) at 0-based index. Preserves the existing timestamp unless `--source` is supplied AND the existing source was a computed/auto source (`incident`, `flag`) — in which case the timestamp is refreshed to `now()` to reflect the re-attribution.
@@ -28,7 +28,7 @@ Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 
 3. If multiple instances exist, use `AskUserQuestion` to pick which one (show goal + instance_id for each).
 
-4. Parse `$ARGUMENTS` into the subcommand and its argument. Common shapes:
+4. Parse the `args` string into the subcommand and its argument. Common shapes:
    - `add "no kill signals"` (defaults to `source: "user"`)
    - `add --source scope-boundary "plan-only scope: no target-repo edits"` (explicit source)
    - `add no signals to host process`  (unquoted; everything after `add` is the rule)
