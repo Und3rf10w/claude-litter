@@ -318,12 +318,23 @@ _verify_event_head_or_block() {
   [[ -n "${STATE_FILE:-}" ]] || return 0  # no state context — fail-open
   [[ -f "$STATE_FILE" ]] || return 0
 
+  local _events_jsonl="${INSTANCE_DIR}/events.jsonl"
+  local _lock="${_events_jsonl}.lock"
+
+  # P23: read event_head and tail of events.jsonl under events.jsonl.lock to eliminate
+  # TOCTOU between concurrent hook invocations (_emit_event holds this lock when
+  # appending to events.jsonl and stamping event_head in state.json — W20 invariant).
+  _acquire_lock "$_lock" || return 0  # fail-open if lock unavailable (best-effort read gate)
+
   local _event_head_stored
   _event_head_stored=$(jq -r '.event_head // ""' "$STATE_FILE" 2>/dev/null || echo "")
-  [[ -n "$_event_head_stored" ]] || return 0  # pre-W7 instance: pass
+  if [[ -z "$_event_head_stored" ]]; then
+    _release_lock "$_lock"
+    return 0  # pre-W7 instance: pass
+  fi
 
-  local _events_jsonl="${INSTANCE_DIR}/events.jsonl"
   if [[ ! -f "$_events_jsonl" ]]; then
+    _release_lock "$_lock"
     printf 'integrity-gate: STATE_DIVERGENCE — event_head present in state.json but events.jsonl is missing.\n' >&2
     printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
     return 2
@@ -331,17 +342,25 @@ _verify_event_head_or_block() {
 
   local _last_line _actual_head
   _last_line=$(tail -1 "$_events_jsonl" 2>/dev/null || echo "")
-  if [[ -n "$_last_line" ]]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
-    else
-      _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
-    fi
-    if [[ "$_event_head_stored" != "$_actual_head" ]]; then
-      printf 'integrity-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
-      printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
-      return 2
-    fi
+  _release_lock "$_lock"
+
+  # P16: strip trailing whitespace before hashing (trailing newline from interrupted append causes false mismatch)
+  _last_line="${_last_line%%[[:space:]]}"
+  # P19: empty last line with event_head set = truncation attack or corruption → block
+  if [[ -z "$_last_line" ]]; then
+    printf 'integrity-gate: EMPTY_EVENT_LOG — event_head is set but events.jsonl last line is empty.\n' >&2
+    printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
+    return 2
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
+  else
+    _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
+  fi
+  if [[ "$_event_head_stored" != "$_actual_head" ]]; then
+    printf 'integrity-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
+    printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
+    return 2
   fi
   return 0
 }

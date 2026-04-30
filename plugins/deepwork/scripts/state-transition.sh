@@ -357,7 +357,18 @@ _verify_integrity_hash() {
   local sf="$1"
   local on_disk recomputed
   on_disk=$(jq -r '.state_integrity_hash // ""' "$sf" 2>/dev/null || echo "")
-  [[ -z "$on_disk" ]] && return 0  # pre-W6 instance: pass
+  if [[ -z "$on_disk" ]]; then
+    # P18: if event_head is present (W7+ instance proxy), a missing hash is a gap —
+    # the write path should have stamped it. Block rather than silently passing.
+    local _eh
+    _eh=$(jq -r '.event_head // ""' "$sf" 2>/dev/null || echo "")
+    if [[ -n "$_eh" ]]; then
+      printf 'INTEGRITY_HASH_MISSING: state.json has event_head but no state_integrity_hash\n' >&2
+      printf '  Run /deepwork-reconcile to rebuild state.\n' >&2
+      return 2
+    fi
+    return 0  # pre-W6 instance: pass
+  fi
   # W22 #2: fail-closed when hash compute fails. If state.json carries a hash
   # but we can't recompute (jq/sha256sum unavailable, file unreadable), block
   # rather than silently passing. The W20-e write-side hardening would have
