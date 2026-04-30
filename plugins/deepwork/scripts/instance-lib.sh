@@ -132,9 +132,29 @@ _dw_exit_trap() {
   return $_s
 }
 
+# P14: global array of lock-dirs (mkdir backend) to clean up on exit.
+# Each _acquire_lock call appends to this array; _dw_cleanup_locks drains it.
+# Replaces string-accumulation trap concatenation which could lose entries on
+# nested acquires when the sed parse strips embedded quotes.
+_DW_LOCK_CLEANUP_PATHS=()
+
+_dw_cleanup_locks() {
+  local _ld
+  for _ld in "${_DW_LOCK_CLEANUP_PATHS[@]:-}"; do
+    [[ -n "$_ld" ]] && rm -rf "$_ld" 2>/dev/null || true
+  done
+}
+
+_dw_exit_all() {
+  local _s=$?
+  _dw_emit_timing "$_s"
+  _dw_cleanup_locks
+  return $_s
+}
+
 # Only install the trap once (guard against double-sourcing)
 if [[ "${_DW_TIMING_TRAP_INSTALLED:-0}" != "1" ]]; then
-  trap '_dw_exit_trap' EXIT
+  trap '_dw_exit_all' EXIT
   _DW_TIMING_TRAP_INSTALLED=1
 fi
 
@@ -167,6 +187,7 @@ _canonical_path() {
 # Static fd convention (F-B3, W22):
 #   fd 200  — events.jsonl.lock (outer)
 #   fd 201  — state.json.lock   (inner)
+#   fd 202  — override-tokens.json.lock (P6; no nesting with 200/201)
 #   default — fd 200 (single-lock callers)
 #
 # Why the convention exists: bash's `exec N>file` rebinds fd N to the new
@@ -177,7 +198,7 @@ _canonical_path() {
 # Empirically reproduced and verified — see proposals/v5-final.md §F-B3 and
 # empirical_results.E6.md.
 #
-# Adding a third lock requires extending this convention (e.g. fd 202).
+# A fourth lock would use fd 203. fd 202 is already allocated (P6).
 # Single-fd nested locks are unsafe by design.
 #
 # macOS-specific traps (mkdir backend):
@@ -213,6 +234,11 @@ _acquire_lock() {
         eval "exec 201>\"$_lp\"" 2>/dev/null || return 1
         flock -x 201 || { exec 201>&-; return 1; }
         ;;
+      */override-tokens.json.lock)
+        # P6: fd 202 — third lock for override-tokens.json (no nesting with 200/201)
+        eval "exec 202>\"$_lp\"" 2>/dev/null || return 1
+        flock -x 202 || { exec 202>&-; return 1; }
+        ;;
       *)
         # Default: single-lock callers (no nesting expected). fd 200.
         eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
@@ -224,18 +250,12 @@ _acquire_lock() {
     local _dl=$(( $(date +%s) + 5 ))
     until mkdir "$_ld" 2>/dev/null; do
       [[ $(date +%s) -lt $_dl ]] || return 1
-      sleep 0.1
+      # P5: jitter — random 0.1–0.5 s sleep reduces contention thundering-herd
+      sleep "0.$(( RANDOM % 5 + 1 ))"
     done
-    # Append to existing EXIT trap rather than replacing it (macOS accumulation fix)
-    local _prev_trap
-    _prev_trap=$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")
-    if [[ -n "$_prev_trap" ]]; then
-      # shellcheck disable=SC2064
-      trap "${_prev_trap}; rm -rf \"${_ld}\"" EXIT
-    else
-      # shellcheck disable=SC2064
-      trap "rm -rf \"${_ld}\"" EXIT
-    fi
+    # P14: push lock-dir onto cleanup array; _dw_cleanup_locks drains it on EXIT.
+    # Replaces sed-based trap string accumulation which corrupt embedded paths.
+    _DW_LOCK_CLEANUP_PATHS+=("$_ld")
   fi
   return 0
 }
@@ -249,9 +269,10 @@ _release_lock() {
     # all subsequent commands. `exec N>&-` does not write to stderr
     # anyway, so error suppression is unnecessary.
     case "$_lp" in
-      */events.jsonl.lock) exec 200>&- ;;
-      */state.json.lock)   exec 201>&- ;;
-      *)                    exec 200>&- ;;
+      */events.jsonl.lock)        exec 200>&- ;;
+      */state.json.lock)          exec 201>&- ;;
+      */override-tokens.json.lock) exec 202>&- ;;
+      *)                           exec 200>&- ;;
     esac
   else
     rm -rf "${_lp}.dir" 2>/dev/null || true

@@ -279,9 +279,17 @@ _emit_event() {
 # sessions that predate W7.
 _ensure_event_log() {
   local events_file="${INSTANCE_DIR}/events.jsonl"
+  # P3: fast-path pre-lock check — avoids lock acquisition on the common path
   [[ -f "$events_file" ]] && return 0
+  local _el_lock="${INSTANCE_DIR}/events.jsonl.lock"
+  _acquire_lock "$_el_lock" || return 1
+  # Re-check inside lock: another writer may have bootstrapped between pre-check and acquire
+  if [[ -f "$events_file" ]]; then
+    _release_lock "$_el_lock"
+    return 0
+  fi
   local state_snap
-  state_snap=$(cat "$STATE_FILE" 2>/dev/null) || return 1
+  state_snap=$(cat "$STATE_FILE" 2>/dev/null) || { _release_lock "$_el_lock"; return 1; }
   local now event_id boot_event
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   if command -v uuidgen >/dev/null 2>&1; then
@@ -297,8 +305,12 @@ _ensure_event_log() {
     --arg actor "${_DW_CALLER:-state-transition.sh}" \
     --argjson snap "$state_snap" \
     '{event_id: $eid, event_type: "bootstrap", prev_event_hash: "GENESIS",
-      timestamp: $ts, actor: $actor, payload: {state_snapshot: $snap}}') || return 1
+      timestamp: $ts, actor: $actor, payload: {state_snapshot: $snap}}') \
+    || { _release_lock "$_el_lock"; return 1; }
   _append_event_raw "$events_file" "$boot_event"
+  local _rc=$?
+  _release_lock "$_el_lock"
+  return $_rc
 }
 
 # ---------------------------------------------------------------------------
@@ -1216,11 +1228,15 @@ case "$SUBCOMMAND" in
     [[ -n "$_OT_ID" ]] || { printf 'grant_override: --id is required\n' >&2; exit 3; }
     [[ -n "$_OT_TO" ]] || { printf 'grant_override: --to <teammate> is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+    _OT_LOCK="${INSTANCE_DIR}/override-tokens.json.lock"
+    # P6: serialize all grant/consume operations to eliminate duplicate-check TOCTOU
+    _acquire_lock "$_OT_LOCK" || { printf 'grant_override: failed to acquire lock\n' >&2; exit 1; }
     _OT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    # Initialise file if absent
+    # Initialise file if absent (inside lock — safe single-writer init)
     [[ -f "$_OT_FILE" ]] || printf '{"tokens":[]}\n' > "$_OT_FILE"
     # Check for duplicate id
     if jq -e --arg id "$_OT_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      _release_lock "$_OT_LOCK"
       printf 'grant_override: token id "%s" already exists\n' "$_OT_ID" >&2
       exit 1
     fi
@@ -1228,8 +1244,14 @@ case "$SUBCOMMAND" in
     jq --arg id "$_OT_ID" --arg to "$_OT_TO" --arg ts "$_OT_TS" --arg by "$_OT_BY" --arg desc "$_OT_DESC" \
       '.tokens += [{id: $id, granted_to: $to, granted_at: $ts, granted_by: $by, description: $desc}]' \
       "$_OT_FILE" > "$_OT_TMP" 2>/dev/null \
-      && mv "$_OT_TMP" "$_OT_FILE" \
-      || { rm -f "$_OT_TMP"; printf 'grant_override: failed to write token\n' >&2; exit 1; }
+      && mv "$_OT_TMP" "$_OT_FILE"
+    local _go_rc=$?
+    _release_lock "$_OT_LOCK"
+    rm -f "$_OT_TMP" 2>/dev/null
+    if [[ $_go_rc -ne 0 ]]; then
+      printf 'grant_override: failed to write token\n' >&2
+      exit 1
+    fi
     printf 'grant_override: token "%s" issued to "%s" at %s\n' "$_OT_ID" "$_OT_TO" "$_OT_TS"
     exit 0
     ;;
@@ -1256,23 +1278,38 @@ case "$SUBCOMMAND" in
     [[ -n "$_CO_ID" ]] || { printf 'consume_override: --id is required\n' >&2; exit 3; }
     [[ -n "$_CO_ACTOR" ]] || { printf 'consume_override: --actor is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
-    [[ -f "$_OT_FILE" ]] || { printf 'consume_override: no override-tokens.json\n' >&2; exit 1; }
+    _OT_LOCK="${INSTANCE_DIR}/override-tokens.json.lock"
+    # P6: serialize all grant/consume operations to eliminate check-then-act TOCTOU
+    _acquire_lock "$_OT_LOCK" || { printf 'consume_override: failed to acquire lock\n' >&2; exit 1; }
+    if [[ ! -f "$_OT_FILE" ]]; then
+      _release_lock "$_OT_LOCK"
+      printf 'consume_override: no override-tokens.json\n' >&2
+      exit 1
+    fi
     # Check token exists
     if ! jq -e --arg id "$_CO_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      _release_lock "$_OT_LOCK"
       printf 'consume_override: token "%s" not found or already consumed\n' "$_CO_ID" >&2
       exit 1
     fi
     # Enforce actor binding: granted_to must match the requesting actor
     _CO_GRANTED_TO=$(jq -r --arg id "$_CO_ID" '.tokens[] | select(.id == $id) | .granted_to // ""' "$_OT_FILE" 2>/dev/null || echo "")
     if [[ "$_CO_GRANTED_TO" != "$_CO_ACTOR" ]]; then
+      _release_lock "$_OT_LOCK"
       printf 'consume_override: token "%s" is granted to "%s", not "%s"\n' "$_CO_ID" "$_CO_GRANTED_TO" "$_CO_ACTOR" >&2
       exit 1
     fi
     _CO_TMP="${_OT_FILE}.tmp.$$"
     jq --arg id "$_CO_ID" '.tokens = [.tokens[] | select(.id != $id)]' \
       "$_OT_FILE" > "$_CO_TMP" 2>/dev/null \
-      && mv "$_CO_TMP" "$_OT_FILE" \
-      || { rm -f "$_CO_TMP"; printf 'consume_override: failed to remove token\n' >&2; exit 1; }
+      && mv "$_CO_TMP" "$_OT_FILE"
+    local _co_rc=$?
+    _release_lock "$_OT_LOCK"
+    rm -f "$_CO_TMP" 2>/dev/null
+    if [[ $_co_rc -ne 0 ]]; then
+      printf 'consume_override: failed to remove token\n' >&2
+      exit 1
+    fi
     printf 'consume_override: token "%s" consumed by "%s"\n' "$_CO_ID" "$_CO_ACTOR"
     exit 0
     ;;
