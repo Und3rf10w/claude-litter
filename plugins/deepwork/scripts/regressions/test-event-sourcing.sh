@@ -1306,15 +1306,23 @@ fi
 rm -rf "$ESAB_SB"
 
 # ── ES-ac: pending_change_set replay — crash-safe tmp+mv write (W20-i) ──────
-# Regression for W20-i: the old code wrote pending-change.json directly with
-# printf > file, leaving a partial file if killed mid-write. After the fix,
-# the write goes through tmp.$$ + mv, so the file is either absent (crashed
-# before mv) or fully-formed valid JSON (mv completed atomically).
+# Regression for W20-i: the replay handler for `pending_change_set` events
+# in state-transition.sh writes pending-change.json beside REPLAY_OUTPUT.
+# Pre-fix: a single `printf > file` left a partial file if killed mid-write.
+# Post-fix (lines ~1193-1196): write goes through tmp.$$ + mv, so the file
+# is either absent (crashed before mv) or a fully-formed valid JSON object.
 #
-# Strategy: simulate a crash by writing a stub tmp file and then examining
-# whether a crash mid-write would leave only complete JSON. We test the actual
-# code path by running pending_change_set replay normally and verifying the
-# output is valid JSON, then separately verifying no .tmp.$$ files are left.
+# This test exercises the replay path end-to-end:
+#   1. Bootstrap state.json + write a real pending_change_set event via the
+#      direct subcommand (which appends to events.jsonl).
+#   2. Delete the pending-change.json the direct subcommand wrote (so any
+#      replay output we observe is genuinely produced by replay, not stale).
+#   3. Run `replay --output <new state path>` to a different directory so
+#      _pcs_dir resolves there.
+#   4. Assert: pending-change.json appears next to the new output, contains
+#      valid JSON, and the payload (plan_section, files, rationale) matches
+#      the original event.
+#   5. Assert: zero `.tmp.$$` files remain in either directory.
 echo ""
 echo "── ES-ac: pending_change_set replay write is atomic (W20-i) ──"
 
@@ -1324,69 +1332,102 @@ ESAC_DIR="$ESAC_SB/.claude/deepwork/$ESAC_ID"
 mkdir -p "$ESAC_DIR"
 ESAC_SID="esac-session-$(date +%s)"
 ESAC_STATE="${ESAC_DIR}/state.json"
+ESAC_EVENTS="${ESAC_DIR}/events.jsonl"
 
-# Bootstrap state with a plan hash so pending_change_set has something to replay
-ESAC_PLAN_HASH="testhash_esac_$(date +%s)"
-cat > "$ESAC_STATE" <<ESACEOF
+# Bootstrap state via init (gives us a valid event_head + bootstrap event)
+"$STATE_TRANSITION" --state-file "$ESAC_STATE" init - <<ESACEOF
 {
-  "instance_id": "$ESAC_ID",
-  "session_id": "$ESAC_SID",
+  "session_id": "${ESAC_SID}",
+  "instance_id": "${ESAC_ID}",
   "phase": "execute",
   "team_name": "test-team",
-  "frontmatter_schema_version": "2.1.0",
-  "started_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
-  "execute": {
-    "plan_hash": "$ESAC_PLAN_HASH",
-    "plan_drift_detected": false
-  },
+  "frontmatter_schema_version": "1",
   "bar": [],
-  "pending_change_set": [
-    {
-      "plan_section": "test-section",
-      "files": ["file-a.py", "file-b.py"],
-      "rationale": "testing atomic replay write"
-    }
-  ]
+  "execute": {"plan_hash": "esachash_$(date +%s)", "plan_drift_detected": false}
 }
 ESACEOF
 
-INSTANCE_DIR="$ESAC_DIR" STATE_FILE="$ESAC_STATE" \
-  "$STATE_TRANSITION" stamp_last_updated >/dev/null 2>&1
+# Write a pending_change_set event via the public subcommand. This appends a
+# `pending_change_set` event to events.jsonl AND writes pending-change.json
+# beside state. We will delete the latter to verify replay rewrites it.
+ESAC_FILES_JSON='["src/file-a.py","src/file-b.py"]'
+ESAC_RATIONALE="testing atomic replay write — W20-i regression"
+INSTANCE_DIR="$ESAC_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAC_STATE" pending_change_set \
+    --plan-section "test_section" \
+    --files "$ESAC_FILES_JSON" \
+    --rationale "$ESAC_RATIONALE" >/dev/null 2>&1
+ESAC_RC=$?
 
-# Run pending_change_set replay
-ESAC_PENDING_DIR="${ESAC_DIR}/pending-changes"
-mkdir -p "$ESAC_PENDING_DIR"
-
-# pending_change_set subcommand iterates state and writes per-section files
-INSTANCE_DIR="$ESAC_DIR" STATE_FILE="$ESAC_STATE" \
-  "$STATE_TRANSITION" pending_change_set replay --pending-dir "$ESAC_PENDING_DIR" >/dev/null 2>&1 || true
-
-# Check: no .tmp.$$ garbage files left (successful run should clean up)
-ESAC_TMP_COUNT=$(find "$ESAC_PENDING_DIR" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
-if [[ "${ESAC_TMP_COUNT:-0}" -eq 0 ]]; then
-  _pass "ES-ac: no tmp files left after successful pending_change_set replay"
+if [[ $ESAC_RC -eq 0 ]] && [[ -f "$ESAC_EVENTS" ]]; then
+  _pass "ES-ac: pending_change_set subcommand succeeded and seeded events.jsonl"
 else
-  _fail "ES-ac: $ESAC_TMP_COUNT tmp file(s) left after replay (cleanup failed)"
+  _fail "ES-ac: pending_change_set subcommand failed (rc=$ESAC_RC) or events.jsonl missing"
 fi
 
-# Check: any pending-change.json files that were written are valid JSON
-ESAC_BAD_JSON=0
-ESAC_JSON_COUNT=0
-while IFS= read -r -d '' _pcf; do
-  ESAC_JSON_COUNT=$((ESAC_JSON_COUNT + 1))
-  if ! jq '.' "$_pcf" >/dev/null 2>&1; then
-    printf 'ES-ac: invalid JSON in %s\n' "$_pcf" >&2
-    ESAC_BAD_JSON=$((ESAC_BAD_JSON + 1))
-  fi
-done < <(find "$ESAC_PENDING_DIR" -name 'pending-change.json' -print0 2>/dev/null)
-
-if [[ $ESAC_BAD_JSON -eq 0 && $ESAC_JSON_COUNT -ge 1 ]]; then
-  _pass "ES-ac: $ESAC_JSON_COUNT pending-change.json file(s) contain valid JSON"
-elif [[ $ESAC_BAD_JSON -gt 0 ]]; then
-  _fail "ES-ac: $ESAC_BAD_JSON pending-change.json file(s) contain invalid JSON"
+# Verify the event was actually appended (search for event_type == pending_change_set)
+ESAC_EV_COUNT=$(jq -s 'map(select(.event_type == "pending_change_set")) | length' "$ESAC_EVENTS" 2>/dev/null || echo 0)
+if [[ "${ESAC_EV_COUNT:-0}" -ge 1 ]]; then
+  _pass "ES-ac: events.jsonl contains pending_change_set event"
 else
-  # replay may be a no-op when pending_change_set is empty in state; tolerate
-  _pass "ES-ac: no pending-change.json written (pending_change_set was empty or unsupported)"
+  _fail "ES-ac: expected pending_change_set event in events.jsonl, found ${ESAC_EV_COUNT:-0}"
+fi
+
+# Now delete the pending-change.json the direct subcommand wrote — replay
+# must rewrite it (to a NEW location below) using the W20-i tmp+mv code path.
+rm -f "${ESAC_DIR}/pending-change.json"
+
+# Run replay against a fresh output directory so _pcs_dir = REPLAY_OUTPUT's dir.
+ESAC_REPLAY_DIR="${ESAC_SB}/replay-out"
+mkdir -p "$ESAC_REPLAY_DIR"
+ESAC_REPLAY_OUTPUT="${ESAC_REPLAY_DIR}/state.json"
+
+INSTANCE_DIR="$ESAC_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAC_STATE" replay --output "$ESAC_REPLAY_OUTPUT" >/dev/null 2>&1
+ESAC_REPLAY_RC=$?
+
+if [[ $ESAC_REPLAY_RC -eq 0 ]]; then
+  _pass "ES-ac: replay exits 0"
+else
+  _fail "ES-ac: replay failed (rc=$ESAC_REPLAY_RC)"
+fi
+
+# Assert: pending-change.json was written next to REPLAY_OUTPUT
+ESAC_REPLAYED_PCJ="${ESAC_REPLAY_DIR}/pending-change.json"
+if [[ -f "$ESAC_REPLAYED_PCJ" ]]; then
+  _pass "ES-ac: replay wrote pending-change.json beside output"
+else
+  _fail "ES-ac: replay did not write pending-change.json at ${ESAC_REPLAYED_PCJ}"
+fi
+
+# Assert: pending-change.json contains valid JSON (the W20-i guarantee).
+# Pre-fix, a partial write would produce a truncated file → jq parse fails.
+if [[ -f "$ESAC_REPLAYED_PCJ" ]] && jq -e 'type == "object"' "$ESAC_REPLAYED_PCJ" >/dev/null 2>&1; then
+  _pass "ES-ac: replayed pending-change.json is valid JSON object"
+else
+  _fail "ES-ac: replayed pending-change.json is missing or not a valid JSON object"
+fi
+
+# Assert: payload round-trips through replay correctly
+if [[ -f "$ESAC_REPLAYED_PCJ" ]]; then
+  ESAC_REPLAYED_PS=$(jq -r '.plan_section // ""' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  ESAC_REPLAYED_FILES=$(jq -c '.files // []' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  ESAC_REPLAYED_RAT=$(jq -r '.rationale // ""' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  if [[ "$ESAC_REPLAYED_PS" == "test_section" ]] \
+     && [[ "$ESAC_REPLAYED_FILES" == "$ESAC_FILES_JSON" ]] \
+     && [[ "$ESAC_REPLAYED_RAT" == "$ESAC_RATIONALE" ]]; then
+    _pass "ES-ac: replayed pending-change.json payload matches original event"
+  else
+    _fail "ES-ac: payload mismatch (plan_section='$ESAC_REPLAYED_PS' files='$ESAC_REPLAYED_FILES' rationale='$ESAC_REPLAYED_RAT')"
+  fi
+fi
+
+# Assert: no .tmp.$$ garbage left in either directory (cleanup invariant)
+ESAC_TMP_COUNT=$(find "$ESAC_DIR" "$ESAC_REPLAY_DIR" -name 'pending-change.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+if [[ "${ESAC_TMP_COUNT:-0}" -eq 0 ]]; then
+  _pass "ES-ac: no pending-change.json.tmp.* files left after replay"
+else
+  _fail "ES-ac: $ESAC_TMP_COUNT pending-change.json.tmp.* file(s) leaked"
 fi
 
 rm -rf "$ESAC_SB"
