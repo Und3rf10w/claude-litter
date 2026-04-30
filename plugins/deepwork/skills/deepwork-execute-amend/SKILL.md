@@ -1,4 +1,5 @@
 ---
+name: deepwork-execute-amend
 description: "Lightweight single-gate amendment for execute mode — spawns MICRO-TEAM (CRITIC + 1 specialist) for re-verdict without full deepwork re-run"
 argument-hint: "<gate-id> [--reason 'description of scope delta']"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList", "TaskCreate", "TaskUpdate", "TaskGet", "SendMessage", "Agent"]

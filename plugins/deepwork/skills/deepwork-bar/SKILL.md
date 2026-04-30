@@ -1,4 +1,5 @@
 ---
+name: deepwork-bar
 description: "Add, remove, or list written-bar criteria for the active deepwork session"
 argument-hint: "add '<criterion>' [--categorical-ban] | remove <id> | list"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)"]

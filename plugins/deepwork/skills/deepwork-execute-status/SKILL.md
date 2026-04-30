@@ -1,4 +1,5 @@
 ---
+name: deepwork-execute-status
 description: "View execute-mode session status — phase, plan_hash, drift, change_log, test results, 3-dimension verdict table, rollback log, discoveries"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList"]
 ---

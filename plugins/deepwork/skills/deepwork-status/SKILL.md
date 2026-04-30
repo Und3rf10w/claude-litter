@@ -1,4 +1,5 @@
 ---
+name: deepwork-status
 description: "View deepwork session status — phase, team, bar verdicts, proposals, guardrails"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "TaskList"]
 ---

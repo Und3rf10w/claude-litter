@@ -1,4 +1,5 @@
 ---
+name: deepwork-guardrail
 description: "Add, remove, replace, or list hard guardrails for the active deepwork session"
 argument-hint: "add [--source <src>] '<rule>' | remove <index> | replace <index> [--source <src>] '<rule>' | list"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)", "Bash(date:*)"]

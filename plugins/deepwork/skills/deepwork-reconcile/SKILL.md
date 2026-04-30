@@ -1,4 +1,5 @@
 ---
+name: deepwork-reconcile
 description: "Rebuild state.json from events.jsonl — full replay with hash-chain validation"
 allowed-tools: ["Bash", "Read", "Glob"]
 ---

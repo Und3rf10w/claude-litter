@@ -1,4 +1,5 @@
 ---
+name: deepwork
 description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
 argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]

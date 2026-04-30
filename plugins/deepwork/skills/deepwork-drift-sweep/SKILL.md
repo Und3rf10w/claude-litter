@@ -1,4 +1,5 @@
 ---
+name: deepwork-drift-sweep
 description: "Enumerate ALL workstreams in the current deepwork session and diff each artifact against its source-of-truth. Produces drift-report.vN.md listing potential drift items across every workstream, not only those flagged by the drift agent."
 allowed-tools: ["Read", "Glob", "Grep", "Bash", "Write"]
 ---

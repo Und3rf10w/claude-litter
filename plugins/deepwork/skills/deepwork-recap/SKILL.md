@@ -1,4 +1,5 @@
 ---
+name: deepwork-recap
 description: "Karpathy-style 40-word recap of deepwork history — reads DEEPWORK_WIKI.md Overview and the last 3 log entries, outputs 30-50 plain-text words"
 allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)"]
 ---

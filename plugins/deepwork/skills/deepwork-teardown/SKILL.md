@@ -1,4 +1,5 @@
 ---
+name: deepwork-teardown
 description: "Tear down an active deepwork session — deletes the team, archives state, and restores settings. Works for both mid-flight abort and post-HALT cleanup."
 allowed-tools: ["Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json:*)", "Bash(rm ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -f ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -rf ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(mv ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
 ---

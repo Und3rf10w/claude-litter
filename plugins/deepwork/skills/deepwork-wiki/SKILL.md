@@ -1,4 +1,5 @@
 ---
+name: deepwork-wiki
 description: "Synthesize the deepwork wiki — rewrites Overview, Session Index, and Cross-refs in ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md from archived sessions. Preserves the # Log section verbatim (hook owns it)."
 allowed-tools: ["Glob", "Grep", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/DEEPWORK_WIKI.md)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)"]
 ---
