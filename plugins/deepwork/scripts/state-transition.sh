@@ -747,6 +747,9 @@ case "$SUBCOMMAND" in
     JSON_VALUE="${2:-}"
     [[ -n "$JQ_PATH" ]] || { printf 'state-transition.sh set_field: <jq-path> required\n' >&2; exit 3; }
     [[ -n "$JSON_VALUE" ]] || { printf 'state-transition.sh set_field: <json-value> required\n' >&2; exit 3; }
+    # P1: defense-in-depth — re-validate path at write site (decoupled from _emit_event gate)
+    printf '%s' "$JQ_PATH" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$' \
+      || { printf 'state-transition.sh set_field: INVALID_JQ_PATH "%s"\n' "$JQ_PATH" >&2; exit 3; }
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
@@ -773,6 +776,9 @@ case "$SUBCOMMAND" in
     JSON_OBJ="${2:-}"
     [[ -n "$JQ_PATH" ]] || { printf 'state-transition.sh append_array: <jq-path> required\n' >&2; exit 3; }
     [[ -n "$JSON_OBJ" ]] || { printf 'state-transition.sh append_array: <json-object> required\n' >&2; exit 3; }
+    # P1: defense-in-depth — re-validate path at write site (decoupled from _emit_event gate)
+    printf '%s' "$JQ_PATH" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$' \
+      || { printf 'state-transition.sh append_array: INVALID_JQ_PATH "%s"\n' "$JQ_PATH" >&2; exit 3; }
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
@@ -854,6 +860,8 @@ case "$SUBCOMMAND" in
 
     [[ -n "$SESSION_ID_ARG" ]] || { printf 'state-transition.sh backfill_session: --session-id <id> required\n' >&2; exit 3; }
     _require_state_file
+    # P7: verify integrity before writing, matching all other write subcommands
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
     current_sid=$(jq -r '.session_id // ""' "$STATE_FILE" 2>/dev/null || echo "")
     # Only backfill if current session_id is a placeholder (deepwork-* prefix)
@@ -1019,11 +1027,14 @@ case "$SUBCOMMAND" in
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_to" --arg ts "$_ts" '.phase = $v | .last_updated = $ts' 2>/dev/null)
+          # P8: detect silent jq failure (empty _working_state = broken reduction)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         exec_phase_advanced)
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_to" --arg ts "$_ts" '.execute.phase = $v | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         field_set)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
@@ -1032,6 +1043,7 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson val "$_json_val" --arg ts "$_ts" \
             "${_jq_path} = \$val | .last_updated = \$ts" 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         array_appended)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
@@ -1040,12 +1052,14 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson obj "$_json_obj" --arg ts "$_ts" \
             "(${_jq_path}) += [\$obj] | .last_updated = \$ts" 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         merged)
           _frag=$(printf '%s' "$_line" | jq -c '.payload.json_fragment' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson frag "$_frag" --arg ts "$_ts" \
             '. * $frag | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         state_reverted)
           _working_state=$(printf '%s' "$_line" | jq -c '.payload.state_snapshot' 2>/dev/null) || {
@@ -1054,6 +1068,7 @@ case "$SUBCOMMAND" in
           }
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         halt_recorded)
           _summary=$(printf '%s' "$_line" | jq -r '.payload.summary // ""' 2>/dev/null)
@@ -1061,11 +1076,13 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg s "$_summary" --argjson b "$_blockers" --arg ts "$_ts" \
             '.halt_reason = {summary: $s, blockers: $b, recorded_at: $ts} | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         session_backfilled)
           _sid=$(printf '%s' "$_line" | jq -r '.payload.session_id // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_sid" --arg ts "$_ts" '.session_id = $v | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         flaky_test_added)
           _cmd=$(printf '%s' "$_line" | jq -r '.payload.command // ""' 2>/dev/null)
@@ -1075,10 +1092,12 @@ case "$SUBCOMMAND" in
              then . else .execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd]) end
              | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         last_updated_stamped)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         bar_added)
           _ba_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -1088,6 +1107,7 @@ case "$SUBCOMMAND" in
             jq -c --arg id "$_ba_id" --arg stmt "$_ba_stmt" --argjson cat "$_ba_cat" --arg ts "$_ts" \
             '.bar = ((.bar // []) + [{id: $id, criterion: $stmt, verdict: null, categorical_ban: $cat, evidence_required: "user-specified criterion"}]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         bar_removed)
           _br_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -1095,6 +1115,7 @@ case "$SUBCOMMAND" in
             jq -c --arg id "$_br_id" --arg ts "$_ts" \
             '.bar = [(.bar // [])[] | select(.id != $id)] | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_added)
           _gra_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
@@ -1103,6 +1124,7 @@ case "$SUBCOMMAND" in
             jq -c --arg stmt "$_gra_stmt" --arg src "$_gra_src" --arg ts "$_ts" \
             '.guardrails = ((.guardrails // []) + [{rule: $stmt, source: $src, timestamp: $ts}]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_replaced)
           _grp_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
@@ -1114,6 +1136,7 @@ case "$SUBCOMMAND" in
              | if $src == "" then . else .guardrails[$idx].source = $src | .guardrails[$idx].timestamp = $ts end
              | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_removed)
           _grm_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
@@ -1121,12 +1144,14 @@ case "$SUBCOMMAND" in
             jq -c --argjson idx "$_grm_idx" --arg ts "$_ts" \
             'del(.guardrails[$idx]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         state_archived)
           # Terminal event — replay stops here; state is considered archived.
           # No field mutations; last_updated stamp reflects the archive timestamp.
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         test_manifest_updated)
           _tmu_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -1141,6 +1166,7 @@ case "$SUBCOMMAND" in
                else . end
              ) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         pending_change_set)
           # Idempotent: replaying writes the same pending-change.json. REPLAY_OUTPUT
@@ -1183,22 +1209,16 @@ case "$SUBCOMMAND" in
     _last_event_hash=$(_compute_event_hash "$_prev_line")
 
     # Write reduced state with integrity hash + event_head
+    # P2: use _write_with_hash (not _write_state_atomic) so hash is stamped atomically.
+    # Seed REPLAY_OUTPUT with _working_state first, then let _write_with_hash re-stamp.
     _replay_tmp="${REPLAY_OUTPUT}.tmp.$$"
     printf '%s\n' "$_working_state" > "$_replay_tmp" || { rm -f "$_replay_tmp"; exit 4; }
     [[ -s "$_replay_tmp" ]] || { rm -f "$_replay_tmp"; exit 4; }
     mv "$_replay_tmp" "$REPLAY_OUTPUT" || exit 4
 
-    # Recompute integrity hash on the written file
-    _new_hash=$(_compute_integrity_hash "$REPLAY_OUTPUT") || _new_hash=""
-    if [[ -n "$_new_hash" ]]; then
-      _write_state_atomic "$REPLAY_OUTPUT" \
-        --arg h "$_new_hash" --arg eh "$_last_event_hash" \
-        '.state_integrity_hash = $h | .event_head = $eh' || true
-    else
-      _write_state_atomic "$REPLAY_OUTPUT" \
-        --arg eh "$_last_event_hash" \
-        '.event_head = $eh' || true
-    fi
+    # P2: _write_with_hash applies identity filter, recomputes hash, stamps hash+event_head atomically.
+    # P2: || exit 4 (was || true — silently swallowed stamp failures leaving state unhashed).
+    _write_with_hash "$REPLAY_OUTPUT" '.' || exit 4
 
     printf 'replay: %d events processed, event_head=%s\n' "$_event_count" "$_last_event_hash"
     exit 0
