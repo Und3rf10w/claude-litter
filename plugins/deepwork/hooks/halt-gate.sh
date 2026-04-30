@@ -80,12 +80,13 @@ CURRENT_VALUE=$(printf '%s' "$STATE_CONTENT" | jq -c '.halt_reason // null' 2>/d
 cat >&2 <<EOF
 halt-gate: phase=halt requires structured halt_reason before turn-end.
 
-Set it in ${STATE_FILE} via atomic jq+tmp+mv, e.g.:
+Set it via state-transition.sh halt_reason, e.g.:
 
-  jq '.halt_reason = {
-    summary: "<one-line explanation>",
-    blockers: ["<open question or blocker>", ...]
-  }' "\$STATE_FILE" > "\$STATE_FILE.tmp" && mv "\$STATE_FILE.tmp" "\$STATE_FILE"
+  # Normal completion (no blockers):
+  bash plugins/deepwork/scripts/state-transition.sh halt_reason --summary "Plan approved; v3-final.md delivered"
+
+  # With open blockers:
+  bash plugins/deepwork/scripts/state-transition.sh halt_reason --summary "Halted on open design questions" --blocker "OD3: DB lib?" --blocker "OD4: API shape?"
 
 Shape rules:
   - summary: non-empty string describing why the session is halting

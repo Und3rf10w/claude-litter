@@ -107,20 +107,14 @@ _read_event_head() {
 }
 
 # _append_event_raw <events_file> <event_json>
-# Appends event_json + newline to events_file. Uses >> for short events
-# (POSIX O_APPEND atomic for writes < PIPE_BUF). For payloads >= 512 bytes,
-# falls back to tmp+cat+rm to avoid torn writes (not atomic under concurrency,
-# but bootstrap events are never concurrent).
+# Appends event_json + newline to events_file using POSIX O_APPEND (>>).
+# All callers go through _emit_event which holds events.jsonl.lock (W20),
+# so concurrent torn-write risk does not exist; the tmp+cat path was
+# unnecessary defense.
 _append_event_raw() {
   local events_file="$1"
   local event_json="$2"
-  local byte_count=${#event_json}
-  if [[ $byte_count -lt 512 ]]; then
-    printf '%s\n' "$event_json" >> "$events_file"
-  else
-    local tmp="${events_file}.tmp.$$"
-    printf '%s\n' "$event_json" > "$tmp" && cat "$tmp" >> "$events_file" && rm -f "$tmp"
-  fi
+  printf '%s\n' "$event_json" >> "$events_file"
 }
 
 # _emit_event <event_type> <payload_json>
@@ -128,9 +122,20 @@ _append_event_raw() {
 # Ordering: events.jsonl write happens BEFORE state.json write (Q1: Option A).
 # If state.json write later fails, reducer self-heals on next invocation.
 #
-# The entire read-prev_hash-through-append block is held under an exclusive
-# flock on events.jsonl.lock to prevent concurrent processes from reading the
-# same prev_event_hash and producing sibling events (hash chain race, W8 H1).
+# Lock invariant (W20-a): the exclusive flock spans the full
+# read-prev_hash → build-event-json → append-to-file sequence.
+# Releasing the lock before _append_event_raw would allow a concurrent caller
+# to read the same prev_event_hash and produce a sibling event — silently
+# forking the hash chain (W20 C1 / integration review CRITICAL).
+# jq runs under the lock by design: payload size is bounded and correctness
+# outweighs the marginal latency.
+#
+# W20-c: if _EMIT_STAMP_HEAD=1 is set by the caller, state.json's event_head,
+# state_integrity_hash, and last_updated are stamped atomically inside the same
+# lock span, before _release_lock. This eliminates the window between the event
+# append and the subsequent _write_with_hash call where integrity-always-gate
+# can see a mismatch (events.jsonl tail != state.event_head). Lock ordering:
+# events.jsonl.lock → state.json.lock — consistent with all other callers.
 _emit_event() {
   local event_type="$1"
   local payload_json="$2"
@@ -162,9 +167,8 @@ _emit_event() {
 
   local actor="${_DW_CALLER:-$(basename "$0")}"
 
-  # Hold an exclusive lock from _read_event_head through _append_event_raw so
-  # no two concurrent callers can read the same prev_event_hash.
-  # Uses portable _acquire_lock/_release_lock (flock on Linux, mkdir on macOS).
+  # Acquire the lock before reading prev_event_hash; hold it through the
+  # append so no concurrent caller can interleave between read and write.
   _acquire_lock "$lock_file" || return 1
 
   local prev_hash
@@ -185,10 +189,81 @@ _emit_event() {
       timestamp: $ts, actor: $actor, payload: $payload}')
   local _ej_rc=$?
 
-  _release_lock "$lock_file"
+  if [[ $_ej_rc -ne 0 ]]; then
+    _release_lock "$lock_file"
+    return 1
+  fi
 
-  [[ $_ej_rc -eq 0 ]] || return 1
   _append_event_raw "$events_file" "$event_json"
+  local _append_rc=$?
+
+  # W20-c: if caller requested a state.json head stamp (e.g. emit_revert_event),
+  # do it here while still holding the events.jsonl lock to eliminate the window
+  # between append and the subsequent state.json write.
+  if [[ "${_EMIT_STAMP_HEAD:-0}" == "1" && "$_append_rc" -eq 0 && -f "${STATE_FILE:-}" ]]; then
+    local _new_event_head _stamp_hash _stamp_now _stamp_tmp _stamp_sf_lock
+    _new_event_head=$(_compute_event_hash "$event_json")
+    _stamp_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    _stamp_sf_lock="${STATE_FILE}.lock"
+    _stamp_tmp="${STATE_FILE}.emit-stamp.tmp.$$"
+
+    # W21 #3: only proceed and release if we actually acquired the state.json
+    # lock — `|| true` would have silently written without holding the lock,
+    # and (on macOS mkdir-fallback) `_release_lock` would `rm -rf` another
+    # process's lock dir. On contention failure, skip the stamp and let
+    # integrity-always-gate detect the mismatch on the next tool call.
+    if _acquire_lock "$_stamp_sf_lock" 2>/dev/null; then
+      # Build a temp copy of state.json with the new event_head so _compute_integrity_hash
+      # sees the right event_head when computing the hash.
+      jq --arg eh "$_new_event_head" --arg ts "$_stamp_now" \
+        '.event_head = $eh | .last_updated = $ts' \
+        "$STATE_FILE" > "$_stamp_tmp" 2>/dev/null
+      if [[ -s "$_stamp_tmp" ]]; then
+        _stamp_hash=$(_compute_integrity_hash "$_stamp_tmp" 2>/dev/null) || _stamp_hash=""
+        if [[ -n "$_stamp_hash" ]]; then
+          local _stamp_final="${STATE_FILE}.emit-stamp2.tmp.$$"
+          # F-A2 (W22 #6): explicit-flag fail-closed for the second jq.
+          # Previously: `jq ... > final && mv final stamp_tmp || rm -f final`,
+          # then unconditional `mv stamp_tmp STATE_FILE`. Failure mode: if
+          # `jq ... > final` exits non-zero (with empty OR partial output),
+          # the rm cleared `_stamp_final` but `mv "$_stamp_tmp" "$STATE_FILE"`
+          # still committed state.json with new event_head + last_updated
+          # alongside the STALE state_integrity_hash from the prior write.
+          # Empirically reproduced in empirical_results.E1.md.
+          local _stamp2_ok=0
+          if jq --arg h "$_stamp_hash" '.state_integrity_hash = $h' \
+               "$_stamp_tmp" > "$_stamp_final" 2>/dev/null; then
+            [[ -s "$_stamp_final" ]] && _stamp2_ok=1
+          fi
+          if [[ "$_stamp2_ok" -eq 1 ]]; then
+            mv "$_stamp_final" "$_stamp_tmp" \
+              && mv "$_stamp_tmp" "$STATE_FILE" 2>/dev/null \
+              || { rm -f "$_stamp_final" "$_stamp_tmp"; }
+          else
+            # F-A2: do NOT mv $_stamp_tmp; cleanup both temp files.
+            printf '_emit_event: state_integrity_hash stamp jq failed; head-stamp skipped (events.jsonl append succeeded; integrity-always-gate will detect mismatch on next call)\n' >&2
+            rm -f "$_stamp_final" "$_stamp_tmp"
+          fi
+        else
+          # W22 #1: fail-closed mirror of W20-e. If integrity-hash compute fails
+          # we must NOT mv state.json — that would commit a new event_head +
+          # last_updated alongside a stale state_integrity_hash, hiding the
+          # mismatch from integrity-always-gate. Skip the stamp; warn so logs
+          # surface the cause; integrity-always-gate detects on next call.
+          printf '_emit_event: integrity-hash compute failed; head-stamp skipped (events.jsonl append succeeded)\n' >&2
+          rm -f "$_stamp_tmp"
+        fi
+      else
+        rm -f "$_stamp_tmp"
+      fi
+      _release_lock "$_stamp_sf_lock" 2>/dev/null || true
+    else
+      printf '_emit_event: could not acquire state.json lock; head-stamp skipped (events.jsonl append succeeded; integrity-always-gate will detect mismatch on next call)\n' >&2
+    fi
+  fi
+
+  _release_lock "$lock_file"
+  return $_append_rc
 }
 
 # _ensure_event_log
@@ -198,9 +273,17 @@ _emit_event() {
 # sessions that predate W7.
 _ensure_event_log() {
   local events_file="${INSTANCE_DIR}/events.jsonl"
+  # P3: fast-path pre-lock check — avoids lock acquisition on the common path
   [[ -f "$events_file" ]] && return 0
+  local _el_lock="${INSTANCE_DIR}/events.jsonl.lock"
+  _acquire_lock "$_el_lock" || return 1
+  # Re-check inside lock: another writer may have bootstrapped between pre-check and acquire
+  if [[ -f "$events_file" ]]; then
+    _release_lock "$_el_lock"
+    return 0
+  fi
   local state_snap
-  state_snap=$(cat "$STATE_FILE" 2>/dev/null) || return 1
+  state_snap=$(cat "$STATE_FILE" 2>/dev/null) || { _release_lock "$_el_lock"; return 1; }
   local now event_id boot_event
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   if command -v uuidgen >/dev/null 2>&1; then
@@ -216,8 +299,12 @@ _ensure_event_log() {
     --arg actor "${_DW_CALLER:-state-transition.sh}" \
     --argjson snap "$state_snap" \
     '{event_id: $eid, event_type: "bootstrap", prev_event_hash: "GENESIS",
-      timestamp: $ts, actor: $actor, payload: {state_snapshot: $snap}}') || return 1
+      timestamp: $ts, actor: $actor, payload: {state_snapshot: $snap}}') \
+    || { _release_lock "$_el_lock"; return 1; }
   _append_event_raw "$events_file" "$boot_event"
+  local _rc=$?
+  _release_lock "$_el_lock"
+  return $_rc
 }
 
 # ---------------------------------------------------------------------------
@@ -257,12 +344,37 @@ _compute_integrity_hash() {
 # Validate on-disk hash against recomputed value.
 # Returns 0 (pass) or 2 (mismatch / gate violation).
 # Absent hash (pre-W6 instance) is treated as pass.
+# Asymmetry note (W20-e/W21 boundary): writes are hard-fail (return 5 in
+# _write_with_hash else branch) while reads here remain soft (|| return 0 below).
+# Harden reads in W21 once hash coverage is load-bearing for new gates.
 _verify_integrity_hash() {
   local sf="$1"
   local on_disk recomputed
   on_disk=$(jq -r '.state_integrity_hash // ""' "$sf" 2>/dev/null || echo "")
-  [[ -z "$on_disk" ]] && return 0  # pre-W6 instance: pass
-  recomputed=$(_compute_integrity_hash "$sf") || return 0  # hash unavailable: fail-open
+  if [[ -z "$on_disk" ]]; then
+    # P18: if event_head is present (W7+ instance proxy), a missing hash is a gap —
+    # the write path should have stamped it. Block rather than silently passing.
+    local _eh
+    _eh=$(jq -r '.event_head // ""' "$sf" 2>/dev/null || echo "")
+    if [[ -n "$_eh" ]]; then
+      printf 'INTEGRITY_HASH_MISSING: state.json has event_head but no state_integrity_hash\n' >&2
+      printf '  Run /deepwork-reconcile to rebuild state.\n' >&2
+      return 2
+    fi
+    return 0  # pre-W6 instance: pass
+  fi
+  # W22 #2: fail-closed when hash compute fails. If state.json carries a hash
+  # but we can't recompute (jq/sha256sum unavailable, file unreadable), block
+  # rather than silently passing. The W20-e write-side hardening would have
+  # been undermined by a soft read here: a corruption could be written via
+  # `_write_with_hash` (which now blocks), but a pre-existing hash mismatch
+  # would still pass the read gate. Mirror the write-side posture.
+  recomputed=$(_compute_integrity_hash "$sf")
+  if [[ -z "$recomputed" ]]; then
+    printf 'INTEGRITY_HASH_COMPUTE_FAILED: cannot recompute hash for %s\n' "$sf" >&2
+    printf '  is jq installed and sha256sum/shasum available?\n' >&2
+    return 5
+  fi
   if [[ "$on_disk" != "$recomputed" ]]; then
     printf 'INTEGRITY_HASH_MISMATCH: state.json was modified outside state-transition.sh\n' >&2
     printf '  on_disk:    %s\n' "$on_disk" >&2
@@ -272,27 +384,108 @@ _verify_integrity_hash() {
   return 0
 }
 
-# Write with hash: applies $jq_filter (+ extra _write_state_atomic args) then
-# immediately recomputes and writes the integrity hash + event_head in one atomic update.
+# Write with hash: applies $jq_filter in a single atomic write that also stamps
+# state_integrity_hash, event_head, and last_updated.
+#
+# Single-pass approach:
+#   1. Apply mutation filter to a tmp file.
+#   2. Compute hash on tmp (hash input excludes state_integrity_hash itself).
+#   3. Stamp hash + event_head + last_updated into the same tmp file.
+#   4. mv tmp → state.json (one atomic rename; no second pass on disk).
+#
+# This eliminates the two-pass window where a SIGKILL between passes left
+# state.json with the mutation but without the updated hash/event_head,
+# causing integrity-always-gate to block all subsequent tool calls.
 _write_with_hash() {
   local sf="$1"; shift
-  # First pass: apply the mutation filter
-  _write_state_atomic "$sf" "$@" || return 4
-  # Second pass: recompute integrity hash, event_head, and last_updated atomically
+  [[ -f "$sf" ]] || return 1
+  local tmp="${sf}.wwh.tmp.$$"
+  local lock="${sf}.lock"
+
+  _acquire_lock "$lock" || return 1
+
+  # Step 1: apply the caller's mutation filter to tmp
+  jq "$@" "$sf" > "$tmp" 2>/dev/null
+  local _jq_rc=$?
+  if [[ $_jq_rc -ne 0 ]] || [[ ! -s "$tmp" ]]; then
+    _release_lock "$lock"
+    rm -f "$tmp"
+    return 4
+  fi
+
+  # Step 2: compute integrity hash on the mutated-but-not-yet-stamped content
+  # (_compute_integrity_hash reads from a file path — pass tmp directly)
   local new_hash event_head now
-  new_hash=$(_compute_integrity_hash "$sf") || new_hash=""
+  new_hash=$(_compute_integrity_hash "$tmp" 2>/dev/null) || new_hash=""
   event_head=$(_read_event_head 2>/dev/null || echo "")
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+  # Step 3: stamp hash + event_head + last_updated into the same tmp in one jq pass.
+  #
+  # F-A1 (W22 #6): explicit-flag fail-closed. Previously the stamp jq used
+  # `jq ... > stamp_tmp 2>/dev/null && mv stamp_tmp tmp`. Failure mode: if
+  # jq exits non-zero AFTER writing partial bytes, `&&` skips the mv but
+  # Step 4's unconditional `mv tmp sf` commits the un-stamped (or partial)
+  # tmp content. The previous `[[ -s "$tmp" ]]` Step-4 guard catches empty
+  # output but NOT partial-then-fail. Empirically reproduced in
+  # empirical_results.E7.md: 49-byte partial output passes `[[ -s ]]`,
+  # state.json ends up as invalid JSON missing the integrity hash.
+  local stamp_tmp="${sf}.wwh.stamp.tmp.$$"
+  local _stamp_ok=0
   if [[ -n "$new_hash" ]] && [[ -n "$event_head" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
-      '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' || return 4
+    if jq --arg h "$new_hash" --arg eh "$event_head" --arg ts "$now" \
+         '.state_integrity_hash = $h | .event_head = $eh | .last_updated = $ts' \
+         "$tmp" > "$stamp_tmp" 2>/dev/null; then
+      [[ -s "$stamp_tmp" ]] && _stamp_ok=1
+    fi
   elif [[ -n "$new_hash" ]]; then
-    _write_state_atomic "$sf" --arg h "$new_hash" --arg ts "$now" \
-      '.state_integrity_hash = $h | .last_updated = $ts' || return 4
+    if jq --arg h "$new_hash" --arg ts "$now" \
+         '.state_integrity_hash = $h | .last_updated = $ts' \
+         "$tmp" > "$stamp_tmp" 2>/dev/null; then
+      [[ -s "$stamp_tmp" ]] && _stamp_ok=1
+    fi
   else
-    _write_state_atomic "$sf" --arg ts "$now" '.last_updated = $ts' || return 4
+    # hash unavailable — fail-closed: do not write an unauthenticated state
+    printf '_write_with_hash: hash compute failed — is jq installed?\n' >&2
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 5
   fi
-  return 0
+
+  if [[ "$_stamp_ok" -eq 1 ]]; then
+    if ! mv "$stamp_tmp" "$tmp"; then
+      # Same fail-closed posture as the stamp-jq-failed branch: if the
+      # stamp_tmp→tmp rename fails (ENOSPC/EROFS/EBUSY), $tmp still holds
+      # the un-stamped Step-1 mutation and would otherwise pass the
+      # `[[ -s ]]` guard in Step 4, committing state.json with stale
+      # integrity_hash. Refuse to proceed.
+      printf '_write_with_hash: stamp_tmp→tmp mv failed — refusing to commit unhashed state\n' >&2
+      _release_lock "$lock"
+      rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+      return 5
+    fi
+  else
+    # F-A1 fail-closed: stamp jq failed (rc!=0 or empty output). Do NOT
+    # proceed to Step 4 — committing $tmp without the hash stamp would
+    # write state.json with the mutation but stale integrity_hash.
+    printf '_write_with_hash: integrity stamp jq failed — refusing to commit unhashed state\n' >&2
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 5
+  fi
+
+  # Step 4: atomic rename — this is the single point of commitment
+  if [[ -s "$tmp" ]]; then
+    mv "$tmp" "$sf"
+    local _mv_rc=$?
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return $_mv_rc
+  else
+    _release_lock "$lock"
+    rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+    return 4
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -387,12 +580,14 @@ _run_phase_advance_gate() {
     sot_json=$(jq -r '.source_of_truth[]? // empty' "$sf" 2>/dev/null)
     for artifact in "${instance_dir}"/findings.*.md "${instance_dir}"/mechanism.*.md "${instance_dir}"/reframe.*.md "${instance_dir}"/coverage.*.md; do
       [[ -f "$artifact" ]] || continue
-      cited=$(grep -oE '\]\([^)]+\)' "$artifact" 2>/dev/null | sed -E 's/^\]\((.*)\)$/\1/' | grep -E '(/|\.(md|js|json|sh|py)$)' || true)
+      cited=$(grep -oE '\]\([^)]+\)' "$artifact" 2>/dev/null | sed -E 's/^\]\((.*)\)$/\1/' | grep -E '\.(md|js|json|sh|py)$' || true)
       while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         case "$path" in http*|\#*|/*|*#*) continue ;; esac
-        if ! printf '%s\n' "$sot_json" | grep -Fqx "$path"; then
-          missing="${missing}${path}"$'\n'
+        local path_norm="$path"
+        while [[ "$path_norm" == ../* ]]; do path_norm="${path_norm#../}"; done
+        if ! printf '%s\n' "$sot_json" | grep -Fqx "$path_norm"; then
+          missing="${missing}${path_norm}"$'\n'
         fi
       done <<< "$cited"
     done
@@ -557,6 +752,9 @@ case "$SUBCOMMAND" in
     JSON_VALUE="${2:-}"
     [[ -n "$JQ_PATH" ]] || { printf 'state-transition.sh set_field: <jq-path> required\n' >&2; exit 3; }
     [[ -n "$JSON_VALUE" ]] || { printf 'state-transition.sh set_field: <json-value> required\n' >&2; exit 3; }
+    # P1: defense-in-depth — re-validate path at write site (decoupled from _emit_event gate)
+    printf '%s' "$JQ_PATH" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$' \
+      || { printf 'state-transition.sh set_field: INVALID_JQ_PATH "%s"\n' "$JQ_PATH" >&2; exit 3; }
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
@@ -583,6 +781,9 @@ case "$SUBCOMMAND" in
     JSON_OBJ="${2:-}"
     [[ -n "$JQ_PATH" ]] || { printf 'state-transition.sh append_array: <jq-path> required\n' >&2; exit 3; }
     [[ -n "$JSON_OBJ" ]] || { printf 'state-transition.sh append_array: <json-object> required\n' >&2; exit 3; }
+    # P1: defense-in-depth — re-validate path at write site (decoupled from _emit_event gate)
+    printf '%s' "$JQ_PATH" | grep -qE '^\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$' \
+      || { printf 'state-transition.sh append_array: INVALID_JQ_PATH "%s"\n' "$JQ_PATH" >&2; exit 3; }
     _require_state_file
     _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
@@ -664,6 +865,8 @@ case "$SUBCOMMAND" in
 
     [[ -n "$SESSION_ID_ARG" ]] || { printf 'state-transition.sh backfill_session: --session-id <id> required\n' >&2; exit 3; }
     _require_state_file
+    # P7: verify integrity before writing, matching all other write subcommands
+    _verify_integrity_hash "$STATE_FILE"; hash_rc=$?; [[ $hash_rc -eq 0 ]] || exit $hash_rc
 
     current_sid=$(jq -r '.session_id // ""' "$STATE_FILE" 2>/dev/null || echo "")
     # Only backfill if current session_id is a placeholder (deepwork-* prefix)
@@ -829,11 +1032,14 @@ case "$SUBCOMMAND" in
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_to" --arg ts "$_ts" '.phase = $v | .last_updated = $ts' 2>/dev/null)
+          # P8: detect silent jq failure (empty _working_state = broken reduction)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         exec_phase_advanced)
           _to=$(printf '%s' "$_line" | jq -r '.payload.to_phase // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_to" --arg ts "$_ts" '.execute.phase = $v | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         field_set)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
@@ -842,6 +1048,7 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson val "$_json_val" --arg ts "$_ts" \
             "${_jq_path} = \$val | .last_updated = \$ts" 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         array_appended)
           _jq_path=$(printf '%s' "$_line" | jq -r '.payload.jq_path // ""' 2>/dev/null)
@@ -850,12 +1057,14 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson obj "$_json_obj" --arg ts "$_ts" \
             "(${_jq_path}) += [\$obj] | .last_updated = \$ts" 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         merged)
           _frag=$(printf '%s' "$_line" | jq -c '.payload.json_fragment' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --argjson frag "$_frag" --arg ts "$_ts" \
             '. * $frag | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         state_reverted)
           _working_state=$(printf '%s' "$_line" | jq -c '.payload.state_snapshot' 2>/dev/null) || {
@@ -864,6 +1073,7 @@ case "$SUBCOMMAND" in
           }
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         halt_recorded)
           _summary=$(printf '%s' "$_line" | jq -r '.payload.summary // ""' 2>/dev/null)
@@ -871,11 +1081,13 @@ case "$SUBCOMMAND" in
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg s "$_summary" --argjson b "$_blockers" --arg ts "$_ts" \
             '.halt_reason = {summary: $s, blockers: $b, recorded_at: $ts} | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         session_backfilled)
           _sid=$(printf '%s' "$_line" | jq -r '.payload.session_id // ""' 2>/dev/null)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg v "$_sid" --arg ts "$_ts" '.session_id = $v | .last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         flaky_test_added)
           _cmd=$(printf '%s' "$_line" | jq -r '.payload.command // ""' 2>/dev/null)
@@ -885,10 +1097,12 @@ case "$SUBCOMMAND" in
              then . else .execute.flaky_tests = ((.execute.flaky_tests // []) + [$cmd]) end
              | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         last_updated_stamped)
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         bar_added)
           _ba_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -898,6 +1112,7 @@ case "$SUBCOMMAND" in
             jq -c --arg id "$_ba_id" --arg stmt "$_ba_stmt" --argjson cat "$_ba_cat" --arg ts "$_ts" \
             '.bar = ((.bar // []) + [{id: $id, criterion: $stmt, verdict: null, categorical_ban: $cat, evidence_required: "user-specified criterion"}]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         bar_removed)
           _br_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -905,6 +1120,7 @@ case "$SUBCOMMAND" in
             jq -c --arg id "$_br_id" --arg ts "$_ts" \
             '.bar = [(.bar // [])[] | select(.id != $id)] | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_added)
           _gra_stmt=$(printf '%s' "$_line" | jq -r '.payload.statement // ""' 2>/dev/null)
@@ -913,6 +1129,7 @@ case "$SUBCOMMAND" in
             jq -c --arg stmt "$_gra_stmt" --arg src "$_gra_src" --arg ts "$_ts" \
             '.guardrails = ((.guardrails // []) + [{rule: $stmt, source: $src, timestamp: $ts}]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_replaced)
           _grp_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
@@ -924,6 +1141,7 @@ case "$SUBCOMMAND" in
              | if $src == "" then . else .guardrails[$idx].source = $src | .guardrails[$idx].timestamp = $ts end
              | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         guardrail_removed)
           _grm_idx=$(printf '%s' "$_line" | jq -r '.payload.index // ""' 2>/dev/null)
@@ -931,12 +1149,14 @@ case "$SUBCOMMAND" in
             jq -c --argjson idx "$_grm_idx" --arg ts "$_ts" \
             'del(.guardrails[$idx]) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         state_archived)
           # Terminal event — replay stops here; state is considered archived.
           # No field mutations; last_updated stamp reflects the archive timestamp.
           _working_state=$(printf '%s' "$_working_state" | \
             jq -c --arg ts "$_ts" '.last_updated = $ts' 2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         test_manifest_updated)
           _tmu_id=$(printf '%s' "$_line" | jq -r '.payload.id // ""' 2>/dev/null)
@@ -951,6 +1171,7 @@ case "$SUBCOMMAND" in
                else . end
              ) | .last_updated = $ts' \
             2>/dev/null)
+          [[ -n "$_working_state" ]] || { printf 'state-transition.sh replay: jq failed on %s at event %d\n' "$_etype" "$_event_count" >&2; exit 1; }
           ;;
         pending_change_set)
           # Idempotent: replaying writes the same pending-change.json. REPLAY_OUTPUT
@@ -968,7 +1189,11 @@ case "$SUBCOMMAND" in
             'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
              else {plan_section:$ps, files:$files, rationale:$rat} end' 2>/dev/null)
           if [[ -n "$_pcs_json" && -n "$_pcs_dir" ]]; then
-            printf '%s\n' "$_pcs_json" > "${_pcs_dir}/pending-change.json" 2>/dev/null || true
+            # tmp+mv to avoid a partial write if interrupted mid-replay (W20-i)
+            _pcs_tmp="${_pcs_dir}/pending-change.json.tmp.$$"
+            printf '%s\n' "$_pcs_json" > "$_pcs_tmp" 2>/dev/null \
+              && mv "$_pcs_tmp" "${_pcs_dir}/pending-change.json" \
+              || { rm -f "$_pcs_tmp"; true; }
           fi
           ;;
         *)
@@ -989,22 +1214,16 @@ case "$SUBCOMMAND" in
     _last_event_hash=$(_compute_event_hash "$_prev_line")
 
     # Write reduced state with integrity hash + event_head
+    # P2: use _write_with_hash (not _write_state_atomic) so hash is stamped atomically.
+    # Seed REPLAY_OUTPUT with _working_state first, then let _write_with_hash re-stamp.
     _replay_tmp="${REPLAY_OUTPUT}.tmp.$$"
     printf '%s\n' "$_working_state" > "$_replay_tmp" || { rm -f "$_replay_tmp"; exit 4; }
     [[ -s "$_replay_tmp" ]] || { rm -f "$_replay_tmp"; exit 4; }
     mv "$_replay_tmp" "$REPLAY_OUTPUT" || exit 4
 
-    # Recompute integrity hash on the written file
-    _new_hash=$(_compute_integrity_hash "$REPLAY_OUTPUT") || _new_hash=""
-    if [[ -n "$_new_hash" ]]; then
-      _write_state_atomic "$REPLAY_OUTPUT" \
-        --arg h "$_new_hash" --arg eh "$_last_event_hash" \
-        '.state_integrity_hash = $h | .event_head = $eh' || true
-    else
-      _write_state_atomic "$REPLAY_OUTPUT" \
-        --arg eh "$_last_event_hash" \
-        '.event_head = $eh' || true
-    fi
+    # P2: _write_with_hash applies identity filter, recomputes hash, stamps hash+event_head atomically.
+    # P2: || exit 4 (was || true — silently swallowed stamp failures leaving state unhashed).
+    _write_with_hash "$REPLAY_OUTPUT" '.' || exit 4
 
     printf 'replay: %d events processed, event_head=%s\n' "$_event_count" "$_last_event_hash"
     exit 0
@@ -1034,11 +1253,15 @@ case "$SUBCOMMAND" in
     [[ -n "$_OT_ID" ]] || { printf 'grant_override: --id is required\n' >&2; exit 3; }
     [[ -n "$_OT_TO" ]] || { printf 'grant_override: --to <teammate> is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
+    _OT_LOCK="${INSTANCE_DIR}/override-tokens.json.lock"
+    # P6: serialize all grant/consume operations to eliminate duplicate-check TOCTOU
+    _acquire_lock "$_OT_LOCK" || { printf 'grant_override: failed to acquire lock\n' >&2; exit 1; }
     _OT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    # Initialise file if absent
+    # Initialise file if absent (inside lock — safe single-writer init)
     [[ -f "$_OT_FILE" ]] || printf '{"tokens":[]}\n' > "$_OT_FILE"
     # Check for duplicate id
     if jq -e --arg id "$_OT_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      _release_lock "$_OT_LOCK"
       printf 'grant_override: token id "%s" already exists\n' "$_OT_ID" >&2
       exit 1
     fi
@@ -1046,8 +1269,14 @@ case "$SUBCOMMAND" in
     jq --arg id "$_OT_ID" --arg to "$_OT_TO" --arg ts "$_OT_TS" --arg by "$_OT_BY" --arg desc "$_OT_DESC" \
       '.tokens += [{id: $id, granted_to: $to, granted_at: $ts, granted_by: $by, description: $desc}]' \
       "$_OT_FILE" > "$_OT_TMP" 2>/dev/null \
-      && mv "$_OT_TMP" "$_OT_FILE" \
-      || { rm -f "$_OT_TMP"; printf 'grant_override: failed to write token\n' >&2; exit 1; }
+      && mv "$_OT_TMP" "$_OT_FILE"
+    local _go_rc=$?
+    _release_lock "$_OT_LOCK"
+    rm -f "$_OT_TMP" 2>/dev/null
+    if [[ $_go_rc -ne 0 ]]; then
+      printf 'grant_override: failed to write token\n' >&2
+      exit 1
+    fi
     printf 'grant_override: token "%s" issued to "%s" at %s\n' "$_OT_ID" "$_OT_TO" "$_OT_TS"
     exit 0
     ;;
@@ -1074,23 +1303,38 @@ case "$SUBCOMMAND" in
     [[ -n "$_CO_ID" ]] || { printf 'consume_override: --id is required\n' >&2; exit 3; }
     [[ -n "$_CO_ACTOR" ]] || { printf 'consume_override: --actor is required\n' >&2; exit 3; }
     _OT_FILE="${INSTANCE_DIR}/override-tokens.json"
-    [[ -f "$_OT_FILE" ]] || { printf 'consume_override: no override-tokens.json\n' >&2; exit 1; }
+    _OT_LOCK="${INSTANCE_DIR}/override-tokens.json.lock"
+    # P6: serialize all grant/consume operations to eliminate check-then-act TOCTOU
+    _acquire_lock "$_OT_LOCK" || { printf 'consume_override: failed to acquire lock\n' >&2; exit 1; }
+    if [[ ! -f "$_OT_FILE" ]]; then
+      _release_lock "$_OT_LOCK"
+      printf 'consume_override: no override-tokens.json\n' >&2
+      exit 1
+    fi
     # Check token exists
     if ! jq -e --arg id "$_CO_ID" '.tokens[] | select(.id == $id)' "$_OT_FILE" >/dev/null 2>&1; then
+      _release_lock "$_OT_LOCK"
       printf 'consume_override: token "%s" not found or already consumed\n' "$_CO_ID" >&2
       exit 1
     fi
     # Enforce actor binding: granted_to must match the requesting actor
     _CO_GRANTED_TO=$(jq -r --arg id "$_CO_ID" '.tokens[] | select(.id == $id) | .granted_to // ""' "$_OT_FILE" 2>/dev/null || echo "")
     if [[ "$_CO_GRANTED_TO" != "$_CO_ACTOR" ]]; then
+      _release_lock "$_OT_LOCK"
       printf 'consume_override: token "%s" is granted to "%s", not "%s"\n' "$_CO_ID" "$_CO_GRANTED_TO" "$_CO_ACTOR" >&2
       exit 1
     fi
     _CO_TMP="${_OT_FILE}.tmp.$$"
     jq --arg id "$_CO_ID" '.tokens = [.tokens[] | select(.id != $id)]' \
       "$_OT_FILE" > "$_CO_TMP" 2>/dev/null \
-      && mv "$_CO_TMP" "$_OT_FILE" \
-      || { rm -f "$_CO_TMP"; printf 'consume_override: failed to remove token\n' >&2; exit 1; }
+      && mv "$_CO_TMP" "$_OT_FILE"
+    local _co_rc=$?
+    _release_lock "$_OT_LOCK"
+    rm -f "$_CO_TMP" 2>/dev/null
+    if [[ $_co_rc -ne 0 ]]; then
+      printf 'consume_override: failed to remove token\n' >&2
+      exit 1
+    fi
     printf 'consume_override: token "%s" consumed by "%s"\n' "$_CO_ID" "$_CO_ACTOR"
     exit 0
     ;;
@@ -1116,7 +1360,10 @@ case "$SUBCOMMAND" in
     _ensure_event_log
     _REVERT_SNAP=$(cat "$STATE_FILE" 2>/dev/null) || { printf 'emit_revert_event: cannot read STATE_FILE\n' >&2; exit 1; }
     printf '%s' "$_REVERT_SNAP" | jq empty 2>/dev/null || { printf 'emit_revert_event: STATE_FILE is not valid JSON\n' >&2; exit 1; }
-    _emit_event "state_reverted" \
+    # W20-c: stamp state.json's event_head + state_integrity_hash atomically
+    # inside the events.jsonl lock so integrity-always-gate never sees a mismatch
+    # between events.jsonl tail and state.event_head after revert.
+    _EMIT_STAMP_HEAD=1 _emit_event "state_reverted" \
       "$(jq -cn --arg reason "$_RE_REASON" --arg rte "$_RE_TO_EVENT" \
           --argjson snap "$_REVERT_SNAP" \
           '{reason: $reason, reverted_to_event: $rte, state_snapshot: $snap}')" || exit 5
@@ -1282,17 +1529,27 @@ case "$SUBCOMMAND" in
     _require_state_file
     _ensure_event_log
     _emit_event "state_archived" '{}' || exit 5
-    # Stamp event_head in state.json AFTER state_archived is appended so the
-    # archived copy's event_head reflects the final event (the archive itself).
-    _arch_event_head=$(_read_event_head 2>/dev/null || echo "")
-    if [[ -n "$_arch_event_head" ]]; then
-      _write_state_atomic "$STATE_FILE" --arg eh "$_arch_event_head" '.event_head = $eh' || true
-    fi
+    # Stamp event_head + state_integrity_hash + last_updated using _write_with_hash so
+    # the archive record carries an accurate, verifiable hash (W20-i: audit integrity).
+    # _write_with_hash internally reads _read_event_head which now returns the SHA256 of
+    # the just-appended state_archived event — the final event in the chain.
+    _write_with_hash "$STATE_FILE" '.' || true
     _ARCHIVE_JSON="${INSTANCE_DIR}/state.archived.json"
     _EVENTS_FILE="${INSTANCE_DIR}/events.jsonl"
     _EVENTS_ARCHIVE="${INSTANCE_DIR}/events.archived.jsonl"
     mv "$STATE_FILE" "$_ARCHIVE_JSON" || { printf 'archive_state: failed to rename state.json\n' >&2; exit 4; }
-    [[ -f "$_EVENTS_FILE" ]] && mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || true
+    if [[ -f "$_EVENTS_FILE" ]]; then
+      mv "$_EVENTS_FILE" "$_EVENTS_ARCHIVE" || {
+        # Reverse the state.json rename to avoid half-archived state
+        mv "$_ARCHIVE_JSON" "$STATE_FILE" 2>/dev/null || true
+        printf 'archive_state: failed to rename events.jsonl — rolled back state.json\n' >&2
+        exit 4
+      }
+    fi
+    rm -f "${INSTANCE_DIR}/pending-change.json"
+    # Pre-leg snapshots keyed to the archive_state Bash call are orphaned after mv
+    # (PostToolUse can't find the instance when state.json is gone). Clean them here.
+    rm -f "${INSTANCE_DIR}"/.state-snapshot* 2>/dev/null || true
     exit 0
     ;;
 
@@ -1352,32 +1609,105 @@ case "$SUBCOMMAND" in
         *) shift ;;
       esac
     done
+    # F-B2's `tr -cd '[:alnum:]_-' | cut -c1-64` below strips all whitespace
+    # (including newlines/tabs) as a side effect of the character-class filter,
+    # so a separate trim pass is unnecessary. The required-arg check still
+    # fires when --plan-section is omitted entirely (var initialized "" at top
+    # of subcommand); whitespace-only values pass through here and are caught
+    # by the post-sanitize empty-check below with the more accurate
+    # "empty after sanitize" message.
     [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: --plan-section required\n' >&2; exit 3; }
     [[ -n "$_PCS_FILES"        ]] || { printf 'pending_change_set: --files required\n' >&2; exit 3; }
     [[ -n "$_PCS_RATIONALE"    ]] || { printf 'pending_change_set: --rationale required\n' >&2; exit 3; }
     printf '%s' "$_PCS_FILES" | jq -e 'if type == "array" then . else error end' >/dev/null 2>&1 \
       || { printf 'pending_change_set: --files must be a valid JSON array\n' >&2; exit 3; }
     _require_state_file
-    _PCS_JSON=$(jq -cn \
-      --arg ps  "$_PCS_PLAN_SECTION" \
-      --argjson files "$_PCS_FILES" \
-      --arg rat "$_PCS_RATIONALE" \
-      --arg ntr "$_PCS_NO_TEST_REASON" \
-      'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
-       else {plan_section:$ps, files:$files, rationale:$rat} end')
+
+    # F-B2: write-time sanitize of plan_section. bash-gate.sh derives the
+    # rollback filename from `plan_section | tr -cd '[:alnum:]_-' | cut -c1-64`,
+    # but pending-change.json previously stored the value verbatim. As a result
+    # `§5.2` was stored verbatim and the gate looked for `rollback.52.md` —
+    # a silent mismatch. Apply the same transform here so the stored value
+    # is the canonical key. Warn to stderr when sanitization changed the value
+    # so operators see the transform happen.
+    _PCS_PLAN_SECTION_RAW="$_PCS_PLAN_SECTION"
+    _PCS_PLAN_SECTION="$(printf '%s' "$_PCS_PLAN_SECTION_RAW" | tr -cd '[:alnum:]_-' | cut -c1-64)"
+    if [[ "$_PCS_PLAN_SECTION" != "$_PCS_PLAN_SECTION_RAW" ]]; then
+      printf 'pending_change_set: plan_section sanitized from "%s" to "%s" (rollback-key canonicalization)\n' \
+        "$_PCS_PLAN_SECTION_RAW" "$_PCS_PLAN_SECTION" >&2
+    fi
+    [[ -n "$_PCS_PLAN_SECTION" ]] || { printf 'pending_change_set: plan_section empty after sanitize\n' >&2; exit 3; }
+
+    # F-P3: deterministic change_id. Three downstream consumers
+    # (file-changed-retest, retest-dispatch, plan-citation-gate) read
+    # change_id from pending-change.json; pending_change_set previously
+    # never wrote it, so they all received empty strings. Generate a
+    # 12-char sha256 prefix over the four stable inputs.
+    _PCS_HASH_INPUT="${_PCS_PLAN_SECTION}"$'\n'"${_PCS_FILES}"$'\n'"${_PCS_RATIONALE}"$'\n'"${_PCS_NO_TEST_REASON}"
+    if command -v sha256sum >/dev/null 2>&1; then
+      _PCS_CHANGE_ID=$(printf '%s' "$_PCS_HASH_INPUT" | sha256sum | cut -c1-12)
+    else
+      _PCS_CHANGE_ID=$(printf '%s' "$_PCS_HASH_INPUT" | shasum -a 256 | cut -c1-12)
+    fi
+
+    # F-P1: jq-cn fail-closed. Previous code captured _PCS_JSON without
+    # checking jq's exit status or output validity; if jq -cn failed, the
+    # next `printf '%s\n' "" > $_PCS_TMP && mv` happily wrote an empty
+    # pending-change.json. Now: explicit exit-status check + non-empty
+    # check + valid-object check; exit 5 on any failure.
+    if ! _PCS_JSON=$(jq -cn \
+        --arg ps   "$_PCS_PLAN_SECTION" \
+        --argjson files "$_PCS_FILES" \
+        --arg rat  "$_PCS_RATIONALE" \
+        --arg ntr  "$_PCS_NO_TEST_REASON" \
+        --arg cid  "$_PCS_CHANGE_ID" \
+        'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr, change_id:$cid}
+         else {plan_section:$ps, files:$files, rationale:$rat, change_id:$cid} end' 2>/dev/null); then
+      printf 'pending_change_set: jq -cn failed to build pending-change JSON\n' >&2
+      exit 5
+    fi
+    [[ -n "$_PCS_JSON" ]] || { printf 'pending_change_set: jq -cn produced empty output\n' >&2; exit 5; }
+    printf '%s' "$_PCS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 \
+      || { printf 'pending_change_set: jq -cn produced non-object output\n' >&2; exit 5; }
+
     _PCS_TMP="${INSTANCE_DIR}/pending-change.json.tmp.$$"
     _ensure_event_log
-    _emit_event "pending_change_set" \
+
+    # F4 (audit): write pending-change.json BEFORE emitting the event so the
+    # file is in place at the moment the event becomes visible to concurrent
+    # readers. Previously the order was reversed: _emit_event released both
+    # events.jsonl.lock and state.json.lock, then the mv ran. A concurrent
+    # consumer that holds state.json.lock between those two points could
+    # observe the new event-log tail while reading stale pending-change.json
+    # content (i.e. an event for change_id X paired with a file describing
+    # change_id Y). Atomic rename guarantees no partial-read hazard either way.
+    #
+    # If the mv fails (e.g. disk full), abort before emitting the event so the
+    # event log never references a change-set that did not land.
+    printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
+      && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
+      || { rm -f "$_PCS_TMP"; exit 4; }
+
+    # F-PCS: prefix _emit_event with _EMIT_STAMP_HEAD=1 so state.event_head,
+    # state_integrity_hash, and last_updated are stamped atomically inside
+    # the events.jsonl lock span. Without this prefix, pending_change_set
+    # was the only event-emitting subcommand of 17 that left state.event_head
+    # stale relative to the events.jsonl tail, causing integrity-always-gate
+    # to thrash on the next call. Empirically reproduced + fix verified in
+    # empirical_results.E8.md.
+    #
+    # Safety: depends on PR A (F-B3 static fd convention) and PR B (F-A2
+    # second-jq fail-closed) being landed first — both fix bugs in the W20-c
+    # stamp block this line now routes traffic through.
+    _EMIT_STAMP_HEAD=1 _emit_event "pending_change_set" \
       "$(jq -cn \
           --arg ps "$_PCS_PLAN_SECTION" \
           --argjson files "$_PCS_FILES" \
           --arg rat "$_PCS_RATIONALE" \
           --arg ntr "$_PCS_NO_TEST_REASON" \
-          'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr}
-           else {plan_section:$ps, files:$files, rationale:$rat} end')" || exit 5
-    printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
-      && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
-      || { rm -f "$_PCS_TMP"; exit 4; }
+          --arg cid "$_PCS_CHANGE_ID" \
+          'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr, change_id:$cid}
+           else {plan_section:$ps, files:$files, rationale:$rat, change_id:$cid} end')" || exit 5
     exit 0
     ;;
 

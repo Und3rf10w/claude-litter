@@ -6,6 +6,24 @@ Use `/deepwork-status` (design mode) or `/deepwork-execute-status` (execute mode
 
 ---
 
+## Top-level audit fields
+
+### `event_head`
+
+SHA-256 hash of the most recent event in `events.jsonl`. Written by `state-transition.sh` atomically alongside every mutation. Used by `hooks/integrity-always-gate.sh` to detect out-of-band edits: if `event_head` does not match `sha256sum` of the last line in `events.jsonl`, the integrity gate blocks all tool calls until `/deepwork-reconcile` is run. Absent on pre-W7 instances (those pass the gate without enforcement).
+
+### `state_integrity_hash`
+
+SHA-256 hash of a canonical subset of `state.json` fields (phase, team_name, and other projection-correctness fields). Written by `state-transition.sh` via `_write_with_hash` atomically alongside every mutation. Verified inside `state-transition.sh`'s write path via `_verify_integrity_hash` before each mutation: if the on-disk hash does not match the recomputed value, the write is refused and the caller exits non-zero, prompting `/deepwork-reconcile`. Note: this hash is **not** checked by `hooks/integrity-always-gate.sh` (that hook verifies `event_head` only); projection corruption is detected at the next state-transition.sh write attempt, not on every tool call.
+
+`state_integrity_hash` and `event_head` coexist: `state_integrity_hash` protects projection-correctness invariants; `event_head` is the event-log synchronization check. Absent hash (null or missing key) is treated as **pass** — pre-W6 instances have no hash and must not be blocked.
+
+### `mode`
+
+Top-level string field indicating the profile under which the session was started. Values: `"default"` (design mode) or `"execute"`. Written once at SETUP by `setup-deepwork.sh` from the `--mode` flag. Hooks use this to gate execute-only enforcement paths (e.g., `hooks/execute/plan-citation-gate.sh` returns early if `mode != "execute"`).
+
+---
+
 ## Design-mode fields (profiles/default/state-schema.json)
 
 ### `phase`
@@ -103,6 +121,34 @@ Populated by `hooks/execute/test-capture.sh` when ≥2 alternating pass/fail res
 
 Summary of open discoveries. Full detail lives in `discoveries.jsonl` (append-only JSONL at the instance directory). If this array has entries with `resolution: null`, there are unresolved discoveries blocking or pending resolution. The three `proposed_outcome` values route differently — see `references/execute-mode.md` §Discovery Routing Table.
 
+### `execute.test_manifest[]`
+
+Array of coverage mappings built at SETUP and updated via `state-transition.sh test_manifest_update`. Each entry maps a source file to its covering test command:
+
+```json
+{"file": "src/foo.sh", "test_cmd": "bash tests/test-foo.sh"}
+```
+
+Used by two gates:
+- `hooks/execute/plan-citation-gate.sh` (G5): if the file being written is **not** in the manifest, `pending-change.json` must contain a non-empty `no_test_reason` field, otherwise the write is blocked. The failing-covering-test block (when the file IS in the manifest and the last test run failed) is enforced by Gate **G4 EP3** in the same file (~line 172), not G5.
+- `hooks/execute/retest-dispatch.sh`: on every Write/Edit, dispatches the covering `test_cmd` asynchronously so the next PreToolUse gate has fresh results.
+
+Updated atomically via the `test_manifest_update` subcommand (emits `test_manifest_updated` event). Direct writes to this field via `set_field` are blocked by the integrity gate.
+
+### `execute.env_attestations[]`
+
+Array of environment attestation records produced by the `auditor` archetype during VERIFY phase. Each entry records the result of running the full test manifest for one gate in one declared environment:
+
+```json
+{"gate_id": "G-exec-1", "environment": "local", "passed": true, "attested_at": "<ISO timestamp>"}
+```
+
+The `auditor` writes entries via `state-transition.sh env_attest`. `hooks/execute/plan-citation-gate.sh` and the CRITIQUE gate check this array: a gate cannot advance to CRITIQUE until it has at least one `passed: true` entry. If no environments were declared in the gate's manifest entry, a single `"environment": "local"` attestation is required.
+
+### `execute.secret_scan_waived`
+
+Boolean. Set to `true` at SETUP when the user invokes `/deepwork --mode execute ... --secret-scan-waive`. Written once by `setup-deepwork.sh` and captured in `setup_flags_snapshot` for replay-safety. When `true`, `hooks/execute/bash-gate.sh` skips the secret-scan enforcement step. Defaults to `false`. Cannot be set to `true` post-SETUP — the bash-gate refuses flag mutations after `execute.phase` leaves `"setup"`.
+
 ### `execute.setup_flags_snapshot`
 
 Object capturing the `authorized_*` flag values at SETUP time: `authorized_push`, `authorized_force_push`, `authorized_prod_deploy`, `authorized_local_destructive`, `secret_scan_waived`. `hooks/execute/bash-gate.sh` checks this snapshot before honoring any `authorized_*` flag — if a flag is `true` in current state but absent from the snapshot, the hook denies the operation. This prevents post-SETUP flag injection.
@@ -114,9 +160,9 @@ Object capturing the `authorized_*` flag values at SETUP time: `authorized_push`
 The state file lives at `${INSTANCE_DIR}/state.json`. Use `jq` for safe reads:
 
 ```bash
-INSTANCE_DIR="$(ls -d .claude/deepwork/*/state.json 2>/dev/null | head -1 | xargs dirname)"
+INSTANCE_DIR="$(ls -d "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json 2>/dev/null | head -1 | xargs dirname)"
 jq '.execute.phase' "$INSTANCE_DIR/state.json"
 jq '.execute.change_log[] | select(.merged_at == null)' "$INSTANCE_DIR/state.json"
 ```
 
-For the instance directory path, use `ls .claude/deepwork/*/state.json` or `/deepwork-execute-status`.
+For the instance directory path, use `ls "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json` or `/deepwork-execute-status`.

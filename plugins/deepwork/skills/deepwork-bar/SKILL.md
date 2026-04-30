@@ -1,7 +1,8 @@
 ---
+name: deepwork-bar
 description: "Add, remove, or list written-bar criteria for the active deepwork session"
 argument-hint: "add '<criterion>' [--categorical-ban] | remove <id> | list"
-allowed-tools: ["Read(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Edit(.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)"]
+allowed-tools: ["Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "Bash(jq:*)", "Bash(mv:*)"]
 ---
 
 # Deepwork Bar Management
@@ -10,7 +11,7 @@ Manually manage the `state.json.bar[]` array — the gate criteria CRITIC verdic
 
 ## Arguments
 
-`$ARGUMENTS` is one of:
+The `args` string passed to this skill is one of:
 - `add "<criterion>" [--categorical-ban]` — append a new criterion with auto-assigned id (G<N+1>). Use `--categorical-ban` for hard limits.
 - `remove <id>` — remove the criterion with the given id (e.g., `G3`)
 - `list` — show current bar criteria with verdicts
@@ -19,14 +20,14 @@ Manually manage the `state.json.bar[]` array — the gate criteria CRITIC verdic
 
 1. Use Glob to find active instance state:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 
 2. If no active session, report "No active deepwork session."
 
 3. If multiple, `AskUserQuestion` to pick.
 
-4. Parse `$ARGUMENTS`. Examples:
+4. Parse the `args` string. Examples:
    - `add "graceful rollback path exists"`
    - `add "no new dependencies" --categorical-ban`
    - `remove G7`
@@ -39,7 +40,7 @@ Glob: .claude/deepwork/*/state.json
 Compute next id (max existing + 1, starting at G1), then call the canonical writer:
 
 ```bash
-STATE=".claude/deepwork/<id>/state.json"
+STATE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/state.json"
 NEXT_ID=$(jq -r '
   if (.bar // []) | length == 0 then "G1"
   else

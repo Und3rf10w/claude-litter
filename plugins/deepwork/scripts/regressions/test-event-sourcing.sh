@@ -18,6 +18,7 @@
 # ES-y: replay guardrail_removed → guardrail removed by index
 # ES-z: replay state_archived → state_archived event present; last_updated set
 # ES-aa: replay test_manifest_updated → .execute.test_manifest updated
+# ES-ab: 5 parallel _emit_event subshells — no forked prev_event_hash (W20-a lock regression)
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
 
@@ -414,13 +415,10 @@ _END_TS=$(date +%s)
 ELAPSED=$(( _END_TS - _START_TS ))
 
 _assert_exit "ES-g: replay exits 0 on 1000 events" "0" "$REPLAY_RC"
-# Python fast-path achieves <1s for 1000 events (no per-event subshell spawns).
-# Threshold set to 5s to tolerate CI overhead; bash fallback (no python3) is exempt.
-if command -v python3 >/dev/null 2>&1; then
-  _THRESHOLD=5
-else
-  _THRESHOLD=120
-fi
+# Bash replay spawns sha256sum per event (O(N) subshells); ~27ms/event => ~27s for 1000 events.
+# The Python fast-path that would have kept this under 5s was removed in W15 #10.
+# Threshold now matches bash-fallback value unconditionally.
+_THRESHOLD=120
 if [[ "$ELAPSED" -lt "$_THRESHOLD" ]]; then
   _pass "ES-g: 1000-event replay completed in ${ELAPSED}s (<${_THRESHOLD}s threshold)"
 else
@@ -1223,6 +1221,216 @@ if [[ "$ESAA_REPLAYED" == "pass" ]]; then
 else
   _fail "ES-aa: replayed test_manifest[0].last_result expected 'pass', got '${ESAA_REPLAYED}'"
 fi
+
+# ── ES-ab: 5 parallel _emit_event subshells — no forked prev_event_hash ──────
+# Regression for W20-a (CRITICAL): verifies the lock spans the full
+# read-prev_hash → build-event → append sequence. Without the fix, two
+# concurrent subshells can race on the same prev_event_hash and produce sibling
+# events sharing a parent — silently forking the hash chain.
+echo ""
+echo "── ES-ab: parallel _emit_event — strict prev-hash chain (W20-a regression) ──"
+
+ESAB_SB=$(mktemp -d)
+ESAB_ID="ab012345"
+ESAB_DIR="$ESAB_SB/.claude/deepwork/$ESAB_ID"
+mkdir -p "$ESAB_DIR"
+ESAB_SID="esab-session-$(date +%s)"
+ESAB_STATE="${ESAB_DIR}/state.json"
+
+"$STATE_TRANSITION" --state-file "$ESAB_STATE" init - <<EOF 2>/dev/null
+{"session_id":"$ESAB_SID","phase":"explore","team_name":"esab-team"}
+EOF
+
+# Pre-seed events.jsonl with a bootstrap event so all parallel workers see an
+# existing file and skip _ensure_event_log. Without this, concurrent callers
+# race on the first-file check, each writing their own bootstrap event with
+# prev_event_hash=GENESIS, producing sibling events before the lock is relevant.
+INSTANCE_DIR="$ESAB_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAB_STATE" stamp_last_updated >/dev/null 2>&1
+
+ESAB_EVENTS="${ESAB_DIR}/events.jsonl"
+
+# Spawn 5 parallel subshells each invoking set_field (which calls _emit_event)
+ESAB_PIDS=()
+for _i in 1 2 3 4 5; do
+  (
+    INSTANCE_DIR="$ESAB_DIR" \
+      "$STATE_TRANSITION" --state-file "$ESAB_STATE" \
+        set_field ".explore_counter_${_i}" "\"event_${_i}\"" 2>/dev/null
+  ) &
+  ESAB_PIDS+=($!)
+done
+for _pid in "${ESAB_PIDS[@]}"; do wait "$_pid" 2>/dev/null || true; done
+
+# Walk events.jsonl: each event's prev_event_hash must equal SHA256 of the
+# previous line. Any duplicate prev_event_hash means the lock was released
+# before the append, allowing two callers to race on the same chain tip.
+ESAB_BROKEN=0
+ESAB_PREV_HASH=""
+ESAB_LINE_NUM=0
+while IFS= read -r _eline; do
+  [[ -z "$_eline" ]] && continue
+  ESAB_LINE_NUM=$((ESAB_LINE_NUM + 1))
+  _actual_prev=$(printf '%s' "$_eline" | jq -r '.prev_event_hash // ""' 2>/dev/null)
+  if [[ $ESAB_LINE_NUM -gt 1 ]]; then
+    if [[ "$_actual_prev" != "$ESAB_PREV_HASH" ]]; then
+      printf 'ES-ab: chain broken at event %d: prev_hash=%s expected=%s\n' \
+        "$ESAB_LINE_NUM" "$_actual_prev" "$ESAB_PREV_HASH" >&2
+      ESAB_BROKEN=$((ESAB_BROKEN + 1))
+    fi
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    ESAB_PREV_HASH=$(printf '%s\n' "$_eline" | sha256sum | cut -d' ' -f1)
+  else
+    ESAB_PREV_HASH=$(printf '%s\n' "$_eline" | shasum -a 256 | cut -d' ' -f1)
+  fi
+done < "$ESAB_EVENTS"
+
+if [[ $ESAB_BROKEN -eq 0 && $ESAB_LINE_NUM -ge 6 ]]; then
+  _pass "ES-ab: all $ESAB_LINE_NUM events form a strict prev-hash chain (no forks)"
+elif [[ $ESAB_BROKEN -gt 0 ]]; then
+  _fail "ES-ab: $ESAB_BROKEN chain break(s) detected — lock-before-append invariant violated"
+else
+  _fail "ES-ab: expected >=6 events (1 bootstrap + 5 parallel), got $ESAB_LINE_NUM"
+fi
+
+# Also verify no two events share the same prev_event_hash (fork detection)
+ESAB_DUP_PARENTS=$(jq -r '.prev_event_hash' "$ESAB_EVENTS" 2>/dev/null \
+  | sort | uniq -d | grep -v '^GENESIS$' | wc -l | tr -d ' ')
+if [[ "${ESAB_DUP_PARENTS:-0}" -eq 0 ]]; then
+  _pass "ES-ab: no duplicate prev_event_hash values (no forked chain)"
+else
+  _fail "ES-ab: $ESAB_DUP_PARENTS duplicate prev_event_hash value(s) — concurrent race detected"
+fi
+
+rm -rf "$ESAB_SB"
+
+# ── ES-ac: pending_change_set replay — crash-safe tmp+mv write (W20-i) ──────
+# Regression for W20-i: the replay handler for `pending_change_set` events
+# in state-transition.sh writes pending-change.json beside REPLAY_OUTPUT.
+# Pre-fix: a single `printf > file` left a partial file if killed mid-write.
+# Post-fix (lines ~1193-1196): write goes through tmp.$$ + mv, so the file
+# is either absent (crashed before mv) or a fully-formed valid JSON object.
+#
+# This test exercises the replay path end-to-end:
+#   1. Bootstrap state.json + write a real pending_change_set event via the
+#      direct subcommand (which appends to events.jsonl).
+#   2. Delete the pending-change.json the direct subcommand wrote (so any
+#      replay output we observe is genuinely produced by replay, not stale).
+#   3. Run `replay --output <new state path>` to a different directory so
+#      _pcs_dir resolves there.
+#   4. Assert: pending-change.json appears next to the new output, contains
+#      valid JSON, and the payload (plan_section, files, rationale) matches
+#      the original event.
+#   5. Assert: zero `.tmp.$$` files remain in either directory.
+echo ""
+echo "── ES-ac: pending_change_set replay write is atomic (W20-i) ──"
+
+ESAC_SB=$(mktemp -d)
+ESAC_ID="ac012345"
+ESAC_DIR="$ESAC_SB/.claude/deepwork/$ESAC_ID"
+mkdir -p "$ESAC_DIR"
+ESAC_SID="esac-session-$(date +%s)"
+ESAC_STATE="${ESAC_DIR}/state.json"
+ESAC_EVENTS="${ESAC_DIR}/events.jsonl"
+
+# Bootstrap state via init (gives us a valid event_head + bootstrap event)
+"$STATE_TRANSITION" --state-file "$ESAC_STATE" init - <<ESACEOF
+{
+  "session_id": "${ESAC_SID}",
+  "instance_id": "${ESAC_ID}",
+  "phase": "execute",
+  "team_name": "test-team",
+  "frontmatter_schema_version": "1",
+  "bar": [],
+  "execute": {"plan_hash": "esachash_$(date +%s)", "plan_drift_detected": false}
+}
+ESACEOF
+
+# Write a pending_change_set event via the public subcommand. This appends a
+# `pending_change_set` event to events.jsonl AND writes pending-change.json
+# beside state. We will delete the latter to verify replay rewrites it.
+ESAC_FILES_JSON='["src/file-a.py","src/file-b.py"]'
+ESAC_RATIONALE="testing atomic replay write — W20-i regression"
+INSTANCE_DIR="$ESAC_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAC_STATE" pending_change_set \
+    --plan-section "test_section" \
+    --files "$ESAC_FILES_JSON" \
+    --rationale "$ESAC_RATIONALE" >/dev/null 2>&1
+ESAC_RC=$?
+
+if [[ $ESAC_RC -eq 0 ]] && [[ -f "$ESAC_EVENTS" ]]; then
+  _pass "ES-ac: pending_change_set subcommand succeeded and seeded events.jsonl"
+else
+  _fail "ES-ac: pending_change_set subcommand failed (rc=$ESAC_RC) or events.jsonl missing"
+fi
+
+# Verify the event was actually appended (search for event_type == pending_change_set)
+ESAC_EV_COUNT=$(jq -s 'map(select(.event_type == "pending_change_set")) | length' "$ESAC_EVENTS" 2>/dev/null || echo 0)
+if [[ "${ESAC_EV_COUNT:-0}" -ge 1 ]]; then
+  _pass "ES-ac: events.jsonl contains pending_change_set event"
+else
+  _fail "ES-ac: expected pending_change_set event in events.jsonl, found ${ESAC_EV_COUNT:-0}"
+fi
+
+# Now delete the pending-change.json the direct subcommand wrote — replay
+# must rewrite it (to a NEW location below) using the W20-i tmp+mv code path.
+rm -f "${ESAC_DIR}/pending-change.json"
+
+# Run replay against a fresh output directory so _pcs_dir = REPLAY_OUTPUT's dir.
+ESAC_REPLAY_DIR="${ESAC_SB}/replay-out"
+mkdir -p "$ESAC_REPLAY_DIR"
+ESAC_REPLAY_OUTPUT="${ESAC_REPLAY_DIR}/state.json"
+
+INSTANCE_DIR="$ESAC_DIR" \
+  "$STATE_TRANSITION" --state-file "$ESAC_STATE" replay --output "$ESAC_REPLAY_OUTPUT" >/dev/null 2>&1
+ESAC_REPLAY_RC=$?
+
+if [[ $ESAC_REPLAY_RC -eq 0 ]]; then
+  _pass "ES-ac: replay exits 0"
+else
+  _fail "ES-ac: replay failed (rc=$ESAC_REPLAY_RC)"
+fi
+
+# Assert: pending-change.json was written next to REPLAY_OUTPUT
+ESAC_REPLAYED_PCJ="${ESAC_REPLAY_DIR}/pending-change.json"
+if [[ -f "$ESAC_REPLAYED_PCJ" ]]; then
+  _pass "ES-ac: replay wrote pending-change.json beside output"
+else
+  _fail "ES-ac: replay did not write pending-change.json at ${ESAC_REPLAYED_PCJ}"
+fi
+
+# Assert: pending-change.json contains valid JSON (the W20-i guarantee).
+# Pre-fix, a partial write would produce a truncated file → jq parse fails.
+if [[ -f "$ESAC_REPLAYED_PCJ" ]] && jq -e 'type == "object"' "$ESAC_REPLAYED_PCJ" >/dev/null 2>&1; then
+  _pass "ES-ac: replayed pending-change.json is valid JSON object"
+else
+  _fail "ES-ac: replayed pending-change.json is missing or not a valid JSON object"
+fi
+
+# Assert: payload round-trips through replay correctly
+if [[ -f "$ESAC_REPLAYED_PCJ" ]]; then
+  ESAC_REPLAYED_PS=$(jq -r '.plan_section // ""' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  ESAC_REPLAYED_FILES=$(jq -c '.files // []' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  ESAC_REPLAYED_RAT=$(jq -r '.rationale // ""' "$ESAC_REPLAYED_PCJ" 2>/dev/null)
+  if [[ "$ESAC_REPLAYED_PS" == "test_section" ]] \
+     && [[ "$ESAC_REPLAYED_FILES" == "$ESAC_FILES_JSON" ]] \
+     && [[ "$ESAC_REPLAYED_RAT" == "$ESAC_RATIONALE" ]]; then
+    _pass "ES-ac: replayed pending-change.json payload matches original event"
+  else
+    _fail "ES-ac: payload mismatch (plan_section='$ESAC_REPLAYED_PS' files='$ESAC_REPLAYED_FILES' rationale='$ESAC_REPLAYED_RAT')"
+  fi
+fi
+
+# Assert: no .tmp.$$ garbage left in either directory (cleanup invariant)
+ESAC_TMP_COUNT=$(find "$ESAC_DIR" "$ESAC_REPLAY_DIR" -name 'pending-change.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+if [[ "${ESAC_TMP_COUNT:-0}" -eq 0 ]]; then
+  _pass "ES-ac: no pending-change.json.tmp.* files left after replay"
+else
+  _fail "ES-ac: $ESAC_TMP_COUNT pending-change.json.tmp.* file(s) leaked"
+fi
+
+rm -rf "$ESAC_SB"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""

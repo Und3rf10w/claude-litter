@@ -32,7 +32,7 @@ fi
 SNAPSHOT_TARGET="${PLUGIN_ROOT}/references/hook-architecture.md"
 
 if [[ "$CHECK_MODE" == "true" ]]; then
-  TMPFILE=$(mktemp /tmp/hook-graph-check-XXXXXX.md)
+  TMPFILE=$(mktemp "${TMPDIR:-/tmp}/hook-graph-check-XXXXXX.md")
   bash "${BASH_SOURCE[0]}" >| "$TMPFILE" 2>/dev/null
   if diff -u "$SNAPSHOT_TARGET" "$TMPFILE" >/dev/null 2>&1; then
     rm -f "$TMPFILE"
@@ -106,6 +106,7 @@ REGTABLE
   # hooks.json static registrations (TeammateIdle, PreCompact) — always-on, not in manifest
   cat <<'REGTABLE'
 HOOKS_JSON_STATIC:teammate-idle-gate.sh:TeammateIdle:.*:design
+HOOKS_JSON_STATIC:status-claim-regex-precheck.sh:TeammateIdle:.*:design
 HOOKS_JSON_STATIC:pre-compact.sh:PreCompact:(none):design
 REGTABLE
 }

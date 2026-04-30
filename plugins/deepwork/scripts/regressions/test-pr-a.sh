@@ -325,6 +325,207 @@ else
 fi
 rm -rf "$SETUP_SANDBOX2"
 
+# ── PRA-14: transactional init — INSTANCE_DIR removed when _SETUP_COMPLETE=false on non-zero exit ──
+# Regression for W18-c: setup-deepwork.sh EXIT trap must rm -rf INSTANCE_DIR when
+# _SETUP_COMPLETE is not "true" and exit code is non-zero (partial init cleanup).
+echo ""
+echo "── PRA-14: transactional init — INSTANCE_DIR cleaned on non-zero exit ──"
+
+TRANS_SB=$(mktemp -d)
+TRANS_INST_DIR="${TRANS_SB}/.claude/deepwork/deadbeef"
+mkdir -p "$TRANS_INST_DIR"
+
+# Simulate the trap body as written in setup-deepwork.sh
+_SETUP_COMPLETE_T=false
+_TRANS_RC=1
+
+# Run the trap logic inline (mirrors the trap body in setup-deepwork.sh)
+if [ "$_SETUP_COMPLETE_T" != "true" ] && [ "$_TRANS_RC" -ne 0 ]; then
+  rm -rf "${TRANS_INST_DIR}" 2>/dev/null || true
+fi
+
+if [[ -d "$TRANS_INST_DIR" ]]; then
+  _fail "PRA-14: INSTANCE_DIR NOT removed when _SETUP_COMPLETE=false and rc=1"
+else
+  _pass "PRA-14: INSTANCE_DIR removed by transactional trap when _SETUP_COMPLETE=false and rc=1"
+fi
+
+# Also verify: when _SETUP_COMPLETE=true, INSTANCE_DIR is preserved even on non-zero exit
+TRANS_SB2=$(mktemp -d)
+TRANS_INST_DIR2="${TRANS_SB2}/.claude/deepwork/deadbeef"
+mkdir -p "$TRANS_INST_DIR2"
+
+_SETUP_COMPLETE_T2=true
+_TRANS_RC2=1
+
+if [ "$_SETUP_COMPLETE_T2" != "true" ] && [ "$_TRANS_RC2" -ne 0 ]; then
+  rm -rf "${TRANS_INST_DIR2}" 2>/dev/null || true
+fi
+
+if [[ -d "$TRANS_INST_DIR2" ]]; then
+  _pass "PRA-14b: INSTANCE_DIR preserved when _SETUP_COMPLETE=true (even rc=1)"
+else
+  _fail "PRA-14b: INSTANCE_DIR incorrectly removed when _SETUP_COMPLETE=true"
+fi
+
+rm -rf "$TRANS_SB" "$TRANS_SB2"
+
+# ── PRA-14c: real mid-init failure — setup-deepwork.sh EXIT trap removes INSTANCE_DIR ──
+# Real end-to-end: stub state-transition.sh to exit 1 during init, verify trap fires.
+echo ""
+echo "── PRA-14c: real mid-init failure — trap fires and INSTANCE_DIR is absent ──"
+
+PRA14C_SB=$(mktemp -d)
+# Create a minimal git repo so early git check passes
+git -C "$PRA14C_SB" init -q
+git -C "$PRA14C_SB" commit --allow-empty -m "init" -q
+
+# Stub state-transition.sh: replace with a script that exits 1 on 'init'
+PRA14C_SCRIPT_DIR="${PRA14C_SB}/plugins/deepwork/scripts"
+mkdir -p "$PRA14C_SCRIPT_DIR"
+cp -r "${PLUGIN_ROOT}/scripts/." "$PRA14C_SCRIPT_DIR/"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${PRA14C_SCRIPT_DIR}/state-transition.sh"
+chmod +x "${PRA14C_SCRIPT_DIR}/state-transition.sh"
+
+# Run setup-deepwork.sh from the sandbox repo dir; it must fail mid-init
+PRA14C_SETUP="${PRA14C_SCRIPT_DIR}/setup-deepwork.sh"
+PRA14C_OUT=$(CLAUDE_PLUGIN_ROOT="${PRA14C_SB}/plugins/deepwork" CLAUDE_PROJECT_DIR="$PRA14C_SB" bash "$PRA14C_SETUP" "test goal pra14c" 2>&1)
+PRA14C_RC=$?
+
+# Should exit non-zero
+if [[ "$PRA14C_RC" -ne 0 ]]; then
+  _pass "PRA-14c: setup-deepwork exits non-zero on mid-init failure (exit=${PRA14C_RC})"
+else
+  _fail "PRA-14c: setup-deepwork should have exited non-zero, got 0"
+fi
+
+# INSTANCE_DIR must not exist (trap must have cleaned it)
+PRA14C_INST_COUNT=$(find "${PRA14C_SB}/.claude/deepwork" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PRA14C_INST_COUNT" -eq 0 ]]; then
+  _pass "PRA-14c: no INSTANCE_DIR remains after mid-init failure (trap fired)"
+else
+  _fail "PRA-14c: INSTANCE_DIR still exists after mid-init failure (trap did not fire or missed it)"
+fi
+
+rm -rf "$PRA14C_SB"
+
+# ── PRA-14d: settings.local.json rollback — hooks stripped when setup fails after injection ──
+# Verify: when setup-deepwork.sh fails AFTER writing hook entries to settings.local.json,
+# the EXIT trap removes only the deepwork-instance entries (not other hooks) and leaves the
+# file consistent. Uses a fake profile-lib.sh to force failure after the injection step.
+echo ""
+echo "── PRA-14d: settings.local.json rollback — hooks stripped on post-injection failure ──"
+
+PRA14D_SB=$(mktemp -d)
+git -C "$PRA14D_SB" init -q
+git -C "$PRA14D_SB" commit --allow-empty -m "init" -q
+
+# Seed settings.local.json with an unrelated hook block (sentinel: must survive rollback)
+mkdir -p "${PRA14D_SB}/.claude"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo sentinel"}],"matcher":"Bash","_other_plugin":true}]}}\n' \
+  > "${PRA14D_SB}/.claude/settings.local.json"
+
+# Copy plugin scripts; replace profile-lib.sh with one that exits 1 (forces failure after injection)
+PRA14D_SCRIPTS="${PRA14D_SB}/plugins/deepwork/scripts"
+mkdir -p "$PRA14D_SCRIPTS"
+cp -r "${PLUGIN_ROOT}/scripts/." "$PRA14D_SCRIPTS/"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${PRA14D_SCRIPTS}/profile-lib.sh"
+
+PRA14D_SETUP="${PRA14D_SCRIPTS}/setup-deepwork.sh"
+PRA14D_OUT=$(CLAUDE_PLUGIN_ROOT="${PRA14D_SB}/plugins/deepwork" CLAUDE_PROJECT_DIR="$PRA14D_SB" \
+  bash "$PRA14D_SETUP" "test goal pra14d" 2>&1)
+PRA14D_RC=$?
+
+# Should exit non-zero
+if [[ "$PRA14D_RC" -ne 0 ]]; then
+  _pass "PRA-14d: setup exits non-zero after profile-lib.sh failure (exit=${PRA14D_RC})"
+else
+  _fail "PRA-14d: setup-deepwork should have exited non-zero, got 0"
+fi
+
+# settings.local.json must exist (not destroyed, rollback is surgical)
+if [[ -f "${PRA14D_SB}/.claude/settings.local.json" ]]; then
+  _pass "PRA-14d: settings.local.json still present after rollback"
+else
+  _fail "PRA-14d: settings.local.json missing — rollback should not delete the file"
+fi
+
+# No deepwork hook blocks should remain (rollback stripped them)
+PRA14D_DW_BLOCKS=$(jq '[.. | objects | select(._deepwork_instance)] | length' \
+  "${PRA14D_SB}/.claude/settings.local.json" 2>/dev/null || echo "-1")
+if [[ "$PRA14D_DW_BLOCKS" -eq 0 ]]; then
+  _pass "PRA-14d: no deepwork hook blocks remain after rollback"
+else
+  _fail "PRA-14d: ${PRA14D_DW_BLOCKS} deepwork hook block(s) remain after rollback (expected 0)"
+fi
+
+# Sentinel (unrelated hook) must survive
+PRA14D_SENTINEL=$(jq '.hooks.PreToolUse // [] | map(select(._other_plugin == true)) | length' \
+  "${PRA14D_SB}/.claude/settings.local.json" 2>/dev/null || echo "-1")
+if [[ "$PRA14D_SENTINEL" -gt 0 ]]; then
+  _pass "PRA-14d: unrelated hook sentinel preserved after rollback"
+else
+  _fail "PRA-14d: unrelated hook sentinel missing after rollback — rollback was not surgical"
+fi
+
+rm -rf "$PRA14D_SB"
+
+# ── PRA-15: early git-repo check — fail with clear error when not in a git repo ──
+echo ""
+echo "── PRA-15: early git-repo check — not-a-git-repo gives clear error ──"
+
+PRA15_DIR="/tmp/no-git-here-$$"
+mkdir -p "$PRA15_DIR"
+
+PRA15_SETUP="${PLUGIN_ROOT}/scripts/setup-deepwork.sh"
+PRA15_OUT=$(CLAUDE_PROJECT_DIR="$PRA15_DIR" bash "$PRA15_SETUP" "test goal pra15" 2>&1)
+PRA15_RC=$?
+
+_assert_exit "PRA-15: non-zero exit outside git repo" "1" "$PRA15_RC"
+_assert_contains "PRA-15: error message mentions git repository" "git repository" "$PRA15_OUT"
+
+# No instance dir should have been created
+PRA15_INST_COUNT=$(find "${PRA15_DIR}/.claude/deepwork" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PRA15_INST_COUNT" -eq 0 ]]; then
+  _pass "PRA-15: no INSTANCE_DIR created when not in a git repo"
+else
+  _fail "PRA-15: INSTANCE_DIR was created despite not being in a git repo"
+fi
+
+rm -rf "$PRA15_DIR"
+
+# ── PRA-15b: SETTINGS_LOCAL anchoring — settings.local.json lands under CLAUDE_PROJECT_DIR, not cwd ──
+echo ""
+echo "── PRA-15b: settings.local.json anchored to CLAUDE_PROJECT_DIR, not cwd ──"
+
+PRA15B_PROJECT=$(mktemp -d)
+PRA15B_CWD=$(mktemp -d)
+
+# Minimal git repo in project dir
+git -C "$PRA15B_PROJECT" init -q
+git -C "$PRA15B_PROJECT" commit --allow-empty -m "init" -q
+
+# Run setup from a DIFFERENT directory (PRA15B_CWD), with CLAUDE_PROJECT_DIR pointing at project
+PRA15B_OUT=$(cd "$PRA15B_CWD" && CLAUDE_PROJECT_DIR="$PRA15B_PROJECT" \
+  bash "${PLUGIN_ROOT}/scripts/setup-deepwork.sh" "test pra15b goal" 2>&1)
+# setup may fail or succeed; we only care about where it tried to write settings.local.json
+
+# Check: settings.local.json (or its tmp) must NOT land under cwd
+if find "$PRA15B_CWD" -name "settings.local.json" -o -name "settings.local.json.tmp.*" 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: settings.local.json fragment found under cwd (${PRA15B_CWD}) — not anchored to CLAUDE_PROJECT_DIR"
+else
+  _pass "PRA-15b: no settings.local.json fragment under cwd — correctly anchored to CLAUDE_PROJECT_DIR"
+fi
+
+# If setup created an instance, verify its .claude dir is under PROJECT_DIR, not cwd
+if find "$PRA15B_CWD/.claude" -maxdepth 0 -type d 2>/dev/null | grep -q .; then
+  _fail "PRA-15b: .claude dir was created under cwd — SETTINGS_LOCAL not anchored"
+else
+  _pass "PRA-15b: .claude dir NOT created under cwd"
+fi
+
+rm -rf "$PRA15B_PROJECT" "$PRA15B_CWD"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

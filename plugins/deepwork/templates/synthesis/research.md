@@ -1,7 +1,7 @@
 # Research Synthesis Template
 
 **Kind**: research
-**Invocation**: `/deepwork --kind research "..."` or goal matches `/\b(investigate|research|explore)\b/i`
+**Invocation**: `/deepwork "..."` when goal matches `/\b(investigate|research|explore)\b/i`
 **Mode**: plan mode only — no execute phase. This template is never consumed by execute mode.
 
 ---
@@ -119,7 +119,7 @@ For each question that the investigation opened but did not close:
 
 ## Notes for SYNTHESIZE phase
 
-- `state.kind = "research"` triggers this template.
+- This template is selected when goal keywords match `/\b(investigate|research|explore)\b/i`.
 - Execute mode is NOT invoked after a research session completes. The deliverable is the `proposals/v<N>.md` findings report.
-- If the user subsequently needs an implementation plan from the findings, they should invoke `/deepwork --kind impl-plan "..."` with the research output as a starting point.
-- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a findings report in its own format (§9.4 degrade path).
+- If the user subsequently needs an implementation plan from the findings, start a new deepwork session using the research output as a starting point.
+- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a findings report in its own format.

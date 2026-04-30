@@ -1,4 +1,5 @@
 ---
+name: deepwork-reconcile
 description: "Rebuild state.json from events.jsonl — full replay with hash-chain validation"
 allowed-tools: ["Bash", "Read", "Glob"]
 ---
@@ -17,14 +18,14 @@ Rebuild the active session's `state.json` from its event log (`events.jsonl`) us
 
 1. Locate the active instance state file:
 ```
-Glob: .claude/deepwork/*/state.json
+Glob: ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json
 ```
 If no file is found, report "No active deepwork session" and stop.
 
 2. Run the replay:
 ```bash
-bash plugins/deepwork/scripts/state-transition.sh replay \
-  --state-file .claude/deepwork/<instance-id>/state.json
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-transition.sh" replay \
+  --state-file "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<instance-id>/state.json"
 ```
 
 The `replay` subcommand:

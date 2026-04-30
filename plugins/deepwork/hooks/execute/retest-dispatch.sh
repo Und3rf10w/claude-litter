@@ -16,8 +16,12 @@
 # script and discards async stdout (cli_formatted_2.1.116.js:565249-565328) — all
 # results must go to test-results.jsonl on disk.
 #
-# Atomicity: results written via >> (O_APPEND semantics) to test-results.jsonl.
-# If flock is available, it is used for additional safety on concurrent writes.
+# Atomicity: appends to test-results.jsonl rely on POSIX O_APPEND semantics.
+# Concurrent `>>` writes from sibling hook processes are guaranteed by the kernel
+# to be atomic at the per-syscall level, which preserves the JSONL one-record-per-line
+# invariant. The auxiliary _acquire_lock around the append is belt-and-suspenders
+# only — see empirical_results.E5.md (zero corruptions across 6000 concurrent
+# appends with payloads up to 50 KB on macOS APFS).
 #
 # Fail-open on any error — never exit 2 from this hook.
 
@@ -106,9 +110,9 @@ ENTRY=$(jq -n \
   }' 2>/dev/null)
 
 if [[ -n "$ENTRY" ]]; then
-  if command -v flock >/dev/null 2>&1; then
-    (flock -x 200; printf '%s\n' "$ENTRY" >> "$TEST_RESULTS") 200>"${TEST_RESULTS}.lock" 2>/dev/null || \
-      printf '%s\n' "$ENTRY" >> "$TEST_RESULTS"
+  if _acquire_lock "${TEST_RESULTS}.lock" 2>/dev/null; then
+    printf '%s\n' "$ENTRY" >> "$TEST_RESULTS"
+    _release_lock "${TEST_RESULTS}.lock"
   else
     printf '%s\n' "$ENTRY" >> "$TEST_RESULTS"
   fi

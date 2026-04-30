@@ -70,36 +70,100 @@ _key_in_execute_sub() { printf '%s\n' "$EXECUTE_SUB_KEYS"  | grep -qxF "$1"; }
 
 # ── Exemption list — one prefix per line; prefix-matched against bare path ──
 #
-# [hook-input]       Hook envelope fields: PostToolUse/PreToolUse/Stop input JSON, not state.json
-# [task]             Team-overlord task object fields
-# [pending]          pending-change.json fields (non-state runtime file)
-# [test-result]      test-results.jsonl entry fields written by retest-dispatch.sh, not state.json
-# [incident]         incidents.jsonl / discoveries.jsonl internal objects
-# [config]           Non-state config file fields (frontmatter-backfill config, etc.)
-# [state-extra]      Fields written to state.json by setup but not in declarative schema
-# [other]            Other cross-section refs not in state.json
-EXEMPT_PREFIXES="session_id
+# Lines beginning with `#` are treated as comments (skipped by _is_exempt).
+# Use category headers to group entries by rationale; every entry must fall
+# under one of the documented categories below.
+#
+# Category legend:
+#   [hook-input]   Hook envelope fields: PostToolUse/PreToolUse/Stop input JSON,
+#                  TeammateIdle/TaskCreated/TaskCompleted/TaskUpdate payloads,
+#                  PostToolUseFailure (.error/.is_interrupt/.tool_response.*),
+#                  CC env vars (_deepwork_instance) — not state.json.
+#   [hook-output]  CC hook output schema fields (hookSpecificOutput.*) —
+#                  written to stdout, not state.json.
+#   [task]         Team-overlord task object fields (id/owner/status/subject/
+#                  metadata/blockedBy/etc.) read from ~/.claude/tasks/*.json,
+#                  not state.json.
+#   [pending]      pending-change.json fields (plan_section/files/rationale/
+#                  no_test_reason/change_id) — non-state runtime file.
+#   [test-result]  test-results.jsonl entry fields (passed_count/failed_count/
+#                  flaky_suspected/duration_ms/stdout_tail/stderr_tail/etc.)
+#                  written by retest-dispatch.sh, not state.json.
+#   [incident]     incidents.jsonl / discoveries.jsonl internal objects.
+#   [config]       Non-state config file fields: frontmatter-backfill config,
+#                  hook-manifest.json (hooks/Stop/matcher/event/etc.).
+#   [state-extra]  Fields written to state.json by setup-deepwork.sh and the
+#                  state-transition.sh init/replay paths but not declared in
+#                  the partial state-schema.json (which is a minimal spec
+#                  of declaratively-managed fields, not exhaustive).
+#                  This includes: instance_id, session_id, team_name, goal,
+#                  phase, frontmatter_schema_version, event_head, last_updated,
+#                  state_integrity_hash (alias integrity_hash), feature flags
+#                  (batch_gate_enabled, execute.scope_gate_strict), and
+#                  change_log/test_manifest entry sub-fields.
+#   [event-log]    events.jsonl entry fields (event_id/event_type/payload/
+#                  prev_event_hash) — append-only log, not state.json.
+#   [literal]      Bash-grep false positives: regex literals, file extensions,
+#                  internal vars (md, jq_path), placeholder X used in tests.
+#   [other]        Cross-plugin references (_other_plugin) and sentinels
+#                  that don't fit a more specific category.
+#
+# Each entry below is filed under the category prefixed in the leading `#` line.
+# Lines beginning with `# [` are category section markers (no semantic effect).
+EXEMPT_PREFIXES="
+# [hook-input] PreToolUse / PostToolUse / Stop / SessionStart envelope
+session_id
 tool_name
 tool_input
 tool_result
+tool_use_id
+tool_calls
+tool_response.data.file_path
+tool_response.data.interrupted
+tool_response.data.stderr
+tool_response.data.stdout
 stop_hook_active
 transcript_path
+is_interrupt
+error
+# [hook-input] TeammateIdle / TaskCreated / TaskUpdate / TaskCompleted envelope
 agent_id
 task_id
 task_subject
 task_description
-team_name
 teammate_name
+# [hook-input] CC-injected env / instance hints
+_deepwork_instance
+
+# [hook-output] CC hookSpecificOutput stdout schema (PreToolUse / SessionStart / PermissionRequest)
+hookSpecificOutput.additionalContext
+hookSpecificOutput.hookEventName
+hookSpecificOutput.permissionDecision
+hookSpecificOutput.permissionDecisionReason
+hookSpecificOutput.watchPaths
+
+# [task] Team-overlord task object fields
 owner
 status
 subject
 taskId
 id
 metadata
+artifact
+artifact_type
+bar_id
+cross_check_required
+scope_items
+scope_strict
+
+# [pending] pending-change.json fields
 change_id
 plan_section
 files
+rationale
 no_test_reason
+
+# [test-result] test-results.jsonl entry fields written by retest-dispatch.sh
 command
 exit_code
 passed_count
@@ -110,24 +174,23 @@ covering_files
 stdout_tail
 stderr_tail
 timestamp
-current_version
-file_path
+last_result
+last_run_at
+
+# [incident] incidents.jsonl / discoveries.jsonl entry fields
 event
 rule
 source
+source_file
 incident_ref
 ref
 type
 result
 resolution
-version
-n
-k
-idx
-i
-ts
-fp
-sh
+reason
+banner_type
+
+# [config] hook-manifest.json + frontmatter-backfill config + setup snapshots
 hooks
 Stop
 field
@@ -138,39 +201,61 @@ instance_depth
 template
 carve_outs
 carve_out_rel_paths
-artifact_type
-elapsed_ms
-blocked
-tool
-last_updated
+current_version
 setup_flags_snapshot
-verdict
-bar_id
-source_of_truth
-content
-path
-plan
-mode
+
+# [state-extra] state.json fields written by setup/init/replay but not in declarative schema
 instance_id
 team_name
 bar
+goal
+mode
+phase
+plan
 scope
 wave
-override_reason
-cross_check_required
-commit_sha
-scope_items
-scope_strict
-artifact
-goal
+last_updated
 frontmatter_schema_version
+integrity_hash
+override_reason
+commit_sha
+verdict
+critic_verdict
+merged_at
+batch_gate_enabled
+execute.scope_gate_strict
+source_of_truth
+content
+path
+file_path
+
+# [event-log] events.jsonl entry fields (append-only log, not state.json)
 event_head
 event_id
 event_type
 prev_event_hash
 payload
+
+# [literal] Bash-grep false positives: regex literals / file extensions / internal vars / placeholders
+n
+k
+idx
+i
+ts
+fp
+sh
+md
+jq_path
+tool
+elapsed_ms
+blocked
 custom_e2e
-X"
+custom_field
+X
+
+# [other] Cross-plugin schema references and sentinels
+_other_plugin
+"
 
 _is_exempt() {
   local p="$1"
@@ -178,7 +263,9 @@ _is_exempt() {
   local pbare="${p//\[\]/}"
   local ex
   while IFS= read -r ex; do
+    # Skip blank lines and category headers (any line starting with `#`).
     [[ -z "$ex" ]] && continue
+    [[ "$ex" == \#* ]] && continue
     if [[ "$pbare" == "$ex" ]] || [[ "$pbare" == "${ex}."* ]]; then
       return 0
     fi

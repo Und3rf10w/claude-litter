@@ -59,19 +59,29 @@ case "$HOOK_EVENT_NAME" in
     # For Bash: only proceed if a snapshot exists (pre-leg fired for this command)
     if [[ "$TOOL_NAME" == "Bash" ]]; then
       [[ -f "$_SNAPSHOT" ]] || exit 0
-      [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
+      # state.json gone after archive_state (mv → state.archived.json): clean up orphan snapshot.
+      if [[ ! -f "${INSTANCE_DIR}/state.json" ]]; then
+        rm -f "$_SNAPSHOT" 2>/dev/null || true
+        exit 0
+      fi
       # Only run if command mentioned state.json
       BASH_CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
       printf '%s' "$BASH_CMD" | grep -q 'state\.json' || exit 0
     fi
 
-    [[ -f "$_SNAPSHOT" ]] || exit 0
     [[ -f "${INSTANCE_DIR}/state.json" ]] || exit 0
     [[ -f "$LOG_FILE" ]] || exit 0
 
     # ── banners[] schema validation (post-write revert) ─────────────────────
     # Validate banners[] in the committed state.json. On violation, revert from
     # snapshot and log a blocker line to log.md.
+    #
+    # Banner validation runs regardless of snapshot availability (the snapshot is
+    # only needed for revert, not for the schema check itself). This closes the
+    # PostToolBatch shadow-period gap: during a parallel batch, batch-gate.sh
+    # (PostToolBatch) may rm the snapshot before this PostToolUse handler checks
+    # [[ -f "$_SNAPSHOT" ]]. Moving the validation above the snapshot guard ensures
+    # the check always fires even if the snapshot was already cleaned up.
     BANNER_COUNT=$(jq -r '(.banners // []) | length' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "0")
     if [[ -n "$BANNER_COUNT" && "$BANNER_COUNT" != "0" ]]; then
       VALIDATION_RESULT=$(jq -r '
@@ -114,26 +124,52 @@ case "$HOOK_EVENT_NAME" in
       ' "${INSTANCE_DIR}/state.json" 2>/dev/null || echo "")
 
       if [[ -n "$VALIDATION_RESULT" ]]; then
-        # Capture the most recent event_id before overwriting state.json; the bad
-        # write bypassed state-transition.sh so events.jsonl already points to the
-        # last good event — that is the event we're reverting to.
-        _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
-          | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
-        # Revert state.json from snapshot
-        cp "$_SNAPSHOT" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
-        # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
-        STATE_FILE="${INSTANCE_DIR}/state.json" \
-          "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
-          --reason "banner_schema_violation" \
-          --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
-        # Append blocker line to log.md
+        # F-C1 (v5-final): the snapshot may already be absent if a sibling hook
+        # (e.g. batch-gate during the PostToolBatch shadow window) cleaned it up
+        # first. Without the [[ -f $_SNAPSHOT ]] guard, the cp silently no-ops
+        # (2>/dev/null || true) but emit_revert_event still appends a
+        # state_reverted record — leaving events.jsonl claiming a revert that
+        # never happened. Guard the entire revert block on snapshot presence;
+        # warn to stderr and skip the revert+event when it is missing so the
+        # auto-healing path (next state mutation re-stamps state.event_head)
+        # remains the corrective action.
+        if [[ -f "$_SNAPSHOT" ]]; then
+          # Capture the most recent event_id before overwriting state.json; the bad
+          # write bypassed state-transition.sh so events.jsonl already points to the
+          # last good event — that is the event we're reverting to.
+          _REVERT_TO_EVENT=$(tail -1 "${INSTANCE_DIR}/events.jsonl" 2>/dev/null \
+            | jq -r '.event_id // "unknown"' 2>/dev/null || echo "unknown")
+          # Revert state.json from snapshot
+          cp "$_SNAPSHOT" "${INSTANCE_DIR}/state.json" 2>/dev/null || true
+          # Emit a state_reverted event so events.jsonl/state.json stay in sync for replay
+          STATE_FILE="${INSTANCE_DIR}/state.json" \
+            "${_PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+            --reason "banner_schema_violation" \
+            --reverted_to_event "$_REVERT_TO_EVENT" 2>/dev/null || true
+          # Clean up snapshot — must happen on this early-return revert path because
+          # the normal cleanup at line 167 is never reached.
+          rm -f "$_SNAPSHOT" 2>/dev/null || true
+          # Print error to stderr (non-blocking — revert is the corrective action)
+          printf 'state-drift-marker: banners[] schema violation — reverted state.json\n%s\n' \
+            "$VALIDATION_RESULT" >&2
+        else
+          # No snapshot to revert from. Do NOT emit a state_reverted event:
+          # claiming a revert without performing one corrupts the audit trail.
+          printf 'state-drift-marker: banners[] schema violation but snapshot absent (%s) — skipping revert; no state_reverted event emitted\n%s\n' \
+            "$_SNAPSHOT" "$VALIDATION_RESULT" >&2
+        fi
+        # Append blocker line to log.md regardless of revert path
         BLOCKER_LINE="> [banner-corruption ${NOW}] ${VALIDATION_RESULT}"
         printf '%s\n' "$BLOCKER_LINE" >> "$LOG_FILE" 2>/dev/null || true
-        # Print error to stderr (non-blocking — revert is the corrective action)
-        printf 'state-drift-marker: banners[] schema violation — reverted state.json\n%s\n' \
-          "$VALIDATION_RESULT" >&2
         exit 0
       fi
+    fi
+
+    # Phase/bar diff requires the snapshot; skip if it was already cleaned up
+    # (e.g., batch-gate fired first in the PostToolBatch shadow period).
+    if [[ ! -f "$_SNAPSHOT" ]]; then
+      printf 'state-drift-marker: snapshot absent (%s) — skipping phase/bar diff\n' "$_SNAPSHOT" >&2
+      exit 0
     fi
 
     # Diff phase field

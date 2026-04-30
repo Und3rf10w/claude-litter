@@ -72,7 +72,8 @@ if [[ "$DRIFT" == "true" ]]; then
 fi
 
 # GAP-10 mitigation: unconditionally block writes to execute log files (extended list)
-for _protected in "test-results.jsonl" "change_log.jsonl" "rollback_log.jsonl" "discoveries.jsonl" "pending-change.json" "log.md" "hook-timing.jsonl" "incidents.jsonl" "metrics-violations.jsonl"; do
+# change_log and rollback_log are state.json fields, not files — excluded from this list.
+for _protected in "test-results.jsonl" "discoveries.jsonl" "pending-change.json" "log.md" "hook-timing.jsonl" "incidents.jsonl" "metrics-violations.jsonl"; do
   if [[ "$FILE_PATH" == "${INSTANCE_DIR}/${_protected}" ]]; then
     printf 'BLOCKED: writes to execute log file %s are not permitted (GAP-10 audit trail protection).\n' "$_protected" >&2
     exit 2

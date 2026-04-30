@@ -1,7 +1,7 @@
 # Review Synthesis Template
 
 **Kind**: review
-**Invocation**: `/deepwork --kind review "..."`
+**Invocation**: `/deepwork "..."` when goal matches a code review request
 **Mode**: plan mode only — no execute phase. This template is never consumed by execute mode.
 
 ---
@@ -120,7 +120,7 @@ For APPROVE-WITH-CHANGES or REQUEST-CHANGES dispositions, list the specific cond
 
 ## Notes for SYNTHESIZE phase
 
-- `state.kind = "review"` triggers this template.
+- This template is selected when the session goal is a code review request.
 - Execute mode is NOT invoked after a review session. The deliverable is a code-review report only.
-- If the review disposition is REQUEST-CHANGES and the changes are substantial, a separate `/deepwork --kind impl-plan "..."` session can consume this review as a starting point for the remediation plan.
-- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes findings in its own format (§9.4 degrade path).
+- If the review disposition is REQUEST-CHANGES and the changes are substantial, a separate deepwork session can consume this review as a starting point for the remediation plan.
+- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes findings in its own format.

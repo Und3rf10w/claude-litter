@@ -254,6 +254,656 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ── (i) Archive cycle: orphan snapshots cleaned by archive_state ──
+# Regression for W18-b: PreToolUse Bash snapshots state.json when archive_state runs.
+# After mv state.json→state.archived.json, PostToolUse can't find the instance (glob
+# only matches state.json), so state-transition.sh archive_state itself must remove
+# any .state-snapshot* files to prevent orphans accumulating in the instance dir.
+echo ""
+echo "── T11-i: archive_state → orphan snapshots cleaned up ──"
+
+ARCHIVE_SB=$(mktemp -d)
+trap 'rm -rf "$ARCHIVE_SB"' EXIT
+export CLAUDE_PROJECT_DIR="$ARCHIVE_SB"
+ARCH_ID="cdef0123"
+ARCH_DIR="$ARCHIVE_SB/.claude/deepwork/$ARCH_ID"
+mkdir -p "$ARCH_DIR"
+ARCH_SID="test-archive-$(date +%s)"
+ARCH_STATE="${ARCH_DIR}/state.json"
+
+STATE_FILE="$ARCH_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$ARCH_SID","phase":"done","team_name":"test-team"}
+EOF
+
+# Simulate two per-tool snapshots (as PreToolUse:Bash would create)
+ARCH_SNAP1="${ARCH_DIR}/.state-snapshot.tool-abc.json"
+ARCH_SNAP2="${ARCH_DIR}/.state-snapshot.tool-def.json"
+cp "$ARCH_STATE" "$ARCH_SNAP1"
+cp "$ARCH_STATE" "$ARCH_SNAP2"
+
+# Run archive_state — should clean snapshots as part of the operation
+_ARCH_RC=$(STATE_FILE="$ARCH_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1; echo $?)
+_assert_exit "T11-i: archive_state exits 0" "0" "$_ARCH_RC"
+
+if [[ -f "$ARCH_SNAP1" ]] || [[ -f "$ARCH_SNAP2" ]]; then
+  printf 'FAIL: T11-i: orphan snapshot(s) NOT cleaned up after archive_state\n' >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-i: orphan snapshots cleaned up by archive_state\n'
+  PASS=$((PASS + 1))
+fi
+
+if [[ -f "${ARCH_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-i: state.archived.json exists\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-i: state.archived.json missing\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# ── (j) Banner violation revert: snapshot cleaned up on early-return revert path ──
+# Regression for W18-b: when banners[] validation fails, state-drift-marker.sh reverts
+# state.json from snapshot then exits early — the snapshot must be removed before exit.
+echo ""
+echo "── T11-j: banner violation revert → snapshot cleaned up on early exit ──"
+
+BANNER_SB=$(mktemp -d)
+trap 'rm -rf "$BANNER_SB"' EXIT
+export CLAUDE_PROJECT_DIR="$BANNER_SB"
+BAN_ID="ef012345"
+BAN_DIR="$BANNER_SB/.claude/deepwork/$BAN_ID"
+mkdir -p "$BAN_DIR"
+BAN_SID="test-banner-$(date +%s)"
+BAN_STATE="${BAN_DIR}/state.json"
+BAN_EVENTS="${BAN_DIR}/events.jsonl"
+BAN_LOG="${BAN_DIR}/log.md"
+touch "$BAN_LOG"
+
+STATE_FILE="$BAN_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$BAN_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Snapshot = good state (no banners)
+BAN_SNAP="${BAN_DIR}/.state-snapshot.ban-tool-id.json"
+cp "$BAN_STATE" "$BAN_SNAP"
+
+# Write a bad banner (missing required fields) directly into state.json
+printf '%s\n' '{"session_id":"'"$BAN_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}' \
+  > "$BAN_STATE"
+
+# Run PostToolUse:Write — banner violation should trigger revert and clean up snapshot
+_BAN_RC=$(printf '%s' \
+  "{\"session_id\":\"$BAN_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"ban-tool-id\",\"tool_input\":{\"file_path\":\"$BAN_STATE\"}}" \
+  | INSTANCE_DIR="$BAN_DIR" LOG_FILE="$BAN_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" >/dev/null 2>&1; echo $?)
+_assert_exit "T11-j: exits 0 after banner violation revert" "0" "$_BAN_RC"
+
+if [[ -f "$BAN_SNAP" ]]; then
+  printf 'FAIL: T11-j: snapshot NOT cleaned up after banner violation revert at %s\n' "$BAN_SNAP" >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-j: snapshot cleaned up after banner violation revert\n'
+  PASS=$((PASS + 1))
+fi
+
+# Snapshot cleanup restores original CLAUDE_PROJECT_DIR for remaining tests
+export CLAUDE_PROJECT_DIR="$SANDBOX"
+
+# ── (k) archive_state: pending-change.json absent after archive ──────────────
+echo ""
+echo "── T11-k: archive_state → pending-change.json absent after archive ──"
+
+T11K_SB=$(mktemp -d)
+T11K_ID="bc234567"
+T11K_DIR="$T11K_SB/.claude/deepwork/$T11K_ID"
+mkdir -p "$T11K_DIR"
+T11K_STATE="${T11K_DIR}/state.json"
+T11K_PENDING="${T11K_DIR}/pending-change.json"
+
+STATE_FILE="$T11K_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"t11k-session","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Create a pending-change.json to simulate mid-session state
+printf '{"change":"test"}\n' > "$T11K_PENDING"
+
+INSTANCE_DIR="$T11K_DIR" STATE_FILE="$T11K_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1
+_T11K_RC=$?
+_assert_exit "T11-k: archive_state exits 0" "0" "$_T11K_RC"
+
+if [[ ! -f "$T11K_PENDING" ]]; then
+  printf 'pass: T11-k: pending-change.json removed after archive\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-k: pending-change.json still present after archive\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ -f "${T11K_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-k: state.archived.json present\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-k: state.archived.json missing\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11K_SB"
+
+# ── (l) archive_state rollback: events.jsonl mv failure → state.json NOT archived ──
+echo ""
+echo "── T11-l: archive_state rollback — events mv fails → state.json remains ──"
+
+T11L_SB=$(mktemp -d)
+T11L_ID="cd345678"
+T11L_DIR="$T11L_SB/.claude/deepwork/$T11L_ID"
+mkdir -p "$T11L_DIR"
+T11L_STATE="${T11L_DIR}/state.json"
+T11L_EVENTS_ARCHIVE="${T11L_DIR}/events.archived.jsonl"
+
+STATE_FILE="$T11L_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"t11l-session","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Ensure events.jsonl is created (stamp_last_updated emits an event)
+INSTANCE_DIR="$T11L_DIR" STATE_FILE="$T11L_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Block mv events.jsonl → events.archived.jsonl by placing a non-writable directory
+# at the destination path. On macOS, mv src dir/ moves src INTO the dir (not replacing it),
+# so we chmod 555 to prevent the write into it, forcing mv to fail.
+mkdir "$T11L_EVENTS_ARCHIVE"
+chmod 555 "$T11L_EVENTS_ARCHIVE"
+
+INSTANCE_DIR="$T11L_DIR" STATE_FILE="$T11L_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1
+_T11L_RC=$?
+chmod 755 "$T11L_EVENTS_ARCHIVE"
+
+# archive_state should fail (exit non-zero) and roll back state.json
+if [[ $_T11L_RC -ne 0 ]]; then
+  printf 'pass: T11-l: archive_state exits non-zero on events mv failure\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: archive_state should exit non-zero but exited 0\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ -f "$T11L_STATE" ]]; then
+  printf 'pass: T11-l: state.json rolled back (present after failed archive)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: state.json missing — rollback did not restore it\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+if [[ ! -f "${T11L_DIR}/state.archived.json" ]]; then
+  printf 'pass: T11-l: state.archived.json absent (not half-archived)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-l: state.archived.json present — half-archived state\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11L_SB"
+
+# ── (m) banner validation gap: snapshot absent → banner check still fires ────
+# Regression for W19-c Fix 2: PostToolBatch shadow period. When batch-gate cleans
+# the per-tool snapshot before state-drift-marker's PostToolUse handler runs,
+# banner validation must still fire (it doesn't need the snapshot for the check).
+echo ""
+echo "── T11-m: banner validation fires even without snapshot (shadow-period gap) ──"
+
+T11M_SB=$(mktemp -d)
+T11M_ID="de456789"
+T11M_DIR="$T11M_SB/.claude/deepwork/$T11M_ID"
+mkdir -p "$T11M_DIR"
+T11M_SID="t11m-session-$(date +%s)"
+T11M_STATE="${T11M_DIR}/state.json"
+T11M_LOG="${T11M_DIR}/log.md"
+touch "$T11M_LOG"
+
+STATE_FILE="$T11M_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11M_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Write corrupt banners[] directly (no snapshot present — simulating batch-gate cleanup)
+printf '%s\n' '{"session_id":"'"$T11M_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}' \
+  > "$T11M_STATE"
+
+# No snapshot file present (simulates batch-gate having cleaned it)
+T11M_SNAP="${T11M_DIR}/.state-snapshot.t11m-tool-id.json"
+rm -f "$T11M_SNAP"
+
+_T11M_RC=$(printf '%s' \
+  "{\"session_id\":\"$T11M_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"t11m-tool-id\",\"tool_input\":{\"file_path\":\"$T11M_STATE\"}}" \
+  | CLAUDE_PROJECT_DIR="$T11M_SB" LOG_FILE="$T11M_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" >/dev/null 2>&1; echo $?)
+_assert_exit "T11-m: exits 0 even without snapshot" "0" "$_T11M_RC"
+
+# Banner validation should have logged to log.md (blocker line)
+T11M_LOG_CONTENT=$(cat "$T11M_LOG" 2>/dev/null || echo "")
+if printf '%s' "$T11M_LOG_CONTENT" | grep -q "banner-corruption"; then
+  printf 'pass: T11-m: banner-corruption logged to log.md without snapshot\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-m: banner-corruption NOT logged to log.md (validation skipped?)\n' >&2
+  printf '  log content: %s\n' "$T11M_LOG_CONTENT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11M_SB"
+
+# ── (n) emit_revert_event stamps event_head atomically (W20-c regression) ──
+# Regression for W20-c: emit_revert_event must stamp state.json.event_head to
+# the new state_reverted event's hash inside the events.jsonl lock, so that
+# integrity-always-gate never sees a mismatch after a banner-violation revert.
+echo ""
+echo "── T11-n: emit_revert_event stamps event_head + hash atomically (W20-c) ──"
+
+T11N_SB=$(mktemp -d)
+T11N_ID="fe567890"
+T11N_DIR="$T11N_SB/.claude/deepwork/$T11N_ID"
+mkdir -p "$T11N_DIR"
+T11N_SID="t11n-session-$(date +%s)"
+T11N_STATE="${T11N_DIR}/state.json"
+T11N_EVENTS="${T11N_DIR}/events.jsonl"
+
+STATE_FILE="$T11N_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11N_SID","phase":"synthesize","team_name":"test-team"}
+EOF
+
+# Seed events.jsonl and build up a proper event_head
+INSTANCE_DIR="$T11N_DIR" STATE_FILE="$T11N_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Record pre-revert event_head and events tail (snapshot's last event)
+T11N_PRE_HEAD=$(jq -r '.event_head // ""' "$T11N_STATE" 2>/dev/null)
+T11N_REVERT_TO=$(tail -1 "$T11N_EVENTS" | jq -r '.event_id // "unknown"' 2>/dev/null)
+
+# Call emit_revert_event (simulates state-drift-marker after snapshot restore)
+INSTANCE_DIR="$T11N_DIR" STATE_FILE="$T11N_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+  --reason "banner_schema_violation" \
+  --reverted_to_event "$T11N_REVERT_TO" >/dev/null 2>&1
+_T11N_REVERT_RC=$?
+
+if [[ $_T11N_REVERT_RC -eq 0 ]]; then
+  printf 'pass: T11-n: emit_revert_event exits 0\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: emit_revert_event exited %d (expected 0)\n' "$_T11N_REVERT_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assert state.json.event_head == SHA256 of the last events.jsonl line
+T11N_LAST_LINE=$(tail -1 "$T11N_EVENTS" 2>/dev/null)
+if command -v sha256sum >/dev/null 2>&1; then
+  T11N_ACTUAL_HEAD=$(printf '%s\n' "$T11N_LAST_LINE" | sha256sum | cut -d' ' -f1)
+else
+  T11N_ACTUAL_HEAD=$(printf '%s\n' "$T11N_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+fi
+T11N_STORED_HEAD=$(jq -r '.event_head // ""' "$T11N_STATE" 2>/dev/null)
+
+if [[ "$T11N_STORED_HEAD" == "$T11N_ACTUAL_HEAD" ]]; then
+  printf 'pass: T11-n: state.json.event_head matches events.jsonl tail hash after revert\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: event_head mismatch after emit_revert_event\n' >&2
+  printf '  state.event_head:       %s\n' "$T11N_STORED_HEAD" >&2
+  printf '  events.jsonl tail hash: %s\n' "$T11N_ACTUAL_HEAD" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assert integrity-always-gate logic passes post-revert (no mismatch block)
+_T11N_GATE_RC=0
+(
+  source "${PLUGIN_ROOT}/scripts/instance-lib.sh"
+  STATE_FILE="$T11N_STATE"
+  INSTANCE_DIR="$T11N_DIR"
+  _verify_event_head_or_block
+) 2>/dev/null
+_T11N_GATE_RC=$?
+
+if [[ $_T11N_GATE_RC -eq 0 ]]; then
+  printf 'pass: T11-n: _verify_event_head_or_block exits 0 after revert (no integrity block)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: _verify_event_head_or_block exits %d after revert — integrity block would fire\n' \
+    "$_T11N_GATE_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Also assert event_head changed from pre-revert (the stamp actually updated it)
+if [[ "$T11N_STORED_HEAD" != "$T11N_PRE_HEAD" ]]; then
+  printf 'pass: T11-n: event_head advanced past pre-revert value (stamp updated)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-n: event_head unchanged — stamp did not fire or event_head == pre-revert hash\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11N_SB"
+
+# ── (o) archive_state → state.archived.json carries accurate state_integrity_hash (W20-i) ──
+# Regression for W20-i: archive_state previously used _write_state_atomic which stamped
+# only event_head, leaving state_integrity_hash stale (covering pre-stamp content).
+# After the fix, _write_with_hash must produce a hash that matches _compute_integrity_hash
+# on the archived file content.
+echo ""
+echo "── T11-o: archive_state → state.archived.json has valid state_integrity_hash (W20-i) ──"
+
+T11O_SB=$(mktemp -d)
+T11O_ID="fg678901"
+T11O_DIR="$T11O_SB/.claude/deepwork/$T11O_ID"
+mkdir -p "$T11O_DIR"
+T11O_SID="t11o-session-$(date +%s)"
+T11O_STATE="${T11O_DIR}/state.json"
+T11O_ARCH="${T11O_DIR}/state.archived.json"
+
+STATE_FILE="$T11O_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11O_SID","phase":"done","team_name":"test-team"}
+EOF
+
+# Build up some event history so event_head is non-trivial
+INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+_T11O_RC=$(INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" archive_state >/dev/null 2>&1; echo $?)
+_assert_exit "T11-o: archive_state exits 0" "0" "$_T11O_RC"
+
+if [[ ! -f "$T11O_ARCH" ]]; then
+  printf 'FAIL: T11-o: state.archived.json not present\n' >&2
+  FAIL=$((FAIL + 1))
+else
+  printf 'pass: T11-o: state.archived.json present\n'
+  PASS=$((PASS + 1))
+
+  # Recompute integrity hash using _compute_integrity_hash from state-transition.sh.
+  # Source state-transition.sh in a subshell to access the internal helper directly.
+  T11O_STORED_HASH=$(jq -r '.state_integrity_hash // ""' "$T11O_ARCH" 2>/dev/null)
+  T11O_COMPUTED_HASH=$(
+    INSTANCE_DIR="$T11O_DIR" STATE_FILE="$T11O_ARCH" \
+      bash -c '
+        source "'"${PLUGIN_ROOT}/scripts/state-transition.sh"'" --_source_only 2>/dev/null || true
+        _compute_integrity_hash "'"$T11O_ARCH"'" 2>/dev/null
+      ' 2>/dev/null
+  ) || T11O_COMPUTED_HASH=""
+  # Fallback: replicate the projection inline if sourcing is not supported
+  if [[ -z "$T11O_COMPUTED_HASH" ]]; then
+    _T11O_SOT=$(jq -r '(.source_of_truth // []) | sort | tojson' "$T11O_ARCH" 2>/dev/null || echo "")
+    _T11O_SOT_DIGEST=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      _T11O_SOT_DIGEST=$(printf '%s\n' "$_T11O_SOT" | sha256sum | cut -d' ' -f1)
+    else
+      _T11O_SOT_DIGEST=$(printf '%s\n' "$_T11O_SOT" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    _T11O_PROJ=$(jq -c --arg sot_digest "$_T11O_SOT_DIGEST" '{
+      phase, team_name, instance_id, frontmatter_schema_version, started_at,
+      source_of_truth_digest: $sot_digest,
+      bar: ([.bar[]? | {id, verdict}] | sort_by(.id)),
+      execute_plan_drift_detected: .execute.plan_drift_detected,
+      execute_plan_hash: .execute.plan_hash
+    }' "$T11O_ARCH" 2>/dev/null)
+    if [[ -n "$_T11O_PROJ" ]]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        T11O_COMPUTED_HASH=$(printf '%s' "$_T11O_PROJ" | sha256sum | cut -d' ' -f1)
+      else
+        T11O_COMPUTED_HASH=$(printf '%s' "$_T11O_PROJ" | shasum -a 256 | cut -d' ' -f1)
+      fi
+    fi
+  fi
+
+  if [[ -n "$T11O_STORED_HASH" && "$T11O_STORED_HASH" == "$T11O_COMPUTED_HASH" ]]; then
+    printf 'pass: T11-o: state.archived.json.state_integrity_hash is accurate\n'
+    PASS=$((PASS + 1))
+  else
+    printf 'FAIL: T11-o: state_integrity_hash mismatch in archived file\n' >&2
+    printf '  stored:   %s\n' "$T11O_STORED_HASH" >&2
+    printf '  computed: %s\n' "$T11O_COMPUTED_HASH" >&2
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Also verify event_head in archived file matches the tail of events.archived.jsonl
+  T11O_EVENTS_ARCH="${T11O_DIR}/events.archived.jsonl"
+  if [[ -f "$T11O_EVENTS_ARCH" ]]; then
+    T11O_LAST_LINE=$(tail -1 "$T11O_EVENTS_ARCH")
+    T11O_LAST_HASH=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      T11O_LAST_HASH=$(printf '%s\n' "$T11O_LAST_LINE" | sha256sum | cut -d' ' -f1)
+    else
+      T11O_LAST_HASH=$(printf '%s\n' "$T11O_LAST_LINE" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    T11O_STORED_HEAD=$(jq -r '.event_head // ""' "$T11O_ARCH" 2>/dev/null)
+    if [[ "$T11O_STORED_HEAD" == "$T11O_LAST_HASH" ]]; then
+      printf 'pass: T11-o: state.archived.json.event_head matches events.archived.jsonl tail\n'
+      PASS=$((PASS + 1))
+    else
+      printf 'FAIL: T11-o: event_head mismatch in archived state\n' >&2
+      printf '  archived event_head:          %s\n' "$T11O_STORED_HEAD" >&2
+      printf '  events.archived.jsonl tail:   %s\n' "$T11O_LAST_HASH" >&2
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+fi
+
+rm -rf "$T11O_SB"
+
+# ── (p) emit_stamp_head lock contention → fail-closed skip + warn (W21 #3) ──
+# Regression for W21 #3: when state.json.lock cannot be acquired, emit_revert_event
+# must NOT proceed to write state.json, must NOT release the lock (which would rm
+# another process's lock dir on macOS mkdir-fallback), must emit a stderr warning,
+# and must still successfully append the state_reverted event to events.jsonl.
+echo ""
+echo "── T11-p: emit_stamp_head fails closed on state.json lock contention (W21 #3) ──"
+
+T11P_SB=$(mktemp -d)
+T11P_ID="aabbccdd"
+T11P_DIR="$T11P_SB/.claude/deepwork/$T11P_ID"
+mkdir -p "$T11P_DIR"
+T11P_SID="t11p-session-$(date +%s)"
+T11P_STATE="${T11P_DIR}/state.json"
+T11P_LOCK="${T11P_STATE}.lock"
+
+STATE_FILE="$T11P_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11P_SID","phase":"explore","team_name":"test-team"}
+EOF
+
+# Generate a baseline event so prev_event_hash is non-empty
+INSTANCE_DIR="$T11P_DIR" STATE_FILE="$T11P_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-revert state.json content + event_head for comparison
+T11P_PRE_EVENT_HEAD=$(jq -r '.event_head // ""' "$T11P_STATE")
+T11P_PRE_HASH=$(jq -r '.state_integrity_hash // ""' "$T11P_STATE")
+
+# Acquire state.json.lock externally to simulate contention. Use mkdir lock-dir
+# pattern matching _acquire_lock's macOS fallback so the test exercises both paths.
+# (On Linux flock is used; mkdir of $LOCK.dir still creates a directory that the
+# in-process flock acquisition will not contest, so we hold via a long-running
+# `flock` background process to be portable.)
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$T11P_LOCK"
+  flock -x 9
+  T11P_LOCK_HOLDER_FD=9
+else
+  mkdir "${T11P_LOCK}.dir" 2>/dev/null || true
+fi
+
+T11P_REVERT_OUT=$(INSTANCE_DIR="$T11P_DIR" STATE_FILE="$T11P_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" emit_revert_event \
+  --reason "t11p_test_contention" \
+  --reverted_to_event "$T11P_PRE_EVENT_HEAD" 2>&1)
+T11P_REVERT_RC=$?
+
+# Release lock
+if [[ -n "${T11P_LOCK_HOLDER_FD:-}" ]]; then
+  exec 9>&-
+else
+  rm -rf "${T11P_LOCK}.dir"
+fi
+
+# Assertion 1: emit_revert_event exits 0 (the events.jsonl append still succeeds)
+if [[ "$T11P_REVERT_RC" -eq 0 ]]; then
+  printf 'pass: T11-p: emit_revert_event exits 0 under stamp-lock contention\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: emit_revert_event exited %d (expected 0)\n' "$T11P_REVERT_RC" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 2: stderr contains the warn line (head-stamp skipped)
+if printf '%s' "$T11P_REVERT_OUT" | grep -q "head-stamp skipped"; then
+  printf 'pass: T11-p: stderr contains head-stamp skipped warning\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: warning line not found in stderr: %s\n' "$T11P_REVERT_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 3: state.json content unchanged (stamp was skipped)
+T11P_POST_EVENT_HEAD=$(jq -r '.event_head // ""' "$T11P_STATE")
+T11P_POST_HASH=$(jq -r '.state_integrity_hash // ""' "$T11P_STATE")
+if [[ "$T11P_PRE_EVENT_HEAD" == "$T11P_POST_EVENT_HEAD" && "$T11P_PRE_HASH" == "$T11P_POST_HASH" ]]; then
+  printf 'pass: T11-p: state.json unchanged when stamp skipped\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: state.json modified despite stamp skip (event_head %s→%s, hash %s→%s)\n' \
+    "$T11P_PRE_EVENT_HEAD" "$T11P_POST_EVENT_HEAD" "$T11P_PRE_HASH" "$T11P_POST_HASH" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 4: events.jsonl got the state_reverted event despite stamp skip
+T11P_LAST_TYPE=$(tail -1 "${T11P_DIR}/events.jsonl" | jq -r '.event_type // ""')
+if [[ "$T11P_LAST_TYPE" == "state_reverted" ]]; then
+  printf 'pass: T11-p: events.jsonl tail is state_reverted (append succeeded)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: events.jsonl tail event_type=%s (expected state_reverted)\n' \
+    "$T11P_LAST_TYPE" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 5: no leftover .emit-stamp*.tmp.* files (also covers W21 #4 cleanup)
+if ! ls "${T11P_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  printf 'pass: T11-p: no leftover emit-stamp tmp files (W21 #4 cleanup verified)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T11-p: leftover emit-stamp tmp files in instance dir\n' >&2
+  ls "${T11P_DIR}"/state.json.emit-stamp*.tmp.* >&2 2>&1
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11P_SB"
+
+# ── (q) T-C1-banner-no-snap: banner violation + no snapshot → warn, no state_reverted ──
+# F-C1 (v5-final): when banner validation fires but the snapshot is absent (e.g.
+# batch-gate cleaned it during the PostToolBatch shadow window), the hook must:
+#   - NOT emit a state_reverted event (claiming a revert without performing one
+#     corrupts the audit trail)
+#   - NOT modify state.json (no fake revert)
+#   - emit a stderr warning citing the missing snapshot
+#   - still log banner-corruption to log.md (validation evidence is preserved)
+echo ""
+echo "── T-C1-banner-no-snap: banner violation + no snapshot → warn, no state_reverted ──"
+
+T11Q_SB=$(mktemp -d)
+T11Q_ID="c1c1c1c1"
+T11Q_DIR="$T11Q_SB/.claude/deepwork/$T11Q_ID"
+mkdir -p "$T11Q_DIR"
+T11Q_SID="t-c1-session-$(date +%s)"
+T11Q_STATE="${T11Q_DIR}/state.json"
+T11Q_EVENTS="${T11Q_DIR}/events.jsonl"
+T11Q_LOG="${T11Q_DIR}/log.md"
+touch "$T11Q_LOG"
+
+STATE_FILE="$T11Q_STATE" bash "${PLUGIN_ROOT}/scripts/state-transition.sh" init - <<EOF
+{"session_id":"$T11Q_SID","phase":"synthesize","team_name":"test-team","banners":[]}
+EOF
+
+# Generate baseline events to give events.jsonl a non-empty tail
+INSTANCE_DIR="$T11Q_DIR" STATE_FILE="$T11Q_STATE" \
+  bash "${PLUGIN_ROOT}/scripts/state-transition.sh" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-hook events.jsonl tail for comparison
+T11Q_PRE_TAIL_TYPE=$(tail -1 "$T11Q_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+T11Q_PRE_LINES=$(wc -l < "$T11Q_EVENTS" 2>/dev/null | tr -d ' ')
+
+# Capture pre-hook state.json content
+T11Q_PRE_STATE=$(cat "$T11Q_STATE")
+
+# Write corrupt banners[] directly (post-write violation)
+T11Q_BAD_STATE='{"session_id":"'"$T11Q_SID"'","phase":"synthesize","team_name":"test-team","banners":[{"bad_field":"oops"}]}'
+printf '%s\n' "$T11Q_BAD_STATE" > "$T11Q_STATE"
+
+# Ensure NO snapshot file is present
+T11Q_SNAP="${T11Q_DIR}/.state-snapshot.t-c1-tool-id.json"
+rm -f "$T11Q_SNAP" "${T11Q_DIR}/.state-snapshot"
+
+# Run PostToolUse:Write — should detect banner violation, find no snapshot,
+# emit stderr warning, NOT emit state_reverted event, NOT modify state.json.
+T11Q_OUT=$(printf '%s' \
+  "{\"session_id\":\"$T11Q_SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_use_id\":\"t-c1-tool-id\",\"tool_input\":{\"file_path\":\"$T11Q_STATE\"}}" \
+  | CLAUDE_PROJECT_DIR="$T11Q_SB" LOG_FILE="$T11Q_LOG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    bash "$HOOK" 2>&1)
+T11Q_RC=$?
+
+# Assertion 1: hook exits 0 (advisory; never blocks)
+_assert_exit "T-C1: hook exits 0 with no snapshot" "0" "$T11Q_RC"
+
+# Assertion 2: stderr contains "snapshot absent" warning
+if printf '%s' "$T11Q_OUT" | grep -qF "snapshot absent"; then
+  printf 'pass: T-C1: stderr contains snapshot-absent warning\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: stderr missing snapshot-absent warning\n' >&2
+  printf '  stderr: %s\n' "$T11Q_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 3: events.jsonl tail is NOT state_reverted (no fake revert event)
+T11Q_POST_TAIL_TYPE=$(tail -1 "$T11Q_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+T11Q_POST_LINES=$(wc -l < "$T11Q_EVENTS" 2>/dev/null | tr -d ' ')
+if [[ "$T11Q_POST_TAIL_TYPE" != "state_reverted" ]]; then
+  printf 'pass: T-C1: events.jsonl tail is NOT state_reverted (last=%s)\n' "$T11Q_POST_TAIL_TYPE"
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: events.jsonl tail is state_reverted — fake revert leaked into audit trail\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 4: events.jsonl line count unchanged (no event appended)
+if [[ "$T11Q_PRE_LINES" == "$T11Q_POST_LINES" ]]; then
+  printf 'pass: T-C1: events.jsonl line count unchanged (pre=%s post=%s)\n' "$T11Q_PRE_LINES" "$T11Q_POST_LINES"
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: events.jsonl grew (pre=%s post=%s)\n' "$T11Q_PRE_LINES" "$T11Q_POST_LINES" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 5: state.json not overwritten — still contains the bad banner
+T11Q_POST_STATE=$(cat "$T11Q_STATE")
+if printf '%s' "$T11Q_POST_STATE" | grep -qF '"bad_field":"oops"'; then
+  printf 'pass: T-C1: state.json NOT overwritten (bad banner still present)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: state.json was overwritten despite missing snapshot\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Assertion 6: banner-corruption logged to log.md (validation evidence preserved)
+T11Q_LOG_CONTENT=$(cat "$T11Q_LOG" 2>/dev/null || echo "")
+if printf '%s' "$T11Q_LOG_CONTENT" | grep -q "banner-corruption"; then
+  printf 'pass: T-C1: banner-corruption logged to log.md (evidence preserved)\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL: T-C1: banner-corruption NOT logged to log.md\n' >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -rf "$T11Q_SB"
+
 # ── Summary ──
 echo ""
 echo "─────────────────────────────────────"

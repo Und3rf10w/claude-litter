@@ -27,6 +27,7 @@
 # PCS-a: pending_change_set writes correct JSON to pending-change.json
 # PCS-b: pending_change_set missing required arg exits 3
 # PCS-c: pending_change_set event replays idempotently
+# PCS-d: pending_change_set strips leading/trailing whitespace from plan_section
 # EV-a: _emit_event rejects malformed jq_path (no leading dot) before writing
 #
 # Exit 0 = all pass; Exit 1 = one or more failures
@@ -674,7 +675,7 @@ if [[ -f "$_PCS_FILE" ]]; then
 else
   _fail "PCS-a: pending-change.json not found"
 fi
-_assert_jq_eq "PCS-a: plan_section" "$_PCS_FILE" '.plan_section' "S3.2"
+_assert_jq_eq "PCS-a: plan_section (sanitized: F-B2 strips '.' from 'S3.2')" "$_PCS_FILE" '.plan_section' "S32"
 _assert_jq_eq "PCS-a: files[0]" "$_PCS_FILE" '.files[0]' "src/foo.sh"
 _assert_jq_eq "PCS-a: files[1]" "$_PCS_FILE" '.files[1]' "src/bar.sh"
 _assert_jq_eq "PCS-a: rationale" "$_PCS_FILE" '.rationale' "Direct quote from plan section 3.2"
@@ -695,7 +696,7 @@ fi
 RC=$?
 _assert_exit "PCS-a (no-test-reason): exit 0" "0" "$RC"
 _assert_jq_eq "PCS-a: no_test_reason set" "$_PCS_FILE" '.no_test_reason' "config-only file, no logic to test"
-_assert_jq_eq "PCS-a: plan_section overwritten" "$_PCS_FILE" '.plan_section' "S3.3"
+_assert_jq_eq "PCS-a: plan_section overwritten (sanitized: F-B2 strips '.')" "$_PCS_FILE" '.plan_section' "S33"
 
 # ── PCS-b: missing required arg exits 3 ──────────────────────────────────────
 echo ""
@@ -746,6 +747,86 @@ else
 fi
 rm -rf "$_PCSC_DIR"
 
+# ── PCS-d: plan_section whitespace is stripped ────────────────────────────────
+echo ""
+echo "── PCS-d: pending_change_set strips leading/trailing whitespace from plan_section ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "  S4.1  " \
+  --files '["src/foo.sh"]' \
+  --rationale "whitespace canonicalization test"
+_assert_exit "PCS-d: exit 0" "0" "$?"
+_assert_jq_eq "PCS-d: plan_section stripped (sanitized: F-B2 strips '.')" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S41"
+
+# ── PCS-e: plan_section strips tabs and newlines ─────────────────────────────
+echo ""
+echo "── PCS-e: pending_change_set strips tab and newline whitespace from plan_section ──"
+_make_state "work"
+SF="${INSTANCE_DIR}/state.json"
+"$STATE_TRANSITION" --state-file "$SF" pending_change_set \
+  --plan-section "$(printf '\t\nS5.2\n\t')" \
+  --files '["src/bar.sh"]' \
+  --rationale "tab/newline canonicalization test"
+_assert_exit "PCS-e: exit 0" "0" "$?"
+_assert_jq_eq "PCS-e: plan_section stripped of tabs/newlines (sanitized: F-B2 strips '.')" "${INSTANCE_DIR}/pending-change.json" '.plan_section' "S52"
+
+# ── DI-a: discover_instance skips orphan dirs (no state.json) ────────────────
+echo ""
+echo "── DI-a: discover_instance skips orphan dirs ──"
+
+DI_A_SB=$(mktemp -d)
+DI_A_SB="$(cd "$DI_A_SB" && pwd -P)"
+DI_A_SESSION="test-di-a-$(date +%s)"
+
+# Create a valid 8-hex instance dir with a proper state.json
+DI_A_VALID_ID="a1b2c3d4"
+DI_A_VALID_DIR="${DI_A_SB}/.claude/deepwork/${DI_A_VALID_ID}"
+mkdir -p "$DI_A_VALID_DIR"
+"$STATE_TRANSITION" --state-file "${DI_A_VALID_DIR}/state.json" init - <<DI_A_EOF
+{
+  "session_id": "${DI_A_SESSION}",
+  "instance_id": "${DI_A_VALID_ID}",
+  "phase": "scope",
+  "team_name": "di-a-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+DI_A_EOF
+
+# Create an orphan dir (no state.json) with a valid-looking 8-hex name
+DI_A_ORPHAN_ID="deadbeef"
+mkdir -p "${DI_A_SB}/.claude/deepwork/${DI_A_ORPHAN_ID}"
+
+# Source instance-lib and call discover_instance
+(
+  INSTANCE_ID=""
+  INSTANCE_DIR=""
+  STATE_FILE=""
+  CLAUDE_PROJECT_DIR="$DI_A_SB"
+  source "${PLUGIN_ROOT}/scripts/instance-lib.sh"
+  if discover_instance "$DI_A_SESSION" 2>/dev/null; then
+    printf '%s\n' "$INSTANCE_ID"
+  else
+    printf 'NOT_FOUND\n'
+  fi
+) > /tmp/di_a_result_$$
+DI_A_FOUND=$(cat /tmp/di_a_result_$$)
+rm -f /tmp/di_a_result_$$
+
+if [[ "$DI_A_FOUND" == "$DI_A_VALID_ID" ]]; then
+  _pass "DI-a: discover_instance returns valid instance (not orphan)"
+elif [[ "$DI_A_FOUND" == "NOT_FOUND" ]]; then
+  _fail "DI-a: discover_instance returned nothing — missed valid instance"
+elif [[ "$DI_A_FOUND" == "$DI_A_ORPHAN_ID" ]]; then
+  _fail "DI-a: discover_instance returned orphan dir (should have skipped it)"
+else
+  _fail "DI-a: unexpected INSTANCE_ID '${DI_A_FOUND}'"
+fi
+
+rm -rf "$DI_A_SB"
+
 # ── EV-a: _emit_event rejects malformed jq_path before writing ───────────────
 echo ""
 echo "── EV-a: emit-side jq_path validation (no leading dot) ──"
@@ -766,6 +847,677 @@ if [[ "$_EVENTS_AFTER" -eq "$_EVENTS_BEFORE" ]]; then
 else
   _fail "EV-a: event was written despite bad jq_path (before=${_EVENTS_BEFORE}, after=${_EVENTS_AFTER})"
 fi
+
+# ── AW-a: atomic write — concurrent set_field with SIGKILL never corrupts state.json ──
+# Forks 5 parallel set_field invocations against the same instance and SIGKILL one of
+# them at random. After all complete/die, asserts state.json is parseable JSON and
+# integrity hash is either valid or the file is the pre-write version (never mid-write).
+echo ""
+echo "── AW-a: concurrent set_field + SIGKILL — state.json never mid-write ──"
+
+_AW_PASS=0
+_AW_FAIL=0
+
+for _iter in $(seq 1 10); do
+  _aw_sb=$(mktemp -d)
+  _aw_inst_dir="$_aw_sb/.claude/deepwork/aw00test"
+  mkdir -p "$_aw_inst_dir"
+  _aw_sf="${_aw_inst_dir}/state.json"
+  _aw_sid="aw-test-$(date +%s)-${_iter}"
+
+  STATE_FILE="$_aw_sf" "$STATE_TRANSITION" init - <<'EOINIT' >/dev/null 2>&1
+{"session_id":"aw-session","phase":"explore","team_name":"aw-team","bar":[{"id":"G1","verdict":null}]}
+EOINIT
+
+  # Capture pre-write state for comparison
+  _aw_pre=$(cat "$_aw_sf" 2>/dev/null)
+
+  # Launch 5 parallel set_field writers
+  _aw_pids=()
+  for _w in 1 2 3 4 5; do
+    STATE_FILE="$_aw_sf" "$STATE_TRANSITION" set_field .execute.plan_drift_detected "true" \
+      >/dev/null 2>&1 &
+    _aw_pids+=($!)
+  done
+
+  # Kill one at random
+  if [[ ${#_aw_pids[@]} -gt 0 ]]; then
+    _victim_idx=$(( RANDOM % ${#_aw_pids[@]} ))
+    _victim_pid=${_aw_pids[$_victim_idx]}
+    kill -9 "$_victim_pid" 2>/dev/null || true
+  fi
+
+  # Wait for remaining
+  for _pid in "${_aw_pids[@]}"; do
+    wait "$_pid" 2>/dev/null || true
+  done
+
+  # Assert state.json is parseable
+  if jq -e . "$_aw_sf" >/dev/null 2>&1; then
+    _AW_PASS=$((_AW_PASS + 1))
+  else
+    _fail "AW-a iter ${_iter}: state.json not parseable after concurrent kill"
+    _AW_FAIL=$((_AW_FAIL + 1))
+    rm -rf "$_aw_sb"
+    continue
+  fi
+
+  # Assert integrity hash is valid (or absent = pre-write state still intact)
+  _aw_on_disk=$(jq -r '.state_integrity_hash // ""' "$_aw_sf" 2>/dev/null)
+  if [[ -z "$_aw_on_disk" ]]; then
+    # No hash means file is the original pre-init or init wrote without hash — OK
+    _AW_PASS=$((_AW_PASS + 1))
+  else
+    # Hash present — recompute and compare
+    _aw_recomputed=$(STATE_FILE="$_aw_sf" "$STATE_TRANSITION" --state-file "$_aw_sf" \
+      set_field .___noop___ 'null' >/dev/null 2>&1; \
+      jq -r '.state_integrity_hash // ""' "$_aw_sf" 2>/dev/null) || _aw_recomputed=""
+    # Direct recompute via subshell sourcing instance-lib
+    _aw_recomputed=$(
+      _PLUGIN_ROOT="$(cd "$(dirname "$STATE_TRANSITION")/.." && pwd)"
+      source "${_PLUGIN_ROOT}/scripts/instance-lib.sh" 2>/dev/null
+      _compute_integrity_hash "$_aw_sf" 2>/dev/null
+    ) || _aw_recomputed=""
+    if [[ -z "$_aw_recomputed" ]] || [[ "$_aw_on_disk" == "$_aw_recomputed" ]]; then
+      _AW_PASS=$((_AW_PASS + 1))
+    else
+      _fail "AW-a iter ${_iter}: hash mismatch (disk=${_aw_on_disk:0:16}... recomputed=${_aw_recomputed:0:16}...)"
+      _AW_FAIL=$((_AW_FAIL + 1))
+    fi
+  fi
+
+  rm -rf "$_aw_sb"
+done
+
+PASS=$((PASS + _AW_PASS))
+FAIL=$((FAIL + _AW_FAIL))
+if [[ $_AW_FAIL -eq 0 ]]; then
+  _pass "AW-a: all 10 kill-race iterations produced valid state.json (${_AW_PASS} hash-checks passed)"
+fi
+
+# ── AW-b: _write_with_hash fail-closed when jq absent (W20-e) ──
+# Stub PATH to a directory without jq; assert set_field exits non-zero,
+# state.json content unchanged, and stderr contains the actionable message.
+echo ""
+echo "── AW-b: _write_with_hash fail-closed when jq absent ──"
+
+_AWB_SB=$(mktemp -d)
+_AWB_INST_DIR="$_AWB_SB/.claude/deepwork/awb00001"
+mkdir -p "$_AWB_INST_DIR"
+_AWB_SF="${_AWB_INST_DIR}/state.json"
+
+# Init with full jq available
+STATE_FILE="$_AWB_SF" "$STATE_TRANSITION" init - <<'AWBINIT' >/dev/null 2>&1
+{"session_id":"awb-session","phase":"explore","team_name":"awb-team","bar":[]}
+AWBINIT
+
+_AWB_BEFORE=$(cat "$_AWB_SF" 2>/dev/null)
+
+# Fake jq that works for validation/reads but returns empty string for hash
+# computation (_compute_integrity_hash calls: jq -Sc 'del(.state_integrity_hash,...)')
+_AWB_FAKE_BIN=$(mktemp -d)
+cat > "${_AWB_FAKE_BIN}/jq" <<'FAKEJQ'
+#!/usr/bin/env bash
+# Fake jq: pass through unless called with --arg sot_digest (unique to _compute_integrity_hash).
+# This simulates hash-compute failure while leaving startup JSON validation intact.
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+FAKEJQ
+chmod +x "${_AWB_FAKE_BIN}/jq"
+
+_AWB_STDERR_FILE=$(mktemp)
+PATH="${_AWB_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWB_INST_DIR" STATE_FILE="$_AWB_SF" \
+  bash "$STATE_TRANSITION" set_field '.phase' '"synthesize"' 2>"$_AWB_STDERR_FILE"
+_AWB_RC=$?
+
+_AWB_AFTER=$(cat "$_AWB_SF" 2>/dev/null)
+_AWB_STDERR=$(cat "$_AWB_STDERR_FILE")
+
+if [[ "$_AWB_RC" -ne 0 ]]; then
+  _pass "AW-b: set_field exited non-zero (rc=$_AWB_RC) when jq absent"
+else
+  _fail "AW-b: set_field exited 0 despite jq absent — should fail-closed"
+fi
+
+if [[ "$_AWB_BEFORE" == "$_AWB_AFTER" ]]; then
+  _pass "AW-b: state.json content unchanged after jq-absent failure"
+else
+  _fail "AW-b: state.json was modified despite jq-absent failure (content changed)"
+fi
+
+if printf '%s' "$_AWB_STDERR" | grep -qE 'hash compute failed|INTEGRITY_HASH_COMPUTE_FAILED'; then
+  _pass "AW-b: stderr contains hash-compute-failure message"
+else
+  _fail "AW-b: stderr missing hash-compute-failure marker — got: ${_AWB_STDERR:0:200}"
+fi
+
+rm -rf "$_AWB_SB" "$_AWB_FAKE_BIN" "$_AWB_STDERR_FILE"
+
+# ── AW-c: _verify_integrity_hash fail-closed when hash recompute fails (W22 #2) ──
+# Pre-W22, line 325 returned 0 silently when _compute_integrity_hash failed
+# (jq/sha256sum unavailable, file unreadable). That fail-open path undermined
+# W20-e's write-side hardening — a state.json with on_disk hash but a broken
+# environment slipped through every subcommand's _verify_integrity_hash call.
+# Post-W22 #2: returns 5 with INTEGRITY_HASH_COMPUTE_FAILED to stderr.
+echo ""
+echo "── AW-c: _verify_integrity_hash fail-closed when hash compute fails (W22 #2) ──"
+
+_AWC_SB=$(mktemp -d)
+_AWC_INST_DIR="$_AWC_SB/.claude/deepwork/awc00001"
+mkdir -p "$_AWC_INST_DIR"
+_AWC_SF="${_AWC_INST_DIR}/state.json"
+
+# Init while jq is fully working — init writes without a hash (test-fixture mode).
+STATE_FILE="$_AWC_SF" "$STATE_TRANSITION" init - <<'AWCINIT' >/dev/null 2>&1
+{"session_id":"awc-session","phase":"explore","team_name":"awc-team","bar":[]}
+AWCINIT
+
+# Stamp an integrity hash by going through _write_with_hash via stamp_last_updated
+# (only need the hash to be set so _verify_integrity_hash hits the recompute path).
+INSTANCE_DIR="$_AWC_INST_DIR" STATE_FILE="$_AWC_SF" \
+  bash "$STATE_TRANSITION" stamp_last_updated >/dev/null 2>&1
+
+_AWC_HASH=$(jq -r '.state_integrity_hash // ""' "$_AWC_SF" 2>/dev/null || echo "")
+if [[ -z "$_AWC_HASH" ]]; then
+  _fail "AW-c: setup — stamp_last_updated did not produce a state_integrity_hash"
+fi
+
+# Reuse AW-b's fake-jq harness pattern: pass-through except for sot_digest.
+_AWC_FAKE_BIN=$(mktemp -d)
+cat > "${_AWC_FAKE_BIN}/jq" <<'AWCFAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+AWCFAKEJQ
+chmod +x "${_AWC_FAKE_BIN}/jq"
+
+# Read-only subcommand that calls _verify_integrity_hash early: stamp_last_updated
+# is a no-op state mutation that exercises the verify path. Use phase_advance which
+# also calls _verify_integrity_hash before the write side.
+_AWC_STDERR_FILE=$(mktemp)
+PATH="${_AWC_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWC_INST_DIR" STATE_FILE="$_AWC_SF" \
+  bash "$STATE_TRANSITION" phase_advance --to synthesize 2>"$_AWC_STDERR_FILE"
+_AWC_RC=$?
+
+_AWC_STDERR=$(cat "$_AWC_STDERR_FILE")
+
+if [[ "$_AWC_RC" -ne 0 ]]; then
+  _pass "AW-c: phase_advance exited non-zero (rc=$_AWC_RC) when hash recompute fails"
+else
+  _fail "AW-c: phase_advance exited 0 despite hash recompute failure — should fail-closed"
+fi
+
+if printf '%s' "$_AWC_STDERR" | grep -q "INTEGRITY_HASH_COMPUTE_FAILED"; then
+  _pass "AW-c: stderr contains INTEGRITY_HASH_COMPUTE_FAILED"
+else
+  _fail "AW-c: stderr missing INTEGRITY_HASH_COMPUTE_FAILED — got: ${_AWC_STDERR:0:200}"
+fi
+
+rm -rf "$_AWC_SB" "$_AWC_FAKE_BIN" "$_AWC_STDERR_FILE"
+
+# ── AW-d: emit_revert_event stamp fail-closed when hash compute fails (W22 #1) ──
+# Pre-W22 #1, the stamp block proceeded to mv state.json even when
+# _compute_integrity_hash returned empty — committing a new event_head +
+# last_updated alongside a stale state_integrity_hash. Mirror of W20-e for
+# the _emit_event stamp path. Post-W22 #1: skip the mv, emit a warning, leave
+# state.json fully unchanged.
+echo ""
+echo "── AW-d: emit_revert_event stamp fail-closed when hash compute fails (W22 #1) ──"
+
+_AWD_SB=$(mktemp -d)
+_AWD_INST_DIR="$_AWD_SB/.claude/deepwork/awd00001"
+mkdir -p "$_AWD_INST_DIR"
+_AWD_SF="${_AWD_INST_DIR}/state.json"
+_AWD_EVENTS="${_AWD_INST_DIR}/events.jsonl"
+
+STATE_FILE="$_AWD_SF" "$STATE_TRANSITION" init - <<'AWDINIT' >/dev/null 2>&1
+{"session_id":"awd-session","phase":"explore","team_name":"awd-team","bar":[]}
+AWDINIT
+
+# Generate a baseline event so prev_event_hash is non-empty for the revert event
+INSTANCE_DIR="$_AWD_INST_DIR" STATE_FILE="$_AWD_SF" \
+  bash "$STATE_TRANSITION" stamp_last_updated >/dev/null 2>&1
+
+# Capture pre-call state for comparison (must be unchanged after fail-closed skip)
+_AWD_PRE_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_HASH=$(jq -r '.state_integrity_hash // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+# Fake jq that lets through everything except integrity-hash compute (sot_digest).
+# This means: events.jsonl event_json build → passes; stamp tmp jq → passes;
+# _compute_integrity_hash on the stamped tmp → fails (returns empty hash);
+# W22 #1 fail-closed branch fires.
+_AWD_FAKE_BIN=$(mktemp -d)
+cat > "${_AWD_FAKE_BIN}/jq" <<'AWDFAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+for arg in "$@"; do
+  if [[ "$arg" == "sot_digest" ]]; then
+    exit 1
+  fi
+done
+exec "$_REAL_JQ" "$@"
+AWDFAKEJQ
+chmod +x "${_AWD_FAKE_BIN}/jq"
+
+_AWD_STDERR_FILE=$(mktemp)
+# Note: we want phase_advance NOT to fire (which would block on _verify_integrity_hash
+# fail-closed from W22 #2). emit_revert_event has its own _verify_integrity_hash
+# call though — we need to invoke it in a way that bypasses the verify check OR
+# we need a pre-W6-style state with no on_disk hash. Simpler: clear the hash on
+# disk so _verify_integrity_hash hits the early-return-0 branch.
+jq 'del(.state_integrity_hash)' "$_AWD_SF" > "${_AWD_SF}.tmp" && mv "${_AWD_SF}.tmp" "$_AWD_SF"
+_AWD_PRE_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_PRE_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+PATH="${_AWD_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_AWD_INST_DIR" STATE_FILE="$_AWD_SF" \
+  bash "$STATE_TRANSITION" emit_revert_event \
+    --reason "awd_test_hash_failure" \
+    --reverted_to_event "$_AWD_PRE_HEAD" 2>"$_AWD_STDERR_FILE"
+_AWD_RC=$?
+
+_AWD_STDERR=$(cat "$_AWD_STDERR_FILE")
+_AWD_POST_HEAD=$(jq -r '.event_head // ""' "$_AWD_SF" 2>/dev/null)
+_AWD_POST_TS=$(jq -r '.last_updated // ""' "$_AWD_SF" 2>/dev/null)
+
+# Assertion 1: emit_revert_event still exits 0 (events.jsonl append is independent)
+if [[ "$_AWD_RC" -eq 0 ]]; then
+  _pass "AW-d: emit_revert_event exits 0 when integrity-hash compute fails (events append independent)"
+else
+  _fail "AW-d: emit_revert_event exited $_AWD_RC (expected 0)"
+fi
+
+# Assertion 2: stderr has the integrity-hash-compute-failed warning
+if printf '%s' "$_AWD_STDERR" | grep -q "integrity-hash compute failed"; then
+  _pass "AW-d: stderr contains integrity-hash compute failed warning"
+else
+  _fail "AW-d: stderr missing W22 #1 warning — got: ${_AWD_STDERR:0:200}"
+fi
+
+# Assertion 3: state.json content unchanged (stamp was skipped — the load-bearing invariant)
+if [[ "$_AWD_PRE_HEAD" == "$_AWD_POST_HEAD" && "$_AWD_PRE_TS" == "$_AWD_POST_TS" ]]; then
+  _pass "AW-d: state.json event_head + last_updated unchanged when stamp fail-closed"
+else
+  _fail "AW-d: state.json modified despite W22 #1 fail-closed skip (head $_AWD_PRE_HEAD→$_AWD_POST_HEAD, ts $_AWD_PRE_TS→$_AWD_POST_TS)"
+fi
+
+# Assertion 4: events.jsonl tail is the new state_reverted event (independent of stamp)
+if [[ -f "$_AWD_EVENTS" ]]; then
+  _AWD_LAST_TYPE=$(tail -1 "$_AWD_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$_AWD_LAST_TYPE" == "state_reverted" ]]; then
+    _pass "AW-d: events.jsonl tail is state_reverted (append succeeded despite stamp skip)"
+  else
+    _fail "AW-d: events.jsonl tail event_type=$_AWD_LAST_TYPE (expected state_reverted)"
+  fi
+fi
+
+# Assertion 5: no leftover .emit-stamp*.tmp.* files
+if ! ls "${_AWD_INST_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "AW-d: no leftover emit-stamp tmp files after fail-closed skip"
+else
+  _fail "AW-d: leftover emit-stamp tmp files after fail-closed skip"
+fi
+
+rm -rf "$_AWD_SB" "$_AWD_FAKE_BIN" "$_AWD_STDERR_FILE"
+
+# ── T-A1: _write_with_hash Step 3 stamp jq fail-closed ────────────────────
+# Inject a jq wrapper that exits non-zero when called with the Step-3 stamp
+# filter (assigning state_integrity_hash + event_head + last_updated).
+# Other jq invocations pass through to the real jq.
+# Verifies F-A1: state.json must NOT be modified after stamp jq fails;
+# set_field must exit 5; no leftover stamp tmp files.
+echo ""
+echo "── T-A1: _write_with_hash Step 3 stamp jq fail-closed ──"
+_TA1_SB=$(mktemp -d); _TA1_SB="$(cd "$_TA1_SB" && pwd -P)"
+_TA1_INST_DIR="$_TA1_SB/.claude/deepwork/ta100001"
+mkdir -p "$_TA1_INST_DIR"
+_TA1_SF="${_TA1_INST_DIR}/state.json"
+_TA1_EVENTS="${_TA1_INST_DIR}/events.jsonl"
+
+INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" init - <<EOF >/dev/null 2>&1
+{
+  "session_id": "ta1-test",
+  "instance_id": "ta100001",
+  "phase": "scope",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOF
+
+# Do one successful set_field to populate hash + event_head
+INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+_TA1_PRE_PHASE=$(jq -r '.phase' "$_TA1_SF")
+_TA1_PRE_HEAD=$(jq -r '.event_head' "$_TA1_SF")
+_TA1_PRE_HASH=$(jq -r '.state_integrity_hash' "$_TA1_SF")
+
+_TA1_FAKE_BIN=$(mktemp -d)
+cat > "${_TA1_FAKE_BIN}/jq" <<'TA1FAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+# Trigger only on Step-3 stamp jq: assigns all three of
+# state_integrity_hash, event_head, and last_updated together.
+_TA1_STAMP=0
+for arg in "$@"; do
+  case "$arg" in
+    *".state_integrity_hash = \$h | .event_head = \$eh | .last_updated = \$ts"*) _TA1_STAMP=1 ;;
+  esac
+done
+[[ "$_TA1_STAMP" -eq 1 ]] && exit 1
+exec "$_REAL_JQ" "$@"
+TA1FAKEJQ
+chmod +x "${_TA1_FAKE_BIN}/jq"
+
+_TA1_STDERR_FILE=$(mktemp)
+PATH="${_TA1_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_TA1_INST_DIR" STATE_FILE="$_TA1_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA1_SF" set_field '.phase' '"work"' 2>"$_TA1_STDERR_FILE"
+_TA1_RC=$?
+
+_TA1_STDERR=$(cat "$_TA1_STDERR_FILE")
+_TA1_POST_PHASE=$(jq -r '.phase' "$_TA1_SF")
+_TA1_POST_HEAD=$(jq -r '.event_head' "$_TA1_SF")
+_TA1_POST_HASH=$(jq -r '.state_integrity_hash' "$_TA1_SF")
+
+# Expect rc=4 (set_field's wrapper converts any non-zero from
+# _write_with_hash to exit 4; F-A1 returns 5 internally but the rc=4
+# convention is preserved at the subcommand boundary).
+_assert_exit "T-A1: set_field rc=4 when stamp jq fails" "4" "$_TA1_RC"
+
+# state.json content unchanged
+if [[ "$_TA1_PRE_PHASE" == "$_TA1_POST_PHASE" \
+   && "$_TA1_PRE_HEAD" == "$_TA1_POST_HEAD" \
+   && "$_TA1_PRE_HASH" == "$_TA1_POST_HASH" ]]; then
+  _pass "T-A1: state.json unchanged when Step 3 stamp jq fails"
+else
+  _fail "T-A1: state.json modified despite stamp failure (phase $_TA1_PRE_PHASE→$_TA1_POST_PHASE)"
+fi
+
+# stderr has the F-A1 fail-closed warning
+if printf '%s' "$_TA1_STDERR" | grep -q "integrity stamp jq failed"; then
+  _pass "T-A1: stderr has F-A1 fail-closed warning"
+else
+  _fail "T-A1: stderr missing F-A1 warning — got: ${_TA1_STDERR:0:200}"
+fi
+
+# No leftover .wwh.* tmp files
+if ! ls "${_TA1_INST_DIR}"/state.json.wwh.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "T-A1: no leftover wwh tmp files"
+else
+  _fail "T-A1: leftover wwh tmp files present"
+fi
+
+rm -rf "$_TA1_SB" "$_TA1_FAKE_BIN" "$_TA1_STDERR_FILE"
+
+# ── T-A2: _emit_event W20-c second jq fail-closed ────────────────────────
+# Inject a jq wrapper that fails on the second jq call inside _emit_event's
+# W20-c stamp block — the one that assigns state_integrity_hash from the
+# computed _stamp_hash. F-A2 must skip the mv and leave state.json
+# unchanged when this jq fails.
+echo ""
+echo "── T-A2: _emit_event W20-c second jq fail-closed ──"
+_TA2_SB=$(mktemp -d); _TA2_SB="$(cd "$_TA2_SB" && pwd -P)"
+_TA2_INST_DIR="$_TA2_SB/.claude/deepwork/ta200001"
+mkdir -p "$_TA2_INST_DIR"
+_TA2_SF="${_TA2_INST_DIR}/state.json"
+_TA2_EVENTS="${_TA2_INST_DIR}/events.jsonl"
+
+INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA2_SF" init - <<EOF >/dev/null 2>&1
+{
+  "session_id": "ta2-test",
+  "instance_id": "ta200001",
+  "phase": "scope",
+  "team_name": "test-team",
+  "hook_warnings": [],
+  "bar": [],
+  "frontmatter_schema_version": "1"
+}
+EOF
+INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TA2_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+# Clear the on-disk hash so _verify_integrity_hash early-returns 0,
+# letting emit_revert_event reach the W20-c stamp block.
+jq 'del(.state_integrity_hash)' "$_TA2_SF" > "${_TA2_SF}.tmp" && mv "${_TA2_SF}.tmp" "$_TA2_SF"
+
+_TA2_PRE_HEAD=$(jq -r '.event_head // ""' "$_TA2_SF")
+_TA2_PRE_TS=$(jq -r '.last_updated // ""' "$_TA2_SF")
+
+_TA2_FAKE_BIN=$(mktemp -d)
+cat > "${_TA2_FAKE_BIN}/jq" <<'TA2FAKEJQ'
+#!/usr/bin/env bash
+_REAL_JQ=$(PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin command -v jq 2>/dev/null)
+[[ -z "$_REAL_JQ" ]] && exit 1
+# W20-c second jq is the one that assigns ONLY state_integrity_hash
+# (not event_head, not last_updated). Filter shape: '.state_integrity_hash = $h'
+_TA2_HIT=0
+for arg in "$@"; do
+  case "$arg" in
+    ".state_integrity_hash = \$h") _TA2_HIT=1 ;;
+  esac
+done
+[[ "$_TA2_HIT" -eq 1 ]] && exit 1
+exec "$_REAL_JQ" "$@"
+TA2FAKEJQ
+chmod +x "${_TA2_FAKE_BIN}/jq"
+
+_TA2_STDERR_FILE=$(mktemp)
+PATH="${_TA2_FAKE_BIN}:${PATH}" INSTANCE_DIR="$_TA2_INST_DIR" STATE_FILE="$_TA2_SF" \
+  bash "$STATE_TRANSITION" emit_revert_event \
+    --reason "ta2_test_second_jq_fail" \
+    --reverted_to_event "$_TA2_PRE_HEAD" 2>"$_TA2_STDERR_FILE"
+_TA2_RC=$?
+
+_TA2_STDERR=$(cat "$_TA2_STDERR_FILE")
+_TA2_POST_HEAD=$(jq -r '.event_head // ""' "$_TA2_SF")
+_TA2_POST_TS=$(jq -r '.last_updated // ""' "$_TA2_SF")
+
+# emit_revert_event should still exit 0 (events.jsonl append is independent)
+_assert_exit "T-A2: emit_revert_event rc=0" "0" "$_TA2_RC"
+
+# state.json head/last_updated must NOT have advanced (stamp was skipped)
+if [[ "$_TA2_PRE_HEAD" == "$_TA2_POST_HEAD" && "$_TA2_PRE_TS" == "$_TA2_POST_TS" ]]; then
+  _pass "T-A2: state.json head/ts unchanged when second jq fails"
+else
+  _fail "T-A2: state.json modified despite F-A2 fail-closed (head $_TA2_PRE_HEAD→$_TA2_POST_HEAD, ts $_TA2_PRE_TS→$_TA2_POST_TS)"
+fi
+
+# stderr has the F-A2 fail-closed warning
+if printf '%s' "$_TA2_STDERR" | grep -q "state_integrity_hash stamp jq failed"; then
+  _pass "T-A2: stderr has F-A2 fail-closed warning"
+else
+  _fail "T-A2: stderr missing F-A2 warning — got: ${_TA2_STDERR:0:200}"
+fi
+
+# events.jsonl tail must be the new state_reverted event
+if [[ -f "$_TA2_EVENTS" ]]; then
+  _TA2_LAST_TYPE=$(tail -1 "$_TA2_EVENTS" | jq -r '.event_type // ""' 2>/dev/null)
+  if [[ "$_TA2_LAST_TYPE" == "state_reverted" ]]; then
+    _pass "T-A2: events.jsonl tail is state_reverted (append succeeded despite stamp skip)"
+  else
+    _fail "T-A2: events.jsonl tail event_type=$_TA2_LAST_TYPE (expected state_reverted)"
+  fi
+fi
+
+# No leftover .emit-stamp* tmp files
+if ! ls "${_TA2_INST_DIR}"/state.json.emit-stamp*.tmp.* 2>/dev/null | head -1 | grep -q .; then
+  _pass "T-A2: no leftover emit-stamp tmp files"
+else
+  _fail "T-A2: leftover emit-stamp tmp files present"
+fi
+
+rm -rf "$_TA2_SB" "$_TA2_FAKE_BIN" "$_TA2_STDERR_FILE"
+
+# Helper: hash the last events.jsonl line the same way _read_event_head does.
+_tail_event_hash() {
+  local f="$1"
+  [[ -s "$f" ]] || { printf 'GENESIS'; return; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    tail -1 "$f" | { read -r line; printf '%s\n' "$line" | sha256sum | cut -d' ' -f1; }
+  else
+    tail -1 "$f" | { read -r line; printf '%s\n' "$line" | shasum -a 256 | cut -d' ' -f1; }
+  fi
+}
+
+# ── T-B2: pending_change_set sanitizes plan_section at write time ──────────
+# Verifies F-B2: storage uses the bash-gate's tr -cd '[:alnum:]_-' | cut -c1-64
+# transform, so `§5.2` and `5.2` and `52` all collide on the same canonical
+# value, and the gate's rollback-file lookup matches the stored value.
+echo ""
+echo "── T-B2: pending_change_set sanitizes plan_section ──"
+_TB2_SB=$(mktemp -d); _TB2_SB="$(cd "$_TB2_SB" && pwd -P)"
+_TB2_INST="$_TB2_SB/.claude/deepwork/tb200001"
+mkdir -p "$_TB2_INST"
+_TB2_SF="${_TB2_INST}/state.json"
+
+INSTANCE_DIR="$_TB2_INST" STATE_FILE="$_TB2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TB2_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tb2","instance_id":"tb200001","phase":"plan","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+
+_TB2_STDERR_FILE=$(mktemp)
+INSTANCE_DIR="$_TB2_INST" STATE_FILE="$_TB2_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TB2_SF" pending_change_set \
+    --plan-section "§5.2" \
+    --files '["foo.sh"]' \
+    --rationale "test" 2>"$_TB2_STDERR_FILE"
+_TB2_RC=$?
+_TB2_STDERR=$(cat "$_TB2_STDERR_FILE")
+
+_assert_exit "T-B2: pending_change_set rc=0" "0" "$_TB2_RC"
+_assert_jq_eq "T-B2: plan_section stored as '52' (sanitized from §5.2)" "${_TB2_INST}/pending-change.json" '.plan_section' "52"
+
+if printf '%s' "$_TB2_STDERR" | grep -q 'plan_section sanitized'; then
+  _pass "T-B2: stderr warning emitted on sanitize transform"
+else
+  _fail "T-B2: stderr missing sanitize warning"
+fi
+
+rm -rf "$_TB2_SB" "$_TB2_STDERR_FILE"
+
+# ── T-P3: pending_change_set writes a deterministic change_id ──────────────
+# Same inputs → same change_id. Different plan_section → different change_id.
+echo ""
+echo "── T-P3: pending_change_set writes deterministic change_id ──"
+_TP3_SB=$(mktemp -d); _TP3_SB="$(cd "$_TP3_SB" && pwd -P)"
+_TP3_INST="$_TP3_SB/.claude/deepwork/tp300001"
+mkdir -p "$_TP3_INST"
+_TP3_SF="${_TP3_INST}/state.json"
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tp3","instance_id":"tp300001","phase":"plan","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S31" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID1=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S31" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID2=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+INSTANCE_DIR="$_TP3_INST" STATE_FILE="$_TP3_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TP3_SF" pending_change_set \
+    --plan-section "S32" --files '["a.sh"]' --rationale "r1" >/dev/null 2>&1
+_TP3_CID3=$(jq -r '.change_id' "${_TP3_INST}/pending-change.json")
+
+# Same inputs produce same change_id
+if [[ "$_TP3_CID1" == "$_TP3_CID2" && -n "$_TP3_CID1" ]]; then
+  _pass "T-P3: same inputs → same change_id ($_TP3_CID1)"
+else
+  _fail "T-P3: same inputs produced different change_ids ($_TP3_CID1 vs $_TP3_CID2)"
+fi
+
+# Different plan_section produces different change_id
+if [[ "$_TP3_CID1" != "$_TP3_CID3" ]]; then
+  _pass "T-P3: different plan_section → different change_id ($_TP3_CID1 vs $_TP3_CID3)"
+else
+  _fail "T-P3: different plan_section produced same change_id ($_TP3_CID1)"
+fi
+
+# Format: 12 hex chars
+if printf '%s' "$_TP3_CID1" | grep -qE '^[a-f0-9]{12}$'; then
+  _pass "T-P3: change_id format is 12 hex chars"
+else
+  _fail "T-P3: change_id format unexpected: '$_TP3_CID1'"
+fi
+
+rm -rf "$_TP3_SB"
+
+# ── T-PCS-stamp-head: pending_change_set updates state.event_head ──────────
+# F-PCS: after pending_change_set, state.event_head MUST equal sha256(tail
+# events.jsonl). Without F-PCS, state.event_head stayed at the prior tail
+# and integrity-always-gate would see a mismatch on the next call.
+echo ""
+echo "── T-PCS-stamp-head: pending_change_set stamps event_head ──"
+_TPCS_SB=$(mktemp -d); _TPCS_SB="$(cd "$_TPCS_SB" && pwd -P)"
+_TPCS_INST="$_TPCS_SB/.claude/deepwork/tpcs0001"
+mkdir -p "$_TPCS_INST"
+_TPCS_SF="${_TPCS_INST}/state.json"
+_TPCS_EVENTS="${_TPCS_INST}/events.jsonl"
+
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" init - <<EOF >/dev/null 2>&1
+{"session_id":"tpcs","instance_id":"tpcs0001","phase":"scope","team_name":"x","hook_warnings":[],"bar":[],"frontmatter_schema_version":"1"}
+EOF
+# Populate event_head with a baseline set_field (uses _write_with_hash).
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" set_field '.phase' '"plan"' >/dev/null 2>&1
+
+# Sanity: baseline state.event_head matches sha256(tail events.jsonl).
+_TPCS_BASE_HEAD=$(jq -r '.event_head' "$_TPCS_SF")
+_TPCS_BASE_TAIL=$(_tail_event_hash "$_TPCS_EVENTS")
+if [[ "$_TPCS_BASE_HEAD" == "$_TPCS_BASE_TAIL" ]]; then
+  _pass "T-PCS-stamp-head: baseline (set_field) state.event_head matches tail"
+else
+  _fail "T-PCS-stamp-head: baseline mismatch — set_field path is broken (head=${_TPCS_BASE_HEAD:0:12} tail=${_TPCS_BASE_TAIL:0:12})"
+fi
+
+# Action: run pending_change_set; assert state.event_head still matches.
+INSTANCE_DIR="$_TPCS_INST" STATE_FILE="$_TPCS_SF" \
+  bash "$STATE_TRANSITION" --state-file "$_TPCS_SF" pending_change_set \
+    --plan-section "S5" --files '["x.sh"]' --rationale "tpcs test" >/dev/null 2>&1
+
+_TPCS_AFTER_HEAD=$(jq -r '.event_head' "$_TPCS_SF")
+_TPCS_AFTER_TAIL=$(_tail_event_hash "$_TPCS_EVENTS")
+_TPCS_TAIL_TYPE=$(tail -1 "$_TPCS_EVENTS" | jq -r '.event_type')
+
+# The pending_change_set event must be the new tail
+if [[ "$_TPCS_TAIL_TYPE" == "pending_change_set" ]]; then
+  _pass "T-PCS-stamp-head: events.jsonl tail event_type = pending_change_set"
+else
+  _fail "T-PCS-stamp-head: events.jsonl tail event_type = $_TPCS_TAIL_TYPE (expected pending_change_set)"
+fi
+
+# state.event_head must match the new tail (F-PCS load-bearing assertion)
+if [[ "$_TPCS_AFTER_HEAD" == "$_TPCS_AFTER_TAIL" ]]; then
+  _pass "T-PCS-stamp-head: state.event_head matches sha256(tail) after pending_change_set"
+else
+  _fail "T-PCS-stamp-head: state.event_head=${_TPCS_AFTER_HEAD:0:12}... != sha256(tail)=${_TPCS_AFTER_TAIL:0:12}... — F-PCS regression"
+fi
+
+rm -rf "$_TPCS_SB"
 
 # ── Summary ──
 echo ""

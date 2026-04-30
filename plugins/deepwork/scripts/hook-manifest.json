@@ -176,6 +176,13 @@
       "reads_state": [".execute.authorized_force_push", ".execute.authorized_push", ".execute.authorized_prod_deploy", ".execute.authorized_local_destructive", ".execute.setup_flags_snapshot"]
     },
     {
+      "script": "hooks/execute/worktree-cd-warn.sh",
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "modes": ["execute"],
+      "_note": "W18-e: warn-only hook that detects write-class Bash commands targeting a worktree path without the required cd-prefix. Always exit 0 (never blocks)."
+    },
+    {
       "script": "hooks/execute/test-capture.sh",
       "event": "PostToolUse",
       "matcher": "Bash",

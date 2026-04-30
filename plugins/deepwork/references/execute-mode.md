@@ -127,7 +127,7 @@ The `authorized_*` flags are written ONCE at SETUP. Any mutation after SETUP is 
 
 ---
 
-## Execute Hooks — All 8
+## Execute Hooks — All 9
 
 Hooks registered at SETUP via `hooks/hooks.json` (dynamic entries for FileChanged matchers). Full behavior documented in each hook's header comment block — the `.sh` file is authoritative.
 
@@ -147,6 +147,7 @@ Execute mode runs inside the same CC session, so design-mode hooks remain active
 | `retest-dispatch.sh` | PostToolUse(Write\|Edit) | `hooks/execute/retest-dispatch.sh` | Async dispatch of covering test from `test_manifest` after each write; feeds EP3 gate. |
 | `plan-drift-detector.sh` | FileChanged(\<plan_ref\>) | `hooks/execute/plan-drift-detector.sh` | Advisory: sets `plan_drift_detected=true` when plan file sha256 diverges from frozen `plan_hash`. |
 | `file-changed-retest.sh` | FileChanged(src/**) | `hooks/execute/file-changed-retest.sh` | Advisory secondary retest trigger on filesystem change events in src/; 500ms debounce. |
+| `worktree-cd-warn.sh` | PreToolUse(Bash) | `hooks/execute/worktree-cd-warn.sh` | Warn-only (exit 0): detects Bash write-class ops on a worktree path without the required `cd /abs/.../worktrees/<segment>` prefix. |
 
 **Note**: `PostToolUse` hooks (test-capture, retest-dispatch) and `FileChanged` hooks (plan-drift-detector, file-changed-retest) are advisory — they cannot block. Enforcement sits on the next PreToolUse gate. This is the two-hook enforcement pattern described in `hooks/execute/test-capture.sh` header.
 
@@ -167,7 +168,7 @@ Before any Write/Edit to a plan-authorized file, executor writes `pending-change
 
 `plan-citation-gate.sh` reads this file before each write. A null `plan_section` or a target file not in `files[]` results in a blocked write.
 
-**GAP-10 protection**: the instance directory's log files (`test-results.jsonl`, `change_log.jsonl`, `rollback_log.jsonl`, `discoveries.jsonl`, `pending-change.json` itself) are unconditionally blocked from Write/Edit — they are append-only via hooks. See `hooks/execute/plan-citation-gate.sh:48-53`.
+**GAP-10 protection**: the instance directory's log files (`test-results.jsonl`, `discoveries.jsonl`, `pending-change.json`, `log.md`, `hook-timing.jsonl`, `incidents.jsonl`, `metrics-violations.jsonl`) are unconditionally blocked from Write/Edit — they are append-only via hooks. See `hooks/execute/plan-citation-gate.sh:74-80`. (`change_log` and `rollback_log` are `state.json` fields, not files.)
 
 ---
 

@@ -32,7 +32,7 @@ fi
 STATE_FILE="$STATE_FILE" INSTANCE_DIR="$INSTANCE_DIR" \
   bash "${_PLUGIN_ROOT}/scripts/state-transition.sh" archive_state 2>/dev/null || exit 0
 
-rm -f "${INSTANCE_DIR}/heartbeat.json" 2>/dev/null || true
+# heartbeat.json was never written by any hook/script; removed dead cleanup (W19-h)
 rm -f "${INSTANCE_DIR}"/.idle-retry.* 2>/dev/null || true
 
 printf '\n> ✅ approve-archive: session %s archived (phase=done)\n' "$INSTANCE_ID" \

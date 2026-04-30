@@ -9,12 +9,12 @@
 #   events.jsonl
 #   pending-change.json
 #   discoveries.jsonl
-#   rollback_log.jsonl
 #   incidents.jsonl
 #   metrics-violations.jsonl
 #   test-results.jsonl
 #   hook-timing.jsonl
 #   override-tokens.json
+# Note: change_log and rollback_log are state.json fields, not files — not listed here.
 #
 # Blocked patterns (case-insensitive):
 #   > .*<file>       redirect
@@ -41,21 +41,30 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
 [[ -n "$COMMAND" ]] || exit 0
 
-# Allowlist: canonical writers; let them through.
+# Active-instance guard: only apply gates when a deepwork instance is active
+# (design OR execute). Audit-trail files are equally protected in both modes.
+discover_instance "$SESSION_ID" 2>/dev/null || exit 0
+
+# Protected file pattern — matches any of the audit-trail filenames.
+_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
+_PENDING_CHANGE='pending-change\.json'
+
+# Allowlist: canonical writers; let them through only if the FULL command
+# does not also contain a direct block-pattern write (bypass via ; && `` $() appending).
+_cmd_has_block_pattern() {
+  printf '%s' "$1" | grep -qiE \
+    ">[[:space:]]*[^;|&]*${_PROTECTED}|>>[[:space:]]*[^;|&]*${_PROTECTED}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|tee[[:space:]]+[^;|&]*${_PROTECTED}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PROTECTED}"
+}
 if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*state-transition\.sh'; then
-  exit 0
+  _cmd_has_block_pattern "$COMMAND" || exit 0
 fi
 if printf '%s' "$COMMAND" | grep -qiE 'bash[[:space:]]+[^;|&]*test-capture\.sh'; then
-  exit 0
+  _cmd_has_block_pattern "$COMMAND" || exit 0
 fi
 # Subprocess sentinel: state-transition.sh sets this before writing
 [[ "${_DW_STATE_TRANSITION_WRITER:-}" == "1" ]] && exit 0
 
-# Protected file pattern — matches any of the audit-trail filenames.
-_PROTECTED='(state\.json|events\.jsonl|pending-change\.json|discoveries\.jsonl|rollback_log\.jsonl|incidents\.jsonl|metrics-violations\.jsonl|test-results\.jsonl|hook-timing\.jsonl|override-tokens\.json)'
-
 # pending-change.json writes get a discriminated error with actionable instruction.
-_PENDING_CHANGE='pending-change\.json'
 if printf '%s' "$COMMAND" | grep -qiE \
   ">[[:space:]]*[^;|&]*${_PENDING_CHANGE}|>>[[:space:]]*[^;|&]*${_PENDING_CHANGE}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PENDING_CHANGE}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PENDING_CHANGE}|tee[[:space:]]+[^;|&]*${_PENDING_CHANGE}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PENDING_CHANGE}"; then
   printf 'state-bash-gate: EXIT_PENDING_CHANGE_DIRECT_WRITE — direct Bash write to pending-change.json is blocked.\n' >&2
@@ -69,6 +78,16 @@ if printf '%s' "$COMMAND" | grep -qiE \
   _matched=$(printf '%s' "$COMMAND" | grep -oiE \
     ">[[:space:]]*[^;|&]*${_PROTECTED}|>>[[:space:]]*[^;|&]*${_PROTECTED}|cp[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|mv[[:space:]]+[^;|&]*[[:space:]]+${_PROTECTED}|tee[[:space:]]+[^;|&]*${_PROTECTED}|dd[[:space:]]+[^;|&]*of=[^;|&]*${_PROTECTED}" | head -1)
   printf 'state-bash-gate: SINGLE_WRITER_VIOLATION — direct Bash write to audit-trail file is blocked; use state-transition.sh\n' >&2
+  printf '  matched: %s\n' "$_matched" >&2
+  exit 2
+fi
+
+# Block exec-fd write/append/read-write redirections (exec N> / exec N>> / exec N<>).
+# Variable-expansion targets (exec 3>"$ST") evade the literal-filename patterns above.
+# Read-only (exec N<) is NOT matched and remains allowed.
+if printf '%s' "$COMMAND" | grep -qE 'exec[[:space:]]+[0-9]+(>>|<>|>)[^&]'; then
+  _matched=$(printf '%s' "$COMMAND" | grep -oE 'exec[[:space:]]+[0-9]+(>>|<>|>)[^&][^;|&]*' | head -1)
+  printf 'state-bash-gate: SINGLE_WRITER_VIOLATION — exec-fd write redirection is blocked; use state-transition.sh\n' >&2
   printf '  matched: %s\n' "$_matched" >&2
   exit 2
 fi

@@ -1,10 +1,10 @@
 # Plan-to-Execute Synthesis Template
 
 **Kind**: plan-to-execute
-**Invocation**: `/deepwork --kind plan-to-execute "..."` or default (no `--kind` flag)
+**Invocation**: `/deepwork "..."` (default output format)
 **Mode**: plan mode deliverable; OPTIONAL execute-mode consumer via `/deepwork --mode execute --plan-ref <path>`
 
-This is the default deepwork output kind — the same format the plugin has always produced. Existing archived sessions without a `kind` field render as plan-to-execute. Backward-compatible default.
+This is the default deepwork output format — the same format the plugin has always produced.
 
 ---
 
@@ -142,8 +142,8 @@ gates:
 
 ## Notes for SYNTHESIZE phase
 
-- `state.kind = "plan-to-execute"` or `state.kind = null` (default) triggers this template.
-- After SYNTHESIZE completes, the user may invoke execute mode: `/deepwork --mode execute --plan-ref .claude/deepwork/<id>/proposals/v<N>-final.md`
+- This is the default synthesis template.
+- After SYNTHESIZE completes, the user may invoke execute mode: `/deepwork --mode execute --plan-ref ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/<id>/proposals/v<N>-final.md`
 - The `execute-mode ready` field in the proposal header is informational — execute mode can consume any plan format.
 - The Execution Manifest section is consumed directly by execute mode SETUP if present; otherwise SETUP extracts an internal manifest from prose.
-- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format (§9.4 degrade path).
+- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes a plan in its current format.

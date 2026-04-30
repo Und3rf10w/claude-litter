@@ -1,24 +1,37 @@
 ---
+name: deepwork
 description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
 argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Edit(.claude/deepwork/**)", "Write(.claude/deepwork/**)", "Read(.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(mktemp:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(rm:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(/tmp/dw-prompt-*.md)", "Write(${TMPDIR}dw-prompt-*.md)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
 # Deepwork — Research/Design Convergence or Plan Execution
 
-Execute the setup script to initialize the deepwork session:
+## Initialize the deepwork session
 
-```!
-mkdir -p .claude
-# Write arguments to a PID-unique file using a quoted heredoc to prevent shell
-# expansion of $, backticks, braces, parens in user prompts. The setup script's
-# --prompt-file flag reads the goal from this file and parses flags from it.
-_prompt_file=".claude/deepwork.local.prompt.$$.md"
-cat <<'__DEEPWORK_PROMPT_EOF__' > "$_prompt_file"
-$ARGUMENTS
-__DEEPWORK_PROMPT_EOF__
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh" --prompt-file "$_prompt_file"
+This skill is invoked with an `args` string containing the goal and any flags (see `argument-hint` above). To initialize the session, perform these THREE tool calls in order. The prompt file MUST be unique-per-invocation — using a fixed shared path (e.g. `.claude/deepwork.local.prompt.md`) is unsafe because two concurrent `/deepwork` invocations would clobber each other's args between Write and the setup-script Bash call. Per-invocation uniqueness is restored by allocating the path with `mktemp` before writing.
+
+**Step 1 — Allocate a unique prompt-file path with mktemp.** Use the Bash tool:
+
+```bash
+mktemp -t dw-prompt-XXXXXXXX.md
 ```
+
+Capture the printed path (e.g. `/var/folders/.../dw-prompt-aB3xY9zQ.md` on macOS, `/tmp/dw-prompt-aB3xY9zQ.md` on Linux). Use that exact path in Steps 2 and 3. Do NOT reuse a fixed filename; do NOT race two `/deepwork` invocations against the same path.
+
+**Step 2 — Write the args to the unique prompt path.** The args may contain shell metacharacters (`$`, backticks, braces, parens, quotes) from user-authored goal text. Routing them through a file rather than a command-line argument prevents shell expansion. Use the Write tool:
+
+- file_path: the path printed by Step 1's mktemp.
+- content: the `args` string passed to this skill, verbatim — preserve all whitespace, quoting, and metacharacters; do not interpret or substitute anything.
+
+**Step 3 — Run the setup script with the unique path; remove it after.** Use the Bash tool, substituting the path captured in Step 1 (shown below as `$PROMPT_PATH` for clarity — substitute the literal path in your actual call):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh" --prompt-file "$PROMPT_PATH" \
+  && rm -f "$PROMPT_PATH"
+```
+
+The setup script reads the goal from the file via `--prompt-file` and parses flags from the same file. It prints the orchestrator instructions to stdout. Read that output carefully — it is your operational handoff.
 
 You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the setup script exactly.
 
@@ -30,7 +43,7 @@ You are now the DEEPWORK ORCHESTRATOR. Follow the instructions output by the set
 
 Delivery happens via `ExitPlanMode`. The team NEVER crosses into implementation — the deliverable is an approved plan document.
 
-**Execute mode:** `/deepwork <goal> --mode execute --plan-ref <path>` delegates to the execute profile at `${CLAUDE_PLUGIN_ROOT}/profiles/execute/PROFILE.md`. This mode drives faithful implementation of an already-approved plan via role-asymmetric agents (PLANNER / IMPLEMENTER / VERIFIER). The `--plan-ref` flag is required in execute mode and points to the approved plan file. Execute mode reads `state.json` and appends events to `events.jsonl` using `state-transition.sh pending_change_set` for all file-change proposals — direct Bash redirects to `pending-change.json` are blocked. For the worktree isolation setup the orchestrator must perform before spawning implementers, see step 3 of `${CLAUDE_PLUGIN_ROOT}/profiles/execute/stances/executor-stance.md`.
+**Execute mode:** `/deepwork <goal> --mode execute --plan-ref <path>` delegates to the execute profile at `${CLAUDE_PLUGIN_ROOT}/profiles/execute/PROFILE.md`. This mode drives faithful implementation of an already-approved plan via role-asymmetric agents (executor / adversary / auditor / scope-guard / chaos-monkey). The `--plan-ref` flag is required in execute mode and points to the approved plan file. Execute mode reads `state.json` and appends events to `events.jsonl` using `state-transition.sh pending_change_set` for all file-change proposals — direct Bash redirects to `pending-change.json` are blocked. For the worktree isolation setup the orchestrator must perform before spawning implementers, see step 3 of `${CLAUDE_PLUGIN_ROOT}/profiles/execute/stances/executor-stance.md`.
 
 ## When to use it
 

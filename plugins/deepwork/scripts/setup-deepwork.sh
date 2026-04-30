@@ -58,7 +58,7 @@ OPTIONS:
   --team-name <name>             Base team name (random 8-hex suffix appended for uniqueness).
                                  Default: derived from goal text.
   --prompt-file <path>           Read goal/flags from a file instead of positional args.
-                                 Flags in the file are extracted by a perl preprocessor;
+                                 Flags in the file are extracted by a pure-bash preprocessor;
                                  multiline goal body after flags becomes the goal text.
 
 EXECUTE-MODE OPTIONS (only meaningful with --mode execute):
@@ -131,6 +131,14 @@ HELP_EOF
       shift 2
       ;;
     --team-name)
+      # Reject `..` segments to prevent path traversal in $HOME/.claude/tasks/<sanitized>.
+      # _sanitize_team_name only strips '/' and ' ', so a name like '..' would resolve
+      # TASK_DIR one level above the intended tasks tree.
+      if [[ "$2" == *".."* ]]; then
+        printf 'setup-deepwork: --team-name must not contain ".." (path-traversal segment)\n' >&2
+        printf '  Received: %s\n' "$2" >&2
+        exit 3
+      fi
       TEAM_NAME="$2"
       shift 2
       ;;
@@ -216,8 +224,26 @@ if [[ "$SAFE_MODE" != "true" ]] && [[ "$SAFE_MODE" != "false" ]]; then
   exit 1
 fi
 
-# Ensure .claude/ exists in CWD (project root)
-mkdir -p .claude
+# Validate CLAUDE_PROJECT_DIR if set — must be an existing directory.
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]] && [[ ! -d "$CLAUDE_PROJECT_DIR" ]]; then
+  printf 'ERROR: CLAUDE_PROJECT_DIR is set but is not an existing directory: %s\n' "$CLAUDE_PROJECT_DIR" >&2
+  exit 1
+fi
+
+# Require a git repository — deepwork uses git for branch safety, worktrees, and
+# CI hooks; without one, sessions will silently fail mid-execute.
+git -C "${CLAUDE_PROJECT_DIR:-$(pwd -P)}" rev-parse --git-dir >/dev/null 2>&1 \
+  || { printf 'ERROR: deepwork requires a git repository (run '"'"'git init'"'"' or cd to one)\n' >&2; exit 1; }
+
+# Declare path variables before any mkdir so the EXIT trap below covers cleanup.
+LOCKFILE="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork.local.lock"
+# Anchored to $CLAUDE_PROJECT_DIR (W20-d): all trap/rollback blocks use this variable.
+SETTINGS_LOCAL="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/settings.local.json"
+# Install EXIT trap before first mkdir so cleanup fires even on early exit.
+trap 'rm -f "$LOCKFILE" "${SETTINGS_LOCAL}.tmp.$$"' EXIT
+
+# Ensure .claude/ exists at project root (CLAUDE_PROJECT_DIR or resolved cwd)
+mkdir -p "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude"
 
 # Resolve SESSION_ID
 SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
@@ -226,7 +252,6 @@ if [[ -z "$SESSION_ID" ]]; then
 fi
 
 # Atomic lockfile (TOCTOU-safe)
-LOCKFILE=".claude/deepwork.local.lock"
 if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
   if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -236,7 +261,7 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
       exit 1
     fi
   else
-    for _sf in .claude/deepwork/*/state.json; do
+    for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
       [[ -f "$_sf" ]] || continue
       _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
       if [[ "$_existing_session" == "$SESSION_ID" ]]; then
@@ -256,10 +281,9 @@ if ! (set -o noclobber; echo $$ > "$LOCKFILE") 2>/dev/null; then
     exit 1
   fi
 fi
-trap 'rm -f "$LOCKFILE" ".claude/settings.local.json.tmp.$$"' EXIT
 
 # Check for already-active instance (lockfile was stale from a crashed setup)
-for _sf in .claude/deepwork/*/state.json; do
+for _sf in "${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork"/*/state.json; do
   [[ -f "$_sf" ]] || continue
   _existing_session=$(jq -r '.session_id // ""' "$_sf" 2>/dev/null)
   if [[ "$_existing_session" == "$SESSION_ID" ]]; then
@@ -294,32 +318,42 @@ if [[ -z "$INSTANCE_ID" ]]; then
 fi
 
 INSTANCE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/${INSTANCE_ID}"
-mkdir -p "$INSTANCE_DIR"
-mkdir -p "${INSTANCE_DIR}/proposals"
+
+# Register cleanup trap and set _SETUP_COMPLETE BEFORE creating INSTANCE_DIR to
+# close the TOCTOU window where a SIGINT/SIGTERM would leave an orphan directory.
+_SETUP_COMPLETE=false
 
 trap '
   _rc=$?
-  rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" ".claude/settings.local.json.tmp.$$"
+  rm -f "$LOCKFILE" "${INSTANCE_DIR}/state.json.tmp.$$" "${SETTINGS_LOCAL}.tmp.$$"
+  if [ "$_SETUP_COMPLETE" != "true" ] && [ $_rc -ne 0 ]; then
+    # Transactional rollback: remove the partial instance dir so discover_instance
+    # never picks up a half-initialised state.json.
+    [[ -d "${INSTANCE_DIR:-}" ]] && rm -rf "${INSTANCE_DIR}" 2>/dev/null || true
+  fi
   # On non-zero exit, remove only the hook blocks inserted by this instance.
   # Backup is last-resort manual recovery only (not automatic primary path).
-  if [ $_rc -ne 0 ] && [ -f ".claude/settings.local.json" ] && command -v jq >/dev/null 2>&1; then
+  if [ $_rc -ne 0 ] && [ -f "$SETTINGS_LOCAL" ] && command -v jq >/dev/null 2>&1; then
     _iid="$INSTANCE_ID"
     if [ -n "$_iid" ]; then
-      _tmp_rollback=".claude/settings.local.json.rollback.$$"
+      _tmp_rollback="${SETTINGS_LOCAL}.rollback.$$"
       jq --arg iid "$_iid" "
         if .hooks then
           .hooks |= with_entries(.value = [.value[]? | select(._deepwork_instance != \$iid)] | select(.value | length > 0))
           | if (.hooks | length) == 0 then del(.hooks) else . end
         else . end
-      " ".claude/settings.local.json" > "$_tmp_rollback" 2>/dev/null
+      " "$SETTINGS_LOCAL" > "$_tmp_rollback" 2>/dev/null
       if [ -s "$_tmp_rollback" ]; then
-        mv "$_tmp_rollback" ".claude/settings.local.json" 2>/dev/null || true
+        mv "$_tmp_rollback" "$SETTINGS_LOCAL" 2>/dev/null || true
       else
         rm -f "$_tmp_rollback" 2>/dev/null || true
       fi
     fi
   fi
 ' EXIT
+
+mkdir -p "$INSTANCE_DIR"
+mkdir -p "${INSTANCE_DIR}/proposals"
 
 # Derive team_name
 if [[ -z "$TEAM_NAME" ]]; then
@@ -527,7 +561,7 @@ fi
 printf '%s\n' "$GOAL" > "${INSTANCE_DIR}/prompt.md"
 
 # ---- Settings.local.json hook wiring ----
-SETTINGS_LOCAL=".claude/settings.local.json"
+# (SETTINGS_LOCAL already declared above, anchored to $CLAUDE_PROJECT_DIR)
 
 # Backup kept as last-resort manual recovery only — transactional rollback (trap above)
 # removes only this instance's injected blocks on failure without touching the backup.
@@ -630,7 +664,6 @@ if [[ -s "${SETTINGS_LOCAL}.tmp.$$" ]]; then
 else
   rm -f "${SETTINGS_LOCAL}.tmp.$$"
   if [[ "$ALLOW_NO_HOOKS" != "true" ]]; then
-    rm -rf "${INSTANCE_DIR}"
     echo "Hook injection failed; programmatic enforcement is absent. Re-run with --allow-no-hooks to override (debugging only)." >&2
     exit 1
   fi
@@ -696,4 +729,5 @@ cat "${PLUGIN_ROOT}/references/written-bar-template.md"
 # when-not-to-use, failure-modes) are loaded on demand via Read during the orchestrator's
 # phase pipeline. Per principle: progressive disclosure keeps the initial prompt lean.
 
+_SETUP_COMPLETE=true
 exit 0

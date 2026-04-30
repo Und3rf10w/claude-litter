@@ -5,7 +5,7 @@
 # Hook Architecture (Current Snapshot)
 
 Source: plugins/deepwork/hooks/ + plugins/deepwork/scripts/setup-deepwork.sh
-Graph: 106 nodes, 170 edges
+Graph: 108 nodes, 174 edges
 
 ## Mermaid Flowchart
 
@@ -42,6 +42,7 @@ flowchart LR
     stale_warn["stale-warn"]
     state_bash_gate["state-bash-gate"]
     state_drift_marker["state-drift-marker"]
+    status_claim_regex_precheck["status-claim-regex-precheck"]
     task_completed_gate["task-completed-gate"]
     teammate_idle_gate["teammate-idle-gate"]
     verdict_version_gate["verdict-version-gate"]
@@ -76,6 +77,7 @@ flowchart LR
     version_bump_notify["version-bump-notify"]
     wave_gate["wave-gate"]
     wiki_log_append["wiki-log-append"]
+    worktree_cd_warn["worktree-cd-warn"]
   end
   subgraph State
     bar(([".bar"]))
@@ -134,9 +136,9 @@ flowchart LR
     drift_log[/"  drift.log"/]
     events_jsonl[/"  events.jsonl"/]
     execute_done_sentinel[/"  execute-done.sentinel"/]
-    heartbeat_json[/"  heartbeat.json"/]
     incidents_jsonl[/"  incidents.jsonl"/]
     log_md[/"  log.md"/]
+    metrics_violations_jsonl[/"  metrics-violations.jsonl"/]
     pending_change_json[/"  pending-change.json"/]
     proposals[/"  proposals"/]
     rollback[/"  rollback."/]
@@ -167,6 +169,7 @@ flowchart LR
   PreToolUse -->|"Bash"| state_bash_gate
   PreToolUse -->|"Write|Edit"| state_drift_marker
   PreToolUse -->|"SendMessage"| verdict_version_gate
+  PreToolUse -->|"Bash"| worktree_cd_warn
   SessionStart -->|"startup|resume|clear|compact"| session_context
   Stop --> approve_archive
   Stop --> halt_gate
@@ -176,6 +179,7 @@ flowchart LR
   TaskCompleted --> task_completed_gate
   TaskCreated --> task_scope_gate
   TaskCreated --> wave_gate
+  TeammateIdle --> status_claim_regex_precheck
   TeammateIdle --> teammate_idle_gate
   approve_archive -.->|"reads"| execute_phase
   approve_archive -.->|"reads"| halt_reason
@@ -223,6 +227,7 @@ flowchart LR
   session_context -.->|"reads"| team_name
   state_drift_marker -.->|"reads"| last_updated
   state_drift_marker -.->|"reads"| phase
+  status_claim_regex_precheck -.->|"reads"| team_name
   stop_hook -.->|"reads"| execute_phase
   task_completed_gate -.->|"reads"| id
   task_completed_gate -.->|"reads"| metadata_artifact
@@ -260,7 +265,6 @@ flowchart LR
   incident_detector -->|"writes"| hook_warnings
   stop_hook -->|"writes"| execute_halt_reason
   stop_hook -->|"writes"| execute_phase
-  approve_archive -.->|"reads"| heartbeat_json
   approve_archive -.->|"reads"| state_archived_json
   bash_gate -.->|"reads"| critique_v
   bash_gate -.->|"reads"| pending_change_json
@@ -286,6 +290,7 @@ flowchart LR
   state_drift_marker -.->|"reads"| state_snapshot
   state_drift_marker -.->|"reads"| events_jsonl
   state_drift_marker -.->|"reads"| state_json
+  status_claim_regex_precheck -.->|"reads"| metrics_violations_jsonl
   stop_hook -.->|"reads"| execute_done_sentinel
   task_completed_gate -.->|"reads"| gate_blocked
   task_completed_gate -.->|"reads"| gate_blocked_task_id
@@ -308,6 +313,7 @@ flowchart LR
   retest_dispatch -->|"writes"| test_results_jsonl
   stale_warn -->|"writes"| drift_log
   state_drift_marker -->|"writes"| state_json
+  status_claim_regex_precheck -->|"writes"| metrics_violations_jsonl
   task_completed_gate -->|"writes"| gate_blocked
   task_scope_gate -->|"writes"| discoveries_jsonl
   teammate_idle_gate -->|"writes"| idle_retry
@@ -334,7 +340,6 @@ flowchart LR
           ".phase"
         ],
         "markers": [
-          "heartbeat.json",
           "state.archived.json"
         ]
       },
@@ -807,6 +812,29 @@ flowchart LR
       },
       "source_refs": ["hooks/state-drift-marker.sh"]
     },
+    "status-claim-regex-precheck.sh": {
+      "triggered_by": [
+      "TeammateIdle"
+      ],
+      "mode": "design",
+      "reads": {
+        "state": [
+          ".team_name"
+        ],
+        "markers": [
+          "metrics-violations.jsonl"
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          "metrics-violations.jsonl"
+        ]
+      },
+      "source_refs": ["hooks/status-claim-regex-precheck.sh"]
+    },
     "stop-hook.sh": {
       "triggered_by": [
       "Stop"
@@ -1046,6 +1074,29 @@ flowchart LR
         ]
       },
       "source_refs": ["hooks/wiki-log-append.sh"]
+    },
+    "worktree-cd-warn.sh": {
+      "triggered_by": [
+      "PreToolUse"
+      ],
+      "mode": "execute",
+      "reads": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "writes": {
+        "state": [
+          ""
+        ],
+        "markers": [
+          ""
+        ]
+      },
+      "source_refs": ["hooks/execute/worktree-cd-warn.sh"]
     }
   },
   "orchestrator_writes": {

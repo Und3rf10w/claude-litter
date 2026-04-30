@@ -52,10 +52,10 @@ if ! discover_instance_by_team_name "$TEAM_NAME"; then
   exit 0
 fi
 
-SANITIZED_TEAM=$(printf '%s' "$TEAM_NAME" | sed 's/[^a-zA-Z0-9_-]/-/g')
+SANITIZED_TEAM=$(_sanitize_team_name "$TEAM_NAME")
 TASK_DIR="$HOME/.claude/tasks/${SANITIZED_TEAM}"
 
-TASK_ID_SAFE=$(printf '%s' "$TASK_ID" | sed 's/[^a-zA-Z0-9_-]/_/g')
+TASK_ID_SAFE=$(_sanitize_task_id "$TASK_ID")
 TASK_FILE="${TASK_DIR}/${TASK_ID_SAFE}.json"
 
 [[ -f "$TASK_FILE" ]] || exit 0
@@ -141,7 +141,13 @@ if [[ "$CROSS_CHECK" == "true" ]]; then
   done
 
   # Require ≥2 completions AND ≥2 distinct owners (avoid same agent completing both)
-  DISTINCT_OWNERS=$(printf '%s\n' "${OWNERS_COMPLETED[@]:-}" | sort -u | wc -l | tr -d ' ')
+  # Empty-array guard: ${OWNERS_COMPLETED[@]:-} expands to a single empty
+  # string when the array is empty, which sort -u | wc -l counts as 1 (not 0).
+  if [[ ${#OWNERS_COMPLETED[@]} -eq 0 ]]; then
+    DISTINCT_OWNERS=0
+  else
+    DISTINCT_OWNERS=$(printf '%s\n' "${OWNERS_COMPLETED[@]}" | sort -u | wc -l | tr -d ' ')
+  fi
 
   if [[ $COMPLETED_COUNT -lt 2 ]] || [[ $DISTINCT_OWNERS -lt 2 ]]; then
     # M5 Change C — write sidecar marker so teammate-idle-gate.sh can detect

@@ -1,7 +1,7 @@
 # Audit Synthesis Template
 
 **Kind**: audit
-**Invocation**: `/deepwork --kind audit "..."` or goal matches `/\b(audit|vuln|security review)\b/i`
+**Invocation**: `/deepwork "..."` when goal matches `/\b(audit|vuln|security review)\b/i`
 **Mode**: plan mode only — no execute phase. This template is never consumed by execute mode.
 
 ---
@@ -123,7 +123,7 @@ SYNTHESIZE phase writes `proposals/v<N>.md` using this structure. Every finding 
 
 ## Notes for SYNTHESIZE phase
 
-- `state.kind = "audit"` triggers this template.
+- This template is selected when goal keywords match `/\b(audit|vuln|security review)\b/i`.
 - Execute mode is NOT invoked after an audit session. The deliverable is a findings report only.
-- Remediation implementation, if required, should be a separate `/deepwork --kind impl-plan "..."` session that treats the audit report as a starting point.
-- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes findings in its own format (§9.4 degrade path).
+- Remediation implementation, if required, should be a separate deepwork session that treats the audit report as a starting point.
+- Fallback behavior: if this template file is absent, SYNTHESIZE phase writes findings in its own format.

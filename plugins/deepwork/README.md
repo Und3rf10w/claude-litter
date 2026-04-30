@@ -51,7 +51,6 @@ See `references/archetype-taxonomy.md` for composition patterns per problem shap
 
 - **Agent teams** — `TeamCreate`, `Agent`, `SendMessage`, `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` must be enabled (Claude Code experimental agent teams)
 - **jq** — required for state management and hook logic
-- **perl** — required for profile template substitution
 - **bash 3.2+** — macOS and Linux supported
 
 ---
@@ -117,7 +116,7 @@ At SETUP, `plan_hash` (SHA-256 of the plan file) is frozen and never changes. Be
 
 Expected outcome: each plan gate goes through WRITE→VERIFY→CRITIQUE; when all gates are APPROVED and LANDed, the session halts cleanly.
 
-For the full pipeline, all 8 execute hooks, state fields, and amendment mechanics, see `references/execute-mode.md`. For the authoritative orchestrator contract, see `profiles/execute/PROFILE.md`.
+For the full pipeline, all 9 execute hooks, state fields, and amendment mechanics, see `references/execute-mode.md`. For the authoritative orchestrator contract, see `profiles/execute/PROFILE.md`.
 
 ---
 
@@ -167,7 +166,7 @@ For the full pipeline, all 8 execute hooks, state fields, and amendment mechanic
 | `--chaos-monkey` | Explicitly spawn CHAOS-MONKEY archetype. Default: auto-enabled for distributed/infra goals. |
 | `--no-chaos-monkey` | Explicitly disable CHAOS-MONKEY spawn. |
 
-Source for all flags: `scripts/setup-deepwork.sh:30-173`.
+Source for all flags: `scripts/setup-deepwork.sh:32-190`.
 
 **Note**: `authorized_*` flags are written ONCE at SETUP and cannot be changed post-SETUP. `hooks/execute/bash-gate.sh` checks `setup_flags_snapshot` and denies any flag that was not set at setup time.
 
@@ -224,7 +223,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `incident-detector.sh` | PermissionDenied | Appends to `incidents.jsonl` on denied operations | `hooks/incident-detector.sh` |
 | `deliver-gate.sh` | PreToolUse:ExitPlanMode | Lints ExitPlanMode content; enforces "Residual unknowns" + delta_from_prior | `hooks/deliver-gate.sh` |
 | `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |
-| `approve-archive.sh` | Stop | On phase=="done", renames `state.json` → `state.archived.json` and invokes teardown | `hooks/approve-archive.sh` |
+| `approve-archive.sh` | Stop | On `phase=="done"` (design mode) OR `execute.phase=="halt"` with a valid `halt_reason` object (execute mode), renames `state.json` → `state.archived.json` and invokes settings teardown | `hooks/approve-archive.sh` |
 | `wiki-log-append.sh` | FileChanged(.claude/deepwork/) | Appends log entry to DEEPWORK_WIKI.md when `state.archived.json` appears | `hooks/wiki-log-append.sh` |
 | `teammate-idle-gate.sh` | TeammateIdle | Forces teammates with in_progress tasks to complete (≤3 retries); M5 Change C — exempts idle when a fresh `.gate-blocked-<task_id>` sidecar marker (AGE<300s) exists for an owned task (drift class l) | `hooks/teammate-idle-gate.sh` |
 | `phase-advance-gate.sh` | PreToolUse(Edit\|Write) | Blocks state.json phase transitions when `empirical_unknowns[*].result` is null / artifact missing (drift class a) or state.json vs log.md metadata disagrees (drift class k); warns on source_of_truth omissions | `hooks/phase-advance-gate.sh` |
@@ -235,6 +234,9 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `frontmatter-gate.sh` | PreToolUse(Write\|Edit) | Enforces uniform YAML frontmatter on `.md` artifacts written inside the active instance dir; carve-outs: `log.md`, `prompt.md`, `adversarial-tests*.md`; warn-only for pre-fix sessions lacking `frontmatter_schema_version` sentinel | `hooks/frontmatter-gate.sh` |
 | `state-drift-marker.sh` | Pre+PostToolUse(Write\|Edit) | On state.json writes: snapshots pre-write, diffs post-write, appends deduped phase-transition + bar-verdict markers to log.md (removes model dependency for log freshness) | `hooks/state-drift-marker.sh` |
 | `pre-compact.sh` | PreCompact (static, `hooks.json`) | Stamps `state.json.last_updated`, appends freshness line to log.md, emits compact instructions on stdout; no-ops for subagent contexts and when no active session | `hooks/pre-compact.sh` |
+| `integrity-always-gate.sh` | PreToolUse(Write\|Edit\|Bash\|TaskCreate\|TaskUpdate\|SendMessage) | Always-on `event_head` integrity check (W9 M1); fires on every tool use; modes: both; fail-open when no active instance | `hooks/integrity-always-gate.sh` |
+| `state-bash-gate.sh` | PreToolUse(Bash) | Blocks shell-redirect writes to `state.json` that would bypass `frontmatter-gate.sh` (W8 H2); modes: both | `hooks/state-bash-gate.sh` |
+| `batch-gate.sh` | PostToolBatch | W3-b: consolidates state-drift-marker Pre leg into one PostToolBatch subprocess; runs in parallel with existing Pre state-drift-marker during shadow period; modes: both; requires CC >= 2.1.118 (pre-2.1.118 silently ignores unknown event); feature flag `state.batch_gate_enabled` (default true) | `hooks/batch-gate.sh` |
 
 ### Execute-mode hooks (registered at execute SETUP)
 
@@ -248,6 +250,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `retest-dispatch.sh` | PostToolUse(Write\|Edit) | Async dispatch of covering test from `test_manifest` after each write | `hooks/execute/retest-dispatch.sh` |
 | `plan-drift-detector.sh` | FileChanged(\<plan_ref\>) | Advisory: sets `plan_drift_detected=true` on sha256 divergence | `hooks/execute/plan-drift-detector.sh` |
 | `file-changed-retest.sh` | FileChanged(src/**) | Advisory secondary retest trigger on filesystem change events; 500ms debounce | `hooks/execute/file-changed-retest.sh` |
+| `worktree-cd-warn.sh` | PreToolUse(Bash) | Warn-only: detects write-class Bash ops on a worktree path without the required cd-prefix | `hooks/execute/worktree-cd-warn.sh` |
 
 ---
 
@@ -338,17 +341,19 @@ Use `/deepwork-recap` for a quick 30-50-word summary of where things stand. DEEP
 
 ## §19 Contributing / tests
 
-Three test scripts for plugin development:
+Run the full test suite with the aggregator (scripts/ + regressions/):
+```
+bash scripts/run-all-tests.sh
+```
+
+Or run individual test scripts:
 
 | Script | Purpose |
 |---|---|
 | `scripts/test-deliver-gate.sh` | Smoke-tests the DESIGN-mode deliver gate (ExitPlanMode linting) |
 | `scripts/test-execute-gates.sh` | Smoke-tests the execute-mode hooks (11 test groups; plan citation, bash gate, task scope, drift detection, etc.) |
 | `scripts/test-prompt-parse.sh` | Smoke-tests goal / flag parsing in `setup-deepwork.sh` |
+| `scripts/test-halt-gate.sh` | Smoke-tests the Stop-hook halt gate registration and logic |
+| `scripts/regressions/` | Deep regression suites for state machine, event sourcing, hook contracts, schema invariants, and more |
 
-Run all tests:
-```
-bash scripts/test-deliver-gate.sh && bash scripts/test-execute-gates.sh && bash scripts/test-prompt-parse.sh
-```
-
-Commit style: conventional commits — `type(scope): description` (e.g., `feat(hooks): add chaos-monkey gate`). Adding a hook requires updating README §10 hooks table. Adding a skill requires updating README §7 commands table. Changing flag parsing requires updating README §8 flags table. See `plugins/deepwork/CLAUDE.md` for the doc sync rule.
+Commit style: conventional commits — `type(scope): description` (e.g., `feat(hooks): add chaos-monkey gate`). Adding a hook requires updating README §13 hooks table. Adding a skill requires updating README §10 commands table. Changing flag parsing requires updating README §11 flags table. See `plugins/deepwork/CLAUDE.md` for the doc sync rule.

@@ -25,14 +25,41 @@
 _parse_hook_input() {
   INPUT=$(cat)
   export INPUT
-  HOOK_EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null || echo "")
-  export HOOK_EVENT_NAME
-  TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
-  export TOOL_NAME
-  SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
-  export SESSION_ID
-  TOOL_USE_ID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // ""' 2>/dev/null || echo "")
-  export TOOL_USE_ID
+  # Single jq pass: extract all four fields in one subprocess instead of four.
+  # Split via bash read instead of 4 sed subprocesses (latency: every hook invocation).
+  local _jq_out _l1 _l2 _l3 _l4
+  _jq_out=$(printf '%s' "$INPUT" | jq -r '
+    (.hook_event_name // ""),
+    (.tool_name       // ""),
+    (.session_id      // ""),
+    (.tool_use_id     // "")
+  ' 2>/dev/null) || _jq_out=$'\n\n\n'
+  # Read four newline-delimited lines into separate variables without spawning sed.
+  # || true: read returns 1 at EOF; callers with set -e must not propagate that.
+  { IFS= read -r _l1 || true; IFS= read -r _l2 || true; IFS= read -r _l3 || true; IFS= read -r _l4 || true; } <<< "$_jq_out"
+  HOOK_EVENT_NAME="$_l1"; export HOOK_EVENT_NAME
+  TOOL_NAME="$_l2";       export TOOL_NAME
+  SESSION_ID="$_l3";      export SESSION_ID
+  TOOL_USE_ID="$_l4";     export TOOL_USE_ID
+}
+
+# ---------------------------------------------------------------------------
+# _sanitize_team_name <team_name>
+#
+# Canonical team-name sanitization: replaces `/` and space with `_`.
+# Prints the sanitized name to stdout. Must match the CC TUI / swarm-loop
+# write path so file lookups find the directory the producer created.
+_sanitize_team_name() {
+  printf '%s' "$1" | tr '/' '_' | tr ' ' '_'
+}
+
+# ---------------------------------------------------------------------------
+# _sanitize_task_id <task_id>
+#
+# Canonical task-ID sanitization: replaces `/` with `_`.
+# Prints the sanitized ID to stdout. Must match _load_task_file's write path.
+_sanitize_task_id() {
+  printf '%s' "$1" | tr '/' '_'
 }
 
 # ---------------------------------------------------------------------------
@@ -44,8 +71,8 @@ _load_task_file() {
   local team_name="$1" task_id="$2"
   [[ -n "$team_name" && -n "$task_id" ]] || return 1
   local sanitized_team task_safe tasks_dir candidate
-  sanitized_team=$(printf '%s' "$team_name" | tr '/' '_' | tr ' ' '_')
-  task_safe=$(printf '%s' "$task_id" | tr '/' '_')
+  sanitized_team=$(_sanitize_team_name "$team_name")
+  task_safe=$(_sanitize_task_id "$task_id")
   tasks_dir="${HOME}/.claude/tasks/${sanitized_team}"
   candidate="${tasks_dir}/${task_safe}.json"
   [[ -f "$candidate" ]] || return 1
@@ -105,9 +132,29 @@ _dw_exit_trap() {
   return $_s
 }
 
+# P14: global array of lock-dirs (mkdir backend) to clean up on exit.
+# Each _acquire_lock call appends to this array; _dw_cleanup_locks drains it.
+# Replaces string-accumulation trap concatenation which could lose entries on
+# nested acquires when the sed parse strips embedded quotes.
+_DW_LOCK_CLEANUP_PATHS=()
+
+_dw_cleanup_locks() {
+  local _ld
+  for _ld in "${_DW_LOCK_CLEANUP_PATHS[@]:-}"; do
+    [[ -n "$_ld" ]] && rm -rf "$_ld" 2>/dev/null || true
+  done
+}
+
+_dw_exit_all() {
+  local _s=$?
+  _dw_emit_timing "$_s"
+  _dw_cleanup_locks
+  return $_s
+}
+
 # Only install the trap once (guard against double-sourcing)
 if [[ "${_DW_TIMING_TRAP_INSTALLED:-0}" != "1" ]]; then
-  trap '_dw_exit_trap' EXIT
+  trap '_dw_exit_all' EXIT
   _DW_TIMING_TRAP_INSTALLED=1
 fi
 
@@ -126,13 +173,48 @@ _canonical_path() {
 # Portable lock helpers — prefer flock(1) when available; fall back to
 # POSIX-atomic mkdir on macOS (where flock ships with util-linux, not BSD).
 #
+# CONTRIBUTOR REFERENCE: see references/lock-primitives.md for the full
+# rationale, the macOS mkdir-fallback foot-guns, and the third-lock
+# extension recipe. The summary below is the minimum needed to call the API
+# correctly; the reference doc covers WHY each rule exists and what breaks
+# when you violate it.
+#
+# Lock-ordering invariant (W20):
+#   events.jsonl.lock is always acquired BEFORE state.json.lock.
+#   _emit_event with _EMIT_STAMP_HEAD=1 nests state.json.lock inside
+#   events.jsonl.lock. No caller acquires them in the reverse order.
+#
+# Static fd convention (F-B3, W22):
+#   fd 200  — events.jsonl.lock (outer)
+#   fd 201  — state.json.lock   (inner)
+#   fd 202  — override-tokens.json.lock (P6; no nesting with 200/201)
+#   default — fd 200 (single-lock callers)
+#
+# Why the convention exists: bash's `exec N>file` rebinds fd N to the new
+# file. If two nested locks both used fd 200, the inner `exec` would close
+# the outer flock (kernel-side flocks live on the file description, which is
+# released when the last fd referencing it closes). Allocating distinct fds
+# per lock keeps each kernel-side flock independent across nested acquires.
+# Empirically reproduced and verified — see proposals/v5-final.md §F-B3 and
+# empirical_results.E6.md.
+#
+# A fourth lock would use fd 203. fd 202 is already allocated (P6).
+# Single-fd nested locks are unsafe by design.
+#
+# macOS-specific traps (mkdir backend):
+#   - NEVER call _release_lock after a failed _acquire_lock — releasing
+#     `<lock>.dir` you do not own deletes another process's lock dir.
+#   - NEVER add `2>/dev/null` to `exec N>&-` lines — see _release_lock note.
+#
 # _acquire_lock <lock-path>  — acquire exclusive lock; spins up to 5 s.
 #   Returns 0 on success, 1 on timeout.
-#   On flock systems: opens <lock-path> as fd 200 and calls flock -x.
+#   On flock systems: opens <lock-path> on the convention-allocated fd
+#     (200 / 201) and calls flock -x.
 #   On mkdir systems: creates <lock-path>.dir atomically; registers EXIT trap.
 #
 # _release_lock <lock-path>  — release a lock acquired by _acquire_lock.
-#   On flock systems: closes fd 200 (lock auto-released on fd close).
+#   On flock systems: closes the convention-allocated fd
+#     (200 / 201; lock auto-released on fd close).
 #   On mkdir systems: removes <lock-path>.dir.
 #
 # Usage pattern (non-subshell):
@@ -143,17 +225,37 @@ _canonical_path() {
 _acquire_lock() {
   local _lp="$1"
   if command -v flock >/dev/null 2>&1; then
-    # Open the lock file on fd 200 and acquire exclusive flock.
-    eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
-    flock -x 200 || { exec 200>&-; return 1; }
+    case "$_lp" in
+      */events.jsonl.lock)
+        exec 200>"$_lp" 2>/dev/null || return 1
+        flock -x 200 || { exec 200>&-; return 1; }
+        ;;
+      */state.json.lock)
+        exec 201>"$_lp" 2>/dev/null || return 1
+        flock -x 201 || { exec 201>&-; return 1; }
+        ;;
+      */override-tokens.json.lock)
+        # P6: fd 202 — third lock for override-tokens.json (no nesting with 200/201)
+        exec 202>"$_lp" 2>/dev/null || return 1
+        flock -x 202 || { exec 202>&-; return 1; }
+        ;;
+      *)
+        # Default: single-lock callers (no nesting expected). fd 200.
+        exec 200>"$_lp" 2>/dev/null || return 1
+        flock -x 200 || { exec 200>&-; return 1; }
+        ;;
+    esac
   else
     local _ld="${_lp}.dir"
     local _dl=$(( $(date +%s) + 5 ))
     until mkdir "$_ld" 2>/dev/null; do
       [[ $(date +%s) -lt $_dl ]] || return 1
-      sleep 0.1
+      # P5: jitter — random 0.1–0.5 s sleep reduces contention thundering-herd
+      sleep "0.$(( RANDOM % 5 + 1 ))"
     done
-    trap 'rm -rf "$_ld"' EXIT
+    # P14: push lock-dir onto cleanup array; _dw_cleanup_locks drains it on EXIT.
+    # Replaces sed-based trap string accumulation which corrupt embedded paths.
+    _DW_LOCK_CLEANUP_PATHS+=("$_ld")
   fi
   return 0
 }
@@ -161,7 +263,17 @@ _acquire_lock() {
 _release_lock() {
   local _lp="$1"
   if command -v flock >/dev/null 2>&1; then
-    exec 200>&- 2>/dev/null || true
+    # NOTE: do NOT add `2>/dev/null` to these `exec` lines — `exec`
+    # without a command applies redirections to the *current shell*
+    # permanently, so `2>/dev/null` would silently disable stderr for
+    # all subsequent commands. `exec N>&-` does not write to stderr
+    # anyway, so error suppression is unnecessary.
+    case "$_lp" in
+      */events.jsonl.lock)        exec 200>&- ;;
+      */state.json.lock)          exec 201>&- ;;
+      */override-tokens.json.lock) exec 202>&- ;;
+      *)                           exec 200>&- ;;
+    esac
   else
     rm -rf "${_lp}.dir" 2>/dev/null || true
   fi
@@ -206,12 +318,23 @@ _verify_event_head_or_block() {
   [[ -n "${STATE_FILE:-}" ]] || return 0  # no state context — fail-open
   [[ -f "$STATE_FILE" ]] || return 0
 
+  local _events_jsonl="${INSTANCE_DIR}/events.jsonl"
+  local _lock="${_events_jsonl}.lock"
+
+  # P23: read event_head and tail of events.jsonl under events.jsonl.lock to eliminate
+  # TOCTOU between concurrent hook invocations (_emit_event holds this lock when
+  # appending to events.jsonl and stamping event_head in state.json — W20 invariant).
+  _acquire_lock "$_lock" || return 0  # fail-open if lock unavailable (best-effort read gate)
+
   local _event_head_stored
   _event_head_stored=$(jq -r '.event_head // ""' "$STATE_FILE" 2>/dev/null || echo "")
-  [[ -n "$_event_head_stored" ]] || return 0  # pre-W7 instance: pass
+  if [[ -z "$_event_head_stored" ]]; then
+    _release_lock "$_lock"
+    return 0  # pre-W7 instance: pass
+  fi
 
-  local _events_jsonl="${INSTANCE_DIR}/events.jsonl"
   if [[ ! -f "$_events_jsonl" ]]; then
+    _release_lock "$_lock"
     printf 'integrity-gate: STATE_DIVERGENCE — event_head present in state.json but events.jsonl is missing.\n' >&2
     printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
     return 2
@@ -219,17 +342,25 @@ _verify_event_head_or_block() {
 
   local _last_line _actual_head
   _last_line=$(tail -1 "$_events_jsonl" 2>/dev/null || echo "")
-  if [[ -n "$_last_line" ]]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
-    else
-      _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
-    fi
-    if [[ "$_event_head_stored" != "$_actual_head" ]]; then
-      printf 'integrity-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
-      printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
-      return 2
-    fi
+  _release_lock "$_lock"
+
+  # P16: strip trailing whitespace before hashing (trailing newline from interrupted append causes false mismatch)
+  _last_line="${_last_line%%[[:space:]]}"
+  # P19: empty last line with event_head set = truncation attack or corruption → block
+  if [[ -z "$_last_line" ]]; then
+    printf 'integrity-gate: EMPTY_EVENT_LOG — event_head is set but events.jsonl last line is empty.\n' >&2
+    printf 'Run /deepwork-reconcile to rebuild state from events.\n' >&2
+    return 2
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    _actual_head=$(printf '%s\n' "$_last_line" | sha256sum | cut -d' ' -f1)
+  else
+    _actual_head=$(printf '%s\n' "$_last_line" | shasum -a 256 | cut -d' ' -f1)
+  fi
+  if [[ "$_event_head_stored" != "$_actual_head" ]]; then
+    printf 'integrity-gate: EVENT_HEAD_MISMATCH — state.json event_head does not match events.jsonl tail.\n' >&2
+    printf 'Run /deepwork-reconcile to rebuild state.json from the event log.\n' >&2
+    return 2
   fi
   return 0
 }
@@ -246,6 +377,8 @@ discover_instance() {
   # for all hook types). Fall back to pwd -P for non-hook contexts (e.g., test harness).
   _project_root="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"
 
+  # Glob matches only state.json — archived instances (state.archived.json) are
+  # automatically skipped without extra logic.
   for _f in "${_project_root}/.claude/deepwork"/*/state.json; do
     # Guard: glob returned literal pattern (no matches)
     [[ -f "$_f" ]] || continue
@@ -264,8 +397,14 @@ discover_instance() {
     if [[ "$_sid" == deepwork-* ]] && [[ -n "$hook_session" ]]; then
       local _st_script
       _st_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-transition.sh"
-      bash "$_st_script" --state-file "$_f" backfill_session --session-id "$hook_session" 2>/dev/null || continue
-      _sid="$hook_session"
+      if bash "$_st_script" --state-file "$_f" backfill_session --session-id "$hook_session" 2>/dev/null; then
+        _sid="$hook_session"
+      else
+        printf 'discover_instance: backfill_session failed for %s — continuing session-id match\n' "$_f" >&2
+        # Fall through: use the placeholder _sid for the match below; it won't
+        # equal $hook_session so this instance will be skipped, but we don't
+        # silently abort scanning the remaining instances.
+      fi
     fi
 
     [[ "$_sid" == "$hook_session" ]] || continue

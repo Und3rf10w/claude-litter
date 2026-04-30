@@ -61,7 +61,7 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
 
 5. **Compose the team**. 5 core + 1 optional:
 
-   **Parallel-pair worktree isolation**: when this phase runs multiple implementer/reviewer pairs concurrently (e.g., two plan gates in parallel), each pair MUST be placed in a dedicated git worktree; use the prompt-based `cd` workaround (NOT `cwd:` on `Agent` — not in public schema as of CC 2.1.118+). Full pattern and hard rules: `references/parallel-execution.md`.
+   **Parallel-pair worktree isolation**: when this phase runs multiple implementer/reviewer pairs concurrently (e.g., two plan gates in parallel), each pair MUST be placed in a dedicated git worktree; use the prompt-based `cd` workaround (NOT `cwd:` on `Agent` — not in public schema as of CC 2.1.120+). Full pattern and hard rules: `references/parallel-execution.md`.
    - `critic` (CRITIC, invariant) — include `references/critic-stance.md` verbatim
    - `executor` (MECHANISM) — include `profiles/execute/stances/executor-stance.md` verbatim
    - `adversary` (FALSIFIER) — include `profiles/execute/stances/adversary-stance.md` verbatim
