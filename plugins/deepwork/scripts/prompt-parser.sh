@@ -13,11 +13,11 @@
 #   - parse_prompt_file mutates these globals. The prompt file is consumed
 #     (removed on success).
 #
-# Why perl -0777 slurp-mode regex? SKILL.md's quoted heredoc delivers $ARGUMENTS
-# as a single line with the goal and flags concatenated. A line-oriented parser
-# would miss everything. The slurp regex injects `\n` before every known flag
-# occurrence, normalizing single-line input to one-flag-per-line before the
-# case-branch parser runs. Pattern from setup-swarm-loop.sh:170-229.
+# Why splitting at all? When SKILL.md's quoted heredoc delivers $ARGUMENTS as
+# a single line with the goal and flags concatenated, a line-oriented parser
+# would miss every flag. The preprocessor inserts `\n` before each known flag
+# occurrence so the case-branch loop in parse_prompt_file sees one flag per
+# line. Pure-bash implementation — no fork to perl/sed/awk.
 
 # Strip surrounding single/double quotes with whitespace trim.
 _strip_quotes() {
@@ -34,26 +34,57 @@ _strip_quotes() {
 }
 
 # Split concatenated `goal --flag value --flag value` single-line input
-# into one-flag-per-line form, in-place.
+# into one-flag-per-line form, in-place. Pure-bash — no perl/sed/awk fork.
 #
-# Two flag classes:
-#   value_re  — flags that require a value (=val or space val)
-#   bool_re   — boolean flags with no value (presence sets the flag)
+# Algorithm: pad input with leading/trailing space so flags at start/end
+# are detectable, then iterate bash regex matches. Each match is whitespace
+# followed by a known --flag and a trailing whitespace/equals; we replace
+# the leading whitespace with a newline. Flags appearing inside arbitrary
+# text without leading whitespace are not split (matches prior perl behavior).
 _preprocess_prompt_file() {
   local file="$1"
-  if ! command -v perl >/dev/null 2>&1; then
-    printf 'prompt-parser.sh: perl is required but not found in PATH; cannot preprocess prompt file\n' >&2
-    return 1
-  fi
-  perl -0777 -pe '
-    s/\r//g;
-    my $value_re = "source-of-truth|anchor|guardrail|bar|safe-mode|mode|team-name|prompt-file|plan-ref";
-    my $bool_re  = "authorized-push|authorized-force-push|authorized-prod-deploy|authorized-local-destructive|secret-scan-waive|chaos-monkey|no-chaos-monkey|allow-no-hooks|enable-single-writer|disable-single-writer";
-    # value flags: split before --flag=val or --flag val
-    s/[^\S\n]+(--(?:$value_re)(?:=\s*(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)|\s+(?:'"'"'[^'"'"']*'"'"'|"[^"]*"|\S+)))/\n$1/gx;
-    # boolean flags: split before --flag (no value follows, or next token starts with --)
-    s/[^\S\n]+(--(?:$bool_re))(?=[[:space:]]|$)/\n$1/gx;
-  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file" || { rm -f "${file}.tmp"; return 1; }
+  local content
+  content=$(<"$file") || return 1
+  content="${content//$'\r'/}"
+
+  # Pad so flags at start/end of input are matched; the padding is stripped
+  # at the end. Trailing space also serves as a sentinel so the last flag's
+  # ([[:space:]=]) match succeeds even when the original input ended on a flag.
+  content=" ${content} "
+
+  local flag_alt='source-of-truth|anchor|guardrail|bar|safe-mode|mode|team-name|prompt-file|plan-ref'
+  flag_alt+='|authorized-push|authorized-force-push|authorized-prod-deploy'
+  flag_alt+='|authorized-local-destructive|secret-scan-waive|chaos-monkey|no-chaos-monkey'
+  flag_alt+='|allow-no-hooks|enable-single-writer|disable-single-writer'
+
+  # Whitespace + --flag + (whitespace or =). Bash regex is POSIX ERE.
+  local pattern='[[:space:]]+(--('"$flag_alt"'))([[:space:]=])'
+
+  local result=""
+  local match flag trail before
+  while [[ "$content" =~ $pattern ]]; do
+    match="${BASH_REMATCH[0]}"
+    flag="${BASH_REMATCH[1]}"
+    trail="${BASH_REMATCH[3]}"
+    before="${content%%"$match"*}"
+    result+="${before}"$'\n'"${flag}"
+    # Put the trailing char back at the start of content so that adjacent
+    # flags (e.g. `--chaos-monkey --allow-no-hooks`) still have a leading
+    # whitespace for the next match.
+    content="${trail}${content#*"$match"}"
+  done
+  result+="$content"
+
+  # Strip the leading newline (from the first pad-space match) and the
+  # leading/trailing pad whitespace. Trail accumulation may leave multiple
+  # trailing whitespace chars; strip all of them.
+  result="${result#$'\n'}"
+  result="${result# }"
+  while [[ "$result" == *[[:space:]] ]]; do
+    result="${result%[[:space:]]}"
+  done
+
+  printf '%s' "$result" > "${file}.tmp" && mv "${file}.tmp" "$file" || { rm -f "${file}.tmp"; return 1; }
 }
 
 # parse_prompt_file <path> — reads flags and goal body, mutates globals.

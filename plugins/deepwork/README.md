@@ -51,7 +51,6 @@ See `references/archetype-taxonomy.md` for composition patterns per problem shap
 
 - **Agent teams** — `TeamCreate`, `Agent`, `SendMessage`, `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` must be enabled (Claude Code experimental agent teams)
 - **jq** — required for state management and hook logic
-- **perl** — required for profile template substitution
 - **bash 3.2+** — macOS and Linux supported
 
 ---

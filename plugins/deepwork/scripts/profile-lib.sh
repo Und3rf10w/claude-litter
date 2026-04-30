@@ -22,8 +22,6 @@ load_profile() {
 # substitute_profile_template <template_string>
 # Replaces {{PLACEHOLDER}} tokens in a template string with env var values.
 # Pure-bash parameter expansion in this function — no fork to perl/sed/python.
-# (Note: scripts/prompt-parser.sh still uses `perl -0777 -pe` for ARGUMENTS
-# preprocessing, so perl remains a plugin-level runtime requirement.)
 # The previous `perl -0777 -pe` with 21 substitutions in a single program was
 # reproducibly SIGKILL'd in some sandboxed Bash-tool environments; bash builtin
 # substitution eliminates the fork-and-compile surface entirely. Multiline-safe

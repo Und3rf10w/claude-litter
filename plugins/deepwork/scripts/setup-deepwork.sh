@@ -58,7 +58,7 @@ OPTIONS:
   --team-name <name>             Base team name (random 8-hex suffix appended for uniqueness).
                                  Default: derived from goal text.
   --prompt-file <path>           Read goal/flags from a file instead of positional args.
-                                 Flags in the file are extracted by a perl preprocessor;
+                                 Flags in the file are extracted by a pure-bash preprocessor;
                                  multiline goal body after flags becomes the goal text.
 
 EXECUTE-MODE OPTIONS (only meaningful with --mode execute):
