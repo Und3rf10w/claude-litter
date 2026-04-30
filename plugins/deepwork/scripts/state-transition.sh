@@ -436,7 +436,17 @@ _write_with_hash() {
   fi
 
   if [[ "$_stamp_ok" -eq 1 ]]; then
-    mv "$stamp_tmp" "$tmp"
+    if ! mv "$stamp_tmp" "$tmp"; then
+      # Same fail-closed posture as the stamp-jq-failed branch: if the
+      # stamp_tmp→tmp rename fails (ENOSPC/EROFS/EBUSY), $tmp still holds
+      # the un-stamped Step-1 mutation and would otherwise pass the
+      # `[[ -s ]]` guard in Step 4, committing state.json with stale
+      # integrity_hash. Refuse to proceed.
+      printf '_write_with_hash: stamp_tmp→tmp mv failed — refusing to commit unhashed state\n' >&2
+      _release_lock "$lock"
+      rm -f "$tmp" "$stamp_tmp" 2>/dev/null
+      return 5
+    fi
   else
     # F-A1 fail-closed: stamp jq failed (rc!=0 or empty output). Do NOT
     # proceed to Step 4 — committing $tmp without the hash stamp would
