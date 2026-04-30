@@ -107,20 +107,14 @@ _read_event_head() {
 }
 
 # _append_event_raw <events_file> <event_json>
-# Appends event_json + newline to events_file. Uses >> for short events
-# (POSIX O_APPEND atomic for writes < PIPE_BUF). For payloads >= 512 bytes,
-# falls back to tmp+cat+rm to avoid torn writes (not atomic under concurrency,
-# but bootstrap events are never concurrent).
+# Appends event_json + newline to events_file using POSIX O_APPEND (>>).
+# All callers go through _emit_event which holds events.jsonl.lock (W20),
+# so concurrent torn-write risk does not exist; the tmp+cat path was
+# unnecessary defense.
 _append_event_raw() {
   local events_file="$1"
   local event_json="$2"
-  local byte_count=${#event_json}
-  if [[ $byte_count -lt 512 ]]; then
-    printf '%s\n' "$event_json" >> "$events_file"
-  else
-    local tmp="${events_file}.tmp.$$"
-    printf '%s\n' "$event_json" > "$tmp" && cat "$tmp" >> "$events_file" && rm -f "$tmp"
-  fi
+  printf '%s\n' "$event_json" >> "$events_file"
 }
 
 # _emit_event <event_type> <payload_json>
