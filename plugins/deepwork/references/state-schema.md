@@ -14,7 +14,7 @@ SHA-256 hash of the most recent event in `events.jsonl`. Written by `state-trans
 
 ### `state_integrity_hash`
 
-SHA-256 hash of a canonical subset of `state.json` fields (phase, team_name, and other projection-correctness fields). Written by `state-transition.sh` via `_write_with_hash` atomically alongside every mutation. Used by `hooks/integrity-always-gate.sh` to detect projection corruption: if the on-disk hash does not match the recomputed value, the integrity gate blocks all tool calls until `/deepwork-reconcile` is run.
+SHA-256 hash of a canonical subset of `state.json` fields (phase, team_name, and other projection-correctness fields). Written by `state-transition.sh` via `_write_with_hash` atomically alongside every mutation. Verified inside `state-transition.sh`'s write path via `_verify_integrity_hash` before each mutation: if the on-disk hash does not match the recomputed value, the write is refused and the caller exits non-zero, prompting `/deepwork-reconcile`. Note: this hash is **not** checked by `hooks/integrity-always-gate.sh` (that hook verifies `event_head` only); projection corruption is detected at the next state-transition.sh write attempt, not on every tool call.
 
 `state_integrity_hash` and `event_head` coexist: `state_integrity_hash` protects projection-correctness invariants; `event_head` is the event-log synchronization check. Absent hash (null or missing key) is treated as **pass** — pre-W6 instances have no hash and must not be blocked.
 
@@ -130,7 +130,7 @@ Array of coverage mappings built at SETUP and updated via `state-transition.sh t
 ```
 
 Used by two gates:
-- `hooks/execute/plan-citation-gate.sh` (G5): if the file being written is in the manifest, the last test run for `test_cmd` must have passed (no failing covering test).
+- `hooks/execute/plan-citation-gate.sh` (G5): if the file being written is **not** in the manifest, `pending-change.json` must contain a non-empty `no_test_reason` field, otherwise the write is blocked. The failing-covering-test block (when the file IS in the manifest and the last test run failed) is enforced by Gate **G4 EP3** in the same file (~line 172), not G5.
 - `hooks/execute/retest-dispatch.sh`: on every Write/Edit, dispatches the covering `test_cmd` asynchronously so the next PreToolUse gate has fresh results.
 
 Updated atomically via the `test_manifest_update` subcommand (emits `test_manifest_updated` event). Direct writes to this field via `set_field` are blocked by the integrity gate.

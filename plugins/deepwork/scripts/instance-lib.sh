@@ -227,21 +227,21 @@ _acquire_lock() {
   if command -v flock >/dev/null 2>&1; then
     case "$_lp" in
       */events.jsonl.lock)
-        eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
+        exec 200>"$_lp" 2>/dev/null || return 1
         flock -x 200 || { exec 200>&-; return 1; }
         ;;
       */state.json.lock)
-        eval "exec 201>\"$_lp\"" 2>/dev/null || return 1
+        exec 201>"$_lp" 2>/dev/null || return 1
         flock -x 201 || { exec 201>&-; return 1; }
         ;;
       */override-tokens.json.lock)
         # P6: fd 202 — third lock for override-tokens.json (no nesting with 200/201)
-        eval "exec 202>\"$_lp\"" 2>/dev/null || return 1
+        exec 202>"$_lp" 2>/dev/null || return 1
         flock -x 202 || { exec 202>&-; return 1; }
         ;;
       *)
         # Default: single-lock callers (no nesting expected). fd 200.
-        eval "exec 200>\"$_lp\"" 2>/dev/null || return 1
+        exec 200>"$_lp" 2>/dev/null || return 1
         flock -x 200 || { exec 200>&-; return 1; }
         ;;
     esac

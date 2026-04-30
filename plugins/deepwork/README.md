@@ -166,7 +166,7 @@ For the full pipeline, all 9 execute hooks, state fields, and amendment mechanic
 | `--chaos-monkey` | Explicitly spawn CHAOS-MONKEY archetype. Default: auto-enabled for distributed/infra goals. |
 | `--no-chaos-monkey` | Explicitly disable CHAOS-MONKEY spawn. |
 
-Source for all flags: `scripts/setup-deepwork.sh:30-173`.
+Source for all flags: `scripts/setup-deepwork.sh:32-190`.
 
 **Note**: `authorized_*` flags are written ONCE at SETUP and cannot be changed post-SETUP. `hooks/execute/bash-gate.sh` checks `setup_flags_snapshot` and denies any flag that was not set at setup time.
 
@@ -223,7 +223,7 @@ Each hook's full behavior is documented in its header comment block — see the 
 | `incident-detector.sh` | PermissionDenied | Appends to `incidents.jsonl` on denied operations | `hooks/incident-detector.sh` |
 | `deliver-gate.sh` | PreToolUse:ExitPlanMode | Lints ExitPlanMode content; enforces "Residual unknowns" + delta_from_prior | `hooks/deliver-gate.sh` |
 | `halt-gate.sh` | Stop | On phase=="halt", requires structured `halt_reason` ({summary, blockers[]}); null/malformed blocks turn-end | `hooks/halt-gate.sh` |
-| `approve-archive.sh` | Stop | On phase=="done", renames `state.json` → `state.archived.json` and invokes teardown | `hooks/approve-archive.sh` |
+| `approve-archive.sh` | Stop | On `phase=="done"` (design mode) OR `execute.phase=="halt"` with a valid `halt_reason` object (execute mode), renames `state.json` → `state.archived.json` and invokes settings teardown | `hooks/approve-archive.sh` |
 | `wiki-log-append.sh` | FileChanged(.claude/deepwork/) | Appends log entry to DEEPWORK_WIKI.md when `state.archived.json` appears | `hooks/wiki-log-append.sh` |
 | `teammate-idle-gate.sh` | TeammateIdle | Forces teammates with in_progress tasks to complete (≤3 retries); M5 Change C — exempts idle when a fresh `.gate-blocked-<task_id>` sidecar marker (AGE<300s) exists for an owned task (drift class l) | `hooks/teammate-idle-gate.sh` |
 | `phase-advance-gate.sh` | PreToolUse(Edit\|Write) | Blocks state.json phase transitions when `empirical_unknowns[*].result` is null / artifact missing (drift class a) or state.json vs log.md metadata disagrees (drift class k); warns on source_of_truth omissions | `hooks/phase-advance-gate.sh` |

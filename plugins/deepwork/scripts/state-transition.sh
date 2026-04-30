@@ -1673,6 +1673,21 @@ case "$SUBCOMMAND" in
     _PCS_TMP="${INSTANCE_DIR}/pending-change.json.tmp.$$"
     _ensure_event_log
 
+    # F4 (audit): write pending-change.json BEFORE emitting the event so the
+    # file is in place at the moment the event becomes visible to concurrent
+    # readers. Previously the order was reversed: _emit_event released both
+    # events.jsonl.lock and state.json.lock, then the mv ran. A concurrent
+    # consumer that holds state.json.lock between those two points could
+    # observe the new event-log tail while reading stale pending-change.json
+    # content (i.e. an event for change_id X paired with a file describing
+    # change_id Y). Atomic rename guarantees no partial-read hazard either way.
+    #
+    # If the mv fails (e.g. disk full), abort before emitting the event so the
+    # event log never references a change-set that did not land.
+    printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
+      && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
+      || { rm -f "$_PCS_TMP"; exit 4; }
+
     # F-PCS: prefix _emit_event with _EMIT_STAMP_HEAD=1 so state.event_head,
     # state_integrity_hash, and last_updated are stamped atomically inside
     # the events.jsonl lock span. Without this prefix, pending_change_set
@@ -1693,9 +1708,6 @@ case "$SUBCOMMAND" in
           --arg cid "$_PCS_CHANGE_ID" \
           'if $ntr != "" then {plan_section:$ps, files:$files, rationale:$rat, no_test_reason:$ntr, change_id:$cid}
            else {plan_section:$ps, files:$files, rationale:$rat, change_id:$cid} end')" || exit 5
-    printf '%s\n' "$_PCS_JSON" > "$_PCS_TMP" \
-      && mv "$_PCS_TMP" "${INSTANCE_DIR}/pending-change.json" \
-      || { rm -f "$_PCS_TMP"; exit 4; }
     exit 0
     ;;
 

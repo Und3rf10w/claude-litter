@@ -131,6 +131,14 @@ HELP_EOF
       shift 2
       ;;
     --team-name)
+      # Reject `..` segments to prevent path traversal in $HOME/.claude/tasks/<sanitized>.
+      # _sanitize_team_name only strips '/' and ' ', so a name like '..' would resolve
+      # TASK_DIR one level above the intended tasks tree.
+      if [[ "$2" == *".."* ]]; then
+        printf 'setup-deepwork: --team-name must not contain ".." (path-traversal segment)\n' >&2
+        printf '  Received: %s\n' "$2" >&2
+        exit 3
+      fi
       TEAM_NAME="$2"
       shift 2
       ;;

@@ -141,7 +141,13 @@ if [[ "$CROSS_CHECK" == "true" ]]; then
   done
 
   # Require ≥2 completions AND ≥2 distinct owners (avoid same agent completing both)
-  DISTINCT_OWNERS=$(printf '%s\n' "${OWNERS_COMPLETED[@]:-}" | sort -u | wc -l | tr -d ' ')
+  # Empty-array guard: ${OWNERS_COMPLETED[@]:-} expands to a single empty
+  # string when the array is empty, which sort -u | wc -l counts as 1 (not 0).
+  if [[ ${#OWNERS_COMPLETED[@]} -eq 0 ]]; then
+    DISTINCT_OWNERS=0
+  else
+    DISTINCT_OWNERS=$(printf '%s\n' "${OWNERS_COMPLETED[@]}" | sort -u | wc -l | tr -d ' ')
+  fi
 
   if [[ $COMPLETED_COUNT -lt 2 ]] || [[ $DISTINCT_OWNERS -lt 2 ]]; then
     # M5 Change C — write sidecar marker so teammate-idle-gate.sh can detect
