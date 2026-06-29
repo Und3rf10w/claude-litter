@@ -11,17 +11,10 @@
 # with last_result=="fail", "pending", or "unknown", the next write is blocked until the test
 # passes. This enforces the test-evidence gate; test-capture.sh (PostToolUse:Bash) writes the
 # evidence, and this hook reads it before each subsequent write. See mechanism.hooks-engineer.md
-# §4 for the two-hook pattern (cli_formatted_2.1.116.js:266053-266058: PostToolUse cannot block;
-# enforcement sits here on the next PreToolUse).
+# §4 for the two-hook pattern
 #
 # Additional protection (GAP-10 mitigation): log files within INSTANCE_DIR are never in
 # pending-change.json files[] and are blocked unconditionally to prevent audit trail tampering.
-#
-# Blocking form: exit 2 (stderr becomes blockingError per cli_formatted_2.1.116.js:564690).
-# hookSpecificOutput.permissionDecision:"deny" is the preferred form for PreToolUse per
-# cli_formatted_2.1.116.js:632082 (decision:"block" deprecated for PreToolUse), but exit 2 is
-# equally valid for bash scripts and avoids JSON encoding complexity with dynamic path strings.
-# CC source: cli_formatted_2.1.116.js:424926 (PreToolUse blockingError), :265655 (stdin schema).
 #
 # Fail-open: if no active execute instance, exit 0 immediately.
 

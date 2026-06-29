@@ -1,37 +1,19 @@
 # Tool Reference — Team Primitives
 
+> **Requirements:** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` must be set in the environment (or in `settings.json` under `env`). Without it, no team is formed, no task directories are written, and deepwork's multi-agent model is entirely inoperative. `TeamCreate` and `TeamDelete` no longer exist in CLI 2.1.178+ — the implicit team forms automatically when the first teammate is spawned, and the CLI cleans up team directories automatically at session end.
+
 **This document is appended verbatim to the orchestrator's initial prompt** because Claude Code is consistently uninformed about the team coordination primitives. Read this before attempting any team operation.
 
 Every primitive listed here is available to the `/deepwork` orchestrator via `allowed-tools` in the skill frontmatter. Teammates spawned via `Agent` get a condensed subset (SendMessage, TaskUpdate, TaskList, TaskGet).
 
 ---
 
-## TeamCreate — called ONCE at start of SCOPE phase
-
-Creates a persistent team that outlives iterations. The team is the container for all teammates and their task list.
-
-```
-TeamCreate(
-  team_name: "<slug>-<random-8hex>",
-  description: "<1-sentence goal>",
-  agent_type: "orchestrator"
-)
-```
-
-**Rules:**
-- Call TeamCreate exactly once at SCOPE phase. Do NOT call it again mid-run.
-- `team_name` comes from `state.json.team_name` — read it, don't invent.
-- Do NOT call `TeamDelete` from the orchestrator. The `/deepwork-teardown` skill is the only path that tears down the team.
-
----
-
 ## Agent — spawn each teammate once
 
-Spawns a named teammate into the team. Each teammate has a role (archetype + stance) and its own Claude Code process.
+Spawns a named teammate into the implicit team. The team forms automatically when the first Agent call is made — no setup call is needed. Each teammate has a role (archetype + stance) and its own Claude Code process. Do NOT pass `team_name` to Agent; the CLI derives it from the session id and the argument is ignored.
 
 ```
 Agent(
-  team_name: "<same team_name used with TeamCreate>",
   name: "<teammate name, e.g. 'hunter', 'architect', 'critic'>",
   subagent_type: "general-purpose",
   model: "<opus|sonnet|haiku>",
@@ -118,8 +100,7 @@ SendMessage(
 ```
 
 **Rules:**
-- Prefer targeted DMs over broadcasts.
-- `SendMessage(to: "*")` broadcasts to all teammates — expensive, use only when everyone genuinely needs the same information (e.g., a new hard guardrail applies).
+- The `to` field accepts a single recipient: a teammate name, or `"main"` (background subagents only — routes to the main conversation). `to: "*"` broadcast is not supported; to reach every teammate, send one `SendMessage` per recipient (loop over the known teammate names from `state.json.role_definitions[]`).
 - Teammates signal completion by sending a summary message to `"team-lead"`. This is a convention enforced by role prompts, not a hook.
 
 ---
@@ -169,22 +150,22 @@ The plan content is the current-version proposal file (`proposals/v<N>.md`) rend
 
 ### Spawn the team (end of SCOPE phase)
 
-Read the team_name + role_definitions from state.json, then emit ALL five Agent calls in a single assistant message so they run in parallel:
+Read the role_definitions from state.json, then emit ALL five Agent calls in a single assistant message so they run in parallel. The implicit team forms on the first Agent call — no TeamCreate needed. Do NOT pass `team_name` to Agent.
 
 ```
-Agent(team_name: TEAM, name: "critic", subagent_type: "general-purpose", model: "opus",
+Agent(name: "critic", subagent_type: "general-purpose", model: "opus",
       description: "gate proposals against written bar",
       prompt: <rendered CRITIC role prompt>)
-Agent(team_name: TEAM, name: "hunter", subagent_type: "general-purpose", model: "sonnet",
+Agent(name: "hunter", subagent_type: "general-purpose", model: "sonnet",
       description: "hunt for mechanism at file:line",
       prompt: <rendered FALSIFIER role prompt>)
-Agent(team_name: TEAM, name: "coverage-map", subagent_type: "general-purpose", model: "sonnet",
+Agent(name: "coverage-map", subagent_type: "general-purpose", model: "sonnet",
       description: "map across environments",
       prompt: <rendered COVERAGE role prompt>)
-Agent(team_name: TEAM, name: "runtime", subagent_type: "general-purpose", model: "opus",
+Agent(name: "runtime", subagent_type: "general-purpose", model: "opus",
       description: "design cleanest runtime artifact",
       prompt: <rendered MECHANISM role prompt>)
-Agent(team_name: TEAM, name: "architect", subagent_type: "general-purpose", model: "opus",
+Agent(name: "architect", subagent_type: "general-purpose", model: "opus",
       description: "challenge the requirement",
       prompt: <rendered REFRAMER role prompt>)
 ```

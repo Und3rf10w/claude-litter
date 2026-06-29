@@ -5,8 +5,7 @@
 # (swarm-loop/hooks/stop-hook.sh:606-609). Fires on every Stop event.
 #
 # Re-injection via {"decision": "block", "reason": "...", "systemMessage": "..."} is
-# STILL VALID for Stop hooks — NOT deprecated (unlike PreToolUse where decision:"block"
-# is deprecated per cli_formatted_2.1.116.js:632082). Stop re-injection uses
+# STILL VALID for Stop hooks — NOT deprecated. Stop re-injection uses
 # decision:"block" as confirmed in mechanism.hooks-engineer.md §1 Hook 8 and per
 # swarm-loop/hooks/stop-hook.sh:225-226 reference.
 #

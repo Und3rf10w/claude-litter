@@ -4,7 +4,7 @@
 # Prevents teammates from creating tasks for phases they don't own.
 #
 # INPUT SHAPE (verified via logging probe before implementation):
-#   Confirmed fields from CC source cli_formatted_2.1.116.js:265837 and live probe:
+#   Confirmed fields via ive probe:
 #     task_id, task_subject, task_description, metadata.*
 #   Also present (same team-event pattern as TaskCompleted/TaskUpdated):
 #     teammate_name — actor identity (may be absent on orchestrator-originated tasks)
@@ -37,6 +37,8 @@ _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 _parse_hook_input
 
+# payload team_name is session-derived and @deprecated; still present,
+# and discovery matches because setup derives the same name.
 TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
 TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
 TEAMMATE=$(printf '%s' "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null || echo "")

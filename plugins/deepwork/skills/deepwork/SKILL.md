@@ -1,8 +1,8 @@
 ---
 name: deepwork
 description: "Run a deepwork session: research/design convergence (default) or plan execution (--mode execute). Design mode spawns a 5-archetype oppositional team and delivers an approved plan. Execute mode drives faithful implementation of an approved plan via role-asymmetric agents."
-argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false] [--team-name NAME]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(mktemp:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(rm:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(/tmp/dw-prompt-*.md)", "Write(${TMPDIR}dw-prompt-*.md)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
+argument-hint: "<goal> [--mode execute] [--plan-ref PATH] [--source-of-truth PATH]... [--anchor FILE:LINE]... [--guardrail 'RULE']... [--bar 'CRITERION']... [--safe-mode true|false]"
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-deepwork.sh:*)", "Bash(mkdir:*)", "Bash(mktemp:*)", "Bash(cat:*)", "Bash(jq:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(rm:*)", "Edit(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Write(/tmp/dw-prompt-*.md)", "Write(${TMPDIR}dw-prompt-*.md)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Read", "Grep", "Glob", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "Agent", "ExitPlanMode", "AskUserQuestion"]
 ---
 
 # Deepwork — Research/Design Convergence or Plan Execution
@@ -68,13 +68,12 @@ Do NOT use `/deepwork` (design mode) for execution tasks, documented answers, or
 - `--anchor FILE:LINE` (repeatable): starting point for investigation. Seeds `state.json.anchors[]`.
 - `--guardrail '<rule>'` (repeatable): hard-safety constraint. Every teammate spawn renders these.
 - `--bar '<criterion>'` (repeatable): pre-seeds a bar criterion. Orchestrator augments in SCOPE.
-- `--safe-mode true|false` (default: true): enables PermissionRequest auto-approve for team coordination tools (Edit/Write/Read/Glob/Grep/Agent/TaskCreate/TaskUpdate/TaskList/TaskGet/SendMessage/TeamCreate).
-- `--team-name NAME`: override default team name derivation.
+- `--safe-mode true|false` (default: true): enables PermissionRequest auto-approve for team coordination tools (Edit/Write/Read/Glob/Grep/Agent/TaskCreate/TaskUpdate/TaskList/TaskGet/SendMessage).
 
 ## Companion commands
 
 - `/deepwork-status` — dashboard: phase, team roster, bar verdicts, proposal versions
-- `/deepwork-teardown` — end session: delete team (only path that calls TeamDelete), archive state, restore settings. Use for mid-flight abort or post-HALT cleanup.
+- `/deepwork-teardown` — end session: graceful per-teammate shutdown (one SendMessage per known teammate), archive state, restore settings. CLI auto-cleans team dirs at session end. Use for mid-flight abort or post-HALT cleanup.
 - `/deepwork-guardrail add|remove|list "<rule>"` — manual guardrail management
 - `/deepwork-bar add|remove|list "<criterion>"` — tune the written bar mid-run
 
@@ -92,8 +91,16 @@ Do NOT use `/deepwork` (design mode) for execution tasks, documented answers, or
 
 ## CRITICAL
 
-Do NOT call `TeamDelete` from the orchestrator. Only `/deepwork-teardown` tears down the team. Approved-and-done plans leave the team intact for user inspection.
+Do NOT attempt to tear down teammates from the orchestrator. Only `/deepwork-teardown` performs graceful shutdown. Approved-and-done plans leave the team intact for user inspection; CLI auto-cleans team dirs at session end.
 
 Do NOT cross into implementation. Your deliverable is the approved plan. Halt at DELIVER.
+
+## Requirements
+
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` must be set before starting a session. Without it the multi-agent oppositional team cannot function and the setup script will hard-fail with remediation instructions. Set it in `settings.json`:
+```json
+{ "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+```
+or in the shell (`export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) then restart Claude Code.
 
 If the setup script prints a courtesy warning that the goal looks like an execution task, use `AskUserQuestion` to confirm before proceeding. Reference: `${CLAUDE_PLUGIN_ROOT}/references/when-not-to-use.md`.

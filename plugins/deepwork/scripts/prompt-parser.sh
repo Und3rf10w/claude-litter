@@ -9,7 +9,7 @@
 #       SOURCE_OF_TRUTH=()  ANCHORS=()  GUARDRAILS=()  BAR_SEEDS=()
 #       PROMPT_PARTS=()
 #   - Caller must declare these as scalars with defaults (or empty):
-#       SAFE_MODE  MODE  TEAM_NAME
+#       SAFE_MODE  MODE
 #   - parse_prompt_file mutates these globals. The prompt file is consumed
 #     (removed on success).
 #
@@ -52,10 +52,10 @@ _preprocess_prompt_file() {
   # ([[:space:]=]) match succeeds even when the original input ended on a flag.
   content=" ${content} "
 
-  local flag_alt='source-of-truth|anchor|guardrail|bar|safe-mode|mode|team-name|prompt-file|plan-ref'
+  local flag_alt='source-of-truth|anchor|guardrail|bar|safe-mode|mode|prompt-file|plan-ref'
   flag_alt+='|authorized-push|authorized-force-push|authorized-prod-deploy'
   flag_alt+='|authorized-local-destructive|secret-scan-waive|chaos-monkey|no-chaos-monkey'
-  flag_alt+='|allow-no-hooks|enable-single-writer|disable-single-writer'
+  flag_alt+='|allow-no-hooks|allow-no-teams|enable-single-writer|disable-single-writer'
 
   # Whitespace + --flag + (whitespace or =). Bash regex is POSIX ERE.
   local pattern='[[:space:]]+(--('"$flag_alt"'))([[:space:]=])'
@@ -89,10 +89,10 @@ _preprocess_prompt_file() {
 
 # parse_prompt_file <path> — reads flags and goal body, mutates globals.
 # Populates: SOURCE_OF_TRUTH, ANCHORS, GUARDRAILS, BAR_SEEDS (arrays)
-#            SAFE_MODE, MODE, TEAM_NAME, PLAN_REF (scalars — overwritten only if flag present)
+#            SAFE_MODE, MODE, PLAN_REF (scalars — overwritten only if flag present)
 #            AUTHORIZED_PUSH, AUTHORIZED_FORCE_PUSH, AUTHORIZED_PROD_DEPLOY,
 #            AUTHORIZED_LOCAL_DESTRUCTIVE, SECRET_SCAN_WAIVED, CHAOS_MONKEY,
-#            ALLOW_NO_HOOKS, SINGLE_WRITER_ENABLED (scalars — set on flag presence)
+#            ALLOW_NO_HOOKS, ALLOW_NO_TEAMS, SINGLE_WRITER_ENABLED (scalars — set on flag presence)
 #            PROMPT_PARTS — goal body lines joined with \n (if any non-flag lines found)
 # Removes the prompt file on success.
 parse_prompt_file() {
@@ -118,8 +118,6 @@ parse_prompt_file() {
       --safe-mode=*)                   SAFE_MODE="$(_strip_quotes "${_line#--safe-mode=}")" ;;
       --mode\ *)                       MODE="$(_strip_quotes "${_line#--mode }")" ;;
       --mode=*)                        MODE="$(_strip_quotes "${_line#--mode=}")" ;;
-      --team-name\ *)                  TEAM_NAME="$(_strip_quotes "${_line#--team-name }")" ;;
-      --team-name=*)                   TEAM_NAME="$(_strip_quotes "${_line#--team-name=}")" ;;
       --plan-ref\ *)                   PLAN_REF="$(_strip_quotes "${_line#--plan-ref }")" ;;
       --plan-ref=*)                    PLAN_REF="$(_strip_quotes "${_line#--plan-ref=}")" ;;
       --authorized-push)               AUTHORIZED_PUSH="true" ;;
@@ -135,6 +133,7 @@ parse_prompt_file() {
       --chaos-monkey)                  CHAOS_MONKEY="true" ;;
       --no-chaos-monkey)               CHAOS_MONKEY="false" ;;
       --allow-no-hooks)                ALLOW_NO_HOOKS="true" ;;
+      --allow-no-teams)                ALLOW_NO_TEAMS="true" ;;
       --enable-single-writer)          SINGLE_WRITER_ENABLED="true" ;;
       --disable-single-writer)         SINGLE_WRITER_ENABLED="false" ;;
       --*)                             ;;  # skip unknown flags (forward-compat)

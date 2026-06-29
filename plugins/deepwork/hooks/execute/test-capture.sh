@@ -3,8 +3,7 @@
 # capture hook.
 #
 # This hook is exclusively a data capture hook — PostToolUse CANNOT block any future
-# operation (cli_formatted_2.1.116.js:266053-266058: PostToolUse hookSpecificOutput has no
-# permissionDecision field). The enforcement half of the test-evidence gate lives in
+# operation. The enforcement half of the test-evidence gate lives in
 # plan-citation-gate.sh (PreToolUse Write|Edit) which reads test-results.jsonl before
 # the next write.
 #

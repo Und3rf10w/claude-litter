@@ -39,6 +39,8 @@ _parse_hook_input
 
 # Discovery: for teammate-origin events, discover by team_name. For orchestrator-
 # origin events (PermissionDenied in orchestrator session), discover by session_id.
+# payload team_name is session-derived and @deprecated; still present,
+# and discovery matches because setup derives the same name.
 TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
 
 if [[ -n "$TEAM_NAME" ]]; then
@@ -58,8 +60,9 @@ case "$EVENT_NAME" in
   SubagentStop)
     EXIT_CODE=$(echo "$INPUT" | jq -r '.exit_code // 0' 2>/dev/null || echo "0")
     TEAMMATE_NAME=$(echo "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null || echo "")
-    # Belt-and-suspenders sanitize (team names are already sanitized at TeamCreate;
-    # this defends against future extensions that might allow teammate self-rename).
+    # Belt-and-suspenders sanitize (team names are session-derived and already
+    # sanitized by the CLI; this defends against future extensions that might
+    # allow teammate self-rename).
     TEAMMATE_NAME=$(printf '%s' "$TEAMMATE_NAME" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
     # Only treat non-zero exits as incidents
     if [[ "$EXIT_CODE" == "0" ]] || [[ -z "$EXIT_CODE" ]]; then

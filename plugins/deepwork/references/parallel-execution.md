@@ -20,13 +20,11 @@ git worktree add .claude/worktrees/<phase-id> -b <branch-name>
 
 ```
 Agent({
-  team_name: "...",
   name: "impl-<phase-id>",
   subagent_type: "general-purpose",
   prompt: "YOUR CWD IS THE WORKTREE. Prepend `cd /abs/path/to/.claude/worktrees/<phase-id> &&` to every Bash command. Verify with `pwd` before any other action. Implement <spec>. Commit before pinging reviewer."
 })
 Agent({
-  team_name: "...",
   name: "reviewer-<phase-id>",
   subagent_type: "Explore",
   prompt: "YOUR CWD IS THE WORKTREE. Prepend `cd /abs/path/to/.claude/worktrees/<phase-id> &&` to every Bash command. Verify with `pwd` before any other action. Wait for impl-<phase-id>'s SendMessage handoff, then review."
@@ -60,7 +58,5 @@ If/when `cwd` becomes available in the public schema, replace the prompt-based w
 None are corruption-class (git locks prevent index corruption), but all break the "I know what state I'm reviewing" contract.
 
 ## Source maintenance note
-
-This recipe was verified against `cli_formatted_2.1.120.js` on 2026-04-26 and documented in `/tmp/deepwork-worktree-recipe.md`. If this reference seems stale, re-verify against the current `cli_formatted_*.js` source and update.
 
 This PR (W16d) was itself implemented via worktree-isolated impl+reviewer pair — the recipe is dogfooded. The impl ran in `.claude/worktrees/w16d` on branch `und3rf10w/hard-real-gates-w16d` without conflicting with the parallel W16a/W16b worktrees. However, the `cwd:` parameter did not take effect at spawn time (see availability note above) — the agent used absolute paths throughout instead of relying on inherited cwd.

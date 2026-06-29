@@ -12,7 +12,7 @@ Your job is to drive implementation of the approved plan at `{{PLAN_REF}}` using
 **State is disk-backed**. `state.json` (including `state.json.execute.*`) + `log.md` at `{{INSTANCE_DIR}}` are the authoritative record. If your transcript is compacted or cleared, re-read them to resume.
 
 **Canonical tool reference and role definitions were appended to this prompt at setup time.** Read them if you haven't:
-- `references/tool-reference.md` — TeamCreate/Agent/TaskCreate/TaskUpdate/TaskList/TaskGet/SendMessage/AskUserQuestion syntax
+- `references/tool-reference.md` — Agent/TaskCreate/TaskUpdate/TaskList/TaskGet/SendMessage/AskUserQuestion syntax
 - `references/archetype-taxonomy.md` — the 5 canonical archetypes + CHAOS-MONKEY 6th
 - `profiles/execute/stances/` — execute-mode stance files for executor, adversary, auditor, scope-guard, chaos-monkey
 
@@ -60,6 +60,8 @@ Execute mode loops on WRITE→VERIFY→CRITIQUE per plan gate until all gates ar
    ```
 
 5. **Compose the team**. 5 core + 1 optional:
+
+   Spawn all teammates in parallel via a single message containing multiple Agent tool calls (one per role). There is no TeamCreate call — the implicit team forms automatically when the first teammate is spawned. Do NOT pass a `team_name:` argument to Agent — it is accepted but ignored (team_name is session-derived and @deprecated; discovery still matches because setup derives the same name).
 
    **Parallel-pair worktree isolation**: when this phase runs multiple implementer/reviewer pairs concurrently (e.g., two plan gates in parallel), each pair MUST be placed in a dedicated git worktree; use the prompt-based `cd` workaround (NOT `cwd:` on `Agent` — not in public schema as of CC 2.1.120+). Full pattern and hard rules: `references/parallel-execution.md`.
    - `critic` (CRITIC, invariant) — include `references/critic-stance.md` verbatim
@@ -244,7 +246,7 @@ WRITE → VERIFY → CRITIQUE → (REFINE → CRITIQUE)* → LAND → (CONTINUOU
 3. Archive state (the Stop hook / approve-archive.sh fires on session end)
 4. Write final log.md entry with completion summary citing `halt_reason.summary` and any open discoveries
 
-**Do NOT restart SETUP** if state already has `plan_hash`. Do NOT re-spawn the team — it persists across clears.
+**Do NOT restart SETUP** if state already has `plan_hash`. If teammates are missing after a /clear or /resume (in-process teammates do NOT persist across session boundaries — agent-teams model), re-spawn them via Agent as a single parallel message. Do NOT call TeamCreate (it no longer exists); the implicit team re-forms on first Agent spawn.
 
 ---
 
@@ -295,7 +297,7 @@ Per-gate task metadata carries `verdict_dimension: "PA"|"EG"|"RA"|"multi"` for r
 
 # Reversibility Ladder (G2)
 
-`bash-gate.sh` (PreToolUse(Bash)) enforces this ladder. No `"ask"` is used — `"ask"` silently degrades to `"deny"` in non-interactive mode (`cli_formatted_2.1.116.js:472423-472440`).
+`bash-gate.sh` (PreToolUse(Bash)) enforces this ladder. No `"ask"` is used — `"ask"` silently degrades to `"deny"` in non-interactive mode 
 
 | Op class | Behavior | Override |
 |---|---|---|

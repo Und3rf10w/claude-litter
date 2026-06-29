@@ -319,6 +319,7 @@ _compute_integrity_hash() {
   sot_digest=$(jq -r '(.source_of_truth // []) | sort | tojson' "$sf" 2>/dev/null \
     | { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; \
         else shasum -a 256 | cut -d' ' -f1; fi }) || sot_digest=""
+  # team_name is session-derived (session-${SESSION_ID:0:8}) and immutable after setup.
   proj=$(jq -c --arg sot_digest "$sot_digest" '{
     phase,
     team_name,
@@ -537,6 +538,7 @@ _run_phase_advance_gate() {
   fi
 
   # Checklist C: state.json vs log.md metadata invariants (drift class k)
+  # team_name is now session-derived (session-${SESSION_ID:0:8}) and immutable after setup.
   if [[ -f "$log_file" ]]; then
     local st_team st_inst log_team log_inst
     st_team=$(jq -r '.team_name // ""' "$sf" 2>/dev/null | tr -d '\n' | tr -d ' ')

@@ -4,7 +4,7 @@
     {
       "script": "hooks/incident-detector.sh",
       "event": "PermissionRequest",
-      "matcher": "Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate",
+      "matcher": "Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage",
       "modes": ["both"],
       "safe_mode_only": true,
       "command_override": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'",

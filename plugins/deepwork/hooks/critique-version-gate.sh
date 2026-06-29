@@ -23,6 +23,8 @@ _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 _parse_hook_input
 
+# payload team_name is session-derived and @deprecated; still present,
+# and discovery matches because setup derives the same name.
 TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null)
 TASK_SUBJECT=$(printf '%s' "$INPUT" | jq -r '.task_subject // ""' 2>/dev/null)
 TEAMMATE=$(printf '%s' "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null)

@@ -18,6 +18,8 @@ If a teammate produces multiple artifacts, create **one TaskCreate per artifact*
 
 **Why relative**: the gate discovers the session instance directory from `team_name` (or session_id) and joins `metadata.artifact` to produce the absolute path. Absolute paths in metadata bypass this discovery and leak orchestrator-host filesystem layout into task state. Addresses drift class (i) from [proposals/v3-final.md](../../../.claude/deepwork/<id>/proposals/v3-final.md).
 
+<!-- team_name is session-derived and @deprecated; discovery still matches because setup derives the same name. -->
+
 ---
 
 ## `metadata.cross_check_required` — primary side only, no mirroring

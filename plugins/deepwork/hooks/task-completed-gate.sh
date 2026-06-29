@@ -41,6 +41,8 @@ _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 _parse_hook_input
 
+# payload team_name is session-derived and @deprecated; still present,
+# and discovery matches because setup derives the same name.
 TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
 TASK_ID=$(printf '%s' "$INPUT" | jq -r '.task_id // ""' 2>/dev/null || echo "")
 TEAMMATE=$(printf '%s' "$INPUT" | jq -r '.teammate_name // ""' 2>/dev/null || echo "")
@@ -180,7 +182,6 @@ fi
 # --- Gate 3: commit_sha artifact existence (execute-mode) ---
 # If metadata.commit_sha is set, the referenced commit must exist in the repo.
 # Plan-mode tasks never set commit_sha — this gate is a no-op for them.
-# CC source: cli_formatted_2.1.116.js:265849 (TaskCompleted schema), :564789 (exit 2 → blockingError).
 COMMIT_SHA=$(printf '%s' "$TASK_JSON" | jq -r '.metadata.commit_sha // ""' 2>/dev/null || echo "")
 if [[ -n "$COMMIT_SHA" ]] && [[ "$COMMIT_SHA" != "null" ]]; then
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd -P)}"

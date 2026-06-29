@@ -152,8 +152,8 @@ flowchart LR
   FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| stale_warn
   FileChanged -->|"^v&#91;0-9&#93;+&#40;-final&#41;?\.md$"| version_bump_notify
   FileChanged -->|".claude/deepwork"| wiki_log_append
-  PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
-  PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
+  PermissionDenied -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage"| incident_detector
+  PermissionRequest -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage"| incident_detector
   PostToolBatch --> batch_gate
   PostToolUse -->|"Write|Edit"| retest_dispatch
   PostToolUse -->|"Write|Edit"| state_drift_marker
@@ -174,7 +174,7 @@ flowchart LR
   Stop --> approve_archive
   Stop --> halt_gate
   Stop --> stop_hook
-  SubagentStop -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage|TeamCreate"| incident_detector
+  SubagentStop -->|"Edit|Write|Read|Glob|Grep|Agent|TaskCreate|TaskUpdate|TaskList|TaskGet|SendMessage"| incident_detector
   TaskCompleted --> critique_version_gate
   TaskCompleted --> task_completed_gate
   TaskCreated --> task_scope_gate

@@ -2,10 +2,9 @@
 # file-changed-retest.sh — FileChanged(src/**) secondary advisory retest trigger.
 #
 # Fires on filesystem-level change events in src/** (chokidar glob, resolved to
-# $cwd/src/** at registration time per cli_formatted_2.1.116.js:269399-269416).
+# $cwd/src/** at registration time per 
 # There is a 500ms awaitWriteFinish stabilityThreshold debounce before the hook fires
-# (cli_formatted_2.1.116.js:269417 chokidar options). This means batch edits coalesce
-# into a single hook fire — one test run at the end of the batch, which is desirable.
+# This means batch edits coalesce into a single hook fire — one test run at the end of the batch, which is desirable.
 #
 # Advisory only — FileChanged hooks cannot block. Results written to test-results.jsonl.
 #
@@ -17,8 +16,6 @@
 # appends with payloads up to 50 KB on macOS APFS).
 #
 # Async: asyncTimeout=30000ms explicitly overrides the 15000ms CC default
-# (cli_formatted_2.1.116.js:264193: `let Y = q.asyncTimeout || 15000`). Once backgrounded
-# after the async handshake, async stdout is discarded (cli_formatted_2.1.116.js:565249-565328)
 # — all results must go to disk.
 #
 # stdin fields: file_path (changed file), event (add/change/unlink)

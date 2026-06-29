@@ -20,6 +20,8 @@ If no files are found, report "no deepwork session is currently active" and stop
 |---|---|---|---|
 | `<id>` | `<goal>` | `<execute.phase>` | `<team_name>` |
 
+<!-- team_name is session-derived and @deprecated; discovery still matches because setup derives the same name. -->
+
 3. Display **Execute Core State**:
 
    - **Goal**: `goal`

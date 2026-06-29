@@ -27,12 +27,6 @@
 # phase left "setup". Checked against state.execute.setup_flags_snapshot (written at
 # setup-end by setup-execute.sh). If a flag is true in state but absent from snapshot, deny.
 #
-# Blocking form: hookSpecificOutput.permissionDecision:"deny" per cli_formatted_2.1.116.js:632082
-# (decision:"block" deprecated for PreToolUse). Exit 2 used for fatal parse errors only.
-# CC source: :265521 (permissionDecision enum), :632082 (deprecated decision:block for PreToolUse),
-# :564690 (exit 2 → blockingError), :472423-472440 (ask degrades to deny in non-interactive mode —
-# never use ask; always use deny + state flag).
-#
 # Fail-open: if no active execute instance, exit 0 immediately.
 
 set +e

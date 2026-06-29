@@ -53,7 +53,9 @@ Re-orient by reading:
 3. \${CLAUDE_PLUGIN_ROOT}/profiles/default/PROFILE.md — full orchestrator prompt if you need the phase-pipeline detail
 4. \${CLAUDE_PLUGIN_ROOT}/references/ — tool reference, archetype taxonomy, role stances, etc.
 
-Then continue the phase pipeline from the current phase. Do not restart SCOPE if state already has role_definitions. Do not re-call TeamCreate — the team persists across clears.
+Then continue the phase pipeline from the current phase. Do not restart SCOPE if state already has role_definitions.
+
+NOTE: In-process teammates do NOT survive /resume or /clear (agent-teams model). If the team is mid-EXPLORE and teammates appear missing, re-spawn them via Agent — one Agent call per role, in a single parallel message. Do not assume teammate persistence across session boundaries.
 
 If the team is mid-EXPLORE, check TaskList to see which gates are still open. If mid-CRITIQUE, re-read proposals/<latest>.md and critique.*.md. Proceed from where the state says we are."
 }
@@ -61,7 +63,8 @@ If the team is mid-EXPLORE, check TaskList to see which gates are still open. If
 # build_resume_prompt — recovery checklist injected when trigger=resume.
 # Session was disconnected and is now resuming. Emits a structured checklist
 # that directs the orchestrator to verify session health before continuing.
-# If no team exists, guides toward TeamCreate rather than assuming persistence.
+# In-process teammates do NOT survive /resume (agent-teams); if they
+# are gone, the orchestrator must re-spawn them via Agent (no TeamCreate call).
 build_resume_prompt() {
   local anchors_list bar_status
   anchors_list=$(render_anchors "$STATE_FILE")
@@ -79,11 +82,14 @@ build_resume_prompt() {
 SESSION RESUMED — run this recovery checklist before continuing:
 
 1. Read ${INSTANCE_DIR}/state.json — verify phase, team_name, goal, and bar status.
+   (team_name field is load-bearing for hook discovery even though it is @deprecated in payloads —
+   team_name is session-derived and @deprecated; discovery still matches because setup derives the same name.)
 2. Check team config: read \${CLAUDE_PLUGIN_ROOT}/references/ for role definitions and stance.
 3. Run TaskList — verify which teammates are alive and which tasks are open/in-progress.
-   - If teammates appear idle or missing, run TeamCreate to spawn a new team. Do NOT
-     assume the prior team persists after a resume — it may have been lost on disconnect.
-   - If no team_name is set in state.json, run /deepwork to initialize a new team.
+   - In-process teammates do NOT survive /resume (agent-teams model). If teammates
+     appear missing, re-spawn them via Agent — one Agent call per role, in a single parallel message.
+     Do NOT call TeamCreate (it no longer exists); the implicit team re-forms on first Agent spawn.
+   - If no team_name is set in state.json, run /deepwork to initialize a new session.
 4. Read ${INSTANCE_DIR}/log.md — review the last 20 lines for context on where work stopped.
 5. Reconcile: if state.json says phase=${PHASE} but TaskList shows no active tasks,
    re-seed the phase pipeline from the current phase.
@@ -98,5 +104,5 @@ Anchors:
 ${anchors_list}
 
 After completing the checklist, continue the phase pipeline from phase=${PHASE}.
-If the prior team is gone, create a NEW team and re-assign open gates."
+If the prior teammates are gone, re-spawn them via Agent and re-assign open gates."
 }

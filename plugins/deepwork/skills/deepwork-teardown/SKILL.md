@@ -1,12 +1,12 @@
 ---
 name: deepwork-teardown
-description: "Tear down an active deepwork session — deletes the team, archives state, and restores settings. Works for both mid-flight abort and post-HALT cleanup."
-allowed-tools: ["Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json:*)", "Bash(rm ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -f ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -rf ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(mv ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TeamDelete", "TaskList"]
+description: "End an active deepwork session — graceful per-teammate shutdown, archives state, and restores settings. CLI auto-cleans team dirs at session end. Works for both mid-flight abort and post-HALT cleanup."
+allowed-tools: ["Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/*/state.json:*)", "Bash(rm ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -f ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(rm -rf ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(mv ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**:*)", "Bash(ls ${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/:*)", "Bash(bash * settings-teardown.sh:*)", "Read(${CLAUDE_PROJECT_DIR:-$(pwd -P)}/.claude/deepwork/**)", "Glob", "AskUserQuestion", "SendMessage", "TaskList"]
 ---
 
 # Teardown Deepwork
 
-Tear down a deepwork session — delete the team, archive state, and restore settings. Applies to both mid-flight abort and post-HALT cleanup; the `phase` field in the archived state distinguishes the two.
+End a deepwork session — graceful per-teammate shutdown, archive state, and restore settings. The CLI auto-cleans team dirs at session end; no explicit TeamDelete call is needed. Applies to both mid-flight abort and post-HALT cleanup; the `phase` field in the archived state distinguishes the two.
 
 1. Use Glob to find all active instances:
 ```
@@ -29,11 +29,22 @@ Then use `AskUserQuestion` to ask the user which instance to tear down.
 
 6. Read the state file to get team_name. Then call `TaskList` to get current task status for the summary report.
 
-7. If the state file has a non-null `team_name` field:
-   - Broadcast a shutdown_request to all teammates: `SendMessage(to: "*", summary: "ending deepwork", message: "The user has ended the deepwork session. Please stop any in-progress work.")`
-   - Call `TeamDelete` to clean up the team and task records.
-   - **This is the ONLY place TeamDelete is called.** `hooks/approve-archive.sh` archives state + restores settings on APPROVE but leaves the team intact for inspection; a full teardown (team deletion) only happens when this skill runs.
-   - If TeamDelete fails (team already gone), continue anyway.
+7. Send a shutdown request to each known teammate BY NAME. Teammate names come from
+   `state.json.role_definitions[]` (the `role` field of each entry, lowercased, e.g.
+   `"falsifier"`, `"coverage"`, `"mechanism"`, `"reframer"`, `"critic"`). For each name, send
+   one `SendMessage`:
+   ```
+   SendMessage(to: "<teammate_name>", summary: "ending deepwork",
+     message: "The user has ended the deepwork session. Please stop any in-progress work.")
+   ```
+   If `role_definitions` is empty or null (session was torn down before any teammates were
+   spawned), skip messaging entirely and proceed to step 8.
+   <!-- team_name is session-derived and @deprecated; discovery still matches
+        because setup derives the same name. SendMessage(to: "*") broadcast is removed in
+        2.1.178+; send one message per recipient. TeamDelete no longer exists; the CLI
+        auto-cleans team dirs at session end. -->
+   Note: `state.json.team_name` is read for the summary report (steps 3, 6) but is not
+   used to route teardown — routing is by individual teammate name.
 
 8. Archive runtime state via the canonical writer, then clean up transient files:
 ```bash

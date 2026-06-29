@@ -22,6 +22,8 @@ _parse_hook_input
 
   # If INSTANCE_DIR is already set (e.g., test harness), skip discovery.
   # Otherwise use team_name-based discovery (TeammateIdle provides team_name, not session_id).
+  # payload team_name is session-derived and @deprecated; still present,
+  # and discovery matches because setup derives the same name.
   if [[ -z "${INSTANCE_DIR:-}" ]]; then
     TEAM_NAME=$(printf '%s' "$INPUT" | jq -r '.team_name // ""' 2>/dev/null || echo "")
     [[ -n "$TEAM_NAME" ]] || exit 0

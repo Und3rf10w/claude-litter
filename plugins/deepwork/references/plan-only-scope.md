@@ -35,7 +35,7 @@ Exception: the `/deepwork-execute-amend`, `/deepwork-guardrail`, and `/deepwork-
 
 ### Home directory / team metadata — `~/.claude/teams/`, `~/.claude/tasks/`
 
-**INDIRECT-SCOPE only.** Team/task state lives here, but teammates interact with it via the team tools (`TeamCreate`, `Agent`, `TaskCreate`, `TaskUpdate`, `SendMessage`). Direct filesystem manipulation of these paths is not plan-only-appropriate — use the tools.
+**INDIRECT-SCOPE only.** Team/task state lives here, but teammates interact with it via the team tools (`Agent`, `TaskCreate`, `TaskUpdate`, `SendMessage`). The implicit team forms on the first `Agent` call; `TeamCreate` no longer exists in CLI 2.1.178+. Direct filesystem manipulation of these paths is not plan-only-appropriate — use the tools.
 
 ---
 

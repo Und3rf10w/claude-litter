@@ -16,8 +16,6 @@
 # This partially mitigates GAP-4 (multi-agent plan-hash coherence) for the
 # single-EXECUTOR V0 case by detecting external mutations (e.g., user edits the plan).
 #
-# CC source: cli_formatted_2.1.116.js:265956 (FileChanged event literal),
-# :269399-269416 (matcher → watch path via chokidar glob), :269417 (awaitWriteFinish debounce).
 # Fail-open on any error.
 
 set +e

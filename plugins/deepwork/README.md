@@ -49,7 +49,11 @@ See `references/archetype-taxonomy.md` for composition patterns per problem shap
 
 ## §5 Requirements
 
-- **Agent teams** — `TeamCreate`, `Agent`, `SendMessage`, `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` must be enabled (Claude Code experimental agent teams)
+- **Agent teams** — `Agent`, `SendMessage`, `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` must be enabled. Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` — deepwork's multi-agent oppositional team is inoperative without it. Set via `settings.json`:
+  ```json
+  { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+  ```
+  or shell: `export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` then restart Claude Code.
 - **jq** — required for state management and hook logic
 - **bash 3.2+** — macOS and Linux supported
 
@@ -63,7 +67,7 @@ From the marketplace:
 /plugin install deepwork@claude-litter
 ```
 
-> **Important**: enable agent teams by adding `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` to your `settings.json` or environment before running.
+> **Mandatory**: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` must be set before running — see §5 Requirements for the exact remediation. Deepwork will hard-fail at setup if this flag is absent.
 
 Local testing:
 ```
@@ -127,7 +131,7 @@ For the full pipeline, all 9 execute hooks, state fields, and amendment mechanic
 | `/deepwork <goal> [flags]` | Start a DESIGN or EXECUTE mode session | `skills/deepwork/SKILL.md` |
 | `/deepwork-status` | Dashboard: phase, team, bar verdicts, proposals, guardrails | `skills/deepwork-status/SKILL.md` |
 | `/deepwork-execute-status` | Execute-mode dashboard: phase, plan_hash, drift, change_log, test results | `skills/deepwork-execute-status/SKILL.md` |
-| `/deepwork-teardown` | End a session — delete team (only path that calls TeamDelete), archive state, restore settings. Use for mid-flight abort or post-HALT cleanup | `skills/deepwork-teardown/SKILL.md` |
+| `/deepwork-teardown` | End a session — graceful shutdown (sends shutdown request to each known teammate by name), archive state, restore settings. CLI auto-cleans up team dirs at session end. Use for mid-flight abort or post-HALT cleanup | `skills/deepwork-teardown/SKILL.md` |
 | `/deepwork-guardrail add\|replace\|remove\|list [--source <src>] "<rule>"` | Manual guardrail management (sources: `user`, `incident`, `flag`, `scope-boundary`, `orchestrator`, `teammate`) | `skills/deepwork-guardrail/SKILL.md` |
 | `/deepwork-bar add\|remove\|list "<criterion>"` | Tune the written bar mid-run | `skills/deepwork-bar/SKILL.md` |
 | `/deepwork-execute-amend <gate-id> --reason "<desc>"` | Single-gate amendment (MICRO-TEAM re-verdict) | `skills/deepwork-execute-amend/SKILL.md` |
@@ -149,9 +153,9 @@ For the full pipeline, all 9 execute hooks, state fields, and amendment mechanic
 | `--guardrail '<rule>'` | Hard-safety constraint. Repeatable. Rendered in every teammate spawn. |
 | `--bar '<criterion>'` | Pre-seed a bar criterion. Orchestrator augments in SCOPE to 6-criteria minimum. |
 | `--safe-mode true\|false` | Autonomous hooks (default: true). |
-| `--team-name <name>` | Override default team name derivation. |
 | `--mode <name>` | Profile selection: `default` (design) or `execute`. |
 | `--prompt-file <path>` | Read goal from a file instead of inline text. |
+| `--allow-no-teams` | Downgrade the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` hard-fail to a loud warning and proceed. Debugging only — the oppositional team cannot function without the env var. |
 
 ### Execute-only flags (require `--mode execute`)
 
@@ -300,7 +304,7 @@ See `references/failure-modes.md` for the full pedagogical failure-mode table (d
 
 ## §16 Trust boundaries & safety
 
-- **Teammate names** are harness-set at `TeamCreate` and sanitized (`[^a-zA-Z0-9_-]` → `_`). Trusted identifiers, not user content.
+- **Teammate names** are harness-set when the first teammate is spawned via `Agent` (CLI 2.1.178+: no explicit `TeamCreate` step) and sanitized (`[^a-zA-Z0-9_-]` → `_`). Trusted identifiers, not user content.
 - **User-supplied guardrails** (via `--guardrail` or `/deepwork-guardrail add`) are user-trusted and rendered verbatim.
 - **Incident-sourced guardrails** (via `incidents.jsonl`) are character-restricted and length-capped.
 - **Threat model**: same-tenant — all teammates are controlled by the same user.
@@ -309,7 +313,7 @@ Safety boundaries:
 
 - **DESIGN mode does NOT implement.** No code changes to target codebase — only proposals and references.
 - **EXECUTE mode does NOT commit without CRITIC APPROVED.** The LAND phase requires all three PA/EG/RA dimensions to PASS.
-- **Does NOT call TeamDelete from the orchestrator.** Only `/deepwork-teardown` tears down the team.
+- **Does NOT issue a TeamDelete call.** `TeamDelete` no longer exists (CLI 2.1.178+); team dirs are cleaned up automatically at session end. `/deepwork-teardown` performs graceful shutdown (per-teammate SendMessage) and archives state.
 - **Does NOT overwrite settings.local.json irrecoverably.** Automatic backup + `_deepwork: true` tag filter preserves other plugins' hooks.
 - **SessionStart re-inject** — `hooks/session-context.sh` reconstructs orchestrator prompt from disk-backed state.
 - **Parallel-safe** — 8-hex instance IDs scope all state; setup is serialized on `.claude/deepwork.local.lock`.
@@ -321,7 +325,7 @@ Safety boundaries:
 For plugin authors reading source:
 
 - `references/archetype-taxonomy.md` — all 6 archetypes (5 design + CHAOS-MONKEY execute-only) with composition patterns
-- `references/tool-reference.md` — explicit TeamCreate / Agent / TaskCreate / TaskUpdate / TaskList / TaskGet / SendMessage / AskUserQuestion / ExitPlanMode syntax
+- `references/tool-reference.md` — explicit Agent / TaskCreate / TaskUpdate / TaskList / TaskGet / SendMessage / AskUserQuestion / ExitPlanMode syntax (TeamCreate/TeamDelete removed in CLI 2.1.178+)
 - `references/execute-mode.md` — execute-mode deep dive: phase pipeline, hooks, state fields, amendment mechanics
 - `profiles/execute/stances/` — execute-mode stance files (executor, adversary, auditor, scope-guard, chaos-monkey); read-only reference for understanding role mandates
 - `profiles/default/PROFILE.md` and `profiles/execute/PROFILE.md` — authoritative orchestrator contracts

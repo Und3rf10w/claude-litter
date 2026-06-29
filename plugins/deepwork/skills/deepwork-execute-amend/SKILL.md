@@ -80,8 +80,8 @@ In these cases, output a HALT recommendation and ask the user via AskUserQuestio
 
 ## CC hook capability note
 
-- `permissionDecision:"ask"` silently degrades to `"deny"` in non-interactive mode (`cli_formatted_2.1.116.js:472423-472440`). This skill does not use `"ask"`.
-- PreToolUse blocking uses `permissionDecision:"deny"` (via `hookSpecificOutput`, `cli_formatted_2.1.116.js:266013-266017`) or exit 2, not the deprecated `decision:"block"` (`cli_formatted_2.1.116.js:632082`).
+- `permissionDecision:"ask"` silently degrades to `"deny"` in non-interactive mode. This skill does not use `"ask"`.
+- PreToolUse blocking uses `permissionDecision:"deny"` (via `hookSpecificOutput`) or exit 2, not the deprecated `decision:"block"`.
 
 ## Companion commands
 

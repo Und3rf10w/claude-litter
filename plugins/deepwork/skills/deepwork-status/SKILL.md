@@ -25,7 +25,8 @@ If no files are found, report that no deepwork session is currently active and s
    **Core fields**
    - **Goal**
    - **Phase** (scope | explore | synthesize | critique | refine | deliver | done | refining)
-   - **Team**: `team_name`
+   - **Team**: `team_name` <!-- team_name is session-derived and @deprecated; discovery still matches because setup derives the same name. -->
+
    - **Instance**: `instance_id`
    - **Started**: `started_at`
    - **Last updated**: `last_updated`

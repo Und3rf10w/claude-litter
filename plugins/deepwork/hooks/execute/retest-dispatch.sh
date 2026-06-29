@@ -6,14 +6,12 @@
 # to test-results.jsonl. This provides fast feedback and feeds the test-evidence gate
 # in plan-citation-gate.sh (PreToolUse Write|Edit) for the next write.
 #
-# Advisory only — PostToolUse CANNOT block (cli_formatted_2.1.116.js:266053-266058:
-# PostToolUse hookSpecificOutput has no permissionDecision field). The blocking half
+# Advisory only — PostToolUse CANNOT block. The blocking half
 # of the test-evidence gate is plan-citation-gate.sh.
 #
-# Async: explicitly set asyncTimeout=30000ms (overrides the 15000ms default per
-# cli_formatted_2.1.116.js:264193: `let Y = q.asyncTimeout || 15000`). 30s is needed
+# Async: explicitly set asyncTimeout=30000ms 
 # because test suites can take 15-25s. After the async handshake, CC backgrounds this
-# script and discards async stdout (cli_formatted_2.1.116.js:565249-565328) — all
+# script and discards async stdout — all
 # results must go to test-results.jsonl on disk.
 #
 # Atomicity: appends to test-results.jsonl rely on POSIX O_APPEND semantics.

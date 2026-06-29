@@ -74,7 +74,9 @@ Re-orient by reading:
 4. ${PLUGIN_ROOT}/references/ — tool reference, critic-stance.md, etc.
 5. ${INSTANCE_DIR}/discoveries.jsonl — any pending unresolved discoveries
 
-Then continue the execute phase pipeline from the current phase. Do not restart SETUP if plan_hash is already set. Do not re-spawn the team — it persists across clears. Do not re-create gate tasks that already exist.
+Then continue the execute phase pipeline from the current phase. Do not restart SETUP if plan_hash is already set. Do not re-create gate tasks that already exist.
+
+NOTE: In-process teammates do NOT survive /resume or /clear (agent-teams model). If teammates appear missing, re-spawn them via Agent — one Agent call per role, in a single parallel message. Do NOT call TeamCreate (it no longer exists); the implicit team re-forms on first Agent spawn.
 
 If execute_phase is 'write': check TaskList for the current gate's tasks. Resume executor on the pending gate.
 If execute_phase is 'verify': check env_attestations[] for completion; resume auditor if incomplete.
@@ -105,9 +107,12 @@ build_resume_prompt() {
 SESSION RESUMED — run this recovery checklist before continuing:
 
 1. Read ${INSTANCE_DIR}/state.json — verify execute.phase, plan_ref, plan_hash, and drift status.
+   (team_name field is load-bearing for hook discovery even though it is @deprecated in payloads —
+   team_name is session-derived and @deprecated; discovery still matches because setup derives the same name.)
 2. Run TaskList — verify which executor tasks are open/in-progress.
-   - If the executor team appears gone, run TeamCreate to spawn a new team. Do NOT
-     assume the prior team persists after a resume — it may have been lost on disconnect.
+   - In-process teammates do NOT survive /resume (agent-teams model). If teammates
+     appear missing, re-spawn them via Agent — one Agent call per role, in a single parallel message.
+     Do NOT call TeamCreate (it no longer exists); the implicit team re-forms on first Agent spawn.
    - If no team_name is set in state.json, run /deepwork --mode execute to reinitialize.
 3. Read ${INSTANCE_DIR}/log.md — review the last 20 lines for context on where execution stopped.
 4. Read ${INSTANCE_DIR}/discoveries.jsonl — check for any unresolved scope-delta discoveries.
@@ -124,5 +129,5 @@ ${bar_status}
 
 After completing the checklist, continue the execute phase pipeline from execute.phase=${execute_phase}.
 If plan_drift_detected is DETECTED, resolve via /deepwork-execute-amend before advancing.
-If the prior team is gone, create a NEW team and re-assign the current gate's tasks."
+If prior teammates are gone, re-spawn them via Agent and re-assign the current gate's tasks."
 }

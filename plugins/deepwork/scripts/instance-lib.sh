@@ -46,11 +46,12 @@ _parse_hook_input() {
 # ---------------------------------------------------------------------------
 # _sanitize_team_name <team_name>
 #
-# Canonical team-name sanitization: replaces `/` and space with `_`.
-# Prints the sanitized name to stdout. Must match the CC TUI / swarm-loop
-# write path so file lookups find the directory the producer created.
+# Canonical team-name sanitization: replaces any character outside [a-zA-Z0-9_-]
+# with "-". Aligned to CLI fn bct(e) = e.replace(/[^a-zA-Z0-9_-]/g, "-")
+# For "session-<8hex>" this is a no-op.
+# Must match the CC bct write path so TASK_DIR lookups resolve the correct directory.
 _sanitize_team_name() {
-  printf '%s' "$1" | tr '/' '_' | tr ' ' '_'
+  printf '%s' "$1" | sed 's/[^a-zA-Z0-9_-]/-/g'
 }
 
 # ---------------------------------------------------------------------------
@@ -426,6 +427,12 @@ discover_instance() {
 }
 
 # discover_instance_by_team_name — find instance by team_name (for teammate-session hooks)
+#
+# team_name is read from hook payloads (TeammateIdle, TaskCreated, TaskCompleted).
+# team_name is session-derived and @deprecated; discovery still matches
+# because setup derives the same name (session-${SESSION_ID:0:8}).
+# A teammate's own session_id differs from the lead's, so team_name is the only
+# viable key for these cross-session hook invocations — keep this function.
 discover_instance_by_team_name() {
   local team_name="${1:-}"
   [[ -n "$team_name" ]] || return 1
@@ -466,6 +473,8 @@ discover_instance_by_team_name() {
     _id="$(basename "$_dir")"
     [[ "$_id" =~ ^[0-9a-f]{8}$ ]] || continue
 
+    # team_name field in state.json is now session-derived (session-${SESSION_ID:0:8});
+    # team_name is @deprecated in hook payloads but still present.
     _tname=$(jq -r '.team_name // ""' "$_f" 2>/dev/null) || continue
     [[ "$_tname" == "$team_name" ]] || continue
 

@@ -12,7 +12,6 @@ set -euo pipefail
 PROMPT_PARTS=()
 MODE="default"
 PROMPT_FILE=""
-TEAM_NAME=""
 SAFE_MODE="true"
 SOURCE_OF_TRUTH=()
 ANCHORS=()
@@ -27,6 +26,7 @@ AUTHORIZED_LOCAL_DESTRUCTIVE="false"
 SECRET_SCAN_WAIVED="false"
 CHAOS_MONKEY="auto"  # auto | true | false
 ALLOW_NO_HOOKS="false"
+ALLOW_NO_TEAMS="false"
 SINGLE_WRITER_ENABLED="true"
 
 while [[ $# -gt 0 ]]; do
@@ -55,8 +55,6 @@ OPTIONS:
                                  tools (Edit/Write/Read/Agent/TaskCreate/TaskUpdate/...).
   --mode <name>                  Profile (default: "default"). Also available: "execute"
                                  (implementation mode — requires --plan-ref).
-  --team-name <name>             Base team name (random 8-hex suffix appended for uniqueness).
-                                 Default: derived from goal text.
   --prompt-file <path>           Read goal/flags from a file instead of positional args.
                                  Flags in the file are extracted by a pure-bash preprocessor;
                                  multiline goal body after flags becomes the goal text.
@@ -78,8 +76,17 @@ EXECUTE-MODE OPTIONS (only meaningful with --mode execute):
   --no-chaos-monkey              Explicitly disable chaos-monkey spawn.
   --allow-no-hooks               Allow setup to proceed even if hook injection fails (debugging
                                  only; enforcement will be absent without hooks).
+  --allow-no-teams               Downgrade the CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 hard-fail
+                                 to a loud warning and proceed (debugging only; the oppositional
+                                 team cannot function without this env var set to 1).
 
   -h, --help                     Show this help
+
+REQUIREMENTS:
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 must be set in your environment or settings.json:
+    { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+  Without it, deepwork's multi-agent oppositional team cannot spawn and all coordination
+  hooks will be inoperative.
 
 DESCRIPTION:
   Spawns a 5-archetype oppositional team (FALSIFIER / COVERAGE / MECHANISM / REFRAMER / CRITIC)
@@ -130,18 +137,6 @@ HELP_EOF
       MODE="$2"
       shift 2
       ;;
-    --team-name)
-      # Reject `..` segments to prevent path traversal in $HOME/.claude/tasks/<sanitized>.
-      # _sanitize_team_name only strips '/' and ' ', so a name like '..' would resolve
-      # TASK_DIR one level above the intended tasks tree.
-      if [[ "$2" == *".."* ]]; then
-        printf 'setup-deepwork: --team-name must not contain ".." (path-traversal segment)\n' >&2
-        printf '  Received: %s\n' "$2" >&2
-        exit 3
-      fi
-      TEAM_NAME="$2"
-      shift 2
-      ;;
     --prompt-file)
       PROMPT_FILE="$2"
       shift 2
@@ -180,6 +175,10 @@ HELP_EOF
       ;;
     --allow-no-hooks)
       ALLOW_NO_HOOKS="true"
+      shift
+      ;;
+    --allow-no-teams)
+      ALLOW_NO_TEAMS="true"
       shift
       ;;
     --enable-single-writer)
@@ -222,6 +221,36 @@ fi
 if [[ "$SAFE_MODE" != "true" ]] && [[ "$SAFE_MODE" != "false" ]]; then
   echo "Error: --safe-mode must be 'true' or 'false', got '$SAFE_MODE'" >&2
   exit 1
+fi
+
+# Hard-fail if CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is not set to "1".
+# Deepwork relies on CLI 2.1.178+ agent-teams: teammates are spawned via Agent,
+# coordination hooks fire TeammateIdle/TaskCreated/TaskCompleted events, and the
+# task directory under ~/.claude/tasks/ is only created when this flag is active.
+# Without it, the entire oppositional-team model is inoperative.
+if [[ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" != "1" ]]; then
+  if [[ "$ALLOW_NO_TEAMS" == "true" ]]; then
+    printf 'WARNING: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is not set to "1".\n' >&2
+    printf '  Deepwork'"'"'s multi-agent oppositional team CANNOT function without it.\n' >&2
+    printf '  Proceeding anyway because --allow-no-teams was passed (debugging only).\n' >&2
+  else
+    printf 'ERROR: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is not set to "1".\n' >&2
+    printf '\n' >&2
+    printf '  Deepwork'"'"'s multi-agent oppositional team (FALSIFIER / COVERAGE /\n' >&2
+    printf '  MECHANISM / REFRAMER / CRITIC) cannot function without this flag.\n' >&2
+    printf '  The CLI will not spawn teammates, write task directories, or fire\n' >&2
+    printf '  TeammateIdle/TaskCreated/TaskCompleted coordination hooks.\n' >&2
+    printf '\n' >&2
+    printf '  Remediation — choose one:\n' >&2
+    printf '  1. Add to your .claude/settings.json (or global settings):\n' >&2
+    printf '       { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }\n' >&2
+    printf '     then restart Claude Code.\n' >&2
+    printf '  2. Set in your shell and restart:\n' >&2
+    printf '       export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\n' >&2
+    printf '\n' >&2
+    printf '  To bypass this check for debugging only, pass --allow-no-teams.\n' >&2
+    exit 1
+  fi
 fi
 
 # Validate CLAUDE_PROJECT_DIR if set — must be an existing directory.
@@ -355,15 +384,19 @@ trap '
 mkdir -p "$INSTANCE_DIR"
 mkdir -p "${INSTANCE_DIR}/proposals"
 
-# Derive team_name
-if [[ -z "$TEAM_NAME" ]]; then
-  # Normalize whitespace (including newlines) before `cut` — multi-line goals
-  # produced line-wise truncated team_name via `cut -c1-30`, leaking newlines
-  # into on-disk team_name while jq --arg further in the pipeline escaped them.
-  # Drift class (k) in proposals/v3-final.md.
-  TEAM_NAME="deepwork-$(printf '%s' "$GOAL" | tr '[:upper:]' '[:lower:]' | tr '\n' ' ' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-30)"
+# Derive team_name from SESSION_ID — must match the CLI's implicit team name exactly.
+if [[ "$SESSION_ID" == deepwork-* ]]; then
+  # Legacy placeholder path: CLAUDE_CODE_SESSION_ID was unset at setup time.
+  # team_name will not match hook payload team_name (session-<8hex>); emit warning.
+  printf 'WARNING: CLAUDE_CODE_SESSION_ID was not set — using placeholder session ID.\n' >&2
+  printf '  team_name will be derived from the placeholder and may not match hook\n' >&2
+  printf '  payload team_name (session-<8hex>). Hook coordination may be degraded.\n' >&2
+  printf '  This typically means deepwork was invoked outside a Claude Code session.\n' >&2
 fi
-TEAM_NAME="${TEAM_NAME}-$(head -c 4 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+TEAM_NAME="session-${SESSION_ID:0:8}"
+# Apply bct sanitizer: replace [^a-zA-Z0-9_-] with "-". For "session-<8hex>" this is
+# a no-op, but we apply it for correctness in all cases.
+TEAM_NAME="$(printf '%s' "$TEAM_NAME" | sed 's/[^a-zA-Z0-9_-]/-/g')"
 
 # Resolve absolute plugin root (needed for hook script absolute paths in settings.local.json)
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"

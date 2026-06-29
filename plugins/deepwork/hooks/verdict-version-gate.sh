@@ -7,9 +7,7 @@
 # verdicts v<N> while orchestrator already bumped to v<N+1>.
 #
 # Mechanics:
-#   1. Fires on every SendMessage PreToolUse (CC source: SendMessage tool in
-#      cli_formatted_2.1.117.js:220337; PreToolUse dispatched via Ms_() at
-#      :425283; tool_input fully resolved per hooks.md §PreToolUse).
+#   1. Fires on every SendMessage PreToolUse 
 #   2. Filters to messages addressed to "critic" OR messages that look like
 #      critique verdicts (contain APPROVED / HOLDING / FAIL / PASS patterns).
 #   3. Reads version-sentinel.json from the discovered deepwork INSTANCE_DIR.

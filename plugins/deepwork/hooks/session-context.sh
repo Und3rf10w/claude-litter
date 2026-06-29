@@ -31,6 +31,8 @@ if [[ -z "$STATE_JSON" ]] || ! echo "$STATE_JSON" | jq empty 2>/dev/null; then
 fi
 
 GOAL=$(echo "$STATE_JSON" | jq -r '.goal // ""')
+# team_name is session-derived and @deprecated; discovery still matches
+# because setup derives the same name. state.json.team_name is the immutable anchor.
 TEAM_NAME=$(echo "$STATE_JSON" | jq -r '.team_name // ""')
 MODE=$(echo "$STATE_JSON" | jq -r '.mode // "default"')
 PHASE=$(echo "$STATE_JSON" | jq -r '.phase // "scope"')
@@ -62,7 +64,7 @@ if [[ -d "${INSTANCE_DIR}/proposals" ]]; then
   done < <(find "${INSTANCE_DIR}/proposals" -maxdepth 1 -name 'v*.md' -print0 2>/dev/null)
 fi
 
-# Emit a single JSON hookSpecificOutput object per cli_formatted_2.1.118.js:265720.
+# Emit a single JSON hookSpecificOutput object 
 # additionalContext carries the reinject text; watchPaths registers proposal files.
 _watch_json="[]"
 if [[ ${#_watch_paths[@]} -gt 0 ]]; then
