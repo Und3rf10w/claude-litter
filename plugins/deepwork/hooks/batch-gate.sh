@@ -26,7 +26,10 @@
 set +e
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
+# Timeout-guarded stdin read (never a bare `cat`) — a bare `$(cat)` freezes the
+# session on CC >= 2.1.163 when the hook's stdin is left un-closed. perl
+# select()+sysread caps at 3s. See instance-lib.sh for the full rationale.
+INPUT=$(perl -MTime::HiRes=time -e 'my $d=time+3;my $b="";my $v="";vec($v,fileno(STDIN),1)=1;while(1){my $r=$d-time;last if $r<=0;my $nf=select(my $o=$v,undef,undef,$r);last if !$nf||$nf<=0;my $n=sysread(STDIN,my $c,65536);last if !$n;$b.=$c;last if length($b)>=8388608}print $b' 2>/dev/null || true)
 _PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${_PLUGIN_ROOT}/scripts/instance-lib.sh"
 

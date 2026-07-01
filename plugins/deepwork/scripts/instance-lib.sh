@@ -23,7 +23,10 @@
 # Never falls back to env vars. Missing fields are exported as empty strings.
 # Call immediately after sourcing instance-lib.sh, before any other logic.
 _parse_hook_input() {
-  INPUT=$(cat)
+  # Timeout-guarded stdin read (never a bare `cat`) — a bare `$(cat)` freezes the
+  # session on CC >= 2.1.163 when the hook's stdin is left un-closed. perl
+  # select()+sysread caps at 3s and preserves whatever arrived.
+  INPUT=$(perl -MTime::HiRes=time -e 'my $d=time+3;my $b="";my $v="";vec($v,fileno(STDIN),1)=1;while(1){my $r=$d-time;last if $r<=0;my $nf=select(my $o=$v,undef,undef,$r);last if !$nf||$nf<=0;my $n=sysread(STDIN,my $c,65536);last if !$n;$b.=$c;last if length($b)>=8388608}print $b' 2>/dev/null || true)
   export INPUT
   # Single jq pass: extract all four fields in one subprocess instead of four.
   # Split via bash read instead of 4 sed subprocesses (latency: every hook invocation).
@@ -47,8 +50,7 @@ _parse_hook_input() {
 # _sanitize_team_name <team_name>
 #
 # Canonical team-name sanitization: replaces any character outside [a-zA-Z0-9_-]
-# with "-". Aligned to CLI fn bct(e) = e.replace(/[^a-zA-Z0-9_-]/g, "-")
-# For "session-<8hex>" this is a no-op.
+# with "-". # For "session-<8hex>" this is a no-op.
 # Must match the CC bct write path so TASK_DIR lookups resolve the correct directory.
 _sanitize_team_name() {
   printf '%s' "$1" | sed 's/[^a-zA-Z0-9_-]/-/g'
@@ -429,7 +431,7 @@ discover_instance() {
 # discover_instance_by_team_name — find instance by team_name (for teammate-session hooks)
 #
 # team_name is read from hook payloads (TeammateIdle, TaskCreated, TaskCompleted).
-# team_name is session-derived and @deprecated; discovery still matches
+# CLI 2.1.191: team_name is session-derived and @deprecated; discovery still matches
 # because setup derives the same name (session-${SESSION_ID:0:8}).
 # A teammate's own session_id differs from the lead's, so team_name is the only
 # viable key for these cross-session hook invocations — keep this function.
@@ -474,7 +476,7 @@ discover_instance_by_team_name() {
     [[ "$_id" =~ ^[0-9a-f]{8}$ ]] || continue
 
     # team_name field in state.json is now session-derived (session-${SESSION_ID:0:8});
-    # team_name is @deprecated in hook payloads but still present.
+    # CLI 2.1.191: team_name is @deprecated in hook payloads but still present.
     _tname=$(jq -r '.team_name // ""' "$_f" 2>/dev/null) || continue
     [[ "$_tname" == "$team_name" ]] || continue
 
