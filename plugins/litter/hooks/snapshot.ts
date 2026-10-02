@@ -61,7 +61,13 @@ export async function dirtySubmodules(p: Ports, checkout: string): Promise<strin
   return dirty.sort()
 }
 
-/** Paths the real index marks skip-worktree that are absent on disk (the sparse path's step 2). */
+/**
+ * Paths the real index marks skip-worktree that are absent on disk, and that
+ * the sparse rules leave out: the intentionally absent ones (the sparse path's
+ * step 2). An absent path inside the rules carries a skip-worktree bit set by
+ * hand, and the file is deleted, so the snapshot takes the deletion, as the
+ * plain snapshot does without sparse checkout.
+ */
 async function absentSkipWorktree(p: Ports, git: Git, checkout: string): Promise<string[]> {
   const listed = (await git(['ls-files', '-t', '-z'])).split('\0')
   const marked = listed.filter(e => e.startsWith('S ')).map(e => e.slice(2))
@@ -81,7 +87,16 @@ async function absentSkipWorktree(p: Ports, git: Git, checkout: string): Promise
       if (!present[j]) absent.push(path)
     })
   }
-  return absent
+  if (absent.length === 0) return absent
+  // `check-rules` (git 2.41+) prints the paths the rules include. Without it,
+  // every absent entry counts as intentionally absent, as before.
+  const r = await p.run(['git', '-C', checkout, 'sparse-checkout', 'check-rules', '-z'], {
+    stdin: `${absent.join('\0')}\0`,
+    timeoutMs: 120_000,
+  })
+  if (r.code !== 0) return absent
+  const inside = new Set(r.stdout.split('\0').filter(x => x !== ''))
+  return absent.filter(path => !inside.has(path))
 }
 
 /**

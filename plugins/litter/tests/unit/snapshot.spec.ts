@@ -1,10 +1,13 @@
 // Tier 2: the snapshot against real git (plan section 9, "Snapshot").
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { dirtySubmodules, snapshot } from '../../hooks/snapshot'
+import { GitFailed, dirtySubmodules, snapshot } from '../../hooks/snapshot'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Real git (submodule clones among it), slow on a busy machine.
+setDefaultTimeout(20_000)
 
 let p: TestPorts
 let dir: string
@@ -100,6 +103,91 @@ describe('snapshot', () => {
     }
   })
 
+  test('a change two submodules down is named by its top-level submodule, even with ignore = all', async () => {
+    const { dir: leaf, cleanup: c1 } = scratch()
+    const { dir: mid, cleanup: c2 } = scratch()
+    try {
+      await scratchRepo(p, leaf)
+      const { git: gitMid } = await scratchRepo(p, mid)
+      await gitMid('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', leaf, 'inner')
+      await gitMid('commit', '-q', '-m', 'add inner')
+      await git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', mid, 'vendor/mid')
+      await git('commit', '-q', '-m', 'add mid')
+      await git('-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', '--recursive')
+      expect(await dirtySubmodules(p, dir)).toEqual([])
+      writeFileSync(join(dir, 'vendor/mid/inner/README.md'), 'edit two levels down\n')
+      expect((await snapshot(p, dir)).dirty_submodules).toEqual(['vendor/mid'])
+      await git('config', 'submodule.vendor/mid.ignore', 'all')
+      await git('config', 'diff.ignoreSubmodules', 'all')
+      expect((await git('status', '--porcelain')).trim()).toBe('')
+      const s = await snapshot(p, dir)
+      expect(s.dirty_submodules).toEqual(['vendor/mid'])
+      expect(s.tree).toBe(await headTree())
+    } finally {
+      c1()
+      c2()
+    }
+  }, 30_000)
+
+  test("a submodule whose HEAD moved (SC..) is an ordinary change: a new gitlink, and clean", async () => {
+    const { dir: subDir, cleanup: c2 } = scratch()
+    try {
+      await scratchRepo(p, subDir)
+      await git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subDir, 'vendor/sub')
+      await git('commit', '-q', '-m', 'add sub')
+      const sub = join(dir, 'vendor/sub')
+      writeFileSync(join(sub, 'next.txt'), 'n\n')
+      await p.run(['git', 'add', 'next.txt'], { cwd: sub })
+      await p.run(['git', 'commit', '-q', '-m', 'next'], { cwd: sub })
+      const moved = (await p.run(['git', 'rev-parse', 'HEAD'], { cwd: sub })).stdout.trim()
+      const s = await snapshot(p, dir)
+      expect(s.dirty_submodules).toEqual([])
+      expect(s.tree).not.toBe(await headTree())
+      expect((await git('ls-tree', s.tree, 'vendor/sub')).trim()).toContain(moved)
+    } finally {
+      c2()
+    }
+  })
+
+  test('skip-worktree set by hand, without sparse checkout: the plain snapshot sees edits and deletions', async () => {
+    write('a.txt', 'a\n')
+    write('b.txt', 'b\n')
+    await git('add', '-A')
+    await git('commit', '-q', '-m', 'files')
+    await git('update-index', '--skip-worktree', 'a.txt', 'b.txt')
+    write('a.txt', 'edited behind the bit\n')
+    rmSync(join(dir, 'b.txt'))
+    expect((await git('status', '--porcelain')).trim()).toBe('')
+    const s = await snapshot(p, dir)
+    expect(s.sparse).toBe(false)
+    expect((await git('cat-file', '-p', `${s.tree}:a.txt`)).trim()).toBe('edited behind the bit')
+    expect(await git('ls-tree', '-r', '--name-only', s.tree)).not.toContain('b.txt')
+  })
+
+  test('sparse with a skip-worktree bit set by hand inside the cone: its edit and its deletion are caught', async () => {
+    write('in/a.ts', 'a\n')
+    write('in/gone.ts', 'g\n')
+    write('out/b.ts', 'b\n')
+    await git('add', '-A')
+    await git('commit', '-q', '-m', 'tree')
+    await git('sparse-checkout', 'set', '--cone', 'in')
+    await git('update-index', '--skip-worktree', 'in/a.ts', 'in/gone.ts')
+    write('in/a.ts', 'edited behind the bit\n')
+    rmSync(join(dir, 'in/gone.ts'))
+    // git shows the bit only on absent files (it clears it from present ones as it reads the index).
+    const before = await indexState()
+    expect(before).toContain('S 100644')
+    const s = await snapshot(p, dir)
+    expect(s.sparse).toBe(true)
+    const names = await git('ls-tree', '-r', '--name-only', s.tree)
+    expect((await git('cat-file', '-p', `${s.tree}:in/a.ts`)).trim()).toBe('edited behind the bit')
+    expect(names).not.toContain('in/gone.ts')
+    // Out of the cone, the absent file is intentionally absent, and stays in the tree.
+    expect(names).toContain('out/b.ts')
+    expect(existsSync(join(dir, 'out/b.ts'))).toBe(false)
+    expect(await indexState()).toBe(before)
+  })
+
   test('sparse: clean is HEAD^{tree}; out-of-cone edits and new files are caught; absent files stay', async () => {
     write('in/a.ts', 'a\n')
     write('out/b.ts', 'b\n')
@@ -120,5 +208,23 @@ describe('snapshot', () => {
     expect(names).toContain('out/new.ts')
     expect(names).toContain('out/c.ts')
     expect((await git('cat-file', '-p', `${s.tree}:out/b.ts`)).trim()).toBe('edited')
+    expect(existsSync(join(dir, 'out/c.ts'))).toBe(false)
+    expect((await git('ls-files', '-t', 'out/c.ts')).trim()).toBe('S out/c.ts')
+  })
+
+  test('staged content is never in the snapshot: the working tree is', async () => {
+    const blob = (await p.run(['git', 'hash-object', '-w', '--stdin'], { cwd: dir, stdin: 'staged only\n' })).stdout.trim()
+    await git('update-index', '--cacheinfo', `100644,${blob},README.md`)
+    expect((await snapshot(p, dir)).tree).toBe(await headTree())
+    expect((await git('ls-files', '-s', 'README.md')).trim()).toContain(blob)
+  })
+
+  test('a failing git rejects with GitFailed, and leaves no temporary index', async () => {
+    const { dir: notRepo, cleanup: c2 } = scratch()
+    try {
+      await expect(snapshot(p, notRepo)).rejects.toBeInstanceOf(GitFailed)
+    } finally {
+      c2()
+    }
   })
 })
