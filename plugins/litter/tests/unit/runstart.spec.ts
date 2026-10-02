@@ -312,6 +312,17 @@ describe('run.start: refusals in order, each writing nothing', () => {
     await nothingWritten(w)
   })
 
+  test('no git identity to commit with: refused naming it, nothing written', async () => {
+    const w = await world()
+    const run = w.p.run
+    w.p.run = (argv, init) => run(argv, argv[0] === 'git' ? { ...init, env: { ...init?.env, GIT_AUTHOR_NAME: '' } } : init)
+    const r = await execute(w)
+    expect(r).toEqual(expect.objectContaining({ ok: false, field: 'checkout' }))
+    expect((r as { error: string }).error).toContain('no identity to commit with')
+    expect((r as { error: string }).error).toContain('set user.name and user.email')
+    await nothingWritten(w)
+  })
+
   test('an untracked file is uncommitted work', async () => {
     const w = await world()
     writeFileSync(join(w.dir, 'new.txt'), 'x\n')

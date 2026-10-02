@@ -1537,6 +1537,15 @@ async function prepare(
   const symbolic = await git(['symbolic-ref', '-q', 'HEAD'])
   const headRef = symbolic.code === 0 ? symbolic.stdout.trim() : null
   if (headRef !== null && !/^refs\/heads\/[^\s]+$/.test(headRef)) return fail(`litter: HEAD names '${headRef}', which isn't a branch`)
+  // Every run makes commits with commit-tree (a design's base, a land), as you: without an identity the
+  // land would fail after the run's work was done (tier 4, a box with no git config).
+  for (const who of ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT']) {
+    const id = await git(['var', who])
+    if (id.code !== 0) {
+      const why = id.stderr.trim().split('\n').find(l => l.trim() !== '') ?? `git var ${who} failed`
+      return fail(`litter: git has no identity to commit with here (${why}); set user.name and user.email, then launch`, 'checkout')
+    }
+  }
 
   if (spec.workflow === 'design' || spec.workflow === 'plan') {
     let plan: Prepared['plan'] = null
