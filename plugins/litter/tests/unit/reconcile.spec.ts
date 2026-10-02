@@ -365,6 +365,94 @@ describe('reconcile, fanout (checkout mode)', () => {
   })
 })
 
+describe('reconcile, a fanout run: by the intent commit, never by trailers', () => {
+  beforeEach(async () => {
+    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, workflow: 'fanout', args: { tasks: [], mergeOrder: [] } }))
+  })
+
+  /** The integration tip: a merge-like commit on base with the integration's files, and no trailer. */
+  async function integrationTip(message = 'litter: merge a of the run'): Promise<{ tip: string; tree: string }> {
+    write('int/a.ts', 'a\n')
+    write('README.md', 'integrated\n')
+    const tree = (await snapshot(p, dir)).tree
+    rmSync(join(dir, 'int'), { recursive: true })
+    await git('checkout', '-q', '--', 'README.md')
+    expect(await status()).toBe('')
+    const tip = (await p.run(['git', 'commit-tree', tree, '-p', base, '-F', '-'], { cwd: dir, stdin: `${message}\n` })).stdout.trim()
+    return { tip, tree }
+  }
+  const intendFanout = (verifyId: string, tree: string, commit: string) =>
+    appendRecord(p, runDir, {
+      run: RUN,
+      kind: 'land.intent',
+      by: MOD,
+      body: { gate: 'fanout', verify_id: verifyId, tree, old: base, ref: REF, mode: 'checkout', commit } satisfies LandIntentBody,
+    })
+  const moveFiles = (tip: string) => git('read-tree', '-m', '-u', base, tip)
+
+  test('an intent with the ref at its commit records the land, recovered, and the repair is a no-op', async () => {
+    const { tip, tree } = await integrationTip()
+    await intendFanout('integration-1-x', tree, tip)
+    await moveFiles(tip)
+    await swap(tip)
+    expect(await status()).toBe('')
+    expect(await reconcileLands(p, runDir, RUN)).toEqual({ problems: [] })
+    const rec = (await records()).at(-1)!
+    expect(rec.kind).toBe('land')
+    expect(rec.body).toEqual({ gate: 'fanout', verify_id: 'integration-1-x', commit: tip, tree, old: base, ref: REF, recovered: true } satisfies LandBody)
+    expect(await status()).toBe('')
+    // A retried land returns that commit.
+    expect(await recordLand(ctx(RELAY), { kind: 'land', run: RUN, gate: 'fanout', verify_id: 'integration-1-x' })).toEqual({ ok: true, landed: true, commit: tip, retry: false })
+  })
+
+  test('an intent with the ref still at base repairs the checkout to a clean base with -u, and abandons it', async () => {
+    const { tip, tree } = await integrationTip()
+    await intendFanout('integration-1-x', tree, tip)
+    await moveFiles(tip)
+    expect(await status()).not.toBe('')
+    expect(await reconcileLands(p, runDir, RUN)).toEqual({ problems: [] })
+    expect(await status()).toBe('')
+    expect((await git('rev-parse', 'HEAD^{tree}')).trim()).toBe((await git('rev-parse', `${base}^{tree}`)).trim())
+    expect((await kinds()).at(-1)).toBe('land.abandoned')
+  })
+
+  test('with a file you edited since, the repair changes nothing and records land.blocked with the path', async () => {
+    const { tip, tree } = await integrationTip()
+    await intendFanout('integration-1-x', tree, tip)
+    await moveFiles(tip)
+    write('README.md', 'your edit after the crash\n')
+    const before = await status()
+    const r = await reconcileLands(p, runDir, RUN)
+    expect(r.problems).toHaveLength(1)
+    expect(r.problems[0]).toMatch(/checkout repair \(git read-tree -m -u\) was refused/)
+    expect(await status()).toBe(before)
+    expect(readFileSync(join(dir, 'README.md'), 'utf8')).toBe('your edit after the crash\n')
+    const blocked = (await records()).at(-1)!
+    expect(blocked.kind).toBe('land.blocked')
+    expect((blocked.body as LandBlockedBody).paths).toEqual(['README.md'])
+    // Reconciling again records the same fact once.
+    await reconcileLands(p, runDir, RUN)
+    expect((await kinds()).filter(k => k === 'land.blocked')).toHaveLength(1)
+  })
+
+  test('a commit carrying a Litter-Run trailer is never read as a land in a fanout run', async () => {
+    const { tip } = await integrationTip(`a writer's commit\n\nLitter-Run: ${RUN} fanout integration-1-forged`)
+    await swap(tip)
+    expect(await reconcileLands(p, runDir, RUN)).toEqual({ problems: [] })
+    expect(await kinds()).toEqual([])
+  })
+
+  test('an intent with the ref somewhere else is refused with the facts', async () => {
+    const { tip, tree } = await integrationTip()
+    await intendFanout('integration-1-x', tree, tip)
+    const elsewhere = (await p.run(['git', 'commit-tree', `${base}^{tree}`, '-p', base, '-m', 'by hand'], { cwd: dir })).stdout.trim()
+    await swap(elsewhere)
+    const r = await reconcileLands(p, runDir, RUN)
+    expect(r.problems[0]).toMatch(new RegExp(`is at ${elsewhere}, neither ${base} where it started nor ${tip}`))
+    expect((await kinds()).at(-1)).toBe('land.blocked')
+  })
+})
+
 describe('reconcile: the ledger and the verify it cites', () => {
   test('a recovered land carries the tree and parent from git, not from the intent', async () => {
     const { verifyId, tree } = await approved()
