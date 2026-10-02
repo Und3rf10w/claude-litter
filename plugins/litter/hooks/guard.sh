@@ -5,9 +5,13 @@
 # against policy.json, its bind/<agent_id> and its own permission_mode, and
 # every failure on its call ends in a deny: the deny decision, or exit 2.
 #
-# Phase 1 has the run rules only. Swarm nodes (litter:sw-*, phase 2b) are
-# refused where guard_node would slot in, and a fanout writer's exceptions
-# (phase 2: commits on its own branch, owned paths, task.bind) aren't built.
+# A fanout writer (a litter:executor in a fanout run) is bound twice: to its
+# worktree by bind/<agent_id>, and to its task by agents/<agent_id>.json,
+# which the mod writes at task.bind (section 7, fanout.js step 2). Until then
+# it gets StructuredOutput (and the record tool) alone; after, it writes only
+# its task's files and may stage and commit in its own worktree, with the
+# hooks running. Swarm nodes (litter:sw-*, phase 2b) are refused where
+# guard_node would slot in.
 
 set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
@@ -82,28 +86,74 @@ def short($cs): any(.[]; test("^-[A-Za-z0-9]*[" + $cs + "]"));
 def pos: map(select(startswith("-") | not));
 def first1: (pos | .[0]) // "";
 
-# git past its global options; -c and --config-env are noted.
+# git past its global options; -c and --config-env are noted, and so is every
+# -C, --git-dir and --work-tree, as [option, value] in loc.
 def gitsub:
-  def go($cfg):
-    if length == 0 then {sub: "", args: [], cfg: $cfg}
+  def go($cfg; $loc):
+    if length == 0 then {sub: "", args: [], cfg: $cfg, loc: $loc}
     else .[0] as $w
-    | if $w == "-c" then .[2:] | go(true)
-      elif ($w | startswith("--config-env")) then (if ($w | contains("=")) then .[1:] else .[2:] end) | go(true)
-      elif ($w | oneof(["-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--attr-source"])) then .[2:] | go($cfg)
-      elif ($w | startswith("-")) then .[1:] | go($cfg)
-      else {sub: ($w | ascii_downcase), args: .[1:], cfg: $cfg} end
+    | if $w == "-c" then .[2:] | go(true; $loc)
+      elif ($w | startswith("--config-env")) then (if ($w | contains("=")) then .[1:] else .[2:] end) | go(true; $loc)
+      elif ($w | oneof(["-C", "--git-dir", "--work-tree"])) then (.[1] // "") as $v | .[2:] | go($cfg; $loc + [[$w, $v]])
+      elif ($w | startswith("--git-dir=")) or ($w | startswith("--work-tree=")) then
+        .[1:] | go($cfg; $loc + [[($w | split("=") | .[0]), ($w | sub("^[^=]*="; ""))]])
+      elif ($w | oneof(["--namespace", "--super-prefix", "--attr-source"])) then .[2:] | go($cfg; $loc)
+      elif ($w | startswith("-")) then .[1:] | go($cfg; $loc)
+      else {sub: ($w | ascii_downcase), args: .[1:], cfg: $cfg, loc: $loc} end
     end;
-  go(false);
+  go(false; []);
+# A long option, spelled in full or by any prefix git would accept for it.
+def longopt($full; $min): any(.[]; . as $w | ($w | startswith("--")) and ($w | length) >= $min and ($full | startswith($w)));
+# The git commands that write the index (section 9, "Bash"): only a bound
+# fanout writer runs them, and only in its own worktree.
+def indexwrite: .sub as $s | .args as $a
+  | ($s | oneof(["add", "rm", "mv", "update-index", "read-tree", "reset", "stash"]))
+    or ($s == "restore" and (($a | has1("--staged")) or ($a | short("S"))))
+    or ($s == "apply" and (($a | has1("--cached")) or ($a | has1("--index")) or ($a | hasp("--3way")) or ($a | short("3"))));
+def gitwrite: .cfg != true and (.sub == "commit" or indexwrite);
+# A fanout writer commit or index write runs in its own worktree: -C only to
+# that folder (or .), and no --git-dir or --work-tree at all.
+def ownwork($wcwd): .loc | all(.[]; .[0] == "-C" and (.[1] == "." or (.[1] | rtrimstr("/")) == $wcwd));
+def fanoutgitwhy($wcwd):
+  .sub as $s | .args as $a
+  | if (ownwork($wcwd) | not) then
+      "git \($s) runs only in your own worktree \($wcwd): run it there, without -C to another folder, --git-dir or --work-tree"
+    elif $s == "commit" and (($a | longopt("--no-verify"; 6)) or ($a | short("n"))) then
+      "git commit --no-verify and -n skip your repository hooks, which every fanout commit runs; commit without them, and fix what the hooks report"
+    elif $s == "commit" and ($a | longopt("--amend"; 4)) then
+      "git commit --amend rewrites a commit; make a new commit on your branch instead"
+    elif $s == "reset" and ($a | longopt("--hard"; 4)) then
+      "git reset --hard discards work, and is denied to every litter agent"
+    elif ($a | hasp("--force")) then "force flags are denied to litter agents (git \($s) \($a | map(select(startswith("--force"))) | .[0]))"
+    elif $s == "stash" then
+      # The plan allows it; refs/stash is one stack for every worktree, so a
+      # writer could pop another writer stash into its own worktree.
+      "git stash writes refs/stash, which every worktree of your repository shares, the other writers too; commit on your branch instead"
+    else empty end;
+# The command-level rules for a fanout writer command that commits or writes
+# the index: no hook-skipping or git-redirecting variables, and no cd away
+# from its worktree first.
+def fanoutcmdwhy($cmd; $wcwd):
+  [$cmd | segs[]] as $ws
+  | ([$ws[][] | select(test("^(HUSKY|HUSKY_SKIP_HOOKS|SKIP|PRE_COMMIT_ALLOW_NO_CONFIG|LEFTHOOK|LEFTHOOK_EXCLUDE|OVERCOMMIT_DISABLE|GIT_[A-Za-z0-9_]*)="))] | .[0]) as $var
+  | if $var != null then
+      "a fanout commit or index write runs with your repository hooks and git environment as they are: drop \($var | split("=") | .[0])"
+    elif any($ws[]; (.[0] | base | oneof(["cd", "pushd", "popd"])) and (((.[1] // "") | rtrimstr("/")) != $wcwd)) then
+      "git commit and index writes run only in your own worktree \($wcwd): run them there, without cd"
+    else empty end;
 def configwrite: .args as $a | ($a | first1) as $p1
   | ($a | any(.[]; oneof(["--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit"])))
     or ($p1 | oneof(["set", "unset", "rename-section", "remove-section", "edit"]))
     or ((($a | pos | length) >= 2) and (($a | any(.[]; startswith("--get") or . == "--list" or . == "-l")) | not)
         and (($p1 | oneof(["get", "list"])) | not));
 # Commits, pushes, history rewrites and force flags are denied to every role,
-# and so is every git command that writes the real index (section 9, "Bash").
-def gitwhy($rowhy):
+# and so is every git command that writes the real index (section 9, "Bash"),
+# but for a bound fanout writer ($fw) committing and staging in its own
+# worktree ($wcwd).
+def gitwhy($rowhy; $fw; $wcwd):
   .sub as $s | .args as $a | ($a | first1) as $p1
   | if .cfg then "git -c and --config-env overrides are denied to litter agents; run git without them"
+    elif $fw and gitwrite then fanoutgitwhy($wcwd)
     elif ($s | oneof(["commit", "push", "merge", "cherry-pick", "revert", "am", "pull", "rebase", "update-ref",
         "symbolic-ref", "commit-tree", "filter-branch", "filter-repo", "replace"])) then
       "git \($s) is denied to litter agents: commits, refs and history belong to the mod, which lands verified work itself"
@@ -196,12 +246,14 @@ def prot($roots): ascii_downcase as $s
     or ($s | test("(^|[^A-Za-z0-9_-])\\.litter(\\.local)?($|[^A-Za-z0-9_.-])"))
     or any($roots[]; . as $r | $s | contains($r));
 
-# The first reason to deny a Bash call, or null.
-def bashwhy($rowhy; $noinstall; $roots):
+# The first reason to deny a Bash call, or null. $fw and $wcwd: the caller is
+# a bound fanout writer, and its worktree.
+def bashwhy($rowhy; $noinstall; $roots; $fw; $wcwd):
   (.tool_input.command | str) as $cmd
   | if $cmd == "" then "Bash needs a command"
     else [$cmd | segs[] | cmds] as $cs
-    | [ ($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub | gitwhy($rowhy)),
+    | [ (if $fw and any($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub; gitwrite) then fanoutcmdwhy($cmd; $wcwd) else empty end),
+        ($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub | gitwhy($rowhy; $fw; $wcwd)),
         ($cs[] | pairwhy(deploys; "publishes or deploys, which litter agents never do")),
         (if $noinstall != "" then ($cs[] | pairwhy(installs; "installs packages: \($noinstall)")) else empty end),
         (if ($cmd | prot($roots)) and (any($cs[]; writes) or ([$cmd | targets[] | select(. != "/dev/null")] | length) > 0) then
@@ -237,7 +289,7 @@ def writecheck($in; $p; $b; $rp; $type; $tool; $ti):
           else ["path", $w, $t, $root, $fp] | join("\n") end
         end
     end;
-def rules($in; $p; $b; $role; $type; $tool; $ti):
+def rules($in; $p; $b; $role; $type; $tool; $ti; $fw):
   $p.roles[$role] as $rp
   | (if ($rp.bash | str) != "rw" then "\($type) is read-only"
      elif ($p.run.inflight | str) != "" then "a \($p.run.inflight) is in flight, so Bash is read-only for now"
@@ -248,9 +300,16 @@ def rules($in; $p; $b; $role; $type; $tool; $ti):
     elif $tool == "PowerShell" or $tool == "Monitor" then deny($in; "\($tool) is not checked for litter agents; use Bash")
     elif $tool == "Write" or $tool == "Edit" or $tool == "NotebookEdit" then writecheck($in; $p; $b; $rp; $type; $tool; $ti)
     elif $tool == "Bash" then
-      ($in | bashwhy($rowhy; $noinstall; litterroots($p))) as $why
+      ($in | bashwhy($rowhy; $noinstall; litterroots($p); $fw; ($b.cwd | str | rtrimstr("/")))) as $why
       | if $why == null then "pass" else deny($in; $why) end
     else "pass" end;
+# A fanout writer (section 7, fanout.js step 2), and its task once task.bind
+# wrote agents/<agent_id>.json for this run: null while it is unbound.
+def fanoutwriter($p; $role): $role == "executor" and ($p.run.workflow | str) == "fanout";
+def taskof($p; $a):
+  if ($a | ok1) and ($a.task | type) == "object" and ($a.task.id | str) != "" and ($a.task.owned | type) == "array"
+    and ($a.run == null or ($a.run | str) == ($p.run.run | str))
+  then $a.task else null end;
 
 . as $in
 | ($in.agent_id | str) as $id
@@ -260,6 +319,7 @@ def rules($in; $p; $b; $role; $type; $tool; $ti):
 | ($in.tool_input | if type == "object" then . else {} end) as $ti
 | readj($pol) as $p
 | readj($bind) as $b
+| readj($agent) as $a
 | (($in.permission_mode | str) as $m | if $m != "" then $m else ($mode | gsub("[^A-Za-z]"; "")) end) as $mode_now
 | if ($p | ok1 | not) then
     deny($in; "policy.json is unreadable (\(why($pol; $p))), so this call cannot be checked; refusing until the mod rewrites it")
@@ -280,7 +340,18 @@ def rules($in; $p; $b; $role; $type; $tool; $ti):
     out($in; "this agent works in \($in.cwd | str), not in its worktree \($b.cwd | str): its working-directory isolation context was lost, most likely to another plugin whose tool.call hook matches this agent tools. The run halts; make no more tool calls";
       [{v: 1, ev: "isolation-lost", ts: ts, session_id: ($in.session_id | str), agent_id: $id, agent_type: $type,
         tool: $tool, cwd: ($in.cwd | str), expected: ($b.cwd | str | orNull), source: "guard"}])
-  else rules($in; $p; $b; $role; $type; $tool; $ti) end
+  elif fanoutwriter($p; $role) and $agent != "" and ($a | ok1 | not) then
+    deny($in; "agents/\($id).json is unreadable (\(why($agent; $a))), so the task this writer is bound to cannot be read; refusing until the mod rewrites it")
+  elif fanoutwriter($p; $role) and taskof($p; $a) == null then
+    # Unbound: its result can still say why (output.sh takes only a blocked
+    # one). The mod answers mcp__litter__record before any hook, so the bind
+    # never comes here; were it to, denying it would leave no way to bind.
+    (if $tool == "StructuredOutput" or $tool == "mcp__litter__record" then "pass"
+     else deny($in; "bind first: call mcp__litter__record with kind task.bind and the bind value from your <task>") end)
+  elif $role == "integrator" and ($p.run.roots.integration | str) == ""
+      and $tool != "StructuredOutput" and $tool != "mcp__litter__record" then
+    deny($in; "run \($p.run.run | str) has no integration worktree yet, so \($type) has nothing to work on; say so in your result")
+  else rules($in; $p; $b; $role; $type; $tool; $ti; fanoutwriter($p; $role)) end
 '
 
 # A write, once the script resolved its target ($real, empty when it could
@@ -290,6 +361,7 @@ def rules($in; $p; $b; $role; $type; $tool; $ti):
 GUARD_JQ_PATH='
 . as $in
 | readj($pol) as $p
+| readj($agent) as $a
 | ($in.agent_type | str) as $type
 | ($real | ascii_downcase) as $l
 | ([$p.litterDir, $p.run.roots.litterDir, ($p.run.roots.litterCopies // [])[]]
@@ -308,53 +380,15 @@ GUARD_JQ_PATH='
       or ((($p.run.roots.worktrees // []) | length) > 0 and ((($p.run.roots.worktrees // []) | index([$root])) == null))) then
     deny($in; "\($type) writes only inside its own worktree, and its bound folder \($root) is not one")
   elif ($real | startswith($root + "/") | not) then deny($in; "\($type) writes only inside \($root), and \($fp) resolves to \($real)")
+  elif $w == "own-worktree" and ($in.agent_type | str) == "litter:executor" and ($p.run.workflow | str) == "fanout" then
+    # A fanout writer writes only its task files: an entry ending in / owns everything under it (section 7, "Ownership").
+    (if ($a | type) == "object" and ($a.task | type) == "object" then $a.task else {} end) as $task
+    | ($task.owned // [] | if type == "array" then map(str | select(. != "")) else [] end) as $own
+    | ($real | ltrimstr($root + "/")) as $rel
+    | if any($own[]; . as $o | if ($o | endswith("/")) then ($rel | startswith($o)) else $rel == $o end) then "pass"
+      else deny($in; "task \($task.id | str) owns only \($own | join(", ")), and \($fp) resolves to \($rel) in your worktree; change only those files, or return blocked and name the file you need") end
   else "pass" end
 '
-
-# The resolved path of a target that may not exist yet (section 9): a final
-# link is followed with readlink, up to 40 links, and the nearest folder that
-# exists is resolved with cd -P and pwd -P, which follows every link and folds
-# . and .. physically, as the kernel will. The missing part is appended; none
-# of it can be a link, and an empty, . or .. part is refused. Fails for
-# anything it can't place.
-lt_realpath() {
-  lt_p=$1
-  lt_links=0
-  while :; do
-    case $lt_p in /*) ;; *) return 1 ;; esac
-    lt_name=${lt_p##*/}
-    lt_dir=${lt_p%/*}
-    [ -n "$lt_dir" ] || lt_dir=/
-    case $lt_name in '' | . | ..) return 1 ;; esac
-    [ -L "$lt_p" ] || break
-    lt_links=$((lt_links + 1))
-    [ "$lt_links" -le 40 ] || return 1
-    lt_to=$(readlink "$lt_p") || return 1
-    case $lt_to in
-      '') return 1 ;;
-      /*) lt_p=$lt_to ;;
-      *) lt_p=${lt_dir%/}/$lt_to ;;
-    esac
-  done
-  lt_tail=$lt_name
-  while [ ! -d "$lt_dir" ]; do
-    # Something that isn't a folder, or a dangling link, on the way.
-    if [ -e "$lt_dir" ] || [ -L "$lt_dir" ]; then return 1; fi
-    lt_part=${lt_dir##*/}
-    case $lt_part in '' | . | ..) return 1 ;; esac
-    lt_tail=$lt_part/$lt_tail
-    lt_dir=${lt_dir%/*}
-    [ -n "$lt_dir" ] || lt_dir=/
-  done
-  lt_real=$(cd -P "$lt_dir" 2>/dev/null && pwd -P) || return 1
-  case $lt_real in /*) ;; *) return 1 ;; esac
-  printf '%s\n' "${lt_real%/}/$lt_tail"
-}
-
-lt_realdir() {
-  lt_real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
-  case $lt_real in /*) printf '%s\n' "${lt_real%/}" ;; *) return 1 ;; esac
-}
 
 # guard_nojq <reason>: jq is gone, or failed. A litter agent is recognised by
 # its raw agent_type, and the rules for everyone else are kept with plain
@@ -403,11 +437,13 @@ guard_work() {
 
   # guard_node: swarm nodes (phase 2b) slot in here; GUARD_JQ_CALL refuses them for now.
 
-  echo 'step reading policy.json, the binding and the mode'
+  echo 'step reading policy.json, the bindings and the mode'
   lt_file "$LT_DIR/policy.json"
   lt_pf=$LT_FF lt_pv=$LT_FV
   lt_file "$LT_DIR/bind/$lt_id"
   lt_bf=$LT_FF lt_bv=$LT_FV
+  lt_file "$LT_DIR/agents/$lt_id.json"
+  lt_af=$LT_FF lt_av=$LT_FV
   lt_file "$LT_DIR/mode"
   lt_mf=$LT_FF lt_mv=$LT_FV
   lt_cfg=
@@ -415,7 +451,7 @@ guard_work() {
     /*) lt_cfg=$(lt_realdir "$CLAUDE_CONFIG_DIR") || lt_cfg=${CLAUDE_CONFIG_DIR%/} ;;
   esac
   lt_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" \
-    "$lt_pf" pol "$lt_pv" "$lt_bf" bind "$lt_bv" "$lt_mf" mode "$lt_mv" \
+    "$lt_pf" pol "$lt_pv" "$lt_bf" bind "$lt_bv" "$lt_af" agent "$lt_av" "$lt_mf" mode "$lt_mv" \
     "$LT_JQ_DEFS$GUARD_JQ_BASH$GUARD_JQ_CALL") || return 1
   case $lt_d in
     "path$LT_NL"*) ;;
@@ -437,7 +473,7 @@ guard_work() {
   fi
   echo 'step checking the resolved path'
   lt_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" "$lt_pf" pol "$lt_pv" \
-    --arg w "$lt_w" --arg real "$lt_real" --arg root "$lt_root" --arg fp "$lt_fp" \
+    "$lt_af" agent "$lt_av" --arg w "$lt_w" --arg real "$lt_real" --arg root "$lt_root" --arg fp "$lt_fp" \
     "$LT_JQ_DEFS$GUARD_JQ_PATH") || return 1
   printf '%s\n' "$lt_d"
 }

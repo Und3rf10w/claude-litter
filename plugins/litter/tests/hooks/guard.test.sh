@@ -301,7 +301,181 @@ case_integrator_no_worktree() {
   policy
   bind a1 litter:integrator
   write_call litter:integrator "$T_DIR/project/a.py" | run_hook guard.sh
-  assert_deny 'has none recorded'
+  assert_deny 'run 20261002-test has no integration worktree yet'
+  bash_call litter:integrator 'git -C /tmp status' | run_hook guard.sh
+  assert_deny 'has no integration worktree yet'
+  call litter:integrator Read '{"file_path":"/tmp/x"}' | run_hook guard.sh
+  assert_deny 'has no integration worktree yet'
+  call litter:integrator StructuredOutput '{"status":"blocked"}' | run_hook guard.sh
+  assert_pass
+}
+
+case_integrator_no_index_writes() {
+  project >/dev/null
+  mkdir -p "$T_DIR/integration"
+  i=$(cd -P "$T_DIR/integration" && pwd -P)
+  policy ".run.roots.integration = \"$i\""
+  bind a1 litter:integrator
+  bash_call litter:integrator "git -C $i merge --no-ff litter/20261002-test-w1" | run_hook guard.sh
+  assert_deny 'git merge is denied'
+  bash_call litter:integrator "git -C $i add a.py" | run_hook guard.sh
+  assert_deny 'git add'
+  bash_call litter:integrator "git -C $i commit -m x" | run_hook guard.sh
+  assert_deny 'git commit is denied'
+}
+
+# --- a fanout writer (section 7, fanout.js step 2) ---------------------------
+
+# A fanout run, and its writer a1 bound to its worktree W (bind/a1) and, with
+# [owned JSON], to task t1 (agents/a1.json).
+setup_writer() {
+  project >/dev/null
+  W=$(real_project)/.claude/worktrees/wf_abc123-456-1
+  mkdir -p "$W/src/lib" "$W/docs"
+  policy ".run.workflow = \"fanout\" | .roles.executor = {write: \"own-worktree\", bash: \"rw\", isolated: true}
+    | .run.roots.worktrees = [\"$W\"]"
+  bind a1 litter:executor "$W"
+  if [ -n "${1:-}" ]; then
+    mkdir -p "$(hooks_dir)/agents"
+    jq -n --argjson owned "$1" --arg w "$W" '{v: 1, run: "20261002-test", task: {id: "t1", owned: $owned},
+      worktree: {name: "wf_abc123-456-1", path: $w, branch: "litter/20261002-test-w1"}}' >|"$(hooks_dir)/agents/a1.json" ||
+      fail "agents fixture"
+  fi
+}
+
+# in_w <call…>: the writer's call, made from its worktree.
+in_w() { "$@" | jq -c --arg c "$W" '.cwd = $c'; }
+
+# A bound writer's Bash call: wbash <command>.
+wbash() { in_w bash_call litter:executor "$1" | run_hook guard.sh; }
+
+case_writer_unbound() {
+  setup_writer
+  wbash 'ls'
+  assert_deny 'bind first: call mcp__litter__record with kind task.bind and the bind value from your <task>'
+  in_w call litter:executor Read "{\"file_path\":\"$W/src/a.py\"}" | run_hook guard.sh
+  assert_deny 'bind first'
+  in_w write_call litter:executor "$W/src/a.py" | run_hook guard.sh
+  assert_deny 'bind first'
+  in_w call litter:executor Glob '{"pattern":"**/*.py"}' | run_hook guard.sh
+  assert_deny 'bind first'
+  in_w call litter:executor StructuredOutput '{"status":"blocked"}' | run_hook guard.sh
+  assert_pass
+  # A task for another run doesn't bind it.
+  mkdir -p "$(hooks_dir)/agents"
+  printf '%s\n' '{"v":1,"run":"20261001-other","task":{"id":"t1","owned":["src/a.py"]}}' >|"$(hooks_dir)/agents/a1.json"
+  wbash 'ls'
+  assert_deny 'bind first'
+  printf '{"v":1,"task":' >|"$(hooks_dir)/agents/a1.json"
+  wbash 'ls'
+  assert_deny 'agents/a1.json is unreadable (it does not parse)'
+}
+
+case_writer_owned_writes() {
+  setup_writer '["src/a.py", "docs/"]'
+  in_w write_call litter:executor "$W/src/a.py" | run_hook guard.sh
+  assert_pass
+  in_w write_call litter:executor "$W/docs/new/guide.md" Edit | run_hook guard.sh
+  assert_pass
+  in_w write_call litter:executor "src/a.py" | run_hook guard.sh
+  assert_pass
+  in_w write_call litter:executor "$W/src/b.py" | run_hook guard.sh
+  assert_deny 'task t1 owns only src/a.py, docs/, and'
+  in_w write_call litter:executor "$W/src/a.py.bak" NotebookEdit | run_hook guard.sh
+  assert_deny 'owns only'
+  in_w write_call litter:executor "$W/docsx/a.md" | run_hook guard.sh
+  assert_deny 'owns only'
+  # Checked on the resolved path: an owned name that is a link elsewhere in the worktree.
+  ln -s "$W/src/lib" "$W/docs/lib"
+  in_w write_call litter:executor "$W/docs/lib/x.py" | run_hook guard.sh
+  assert_deny 'resolves to src/lib/x.py'
+  in_w write_call litter:executor "$(real_project)/src/a.py" | run_hook guard.sh
+  assert_deny 'writes only inside'
+}
+
+case_writer_commits() {
+  setup_writer '["src/a.py"]'
+  wbash 'git add src/a.py && git commit -m "add a"'
+  assert_pass
+  wbash "cd $W && git commit -am 'add a'"
+  assert_pass
+  wbash "git -C $W add -A && git -C $W/ commit -m x"
+  assert_pass
+  wbash 'git -C . status && git restore --staged src/a.py && git rm --cached src/b.py'
+  assert_pass
+}
+
+case_writer_commit_skips_denied() {
+  setup_writer '["src/a.py"]'
+  wbash 'git commit --no-verify -m x'
+  assert_deny 'skip your repository hooks'
+  wbash 'git commit --no-verif -m x'
+  assert_deny 'skip your repository hooks'
+  wbash 'git commit -n -m x'
+  assert_deny 'skip your repository hooks'
+  wbash 'git commit -anm x'
+  assert_deny 'skip your repository hooks'
+  wbash 'git commit --amend --no-edit'
+  assert_deny 'rewrites a commit'
+  wbash 'git commit --am'
+  assert_deny 'rewrites a commit'
+  wbash 'git -c core.hooksPath=/dev/null commit -m x'
+  assert_deny 'git -c and --config-env overrides are denied'
+  wbash 'HUSKY=0 git commit -m x'
+  assert_deny 'drop HUSKY'
+  wbash 'SKIP=ruff git commit -m x'
+  assert_deny 'drop SKIP'
+  wbash 'env HUSKY=0 git commit -m x'
+  assert_deny 'drop HUSKY'
+  wbash 'GIT_DIR=/tmp/x.git git add a'
+  assert_deny 'drop GIT_DIR'
+}
+
+case_writer_commit_elsewhere_denied() {
+  setup_writer '["src/a.py"]'
+  wbash "git -C $(real_project) commit -m x"
+  assert_deny "runs only in your own worktree $W"
+  wbash "cd $(real_project) && git commit -m x"
+  assert_deny "run them there, without cd"
+  wbash "git --git-dir=$(real_project)/.git add a"
+  assert_deny 'without -C to another folder, --git-dir or --work-tree'
+  wbash "git --work-tree $W add a"
+  assert_deny '--work-tree'
+}
+
+case_writer_other_git_denied() {
+  setup_writer '["src/a.py"]'
+  wbash 'git push origin HEAD'
+  assert_deny 'git push is denied'
+  wbash 'git rebase main'
+  assert_deny 'git rebase is denied'
+  wbash 'git reset --hard HEAD~1'
+  assert_deny 'git reset --hard discards work'
+  wbash 'git merge main'
+  assert_deny 'git merge is denied'
+  wbash 'git add --force deps/x'
+  assert_deny 'force flags are denied'
+  wbash 'git clean -fd'
+  assert_deny 'git clean deletes files'
+  wbash 'git checkout -- src/a.py'
+  assert_deny 'git checkout moves the checkout'
+  wbash 'git branch -D main'
+  assert_deny 'git branch may only list here'
+  wbash 'git config core.hooksPath /dev/null'
+  assert_deny 'git config touching hooks is denied'
+  wbash 'git stash'
+  assert_deny 'refs/stash'
+  wbash 'git reset -q HEAD -- src/a.py && git reset --soft HEAD'
+  assert_pass
+}
+
+# An execute run's executor still stages nothing.
+case_executor_no_index_writes() {
+  setup_executor
+  bash_call litter:executor 'git add a.py' | run_hook guard.sh
+  assert_deny 'git add'
+  bash_call litter:executor 'git commit -m x' | run_hook guard.sh
+  assert_deny 'git commit is denied'
 }
 
 case_prober_scope() {
@@ -364,7 +538,15 @@ t "an executor writes inside the checkout, new folders and relative paths too" c
 t "an executor's write outside the checkout is denied" case_executor_writes_outside
 t "writes wait while a land is in flight" case_inflight_denies_writes
 t "an integrator writes only in the integration worktree" case_integrator_scope
-t "an integrator with no integration worktree is denied" case_integrator_no_worktree
+t "an integrator with no integration worktree is denied every tool but its result" case_integrator_no_worktree
+t "an integrator merges, stages and commits nothing" case_integrator_no_index_writes
+t "an unbound fanout writer is denied every tool but StructuredOutput" case_writer_unbound
+t "a bound fanout writer writes only its owned paths, resolved" case_writer_owned_writes
+t "a bound fanout writer stages and commits in its own worktree" case_writer_commits
+t "a fanout commit that skips the hooks, amends or overrides git is denied" case_writer_commit_skips_denied
+t "a fanout commit from another folder is denied" case_writer_commit_elsewhere_denied
+t "a fanout writer keeps every denial but commit and staging, and gets no stash" case_writer_other_git_denied
+t "an execute executor stages and commits nothing" case_executor_no_index_writes
 t "a prober writes only in its own worktree" case_prober_scope
 t "a prober bound to the checkout itself is denied" case_prober_bound_to_checkout
 done_testing
