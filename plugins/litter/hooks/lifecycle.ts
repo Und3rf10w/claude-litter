@@ -534,6 +534,21 @@ async function workflowOf(p: Ports, ref: RunRef, st: RunState): Promise<Workflow
   return json?.workflow ?? st.start?.workflow ?? 'execute'
 }
 
+const ISOLATION_CAUSE =
+  "likely another plugin's tool.call hook matches this agent's tools: disable it, or ask its author for a literal matcher"
+
+/** Why the run halts, while its policy says an agent lost its isolation context (the guard or watch.sh spooled it); else null. */
+async function isolationLoss(p: Ports, ref: RunRef): Promise<string | null> {
+  const policy = await readPolicy(p, ref.litterDir).catch(() => undefined)
+  if (policy?.run?.run !== ref.run || policy.run.isolationLost !== true) return null
+  const events = ((await p.store.get(eventsKey(ref.runDir))) as Record<string, unknown>[] | undefined) ?? []
+  const last = [...events].reverse().find(ev => ev.ev === 'isolation-lost')
+  const what = last
+    ? `agent ${String(last.agent_id)} lost its isolation context on ${String(last.tool)} (cwd ${String(last.cwd)})`
+    : 'an agent lost its isolation context'
+  return `${what}; ${ISOLATION_CAUSE}`
+}
+
 async function settleNotification(p: Ports, n: Notification): Promise<void> {
   const ref = (await p.store.get(taskKey(n.taskId))) as RunRef | undefined
   if (!ref || typeof ref.runDir !== 'string') return
@@ -553,7 +568,10 @@ async function settleNotification(p: Ports, n: Notification): Promise<void> {
     await trySettle(p, ref)
     return
   }
-  const d = decodeReturn(await workflowOf(p, ref, st), end)
+  let d = decodeReturn(await workflowOf(p, ref, st), end)
+  // A run that lost an agent's isolation halts, whatever its script returned (section 14).
+  const lost = d.status === 'stopped' ? null : await isolationLoss(p, ref)
+  if (lost) d = { status: 'halted', reason: lost }
   await endRun(p, ref, {
     taskId: gen.taskId,
     generation: gen.n,
@@ -2234,10 +2252,7 @@ export const consumeLifecycle: SpoolConsumer = async (ctx, line) => {
     case 'isolation-lost': {
       // Every later call of the run is denied, so the run halts rather than reading the parent checkout.
       await patchRunPolicy(p, litterDir, active.run, r => ({ ...r, isolationLost: true }))
-      p.log(
-        `run ${active.run}: agent ${line.agent_id} (${line.agent_type}) lost its isolation context on ${line.tool} (cwd ${line.cwd}); ` +
-          "likely another plugin's tool.call hook matches this agent's tools: disable it, or ask its author for a literal matcher",
-      )
+      p.log(`run ${active.run}: agent ${line.agent_id} (${line.agent_type}) lost its isolation context on ${line.tool} (cwd ${line.cwd}); ${ISOLATION_CAUSE}`)
       await noteEvent(p, ref.runDir, { ev: 'isolation-lost', agent_id: line.agent_id, tool: line.tool, cwd: line.cwd, ts: line.ts })
       return
     }
