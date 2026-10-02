@@ -223,34 +223,13 @@ describe('rule.propose', () => {
 })
 
 describe('task.bind', () => {
-  beforeEach(async () => {
-    await makeRun({ tasks: [{ id: 'T1', bind: 'tok-1', files: ['a.ts'] }, { id: 'T2', bind: 'tok-2', files: ['b.ts'] }, { id: 'R1' }] })
-  })
-
-  test('binds the writer to its task and worktree, and stores the task, never the token', async () => {
+  // The binding's cases, against recorded worktrees, are in bind.spec.ts.
+  test("needs a cwd that's one of the run's recorded worktrees", async () => {
+    await makeRun({ tasks: [{ id: 'T1', bind: 'tok-1', files: ['a.ts'] }] })
     await startAgent('w1', 'executor', '/wt/one')
-    expect(asError(await call({ kind: 'task.bind' }, 'w1')).field).toBe('token')
-    expect(asError(await call({ kind: 'task.bind', token: 'tok-9' }, 'w1')).field).toBe('token')
-    const r = await call({ kind: 'task.bind', token: 'tok-1' }, 'w1')
-    expect(r).toEqual(expect.objectContaining({ ok: true, task: 'T1' }))
-    expect(JSON.parse(readFileSync(agentPolicyPath(dir, 'w1'), 'utf8'))).toEqual({ v: 1, run: RUN, task: { id: 'T1', owned: ['a.ts'] } })
-    const rec = (await records())[0]!
-    expect(rec.body).toEqual({ task: 'T1' })
-    expect(JSON.stringify(rec)).not.toContain('tok-1')
-  })
-
-  test('one worktree per task and one task per worktree; a restarted writer rebinds from its own', async () => {
-    await startAgent('w1', 'executor', '/wt/one')
-    await startAgent('w2', 'executor', '/wt/one')
-    await startAgent('w3', 'executor', '/wt/two')
-    await startAgent('w1b', 'executor', '/wt/one')
-    expect((await call({ kind: 'task.bind', token: 'tok-1' }, 'w1')).ok).toBe(true)
-    expect(asError(await call({ kind: 'task.bind', token: 'tok-2' }, 'w1')).error).toContain('already bound to task T1')
-    expect(asError(await call({ kind: 'task.bind', token: 'tok-2' }, 'w2')).error).toContain('this worktree is already bound')
-    expect(asError(await call({ kind: 'task.bind', token: 'tok-1' }, 'w3')).error).toContain("another writer's worktree")
-    expect((await call({ kind: 'task.bind', token: 'tok-1' }, 'w1b')).ok).toBe(true)
-    expect((await call({ kind: 'task.bind', token: 'tok-2' }, 'w3')).ok).toBe(true)
-    expect(existsSync(agentPolicyPath(dir, 'w2'))).toBe(false)
+    expect(asError(await call({ kind: 'task.bind', token: 'tok-1' }, 'w1')).error).toContain("isn't one of this run's worktrees")
+    expect(existsSync(agentPolicyPath(dir, 'w1'))).toBe(false)
+    expect(JSON.parse(readFileSync(outPath(dir, 'w1'), 'utf8')).fields.bind_refusal).toContain('/wt/one')
   })
 })
 
