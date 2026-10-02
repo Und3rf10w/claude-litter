@@ -1,6 +1,7 @@
 // The `verify` record: snapshot, run the verify argv streamed, log in parts,
 // keep the tail, enforce the timeout, snapshot again, record (plan section 9,
-// "verify and land records"). Owner: phase 1b, work package C.
+// "verify and land records"). Owner: phase 1b, work package C; a fanout's
+// gate `integration`, in the integration worktree, phase 2b, package G.
 //
 // Also the run facts both records start from (run.json, the ledger's state),
 // which land.ts imports.
@@ -15,6 +16,7 @@ import { mkdirp, randomId, readJson } from './fsx'
 import { LedgerTampered, RecordTooLarge, appendRecord, readLedger } from './ledgercore'
 import { snapshot } from './snapshot'
 import { writeOut } from './output'
+import { integrationWorktree } from './integrate'
 
 // ---------------------------------------------------------------------------
 // The run's facts, shared with land.ts.
@@ -427,7 +429,22 @@ export function verifyFields(role: string | null, v: VerifyBody): Record<string,
       : { pass: false, evidence: `verify ${v.verify_id} ${notGreen(v)}: ${v.output_tail}`, gaps: [] }
     return { verify_id: v.verify_id, tests_green }
   }
+  // A fanout verifier's FANOUT_CHECK carries no observed field, but output.sh
+  // still checks its verify_id against the out file's, as the gate critic's.
+  if (role === 'verifier') return {}
   return null
+}
+
+/**
+ * Where a verify runs: the run's checkout, or for a fanout's gate
+ * `integration` the integration worktree from its `worktree.create` record,
+ * chosen by the mod, never a path from the call (plan section 7, fanout.js step 4).
+ */
+function verifyTarget(f: RunFacts, gate: string, records: readonly StoredRecord[]): { ok: true; where: string } | RecordError {
+  if (f.json.workflow !== 'fanout' || gate !== 'integration') return { ok: true, where: f.json.checkout }
+  const wt = integrationWorktree(records, f.run)
+  if (!wt) return fail(`litter: run ${f.run} has no integration worktree yet, so there's nothing to verify for gate integration; record integrate first`, 'gate')
+  return { ok: true, where: wt.path }
 }
 
 /** `mcp__litter__record({ kind: 'verify', run, gate, attempt })`. */
@@ -461,6 +478,9 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
   if (ledger.tampered) return ledgerFailure(new LedgerTampered(ledger.tampered.seq, ledger.tampered.reason))
   const closed = runClosed(ledger.records)
   if (closed) return fail(`litter: run ${run} ${closed}; it takes no more verifies`, 'run')
+  const target = verifyTarget(facts, gate, ledger.records)
+  if (!target.ok) return target
+  const where = target.where
 
   const verifyId = `${gate}-${attempt}-${randomId().replace(/-/g, '').slice(0, 10)}`
   const ends = inflight.get(run) ?? new Set<() => void>()
@@ -472,15 +492,15 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
   let afterSnap: Awaited<ReturnType<typeof snapshot>>
   try {
     try {
-      before = await snapshot(p, json.checkout)
+      before = await snapshot(p, where)
     } catch (err) {
       return fail(`litter: the snapshot before the verify failed: ${message(err)}`)
     }
     await mkdirp(p, verifyLogDir(runDir, verifyId))
-    ran = await runStreamed(p, argv, json.checkout, runDir, verifyId, ctx.options.verifyTimeoutMs, stop.promise)
+    ran = await runStreamed(p, argv, where, runDir, verifyId, ctx.options.verifyTimeoutMs, stop.promise)
     if (ran.ended) return fail(`litter: run ${run} is stopping; verify ${verifyId} was ended and isn't recorded`, 'run')
     try {
-      afterSnap = await snapshot(p, json.checkout)
+      afterSnap = await snapshot(p, where)
     } catch (err) {
       return fail(`litter: the snapshot after verify ${verifyId} failed, so it isn't recorded: ${message(err)}`)
     }

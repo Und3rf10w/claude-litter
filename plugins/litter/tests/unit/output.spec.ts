@@ -79,6 +79,8 @@ const output = (id: string, type: string, input: Record<string, unknown> | undef
 })
 
 const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records
+/** run.json as much as consumeOutput reads of it: the workflow. */
+const runJson = (workflow: string) => p.fs.write(join(runDir(dir, RUN), 'run.json'), JSON.stringify({ v: 1, run: RUN, workflow }))
 
 const VERDICT = {
   verify_id: 'vf1',
@@ -164,6 +166,50 @@ describe('consumeOutput', () => {
     expect(logs).toContain('which has no start')
     expect(logs).toContain('contradicts')
     expect(logs).toContain('carries no result')
+  })
+
+  test("a fanout writer's result becomes its task.result, once, with the task from its latest binding", async () => {
+    const rd = runDir(dir, RUN)
+    await runJson('fanout')
+    await startAgent('ex', 'litter:executor')
+    const by = { source: 'agent' as const, agentId: 'ex', agentType: 'litter:executor' }
+    const worktree = { name: 'wf_1-1', path: '/w', branch: `litter/${RUN}-w1` }
+    await appendRecord(p, rd, { run: RUN, kind: 'task.bind', by, body: { task: 'a', worktree } })
+    await appendRecord(p, rd, { run: RUN, kind: 'task.bind', by: { ...by, agentId: 'other' }, body: { task: 'b', worktree } })
+    const TASK = { status: 'done', files: ['pkgA/a.ts'], checks: ['bun test'], summary: 'did A', notes: '' }
+    await consumeOutput(ctx(), output('ex', 'litter:executor', TASK))
+    await consumeOutput(ctx(), output('ex', 'litter:executor', TASK))
+    const results = (await records()).filter(r => r.kind === 'task.result')
+    expect(results).toHaveLength(1)
+    expect(results[0]!.body).toEqual({ task: 'a', role: 'executor', tool_use_id: 'tu1', result: TASK })
+    expect(results[0]!.by).toEqual(by)
+    // A verdict-role path isn't taken for it.
+    expect((await records()).map(r => r.kind)).not.toContain('verdict')
+  })
+
+  test('an unbound writer\'s blocked result is recorded with no task, and what output.sh observed', async () => {
+    await runJson('fanout')
+    await startAgent('ex', 'litter:executor')
+    const BLOCKED = { status: 'blocked', files: [], checks: [], summary: 'no task has that bind value', notes: '', unbound: true, bind_refusal: 'no task of this run has that bind value' }
+    await consumeOutput(ctx(), output('ex', 'litter:executor', BLOCKED))
+    const r = (await records()).find(x => x.kind === 'task.result')!
+    expect(r.body).toEqual({ task: null, role: 'executor', tool_use_id: 'tu1', result: BLOCKED, unbound: true, bind_refusal: BLOCKED.bind_refusal })
+  })
+
+  test("a researcher's result, and an execute run's executor, record nothing", async () => {
+    await runJson('execute')
+    await startAgent('ex', 'litter:executor')
+    await startAgent('rs', 'litter:researcher')
+    await consumeOutput(ctx(), output('ex', 'litter:executor', { status: 'done' }))
+    await runJson('fanout')
+    await consumeOutput(ctx(), output('rs', 'litter:researcher', { answer: 'x' }))
+    expect(await records()).toEqual([])
+  })
+
+  test('writeOut takes an integrate_id', async () => {
+    const out: OutFile = { v: 1, agent_id: 'relay-1', for: { integrate_id: 'i7' }, fields: { integrate_id: 'i7', status: 'merged' } }
+    await writeOut(p, dir, out)
+    expect(JSON.parse(readFileSync(outPath(dir, 'relay-1'), 'utf8'))).toEqual(out)
   })
 
   test('a tampered ledger is logged and nothing is appended', async () => {

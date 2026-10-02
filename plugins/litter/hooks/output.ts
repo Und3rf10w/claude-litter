@@ -10,16 +10,18 @@
 import type { Ports } from './ports'
 import type { OutFile, SpoolConsumer } from './hookfiles'
 import type { Author } from './records/core'
+import type { RunJson } from './records/run'
+import type { TaskResultBody } from './records/fanout'
 import { appendRecord, readLedger } from './ledgercore'
-import { outPath, runDir } from './layout'
-import { atomicWriteJson, serial } from './fsx'
+import { outPath, runDir, runJsonPath } from './layout'
+import { atomicWriteJson, readJson, serial } from './fsx'
 import { agentInfo } from './policy'
 
 /** An id that can name a file in one folder: no separator, no NUL, not `.` or `..`. */
 export const safeFileName = (id: string): boolean =>
   id !== '' && id !== '.' && id !== '..' && id.length <= 200 && !id.includes('/') && !id.includes('\0')
 
-const FOR_KEYS = ['verify_id', 'version', 'land_of'] as const
+const FOR_KEYS = ['verify_id', 'version', 'land_of', 'integrate_id'] as const
 
 /**
  * Writes out/<agent_id>.json atomically, so output.sh reads the old file or
@@ -51,6 +53,8 @@ const VERDICT_ROLES: readonly string[] = ['gate-critic', 'verifier']
  * Spool consumer: a run agent's spooled result becomes its `verdict` record,
  * the body being the result as returned with its `tool_use_id`, and each of a
  * gate critic's `proposed_rules` a `rule.propose` with the run (section 16.4).
+ * A fanout writer's becomes its `task.result`, with the task from its latest
+ * `task.bind` (null when unbound): integration reads it (fanout.js step 3).
  * Recorded once per tool_use_id, so a line drained twice changes nothing. A
  * result from an agent the map doesn't know, or that contradicts it, is logged
  * and skipped.
@@ -67,19 +71,34 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
     return
   }
   const run = info.run
-  if (!run || !info.role || !VERDICT_ROLES.includes(info.role)) return
+  if (!run || !info.role) return
+  const writer = info.role === 'executor'
+  if (!writer && !VERDICT_ROLES.includes(info.role)) return
+  const dir = runDir(ctx.litterDir, run)
+  // An execute gate's executor has no result to record; only a fanout writer does.
+  if (writer && (await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined))?.workflow !== 'fanout') return
   const input = line.input
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     ctx.p.log(`output from ${info.role} ${line.agent_id} (${line.tool_use_id}) carries no result; not recorded`)
     return
   }
-  const dir = runDir(ctx.litterDir, run)
   const by: Author = { source: 'agent', agentId: info.agentId, agentType: info.agentType }
   // The check for an earlier copy and the append must not interleave with another drain of this run.
   await serial(`output:${dir}`, async () => {
     const { records, tampered } = await readLedger(ctx.p, dir, run)
     if (tampered) {
       ctx.p.log(`output ${line.tool_use_id}: run ${run}'s ledger is tampered at ${tampered.seq}; not recorded`)
+      return
+    }
+    if (writer) {
+      if (records.some(r => r.kind === 'task.result' && r.body.tool_use_id === line.tool_use_id)) return
+      const bound = records.filter(r => r.kind === 'task.bind' && r.by.source === 'agent' && r.by.agentId === info.agentId).at(-1)
+      const task = typeof bound?.body.task === 'string' ? bound.body.task : null
+      const result: TaskResultBody = { task, role: 'executor', tool_use_id: line.tool_use_id, result: input }
+      // Observed by output.sh, from the binding: the result can't claim another task's work.
+      if (input.unbound === true) result.unbound = true
+      if (typeof input.bind_refusal === 'string' && input.bind_refusal !== '') result.bind_refusal = input.bind_refusal
+      await appendRecord(ctx.p, dir, { run, kind: 'task.result', by, body: result })
       return
     }
     const done = new Set(

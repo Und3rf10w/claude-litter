@@ -2,7 +2,7 @@
 // 9, "verify and land records": "Run: always streamed" and "Record"; section 12).
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PART_BYTES,
@@ -23,6 +23,7 @@ import { verifyLogDir } from '../../hooks/layout'
 import type { Caller, RecordCtx, RecordError } from '../../hooks/records/core'
 import type { RunJson } from '../../hooks/records/run'
 import type { VerifyBody, VerifyReply } from '../../hooks/records/execute'
+import type { WorktreeCreateBody } from '../../hooks/records/fanout'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 const RUN = '20261002-verify'
@@ -475,5 +476,65 @@ describe('verify: stops and the observed fields', () => {
     const green = verifyFields('gate-critic', await lastVerify())!
     expect(green.tests_green).toMatchObject({ pass: true })
     expect(verifyFields('executor', await lastVerify())).toBeNull()
+  })
+})
+
+describe("verify: a fanout's gate integration (plan section 7, fanout.js step 4)", () => {
+  const VERIFIER: Caller = { agentId: 'verifier-1', agentType: 'litter:verifier' }
+  const fanout = (argv: string[]) => writeRun({ workflow: 'fanout', verify: argv, args: { tasks: [], mergeOrder: [] } })
+  const integrationVerify = () => recordVerify(ctx(VERIFIER), { kind: 'verify', run: RUN, gate: 'integration', attempt: 1 })
+
+  /** The integration worktree, with a file only it has, recorded as integrate leaves it. */
+  async function addIntegration(): Promise<string> {
+    const path = join(realpathSync(outside), '.claude', 'worktrees', `litter-${RUN}-integration`)
+    await git('worktree', 'add', '-q', '-b', `litter/${RUN}-integration`, path, base)
+    writeFileSync(join(path, 'only-here.txt'), 'integrated\n')
+    const add = await p.run(['git', 'add', 'only-here.txt'], { cwd: path })
+    expect(add.code).toBe(0)
+    expect((await p.run(['git', 'commit', '-q', '-m', 'merge'], { cwd: path })).code).toBe(0)
+    const body: WorktreeCreateBody = { run: RUN, name: `litter-${RUN}-integration`, path, branch: `litter/${RUN}-integration`, base, disposable: false, ignored: [] }
+    await appendRecord(p, runDir, { run: RUN, kind: 'worktree.create', by: { source: 'mod' }, body })
+    return path
+  }
+
+  test('refuses before integrate made the integration worktree, recording nothing', async () => {
+    await fanout(['true'])
+    const r = err(await integrationVerify())
+    expect(r).toMatchObject({ field: 'gate' })
+    expect(r.error).toMatch(/record integrate first/)
+    expect(await records()).toEqual([])
+  })
+
+  test('runs in the integration worktree, chosen by the mod, and snapshots it there', async () => {
+    await fanout(['sh', '-c', 'test -f only-here.txt && pwd -P'])
+    const path = await addIntegration()
+    const r = ok(await integrationVerify())
+    expect(r.green).toBe(true)
+    expect(r.output_tail.trim()).toBe(path)
+    const tree = (await p.run(['git', 'rev-parse', 'HEAD^{tree}'], { cwd: path })).stdout.trim()
+    expect(r.tree).toBe(tree)
+    expect(r.tree).not.toBe(await headTree())
+    expect(await lastVerify()).toMatchObject({ gate: 'integration', tree_before: tree, tree_after: tree })
+    // The checkout itself has no such file: the same argv there is red.
+    expect(existsSync(join(dir, 'only-here.txt'))).toBe(false)
+  })
+
+  test("the verifier's out file carries its verify_id and no fields, so output.sh can check it", async () => {
+    await fanout(['true'])
+    await addIntegration()
+    const r = ok(await integrationVerify())
+    const out = JSON.parse(readFileSync(join(litterDir, 'hooks', 'out', 'verifier-1.json'), 'utf8'))
+    expect(out).toEqual({ v: 1, agent_id: 'verifier-1', for: { verify_id: r.verify_id }, fields: {} })
+    expect(verifyFields('verifier', await lastVerify())).toEqual({})
+  })
+
+  test('an execute run, and a fanout gate other than integration, still verify the checkout', async () => {
+    await writeRun({ verify: ['sh', '-c', 'pwd -P'] })
+    const r = ok(await recordVerify(ctx(VERIFIER), { kind: 'verify', run: RUN, gate: 'integration', attempt: 1 }))
+    expect(r.output_tail.trim()).toBe(realpathSync(dir))
+    await fanout(['sh', '-c', 'pwd -P'])
+    await addIntegration()
+    const b = ok(await recordVerify(ctx(VERIFIER), { kind: 'verify', run: RUN, gate: 'baseline' }))
+    expect(b.output_tail.trim()).toBe(realpathSync(dir))
   })
 })
