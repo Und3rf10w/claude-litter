@@ -2,7 +2,7 @@
 // (plan sections 6 and 9), against real git and files: the args swap,
 // run.launch and run.resume, and each refusal.
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +25,9 @@ import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Each world runs run.start against real git; a loaded machine takes seconds.
+setDefaultTimeout(30_000)
 
 // One plugin root for the file: the shipped scripts are read once per module instance.
 const PLUGIN_ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'litter-root-')))

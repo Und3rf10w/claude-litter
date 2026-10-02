@@ -2,7 +2,7 @@
 // preconditions", step 0): one winner, compare-and-delete, the lease, and
 // orphan recovery that never steals a live holder.
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { LockBlob } from '../../hooks/records/run'
@@ -12,6 +12,9 @@ import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { leasePath, runDir } from '../../hooks/layout'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Real git in every test; a loaded machine takes seconds.
+setDefaultTimeout(30_000)
 
 const NOW = 1_800_000_000_000
 const mod = { source: 'mod' } as const

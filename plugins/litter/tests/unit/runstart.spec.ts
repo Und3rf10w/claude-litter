@@ -3,7 +3,7 @@
 // releasing the lock; the fenced transaction; a refusal after it rolled back
 // and recorded; isolate, design, plan, fanout and continuations.
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
@@ -16,6 +16,9 @@ import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
 import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Each test runs a few dozen real git commands; a loaded machine takes seconds.
+setDefaultTimeout(30_000)
 
 const SYMREF = (() => {
   const m = /git version ([0-9]+)\.([0-9]+)/.exec(Bun.spawnSync(['git', 'version']).stdout.toString())

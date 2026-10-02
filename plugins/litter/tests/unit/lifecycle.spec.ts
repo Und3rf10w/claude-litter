@@ -3,7 +3,7 @@
 // the pending launch at turn.complete and session.end, TaskStop settling, and
 // reconcile of each stale state. Real git and files in scratch repos.
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
@@ -35,6 +35,9 @@ import { readPolicy } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Each world runs run.start against real git; a loaded machine takes seconds.
+setDefaultTimeout(30_000)
 
 // ---------------------------------------------------------------------------
 // The decoder, one row each
