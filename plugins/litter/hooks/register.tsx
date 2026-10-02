@@ -19,7 +19,8 @@ import type { Ports, SpawnStream, Stat } from './ports'
 import { session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
-import { drainAllSpools, startDrainTimer } from './policy'
+import { drainAllSpools, drainOwnSpools, startDrainTimer } from './policy'
+import { activePath } from './layout'
 import { registerRoles } from './roles'
 import { resolveLitterDir } from './litterdir'
 import { onPromptSubmit, onSessionEnd, onTurnComplete, reconcileRuns } from './lifecycle'
@@ -63,6 +64,21 @@ function enginePorts($: EngineInterface): Ports {
     },
     every: (ms, fn) => $.clock.every(ms, fn),
     ask: (question, options) => $.ui.ask(question, options),
+  }
+}
+
+/**
+ * Drains this session's spools before a hook that reads what they carry (the
+ * launch check, the task notification), while a run is active. It lives here,
+ * not in launch.ts or lifecycle.ts, because the registry imports those two.
+ */
+async function drainFirst(p: Ports): Promise<void> {
+  const litterDir = session().litterDir
+  if (!litterDir) return
+  try {
+    if (await p.fs.exists(activePath(litterDir))) await drainOwnSpools(p, litterDir, SPOOL_CONSUMERS)
+  } catch (err) {
+    p.log(`drain before the hook failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
@@ -110,9 +126,11 @@ export const register: Register = (on, options) => {
   )
 
   // The launch check (main thread only: Workflow isn't a subagent tool).
-  on('tool.call', { tool: 'Workflow' }, async ($, e, next) => workflowCheck(enginePorts($), e, next)).catch(
-    workflowCheckFailed,
-  )
+  on('tool.call', { tool: 'Workflow' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await drainFirst(p)
+    return workflowCheck(p, e, next)
+  }).catch(workflowCheckFailed)
 
   // Observes a stop of a run's task: run.stopping, then run.end once settled.
   on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => taskStop(enginePorts($), e, next)).catch(taskStopFailed)
@@ -121,7 +139,11 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => spawnBlock(enginePorts($), e, next)).catch(spawnBlockFailed)
 
   // A run's completion notification: run.end and summary.md before the launcher's turn.
-  on('prompt.submit', async ($, e, next) => onPromptSubmit(enginePorts($), e, next)).catch(($, e, next) => next(e))
+  on('prompt.submit', async ($, e, next) => {
+    const p = enginePorts($)
+    await drainFirst(p)
+    return onPromptSubmit(p, e, next)
+  }).catch(($, e, next) => next(e))
 
   // A main turn that ends with a launch pending and no Workflow call releases the lock.
   on('turn.complete', async ($, e, next) => onTurnComplete(enginePorts($), e, next)).catch(($, e, next) => next(e))

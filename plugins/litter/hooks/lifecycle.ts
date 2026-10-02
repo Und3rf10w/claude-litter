@@ -52,7 +52,8 @@ import {
   SNAPSHOT_EXCLUDES,
 } from './layout'
 import { atomicWrite, randomId, readJson, serial, sha256 } from './fsx'
-import { readPolicy, setActive, writePolicy } from './policy'
+import { forgetRunAgents, readPolicy, setActive, writePolicy } from './policy'
+import { endVerifies, verifiesInFlight } from './verify'
 import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
@@ -372,6 +373,7 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
       const gen = body.generation > 0 ? st.generations[body.generation - 1] : null
       if (gen) await p.store.delete(taskKey(gen.taskId))
       await p.store.delete(agentsKey(ref.runDir))
+      await forgetRunAgents(p, ref.run).catch(err => p.log(`agent map for ${ref.run} not pruned: ${errText(err)}`))
       const pending = await getPending(p, ref.litterDir)
       if (pending?.run === ref.run) await clearPending(p, ref.litterDir)
     }
@@ -597,6 +599,8 @@ async function unsettled(p: Ports, ref: RunRef, records: readonly StoredRecord[]
   const agents = ((await p.store.get(agentsKey(ref.runDir))) as AgentSet | undefined) ?? { started: [], stopped: [] }
   const live = agents.started.filter(a => !agents.stopped.includes(a))
   if (live.length > 0) open.push(`agents still running: ${live.join(', ')}`)
+  const verifies = verifiesInFlight(ref.run)
+  if (verifies > 0) open.push(`${verifies} verify run(s) still ending`)
   const policy = await readPolicy(p, ref.litterDir).catch(() => undefined)
   if (policy?.run?.run === ref.run && policy.run.inflight) open.push(`a ${policy.run.inflight} in flight`)
   const made = new Set<string>()
@@ -657,6 +661,8 @@ export async function observeStop(p: Ports, taskId: string): Promise<boolean> {
   const gen = runState(ledger.records).open
   if (!gen || gen.taskId !== taskId) return false
   await markStopping(p, ref, gen)
+  // A stop ends the run's verifies too: each leaves its loop, kills its child and records nothing.
+  endVerifies(ref.run)
   await trySettle(p, ref)
   return true
 }
