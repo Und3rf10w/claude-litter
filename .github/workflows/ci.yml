@@ -23,3 +23,43 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
       - run: uv run pytest tests/ -v
+
+  litter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/litter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The mod API is pinned to the build its vendored types came from.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.287
+      - run: sudo apt-get update && sudo apt-get install -y dash busybox jq
+      - name: Install the dev types
+        working-directory: plugins/litter/tests/unit
+        run: bun install --frozen-lockfile
+      - name: Type-check
+        run: |
+          tests/unit/node_modules/.bin/tsc -p .
+          tests/unit/node_modules/.bin/tsc -p tests/unit
+      - name: Validate
+        run: claude plugin validate --strict .
+      - name: Matcher allowlist
+        run: claude plugin validate --json . | bun tests/unit/allowlist.ts
+      - name: Tier 1 (the engine's plugin test)
+        run: claude plugin test .
+      - name: Tier 2 (bun specs)
+        working-directory: plugins/litter/tests/unit
+        run: bun test
+      - name: Tier 3 (hook scripts under sh and dash)
+        run: |
+          sh tests/hooks/run.sh
+          SHELL_UNDER_TEST=dash sh tests/hooks/run.sh
+      - name: Tier 3 under BusyBox (its sh, sed and awk first on PATH)
+        run: |
+          mkdir -p "$RUNNER_TEMP/busybox"
+          busybox --install -s "$RUNNER_TEMP/busybox"
+          PATH="$RUNNER_TEMP/busybox:$PATH" SHELL_UNDER_TEST="busybox sh" sh tests/hooks/run.sh

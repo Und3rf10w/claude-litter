@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": ["../../types", "./node_modules/@types"],
+    "types": ["claude-code", "bun"]
+  },
+  "include": ["**/*.ts", "../../hooks", "../../types/index.d.ts"],
+  "exclude": ["node_modules"]
+}

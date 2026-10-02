@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "typeRoots": ["./types"],
+    "types": ["claude-code"]
+  },
+  "include": ["hooks", "types/index.d.ts", "tests/*.test.ts", "tests/*.test.tsx"]
+}

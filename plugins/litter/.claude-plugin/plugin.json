@@ -1,0 +1,72 @@
+{
+  "name": "litter",
+  "version": "0.1.0",
+  "description": "Design, execute and fanout runs as Claude Code workflows, with a mod that records every step, runs verify itself and lands only verified trees",
+  "author": { "name": "Und3rf10w" },
+  "homepage": "https://github.com/Und3rf10w/claude-litter",
+  "repository": "https://github.com/Und3rf10w/claude-litter",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "verify": {
+      "type": "string",
+      "multiple": true,
+      "title": "Verify command",
+      "description": "The command that decides whether a gate is done, as an argument list with no shell string, e.g. uv run pytest tests/ -q. litter runs it itself and records the exit code."
+    },
+    "goalCheck": {
+      "type": "string",
+      "multiple": true,
+      "title": "Goal check command",
+      "description": "Optional. An argument list that checks a goal-mode run's goal at the end. Usually set per run when you launch."
+    },
+    "setup": {
+      "type": "string",
+      "multiple": true,
+      "title": "Worktree setup command",
+      "description": "Optional. An argument list run in the root of each fresh worktree litter makes, to install dependencies (e.g. npm ci). It must be safe to run twice."
+    },
+    "linkDirs": {
+      "type": "string",
+      "multiple": true,
+      "title": "Directories to link into worktrees",
+      "description": "Optional. Ignored directories (e.g. node_modules) linked from your checkout into each fresh worktree instead of a setup run."
+    },
+    "verifyTimeoutMs": {
+      "type": "number",
+      "title": "Verify timeout (ms)",
+      "description": "The longest a verify, goal check or setup run may take before litter kills it and records it as timed out.",
+      "default": 1800000,
+      "min": 1000
+    },
+    "maxAttempts": {
+      "type": "number",
+      "title": "Attempts per gate",
+      "description": "How many executor attempts a gate gets before the run halts.",
+      "default": 3,
+      "min": 1,
+      "max": 10
+    },
+    "maxRounds": {
+      "type": "number",
+      "title": "Design rounds",
+      "description": "How many rounds a design run gets before it stops for you.",
+      "default": 4,
+      "min": 1,
+      "max": 10
+    },
+    "summaryModel": {
+      "type": "string",
+      "title": "Swarm summary model",
+      "description": "The model for the swarm browser's generated summary, resolved like --model; off disables it.",
+      "default": "haiku"
+    },
+    "summaryEverySec": {
+      "type": "number",
+      "title": "Swarm summary interval (s)",
+      "description": "The shortest gap between two generated swarm summaries.",
+      "default": 60,
+      "min": 10
+    }
+  }
+}
