@@ -88,6 +88,11 @@ export interface Ports {
   cwd(): Promise<string>
   /** The plugin's own folder, absolute. */
   pluginRoot: string
+  /**
+   * `$.settings.read()`: the settings merged over every source, `--settings`
+   * and managed policy included, as the engine runs under them. A snapshot.
+   */
+  settings(): Promise<Readonly<Record<string, unknown>>>
   /** One line in the debug log (`claude --debug`), prefixed `litter: `. */
   log(text: string): void
   /** `$.tool.register`: served as `mcp__litter__<name>`. Rejects when the engine refuses it. */

@@ -76,8 +76,11 @@ export type LandReply =
 /** How a land moves the checkout: execute's index only, or fanout's index and files (`read-tree -m -u`). */
 export type LandMode = 'index' | 'checkout'
 
-/** Recorded before any git write (step 1). `old` is the ref's checked tip, `tree` the verified tree T. */
-export type LandIntentBody = { gate: GateRef; verify_id: string; tree: string; old: string; ref: string; mode: LandMode }
+/**
+ * Recorded before any git write (step 1). `old` is the ref's checked tip, `tree` the verified tree T.
+ * A fanout's (`gate: 'fanout'`, mode `checkout`) adds `commit`, the integration tip the ref moves to.
+ */
+export type LandIntentBody = { gate: GateRef; verify_id: string; tree: string; old: string; ref: string; mode: LandMode; commit?: string }
 
 /** Step 6, or reconcile's `recovered: true` for a commit found by its trailer. */
 export type LandBody = {

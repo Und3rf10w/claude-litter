@@ -19,13 +19,13 @@ export const KNOWN_KINDS = [
   'finding', 'coverage', 'mechanism', 'probe', 'reframe', 'proposal', 'verdict', 'design.feedback',
   // execute
   'verify', 'land.intent', 'land', 'land.abandoned', 'land.blocked', 'rule.propose',
-  // fanout (phase 2)
-  'task.bind',
+  // fanout (bodies in records/fanout.ts)
+  'task.bind', 'task.result', 'integrate', 'integrate.merge', 'integrate.conflict', 'integrate.skip', 'integrate.done',
   // the run lock
   'lock.recovered', 'lock.forced',
   // launchers and the mod's own
   'run.start', 'run.launch', 'run.resume', 'run.stopping', 'run.end',
-  'worktree.intent', 'worktree.create', 'worktree.setup_failed',
+  'worktree.intent', 'worktree.create', 'worktree.setup_failed', 'worktree.removed', 'worktree.kept',
   'plan.write', 'gate.amend', 'wiki.write',
   // read-only
   'run.find',
@@ -37,6 +37,8 @@ export type KnownKind = (typeof KNOWN_KINDS)[number]
 export const MOD_ONLY_KINDS: readonly KnownKind[] = [
   'land.intent', 'land.abandoned', 'land.blocked', 'run.launch', 'run.resume', 'run.stopping',
   'lock.recovered', 'lock.forced', 'worktree.intent', 'worktree.create', 'worktree.setup_failed',
+  'worktree.removed', 'worktree.kept', 'task.result',
+  'integrate.merge', 'integrate.conflict', 'integrate.skip', 'integrate.done',
 ]
 
 /** Rule steps that are yours alone, from the rules pane (section 16.3); the tool refuses them whatever the caller. */
@@ -71,6 +73,12 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'land.blocked': modKind,
   'rule.propose': { by: 'any', run: 'optional' },
   'task.bind': agentKind,
+  'task.result': modKind,
+  integrate: agentKind,
+  'integrate.merge': modKind,
+  'integrate.conflict': modKind,
+  'integrate.skip': modKind,
+  'integrate.done': modKind,
   'lock.recovered': modKind,
   'lock.forced': modKind,
   'run.start': { by: 'launcher', run: 'none' },
@@ -81,6 +89,8 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'worktree.intent': modKind,
   'worktree.create': modKind,
   'worktree.setup_failed': modKind,
+  'worktree.removed': modKind,
+  'worktree.kept': modKind,
   'plan.write': launcherKind,
   'gate.amend': launcherKind,
   'wiki.write': { by: 'launcher', run: 'none' },

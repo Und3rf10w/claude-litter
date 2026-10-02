@@ -14,6 +14,8 @@ import { recordLand } from './land'
 import { consumeLifecycle, recordRunEnd, recordRunStart } from './lifecycle'
 import { consumeAgents } from './policy'
 import { consumeOutput } from './output'
+import { recordIntegrate } from './integrate'
+import { consumeWorktrees } from './worktrees'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
@@ -31,6 +33,12 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'land.blocked': recordGeneric,
   'rule.propose': recordGeneric,
   'task.bind': recordGeneric,
+  'task.result': recordGeneric,
+  integrate: recordIntegrate,
+  'integrate.merge': recordGeneric,
+  'integrate.conflict': recordGeneric,
+  'integrate.skip': recordGeneric,
+  'integrate.done': recordGeneric,
   'lock.recovered': recordGeneric,
   'lock.forced': recordGeneric,
   'run.start': recordRunStart,
@@ -41,11 +49,16 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'worktree.intent': recordGeneric,
   'worktree.create': recordGeneric,
   'worktree.setup_failed': recordGeneric,
+  'worktree.removed': recordGeneric,
+  'worktree.kept': recordGeneric,
   'plan.write': recordGeneric,
   'gate.amend': recordGeneric,
   'wiki.write': recordGeneric,
   'run.find': recordRunFind,
 }
 
-/** In order: the agent map first, so the others can look an agent up. */
-export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [consumeAgents, consumeOutput, consumeLifecycle]
+/**
+ * In order: the agent map first, so the others can look an agent up; the
+ * worktree records before the outputs, so a writer's result finds its worktree.
+ */
+export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [consumeAgents, consumeWorktrees, consumeOutput, consumeLifecycle]

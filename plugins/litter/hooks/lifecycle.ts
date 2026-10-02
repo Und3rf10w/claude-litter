@@ -14,7 +14,7 @@
 import type { PortHook, PromptSubmitHook, SessionEndHook, TurnCompleteHook } from './hooktypes'
 import type { Ports } from './ports'
 import type { LitterOptions } from './options'
-import type { Policy, SpoolConsumer } from './hookfiles'
+import type { Policy, RolePolicy, SpoolConsumer } from './hookfiles'
 import type { Author, RecordError, RecordHandler, RecordInput, StoredRecord } from './records/core'
 import type { VerifyBody } from './records/execute'
 import type {
@@ -58,7 +58,9 @@ import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
 import { reconcileLands } from './land'
-import { session } from './session'
+import { getOptions, session } from './session'
+import { cleanupRun, worktreeSummary } from './worktrees'
+import { fanoutSummary } from './integrate'
 import {
   acquireLock,
   leaseStale,
@@ -267,6 +269,10 @@ async function policyFor(
   const primary = primaryOf(litterDir)
   const bases = [...new Set([primary ? await realOf(p, primary) : null, checkout].filter((x): x is string => x !== null))]
   const ruleDirs = bases.flatMap(b => ['.litter', '.litter.local', '.claude/rules/litter', '.claude/rules/litter-local'].map(r => `${b}/${r}`))
+  // Every litter worktree goes under the primary checkout, even from a run worktree (plan section 9, "Run worktrees").
+  const worktreeRoot = primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+  // A fanout's writers run isolated, each bound to its own worktree (plan section 7, fanout.js step 2).
+  const roles = json.workflow === 'fanout' ? { ...ROLE_POLICIES, executor: FANOUT_WRITER } : { ...ROLE_POLICIES }
   return {
     v: 1,
     session: sessionId,
@@ -292,11 +298,19 @@ async function policyFor(
       },
       setup: json.setup,
       linkDirs: [...json.linkDirs],
+      worktreeRoot,
+      setupTimeoutSec: Math.min(Math.ceil(getOptions().verifyTimeoutMs / 1000), SETUP_HOOK_LIMIT_SEC),
     },
-    roles: { ...ROLE_POLICIES },
+    roles,
     swarm: prev?.swarm ?? null,
   }
 }
+
+/** A fanout's executor: isolated, writing only its own worktree (the guard narrows it to its task's paths). */
+const FANOUT_WRITER: RolePolicy = { write: 'own-worktree', bash: 'rw', isolated: true }
+
+/** worktree.sh's setup limit: the WorktreeCreate hook gets 600 s, and the script needs time to answer after. */
+const SETUP_HOOK_LIMIT_SEC = 570
 
 /** Makes the run active for the hooks: policy.json first, then `active` (policy.ts). */
 export async function activate(
@@ -367,6 +381,8 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
     }
     await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body })
     if (current) {
+      // Cleanup first, so the summary lists what it kept (plan section 9, "Cleanup is the mod's").
+      await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
       await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
       await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
       await releaseRunLock(p, ref.litterDir, ref.run)
@@ -2122,6 +2138,7 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
     const earlier = Array.isArray(json?.args.landed) ? (json!.args.landed as { id: string; commit: string }[]) : []
     if (earlier.length > 0) lines.push('', `Landed earlier in this chain: ${earlier.map(l => `${l.id} (${l.commit})`).join(', ')}`)
   }
+  lines.push(...fanoutSummary(json, records), ...worktreeSummary(records))
   if (st.generations.length > 1 || (st.generations.length === 1 && st.generations[0]!.stopping)) {
     lines.push('', '## Generations', '')
     for (const g of st.generations) {

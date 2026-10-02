@@ -92,6 +92,7 @@ const REQUIRED: Readonly<Record<SpoolEvent, readonly string[]>> = {
   mode: ['mode'],
   'isolation-lost': ['agent_id', 'agent_type', 'tool'],
   deny: ['tool', 'reason'],
+  worktree: ['step', 'run', 'name', 'path', 'branch', 'base'],
 }
 
 /**

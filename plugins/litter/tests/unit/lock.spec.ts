@@ -103,7 +103,8 @@ describe('the lease', () => {
     expect(p.timers.size).toBe(1)
     p.clock.now = NOW + 10_000
     for (const fn of p.timers) fn()
-    await Bun.sleep(50)
+    // The beat runs git; poll for it rather than guess how long a loaded machine takes.
+    for (let i = 0; i < 100 && (await readLease(p, litterDir, held.oid))?.beatAt !== NOW + 10_000; i++) await Bun.sleep(50)
     expect((await readLease(p, litterDir, held.oid))?.beatAt).toBe(NOW + 10_000)
     stopLease(held.oid)
     expect(lease.stopped).toBe(true)

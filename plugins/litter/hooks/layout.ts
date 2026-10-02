@@ -19,6 +19,8 @@ export const policyPath = (litterDir: LitterDir) => join(hooksDir(litterDir), 'p
 export const worktreePolicyPath = (litterDir: LitterDir) => join(hooksDir(litterDir), 'worktree.json')
 export const agentPolicyPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'agents', `${agentId}.json`)
 export const outPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'out', `${agentId}.json`)
+/** worktree.sh's step marker for one worktree name (hookfiles.WtMarker). */
+export const wtMarkerPath = (litterDir: LitterDir, name: string) => join(hooksDir(litterDir), 'wt', name)
 export const bindPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'bind', agentId)
 export const modePath = (litterDir: LitterDir) => join(hooksDir(litterDir), 'mode')
 export const spoolDir = (litterDir: LitterDir) => join(hooksDir(litterDir), 'spool')
@@ -44,6 +46,16 @@ export const planPath = (runDir: string) => join(runDir, 'plan.md')
 export const summaryPath = (runDir: string) => join(runDir, 'summary.md')
 export const proposalPath = (runDir: string, version: string) => join(runDir, 'proposals', `${version}.md`)
 export const verdictsDir = (runDir: string) => join(runDir, 'verdicts')
+/** A worktree's setup log, `verify/setup-<name>/0001.log`, written by worktree.sh or the mod. */
+export const setupLogPart = (runDir: string, name: string) => verifyLogPart(runDir, `setup-${name}`, 1)
+
+// Worktrees (plan section 7, fanout.js; section 9, "Run worktrees").
+/** The integration worktree's name; its path is `<worktreeRoot>/<name>`. */
+export const integrationName = (run: string) => `litter-${run}-integration`
+/** `refs/heads/` is left off: these are branch names. */
+export const integrationBranch = (run: string) => `litter/${run}-integration`
+/** A workflow agent's worktree `<runId>-<n>` gets `litter/<run>-w<n>`. */
+export const writerBranch = (run: string, n: number) => `litter/${run}-w${n}`
 
 /** `<litterDir>/WIKI.md` (plan section 10, "On disk"). */
 export const wikiPath = (litterDir: LitterDir) => join(litterDir, 'WIKI.md')

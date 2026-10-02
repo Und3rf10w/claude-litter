@@ -8,6 +8,7 @@
     ],
     "SubagentStart": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/identity.sh", "start"], "timeout": 10 }] }],
     "SubagentStop": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/identity.sh", "stop"], "timeout": 5 }] }],
+    "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/worktree.sh"], "timeout": 600 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "prompt"], "timeout": 10 }] }],
     "PostToolUse": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "post"], "timeout": 10 }] }],
     "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "post"], "timeout": 10 }] }]

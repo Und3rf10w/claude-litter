@@ -24,6 +24,7 @@ import { activePath } from './layout'
 import { registerRoles } from './roles'
 import { resolveLitterDir } from './litterdir'
 import { onPromptSubmit, onSessionEnd, onTurnComplete, reconcileRuns } from './lifecycle'
+import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
 import { spawnBlock, spawnBlockFailed, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 
 /** The ports over this dispatch's `$` (ports.ts). */
@@ -55,6 +56,7 @@ function enginePorts($: EngineInterface): Ports {
     sessionId: () => $.session.id(),
     cwd: () => $.session.cwd(),
     pluginRoot: $.plugin.root,
+    settings: () => $.settings.read(),
     log: text => $.ui.log(`litter: ${text}`, { to: 'debug' }),
     registerTool: async spec => {
       await $.tool.register(spec)
@@ -110,8 +112,10 @@ export const register: Register = (on, options) => {
     })
     const litterDir = session().litterDir
     if (litterDir) {
+      await step(p, 'worktree.json', () => startWorktreePolicy(p, litterDir))
       await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
       await step(p, 'reconcile', () => reconcileRuns(p, litterDir))
+      await step(p, 'leftover worktrees', () => cleanupLeftovers(p, litterDir))
     }
     await step(p, 'timers', async () => startDrainTimer(p, SPOOL_CONSUMERS))
     updateSession({ ready: true })

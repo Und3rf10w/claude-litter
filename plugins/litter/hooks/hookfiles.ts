@@ -10,6 +10,7 @@
 // Who writes what:
 //   mod   -> active, policy.json, worktree.json, agents/<id>.json, out/<id>.json, pointer
 //   hooks -> bind/<id>, mode, wt/<name>, spool/<session>.jsonl, spool/blobs/*
+// worktree.sh also writes setup logs under the run's verify/setup-<name>/.
 // The mod replaces its files atomically (temp file + mv, fsx.atomicWrite).
 // The hooks write bind/ and mode through a temp file + mv too, and append
 // spool lines with one `>>` each.
@@ -72,7 +73,8 @@ export type RunPolicy = {
   isolationLost: boolean
   /**
    * Resolved real paths (the mod's $.fs.stat resolve), compared exactly by the guard.
-   * `worktrees` and `integration` fill in from phase 2.
+   * `worktrees` gains each `worktree.create` path as the mod records it;
+   * `integration` is set when the mod makes the integration worktree.
    */
   roots: {
     checkout: string
@@ -84,12 +86,27 @@ export type RunPolicy = {
     worktrees: string[]
     integration: string | null
   }
-  /** Phase 2: the approved setup argv and link dirs, for worktree.sh. */
+  /** The approved setup argv and link dirs, for worktree.sh. */
   setup: string[] | null
   linkDirs: string[]
+  /**
+   * Phase 2. Absolute and resolved: where worktree.sh makes this run's
+   * worktrees, `<worktreeRoot>/<name>`. The primary checkout's
+   * `.claude/worktrees`, or `<common dir>/litter-worktrees` for a bare
+   * repository. worktree.sh never derives it, and refuses a litter name
+   * without it.
+   */
+  worktreeRoot?: string
+  /** Phase 2. worktree.sh's own limit for one setup run, under the hook's 600 s. */
+  setupTimeoutSec?: number
 }
 
-/** worktree.json: your merged worktree settings, kept whether or not anything is active. Phase 2. */
+/**
+ * worktree.json: your merged worktree settings, kept whether or not anything
+ * is active (plan section 9, "Run worktrees"). The mod writes it from
+ * `$.settings.read()` at session.start and whenever a 30 s check finds the
+ * values changed; worktree.sh makes your own worktrees with it.
+ */
 export type WorktreePolicy = {
   v: 1
   baseRef: 'fresh' | 'head'
@@ -97,14 +114,38 @@ export type WorktreePolicy = {
 }
 
 /**
- * agents/<agent_id>.json: the mod's half of a binding. Phase 2 (fanout writers)
- * and 2b (swarm nodes). Absent for most run agents.
+ * agents/<agent_id>.json: the mod's half of a binding, written by task.bind
+ * before it answers (fanout writers; 2b adds swarm nodes). Absent for most
+ * run agents, and for a fanout writer that hasn't bound yet: the guard then
+ * denies it every tool but StructuredOutput, which output.sh accepts only as
+ * a blocked result (plan section 7, fanout.js step 2).
+ *  - `task.owned`: the task's `files` as run.start validated them,
+ *    repo-relative, a trailing `/` owning a folder. The guard scopes the
+ *    writer's Write/Edit to `<its bind cwd>/<owned>`.
+ *  - `worktree`: the recorded worktree it's bound to (its bind cwd, resolved).
  */
 export type AgentPolicy = {
   v: 1
   run?: string
   task?: { id: string; owned: string[] }
+  worktree?: { name: string; path: string; branch: string }
   node?: Record<string, unknown>
+}
+
+/**
+ * wt/<name>: worktree.sh's step marker for one worktree name, replaced through
+ * a temp file and mv at each step, so a later request knows how far an
+ * earlier one got before the mod has drained anything. One JSON object.
+ */
+export type WtMarker = {
+  v: 1
+  step: 'intent' | 'create' | 'setup_failed'
+  run: string
+  name: string
+  path: string
+  branch: string
+  base: string
+  disposable: boolean
 }
 
 /**
@@ -117,7 +158,12 @@ export type AgentPolicy = {
 export type OutFile = {
   v: 1
   agent_id: string
-  for: { verify_id?: string; version?: string; land_of?: string }
+  /**
+   * `integrate_id`: an integrate relay's answer, matched against the input's
+   * own `integrate_id` like `verify_id`. A fanout writer's file has an empty
+   * `for` and carries `unbound` (and `bind_refusal`) from its task.bind.
+   */
+  for: { verify_id?: string; version?: string; land_of?: string; integrate_id?: string }
   /** Merged over the input's top-level fields, already shaped to the role's schema. */
   fields: Record<string, unknown>
 }
@@ -151,6 +197,26 @@ export type SpoolLine =
   | SpoolBase<'mode', { agent_id: string | null; mode: string }>
   | SpoolBase<'isolation-lost', { agent_id: string; agent_type: string; tool: string; cwd: string; expected: string | null; source: 'guard' | 'watch' }>
   | SpoolBase<'deny', { agent_id: string | null; agent_type: string | null; tool: string; tool_use_id: string; reason: string }>
+  /**
+   * worktree.sh, for a litter name: each step as it happens, the intent before
+   * any git command. The mod records them as `worktree.intent`,
+   * `worktree.create` and `worktree.setup_failed` (records/fanout.ts).
+   */
+  | SpoolBase<'worktree', {
+      step: 'intent' | 'create' | 'setup_failed'
+      run: string
+      name: string
+      path: string
+      branch: string
+      base: string
+      disposable: boolean
+      /** create: the top-level ignored paths the setup left. */
+      ignored?: string[]
+      /** setup_failed. */
+      exit_code?: number | null
+      timed_out?: boolean
+      log?: string
+    }>
 
 type SpoolBase<E extends string, P> = { v: 1; ev: E; ts: number; session_id: string } & P
 

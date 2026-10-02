@@ -26,6 +26,8 @@ export type TestPorts = Ports & {
   timers: Set<() => void>
   /** The fake clock's value, read by `now` (real time when null). */
   clock: { now: number | null }
+  /** What `settings()` answers, the merged settings; a spec sets its keys. */
+  settingsValue: Record<string, unknown>
 }
 
 const kindOf = (s: { isFile(): boolean; isDirectory(): boolean }): Entry['kind'] =>
@@ -200,6 +202,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
   const clock: { now: number | null } = { now: null }
   const answers: string[] = []
   const asked: { question: string; options: readonly string[] }[] = []
+  const settingsValue: Record<string, unknown> = {}
   const clone = (v: unknown) => (v === undefined ? undefined : structuredClone(v))
   return {
     fs: {
@@ -245,6 +248,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     sessionId: async () => options.sessionId ?? 'test-session',
     cwd: async () => options.cwd ?? process.cwd(),
     pluginRoot: options.pluginRoot ?? join(import.meta.dir, '..', '..', '..'),
+    settings: async () => structuredClone(settingsValue),
     log: text => void logs.push(text),
     registerTool: async () => {},
     registerAgent: async () => {},
@@ -264,6 +268,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     storeMap,
     timers,
     clock,
+    settingsValue,
   }
 }
 
