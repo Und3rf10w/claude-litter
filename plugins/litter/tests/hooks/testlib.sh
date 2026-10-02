@@ -105,3 +105,117 @@ assert_stderr_contains() { assert_contains "$1" "$(cat "$T_DIR/err")" stderr; }
 
 assert_file() { [ -f "$1" ] || fail "no file $1"; }
 assert_no_file() { [ ! -e "$1" ] || fail "$1 exists"; }
+
+# A PreToolUse call that passed: exit 0, nothing printed.
+assert_pass() {
+  assert_code 0
+  assert_stdout_empty
+}
+
+# A PreToolUse call that was refused, either way a command hook can: a deny
+# decision on stdout (exit 0) or exit 2. [text] must be in the reason.
+assert_deny() {
+  ad_code=$(cat "$T_DIR/code")
+  case $ad_code in
+    0)
+      ad_out=$(cat "$T_DIR/out")
+      assert_contains '"permissionDecision":"deny"' "$ad_out" "deny decision"
+      [ -z "${1:-}" ] || assert_contains "$1" "$ad_out" "deny reason"
+      ;;
+    2) [ -z "${1:-}" ] || assert_stderr_contains "$1" ;;
+    *) fail "exit $ad_code is neither a deny decision nor exit 2; stderr: $(cat "$T_DIR/err")" ;;
+  esac
+}
+
+# What every litter agent's call is denied with when the script itself fails.
+assert_blocked() {
+  assert_code 2
+  [ -z "${1:-}" ] || assert_stderr_contains "$1"
+}
+
+# Fixtures, after `project`: the hooks folder, a policy for an active run, a
+# binding, and hook inputs. Each writes what the mod or identity.sh would.
+hooks_dir() { printf '%s\n' "$T_DIR/project/.claude/litter/hooks"; }
+
+# The guard's view of each role, as roles.ts has it (ROLE_POLICIES).
+T_ROLES='{
+  "falsifier": {"write": "none", "bash": "ro", "isolated": false},
+  "coverage": {"write": "none", "bash": "ro", "isolated": false},
+  "mechanism": {"write": "none", "bash": "ro", "isolated": false},
+  "reframer": {"write": "none", "bash": "ro", "isolated": false},
+  "prober": {"write": "own-worktree", "bash": "rw", "isolated": true},
+  "author": {"write": "none", "bash": "ro", "isolated": false},
+  "design-critic": {"write": "none", "bash": "ro", "isolated": false},
+  "gate-critic": {"write": "none", "bash": "ro", "isolated": false},
+  "executor": {"write": "checkout", "bash": "rw", "isolated": false},
+  "adversary": {"write": "none", "bash": "ro", "isolated": false},
+  "relay": {"write": "none", "bash": "ro", "isolated": false},
+  "integrator": {"write": "integration", "bash": "rw", "isolated": false},
+  "planner": {"write": "none", "bash": "ro", "isolated": false},
+  "verifier": {"write": "none", "bash": "ro", "isolated": false},
+  "researcher": {"write": "none", "bash": "ro", "isolated": false}
+}'
+
+# The scratch project's real path, as the mod's resolve would give it.
+real_project() { (cd -P "$T_DIR/project" && pwd -P); }
+
+# policy [jq filter]: policy.json for an active execute run whose checkout is
+# the scratch project, then `active`. The filter edits it first, e.g.
+# '.run.stopping = true'.
+policy() {
+  pl_hooks=$(hooks_dir)
+  pl_co=$(real_project)
+  jq -n --arg co "$pl_co" --arg ld "$pl_co/.claude/litter" --argjson roles "$T_ROLES" '
+    {v: 1, session: "s1", litterDir: $ld,
+     run: {run: "20261002-test", workflow: "execute", runDir: ($ld + "/20261002-test"), checkout: $co, base: "0000000",
+           runIds: ["wf_abc123-456"], launching: false, stopping: false, inflight: null, isolationLost: false,
+           roots: {checkout: $co, litterDir: $ld, litterCopies: [], ruleDirs: [], worktrees: [], integration: null},
+           setup: null, linkDirs: []},
+     roles: $roles, swarm: null}' | jq "${1:-.}" >|"$pl_hooks/policy.json" || fail "policy fixture"
+  : >|"$pl_hooks/active"
+}
+
+# bind <agent_id> <agent_type> [cwd]: the binding identity.sh writes at SubagentStart.
+bind() {
+  bd_hooks=$(hooks_dir)
+  mkdir -p "$bd_hooks/bind"
+  jq -n --arg id "$1" --arg ty "$2" --arg cwd "${3:-$T_DIR/project}" \
+    '{v: 1, agent_id: $id, agent_type: $ty, cwd: $cwd, session_id: "s1", transcript_path: "/tmp/t.jsonl"}' \
+    >|"$bd_hooks/bind/$1" || fail "bind fixture"
+}
+
+# call <agent_type> <tool> <tool_input JSON> [jq filter]: a PreToolUse input,
+# from agent a1 of that type, or from the main thread for `-`.
+call() {
+  jq -cn --arg ty "$1" --arg tool "$2" --argjson ti "$3" --arg cwd "$T_DIR/project" '
+    {session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: $cwd, permission_mode: "auto",
+     hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $ti, tool_use_id: "toolu_1"}
+    + (if $ty == "-" then {} else {agent_id: "a1", agent_type: $ty} end)' | jq -c "${4:-.}"
+}
+
+# bash_call <agent_type> <command>: a Bash call's input.
+bash_call() {
+  call "$1" Bash "$(jq -cn --arg c "$2" '{command: $c}')"
+}
+
+# write_call <agent_type> <path> [tool]: a Write (or Edit, NotebookEdit) call's input.
+write_call() {
+  case ${3:-Write} in
+    NotebookEdit) wc_ti=$(jq -cn --arg p "$2" '{notebook_path: $p, new_source: "x"}') ;;
+    Edit) wc_ti=$(jq -cn --arg p "$2" '{file_path: $p, old_string: "a", new_string: "b"}') ;;
+    *) wc_ti=$(jq -cn --arg p "$2" '{file_path: $p, content: "x"}') ;;
+  esac
+  call "$1" "${3:-Write}" "$wc_ti"
+}
+
+# The spool lines written for session s1, one per line.
+spool_lines() { cat "$(hooks_dir)/spool/s1.jsonl" 2>/dev/null; }
+
+# A folder holding a fake <tool> that runs <body>, for PATH=…:$PATH.
+fake_tool() {
+  ft_dir=$T_DIR/fake-$1
+  mkdir -p "$ft_dir"
+  printf '#!/bin/sh\n%s\n' "$2" >|"$ft_dir/$1"
+  chmod +x "$ft_dir/$1"
+  printf '%s\n' "$ft_dir"
+}
