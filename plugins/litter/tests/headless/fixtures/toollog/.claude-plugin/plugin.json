@@ -1,0 +1,1 @@
+{ "name": "toollog", "version": "0.1.0", "description": "litter tier-4 fixture: command hooks that log every tool call's input and result" }

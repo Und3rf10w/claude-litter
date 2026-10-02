@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/log.sh"], "timeout": 10 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/log.sh"], "timeout": 10 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/log.sh"], "timeout": 10 }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/log.sh"], "timeout": 10 }] }]
+  }
+}
