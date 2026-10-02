@@ -109,6 +109,12 @@ export type RunJson = {
   planSha256: string | null
   session: string
   created: number
+  /**
+   * The attribution lines the session requires on commits, one `Key: value`
+   * each, added to every land's message (section 9, "Commit message"). Not
+   * filled yet: it needs a settings port.
+   */
+  trailers?: string[]
 }
 
 /** The `run.start` ledger body: run.json's facts, chained, with run.json's and the args' sha256. */

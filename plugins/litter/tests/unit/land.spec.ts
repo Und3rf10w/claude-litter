@@ -74,6 +74,11 @@ async function writeRun(patch: Partial<RunJson> = {}): Promise<void> {
     amendOf: null,
     rules: [],
     planSha256: null,
+    linkDirs: [],
+    isolate: false,
+    planPath: null,
+    session: 'test-session',
+    created: 0,
     ...patch,
   }
   await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
