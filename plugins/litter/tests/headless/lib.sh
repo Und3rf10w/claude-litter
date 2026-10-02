@@ -52,6 +52,8 @@ h_scratch() {
     cp -R "$e" "$H_DIR/litter/" || exit 1
   done
   cp "$H_FIX"/*.js "$H_DIR/litter/workflows/" || exit 1
+  # Copies, since the engine writes types into a --plugin-dir folder it loads.
+  cp -R "$H_FIX/toollog" "$H_FIX/broad" "$H_DIR/" || exit 1
 }
 
 # h_claude <prompt> [claude args...]: one headless session in the repo, with
@@ -61,7 +63,7 @@ h_claude() {
   shift
   (
     cd "$H_REPO" || exit 1
-    LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh claude -p --plugin-dir "$H_DIR/litter" --plugin-dir "$H_FIX/toollog" "$@" \
+    LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh claude -p --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" "$@" \
       --debug-file "$H_DIR/debug.txt" --output-format json --max-turns 30 "$hc_prompt" \
       </dev/null >|"$H_DIR/out.json" 2>|"$H_DIR/stderr.txt"
   )

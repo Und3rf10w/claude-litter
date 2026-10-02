@@ -32,7 +32,7 @@ If a step is refused, note the refusal verbatim and go on to the next step."
 
 h_scratch "isolation-$mode"
 extra=
-[ "$mode" = broad ] && extra=$H_FIX/broad
+[ "$mode" = broad ] && extra=$H_DIR/broad
 # run.start needs a verify command; the fixture never runs it.
 # shellcheck disable=SC2086
 h_claude "$PROMPT" ${extra:+--plugin-dir "$extra"} \

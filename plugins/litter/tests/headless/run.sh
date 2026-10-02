@@ -6,7 +6,8 @@
 #
 #   sh tests/headless/run.sh
 #
-# Exits non-zero when any case fails.
+# Exits non-zero when any case fails. The managed-settings cases need a box
+# whose /etc/claude-code they may write: container/container.sh runs them.
 
 here=$(cd "$(dirname "$0")" && pwd)
 failed=0

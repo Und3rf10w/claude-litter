@@ -33,11 +33,14 @@ await agent(
   steps('Bash: pwd', 'Write the file a.txt in the folder step 1 printed (absolute path), with the content "done"', 'Reply with DONE'),
   { agentType: 'litter:executor', label: 'executor' },
 )
+// The critic judges for real: told to pass a verdict it hasn't checked, it fails it, as its role says (tier 4, live).
+const gate = (args?.gates ?? [])[0] ?? {}
 const verdict = await agent(
-  steps(
-    'Call mcp__litter__record with the input {"kind": "verify", "gate": "G1", "attempt": 1}. Its reply holds a verify_id.',
-    'Return your result: verify_id is that id; plan_adherence, tests_green and no_regressions are each {"pass": true, "evidence": "tier-4 probe"}; plan_gap is ""; proposed_rules is [].',
-  ),
+  'Judge gate G1 of this run. The gate, from the plan:\n' +
+    `<gate>\n${gate.excerpt ?? ''}\n</gate>\n` +
+    'The executor has written the gate\'s file in the checkout, your working directory. First record a verify with ' +
+    'mcp__litter__record and the input {"kind": "verify", "gate": "G1", "attempt": 1}. Then check the change against ' +
+    'the gate (git status, git diff, the file itself), and return your verdict with the verify_id the verify gave.',
   { agentType: 'litter:gate-critic', label: 'critic', schema: VERDICT },
 )
 await agent(steps('Bash: sleep 60', 'Reply with DONE'), { agentType: 'litter:researcher', label: 'pause' })
