@@ -8,9 +8,12 @@
 #
 # The paths below mirror hooks/layout.ts, its hooks/ part (plan section 9,
 # "Mod-to-hook state"). Keep the two identical:
-#   <hooks>/active  policy.json  agents/<id>.json  out/<id>.json  bind/<id>
-#   <hooks>/mode  spool/<session_id>.jsonl  spool/blobs/<name>.json
+#   <hooks>/active  policy.json  worktree.json  agents/<id>.json  out/<id>.json
+#   <hooks>/bind/<id>  mode  wt/<name>  spool/<session_id>.jsonl  spool/blobs/<name>.json
 #   $CLAUDE_PROJECT_DIR/.claude/litter/hooks/pointer
+# and, for worktree.sh, the run's setup log and its writers' branches
+# (lt_wt_marker, lt_setup_log, lt_writer_branch below):
+#   <runDir>/verify/setup-<name>/0001.log  litter/<run>-w<n>
 #
 # How a script fails (plan section 9, "Fail closed"): its work runs in a
 # subshell (lt_run), so set -u or a failed step ends only that subshell, and
@@ -116,6 +119,57 @@ lt_id_ok() {
 }
 
 lt_mkdir() { [ -d "$1" ] || mkdir -p -- "$1" 2>/dev/null; }
+
+# layout.ts's wtMarkerPath, setupLogPart and writerBranch.
+lt_wt_marker() { printf '%s\n' "$LT_DIR/wt/$1"; }
+lt_setup_log() { printf '%s\n' "${1%/}/verify/setup-$2/0001.log"; }
+lt_writer_branch() { printf '%s\n' "litter/$1-w$2"; }
+
+# The resolved path of a target that may not exist yet (plan section 9,
+# "Guard"): a final link is followed with readlink, up to 40 links, and the
+# nearest folder that exists is resolved with cd -P and pwd -P, which follows
+# every link and folds . and .. physically, as the kernel will. The missing
+# part is appended; none of it can be a link, and an empty, . or .. part is
+# refused. Fails for anything it can't place.
+lt_realpath() {
+  lt_p=$1
+  lt_links=0
+  while :; do
+    case $lt_p in /*) ;; *) return 1 ;; esac
+    lt_name=${lt_p##*/}
+    lt_dir=${lt_p%/*}
+    [ -n "$lt_dir" ] || lt_dir=/
+    case $lt_name in '' | . | ..) return 1 ;; esac
+    [ -L "$lt_p" ] || break
+    lt_links=$((lt_links + 1))
+    [ "$lt_links" -le 40 ] || return 1
+    lt_to=$(readlink "$lt_p") || return 1
+    case $lt_to in
+      '') return 1 ;;
+      /*) lt_p=$lt_to ;;
+      *) lt_p=${lt_dir%/}/$lt_to ;;
+    esac
+  done
+  lt_tail=$lt_name
+  while [ ! -d "$lt_dir" ]; do
+    # Something that isn't a folder, or a dangling link, on the way.
+    if [ -e "$lt_dir" ] || [ -L "$lt_dir" ]; then return 1; fi
+    lt_part=${lt_dir##*/}
+    case $lt_part in '' | . | ..) return 1 ;; esac
+    lt_tail=$lt_part/$lt_tail
+    lt_dir=${lt_dir%/*}
+    [ -n "$lt_dir" ] || lt_dir=/
+  done
+  lt_real=$(cd -P "$lt_dir" 2>/dev/null && pwd -P) || return 1
+  case $lt_real in /*) ;; *) return 1 ;; esac
+  printf '%s\n' "${lt_real%/}/$lt_tail"
+}
+
+# A folder's resolved path, with no trailing slash.
+lt_realdir() {
+  lt_real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+  case $lt_real in /*) printf '%s\n' "${lt_real%/}" ;; *) return 1 ;; esac
+}
 
 # Writes <text> and a newline to <path> through a temp file beside it and mv,
 # so a reader sees the old file or the new one, never half of one.

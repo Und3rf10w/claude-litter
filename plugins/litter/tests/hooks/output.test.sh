@@ -163,6 +163,122 @@ case_big_result_blob() {
   [ "$(printf '%s' "$line" | wc -c)" -lt 4096 ] || fail "the line is 4 KiB or more"
 }
 
+# --- fanout (section 7, fanout.js) -------------------------------------------
+
+# A fanout run, its writer a1 bound to task t1 by agents/a1.json when [bound]
+# is given.
+setup_writer() {
+  project >/dev/null
+  policy '.run.workflow = "fanout" | .roles.executor = {write: "own-worktree", bash: "rw", isolated: true}'
+  if [ -n "${1:-}" ]; then
+    mkdir -p "$(hooks_dir)/agents"
+    printf '%s\n' '{"v":1,"run":"20261002-test","task":{"id":"t1","owned":["src/a.py"]}}' >|"$(hooks_dir)/agents/a1.json"
+  fi
+}
+
+BLOCKED='{"status":"blocked","files":[],"checks":[],"summary":"task.bind refused: t1 is bound to another writer","notes":""}'
+TASK_DONE='{"status":"done","files":["src/a.py"],"checks":[{"command":"pytest","pass":true}],"summary":"did it","notes":""}'
+FANOUT_CHECK='{"verify_id":"v4","tasks":[{"id":"t1","pass":true,"evidence":"e","gaps":[]}],"combined":{"pass":true,"evidence":"claimed","gaps":[]}}'
+
+case_writer_unbound_blocked() {
+  setup_writer
+  so litter:executor "$BLOCKED" | run_hook output.sh
+  assert_code 0
+  assert_eq 'true blocked' "$(updated | jq -r '"\(.unbound) \(.status)"')" "unbound and status"
+  assert_eq false "$(updated | jq 'has("bind_refusal")')" "bind_refusal without an out file"
+  assert_eq true "$(spool_lines | jq -r 'select(.ev == "output") | .input.unbound')" "spooled result"
+  # The refusal the mod recorded, from an out file with an empty for.
+  out_file '{}' '{"unbound":true,"bind_refusal":"task t1 is bound to a2"}'
+  so litter:executor "$(printf '%s' "$BLOCKED" | jq -c '.bind_refusal = "made up"')" | run_hook output.sh
+  assert_eq 'task t1 is bound to a2' "$(updated | jq -r '.bind_refusal')" bind_refusal
+  # A claimed refusal with no recorded one is dropped.
+  rm "$(hooks_dir)/out/a1.json"
+  so litter:executor "$(printf '%s' "$BLOCKED" | jq -c '.bind_refusal = "made up"')" | run_hook output.sh
+  assert_eq false "$(updated | jq 'has("bind_refusal")')" "a claimed bind_refusal"
+}
+
+case_writer_unbound_denied() {
+  setup_writer
+  so litter:executor "$TASK_DONE" | run_hook output.sh
+  assert_deny 'bind first; only a blocked result is accepted unbound'
+  so litter:executor "$(printf '%s' "$BLOCKED" | jq -c '.files = ["src/a.py"]')" | run_hook output.sh
+  assert_deny 'bind first'
+  so litter:executor "$(printf '%s' "$BLOCKED" | jq -c '.checks = [{"command":"x","pass":true}]')" | run_hook output.sh
+  assert_deny 'bind first'
+  so litter:executor "$(printf '%s' "$BLOCKED" | jq -c '.summary = " \n "')" | run_hook output.sh
+  assert_deny 'bind first'
+  assert_eq '' "$(spool_lines | jq -c 'select(.ev == "output")')" "nothing spooled as a result"
+  # agents/a1.json for another run doesn't bind it.
+  mkdir -p "$(hooks_dir)/agents"
+  printf '%s\n' '{"v":1,"run":"20261001-other","task":{"id":"t1","owned":["src/a.py"]}}' >|"$(hooks_dir)/agents/a1.json"
+  so litter:executor "$TASK_DONE" | run_hook output.sh
+  assert_deny 'bind first'
+}
+
+case_writer_unreadable_files() {
+  setup_writer
+  mkdir -p "$(hooks_dir)/agents" "$(hooks_dir)/out"
+  printf '{"v":1,"task":' >|"$(hooks_dir)/agents/a1.json"
+  so litter:executor "$BLOCKED" | run_hook output.sh
+  assert_deny 'agents/a1.json is unreadable (it does not parse)'
+  rm "$(hooks_dir)/agents/a1.json"
+  printf '{"v":1,"agent_id":' >|"$(hooks_dir)/out/a1.json"
+  so litter:executor "$BLOCKED" | run_hook output.sh
+  assert_deny 'out/a1.json is unreadable'
+  printf '{"v":1,"run":' >|"$(hooks_dir)/policy.json"
+  so litter:executor "$BLOCKED" | run_hook output.sh
+  assert_deny 'policy.json is unreadable (it does not parse)'
+}
+
+case_writer_bound() {
+  setup_writer bound
+  so litter:executor "$TASK_DONE" | run_hook output.sh
+  assert_pass
+  assert_eq done "$(spool_lines | jq -r 'select(.ev == "output") | .input.status')" "spooled result"
+  # unbound and bind_refusal are never claimed.
+  so litter:executor "$(printf '%s' "$TASK_DONE" | jq -c '.unbound = true | .bind_refusal = "x"')" | run_hook output.sh
+  assert_eq '["checks","files","notes","status","summary"]' "$(updated | jq -c 'keys')" keys
+}
+
+case_writer_bound_merged() {
+  setup_writer bound
+  out_file '{}' '{"notes":"observed","unbound":true,"bind_refusal":"from before the bind"}'
+  so litter:executor "$TASK_DONE" | run_hook output.sh
+  assert_code 0
+  assert_eq 'observed false false' "$(updated | jq -r '"\(.notes) \(has("unbound")) \(has("bind_refusal"))"')" "merged fields"
+  assert_eq observed "$(spool_lines | jq -r 'select(.ev == "output") | .input.notes')" "spooled result"
+}
+
+case_verifier() {
+  setup_writer
+  so litter:verifier "$FANOUT_CHECK" | run_hook output.sh
+  assert_deny 'no verify recorded by you for verify_id \"v4\"'
+  assert_contains 'gate integration and attempt 1' "$(cat "$T_DIR/out")" reason
+  out_file '{"verify_id":"v5"}' '{"combined":{"pass":false,"evidence":"verify v5 exited 1","gaps":[]}}'
+  so litter:verifier "$FANOUT_CHECK" | run_hook output.sh
+  assert_deny 'your result gives verify_id \"v4\", but your latest record is for \"v5\"'
+  out_file '{"verify_id":"v4"}' '{"combined":{"pass":false,"evidence":"verify v4 exited 1","gaps":[]}}'
+  so litter:verifier "$FANOUT_CHECK" | run_hook output.sh
+  assert_eq 'false verify v4 exited 1' "$(updated | jq -r '"\(.combined.pass) \(.combined.evidence)"')" combined
+  assert_eq '"t1"' "$(updated | jq -c '.tasks[0].id')" tasks
+}
+
+case_integrate_relay() {
+  setup_writer
+  so litter:relay '{"integrate_id":"i1","status":"merged"}' | run_hook output.sh
+  assert_deny 'no integrate recorded by you for integrate_id \"i1\"'
+  # A verify's out file doesn't answer an integrate.
+  out_file '{"verify_id":"v4"}' '{"green":true}'
+  so litter:relay '{"integrate_id":"i1","status":"merged"}' | run_hook output.sh
+  assert_deny 'no integrate recorded by you'
+  out_file '{"integrate_id":"i2"}' '{"status":"conflict"}'
+  so litter:relay '{"integrate_id":"i1","status":"merged"}' | run_hook output.sh
+  assert_deny 'your result gives integrate_id \"i1\", but your latest record is for \"i2\"'
+  out_file '{"integrate_id":"i1"}' '{"status":"conflict","conflicts":["src/a.py"]}'
+  so litter:relay '{"integrate_id":"i1","status":"merged"}' | run_hook output.sh
+  assert_eq '{"integrate_id":"i1","status":"conflict","conflicts":["src/a.py"]}' "$(updated)" updatedInput
+}
+
 t "a StructuredOutput from anyone but a litter agent passes untouched" case_not_litter
 t "a critic's tests_green: true against a red verify is rewritten to false" case_critic_rewritten
 t "a critic with no verify recorded is denied" case_critic_no_out
@@ -178,4 +294,11 @@ t "an unreadable or other-version out file denies" case_out_unreadable
 t "an out file for another agent denies" case_out_for_another_agent
 t "a StructuredOutput that isn't an object is denied" case_not_an_object
 t "a result over 4 KiB goes to spool/blobs, and the line names it" case_big_result_blob
+t "an unbound fanout writer's blocked result gets unbound and the recorded refusal" case_writer_unbound_blocked
+t "an unbound fanout writer's other results are denied" case_writer_unbound_denied
+t "a fanout writer's unreadable agents, out or policy file denies" case_writer_unreadable_files
+t "a bound fanout writer's result is spooled, unbound never claimed" case_writer_bound
+t "a bound fanout writer gets its out file's fields, but a stale refusal" case_writer_bound_merged
+t "the fanout verifier needs the verify it records, and gets its fields" case_verifier
+t "an integrate relay is matched by integrate_id" case_integrate_relay
 done_testing

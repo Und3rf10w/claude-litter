@@ -61,21 +61,24 @@ run_hook() {
   printf '%s\n' "$?" >|"$T_DIR/code"
 }
 
-# A PATH without jq: a folder of links to every tool on PATH but jq.
+# A PATH without jq: a folder of links to every tool on PATH but jq. One ln
+# per PATH folder, in PATH order: a name linked already is kept, as the
+# shell's lookup keeps the first.
 path_without_jq() {
   pw_dir=$T_DIR/nojq-bin
   mkdir -p "$pw_dir"
   pw_old_ifs=$IFS
   IFS=:
+  set -f
   for pw_p in $PATH; do
     [ -d "$pw_p" ] || continue
-    for pw_f in "$pw_p"/*; do
-      pw_n=${pw_f##*/}
-      [ "$pw_n" = jq ] && continue
-      [ -e "$pw_dir/$pw_n" ] || ln -s "$pw_f" "$pw_dir/$pw_n" 2>/dev/null
-    done
+    set +f
+    ln -s "$pw_p"/* "$pw_dir"/ 2>/dev/null
+    set -f
   done
+  set +f
   IFS=$pw_old_ifs
+  rm -f "$pw_dir/jq"
   printf '%s\n' "$pw_dir"
 }
 
@@ -210,6 +213,57 @@ write_call() {
 
 # The spool lines written for session s1, one per line.
 spool_lines() { cat "$(hooks_dir)/spool/s1.jsonl" 2>/dev/null; }
+
+# Every git run in a case ignores your global and system config and has a
+# fixed identity, as tier 2's HERMETIC_GIT_ENV, scripts under test included.
+git_env() {
+  GIT_CONFIG_GLOBAL=/dev/null
+  GIT_CONFIG_NOSYSTEM=1
+  GIT_AUTHOR_NAME=litter-test
+  GIT_AUTHOR_EMAIL=test@litter.invalid
+  GIT_COMMITTER_NAME=litter-test
+  GIT_COMMITTER_EMAIL=test@litter.invalid
+  export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+}
+
+# repo: the scratch project (see `project`) as a git repository with two
+# commits, whose origin/main (and origin/HEAD) is the first, so it is behind
+# HEAD. Sets REPO_OLD (the first) and REPO_BASE (HEAD). .claude/ and deps/
+# are ignored.
+repo() {
+  git_env
+  project >/dev/null
+  rp_dir=$T_DIR/project
+  git -C "$rp_dir" init -q -b main || fail "git init"
+  printf '.claude/\ndeps/\n' >|"$rp_dir/.gitignore"
+  printf 'one\n' >|"$rp_dir/a.txt"
+  git -C "$rp_dir" add .gitignore a.txt && git -C "$rp_dir" commit -qm one || fail "first commit"
+  REPO_OLD=$(git -C "$rp_dir" rev-parse HEAD)
+  printf 'two\n' >>"$rp_dir/a.txt"
+  mkdir -p "$rp_dir/src"
+  printf 'x = 1\n' >|"$rp_dir/src/x.py"
+  git -C "$rp_dir" add -A && git -C "$rp_dir" commit -qm two || fail "second commit"
+  REPO_BASE=$(git -C "$rp_dir" rev-parse HEAD)
+  git -C "$rp_dir" update-ref refs/remotes/origin/main "$REPO_OLD" || fail "origin/main"
+  git -C "$rp_dir" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main || fail "origin/HEAD"
+}
+
+# fanout_policy [jq filter]: policy.json for an active fanout run on the
+# scratch repository, at REPO_BASE, its worktrees under the project's
+# .claude/worktrees (resolved, as the mod writes it), and the fanout
+# executor's role. The filter edits it last.
+fanout_policy() {
+  fp_co=$(real_project)
+  policy ".run.workflow = \"fanout\" | .run.base = \"${REPO_BASE:-0000000000000000000000000000000000000000}\"
+    | .run.worktreeRoot = \"$fp_co/.claude/worktrees\" | .run.setupTimeoutSec = 30
+    | .roles.executor = {write: \"own-worktree\", bash: \"rw\", isolated: true} | ${1:-.}"
+}
+
+# wt_in <name> [cwd]: a WorktreeCreate input from session s1.
+wt_in() {
+  jq -cn --arg n "$1" --arg cwd "${2:-$T_DIR/project}" \
+    '{session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: $cwd, hook_event_name: "WorktreeCreate", name: $n}'
+}
 
 # A folder holding a fake <tool> that runs <body>, for PATH=…:$PATH.
 fake_tool() {
