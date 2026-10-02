@@ -4,14 +4,17 @@
 // validated as loosely as section 9 allows and stored, so the tool's error
 // shape and bounds are exercised end to end.
 
-import type { Author, Caller, RecordCtx, RecordError, RecordHandler, RecordInput, RecordReply } from './core'
+import type { Author, Caller, RecordCtx, RecordError, RecordHandler, RecordInput, RecordReply, StoredRecord } from './core'
 import type { RunJson } from './run'
+import type { BoundWorktree, TaskBindBody, WorktreeCreateBody } from './fanout'
+import type { AgentPolicy } from '../hookfiles'
 import { fail } from './core'
 import { appendRecord, readLedger } from '../ledgercore'
-import { agentPolicyPath, proposalPath, runDir, runJsonPath, wikiPath } from '../layout'
-import { atomicWrite, atomicWriteJson, readJson, serial, sha256 } from '../fsx'
+import { agentPolicyPath, integrationName, outPath, proposalPath, runDir, runJsonPath, wikiPath } from '../layout'
+import { atomicWrite, atomicWriteJson, readJson, remove, serial, sha256 } from '../fsx'
 import { safeFileName, writeOut } from '../output'
 import { agentInfo } from '../policy'
+import { recordedWorktrees } from '../worktrees'
 
 /** Every kind the record tool knows, in its canonical spelling. `kind` matches case-insensitively. */
 export const KNOWN_KINDS = [
@@ -319,45 +322,129 @@ async function bindTasks(ctx: RecordCtx, dir: string): Promise<BindTask[]> {
   })
 }
 
+type Binding = { seq: number; agent: string; body: TaskBindBody }
+
+/** The run's task.bind records, in order. A body without its worktree (phase 1's) names none. */
+function bindingsOf(records: readonly StoredRecord[]): Binding[] {
+  return records.flatMap(r => {
+    if (r.kind !== 'task.bind' || r.by.source !== 'agent' || typeof r.body.task !== 'string') return []
+    return [{ seq: r.seq, agent: r.by.agentId, body: r.body as unknown as TaskBindBody }]
+  })
+}
+
+/** The agent a task.result speaks for: its author, or the agent the mod recorded it from. */
+const resultAgent = (rec: StoredRecord): string | null =>
+  rec.by.source === 'agent' ? rec.by.agentId : typeof rec.body.agent_id === 'string' ? rec.body.agent_id : null
+
+const nfc = (s: string): string => s.normalize('NFC')
+
+async function resolved(ctx: RecordCtx, path: string): Promise<string> {
+  try {
+    return (await ctx.p.fs.stat(path, { resolve: true })).realPath ?? path
+  } catch {
+    return path
+  }
+}
+
+type BindOutcome = { reply: RecordReply; bound: boolean }
+
 /**
  * `task.bind`: binds the calling writer to the task whose token it presents,
- * and its worktree (its SubagentStart cwd) to that task. Each task binds to
- * one worktree and each worktree to one task; a second agent with the same
- * token is accepted only from the same worktree, the restarted writer. The
- * token itself is never stored.
+ * and to its worktree: its SubagentStart cwd, which must be one of this run's
+ * recorded `worktree.create` paths (section 7, fanout.js step 2). Each task
+ * binds to one worktree and each worktree to one task. A second agent with
+ * the same token is accepted from the same worktree (the restarted writer),
+ * and from another worktree only once the agent bound before it has stopped
+ * without a `task.result`; that binding names the one it `supersedes`
+ * (COMMON.md, "Rebinding"). The token itself is never stored.
+ *
+ * A refused writer that isn't bound gets its out file, `bind_refusal`, before
+ * the answer, so output.sh can add the reason to its blocked result; a
+ * successful bind removes it.
  */
 const taskBind: RecordHandler = async (ctx, input) => {
-  const missing = needText(input, 'token', 'the bind value from your <task>, exactly')
-  if (missing) return missing
   const { run, runDir: dir } = scoped(ctx, input)
   const agentId = ctx.caller.agentId
   if (agentId === null) throw new Error('records/design: task.bind reached its handler from the main thread')
-  const task = (await bindTasks(ctx, dir)).find(t => t.bind === input.token)
-  if (!task) return fail("litter: no task of this run has that bind value; copy it exactly from the bind attribute of your <task>", 'token')
-  const me = await agentInfo(ctx.p, agentId)
-  if (!me) return fail(`litter: agent ${agentId} has no recorded worktree yet, so it can't bind; call task.bind again`)
+  if (!safeFileName(agentId)) throw new Error(`records/design: agent id '${agentId}' can't name a binding file`)
+  if (ctx.caller.agentType !== 'litter:executor') {
+    return fail(`litter: task.bind is for a fanout's writers (litter:executor), not ${ctx.caller.agentType ?? 'this agent'}`, 'kind')
+  }
   return serial(`bind:${dir}`, async () => {
-    const { records } = await readLedger(ctx.p, dir, run)
-    for (const rec of records) {
-      if (rec.kind !== 'task.bind' || rec.by.source !== 'agent') continue
-      const other = rec.by.agentId
-      const boundTask = (rec.body as { task?: string }).task
-      const otherCwd = other === agentId ? me.cwd : (await agentInfo(ctx.p, other))?.cwd
-      if (other === agentId && boundTask !== task.id) {
-        return fail(`litter: you're already bound to task ${boundTask}; a writer binds to one task`, 'token')
-      }
-      if (boundTask === task.id && otherCwd !== me.cwd) {
-        return fail(`litter: task ${task.id} is already bound to another writer's worktree; only that worktree can bind it again`, 'token')
-      }
-      if (boundTask !== task.id && otherCwd === me.cwd) {
-        return fail(`litter: this worktree is already bound to task ${boundTask}; each worktree binds to one task`, 'token')
-      }
+    const out = await bindWriter(ctx, input, run, dir, agentId)
+    const outFile = outPath(ctx.litterDir!, agentId)
+    if (out.reply.ok) {
+      if (await ctx.p.fs.exists(outFile)) await remove(ctx.p, outFile)
+    } else if (!out.bound) {
+      // Written before the answer: the writer's next call may be its blocked StructuredOutput.
+      await writeOut(ctx.p, ctx.litterDir!, { v: 1, agent_id: agentId, for: {}, fields: { bind_refusal: out.reply.error } })
     }
-    if (!safeFileName(agentId)) throw new Error(`records/design: agent id '${agentId}' can't name a binding file`)
-    // The guard reads the binding, so it's written before the call is answered.
-    await atomicWriteJson(ctx.p, agentPolicyPath(ctx.litterDir!, agentId), { v: 1, run, task: { id: task.id, owned: task.files } })
-    return store(ctx, input, { task: task.id }, { task: task.id })
+    return out.reply
   })
+}
+
+async function bindWriter(ctx: RecordCtx, input: RecordInput, run: string, dir: string, agentId: string): Promise<BindOutcome> {
+  const { records } = await readLedger(ctx.p, dir, run)
+  const bindings = bindingsOf(records)
+  const mine = bindings.filter(b => b.agent === agentId).at(-1)
+  const refuse = (error: string, field?: string): BindOutcome => ({ reply: fail(error, field), bound: mine !== undefined })
+
+  const missing = needText(input, 'token', 'the bind value from your <task>, exactly')
+  if (missing) return { reply: missing, bound: mine !== undefined }
+  const task = (await bindTasks(ctx, dir)).find(t => t.bind === input.token)
+  if (!task) return refuse("litter: no task of this run has that bind value; copy it exactly from the bind attribute of your <task>", 'token')
+  const me = await agentInfo(ctx.p, agentId)
+  if (!me) return refuse(`litter: agent ${agentId} has no recorded start yet, so its worktree isn't known; call task.bind again`)
+
+  // The worktree, from the engine: the caller's cwd is one this run recorded (worktree.sh's creates, drained before this call).
+  const cwd = nfc(await resolved(ctx, me.cwd))
+  const own = new Set([integrationName(run), `litter-${run}`])
+  const created = recordedWorktrees(records).filter(w => !own.has(w.name) && !w.disposable)
+  let wt: WorktreeCreateBody | undefined
+  for (const w of created) {
+    if (nfc(w.path) === cwd || nfc(await resolved(ctx, w.path)) === cwd) {
+      wt = w
+      break
+    }
+  }
+  if (!wt) return refuse(`litter: your working directory ${me.cwd} isn't one of this run's worktrees, so task.bind can't bind you`)
+  const worktree: BoundWorktree = { name: wt.name, path: wt.path, branch: wt.branch }
+  const sameWorktree = (b: Binding) => b.body.worktree?.name === wt!.name
+
+  if (mine) {
+    if (mine.body.task !== task.id) return refuse(`litter: you're already bound to task ${mine.body.task}; a writer binds to one task`, 'token')
+    // The same call again: the binding stands.
+    await writeBinding(ctx, run, agentId, task, worktree)
+    return { reply: { ok: true, kind: 'task.bind', run, seq: mine.seq, task: task.id, worktree }, bound: true }
+  }
+  const taken = bindings.find(b => sameWorktree(b) && b.body.task !== task.id)
+  if (taken) return refuse(`litter: this worktree is already bound to task ${taken.body.task}; each worktree binds to one task`, 'token')
+
+  let supersedes: string | undefined
+  const holder = bindings.filter(b => b.body.task === task.id).at(-1)
+  if (holder && !sameWorktree(holder)) {
+    // Rebinding from a second worktree: only once the first writer stopped without a result.
+    const where = holder.body.worktree?.path ?? "another writer's worktree"
+    const other = await agentInfo(ctx.p, holder.agent)
+    if (!other) return refuse(`litter: task ${task.id} is bound to agent ${holder.agent} in ${where}, and litter can't tell whether it has stopped; only that worktree can bind it`, 'token')
+    if (other.stopped === null) return refuse(`litter: task ${task.id} is bound to agent ${holder.agent} in ${where}, which is still running; only that worktree can bind it`, 'token')
+    if (records.some(r => r.kind === 'task.result' && resultAgent(r) === holder.agent)) {
+      return refuse(`litter: task ${task.id} was bound in ${where}, and that writer already returned its result; it can't be bound again`, 'token')
+    }
+    supersedes = holder.agent
+  }
+
+  // The guard reads the binding, so it's written before the call is answered.
+  await writeBinding(ctx, run, agentId, task, worktree)
+  const body: TaskBindBody = { task: task.id, worktree, ...(supersedes ? { supersedes } : {}) }
+  const reply = await store(ctx, input, body, { task: task.id, worktree, ...(supersedes ? { supersedes } : {}) })
+  return { reply, bound: true }
+}
+
+/** agents/<agent_id>.json: the task's owned paths and the worktree, the mod's half of the binding (hookfiles.AgentPolicy). */
+async function writeBinding(ctx: RecordCtx, run: string, agentId: string, task: BindTask, worktree: BoundWorktree): Promise<void> {
+  const policy: AgentPolicy = { v: 1, run, task: { id: task.id, owned: task.files }, worktree }
+  await atomicWriteJson(ctx.p, agentPolicyPath(ctx.litterDir!, agentId), policy)
 }
 
 /** `plan.write { run, gates }`: the approved planner gates. Rendering them into plan.md comes with goal mode (phase 3). */

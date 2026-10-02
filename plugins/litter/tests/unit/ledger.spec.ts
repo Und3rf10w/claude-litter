@@ -291,6 +291,43 @@ describe('bounds', () => {
   })
 })
 
+describe('an unbound fanout writer', () => {
+  /** run.json for a run of `workflow`. */
+  const runOf = (run: string, workflow: string) =>
+    p.fs.write(runJsonPath(runDir(dir, run)), `${JSON.stringify({ v: 1, run, workflow, args: { tasks: [{ id: 'T1', bind: 'tok-1', files: ['a/'] }] }, ref: `litter/${run}` })}\n`)
+  const propose = (agentId: string) => call({ kind: 'rule.propose', rule: 'When a task owns a folder, keep its tests in it.' }, agentId)
+
+  test('records only task.bind until it has bound, whatever the kind', async () => {
+    await runOf(RUN, 'fanout')
+    await startAgent('w1', 'litter:executor')
+    for (const fields of [{ kind: 'rule.propose', rule: 'r' }, { kind: 'verify', gate: 'G1' }, { kind: 'run.find' }]) {
+      const e = asError(await call(fields, 'w1'))
+      expect(e.error).toBe('litter: bind first: record kind task.bind with the bind value from your <task>')
+      expect(e.field).toBe('kind')
+      expect(e.allowed).toEqual(['task.bind'])
+    }
+    // task.bind gets through to its handler, which judges it on its own terms.
+    expect(asError(await call({ kind: 'task.bind', token: 'tok-1' }, 'w1')).error).toContain("isn't one of this run's worktrees")
+    await appendRecord(p, runDir(dir, RUN), {
+      run: RUN,
+      kind: 'task.bind',
+      by: { source: 'agent', agentId: 'w1', agentType: 'litter:executor' },
+      body: { task: 'T1', worktree: { name: 'n', path: '/work/a', branch: 'b' } },
+    })
+    expect((await propose('w1')).ok).toBe(true)
+  })
+
+  test("another role in a fanout, and an execute run's executor, are unaffected", async () => {
+    await runOf(RUN, 'fanout')
+    await startAgent('rl', 'litter:relay')
+    expect((await propose('rl')).ok).toBe(true)
+    const EXEC = '20261002-exec'
+    await runOf(EXEC, 'execute')
+    await startAgent('ex', 'litter:executor', EXEC)
+    expect((await propose('ex')).ok).toBe(true)
+  })
+})
+
 describe('failures', () => {
   test("a handler's own failure rejects, so the hook's catch denies", async () => {
     await startAgent('a1', 'litter:falsifier')

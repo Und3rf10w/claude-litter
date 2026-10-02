@@ -20,6 +20,7 @@ import { KIND_HANDLERS, SPOOL_CONSUMERS } from './registry'
 import { LedgerTampered, readLedger, RecordTooLarge } from './ledgercore'
 import { agentInfo, drainOwnSpools } from './policy'
 import { RUN_ID, runDir, runJsonPath } from './layout'
+import { readJson } from './fsx'
 import { getOptions, session } from './session'
 
 type FieldType = 'strings' | 'objects' | 'object' | 'boolean' | 'integer'
@@ -133,6 +134,15 @@ const bytes = (text: string) => new TextEncoder().encode(text).length
 
 const callerMay = (rule: KindRule, agent: boolean) => rule.by === 'any' || rule.by === (agent ? 'agent' : 'launcher')
 
+/** An executor of a fanout run with no task.bind of its own yet: it may record only task.bind. */
+async function unboundWriter(p: Ports, litterDir: string, run: string, agentId: string): Promise<boolean> {
+  const dir = runDir(litterDir, run)
+  const json = await readJson<{ workflow?: unknown }>(p, runJsonPath(dir)).catch(() => undefined)
+  if (json?.workflow !== 'fanout') return false
+  const { records } = await readLedger(p, dir, run)
+  return !records.some(r => r.kind === 'task.bind' && r.by.source === 'agent' && r.by.agentId === agentId)
+}
+
 /** The kinds this caller may record, for an error's `allowed`. */
 const allowedFor = (agent: boolean): KnownKind[] => KNOWN_KINDS.filter(k => callerMay(KIND_RULES[k], agent))
 
@@ -215,6 +225,10 @@ export async function dispatchRecord(
 
   // The run: an agent's from the agent map, never from its input; a launcher's from its input.
   const agentRun = info?.role && typeof info.run === 'string' ? info.run : null
+  // A fanout writer records task.bind before anything else (section 7, fanout.js step 2).
+  if (isAgent && kind !== 'task.bind' && info?.role === 'executor' && agentRun !== null && (await unboundWriter(p, litterDir, agentRun, agentId))) {
+    return fail('litter: bind first: record kind task.bind with the bind value from your <task>', 'kind', ['task.bind'])
+  }
   if (rule.run !== 'none') {
     if (agentRun !== null) {
       if (input.run !== undefined && input.run !== agentRun) {

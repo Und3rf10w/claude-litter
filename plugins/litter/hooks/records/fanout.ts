@@ -15,6 +15,12 @@ export type WorktreeBody = {
   base: string
   /** A design run's prober worktrees: discarded after run.end (section 9, "Disposable worktrees"). */
   disposable: boolean
+  /**
+   * On a record made from worktree.sh's spool line: the line's session and
+   * time, so the same line drained twice is recognised and changes nothing.
+   * The mod's own worktrees have none.
+   */
+  spooled?: { session_id: string; ts: number }
 }
 
 /** `worktree.create`: the top-level ignored paths the setup left, which cleanup may delete later. */
@@ -23,9 +29,24 @@ export type WorktreeCreateBody = WorktreeBody & { ignored: string[] }
 /** `worktree.setup_failed`: the setup's log (absolute, under the run's `verify/setup-<name>/`). */
 export type WorktreeSetupFailedBody = WorktreeBody & { exit_code: number | null; timed_out: boolean; log: string }
 
-/** `worktree.removed` and `worktree.kept`, by cleanup after run.end (section 9, "Cleanup is the mod's"). */
-export type WorktreeRemovedBody = { name: string; path: string; branch: string; forced: boolean }
+/**
+ * `worktree.removed` and `worktree.kept`, by cleanup after run.end (section 9, "Cleanup is the mod's").
+ * `branch_kept` says why the branch stayed after its worktree went: the run's own `litter/<run>`, or git refusing.
+ */
+export type WorktreeRemovedBody = { name: string; path: string; branch: string; forced: boolean; branch_kept?: string }
 export type WorktreeKeptBody = { name: string; path: string; branch: string; reason: string }
+
+/** A bound writer's worktree, as `task.bind` and `agents/<agent_id>.json` carry it. */
+export type BoundWorktree = { name: string; path: string; branch: string }
+
+/**
+ * `task.bind`: a fanout writer bound to its task and to its recorded worktree
+ * (section 7, fanout.js step 2). The token itself is never stored. A binding
+ * from a second worktree names the agent it replaces in `supersedes`: that
+ * agent stopped without a `task.result` (COMMON.md, "Rebinding"). Integration
+ * takes a task's latest binding.
+ */
+export type TaskBindBody = { task: string; worktree: BoundWorktree; supersedes?: string }
 
 /**
  * `task.result`: a fanout writer's or researcher's StructuredOutput, recorded
