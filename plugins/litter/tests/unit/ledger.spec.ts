@@ -90,6 +90,29 @@ describe('the spec', () => {
     expect(schema.properties.run?.description).toBeTruthy()
   })
 
+  test("declares every field that isn't a string, with its type", () => {
+    const schema = RECORD_TOOL.inputSchema as { properties: Record<string, { type?: string }>; additionalProperties?: boolean }
+    expect(schema.properties.authorized?.type).toBe('array')
+    expect(schema.properties.tasks?.type).toBe('array')
+    expect(schema.properties.amendOf?.type).toBe('object')
+    expect(schema.properties.adversary?.type).toBe('boolean')
+    expect(schema.properties.maxAttempts?.type).toBe('integer')
+    expect(schema.additionalProperties).toBe(true)
+  })
+
+  test('a structured field sent as the JSON of its type is decoded; any other string is left for the handler', async () => {
+    await startAgent('a1', 'litter:falsifier')
+    const r = await call(
+      { kind: 'finding', report: '["kept"]', anchors: '["a", "b"]', amendOf: '{"run": "x"}', adversary: 'true', attempt: '2', tasks: '{"not": "a list"}', maxRounds: 'three' },
+      'a1',
+    )
+    expect(r.ok).toBe(true)
+    const body = (await readLedger(p, runDir(dir, RUN), RUN)).records.at(-1)!.body
+    expect(body).toEqual(
+      expect.objectContaining({ report: '["kept"]', anchors: ['a', 'b'], amendOf: { run: 'x' }, adversary: true, attempt: 2, tasks: '{"not": "a list"}', maxRounds: 'three' }),
+    )
+  })
+
   test('registerRecordTool resolves null, or the refusal', async () => {
     expect(await registerRecordTool(p)).toBeNull()
     p.registerTool = async () => {

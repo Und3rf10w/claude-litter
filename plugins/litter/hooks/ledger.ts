@@ -22,6 +22,67 @@ import { agentInfo, drainOwnSpools } from './policy'
 import { RUN_ID, runDir, runJsonPath } from './layout'
 import { getOptions, session } from './session'
 
+type FieldType = 'strings' | 'objects' | 'object' | 'boolean' | 'integer'
+
+/**
+ * The fields of any kind whose value isn't a string. A model sends a field the
+ * schema doesn't declare as a string, so a list arrives JSON-encoded (tier 4,
+ * live). Each is declared in the schema, and a string holding the JSON of its
+ * type is decoded before the checks.
+ */
+const STRUCTURED: Readonly<Record<string, FieldType>> = {
+  authorized: 'strings',
+  verify: 'strings',
+  goalCheck: 'strings',
+  setup: 'strings',
+  runRules: 'strings',
+  linkDirs: 'strings',
+  mergeOrder: 'strings',
+  empiricalUnknowns: 'strings',
+  anchors: 'strings',
+  tasks: 'objects',
+  bar: 'objects',
+  lenses: 'objects',
+  gates: 'objects',
+  criteria: 'objects',
+  amendOf: 'object',
+  adversary: 'boolean',
+  isolate: 'boolean',
+  carryOver: 'boolean',
+  maxAttempts: 'integer',
+  maxRounds: 'integer',
+  attempt: 'integer',
+}
+
+const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {
+  strings: { type: 'array', items: { type: 'string' } },
+  objects: { type: 'array', items: { type: 'object' } },
+  object: { type: 'object' },
+  boolean: { type: 'boolean' },
+  integer: { type: 'integer' },
+}
+
+const hasType = (v: unknown, t: FieldType): boolean =>
+  t === 'strings' || t === 'objects'
+    ? Array.isArray(v)
+    : t === 'object'
+      ? typeof v === 'object' && v !== null && !Array.isArray(v)
+      : t === 'boolean'
+        ? typeof v === 'boolean'
+        : Number.isInteger(v)
+
+/** A structured field sent as a string of its JSON, decoded; anything else unchanged, for the handler to judge. */
+function decodeField(name: string, v: unknown): unknown {
+  const t = STRUCTURED[name]
+  if (t === undefined || typeof v !== 'string') return v
+  try {
+    const parsed: unknown = JSON.parse(v)
+    return hasType(parsed, t) ? parsed : v
+  } catch {
+    return v
+  }
+}
+
 /** Registered at session.start as `mcp__litter__record`. */
 export const RECORD_TOOL: ToolSpec = {
   name: 'record',
@@ -37,8 +98,10 @@ export const RECORD_TOOL: ToolSpec = {
         type: 'string',
         description: "The run id (<yyyymmdd>-<slug>). A run's agents leave it out: litter knows their run.",
       },
+      ...Object.fromEntries(Object.entries(STRUCTURED).map(([name, t]) => [name, SCHEMA_OF[t]])),
     },
     required: ['kind'],
+    additionalProperties: true,
   },
 }
 
@@ -101,7 +164,7 @@ export async function dispatchRecord(
   env: DispatchEnv,
 ): Promise<RecordReply> {
   const fields: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(raw)) if (!RESERVED.has(k)) fields[k] = v
+  for (const [k, v] of Object.entries(raw)) if (!RESERVED.has(k)) fields[k] = decodeField(k, v)
   const isAgent = typeof agentId === 'string' && agentId !== ''
 
   // The kind, matched case-insensitively ("some models misname parameters").
