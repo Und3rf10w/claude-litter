@@ -425,7 +425,7 @@ describe('land: each precondition refused on its own, nothing moved', () => {
 
   test('a tampered ledger', async () => {
     const verifyId = await approvedChange()
-    p.storeMap.set(headKey(RUN), { seq: 2, sha: 'not-the-hash' })
+    p.storeMap.set(headKey(runDir), { seq: 2, sha: 'not-the-hash' })
     const r = await land(verifyId)
     expect(r).toMatchObject({ landed: false, retry: false })
     if (!r.landed) expect(r.reason).toMatch(/tampered/)

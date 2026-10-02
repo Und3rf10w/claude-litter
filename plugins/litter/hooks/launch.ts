@@ -65,15 +65,13 @@ function shippedScripts(p: Ports): Promise<Map<string, Workflow>> {
 }
 
 /**
- * A scriptPath's content. A relative path is the session's working directory's,
- * which `pwd` with no cwd reports (Ports has no cwd of its own). Rejects when
- * unreadable, so the catch refuses the call.
+ * A scriptPath's content. A relative path is the session's working
+ * directory's. Rejects when unreadable, so the catch refuses the call.
  */
 async function scriptText(p: Ports, path: string): Promise<string> {
   if (path.startsWith('/')) return p.fs.read(path)
-  const pwd = await p.run(['pwd'])
-  const dir = pwd.stdout.trim()
-  if (pwd.code !== 0 || !dir.startsWith('/')) throw new Error(`can't resolve the relative scriptPath ${path}`)
+  const dir = await p.cwd()
+  if (!dir.startsWith('/')) throw new Error(`can't resolve the relative scriptPath ${path}`)
   return p.fs.read(`${dir}/${path.replace(/^\.\//, '')}`)
 }
 

@@ -385,7 +385,7 @@ describe('verify: input and run checks', () => {
 
   test('a tampered ledger is refused before anything runs', async () => {
     await appendRecord(p, runDir, { run: RUN, kind: 'finding', by: { source: 'mod' }, body: {} })
-    p.storeMap.set(headKey(RUN), { seq: 1, sha: 'not-the-hash' })
+    p.storeMap.set(headKey(runDir), { seq: 1, sha: 'not-the-hash' })
     const marker = join(outside, 'ran')
     expect(err(await verify(['touch', marker])).error).toMatch(/tampered/)
     expect(existsSync(marker)).toBe(false)

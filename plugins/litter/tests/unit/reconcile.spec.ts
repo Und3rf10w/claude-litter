@@ -270,10 +270,10 @@ describe('reconcile: anything else is refused with the facts', () => {
   test('a tampered ledger: nothing is acted on', async () => {
     const { verifyId, tree } = await approved()
     await intend(verifyId, tree)
-    p.storeMap.set(headKey(RUN), { seq: 3, sha: 'not-the-hash' })
+    p.storeMap.set(headKey(runDir), { seq: 3, sha: 'not-the-hash' })
     const r = await reconcileLands(p, runDir, RUN)
     expect(r.problems[0]).toMatch(/tampered/)
-    p.storeMap.delete(headKey(RUN))
+    p.storeMap.delete(headKey(runDir))
     expect((await kinds()).at(-1)).toBe('land.intent')
   })
 

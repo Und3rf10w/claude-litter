@@ -36,7 +36,7 @@ describe('ledgercore', () => {
     const r = await readLedger(p, dir, RUN)
     expect(r.tampered).toBeNull()
     expect(r.records.map(x => x.kind)).toEqual(['finding', 'verify'])
-    expect(p.storeMap.get(headKey(RUN))).toEqual(r.head)
+    expect(p.storeMap.get(headKey(dir))).toEqual(r.head)
   })
 
   test('concurrent appends to one run never share a seq', async () => {
@@ -76,13 +76,13 @@ describe('ledgercore', () => {
 
   test('a valid record past the head (crash before the head moved) is adopted', async () => {
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
-    const head = p.storeMap.get(headKey(RUN))
+    const head = p.storeMap.get(headKey(dir))
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
-    p.storeMap.set(headKey(RUN), head)
+    p.storeMap.set(headKey(dir), head)
     const r = await readLedger(p, dir, RUN)
     expect(r.tampered).toBeNull()
     expect(r.head?.seq).toBe(2)
-    expect((p.storeMap.get(headKey(RUN)) as { seq: number }).seq).toBe(2)
+    expect((p.storeMap.get(headKey(dir)) as { seq: number }).seq).toBe(2)
   })
 
   test('a record over the limit is refused, naming its largest field', async () => {

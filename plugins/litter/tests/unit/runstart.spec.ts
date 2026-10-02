@@ -75,6 +75,7 @@ async function world(options: Record<string, unknown> = { verify: ['true'] }): P
         return replaced ?? base.fs.read(path)
       },
     },
+    cwd: async () => cwd.dir,
     run: (argv, init) => {
       if (argv[0] === 'jq') {
         return jq.ok ? Promise.resolve({ code: 0, stdout: 'jq-1.7.1\n', stderr: '', truncated: false }) : Promise.reject(new Error('jq: not found'))

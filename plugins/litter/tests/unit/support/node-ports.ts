@@ -7,6 +7,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { StringDecoder } from 'node:string_decoder'
 import { dirname, join } from 'node:path'
 import type { Entry, Ports, RunInit, RunResult, SpawnChunk, SpawnEnd, SpawnRequest, Stat } from '../../../hooks/ports'
 
@@ -65,17 +66,22 @@ function runNode(argv: readonly string[], init: RunInit = {}): Promise<RunResult
     let stdout = ''
     let stderr = ''
     let truncated = false
-    const take = (cur: string, chunk: Buffer): string => {
+    // One decoder per stream, so a character split across chunks survives.
+    const outText = new StringDecoder('utf8')
+    const errText = new StringDecoder('utf8')
+    const take = (cur: string, text: string): string => {
       if (cur.length >= MAX_BYTES) {
-        truncated = true
+        if (text !== '') truncated = true
         return cur
       }
-      const next = cur + chunk.toString('utf8')
+      const next = cur + text
       if (next.length > MAX_BYTES) truncated = true
       return next.slice(0, MAX_BYTES)
     }
-    child.stdout.on('data', (c: Buffer) => (stdout = take(stdout, c)))
-    child.stderr.on('data', (c: Buffer) => (stderr = take(stderr, c)))
+    child.stdout.on('data', (c: Buffer) => (stdout = take(stdout, outText.write(c))))
+    child.stderr.on('data', (c: Buffer) => (stderr = take(stderr, errText.write(c))))
+    child.stdout.on('end', () => (stdout = take(stdout, outText.end())))
+    child.stderr.on('end', () => (stderr = take(stderr, errText.end())))
     // As the engine: a child past its time is killed and the call rejects; one ended by a signal reads as 1.
     let timedOut = false
     const ms = Math.min(init.timeoutMs ?? 30_000, 600_000)
@@ -96,40 +102,98 @@ function runNode(argv: readonly string[], init: RunInit = {}): Promise<RunResult
   })
 }
 
-async function* spawnNode(request: SpawnRequest): AsyncGenerator<SpawnChunk, SpawnEnd> {
+/**
+ * The stream is a hand-built iterator, not an `async function*`: a generator
+ * can't run its `return()` while a `next()` is still pending, so a silent
+ * child would live on until it wrote or exited. Here `return()` and `throw()`
+ * kill the child at once and settle the pending `next()`.
+ */
+function spawnNode(request: SpawnRequest): AsyncGenerator<SpawnChunk, SpawnEnd> {
   const full = gitArgv(request.argv)
   const child = nodeSpawn(full[0]!, full.slice(1), {
     cwd: request.cwd,
     env: envFor(request.argv, request.env),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
-  const queue: (SpawnChunk | { end: SpawnEnd } | { error: Error })[] = []
-  let wake: (() => void) | null = null
-  const push = (item: (typeof queue)[number]) => {
-    queue.push(item)
-    wake?.()
+  type Item = SpawnChunk | { end: SpawnEnd } | { error: Error }
+  type Result = IteratorResult<SpawnChunk, SpawnEnd>
+  const queue: Item[] = []
+  let waiting: { resolve: (r: Result) => void; reject: (e: unknown) => void } | null = null
+  let finished: Result | null = null
+  const kill = () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   }
-  child.stdout.on('data', (c: Buffer) => push({ stream: 'stdout', text: c.toString('utf8') }))
-  child.stderr.on('data', (c: Buffer) => push({ stream: 'stderr', text: c.toString('utf8') }))
+  const pump = () => {
+    if (!waiting || queue.length === 0) return
+    const w = waiting
+    waiting = null
+    const item = queue.shift()!
+    if ('error' in item) {
+      finished = { done: true, value: { code: null, signal: null } }
+      w.reject(item.error)
+    } else if ('end' in item) {
+      finished = { done: true, value: item.end }
+      w.resolve(finished)
+    } else w.resolve({ done: false, value: item })
+  }
+  const push = (item: Item) => {
+    if (finished) return
+    queue.push(item)
+    pump()
+  }
+  const decoded = (stream: 'stdout' | 'stderr', source: NodeJS.ReadableStream) => {
+    const decoder = new StringDecoder('utf8')
+    source.on('data', (c: Buffer) => {
+      const text = decoder.write(c)
+      if (text !== '') push({ stream, text })
+    })
+    source.on('end', () => {
+      const text = decoder.end()
+      if (text !== '') push({ stream, text })
+    })
+  }
+  decoded('stdout', child.stdout)
+  decoded('stderr', child.stderr)
   child.on('error', err => push({ error: err }))
   child.on('close', (code, signal) => push({ end: { code, signal } }))
   child.stdin.end(request.input ?? '')
-  try {
-    for (;;) {
-      if (queue.length === 0) await new Promise<void>(r => (wake = r))
-      wake = null
-      const item = queue.shift()!
-      if ('error' in item) throw item.error
-      if ('end' in item) return item.end
-      yield item
+  const stop = (value: SpawnEnd): Result => {
+    kill()
+    const done: Result = { done: true, value }
+    finished ??= done
+    queue.length = 0
+    if (waiting) {
+      const w = waiting
+      waiting = null
+      w.resolve(done)
     }
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    return done
   }
+  const stream: AsyncGenerator<SpawnChunk, SpawnEnd> = {
+    next: () =>
+      finished
+        ? Promise.resolve(finished)
+        : new Promise<Result>((resolve, reject) => {
+            waiting = { resolve, reject }
+            pump()
+          }),
+    return: async value => stop((await value) ?? { code: null, signal: 'SIGKILL' }),
+    throw: async err => {
+      stop({ code: null, signal: 'SIGKILL' })
+      throw err
+    },
+    [Symbol.asyncIterator]() {
+      return stream
+    },
+    async [Symbol.asyncDispose]() {
+      stop({ code: null, signal: 'SIGKILL' })
+    },
+  }
+  return stream
 }
 
 /** Node ports. `root` is only the plugin root it reports. */
-export function nodePorts(options: { pluginRoot?: string; sessionId?: string } = {}): TestPorts {
+export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cwd?: string } = {}): TestPorts {
   const storeMap = new Map<string, unknown>()
   const logs: string[] = []
   const timers = new Set<() => void>()
@@ -179,6 +243,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string } =
       delete: async key => void storeMap.delete(key),
     },
     sessionId: async () => options.sessionId ?? 'test-session',
+    cwd: async () => options.cwd ?? process.cwd(),
     pluginRoot: options.pluginRoot ?? join(import.meta.dir, '..', '..', '..'),
     log: text => void logs.push(text),
     registerTool: async () => {},

@@ -110,13 +110,13 @@ async function commonDirOf(p: Ports, dir: string): Promise<string | null> {
 }
 
 /**
- * The checkout the session works in: `git rev-parse --show-toplevel` with no
- * cwd, which is the session's working directory (it moves with EnterWorktree).
- * Everything after uses the absolute path. It must be a checkout of the
- * repository litterDir belongs to.
+ * The checkout the session works in: `git rev-parse --show-toplevel` in the
+ * session's working directory (it moves with EnterWorktree). Everything after
+ * uses the absolute path. It must be a checkout of the repository litterDir
+ * belongs to.
  */
 async function sessionCheckout(p: Ports, litterDir: string): Promise<{ ok: true; checkout: string } | RecordError> {
-  const top = await p.run(['git', 'rev-parse', '--show-toplevel'])
+  const top = await p.run(['git', 'rev-parse', '--show-toplevel'], { cwd: await p.cwd() })
   if (top.code !== 0 || top.stdout.trim() === '') {
     return fail("litter: the session's directory isn't inside a git checkout; start the run from the repository's checkout")
   }

@@ -84,6 +84,8 @@ export interface Ports {
   }
   /** The current session id. It changes at /clear and when a session is backgrounded. */
   sessionId(): Promise<string>
+  /** The session's working directory, absolute (`$.session.cwd()`). It moves with EnterWorktree. */
+  cwd(): Promise<string>
   /** The plugin's own folder, absolute. */
   pluginRoot: string
   /** One line in the debug log (`claude --debug`), prefixed `litter: `. */

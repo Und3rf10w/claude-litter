@@ -52,6 +52,7 @@ function enginePorts($: EngineInterface): Ports {
       delete: key => $.store.delete(key),
     },
     sessionId: () => $.session.id(),
+    cwd: () => $.session.cwd(),
     pluginRoot: $.plugin.root,
     log: text => $.ui.log(`litter: ${text}`, { to: 'debug' }),
     registerTool: async spec => {

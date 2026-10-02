@@ -11,8 +11,8 @@ import { RECORD_MAX_BYTES } from './records/core'
 import { ledgerDir, ledgerFileName } from './layout'
 import { remove, serial, sha256 } from './fsx'
 
-/** `$.store` key for a run's ledger head. */
-export const headKey = (run: string) => `litter.head.${run}`
+/** `$.store` key for a run's ledger head, by its absolute runDir: the store is shared by every project. */
+export const headKey = (runDir: string) => `litter.head.${runDir}`
 
 export type Head = { seq: number; sha: string }
 
@@ -79,7 +79,7 @@ export function appendRecord<B>(p: Ports, runDir: string, input: AppendInput<B>)
     const n = bytes(text)
     if (n > RECORD_MAX_BYTES) throw new RecordTooLarge(n, largestField(input.body))
     await p.fs.write(`${ledgerDir(runDir)}/${ledgerFileName(rec.seq, rec.kind)}`, text)
-    await p.store.set(headKey(input.run), { seq: rec.seq, sha: await sha256(text) } satisfies Head)
+    await p.store.set(headKey(runDir), { seq: rec.seq, sha: await sha256(text) } satisfies Head)
     return rec
   })
 }
@@ -106,7 +106,7 @@ export type LedgerRead = {
  */
 export async function readLedger(p: Ports, runDir: string, run: string): Promise<LedgerRead> {
   const dir = ledgerDir(runDir)
-  const stored = (await p.store.get(headKey(run))) as Head | undefined
+  const stored = (await p.store.get(headKey(runDir))) as Head | undefined
   const names = (await p.fs.exists(dir))
     ? (await p.fs.list(dir)).filter(e => e.kind === 'file' && /^[0-9]{6}-.+\.json$/.test(e.name)).map(e => e.name).sort()
     : []
@@ -149,6 +149,6 @@ export async function readLedger(p: Ports, runDir: string, run: string): Promise
     tampered = { seq: records.length + 1, reason: `the ledger ends at ${records.length}, but its head is ${stored.seq}` }
   }
   const head: Head | null = records.length > 0 && prevSha ? { seq: records.length, sha: prevSha } : null
-  if (!tampered && head && (!stored || stored.seq < head.seq)) await p.store.set(headKey(run), head)
+  if (!tampered && head && (!stored || stored.seq < head.seq)) await p.store.set(headKey(runDir), head)
   return { records, head, tampered, brokenTail }
 }

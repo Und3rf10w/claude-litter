@@ -12,7 +12,8 @@ import { agentPolicyPath, outPath, proposalPath, runDir, runJsonPath } from '../
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
 import { sha256 } from '../../hooks/fsx'
-import { bareBacktickPaths, KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, recordGeneric, wikiPath } from '../../hooks/records/design'
+import { bareBacktickPaths, KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, recordGeneric } from '../../hooks/records/design'
+import { wikiPath } from '../../hooks/layout'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 const RUN = '20261002-design'

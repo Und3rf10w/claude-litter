@@ -8,7 +8,7 @@ import type { Author, Caller, RecordCtx, RecordError, RecordHandler, RecordInput
 import type { RunJson } from './run'
 import { fail } from './core'
 import { appendRecord, readLedger } from '../ledgercore'
-import { agentPolicyPath, proposalPath, runDir, runJsonPath } from '../layout'
+import { agentPolicyPath, proposalPath, runDir, runJsonPath, wikiPath } from '../layout'
 import { atomicWrite, atomicWriteJson, readJson, serial, sha256 } from '../fsx'
 import { safeFileName, writeOut } from '../output'
 import { agentInfo } from '../policy'
@@ -91,8 +91,6 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
 export const authorOf = (caller: Caller): Author =>
   caller.agentId === null ? { source: 'launcher' } : { source: 'agent', agentId: caller.agentId, agentType: caller.agentType }
 
-/** `<litterDir>/WIKI.md` (section 10, "On disk"). layout.ts has no entry for it yet. */
-export const wikiPath = (litterDir: string) => `${litterDir}/WIKI.md`
 
 const RULE_MAX_BYTES = 8 * 1024
 const GATE_ID = /^G[0-9]+$/

@@ -45,6 +45,9 @@ export const summaryPath = (runDir: string) => join(runDir, 'summary.md')
 export const proposalPath = (runDir: string, version: string) => join(runDir, 'proposals', `${version}.md`)
 export const verdictsDir = (runDir: string) => join(runDir, 'verdicts')
 
+/** `<litterDir>/WIKI.md` (plan section 10, "On disk"). */
+export const wikiPath = (litterDir: LitterDir) => join(litterDir, 'WIKI.md')
+
 // Lock lease (plan section 9, "Launch preconditions", step 0).
 export const leasePath = (litterDir: LitterDir, oid: string) => join(litterDir, `lock-lease-${oid}.json`)
 

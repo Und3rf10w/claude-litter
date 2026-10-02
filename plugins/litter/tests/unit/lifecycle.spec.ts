@@ -144,6 +144,7 @@ async function world(): Promise<World> {
   const p: TestPorts = {
     ...base,
     sessionId: async () => sid.value,
+    cwd: async () => dir,
     run: (argv, init) =>
       argv[0] === 'jq'
         ? Promise.resolve({ code: 0, stdout: 'jq-1.7.1\n', stderr: '', truncated: false })
