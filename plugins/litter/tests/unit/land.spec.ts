@@ -449,6 +449,10 @@ describe('land: each precondition refused on its own, nothing moved', () => {
     expect(await bad({ gate: 'baseline', verify_id: verifyId })).toMatchObject({ ok: false, field: 'gate' })
     expect(await bad({ gate: 'integration', verify_id: verifyId })).toMatchObject({ ok: false, field: 'gate' })
     expect(await bad({ gate: 'G7', verify_id: verifyId })).toMatchObject({ ok: false, field: 'gate' })
+    // A fanout's gate lands only in a fanout run (fanoutland.spec.ts has that path).
+    const fanout = await bad({ gate: 'fanout', verify_id: verifyId })
+    expect(fanout).toMatchObject({ ok: false, field: 'gate', allowed: ['G1', 'G2'] })
+    expect(fanout.error).toMatch(/lands only in a fanout run/)
     expect(await bad({ gate: 'G1' })).toMatchObject({ ok: false, field: 'verify_id' })
     expect(await bad({ gate: 'G1', verify_id: 7 })).toMatchObject({ ok: false, field: 'verify_id' })
     expect((await recordLand(ctx(RELAY), { kind: 'land', run: '20261002-other', gate: 'G1', verify_id: verifyId })) as RecordError).toMatchObject({ ok: false, field: 'run' })

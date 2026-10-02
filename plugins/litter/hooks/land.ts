@@ -1,7 +1,9 @@
 // The `land` record: commit exactly the verified tree with commit-tree, move
 // the run's branch with a compare-and-swap, keep your index with the two-tree
 // merge, idempotent per verify_id, with crash recovery by trailer (plan
-// sections 7 and 9). Owner: phase 1b, work package C.
+// sections 7 and 9). Owner: phase 1b, work package C. A fanout's land (gate
+// `fanout`), which moves the checkout's index and files to the integration
+// tip, and its recovery by the intent's commit: phase 2b, package G.
 //
 // Every git argv here is built from run.json's checked facts, the ledger's
 // trees and git's own answers. Nothing from the call becomes an argument: the
@@ -20,11 +22,14 @@ import type {
   LandIntentBody,
   LandReply,
 } from './records/execute'
+import type { IntegrateDoneBody } from './records/fanout'
 import { fail } from './records/core'
+import { FANOUT_GATE } from './records/fanout'
 import { appendRecord, readLedger } from './ledgercore'
-import { runJsonPath } from './layout'
+import { integrationBranch, runJsonPath } from './layout'
 import { readJson, serial } from './fsx'
 import { snapshot } from './snapshot'
+import { fanoutTasks, integrationWorktree, wholeResult } from './integrate'
 import {
   FIXED_GATES,
   MOD,
@@ -188,24 +193,12 @@ async function repair(p: Ports, checkout: string, intent: LandIntentBody): Promi
  *    or `land.blocked` with the paths when git refuses the repair;
  *  - anything else is refused with the facts (a `land.blocked`, once per fact).
  */
-async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
-  const { run, runDir, json } = f
-  const ledger = await readLedger(p, runDir, run)
-  if (ledger.tampered) {
-    return { problems: [`the run's ledger is tampered at record ${ledger.tampered.seq} (${ledger.tampered.reason})`] }
-  }
-  const listed = await listLanded(p, json)
-  if (!listed.ok) {
-    // A run that never began a land has nothing on its ref to account for (its branch may be gone since).
-    if (!ledger.records.some(r => r.kind.startsWith('land'))) return { problems: [] }
-    p.log(`reconcile ${run}: ${listed.error}`)
-    return { problems: [listed.error] }
-  }
-
+/** The lands the ledger knows: landed verify_ids, intents with no land or abandon, the last block per verify_id. */
+function landState(records: readonly StoredRecord[]): { landed: Set<string>; open: Map<string, LandIntentBody>; blocked: Map<string, LandBlockedBody> } {
   const landed = new Set<string>()
   const open = new Map<string, LandIntentBody>()
   const blocked = new Map<string, LandBlockedBody>()
-  for (const rec of ledger.records) {
+  for (const rec of records) {
     const v = (rec.body as { verify_id?: unknown }).verify_id
     if (typeof v !== 'string') continue
     if (rec.kind === 'land.intent') open.set(v, rec.body as LandIntentBody)
@@ -215,16 +208,94 @@ async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
     } else if (rec.kind === 'land.abandoned') open.delete(v)
     else if (rec.kind === 'land.blocked') blocked.set(v, rec.body as LandBlockedBody)
   }
+  return { landed, open, blocked }
+}
 
-  const problems: string[] = []
-  const append = <B>(kind: string, body: B) => appendRecord(p, runDir, { run, kind, by: MOD, body })
-  const refuseWith = async (body: LandBlockedBody): Promise<void> => {
+/** Records a block once per fact: the same reason and paths again add nothing. */
+function blocker(p: Ports, f: RunFacts, blocked: Map<string, LandBlockedBody>, problems: string[]) {
+  return async (body: LandBlockedBody): Promise<void> => {
     problems.push(body.reason)
     const last = blocked.get(body.verify_id)
     if (last && last.reason === body.reason && sameList(last.paths, body.paths)) return
-    await append('land.blocked', body)
+    await appendRecord(p, f.runDir, { run: f.run, kind: 'land.blocked', by: MOD, body })
     blocked.set(body.verify_id, body)
   }
+}
+
+/** The checkout repair refused: what's in the files now, and where the integration's result still is. */
+const checkoutRepairRefused = (why: string, ref: string): string =>
+  `the checkout repair (git read-tree -m -u) was refused: ${why}. These files hold the integration's content with your changes since; ${branchOf(ref)}-integration still has the result. Decide what to keep; the repair is retried at the next reconcile`
+
+/**
+ * A fanout's lands, reconciled by each intent's `commit`, never by trailers:
+ * the ref holds the integration tip, whose merges and task commits carry
+ * whatever messages their writers gave them (plan section 7, fanout.js step 5).
+ *  - the ref at the intent's `commit`: it landed (`land { recovered: true }`);
+ *  - the ref still at the intent's `old` (base): the checkout is repaired with
+ *    `read-tree -m -u <tree> HEAD` and the intent abandoned, or `land.blocked`
+ *    with the paths when git refuses;
+ *  - anything else is refused with the facts.
+ */
+async function reconcileFanout(p: Ports, f: RunFacts, records: readonly StoredRecord[]): Promise<ReconcileResult> {
+  const { run, runDir, json } = f
+  const { open, blocked } = landState(records)
+  const problems: string[] = []
+  const refuseWith = blocker(p, f, blocked, problems)
+  const append = <B>(kind: string, body: B) => appendRecord(p, runDir, { run, kind, by: MOD, body })
+  const tip = open.size > 0 ? await tipOf(p, json.checkout, json.ref) : null
+  for (const [v, intent] of open) {
+    if (typeof intent.commit === 'string' && OID.test(intent.commit) && tip === intent.commit) {
+      const body: LandBody = { gate: intent.gate, verify_id: v, commit: intent.commit, tree: intent.tree, old: intent.old, ref: json.ref, recovered: true }
+      // After the swap the repair is a no-op, and re-syncs a checkout that moved since.
+      const r = await repair(p, json.checkout, intent)
+      if (!r.ok) body.note = `recovered; the checkout repair left these alone: ${r.why}`
+      await append('land', body)
+      continue
+    }
+    if (tip === null || tip !== intent.old) {
+      await refuseWith({
+        gate: intent.gate,
+        verify_id: v,
+        reason: `the land of ${intent.gate} (verify ${v}) stopped part way, and ${branchOf(json.ref)} is at ${tip ?? 'nothing'}, neither ${intent.old} where it started nor ${intent.commit ?? 'the commit it was moving to'}; litter won't repair or retry it, so check the branch and the checkout yourself`,
+      })
+      continue
+    }
+    const r = await repair(p, json.checkout, intent)
+    if (r.ok) {
+      await append('land.abandoned', {
+        gate: intent.gate,
+        verify_id: v,
+        reason: 'the land stopped before the ref moved; reconcile put the checkout back to HEAD, and a retried land starts over',
+      } satisfies LandAbandonedBody)
+      continue
+    }
+    const body: LandBlockedBody = { gate: intent.gate, verify_id: v, reason: checkoutRepairRefused(r.why, json.ref) }
+    if (r.paths.length > 0) body.paths = r.paths
+    await refuseWith(body)
+  }
+  for (const problem of problems) p.log(`reconcile ${run}: ${problem}`)
+  return { problems }
+}
+
+async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
+  const { run, runDir, json } = f
+  const ledger = await readLedger(p, runDir, run)
+  if (ledger.tampered) {
+    return { problems: [`the run's ledger is tampered at record ${ledger.tampered.seq} (${ledger.tampered.reason})`] }
+  }
+  if (json.workflow === 'fanout') return reconcileFanout(p, f, ledger.records)
+  const listed = await listLanded(p, json)
+  if (!listed.ok) {
+    // A run that never began a land has nothing on its ref to account for (its branch may be gone since).
+    if (!ledger.records.some(r => r.kind.startsWith('land'))) return { problems: [] }
+    p.log(`reconcile ${run}: ${listed.error}`)
+    return { problems: [listed.error] }
+  }
+
+  const { landed, open, blocked } = landState(ledger.records)
+  const problems: string[] = []
+  const append = <B>(kind: string, body: B) => appendRecord(p, runDir, { run, kind, by: MOD, body })
+  const refuseWith = blocker(p, f, blocked, problems)
 
   // The commits are the record of what landed.
   const onRef = new Set<string>()
@@ -291,7 +362,7 @@ async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
       verify_id: v,
       reason:
         intent.mode === 'checkout'
-          ? `the checkout repair (git read-tree -m -u) was refused: ${r.why}. These files hold the integration's content with your changes since; ${branchOf(json.ref)}-integration still has the result. Decide what to keep; the repair is retried at the next reconcile`
+          ? checkoutRepairRefused(r.why, json.ref)
           : `the index repair (git read-tree -m -i) was refused: ${r.why}. Nothing changed; it's retried at the next reconcile`,
     }
     if (r.paths.length > 0) body.paths = r.paths
@@ -302,7 +373,11 @@ async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
   return { problems }
 }
 
-/** At session.start (through reconcileRuns) and before every land: finds lands the ledger missed by their trailers, abandons stale intents. */
+/**
+ * At session.start (through reconcileRuns) and before every land: finds lands
+ * the ledger missed (by their trailers, or a fanout's by its intent's commit),
+ * abandons stale intents.
+ */
 export function reconcileLands(p: Ports, runDir: string, run: string): Promise<ReconcileResult> {
   return serial(landKey(runDir), async () => {
     // Only execute and fanout land; a design or plan run has no branch to account for.
@@ -351,8 +426,18 @@ function findLast(records: readonly StoredRecord[], test: (r: StoredRecord) => b
 export const recordLand: RecordHandler = async (ctx, input) => {
   const facts = await loadRun(ctx, input)
   if ('ok' in facts) return facts
-  const ids = gateIds(facts.json)
   const gate = input.gate
+  // A fanout lands once, with gate `fanout`, and an execute run never does (plan section 7, fanout.js step 5).
+  if (facts.json.workflow === 'fanout') {
+    if (gate !== FANOUT_GATE) return fail(`litter: a fanout run lands with gate '${FANOUT_GATE}', citing the verifier's verify for gate integration`, 'gate', [FANOUT_GATE])
+    const verifyId = input.verify_id
+    if (typeof verifyId !== 'string' || verifyId === '') {
+      return fail("litter: 'verify_id' must be the verify_id the verifier's result cites, as your instruction gives it", 'verify_id')
+    }
+    return serial(landKey(facts.runDir), () => landFanout(ctx, facts, verifyId))
+  }
+  const ids = gateIds(facts.json)
+  if (gate === FANOUT_GATE) return fail(`litter: gate '${FANOUT_GATE}' lands only in a fanout run; run ${facts.run} is a ${facts.json.workflow} run, so name its plan gate`, 'gate', ids)
   if (typeof gate !== 'string' || gate === '') return fail("litter: 'gate' must name the plan gate to land, as your instruction gives it", 'gate', ids)
   if (FIXED_GATES.includes(gate)) {
     return fail(`litter: gate '${gate}' isn't landed by a land record; name the plan gate your instruction gives`, 'gate', ids)
@@ -494,4 +579,188 @@ async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string
     p.log(`land ${run} ${gate}: the land record failed (${message(err)}); reconcile recovers it from the commit's trailer`)
   }
   return landed(commit, note)
+}
+
+// ---------------------------------------------------------------------------
+// The fanout land (plan section 7, fanout.js step 5).
+
+/**
+ * Moves the checkout's index and files from base to the verified integration
+ * tip with git's two-tree merge (`read-tree -m -u`), then fast-forwards the
+ * run's ref to the tip itself with a compare-and-swap. The tip was made
+ * before the verify, so it carries no trailer: the intent records it as
+ * `commit`, and reconcile matches the ref against that.
+ */
+async function landFanout(ctx: RecordCtx, f: RunFacts, verifyId: string): Promise<RecordReply> {
+  const { p } = ctx
+  const { run, runDir, json } = f
+  const gate = FANOUT_GATE
+  const branch = branchOf(json.ref)
+  const base = json.base
+
+  const answer = async (reply: LandReply): Promise<LandReply> => {
+    await observe(ctx, { land_of: verifyId }, landFields(reply))
+    return reply
+  }
+  const refuse = (reason: string, retry: boolean) => answer({ ok: true, landed: false, reason, retry })
+  const landed = (commit: string, note?: string) =>
+    answer(note ? { ok: true, landed: true, commit, retry: false, reason: note } : { ok: true, landed: true, commit, retry: false })
+
+  const reconciled = await reconcileIn(p, f)
+  const ledger = await readLedger(p, runDir, run)
+  if (ledger.tampered) {
+    return refuse(`the run's ledger is tampered at record ${ledger.tampered.seq} (${ledger.tampered.reason}), so nothing more lands`, false)
+  }
+  const records = ledger.records
+
+  // Idempotent per verify_id: the first answer, and nothing moved.
+  const prior = findLast(records, r => r.kind === 'land' && r.body.verify_id === verifyId)
+  if (prior) {
+    const b = prior.body as LandBody
+    if (b.gate !== gate) return refuse(`verify ${verifyId} already landed gate ${b.gate}, not ${gate}`, false)
+    return landed(b.commit, b.note)
+  }
+  if (reconciled.problems.length > 0) return refuse(`reconcile found what it can't settle: ${reconciled.problems.join('; ')}`, false)
+  const closed = runClosed(records)
+  if (closed) return refuse(`run ${run} ${closed}, so nothing more lands`, false)
+  const earlier = lastLand(records)
+  if (earlier) return refuse(`run ${run} already landed ${earlier.commit} with verify ${earlier.verify_id}; a fanout lands once`, false)
+
+  // 1. A green verify for gate integration, cited by the agent that recorded it, and its latest for that gate and attempt.
+  const vRec = records.find(r => verifyBody(r)?.verify_id === verifyId)
+  const v = vRec ? verifyBody(vRec) : null
+  if (!vRec || !v) return refuse(`run ${run} has no verify ${verifyId}`, false)
+  if (v.gate !== 'integration') return refuse(`verify ${verifyId} is for gate ${v.gate}; a fanout lands on the verifier's verify for gate integration`, false)
+  if (!isGreen(v)) return refuse(`verify ${verifyId} isn't green (${notGreen(v)})`, false)
+  const recorder = vRec.by.source === 'agent' ? vRec.by.agentId : null
+  if (recorder === null) return refuse(`verify ${verifyId} wasn't recorded by an agent, so no verdict can cite it`, false)
+  const latest = findLast(records, r => {
+    const b = verifyBody(r)
+    return b !== null && r.by.source === 'agent' && r.by.agentId === recorder && b.gate === v.gate && b.attempt === v.attempt
+  })
+  const latestId = latest ? verifyBody(latest)?.verify_id : undefined
+  if (latestId !== verifyId) {
+    return refuse(`verify ${verifyId} isn't the latest its recorder made for integration attempt ${v.attempt} (that's ${latestId}), so it can't be cited`, false)
+  }
+
+  // 2. It ran on the integration's tree: integrate.done's, the integration tip's, and the integration worktree's still.
+  const doneRec = findLast(records, r => r.kind === 'integrate.done')
+  if (!doneRec) return refuse(`run ${run}'s integration hasn't finished (there's no integrate.done), so there's nothing to land`, false)
+  const done = doneRec.body as IntegrateDoneBody
+  if (v.tree_after !== done.tree) return refuse(`verify ${verifyId} ran on tree ${v.tree_after}, not the integration's ${done.tree}`, false)
+  const ib = integrationBranch(run)
+  const ibTip = await tipOf(p, json.checkout, `refs/heads/${ib}`)
+  if (ibTip !== done.tip) return refuse(`${ib} is at ${ibTip ?? 'nothing'}, not the integration tip ${done.tip} the integration recorded`, false)
+  const tipTree = (await git(p, json.checkout, ['rev-parse', '--verify', '-q', `${done.tip}^{tree}`])).stdout.trim()
+  if (tipTree !== done.tree) return refuse(`the integration tip ${done.tip} has tree ${tipTree || 'none'}, not ${done.tree}`, false)
+  // The ref only ever fast-forwards: the tip descends from base.
+  const descends = await git(p, json.checkout, ['merge-base', '--is-ancestor', base, done.tip])
+  if (descends.code !== 0) return refuse(`the integration tip ${done.tip} doesn't descend from the run's base ${base}`, false)
+  const wt = integrationWorktree(records, run)
+  if (!wt) return refuse(`run ${run} has no integration worktree recorded`, false)
+  let there: Awaited<ReturnType<typeof snapshot>>
+  try {
+    there = await snapshot(p, wt.path)
+  } catch (err) {
+    return refuse(`the integration worktree ${wt.path} can't be snapshotted: ${message(err)}`, false)
+  }
+  if (there.tree !== done.tree || there.dirty_submodules.length > 0) {
+    return refuse(`the integration worktree ${wt.path} changed after the integration, so it isn't the tree verify ${verifyId} judged`, false)
+  }
+
+  // 3. Everything merged: nothing blocked, nothing skipped, every writer merged.
+  if (done.blocked.length > 0) return refuse(`the integration was refused: ${done.blocked.join('; ')}`, false)
+  const skipped = records.filter(r => r.kind === 'integrate.skip').map(r => String(r.body.task))
+  if (skipped.length > 0) return refuse(`a fanout lands all or nothing, and these tasks weren't merged: ${skipped.join(', ')}`, false)
+  const tasks = fanoutTasks(json)
+  const merged = new Set(records.filter(r => r.kind === 'integrate.merge').map(r => r.body.task))
+  const unmerged = tasks.filter(t => t.writes && !merged.has(t.id)).map(t => t.id)
+  if (unmerged.length > 0) return refuse(`these writing tasks have no merge: ${unmerged.join(', ')}`, false)
+
+  // 4. The verifier's verdict on that verify_id, from the same agent, passing every task of the run.
+  const verdict = findLast(records, r => r.kind === 'verdict' && r.body.verify_id === verifyId)
+  if (!verdict) return refuse(`no verdict cites verify ${verifyId}`, false)
+  if (agentOf(verdict) !== recorder) return refuse(`the verdict citing verify ${verifyId} isn't from the agent that recorded it`, false)
+  const judged = Array.isArray(verdict.body.tasks) ? (verdict.body.tasks as { id?: unknown; pass?: unknown }[]) : []
+  const notPassed = tasks.filter(t => !judged.some(j => j !== null && typeof j === 'object' && j.id === t.id && j.pass === true)).map(t => t.id)
+  if (notPassed.length > 0) return refuse(`the verdict on verify ${verifyId} doesn't pass every task: ${notPassed.join(', ')}`, false)
+
+  // 5. The whole-result check, again, on the tip being landed.
+  const whole = await wholeResult(p, f, records, done.tip)
+  if (whole.blocked.length > 0) return refuse(`the combined change fails the ownership check: ${whole.blocked.join('; ')}`, false)
+
+  // 6. The destination: on the run's branch, at base, and unchanged since the launch (section 7, fanout.js step 5).
+  const head = await headRef(p, json.checkout)
+  if (head !== json.ref) {
+    return refuse(`the checkout is on ${head ? branchOf(head) : 'a detached HEAD'}, not ${branch}; switch back (git switch ${branch}) and land again`, false)
+  }
+  const at = await tipOf(p, json.checkout, json.ref)
+  if (at !== base) return refuse(`${branch} is at ${at ?? 'nothing'}, not the run's base ${base}; something else moved it`, false)
+  let now: Awaited<ReturnType<typeof snapshot>>
+  try {
+    now = await snapshot(p, json.checkout)
+  } catch (err) {
+    return refuse(`the snapshot before the land failed: ${message(err)}`, false)
+  }
+  if (now.dirty_submodules.length > 0) {
+    return refuse(`submodules have uncommitted changes (${now.dirty_submodules.join(', ')}); commit, stash or discard inside them, then land again`, false)
+  }
+  const baseTree = (await git(p, json.checkout, ['rev-parse', '--verify', '-q', `${base}^{tree}`])).stdout.trim()
+  if (now.tree !== baseTree) {
+    return refuse(
+      `the checkout changed after the launch (it no longer snapshots to base ${base}), so moving the integration's files in would overwrite or mix in those changes; commit, stash or discard them, then land again`,
+      true,
+    )
+  }
+
+  // The steps, in order.
+  const tip = done.tip
+  const intent: LandIntentBody = { gate, verify_id: verifyId, tree: done.tree, old: base, ref: json.ref, mode: 'checkout', commit: tip }
+  try {
+    await appendRecord(p, runDir, { run, kind: 'land.intent', by: MOD, body: intent })
+  } catch (err) {
+    return refuse(`the land's intent couldn't be recorded (${message(err)}), so nothing was done`, false)
+  }
+  const abandon = async (reason: string): Promise<LandReply> => {
+    try {
+      await appendRecord(p, runDir, { run, kind: 'land.abandoned', by: MOD, body: { gate, verify_id: verifyId, reason } satisfies LandAbandonedBody })
+    } catch (err) {
+      p.log(`land ${run} ${gate}: land.abandoned not recorded (${message(err)}); reconcile settles it`)
+    }
+    return refuse(reason, false)
+  }
+
+  // The checkout's index and files, by git's two-tree merge under its own lock. A
+  // refresh first, so a file whose content is unchanged doesn't read as modified.
+  await git(p, json.checkout, ['update-index', '-q', '--refresh'])
+  const moved = await git(p, json.checkout, ['read-tree', '-m', '-u', base, tip])
+  if (moved.code !== 0) {
+    return abandon(
+      `git refused to move the checkout to the integration, so nothing moved: ${refusal(moved)}. A file you changed or staged on the integration's paths, an untracked file in the way, a held index.lock or unmerged entries stop it; resolve that, then land again`,
+    )
+  }
+
+  // Compare-and-swap on the run's ref, never HEAD.
+  const swap = await git(p, json.checkout, ['update-ref', '-m', `litter: land ${gate} of ${run}`, json.ref, tip, base])
+
+  // Re-sync the checkout to whatever HEAD is now, whatever the swap did.
+  const notes: string[] = []
+  const resync = await git(p, json.checkout, ['read-tree', '-m', '-u', tip, 'HEAD'])
+  const headNow = await headRef(p, json.checkout)
+  if (headNow !== json.ref) notes.push(`the checkout moved to ${headNow ? branchOf(headNow) : 'a detached HEAD'} during the land, and its files were re-synced to it`)
+  if (resync.code !== 0) notes.push(`the re-sync to HEAD left these alone: ${refusal(resync)}`)
+  if (swap.code !== 0) {
+    const tipNow = await tipOf(p, json.checkout, json.ref)
+    return abandon([`${branch} moved during the land (it's at ${tipNow ?? 'nothing'}), so nothing landed`, ...notes].join('; '))
+  }
+
+  const note = notes.length > 0 ? notes.join('; ') : undefined
+  const body: LandBody = { gate, verify_id: verifyId, commit: tip, tree: done.tree, old: base, ref: json.ref }
+  if (note) body.note = note
+  try {
+    await appendRecord(p, runDir, { run, kind: 'land', by: MOD, body })
+  } catch (err) {
+    p.log(`land ${run} ${gate}: the land record failed (${message(err)}); reconcile recovers it from the intent's commit`)
+  }
+  return landed(tip, note)
 }
