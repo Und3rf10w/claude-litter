@@ -6,17 +6,30 @@
 // is the instance's own, made at its spawn after the parent's task is fixed
 // (spawn.ts, R12), so text in a task can't close or forge a block.
 //
-// Contract owner: phase 2b-1, package C.
+// Contract owner: phase 2b-1, package C; the repair budget line is phase
+// 2b-2's (package Y).
 
-/** Slots: {nonce}, {node}, {n}, {swarm}, {parent_node}, {parent_route}, {cwd}, {branch} (unset drops its line), {spawns_left}, {token}. */
+/**
+ * Slots: {nonce}, {node}, {n}, {swarm}, {parent_node}, {parent_route}, {cwd},
+ * {branch} (unset drops its line), {spawns_left}, {budget} (REPAIR_BUDGET_LEFT
+ * for a repair swarm; unset drops its line), {token}.
+ */
 export const SWARM_INSTANCE = `<instance id="{nonce}">
 You are {node} #{n} in swarm {swarm}.
 Parent: {parent_node}. {parent_route}
 Directory: {cwd}
 Branch: {branch}
 You may still start: {spawns_left}
+Repair budget left: {budget}
 Bind token: {token}
 </instance id="{nonce}">`
+
+/**
+ * {budget} for a repair swarm (plan 15.11, "The repair budget"), at this
+ * spawn, after its own count. Slots: {rounds_left}, {rounds}, {agents_left}, {agents}.
+ */
+export const REPAIR_BUDGET_LEFT =
+  "{rounds_left} of {rounds} rounds (a round is the critic's verdict on a new verify), {agents_left} of {agents} agents (the workers and agents the swarm's nodes start). Past either, litter refuses the next spawn or land: report blocked to your parent, saying what you need."
 
 /** Slots: {nonce}, {rules} (RULES_NONE until phase 3 selects them). */
 export const SWARM_RULES = `<rules id="{nonce}">

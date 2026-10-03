@@ -197,18 +197,23 @@ const expectedTip = (st: IntegrationState, base: string): string => st.merges.at
  * --no-renames <base> <tip>` is owned by a merged task, and every recorded
  * worktree with commits past base or uncommitted changes has a binding (a
  * superseded one counts). `blocked` names each failure.
+ *
+ * `owners: 'all'` (a repair swarm's land, 2b-2): a path may be owned by any
+ * task of the run with an owned path, merged or not, since a repair may
+ * finish a task its writer didn't. A path no task owns still blocks.
  */
 export async function wholeResult(
   p: Ports,
   f: RunFacts,
   records: readonly StoredRecord[],
   tip: string,
+  opts: { owners?: 'merged' | 'all' } = {},
 ): Promise<{ changed: ChangedPath[]; blocked: string[] }> {
   const { run, json } = f
   const tasks = fanoutTasks(json)
   const st = stateOf(records)
   const mergedIds = new Set(st.merges.map(m => m.body.task))
-  const merged = tasks.filter(t => mergedIds.has(t.id))
+  const merged = opts.owners === 'all' ? tasks.filter(t => t.files.length > 0) : tasks.filter(t => mergedIds.has(t.id))
   const changed: ChangedPath[] = []
   const blocked: string[] = []
 

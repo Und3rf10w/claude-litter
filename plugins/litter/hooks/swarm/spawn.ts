@@ -1,7 +1,10 @@
 // WP-L: the spawn check on agent.spawn (15.4, "The spawn check"): check and
 // reserve in one synchronous step, the pending marker, `own` worktrees, the
 // instance and rules blocks, the rewrite, the binding before the parent sees
-// the result, and a node's non-swarm children.
+// the result, and a node's non-swarm children. For a repair swarm (2b-2,
+// package Y), its budget: a worker or child spawn is counted against
+// `repairAgents` in the step that reserves and given back on undo; past the
+// agents or the rounds it's refused (gate.ts).
 //
 // The check applies when `subagentType` is a live swarm's type, or the
 // spawning loop is a bound node or a node's child. Anything else passes to
@@ -25,6 +28,7 @@ import {
   PARENT_LEAD,
   PARENT_ROUTE_ORCHESTRATOR,
   PARENT_ROUTE_WORKER,
+  REPAIR_BUDGET_LEFT,
   RULES_NONE,
   SPAWNS_LEFT_ITEM,
   SPAWNS_LEFT_NONE,
@@ -34,6 +38,7 @@ import {
 } from '../prompts/swarm-instance'
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
 import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
+import { budgetCounted, budgetLeft, budgetRefusal, countsAgainstBudget } from './gate'
 import * as state from './state'
 
 type Spawn = Parameters<PortHook<SpawnHook>>[1]
@@ -101,6 +106,8 @@ function planSpawn(e: Spawn, root: string, at: number): Plan | string {
   } catch (err) {
     return errText(err)
   }
+  // A repair swarm's worker or child counts against its agents from here, in the step that reserved (decision 7).
+  if (countsAgainstBudget(plan.s, plan.kind)) state.noteSpawned(plan.s.name, plan.key)
   return plan
 }
 
@@ -134,6 +141,8 @@ function planNode(e: Spawn, hit: { swarm: string; node: string }, parentB: NodeB
   }
   const cap = capRefusal(s)
   if (cap) return cap
+  const budget = budgetRefusal(s.name, node.kind)
+  if (budget) return budget
 
   // Its directory: own per instance, inherit its parent's, else the node's from Launch.
   const wt = node.worktree ?? 'inherit'
@@ -186,6 +195,8 @@ function planChild(e: Spawn, parentB: NodeBinding): Plan | string {
   if (isolated(e)) return NO_ISOLATION
   const cap = capRefusal(s)
   if (cap) return cap
+  const budget = budgetRefusal(s.name, 'child')
+  if (budget) return budget
   const scope = scopeOf(node, of.cwd)
   if (scope) {
     const clash = scopeConflict(s.name, scope, delegatorsOf(parentB.agentId))
@@ -221,6 +232,13 @@ function spawnsLeft(plan: Plan): string {
   return plan.kind === 'worker' ? `${items}. ${SPAWNS_LEFT_WORKER_HOLD}` : items
 }
 
+/** `{budget}`: what a repair swarm has left, this spawn counted; null (the line goes) for any other swarm. */
+function budgetText(s: LiveSwarm): string | null {
+  const left = budgetLeft(s)
+  if (!left) return null
+  return renderSlots(REPAIR_BUDGET_LEFT, { rounds_left: String(left.roundsLeft), rounds: String(left.rounds), agents_left: String(left.agentsLeft), agents: String(left.agents) })
+}
+
 /** The parent as the block names it. */
 const parentName = (plan: Plan): string =>
   plan.parent === null ? PARENT_LEAD : plan.parent.kind === 'worker' ? `${plan.parent.node} #${plan.parent.n}` : plan.parent.node
@@ -242,6 +260,7 @@ function promptFor(plan: Plan, dir: string, branch: string | null, token: string
     cwd: dir,
     branch: branch === null ? null : branch.replace(/^refs\/heads\//, ''),
     spawns_left: spawnsLeft(plan),
+    budget: budgetText(plan.s),
     token,
   })
   const rules = renderSlots(SWARM_RULES, { nonce, rules: RULES_NONE })
@@ -293,6 +312,13 @@ export const swarmSpawn: PortHook<SpawnHook> = async (p, e, next) => {
   if (!hit && !parentB) return next(e)
   const dir = session().litterDir
   if (!dir) return deny('this session has no litter directory, so it runs no swarm agents')
+  // A repair swarm's budget, caught up from its ledgers before this process's first check of it (gate.ts).
+  const swarm = hit?.swarm ?? parentB!.swarm
+  try {
+    await budgetCounted(p, dir, swarm)
+  } catch (err) {
+    return deny(`swarm ${swarm}'s repair budget couldn't be counted, so it starts nothing: ${errText(err)}`)
+  }
   const root = await litterWorktreeRoot(p, dir)
   const at = await p.now()
 
@@ -308,6 +334,8 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
   /** Releases the place, the marker and a fresh worktree; denies with `reason` (the engine's own deny passes as it is). */
   const undo = async (reason: string, engine = false): Promise<SpawnResult> => {
     state.release(key)
+    // A spawn that never started gives its count back (decision 7); one that started keeps it, even unbound.
+    state.unnoteSpawned(s.name, key)
     await remove(p, marker).catch(err => p.log(`swarm ${s.name}: the pending marker ${marker} wasn't removed: ${errText(err)}`))
     if (made) await removeFresh(p, litterDir, s, made)
     return engine ? { deny: reason } : deny(reason)
