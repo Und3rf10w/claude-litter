@@ -160,6 +160,23 @@ case_not_a_role() {
   assert_deny 'is not a role of run 20261002-test'
 }
 
+# A litter: type that isn't a litter role, such as the one fanout dropped
+# (plan 15.11), in a fanout run: every tool is denied, its result and the
+# record tool too, whatever its binding says.
+case_unknown_litter_type() {
+  project >/dev/null
+  fanout_policy
+  bind a1 litter:merger
+  write_call litter:merger "$T_DIR/project/a.py" Edit | run_hook guard.sh
+  assert_deny 'litter:merger is not a role of run 20261002-test; refusing'
+  bash_call litter:merger 'git status' | run_hook guard.sh
+  assert_deny 'is not a role of run 20261002-test'
+  for uk_tool in Read StructuredOutput mcp__litter__record; do
+    call litter:merger "$uk_tool" '{}' | run_hook guard.sh
+    assert_deny 'is not a role of run 20261002-test'
+  done
+}
+
 case_swarm_node_refused() {
   setup_executor
   bind a1 litter:sw-a-lead
@@ -176,8 +193,8 @@ case_unbound() {
 
 case_bound_to_other_type() {
   setup_executor
-  call litter:integrator Read '{"file_path":"/x"}' | run_hook guard.sh
-  assert_deny 'belongs to litter:executor, not to litter:integrator'
+  call litter:verifier Read '{"file_path":"/x"}' | run_hook guard.sh
+  assert_deny 'belongs to litter:executor, not to litter:verifier'
 }
 
 case_bind_unparsable() {
@@ -283,45 +300,6 @@ case_inflight_denies_writes() {
   setup_executor '.run.inflight = "land"'
   write_call litter:executor "$T_DIR/project/a.py" | run_hook guard.sh
   assert_deny 'a land is in flight for this checkout'
-}
-
-case_integrator_scope() {
-  project >/dev/null
-  mkdir -p "$T_DIR/integration" "$T_DIR/project/src"
-  policy ".run.roots.integration = \"$(cd -P "$T_DIR/integration" && pwd -P)\""
-  bind a1 litter:integrator
-  write_call litter:integrator "$T_DIR/integration/a.py" Edit | run_hook guard.sh
-  assert_pass
-  write_call litter:integrator "$T_DIR/project/src/a.py" Edit | run_hook guard.sh
-  assert_deny 'litter:integrator writes only inside'
-}
-
-case_integrator_no_worktree() {
-  project >/dev/null
-  policy
-  bind a1 litter:integrator
-  write_call litter:integrator "$T_DIR/project/a.py" | run_hook guard.sh
-  assert_deny 'run 20261002-test has no integration worktree yet'
-  bash_call litter:integrator 'git -C /tmp status' | run_hook guard.sh
-  assert_deny 'has no integration worktree yet'
-  call litter:integrator Read '{"file_path":"/tmp/x"}' | run_hook guard.sh
-  assert_deny 'has no integration worktree yet'
-  call litter:integrator StructuredOutput '{"status":"blocked"}' | run_hook guard.sh
-  assert_pass
-}
-
-case_integrator_no_index_writes() {
-  project >/dev/null
-  mkdir -p "$T_DIR/integration"
-  i=$(cd -P "$T_DIR/integration" && pwd -P)
-  policy ".run.roots.integration = \"$i\""
-  bind a1 litter:integrator
-  bash_call litter:integrator "git -C $i merge --no-ff litter/20261002-test-w1" | run_hook guard.sh
-  assert_deny 'git merge is denied'
-  bash_call litter:integrator "git -C $i add a.py" | run_hook guard.sh
-  assert_deny 'git add'
-  bash_call litter:integrator "git -C $i commit -m x" | run_hook guard.sh
-  assert_deny 'git commit is denied'
 }
 
 # --- a fanout writer (section 7, fanout.js step 2) ---------------------------
@@ -521,6 +499,7 @@ t "a stopping run's agents are denied every tool" case_stopping
 t "after a lost isolation context, every call is denied" case_isolation_lost_flag
 t "with no run active, a litter role is denied" case_no_run
 t "a role the policy doesn't list is denied" case_not_a_role
+t "a litter type that isn't a litter role is denied every tool, its result too" case_unknown_litter_type
 t "a swarm node is refused in this build" case_swarm_node_refused
 t "an unbound litter agent is denied every tool" case_unbound
 t "an agent bound as another role is denied" case_bound_to_other_type
@@ -537,9 +516,6 @@ t "a read-only role's Write and Edit are denied" case_readonly_write_denied
 t "an executor writes inside the checkout, new folders and relative paths too" case_executor_writes_checkout
 t "an executor's write outside the checkout is denied" case_executor_writes_outside
 t "writes wait while a land is in flight" case_inflight_denies_writes
-t "an integrator writes only in the integration worktree" case_integrator_scope
-t "an integrator with no integration worktree is denied every tool but its result" case_integrator_no_worktree
-t "an integrator merges, stages and commits nothing" case_integrator_no_index_writes
 t "an unbound fanout writer is denied every tool but StructuredOutput" case_writer_unbound
 t "a bound fanout writer writes only its owned paths, resolved" case_writer_owned_writes
 t "a bound fanout writer stages and commits in its own worktree" case_writer_commits

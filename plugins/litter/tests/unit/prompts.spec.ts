@@ -15,14 +15,12 @@ import {
   BIND_A,
   BIND_B,
   check,
-  conflict,
   done,
   landedOk,
   merged,
   NONCE,
   nonceTags,
   researched,
-  resolvedOk,
   runFanout,
   TASK_A,
   TASK_B,
@@ -80,9 +78,14 @@ describe('tags', () => {
   })
 
   test('the fanout calls match the prompts doc', () => {
-    expect([...ROLE_TAGS.verifier!].sort()).toEqual(['base', 'changed', 'contract', 'integrator', 'rules', 'tasks', 'where'])
-    expect([...ROLE_TAGS.integrator!].sort()).toEqual(['authorized', 'conflict', 'contract', 'rules', 'tasks', 'where'])
+    expect([...ROLE_TAGS.verifier!].sort()).toEqual(['base', 'changed', 'contract', 'rules', 'tasks', 'where'])
     expect([...ROLE_TAGS.researcher!].sort()).toEqual(['authorized', 'contract', 'rules', 'task'])
+  })
+
+  test('the verifier looks hardest at the seams between tasks', () => {
+    const text = ROLE_PROMPTS.verifier
+    expect(text).toContain('Look hardest at the seams between tasks.')
+    expect(text).toContain('an API or a data shape one task changes and another consumes')
   })
 
   test('every execute and fanout role is listed', () => {
@@ -93,7 +96,7 @@ describe('tags', () => {
 
 // ---------------------------------------------------------------------------
 // The fanout's calls against its roles' prompts (WP-H): workflows/fanout.js run
-// through a conflict, so every fanout role is called once at least.
+// through a land, so every fanout role is called once at least.
 
 const fanoutRun = () =>
   runFanout({
@@ -102,9 +105,7 @@ const fanoutRun = () =>
       'write:A': done(['a/hello.txt']),
       'write:B': done(['b/world.txt']),
       'research:R': researched,
-      integrate: conflict('B', ['A']),
-      'integrator:B': resolvedOk,
-      'integrate#2': merged(['A', 'B']),
+      integrate: merged(['A', 'B']),
       verifier: check(['A', 'B', 'R']),
       'land:fanout': landedOk,
     },
@@ -124,7 +125,7 @@ describe('the fanout calls', () => {
         expect({ call: c.label, tag, named: ROLE_PROMPTS[role].includes(`<${tag}>`) }).toEqual({ call: c.label, tag, named: true })
       }
     }
-    expect([...roles].sort()).toEqual(['executor', 'integrator', 'relay', 'researcher', 'verifier'])
+    expect([...roles].sort()).toEqual(['executor', 'relay', 'researcher', 'verifier'])
   })
 
   test('the tags read the same once prompt provenance indents every line', async () => {
@@ -224,6 +225,18 @@ describe('skills/fanout/SKILL.md', () => {
     for (const part of shellParts(text)) expect(part).not.toContain('${user_config.')
   })
 
+  test("when nothing lands, it says what's kept and names the manual routes; it promises no repair (plan 15.11)", () => {
+    const text = skillText()
+    expect(text).toContain('if a merge ever does, the run stops with the conflicted paths')
+    expect(text).toContain('nothing was thrown away')
+    for (const kept of ['the task branches', 'the integration worktree at its merged tip', "the integration verify's output", "the verifier's gaps"]) {
+      expect(text).toContain(kept)
+    }
+    expect(text).toContain('rerun the failed tasks as a new fanout')
+    expect(text).toContain('merge chosen passing task branches yourself')
+    expect(text).not.toMatch(/resolves conflicts|swarm/i)
+  })
+
   test('records run.start with the fields run.start takes, and launches litter:fanout by name', () => {
     const text = skillText()
     expect(text).toContain("{ kind: 'run.start', workflow: 'fanout', tasks, contract, verify, setup, linkDirs, authorized, mergeOrder, runRules }")
@@ -292,7 +305,7 @@ describe('the eval cases', () => {
   })
 
   test("allow the roles' tools and the record tool, which dontAsk would otherwise deny", () => {
-    const need = new Set(['Skill', 'ToolSearch', 'Workflow', ...(['executor', 'integrator', 'verifier', 'researcher', 'relay'] as const).flatMap(r => ROLE_TOOLS[r])])
+    const need = new Set(['Skill', 'ToolSearch', 'Workflow', ...(['executor', 'verifier', 'researcher', 'relay'] as const).flatMap(r => ROLE_TOOLS[r])])
     for (const dir of caseDirs()) {
       const allowed = readCase(dir).execution.allowed_tools as string[]
       for (const t of need) expect({ dir, tool: t, allowed: allowed.includes(t) }).toEqual({ dir, tool: t, allowed: true })

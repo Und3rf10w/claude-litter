@@ -205,21 +205,21 @@ export const merged = (ids: string[], extra: Record<string, unknown> = {}) => ({
   tip: 'c'.repeat(40),
   tree: 'd'.repeat(40),
   changed: [
-    { path: 'a/hello.txt', task: 'A', integrator_extra: false },
-    { path: 'b/world.txt', task: 'B', integrator_extra: false },
+    { path: 'a/hello.txt', task: 'A' },
+    { path: 'b/world.txt', task: 'B' },
   ],
   ...extra,
 })
-export const conflict = (task: string, mergedIds: string[]) => ({
+/** The mod's final answer for a merge that stopped: reachable only from a hand-written run.json (plan section 7, fanout.js step 3). */
+export const conflict = (task: string, mergedIds: string[], files = ['b/world.txt']) => ({
   integrate_id: 'i11',
   status: 'conflict',
   where: WHERE,
   base: BASE,
   merged: mergedIds,
   skipped: [],
-  conflict: { task, branch: `litter/${RUN}-w2`, files: ['b/world.txt'] },
+  conflict: { task, branch: `litter/${RUN}-w2`, files },
 })
-export const resolvedOk = { resolved: true, files: [{ path: 'b/world.txt', how: 'kept both lines, b/world.txt:1-2' }], unresolved: [], checks: ['sh check.sh: exit 0'] }
 export const check = (ids: string[], fail: string[] = []) => ({
   verify_id: VERIFY_ID,
   tasks: ids.map(id => ({ id, pass: !fail.includes(id), evidence: fail.includes(id) ? `${id}: b/world.txt:1 is empty` : `${id}: verify ${VERIFY_ID} exit 0`, gaps: fail.includes(id) ? ['b/world.txt:1 is empty'] : [] })),

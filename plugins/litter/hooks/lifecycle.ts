@@ -294,7 +294,6 @@ async function policyFor(
         litterCopies: [...new Set([litter, `${checkout}/.claude/litter`])],
         ruleDirs,
         worktrees: [],
-        integration: null,
       },
       setup: json.setup,
       linkDirs: [...json.linkDirs],

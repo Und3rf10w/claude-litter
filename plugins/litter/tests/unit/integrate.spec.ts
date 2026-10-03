@@ -8,11 +8,11 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fanoutSummary, markerLines, recordIntegrate } from '../../hooks/integrate'
+import { fanoutSummary, recordIntegrate } from '../../hooks/integrate'
 import { appendRecord, headKey, readLedger } from '../../hooks/ledgercore'
 import { normalizeOptions } from '../../hooks/options'
 import { outPath } from '../../hooks/layout'
-import { writePolicy, readPolicy } from '../../hooks/policy'
+import { writePolicy } from '../../hooks/policy'
 import type { Policy } from '../../hooks/hookfiles'
 import type { Caller, RecordCtx, RecordError, StoredRecord } from '../../hooks/records/core'
 import type { RunJson } from '../../hooks/records/run'
@@ -194,10 +194,10 @@ describe('integrate: clean merges', () => {
     expect(r.tip).toBe(tip)
     expect(r.tree).toBe((await git('rev-parse', `${tip}^{tree}`)).trim())
     expect(r.changed).toEqual([
-      { path: 'docs/c.md', task: 'c', integrator_extra: false },
-      { path: 'pkgA/a.ts', task: 'a', integrator_extra: false },
-      { path: 'pkgB/b.ts', task: 'b', integrator_extra: false },
-      { path: 'pkgB/more.ts', task: 'b', integrator_extra: false },
+      { path: 'docs/c.md', task: 'c' },
+      { path: 'pkgA/a.ts', task: 'a' },
+      { path: 'pkgB/b.ts', task: 'b' },
+      { path: 'pkgB/more.ts', task: 'b' },
     ])
     // The first-parent chain is the mod's merges only, each with two parents.
     const chain = (await git('log', '--first-parent', '--format=%P%x09%s', `${base}..${tip}`)).trim().split('\n')
@@ -231,35 +231,10 @@ describe('integrate: clean merges', () => {
     expect(await tipOf(IB)).toBe(tip)
   })
 
-  test('the integration branch coexists with the run branch, and policy.json names the integration worktree', async () => {
-    const policy: Policy = {
-      v: 1,
-      session: 'test-session',
-      litterDir,
-      run: {
-        run: RUN,
-        workflow: 'fanout',
-        runDir,
-        checkout: dir,
-        base,
-        runIds: [],
-        launching: false,
-        stopping: false,
-        inflight: null,
-        isolationLost: false,
-        roots: { checkout: dir, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [], integration: null },
-        setup: null,
-        linkDirs: [],
-        worktreeRoot: root,
-      },
-      roles: {},
-      swarm: null,
-    }
-    await writePolicy(p, litterDir, policy)
+  test('the integration branch coexists with the run branch', async () => {
     await writeRun(TASKS.filter(t => !t.writes))
     const r = await integrate()
     expect(r).toMatchObject({ status: 'merged', merged: [], skipped: [], tip: base, changed: [] })
-    expect((await readPolicy(p, litterDir))!.run!.roots.integration).toBe(integration)
     expect((await git('for-each-ref', '--format=%(refname)', 'refs/heads/litter/')).trim().split('\n').sort()).toEqual([REF, `refs/heads/${IB}`].sort())
     expect(await tipOf(REF)).toBe(base)
   })
@@ -305,8 +280,8 @@ describe('integrate: ownership', () => {
     const done = (await ofKind<IntegrateDoneBody>('integrate.done'))[0]!.body
     expect(done.blocked).toEqual(['stray.txt is owned by no task'])
     expect(done.changed).toEqual([
-      { path: 'pkgA/a.ts', task: 'a', integrator_extra: false },
-      { path: 'stray.txt', task: null, integrator_extra: false },
+      { path: 'pkgA/a.ts', task: 'a' },
+      { path: 'stray.txt', task: null },
     ])
     // The same answer again.
     expect(await integrate()).toEqual(r)
@@ -387,8 +362,9 @@ describe('integrate: what is merged, and what is skipped', () => {
   })
 })
 
-describe('integrate: conflicts', () => {
-  // Two tasks that both own shared.ts: run.start refuses that, so a conflict is built by writing run.json directly.
+describe('integrate: a conflict is final', () => {
+  // Two tasks that both own shared.ts: run.start refuses that, so a conflict is built by writing run.json directly
+  // (plan section 7, fanout.js step 3: "So task branches can't conflict").
   const OVERLAP: Task[] = [
     { id: 'a', title: 'A', text: 'a', writes: true, files: ['shared.ts', 'pkgA/'] },
     { id: 'b', title: 'B', text: 'b', writes: true, files: ['shared.ts', 'pkgB/'] },
@@ -404,85 +380,47 @@ describe('integrate: conflicts', () => {
     return { r, b }
   }
 
-  test('stops at the conflict with its files, leaves the merge in progress, and answers the same until something changes', async () => {
+  test('recorded with its task, branch and paths, answered as conflict, and the merge left in progress', async () => {
     const { r, b } = await conflicted()
     expect(r.status).toBe('conflict')
     expect(r.conflict).toEqual({ task: 'b', branch: b.branch, files: ['shared.ts'] })
     expect(r.merged).toEqual(['a'])
+    expect(r.skipped).toEqual([])
     expect(r.where).toBe(integration)
-    const rec = (await ofKind<IntegrateConflictBody>('integrate.conflict'))[0]!
-    expect(r.integrate_id).toBe(`i${rec.seq}`)
-    expect(rec.body).toMatchObject({ task: 'b', branch: b.branch, files: ['shared.ts'], commit: await tipOf(b.branch) })
+    expect(r.tip).toBeUndefined()
+    const recs = await ofKind<IntegrateConflictBody>('integrate.conflict')
+    expect(recs).toHaveLength(1)
+    expect(recs[0]!.body).toEqual({ task: 'b', branch: b.branch, files: ['shared.ts'] })
+    expect(recs[0]!.by).toEqual(MOD)
+    expect(r.integrate_id).toBe(`i${recs[0]!.seq}`)
+    const { ok: _ok, ...fields } = r
+    expect(outFile()).toEqual({ v: 1, agent_id: RELAY.agentId, for: { integrate_id: r.integrate_id }, fields })
+    // Nothing after the conflict: c isn't tried, and there's no integrate.done to land on.
+    expect((await ofKind<IntegrateMergeBody>('integrate.merge')).map(m => m.body.task)).toEqual(['a'])
+    expect(await kinds()).not.toContain('integrate.done')
+    expect(await kinds()).not.toContain('integrate.skip')
+    // The integration worktree is as the merge left it: the evidence.
     expect(await mergeHead()).toBe(await tipOf(b.branch))
     expect(readFileSync(join(integration, 'shared.ts'), 'utf8')).toContain('<<<<<<< ')
-    expect(outFile().for).toEqual({ integrate_id: r.integrate_id })
-    // A retried relay before the integrator ran: the same conflict, nothing recorded.
+    expect((await gitIn(integration, 'diff', '--name-only', '--diff-filter=U')).trim()).toBe('shared.ts')
+  })
+
+  test('a later call answers the same conflict and never finishes it, even after a resolution by hand', async () => {
+    const { r, b } = await conflicted()
+    const tip = await tipOf(IB)
     const before = await kinds()
     expect(await integrate()).toEqual(r)
-    expect(await kinds()).toEqual(before)
-  })
-
-  test("a resolution with an extra path is finished as integrate.merge with integrator_extra, then the rest merged", async () => {
-    const { b } = await conflicted()
-    const head = await tipOf(IB)
+    expect(await mergeHead()).toBe(await tipOf(b.branch))
+    // Someone resolves the file and stages it: the mod neither commits the merge nor carries on.
     write(integration, 'shared.ts', 'export const v = 3 // a and b\n')
-    write(integration, 'glue/extra.ts', 'export const glue = true\n')
-    const r = await integrate()
-    expect(r.status).toBe('merged')
-    expect(r.merged).toEqual(['a', 'b', 'c'])
-    const merges = await ofKind<IntegrateMergeBody>('integrate.merge')
-    const mb = merges.find(m => m.body.task === 'b')!.body
-    expect(mb.resolved).toEqual({ files: ['shared.ts'], integrator_extra: ['glue/extra.ts'] })
-    expect(mb.paths).toEqual(['pkgB/b.ts', 'shared.ts'])
-    expect((await git('rev-parse', `${mb.commit}^1`)).trim()).toBe(head)
-    expect((await git('rev-parse', `${mb.commit}^2`)).trim()).toBe(await tipOf(b.branch))
-    expect((await git('log', '-1', '--format=%s', mb.commit)).trim()).toBe(`litter: merge b of ${RUN}`)
-    expect(await mergeHead()).toBe('')
-    expect(r.changed).toContainEqual({ path: 'glue/extra.ts', task: null, integrator_extra: true })
-    expect(r.changed).toContainEqual({ path: 'shared.ts', task: 'a', integrator_extra: false })
-    expect((await git('show', `${r.tip}:shared.ts`))).toBe('export const v = 3 // a and b\n')
-    expect((await gitIn(integration, 'status', '--porcelain')).trim()).toBe('')
-  })
-
-  test('a resolution that left a marker is refused, the worktree left as it is, and refused again', async () => {
-    await conflicted()
-    const text = readFileSync(join(integration, 'shared.ts'), 'utf8')
-    write(integration, 'shared.ts', text.replace('// a', '// a, half resolved'))
-    const r = await integrate()
-    expect(r.status).toBe('refused')
-    expect(r.reason).toMatch(/conflict markers are left in shared\.ts:1,3,5/)
-    expect(r.reason).toContain(`The integration worktree ${integration} is left as it is`)
-    expect(await mergeHead()).not.toBe('')
-    expect(readFileSync(join(integration, 'shared.ts'), 'utf8')).toContain('half resolved')
-    expect((await ofKind<IntegrateMergeBody>('integrate.merge')).map(m => m.body.task)).toEqual(['a'])
-    expect(await integrate()).toEqual(r)
-  })
-
-  test('a resolution the integrator staged is refused', async () => {
-    await conflicted()
-    write(integration, 'shared.ts', 'export const v = 4\n')
     await gitIn(integration, 'add', 'shared.ts')
-    const r = await integrate()
-    expect(r.status).toBe('refused')
-    expect(r.reason).toMatch(/files were staged or unstaged/)
-  })
-
-  test('a resolution the integrator committed is refused', async () => {
-    await conflicted()
-    write(integration, 'shared.ts', 'export const v = 4\n')
-    await gitIn(integration, 'commit', '-q', '-a', '-m', 'mine')
-    const r = await integrate()
-    expect(r.status).toBe('refused')
-    expect(r.reason).toMatch(/a commit was made/)
-    expect(r.reason).toMatch(/no longer in progress/)
-  })
-
-  test('a merge the integrator aborted is refused', async () => {
-    await conflicted()
+    expect(await integrate()).toEqual(r)
+    expect(await mergeHead()).toBe(await tipOf(b.branch))
+    // With the merge aborted, the answer is still the recorded one.
     await gitIn(integration, 'merge', '--abort')
-    const r = await integrate()
-    expect(r.status).toBe('refused')
-    expect(r.reason).toMatch(/no longer in progress \(it was aborted or committed\)/)
+    expect(await integrate()).toEqual(r)
+    expect(await kinds()).toEqual(before)
+    expect(await tipOf(IB)).toBe(tip)
   })
 })
 
@@ -528,7 +466,7 @@ describe('integrate: who may call, and when', () => {
         stopping: false,
         inflight: null,
         isolationLost: false,
-        roots: { checkout: dir, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [], integration: null },
+        roots: { checkout: dir, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [] },
         setup: null,
         linkDirs: [],
         worktreeRoot: join(dir, 'README.md'),
@@ -546,7 +484,6 @@ describe('integrate: who may call, and when', () => {
     expect(done).toHaveLength(1)
     expect(r.integrate_id).toBe(`i${done[0]!.seq}`)
     expect(await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: run2 })).toEqual(r)
-    expect((await readPolicy(p, litterDir))!.run!.roots.integration).toBeNull()
   })
 
   test('a changed integration worktree stops the integration before it merges anything', async () => {
@@ -559,14 +496,8 @@ describe('integrate: who may call, and when', () => {
   })
 })
 
-describe('integrate: helpers', () => {
-  test('markerLines finds git markers, and a lone ======= only between them', () => {
-    expect(markerLines('a\n=======\nb\n')).toEqual([])
-    expect(markerLines('<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\n=======\n')).toEqual([1, 3, 5])
-    expect(markerLines('<<<<<<<< not one\n')).toEqual([])
-  })
-
-  test('fanoutSummary lists tasks, conflicts and what blocked the land; nothing for other workflows', async () => {
+describe('integrate: summary.md', () => {
+  test('fanoutSummary lists tasks and what blocked the land; nothing for other workflows', async () => {
     await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
     await writer('b', 2, { 'pkgB/b.ts': 'b\n' }, { status: 'blocked', summary: 'needs | a pipe' })
     await writer('c', 3, { 'docs/c.md': 'c, done\n' })
@@ -583,5 +514,41 @@ describe('integrate: helpers', () => {
     expect(text).toContain("- task b wasn't merged: task b returned blocked: needs | a pipe")
     expect(fanoutSummary({ ...json, workflow: 'execute' }, await records())).toEqual([])
     expect(fanoutSummary(null, [])).toEqual([])
+  })
+
+  test('a conflict: which merge stopped, at which paths, after which branches, and no Conflicts section', async () => {
+    await writeRun([
+      { id: 'a', title: 'A', text: 'a', writes: true, files: ['shared.ts', 'pkgA/'] },
+      { id: 'b', title: 'B', text: 'b', writes: true, files: ['shared.ts', 'pkgB/'] },
+    ], ['a', 'b'])
+    const a = await writer('a', 1, { 'shared.ts': 'export const v = 2 // a\n' })
+    const b = await writer('b', 2, { 'shared.ts': 'export const v = 3 // b\n' })
+    expect((await integrate()).status).toBe('conflict')
+    const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
+    const text = fanoutSummary(json, await records()).join('\n')
+    expect(text).toContain('| a | writer | done | merged | - |')
+    expect(text).toContain('| b | writer | done | conflict in shared.ts | - |')
+    expect(text).toContain(
+      `- the merge of task b (branch ${b.branch}) stopped at a conflict in shared.ts, after a (${a.branch}); the integration worktree is left mid-merge`,
+    )
+    expect(text).not.toContain('## Conflicts')
+  })
+
+  test('a red integration verify names where its log is, and each failed task gives its evidence', async () => {
+    await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
+    await writer('b', 2, { 'pkgB/b.ts': 'b\n' })
+    await writer('c', 3, { 'docs/c.md': 'c, done\n' })
+    expect((await integrate()).status).toBe('merged')
+    const verifier = { source: 'agent' as const, agentId: 'verifier-1', agentType: 'litter:verifier' }
+    const verify = { verify_id: 'integration-1-abc', gate: 'integration', attempt: 1, green: false, exit_code: 1, timed_out: false }
+    await appendRecord(p, runDir, { run: RUN, kind: 'verify', by: verifier, body: verify })
+    const tasks = ['a', 'b', 'c', 'r'].map(id => ({ id, pass: id !== 'b', evidence: id === 'b' ? 'pkgB/b.ts:1 calls a() with two arguments; pkgA/a.ts:1 takes one' : 'ok', gaps: id === 'b' ? ['match a()'] : [] }))
+    await appendRecord(p, runDir, { run: RUN, kind: 'verdict', by: verifier, body: { verify_id: verify.verify_id, tasks, combined: 'a and b disagree on a()' } })
+    const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
+    const text = fanoutSummary(json, await records()).join('\n')
+    expect(text).toContain('| b | writer | done | merged | fail: match a() |')
+    expect(text).toContain("- the integration verify integration-1-abc isn't green (exit 1); its full log is in verify/integration-1-abc/ beside this summary")
+    expect(text).toContain('- the verifier failed task b: pkgB/b.ts:1 calls a() with two arguments; pkgA/a.ts:1 takes one')
+    expect(text).not.toContain('the verifier failed task a')
   })
 })

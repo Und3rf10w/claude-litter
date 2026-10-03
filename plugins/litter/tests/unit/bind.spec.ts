@@ -88,7 +88,7 @@ function policy(): Policy {
       stopping: false,
       inflight: null,
       isolationLost: false,
-      roots: { checkout: dir, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [], integration: null },
+      roots: { checkout: dir, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [] },
       setup: null,
       linkDirs: [],
       worktreeRoot: root,

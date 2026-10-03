@@ -43,7 +43,7 @@ Confirm these in one AskUserQuestion call:
   - no destructive git, and no publish or deploy commands.
 
   The guard enforces this list.
-- **Merge order.** The mod merges task branches in this order. An integrator resolves conflicts against the task texts and the contract, and anything it can't settle halts the run.
+- **Merge order.** The mod merges task branches in this order. Tasks with disjoint files can't conflict; if a merge ever does, the run stops with the conflicted paths.
 - **Rules.** Record `{ kind: 'rule.find', applicable: { workflow: 'fanout', tasks } }` and show, per task, the accepted rules its owned files bring, one line each. If the mod answers that `rule.find` isn't a record kind, there are no accepted rules yet; skip this. Constraints the user states now go into `runRules` for this run only.
 
 Show the task list and the settings together, and ask for an explicit "Launch". This is the user's opt-in, so ask for it even if the user didn't type the command.
@@ -64,14 +64,15 @@ Tell the user in two or three lines what launched (the run id, the number of tas
 
 Read `summary.md` in the `runDir` from `run.start` (or from `run.find` with the run id). The mod finalizes it before the notification reaches you; if it still shows the run as open, record `{ kind: 'run.end', run, taskId, status, result }` with the notification's task id, status and result, and read it again. Report how the run ended, and each task as one of:
 - verified;
-- failed, with the verifier's evidence quoted;
+- failed, with the verifier's evidence and gaps quoted;
+- not merged, with the mod's reason (a conflict names its paths);
 - blocked, with the agent's reason;
 - no result.
 
-Say whether the combined result landed on `litter/<run>`, which conflicts the integrator resolved and how, and any it couldn't. If nothing landed because the checkout changed during the run, say so and name the changed paths from the summary.
+Say whether the combined result landed on `litter/<run>`. If nothing landed because the checkout changed during the run, say so and name the changed paths from the summary.
 
 - **It landed:** give the commit range. The mod's commits don't run the repository's commit hooks, so suggest running them before merging. The user merges and pushes when ready.
-- **Nothing landed:** offer with AskUserQuestion:
+- **Nothing landed:** nothing was thrown away. Say what's kept, from the summary: the task branches, the integration worktree at its merged tip (mid-merge if a merge stopped at a conflict), the integration verify's output, and the verifier's gaps for each task. Then offer with AskUserQuestion:
   - rerun the failed tasks as a new fanout, with the verifier's gaps added to each task;
   - merge chosen passing task branches yourself, one at a time with `git merge --no-ff <branch>`, running the verify command after each, and stopping at the first conflict or failure. Don't resolve a conflict yourself, because how two tasks' changes combine is the user's decision;
   - stop and leave the branches and worktrees for inspection, listing their paths.

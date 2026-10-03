@@ -89,7 +89,7 @@ function policyFor(run: string, workflow: RunJson['workflow'], runIds: string[])
       stopping: false,
       inflight: null,
       isolationLost: false,
-      roots: { checkout: repo, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [], integration: null },
+      roots: { checkout: repo, litterDir, litterCopies: [litterDir], ruleDirs: [], worktrees: [] },
       setup: null,
       linkDirs: [],
       worktreeRoot: root,

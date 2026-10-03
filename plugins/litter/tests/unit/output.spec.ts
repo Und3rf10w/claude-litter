@@ -42,7 +42,7 @@ function policyFor(run: string | null): Policy {
           stopping: false,
           inflight: null,
           isolationLost: false,
-          roots: { checkout: dir, litterDir: dir, litterCopies: [dir], ruleDirs: [], worktrees: [], integration: null },
+          roots: { checkout: dir, litterDir: dir, litterCopies: [dir], ruleDirs: [], worktrees: [] },
           setup: null,
           linkDirs: [],
         }

@@ -20,21 +20,21 @@ import type { Ports } from './ports'
 /** litter's role names, without the `litter:` prefix (plan section 6). */
 export type RoleName =
   | 'falsifier' | 'coverage' | 'mechanism' | 'reframer' | 'prober' | 'author' | 'design-critic'
-  | 'gate-critic' | 'executor' | 'adversary' | 'relay' | 'integrator' | 'planner' | 'verifier' | 'researcher'
+  | 'gate-critic' | 'executor' | 'adversary' | 'relay' | 'planner' | 'verifier' | 'researcher'
 
 /**
  * What the guard allows a role, written into policy.json by the mod from roles.ts,
  * so the role table has one source.
  *  - `write`: where Write/Edit/NotebookEdit may land. `checkout` is the run's
- *    checkout root, `own-worktree` the agent's own bound worktree (its bind cwd),
- *    `integration` the run's integration worktree. `none` denies every write.
+ *    checkout root, `own-worktree` the agent's own bound worktree (its bind cwd).
+ *    `none` denies every write.
  *  - `bash`: `rw` gets the full Bash rules; `ro` also loses redirections and
  *    write-ish commands (the deepwork state-bash-gate port).
  *  - `isolated`: the role runs with `isolation: 'worktree'`, so its call's cwd must be
  *    its bound worktree (plan section 9, "Its working directory").
  */
 export type RolePolicy = {
-  write: 'none' | 'checkout' | 'own-worktree' | 'integration'
+  write: 'none' | 'checkout' | 'own-worktree'
   bash: 'rw' | 'ro'
   isolated: boolean
 }
@@ -73,8 +73,7 @@ export type RunPolicy = {
   isolationLost: boolean
   /**
    * Resolved real paths (the mod's $.fs.stat resolve), compared exactly by the guard.
-   * `worktrees` gains each `worktree.create` path as the mod records it;
-   * `integration` is set when the mod makes the integration worktree.
+   * `worktrees` gains each `worktree.create` path as the mod records it.
    */
   roots: {
     checkout: string
@@ -84,7 +83,6 @@ export type RunPolicy = {
     /** The rule folders and their exports (plan section 16.1). */
     ruleDirs: string[]
     worktrees: string[]
-    integration: string | null
   }
   /** The approved setup argv and link dirs, for worktree.sh. */
   setup: string[] | null

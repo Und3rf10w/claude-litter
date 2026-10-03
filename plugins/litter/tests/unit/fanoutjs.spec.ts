@@ -25,7 +25,6 @@ import {
   NONCE,
   nonceTags,
   researched,
-  resolvedOk,
   RUN,
   runFanout,
   TASK_A,
@@ -177,59 +176,38 @@ describe('three tasks, two writing', () => {
   })
 })
 
-describe('conflicts', () => {
-  test('a conflict resolved by the integrator, then landed', async () => {
-    const r = await runFanout({
-      args: THREE,
-      replies: happy({ integrate: conflict('B', ['A']), 'integrator:B': resolvedOk, 'integrate#2': merged(['A', 'B']) }),
+describe('conflicts (a hand-written run.json only: plan section 7, fanout.js step 3)', () => {
+  test('a conflict halts with its paths and the tasks merged so far, before any verify, and nothing repairs it', async () => {
+    const r = await runFanout({ args: THREE, replies: happy({ integrate: conflict('B', ['A'], ['b/world.txt', 'shared/api.ts']) }) })
+    expect(labels(r)).toEqual(['write:A', 'write:B', 'research:R', 'integrate'])
+    expect(r.calls.map(c => c.agentType)).not.toContain('litter:verifier')
+    expect(decoded(r)).toEqual({
+      status: 'halted',
+      reason:
+        `the merge of B (branch litter/${RUN}-w2) stopped at a conflict in b/world.txt, shared/api.ts; merged so far: A. ` +
+        'Nothing landed; the integration worktree is kept as the merge left it',
     })
-    expect(labels(r)).toEqual(['write:A', 'write:B', 'research:R', 'integrate', 'integrator:B', 'integrate#2', 'verifier', 'land:fanout'])
-    expect(r.calls.map(c => c.opts.phase)).toEqual(['Run', 'Run', 'Run', 'Integrate', 'Integrate', 'Integrate', 'Verify', 'Land'])
-    const i = byLabel(r, 'integrator:B')
-    expect(i.opts.agentType).toBe('litter:integrator')
-    expect(nonceTags(i.prompt, NONCE)).toEqual(['where', 'conflict', 'tasks', 'contract', 'rules', 'authorized'])
-    expect(instructionOf(i.prompt, NONCE)).toBe('Resolve the conflicts listed in <conflict>, working only inside <where>.')
-    expect(i.prompt).toContain(`Merging task B (branch litter/${RUN}-w2) stopped with conflicts in:\nb/world.txt\nAlready merged: A`)
-    expect(i.prompt).toContain('Task A (changes files): Add hello')
-    expect(i.prompt).toContain('Side: the task being merged')
-    expect(i.prompt).not.toContain('Task R')
-    expect(i.prompt).not.toContain('R2 v3')
-    const v = byLabel(r, 'verifier')
-    expect(nonceTags(v.prompt, NONCE)).toContain('integrator')
-    expect(v.prompt).toContain('kept both lines, b/world.txt:1-2')
-    expect(decoded(r)).toEqual({ status: 'done', reason: null })
+    expect(r.result).toEqual(expect.objectContaining({ verify_id: null, landed: null }))
+    // The return shape is the one every halt has.
+    expect((r.result!.results as { id: string }[]).map(x => x.id)).toEqual(['A', 'B', 'R'])
     expectEnvelope(r)
     expectBinds(r, [TASK_A, TASK_B, TASK_R])
   })
 
-  test('an unresolved conflict halts with what was merged, before any verify', async () => {
-    const r = await runFanout({
-      args: THREE,
-      replies: happy({
-        integrate: conflict('B', ['A']),
-        'integrator:B': { resolved: false, files: [], unresolved: ['b/world.txt:2 both sides set the greeting'], checks: [] },
-      }),
-    })
-    expect(labels(r)).toEqual(['write:A', 'write:B', 'research:R', 'integrate', 'integrator:B'])
-    const d = decoded(r)
-    expect(d.status).toBe('halted')
-    expect(d.reason).toContain("the integrator left B's conflicts unresolved: b/world.txt:2 both sides set the greeting")
-    expect(d.reason).toContain('merged so far: A')
+  test('a conflict at the first merge says nothing was merged before it', async () => {
+    const r = await runFanout({ args: THREE, replies: happy({ integrate: conflict('A', []) }) })
+    expect(labels(r).slice(3)).toEqual(['integrate'])
+    expect(decoded(r).reason).toContain('stopped at a conflict in b/world.txt; merged so far: none.')
   })
 
-  test('an integrator that returns nothing is retried once, then the run halts', async () => {
-    const r = await runFanout({ args: THREE, replies: happy({ integrate: conflict('B', ['A']), 'integrator:B': null, 'integrator:B (retry)': null }) })
-    expect(labels(r).slice(3)).toEqual(['integrate', 'integrator:B', 'integrator:B (retry)'])
-    expect(decoded(r)).toEqual({ status: 'halted', reason: 'the integrator for B returned nothing; merged so far: A' })
-  })
-
-  test('the same task conflicting again after the integrator halts', async () => {
-    const r = await runFanout({
-      args: THREE,
-      replies: happy({ integrate: conflict('B', ['A']), 'integrator:B': resolvedOk, 'integrate#2': conflict('B', ['A']) }),
-    })
-    expect(labels(r).slice(3)).toEqual(['integrate', 'integrator:B', 'integrate#2'])
-    expect(decoded(r).reason).toContain('the mod still reports a conflict merging B after the integrator')
+  test("a conflict answer without its task halts as well, and a retried relay's answer is the same final one", async () => {
+    const { conflict: _c, ...bare } = conflict('B', ['A'])
+    const r = await runFanout({ args: THREE, replies: happy({ integrate: bare }) })
+    expect(decoded(r)).toEqual({ status: 'halted', reason: 'the mod reported a conflict without its task; merged so far: A' })
+    // A relay that returned nothing first: its retry gets the mod's same answer, and the run halts on it.
+    const retried = await runFanout({ args: THREE, replies: happy({ integrate: null, 'integrate (retry)': conflict('B', ['A']) }) })
+    expect(labels(retried).slice(3)).toEqual(['integrate', 'integrate (retry)'])
+    expect(decoded(retried).reason).toContain('the merge of B')
   })
 })
 
@@ -239,7 +217,7 @@ describe('writers that end blocked', () => {
       args: THREE,
       replies: happy({
         'write:B': blocked('b/world.txt needs a change in a/, which this task does not own'),
-        integrate: merged(['A'], { skipped: [{ task: 'B', reason: 'blocked' }], changed: [{ path: 'a/hello.txt', task: 'A', integrator_extra: false }] }),
+        integrate: merged(['A'], { skipped: [{ task: 'B', reason: 'blocked' }], changed: [{ path: 'a/hello.txt', task: 'A' }] }),
         verifier: check(['A', 'B', 'R'], ['B']),
       }),
     })
@@ -490,7 +468,7 @@ const INTEGRATE_FIELDS: Record<Exclude<keyof IntegrateReply, 'ok'>, true> = {
   integrate_id: true, status: true, where: true, base: true, merged: true, skipped: true, conflict: true, tip: true, tree: true, changed: true, reason: true,
 }
 const SKIPPED_FIELDS: Record<keyof SkippedTask, true> = { task: true, reason: true, unowned: true }
-const CHANGED_FIELDS: Record<keyof ChangedPath, true> = { path: true, task: true, integrator_extra: true }
+const CHANGED_FIELDS: Record<keyof ChangedPath, true> = { path: true, task: true }
 const CONFLICT_FIELDS: Record<keyof NonNullable<IntegrateReply['conflict']>, true> = { task: true, branch: true, files: true }
 const LANDED_FIELDS: Record<Exclude<AllKeys<LandReply>, 'ok'>, true> = { landed: true, commit: true, reason: true, retry: true }
 const OBSERVED_TASK_FIELDS: Record<keyof Pick<TaskResultBody, 'unbound' | 'bind_refusal'>, true> = { unbound: true, bind_refusal: true }
@@ -509,7 +487,7 @@ describe('the script', () => {
     expect(typeof meta.description).toBe('string')
     const titles = (meta.phases as { title: string }[]).map(p => p.title)
     expect(titles).toEqual(['Run', 'Integrate', 'Verify', 'Land'])
-    const r = await runFanout({ args: THREE, replies: happy({ integrate: conflict('B', ['A']), 'integrator:B': resolvedOk, 'integrate#2': merged(['A', 'B']) }) })
+    const r = await runFanout({ args: THREE, replies: happy() })
     for (const c of r.calls) expect(titles).toContain(String(c.opts.phase))
     for (const p of r.phases) expect(titles).toContain(p)
   })
@@ -521,7 +499,7 @@ describe('the script', () => {
   })
 
   test('every schema converts to a strict schema, and names every field the mod fills', async () => {
-    const r = await runFanout({ args: THREE, replies: happy({ integrate: conflict('B', ['A']), 'integrator:B': resolvedOk, 'integrate#2': merged(['A', 'B']) }) })
+    const r = await runFanout({ args: THREE, replies: happy() })
     for (const c of r.calls) {
       expect(isObj(c.opts.schema)).toBe(true)
       expect({ call: c.label, problem: strictProblem(c.opts.schema) }).toEqual({ call: c.label, problem: null })
@@ -539,7 +517,6 @@ describe('the script', () => {
     for (const f of Object.keys(OBSERVED_TASK_FIELDS)) expect(props(task)).toContain(f)
     expect((task as { required: string[] }).required).toEqual(['status', 'files', 'checks', 'summary', 'notes'])
     expect(props(byLabel(r, 'research:R').opts.schema)).toEqual(['findings', 'open', 'summary'])
-    expect(props(byLabel(r, 'integrator:B').opts.schema)).toEqual(['checks', 'files', 'resolved', 'unresolved'])
     const verdict = byLabel(r, 'verifier').opts.schema
     expect(props(verdict)).toEqual(['combined', 'tasks', 'verify_id'])
     expect(prop(verdict, 'tasks', 'items', 'id')).toEqual({ enum: ['A', 'B', 'R'] })

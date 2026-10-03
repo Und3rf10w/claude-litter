@@ -21,10 +21,6 @@ const RESEARCHED = { type: 'object', properties: {
   summary: str,
   findings: { type: 'array', items: { type: 'object', properties: { claim: str, evidence: strs }, required: ['claim', 'evidence'] } },
   open: strs }, required: ['summary', 'findings', 'open'] }
-const INTEGRATED = { type: 'object', properties: {           // the integrator's
-  resolved: bool,
-  files: { type: 'array', items: { type: 'object', properties: { path: str, how: str }, required: ['path', 'how'] } },
-  unresolved: strs, checks: strs }, required: ['resolved', 'files', 'unresolved', 'checks'] }
 const INTEGRATE = { type: 'object', properties: {            // the mod's answer to an integrate, all but integrate_id filled by it
   integrate_id: str,
   status: { enum: ['merged', 'conflict', 'refused'] },
@@ -33,7 +29,7 @@ const INTEGRATE = { type: 'object', properties: {            // the mod's answer
   conflict: { type: 'object', properties: { task: str, branch: str, files: strs }, required: ['task', 'branch', 'files'] },
   tip: str, tree: str,
   changed: { type: 'array', items: { type: 'object', properties: {
-    path: str, task: { type: ['string', 'null'] }, integrator_extra: bool }, required: ['path', 'task', 'integrator_extra'] } },
+    path: str, task: { type: ['string', 'null'] } }, required: ['path', 'task'] } },
   reason: str }, required: ['integrate_id', 'status'] }
 const LANDED = { type: 'object', properties: { landed: bool, commit: str, reason: str, retry: bool }, required: ['landed'] }  // mod's answer
 
@@ -63,7 +59,7 @@ const mergedLine = t => {
   if (t.writes !== true || s.merged === null) return []
   return [s.merged === true ? 'Merged by the mod: yes' : `Not merged by the mod: ${s.merged}`]
 }
-// <tasks> for the integrator and the verifier: never a bind token.
+// <tasks> for the verifier: never a bind token.
 const tasksTag = (ts, note = () => []) => tag('tasks', ts.map(t => [
   `Task ${t.id} (${t.writes === true ? 'changes files' : 'read-only'}): ${t.title}`, t.text,
   ...(t.writes === true ? ['Owned files:', list(t.files)] : []),
@@ -155,40 +151,22 @@ if (missing.length > 0) {
 }
 const isBlocked = t => t.writes === true && (state.get(t.id).result.status !== 'done' || state.get(t.id).result.unbound === true)
 
-// 2. Integrate: the mod merges the branches in the confirmed order; an integrator resolves each conflict.
+// 2. Integrate: the mod merges the branches in the confirmed order. A conflict
+// halts the run with its paths, the merge left in progress, since fanout never
+// repairs (plan 15.11); disjoint ownership rules one out for any run that
+// run.start accepts.
 phase('Integrate')
 if (lowBudget()) return halt('token budget reached')
-const INTEGRATE_ASK = "Record an integrate and return the mod's answer, field for field."
-let answer = await relay(INTEGRATE_ASK, 'integrate', 'Integrate', INTEGRATE)
-const resolutions = []
-while (answer !== null && answer.status === 'conflict') {
-  const c = answer.conflict
-  const mergedSoFar = `merged so far: ${list(answer.merged)}`
-  if (!c || !state.has(c.task) || typeof answer.where !== 'string' || !answer.where.startsWith('/')) {
-    return halt(`the mod reported a conflict without its task or worktree; ${mergedSoFar}`)
-  }
-  if (resolutions.some(r => r.task === c.task) || resolutions.length >= writers.length) {   // at most once per writer
-    return halt(`the mod still reports a conflict merging ${c.task} after the integrator; ${mergedSoFar}`)
-  }
-  if (lowBudget()) return halt('token budget reached')
-  const sides = writers.filter(t => t.id === c.task || (answer.merged ?? []).includes(t.id))
-  const resolved = await call(tag('where', answer.where) +
-    tag('conflict', `Merging task ${c.task} (branch ${c.branch}) stopped with conflicts in:\n${list((c.files ?? []).map(showPath))}\n` +
-      `Already merged: ${list(answer.merged)}`) +
-    tasksTag(sides, t => [t.id === c.task ? 'Side: the task being merged' : 'Side: already merged']) +
-    tag('contract', args.contract) + tag('rules', rulesFor(sides)) + tag('authorized', args.authorized) +
-    'Resolve the conflicts listed in <conflict>, working only inside <where>.',
-    { label: `integrator:${c.task}`, phase: 'Integrate', agentType: 'litter:integrator', schema: INTEGRATED })
-  if (resolved === null) return halt(stopped() ? 'the integrator was refused' : `the integrator for ${c.task} returned nothing; ${mergedSoFar}`)
-  if (resolved.resolved !== true || (resolved.unresolved ?? []).length > 0) {
-    return halt(`the integrator left ${c.task}'s conflicts unresolved: ${short((resolved.unresolved ?? []).join('; ') || 'no detail', 600)}; ${mergedSoFar}`)
-  }
-  resolutions.push({ task: c.task, branch: c.branch, conflicted: c.files ?? [], result: resolved })
-  if (lowBudget()) return halt('token budget reached')
-  answer = await relay(INTEGRATE_ASK, `integrate#${resolutions.length + 1}`, 'Integrate', INTEGRATE)
-}
+const answer = await relay("Record an integrate and return the mod's answer, field for field.", 'integrate', 'Integrate', INTEGRATE)
 if (answer === null) return halt(stopped() ? 'the integrate relay was refused' : 'relay for integrate returned nothing')
 if (answer.status === 'refused') return halt(`integration refused: ${short(answer.reason || 'the mod gave no reason', 600)}`)
+if (answer.status === 'conflict') {
+  const c = answer.conflict
+  const mergedSoFar = `merged so far: ${(answer.merged ?? []).join(', ') || 'none'}`
+  if (!c || !state.has(c.task)) return halt(`the mod reported a conflict without its task; ${mergedSoFar}`)
+  const files = short((c.files ?? []).map(showPath).join(', ') || 'no paths listed', 600)
+  return halt(`the merge of ${c.task} (branch ${short(c.branch, 120)}) stopped at a conflict in ${files}; ${mergedSoFar}. Nothing landed; the integration worktree is kept as the merge left it`)
+}
 if (answer.status !== 'merged' || typeof answer.where !== 'string' || !answer.where.startsWith('/') || typeof answer.base !== 'string') {
   return halt(`the integrate relay returned no usable answer (status ${short(answer.status, 40)})`)
 }
@@ -207,11 +185,9 @@ const FANOUT_CHECK = { type: 'object', properties: {
   tasks: { type: 'array', items: { type: 'object', properties: { id: { enum: ids }, pass: bool, evidence: str, gaps: strs },
     required: ['id', 'pass', 'evidence', 'gaps'] } },
   combined: str }, required: ['verify_id', 'tasks', 'combined'] }
-const changed = (answer.changed ?? []).map(c =>
-  `${showPath(c.path)}  owner: ${c.task ?? 'none'}${c.integrator_extra ? '  integrator_extra: read it in full' : ''}`)
+const changed = (answer.changed ?? []).map(c => `${showPath(c.path)}  owner: ${c.task ?? 'none'}`)
 const check = await call(tag('where', answer.where) + tag('base', answer.base) + tasksTag(tasks, mergedLine) +
   tag('changed', list(changed)) + tag('contract', args.contract) + tag('rules', rulesFor(tasks)) +
-  tag('integrator', resolutions.length ? JSON.stringify(resolutions) : '') +
   'Check the combined result. Record a verify for gate integration, attempt 1, first.' +
   (readers.length ? ' For read-only tasks, open the cited file:line locations, confirm they say what the report claims, ' +
     'and check that the findings answer the task as asked.' : ''),

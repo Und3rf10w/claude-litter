@@ -11,7 +11,6 @@ import { designCritic } from './design-critic'
 import { executor } from './executor'
 import { falsifier } from './falsifier'
 import { gateCritic } from './gate-critic'
-import { integrator } from './integrator'
 import { mechanism } from './mechanism'
 import { planner } from './planner'
 import { prober } from './prober'
@@ -28,7 +27,7 @@ import { verifier } from './verifier'
  */
 export const PROMPT_TAGS = [
   'gate', 'task', 'contract', 'authorized', 'verify', 'rules', 'feedback', 'change', 'adversary',
-  'where', 'base', 'conflict', 'tasks', 'changed', 'integrator', 'goal', 'goal_check', 'plan', 'landed', 'halted',
+  'where', 'base', 'tasks', 'changed', 'goal', 'goal_check', 'plan', 'landed', 'halted',
 ] as const
 
 export type PromptTag = (typeof PROMPT_TAGS)[number]
@@ -44,9 +43,8 @@ export const ROLE_TAGS: Readonly<Partial<Record<RoleName, readonly PromptTag[]>>
   'gate-critic': ['gate', 'authorized', 'verify', 'rules', 'change', 'adversary', 'feedback'],
   adversary: ['gate', 'authorized', 'verify', 'rules', 'change'],
   relay: [],
-  integrator: ['where', 'conflict', 'tasks', 'contract', 'rules', 'authorized'],
   planner: ['goal', 'plan', 'verify', 'goal_check', 'rules', 'landed', 'halted'],
-  verifier: ['where', 'base', 'tasks', 'changed', 'contract', 'rules', 'integrator'],
+  verifier: ['where', 'base', 'tasks', 'changed', 'contract', 'rules'],
   researcher: ['task', 'contract', 'authorized', 'rules'],
 }
 
@@ -62,7 +60,6 @@ export const ROLE_PROMPTS: Readonly<Record<RoleName, string>> = {
   executor,
   adversary,
   relay,
-  integrator,
   planner,
   verifier,
   researcher,

@@ -77,7 +77,7 @@ const AGENT = {
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as { ok: boolean; error?: string; field?: string; allowed?: string[] }
 
 describe('record tool', () => {
-  test('session.start registers the record tool and the fifteen roles', async ($, on) => {
+  test('session.start registers the record tool and the fourteen roles', async ($, on) => {
     mock.store(on)
     mock.clock(on)
     const tools: string[] = []
@@ -94,7 +94,7 @@ describe('record tool', () => {
     on('session.start', async (_$, e) => ({ cwd: e.cwd }))
     await $.session.start({ cwd: '/nonexistent/litter-test', surface: null, isInteractive: false })
     expect(tools).toEqual(['record'])
-    expect(agents.length).toBe(15)
+    expect(agents.length).toBe(14)
     expect(agents).toContain('gate-critic')
   })
 
