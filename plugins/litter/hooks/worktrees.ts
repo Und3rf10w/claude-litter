@@ -247,11 +247,22 @@ function tracked(records: readonly StoredRecord[]): Map<string, Tracked> {
 const rootKey = (runDir: string) => `litter.worktreeRoot.${runDir}`
 
 /**
+ * Where litter's worktrees go for a litter directory: the primary checkout's
+ * `.claude/worktrees`, resolved, or `litter-worktrees` beside a bare
+ * repository's litter folder (its common dir). The one computation:
+ * policyFor (lifecycle.ts) gives a run this root, worktreeRootFor falls back
+ * to it, and swarm/worktrees.ts checks a swarm worktree's path against it.
+ */
+export async function litterWorktreeRoot(p: Ports, litterDir: string): Promise<string> {
+  const primary = primaryOf(litterDir)
+  return primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+}
+
+/**
  * Where the run's litter worktrees go: the root policy.json gave the run,
  * kept in the store with the run so a drain or a cleanup after its end still
- * checks against it. Without either, it's computed as policyFor computes it
- * (lifecycle.ts): the primary checkout's `.claude/worktrees`, resolved, or
- * `litter-worktrees` beside a bare repository's litter folder.
+ * checks against it. Without either, it's litterWorktreeRoot's, as policyFor
+ * computes it (lifecycle.ts).
  */
 export async function worktreeRootFor(p: Ports, litterDir: string, run: string): Promise<string> {
   const dir = runDirOf(litterDir, run)
@@ -263,8 +274,7 @@ export async function worktreeRootFor(p: Ports, litterDir: string, run: string):
   }
   const kept = await p.store.get(rootKey(dir))
   if (typeof kept === 'string' && cleanAbsolute(kept)) return kept
-  const primary = primaryOf(litterDir)
-  return primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+  return litterWorktreeRoot(p, litterDir)
 }
 
 // ---------------------------------------------------------------------------

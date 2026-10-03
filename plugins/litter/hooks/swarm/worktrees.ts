@@ -24,6 +24,7 @@ import {
   linkDirs,
   listedAt,
   listWorktrees,
+  litterWorktreeRoot,
   newIgnored,
   OID,
   place,
@@ -57,15 +58,12 @@ export type SwarmWorktreeSpec = {
   /** An `own` instance's number; absent for a `new` worktree. */
   n?: number
   /**
-   * Absolute, and exactly `<worktreeRoot>/<name>` with layout.ts's name:
-   * `swarmNewWorktreeName(swarm, node)`, or `swarmOwnWorktreeName(swarm, node, n)`.
+   * Absolute, and exactly `<root>/<name>`: the root worktrees.ts's
+   * litterWorktreeRoot gives the litter directory (the one a run's
+   * policy.json carries), with layout.ts's name,
+   * `swarmNewWorktreeName(swarm, node)` or `swarmOwnWorktreeName(swarm, node, n)`.
    */
   path: string
-  /**
-   * The swarm's worktree root (`LiveSwarm.worktreeRoot`, as `swarm.start` records it).
-   * C's choice: the brief's spec has no root, and "refuse any other path" needs one.
-   */
-  worktreeRoot: string
   /** Short name: the spec's `new.branch`, or `swarmOwnBranch(swarm, node, n)`. Checked with `git check-ref-format --branch`. */
   branch: string
   /** A commit id, or a ref resolved here with `rev-parse --verify --end-of-options <from>^{commit}`. */
@@ -102,11 +100,15 @@ function shapeProblem(spec: SwarmWorktreeSpec): string | null {
   return null
 }
 
-/** The rest of the spec; null when it's fine. */
-function specProblem(spec: SwarmWorktreeSpec): string | null {
-  if (typeof spec.worktreeRoot !== 'string' || !cleanAbsolute(spec.worktreeRoot)) return `the worktree root ${String(spec.worktreeRoot)} isn't a clean absolute path`
-  const name = spec.n === undefined ? swarmNewWorktreeName(spec.swarm, spec.node) : swarmOwnWorktreeName(spec.swarm, spec.node, spec.n)
-  if (spec.path !== `${spec.worktreeRoot}/${name}`) return `the path ${String(spec.path)} isn't ${spec.worktreeRoot}/${name}`
+/** The worktree's name, from layout.ts. */
+const nameOf = (spec: SwarmWorktreeSpec): string =>
+  spec.n === undefined ? swarmNewWorktreeName(spec.swarm, spec.node) : swarmOwnWorktreeName(spec.swarm, spec.node, spec.n)
+
+/** The rest of the spec, against the litter directory's worktree root; null when it's fine. */
+function specProblem(spec: SwarmWorktreeSpec, root: string): string | null {
+  if (!cleanAbsolute(root)) return `the worktree root ${root} isn't a clean absolute path`
+  const name = nameOf(spec)
+  if (spec.path !== `${root}/${name}`) return `the path ${String(spec.path)} isn't ${root}/${name}`
   if (typeof spec.branch !== 'string' || !BRANCH.test(spec.branch)) return `the branch '${String(spec.branch)}' isn't one the mod makes`
   if (typeof spec.from !== 'string' || spec.from === '' || /[\0-\x1f]/.test(spec.from) || spec.from.startsWith('-')) return `'from' isn't a commit or a ref`
   if (typeof spec.repo !== 'string' || !cleanAbsolute(spec.repo)) return `the repository ${String(spec.repo)} isn't a clean absolute path`
@@ -124,12 +126,15 @@ function specProblem(spec: SwarmWorktreeSpec): string | null {
  *     the launch folder's `verify/setup-<name>/`);
  *  3. `swarm.worktree { …, created_by: <launch>, ignored }`, with the ignored
  *     paths the setup left.
- * A failure after the checks records `swarm.worktree.failed` with the step and
- * the reason, and answers `{ ok: false, reason }`. A replay of the same path
- * finishes an intent without an outcome, reuses a made one that passes
- * worktrees.ts's replay checks, and blocks with the facts otherwise, under the
- * rules addModWorktree follows; it never fails on a branch it made itself.
- * Resolves the worktree's resolved path and the commit it was made from.
+ * A failure after the intent records `swarm.worktree.failed` with the step and
+ * the reason, and answers `{ ok: false, reason }`. A check that fails before
+ * any intent is only answered: there's nothing to give an outcome to. A
+ * replay of the same path finishes an intent without an outcome, reuses a
+ * made one that passes worktrees.ts's replay checks, and blocks with the facts
+ * otherwise, under the rules addModWorktree follows; it never fails on a
+ * branch it made itself. Each attempt whose last step isn't an open intent
+ * (none yet, made, or failed) records its own intent. Resolves the worktree's
+ * resolved path and the commit it was made from.
  */
 export async function addSwarmWorktree(
   p: Ports,
@@ -156,23 +161,30 @@ async function makeSwarmWorktree(p: Ports, litterDir: string, options: LitterOpt
   const { records, tampered } = await readLaunchLedger(p, litterDir, spec.swarm, spec.launch)
   if (tampered) return refuse(`launch ${spec.launch}'s ledger is tampered at record ${tampered.seq}`)
 
+  // This path's steps so far. Only an open intent (one with no outcome after
+  // it) gets a check failure recorded as its outcome; before any intent, or
+  // after an outcome, a check failure is answered and nothing is recorded, so
+  // the next attempt records its own intent.
+  const steps = stepsFor(records, String(spec.path))
+  const last = steps.at(-1)
+  const open = last?.kind === 'swarm.worktree.intent'
+  const checkFailed = async (reason: string): Promise<SwarmWorktreeMade> => (open ? failed('check', reason) : refuse(reason))
+
   // The checks, before git touches anything.
-  const bad = specProblem(spec)
-  if (bad) return failed('check', bad)
+  const bad = specProblem(spec, await litterWorktreeRoot(p, litterDir))
+  if (bad) return checkFailed(bad)
   const format = await git(p, spec.repo, ['check-ref-format', '--branch', spec.branch])
-  if (format.code !== 0 || format.stdout.trim() !== spec.branch) return failed('check', `git won't take '${spec.branch}' as a branch name`)
+  if (format.code !== 0 || format.stdout.trim() !== spec.branch) return checkFailed(`git won't take '${spec.branch}' as a branch name`)
   const resolved = await git(p, spec.repo, ['rev-parse', '--verify', '--end-of-options', `${spec.from}^{commit}`])
   const from = resolved.code === 0 ? resolved.stdout.trim() : ''
-  if (!OID.test(from)) return failed('check', `'${spec.from}' doesn't name a commit in ${spec.repo}: ${firstLine(resolved.stderr)}`)
+  if (!OID.test(from)) return checkFailed(`'${spec.from}' doesn't name a commit in ${spec.repo}: ${firstLine(resolved.stderr)}`)
 
   // A replay names the same node, branch and commit as the records; a ref that moved since is refused with the facts.
-  const steps = stepsFor(records, spec.path)
   const differs = steps.find(s => s.kind !== 'swarm.worktree.failed' && (s.body.node !== spec.node || s.body.n !== spec.n || s.body.branch !== spec.branch || s.body.from !== from))
   if (differs) return refuse(`the launch ledger records it for ${String(differs.body.node)} on ${String(differs.body.branch)} from ${String(differs.body.from)}`)
-  const last = steps.at(-1)
   const created = steps.some(s => s.kind === 'swarm.worktree')
   // worktrees.ts's helpers take a run worktree's spec: the launch stands in for the run.
-  const name = spec.path.slice(spec.worktreeRoot.length + 1)
+  const name = nameOf(spec)
   const mws: ModWorktreeSpec = {
     run: launchRun(spec.swarm, spec.launch),
     name,
@@ -191,9 +203,10 @@ async function makeSwarmWorktree(p: Ports, litterDir: string, options: LitterOpt
     if (again !== 'gone') return refuse(again)
   }
 
-  // The intent before git touches anything: a first request, or a made worktree that's gone and is added again.
+  // The intent before git touches anything, unless one is open: a first
+  // request, a retry after a failure, or a made worktree that's gone.
   const intent: SwarmWorktreeIntentBody = { node: spec.node, ...at, path: spec.path, branch: spec.branch, from }
-  if (!last || last.kind === 'swarm.worktree') await appendLaunchRecord(p, litterDir, spec.swarm, spec.launch, 'swarm.worktree.intent', intent)
+  if (!open) await appendLaunchRecord(p, litterDir, spec.swarm, spec.launch, 'swarm.worktree.intent', intent)
   try {
     const blocked = await place(p, mws, created)
     if (blocked) return failed('add', blocked)

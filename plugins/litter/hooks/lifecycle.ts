@@ -59,7 +59,7 @@ import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
 import { reconcileLands } from './land'
 import { getOptions, session } from './session'
-import { cleanupRun, worktreeSummary } from './worktrees'
+import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
 import {
   acquireLock,
@@ -270,7 +270,7 @@ async function policyFor(
   const bases = [...new Set([primary ? await realOf(p, primary) : null, checkout].filter((x): x is string => x !== null))]
   const ruleDirs = bases.flatMap(b => ['.litter', '.litter.local', '.claude/rules/litter', '.claude/rules/litter-local'].map(r => `${b}/${r}`))
   // Every litter worktree goes under the primary checkout, even from a run worktree (plan section 9, "Run worktrees").
-  const worktreeRoot = primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+  const worktreeRoot = await litterWorktreeRoot(p, litterDir)
   // A fanout's writers run isolated, each bound to its own worktree (plan section 7, fanout.js step 2).
   const roles = json.workflow === 'fanout' ? { ...ROLE_POLICIES, executor: FANOUT_WRITER } : { ...ROLE_POLICIES }
   return {

@@ -4,7 +4,7 @@
 // checks that refuse, a failed setup, and inspectWorktree's facts.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { normalizeOptions } from '../../hooks/options'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
@@ -35,7 +35,8 @@ beforeEach(async () => {
   await git('commit', '-q', '-m', 'ignore')
   main = (await git('rev-parse', 'HEAD')).trim()
   litterDir = join(dir, '.claude', 'litter')
-  root = join(dir, '.claude', 'worktrees')
+  // The module's own root for this litter directory: the primary checkout's, resolved.
+  root = join(realpathSync(dir), '.claude', 'worktrees')
   launch = await newLaunchId(p, litterDir, 'alpha')
 })
 afterEach(() => cleanup())
@@ -45,7 +46,6 @@ const newSpec = (over: Partial<SwarmWorktreeSpec> = {}): SwarmWorktreeSpec => ({
   launch,
   node: 'part-a',
   path: join(root, swarmNewWorktreeName('alpha', 'part-a')),
-  worktreeRoot: root,
   branch: 'feature/part-a',
   from: 'main',
   repo: dir,
@@ -127,18 +127,21 @@ describe('addSwarmWorktree', () => {
     expect(!r.ok && r.reason).toContain('the launch ledger records it')
   })
 
-  test('a path that is not <worktreeRoot>/<its name> is refused, and nothing is made', async () => {
-    for (const path of [join(dir, 'elsewhere', 'sw-alpha-part-a'), join(root, 'sw-alpha-other'), join(root, 'sub', 'sw-alpha-part-a')]) {
+  test("a path that is not <the litter directory's worktree root>/<its name> is refused, and nothing is made or recorded", async () => {
+    const unresolved = join(dir, '.claude', 'worktrees', 'sw-alpha-part-a')
+    const paths = [join(dir, 'elsewhere', 'sw-alpha-part-a'), join(root, 'sw-alpha-other'), join(root, 'sub', 'sw-alpha-part-a')]
+    // On a machine whose temp folder is a link, the unresolved spelling isn't the root either.
+    if (unresolved !== newSpec().path) paths.push(unresolved)
+    for (const path of paths) {
       const r = await addSwarmWorktree(p, litterDir, options, newSpec({ path }))
       expect({ path, ok: r.ok }).toEqual({ path, ok: false })
+      expect(!r.ok && r.reason).toContain(`isn't ${root}/sw-alpha-part-a`)
       expect(existsSync(path)).toBe(false)
     }
-    const rs = await records()
-    expect(rs.every(r => r.kind === 'swarm.worktree.failed' && r.body.step === 'check')).toBe(true)
-    expect(rs.length).toBe(3)
+    expect(await records()).toEqual([])
   })
 
-  test('a branch git refuses, and a `from` that names no commit, are refused before git adds anything', async () => {
+  test('a branch git refuses, and a `from` that names no commit, are refused before git adds anything, recording nothing', async () => {
     const bad = await addSwarmWorktree(p, litterDir, options, newSpec({ branch: 'feature/.hidden' }))
     expect(!bad.ok && bad.reason).toContain("git won't take 'feature/.hidden'")
     const dots = await addSwarmWorktree(p, litterDir, options, newSpec({ branch: 'a..b' }))
@@ -148,7 +151,35 @@ describe('addSwarmWorktree', () => {
     const opt = await addSwarmWorktree(p, litterDir, options, newSpec({ from: '--all' }))
     expect(opt.ok).toBe(false)
     expect(existsSync(newSpec().path)).toBe(false)
-    expect((await records()).map(r => r.body.step)).toEqual(['check', 'check', 'check', 'check'])
+    expect(await records()).toEqual([])
+  })
+
+  test('after a refused check, the next attempt records its intent and makes the worktree', async () => {
+    expect((await addSwarmWorktree(p, litterDir, options, newSpec({ from: 'no-such-ref' }))).ok).toBe(false)
+    const made = await addSwarmWorktree(p, litterDir, options, newSpec())
+    expect(made.ok).toBe(true)
+    expect(await kinds()).toEqual(['swarm.worktree.intent', 'swarm.worktree'])
+  })
+
+  test('a check that fails on an open intent is its outcome, and the next attempt records a fresh intent', async () => {
+    const spec = newSpec()
+    await appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.worktree.intent', { node: 'part-a', path: spec.path, branch: spec.branch, from: main })
+    const r = await addSwarmWorktree(p, litterDir, options, newSpec({ from: 'no-such-ref' }))
+    expect(r.ok).toBe(false)
+    expect((await records()).map(x => [x.kind, x.body.step])).toEqual([
+      ['swarm.worktree.intent', undefined],
+      ['swarm.worktree.failed', 'check'],
+    ])
+    expect((await addSwarmWorktree(p, litterDir, options, spec)).ok).toBe(true)
+    expect(await kinds()).toEqual(['swarm.worktree.intent', 'swarm.worktree.failed', 'swarm.worktree.intent', 'swarm.worktree'])
+  })
+
+  test('a retry after a failed setup records its own intent', async () => {
+    expect((await addSwarmWorktree(p, litterDir, options, newSpec({ setup: ['sh', '-c', 'exit 3'] }))).ok).toBe(false)
+    await git('worktree', 'remove', '--force', '--', newSpec().path)
+    await git('branch', '-D', 'feature/part-a')
+    expect((await addSwarmWorktree(p, litterDir, options, newSpec())).ok).toBe(true)
+    expect(await kinds()).toEqual(['swarm.worktree.intent', 'swarm.worktree.failed', 'swarm.worktree.intent', 'swarm.worktree'])
   })
 
   test('a spec naming no launch folder, or a bad name, is refused and records nothing', async () => {
