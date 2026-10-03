@@ -186,8 +186,10 @@ const FANOUT_CHECK = { type: 'object', properties: {
     required: ['id', 'pass', 'evidence', 'gaps'] } },
   combined: str }, required: ['verify_id', 'tasks', 'combined'] }
 const changed = (answer.changed ?? []).map(c => `${showPath(c.path)}  owner: ${c.task ?? 'none'}`)
+// The verifier's union, already capped by the mod when run.start passed it (decision 20); else built here.
+const verifierRules = Array.isArray(args.verifierRules) ? [...(args.rules ?? []), ...args.verifierRules].join('\n') : rulesFor(tasks)
 const check = await call(tag('where', answer.where) + tag('base', answer.base) + tasksTag(tasks, mergedLine) +
-  tag('changed', list(changed)) + tag('contract', args.contract) + tag('rules', rulesFor(tasks)) +
+  tag('changed', list(changed)) + tag('contract', args.contract) + tag('rules', verifierRules) +
   'Check the combined result. Record a verify for gate integration, attempt 1, first.' +
   (readers.length ? ' For read-only tasks, open the cited file:line locations, confirm they say what the report claims, ' +
     'and check that the findings answer the task as asked.' : ''),
