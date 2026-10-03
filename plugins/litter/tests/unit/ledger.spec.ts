@@ -170,7 +170,7 @@ describe('kind', () => {
       for (const agentId of [undefined, 'a1']) {
         const e = asError(await call({ kind, run: RUN }, agentId))
         expect(e.field).toBe('kind')
-        expect(e.allowed).toEqual(['rule.propose'])
+        expect(e.allowed).toEqual(['rule.propose', 'rule.open'])
       }
     }
   })

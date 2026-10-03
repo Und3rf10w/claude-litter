@@ -17,6 +17,13 @@ import { LedgerTampered, RecordTooLarge, appendRecord, readLedger } from './ledg
 import { snapshot } from './snapshot'
 import { writeOut } from './output'
 import { integrationWorktree } from './integrate'
+import { markCritique } from './inflight'
+
+// The other packages' functions reached from here, through one table so tier 2
+// can stand in for them (COMMON, "Another package's module").
+export const deps = {
+  markCritique: (...a: Parameters<typeof markCritique>) => markCritique(...a),
+}
 
 // ---------------------------------------------------------------------------
 // The run's facts, shared with land.ts.
@@ -485,6 +492,12 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
   if (closed) return fail(`litter: run ${run} ${closed}; it takes no more verifies`, 'run')
   const target = verifyTarget(facts, gate, ledger.records)
   if (!target.ok) return target
+
+  // A gate-critic's verify starts its critique, if its start line hasn't (decision 24): the
+  // in-flight flag is set before the suite runs. A failure fails the verify closed.
+  if (json.workflow === 'execute' && ctx.caller.agentType === 'litter:gate-critic' && ctx.caller.agentId !== null) {
+    await deps.markCritique(p, ctx.litterDir!, run, ctx.caller.agentId)
+  }
 
   const ran = await runVerify(p, facts, { gate, attempt, where: target.where, by: authorFor(ctx.caller), timeoutMs: ctx.options.verifyTimeoutMs })
   if (!ran.ok) return ran

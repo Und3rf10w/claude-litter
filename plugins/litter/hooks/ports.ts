@@ -22,7 +22,7 @@ import type {
   ToolCallResult,
   ToolSpec,
 } from 'claude-code'
-import type { DoctorPaneView, SwarmPaneView } from '../types/index'
+import type { BoardView, DoctorPaneView, RulesPaneView, SwarmPaneView } from '../types/index'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
@@ -45,9 +45,11 @@ export type SubagentLimits = Readonly<Record<SubagentLimitName, string | undefin
 /** The settings sources the health check reads one by one (`$.settings.read({ source })`; `flag` isn't a file you edit). */
 export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
 
-/** The two panes' views in `$.state` (types/index.d.ts; package N types them). */
-export type PaneName = 'swarm' | 'doctor'
-export type { DoctorPaneView, SwarmPaneView }
+/** The panes' views in `$.state` (types/index.d.ts): N's swarm and doctor panes, phase 3's board and rules pane. */
+export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules'
+export type { BoardView, DoctorPaneView, RulesPaneView, SwarmPaneView }
+/** Any pane's view; each view's `view` field names its pane, and setView writes it to that pane's atom. */
+export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView
 
 export type RunInit = {
   cwd?: string
@@ -204,5 +206,5 @@ export interface Ports {
   /** `$.ui.copy({ text })`: whether the clipboard took it. */
   copy(text: string): Promise<boolean>
   /** Writes a pane's view into `$.state` (the atoms in register.tsx); the write redraws the pane. */
-  setView(pane: PaneName, view: SwarmPaneView | DoctorPaneView | null): Promise<void>
+  setView(pane: PaneName, view: PaneView | null): Promise<void>
 }

@@ -1,14 +1,6 @@
 // litter's $.state contract (named in plugin.json as "types"). Self-contained:
-// no import or reference. The board's values arrive with the board (phase 3);
-// until then the mod keeps nothing in $.state, since /clear wipes it and every
-// run fact lives in the ledger or $.store.
-
-export type LitterBoard = {
-  /** The run the board shows, or null. */
-  run: string | null
-  /** Bumped by the drain and the record tool, so readers redraw. */
-  version: number
-}
+// no import or reference. $.state holds only what the panes draw: /clear
+// wipes it, and every run fact lives in the ledger or $.store.
 
 // ---------------------------------------------------------------------------
 // The swarm panes (package N; plan 15.5, 15.6, 15.7): the one thing in
@@ -400,8 +392,199 @@ export type DoctorPaneBody = {
  */
 export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
 
+// ---------------------------------------------------------------------------
+// The board (phase 3, AF; plan section 11, decision 21): one run, drawn from
+// its ledger only, by hooks/board/view.ts. Execute runs get the gate table
+// and its detail; fanout, plan and design runs a header and their last
+// records. Texts are cleaned and cut, and colors are theme keys with a word or
+// glyph beside each, as in the swarm panes.
+
+/** A status as drawn: its word, and the color and glyph beside it (15.6). */
+export type BoardStatus = { text: string; color: string; glyph: string }
+
+/** The run's header, left-aligned. */
+export type BoardHeader = {
+  run: string
+  workflow: string
+  /** From runState: `running`, `done`, `halted`… */
+  status: BoardStatus
+  generation: number
+  /** The repair swarm, while a repair generation is open. */
+  repairSwarm: string | null
+  /** run.json's ref, shown without `refs/heads/`. */
+  branch: string
+  /** The base commit, abbreviated. */
+  base: string
+  /** Absolute. */
+  checkout: string
+  started: string
+  ended: string | null
+  /** "ledger tampered at <seq>" when it is. */
+  tampered: string | null
+}
+
+/** A gate's state on the board. */
+export type BoardGateState = 'landed' | 'in progress' | 'halted' | 'waiting' | 'repairing'
+
+/** One gate row: `args.gates`', or one of the chain's earlier lands (`earlier`). */
+export type BoardGateRow = {
+  id: string
+  title: string
+  state: BoardGateState
+  color: string
+  glyph: string
+  /** Counted from the gate's verifies; 0 before the first. */
+  attempt: number
+  maxAttempts: number
+  /** The last verdict's failing dimensions (`plan_adherence`…), empty when it passed or there is none. */
+  failing: string[]
+  /** Absolute: `verdicts/<gate>-<attempt>.md`, or null before a verdict. */
+  verdictFile: string | null
+  /** The land's commit, abbreviated, or null. */
+  commit: string | null
+  /** Landed by an earlier run of the chain, named here. */
+  earlier: string | null
+}
+
+/** The props of the gate table's Client (hooks/board/gates.tsx): plain JSON. */
+export type BoardGatesProps = {
+  /** The run it draws, posted back with each pick so a stale one is caught. */
+  run: string
+  rows: BoardGateRow[]
+  selected: string | null
+}
+
+/** The selected gate's detail. */
+export type BoardGateDetail = {
+  gate: string
+  /** The last verdict's dimensions, in VERDICT's order; empty before a verdict. */
+  dimensions: { name: string; pass: boolean; evidence: string; gaps: string[] }[]
+  /** The last verify: its id, how it ended (howEnded's words), and its log folder, absolute. */
+  verify: { id: string; ended: string; log: string } | null
+  /** The last verdict's `plan_gap`, or ''. */
+  planGap: string
+}
+
+/** A rule version the run delivered (`run.json.rules`), with its standing now (AD's loadRules). */
+export type BoardRuleRow = { ref: string; standing: string; color: string }
+
+/** One of the run's proposals, marked "proposed, not accepted". */
+export type BoardProposalRow = { text: string; source: string; gate: string | null; label: string }
+
+/** One record of a fanout, plan or design run: its kind and a short summary. */
+export type BoardRecordRow = { seq: number; kind: string; text: string }
+
+/** What [Plan] or [Diff G<n>] opened in the pane, or null. */
+export type BoardSection = {
+  kind: 'plan' | 'diff'
+  title: string
+  /** Absolute: the plan file, or null for a diff. */
+  path: string | null
+  text: string
+}
+
+/** One of the board's buttons. */
+export type BoardButton = { key: string; label: string }
+
+export type BoardBody = {
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+  /** Null when there is no run to show. */
+  header: BoardHeader | null
+  /** Execute only. */
+  gates: BoardGatesProps | null
+  detail: BoardGateDetail | null
+  /** The last 30, for the other workflows; empty for execute. */
+  records: BoardRecordRow[]
+  rules: BoardRuleRow[]
+  proposals: BoardProposalRow[]
+  section: BoardSection | null
+  /** [Plan], [Diff G<n>] and [Rules], those that apply. */
+  buttons: BoardButton[]
+  /** The run's ledger head the view was built from, so a rebuild with nothing new is skipped. */
+  stamp: string
+}
+
+/**
+ * The `litter-board` pane's view. `run` is the run shown, null before one is
+ * picked; `body` is absent until the first build is in.
+ */
+export type BoardView = { view: 'board'; v: number; run: string | null; body?: BoardBody }
+
+// ---------------------------------------------------------------------------
+// The rules pane (phase 3, AF; plan 16.3, 16.8): the only place a rule is
+// accepted, dismissed or retired. Built by hooks/rules/paneview.ts from AD's
+// store.
+
+export type RulesTab = 'proposed' | 'in-force'
+
+/** One row: a proposal, an unverified rule file, or a rule in force. */
+export type RulesRow = {
+  /** The row's element key: a proposal's `<store>:<seq>`, a file's rule id. */
+  key: string
+  kind: 'proposal' | 'unverified' | 'accepted'
+  /** Null for a proposal, which gets its id at [Accept]. */
+  id: string | null
+  version: number | null
+  scope: string | null
+  type: string
+  /** Its word, color and glyph: `proposed`, `unverified`, `accepted`, `accepted (committed)`. */
+  status: BoardStatus
+  when: string
+  rule: string
+  /** Empty: "no paths: applies to every gate". */
+  paths: string[]
+  /** "local L-… overrides U-…", "matches no file", an unverified file's reason, a proposal's run and gate. */
+  notes: string[]
+  /** An edit proposal's diff against the version in force. */
+  diff: SwarmSpan[] | null
+  source: string | null
+  /** The buttons it has: `accept`, `edit`, `dismiss`, `retire`. */
+  actions: string[]
+  /** In an import batch: whether it's checked. */
+  checked?: boolean
+}
+
+/** A focused import batch (16.8; decision 3). */
+export type RulesBatch = {
+  /** The `rule.import` record's seq. */
+  seq: number
+  instances: { id: string; goal: string; date: string | null; archived: boolean }[]
+  /** The row keys it preselected. */
+  preselected: string[]
+}
+
+/** What a press is waiting on: a scope to accept into, a project file to confirm, or a retire to confirm. */
+export type RulesPending =
+  | { kind: 'scope'; key: string }
+  | { kind: 'preview'; key: string; path: string; text: string }
+  | { kind: 'retire'; key: string }
+
+export type RulesBody = {
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+  counts: { proposed: number; inForce: number }
+  rows: RulesRow[]
+  batch: RulesBatch | null
+  /** The focused row's key, or null. */
+  focus: string | null
+  /** loadRules' problems, shown on the In force tab. */
+  problems: string[]
+  pending: RulesPending | null
+  /** A proposal's paths and type as the pane holds them until [Accept]; `error` is narrowPaths' reason. */
+  editing: { key: string; paths: string; type: string; error: string | null } | null
+}
+
+/** The `litter-rules` pane's view; `body` is absent until the first build is in. */
+export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: RulesBody }
+
 declare module 'claude-code' {
   interface PluginState {
-    litter: { board: LitterBoard; swarmPane: SwarmPaneView | null; doctorPane: DoctorPaneView | null }
+    litter: {
+      board: BoardView | null
+      rulesPane: RulesPaneView | null
+      swarmPane: SwarmPaneView | null
+      doctorPane: DoctorPaneView | null
+    }
   }
 }

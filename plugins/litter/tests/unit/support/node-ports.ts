@@ -14,12 +14,12 @@ import type { ToolSpec } from 'claude-code'
 import type {
   AgentSpec,
   CommandSpec,
-  DoctorPaneView,
   Entry,
   ListedAgent,
   ModelCompleteRequest,
   ModelCompleteResult,
   PaneName,
+  PaneView,
   Ports,
   RunInit,
   RunResult,
@@ -31,7 +31,6 @@ import type {
   SpawnRequest,
   Stat,
   SubagentLimitName,
-  SwarmPaneView,
   ToolCallResult,
 } from '../../../hooks/ports'
 
@@ -138,7 +137,7 @@ export type TestPorts = Ports & {
   toasts: string[]
   copied: string[]
   /** The last view `setView` wrote, by pane. */
-  views: Partial<Record<PaneName, SwarmPaneView | DoctorPaneView | null>>
+  views: Partial<Record<PaneName, PaneView | null>>
   /** Every `registerAgent` and `registerTool` spec, in order (a spec that replaces the method records nothing here). */
   registeredAgents: AgentSpec[]
   registeredTools: ToolSpec[]

@@ -71,7 +71,7 @@
     "repair": {
       "type": "string",
       "title": "When a run fails",
-      "description": "auto: a failed fanout continues as a repair swarm, within the repair budget, without asking, and lands only a verified and independently approved result. off: it stops, keeps everything and recommends the repair. A launch can override it for its run.",
+      "description": "auto: a failed fanout, or an execute run halted on a plan gap or out of attempts, continues as a repair swarm, within the repair budget, without asking, and lands only verified and independently approved work. off: it stops, keeps everything and offers the routes. A launch can override it for its run.",
       "default": "auto",
       "options": ["auto", "off"]
     },
@@ -90,6 +90,12 @@
       "default": 6,
       "min": 1,
       "max": 50
+    },
+    "trailers": {
+      "type": "string",
+      "multiple": true,
+      "title": "Commit trailers",
+      "description": "Optional. Lines litter adds to every commit it makes, one Key: value each, e.g. the attribution your organization requires. litter can't read the session's own attribution settings."
     }
   }
 }

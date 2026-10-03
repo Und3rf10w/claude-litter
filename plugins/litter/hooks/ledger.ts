@@ -62,6 +62,17 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
   proposed_rules: 'strings',
   rounds: 'integer',
   agents: 'integer',
+  // Phase 3: a plan-template critic's verdict (execute's VERDICT, through the
+  // tool), rule.propose's paths, rule.open's proposal, rule.find's applicable.
+  // rule.find's `status` list isn't declared: run.end's `status` is a string,
+  // so its handler decodes it.
+  plan_adherence: 'object',
+  tests_green: 'object',
+  no_regressions: 'object',
+  rules: 'object',
+  paths: 'strings',
+  proposal: 'object',
+  applicable: 'object',
 }
 
 const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {
@@ -194,9 +205,9 @@ export async function dispatchRecord(
   const lower = given.trim().toLowerCase()
   if ((USER_ONLY_KINDS as readonly string[]).includes(lower)) {
     return fail(
-      `litter: '${lower}' is the user's alone, in the rules pane (/litter:rules); a tool call can only propose a rule`,
+      `litter: '${lower}' is the user's alone, in the rules pane (/litter-rules); a tool call can only propose a rule or open one in the pane`,
       'kind',
-      ['rule.propose'],
+      ['rule.propose', 'rule.open'],
     )
   }
   const kind = KNOWN_KINDS.find(k => k.toLowerCase() === lower)

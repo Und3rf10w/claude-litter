@@ -20,6 +20,9 @@ import { recordSwarmBind } from './swarm/admit'
 import { recordSwarmEnd } from './swarm/end'
 import { consumeSwarm } from './swarm/observe'
 import { recordRepairBudget, recordRepairStart } from './repair'
+import { recordGateAmend, recordPlanWrite } from './plan'
+import { consumeInflight } from './inflight'
+import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
@@ -35,7 +38,7 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   land: recordLand,
   'land.abandoned': recordGeneric,
   'land.blocked': recordGeneric,
-  'rule.propose': recordGeneric,
+  'rule.propose': recordRuleProposal,
   'task.bind': recordGeneric,
   'task.result': recordGeneric,
   integrate: recordIntegrate,
@@ -55,10 +58,14 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'worktree.setup_failed': recordGeneric,
   'worktree.removed': recordGeneric,
   'worktree.kept': recordGeneric,
-  'plan.write': recordGeneric,
-  'gate.amend': recordGeneric,
+  'plan.write': recordPlanWrite,
+  'gate.amend': recordGateAmend,
   'wiki.write': recordGeneric,
+  // Rules (phase 3): the rules ledger's, rules/records.ts.
+  'rule.open': recordRuleOpen,
+  'rule.import': recordRuleImport,
   'run.find': recordRunFind,
+  'rule.find': recordRuleFind,
   // Swarms (phase 2b): the two kinds the tool takes have handlers; the mod's own are refused before this table.
   'swarm.revision': recordGeneric,
   'swarm.proposal': recordGeneric,
@@ -88,9 +95,17 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
 }
 
 /**
- * In order: the agent map first, so the others can look an agent up; the
- * swarm's consumer next, so its in-flight table sees a call before anything
- * acts on it; the worktree records before the outputs, so a writer's result
- * finds its worktree.
+ * In order: the agent map first, so the others can look an agent up; an
+ * execute run's in-flight flag next (phase 3, decision 24), so a gate-critic's
+ * start or stop is seen before its output; the swarm's consumer next, so its
+ * in-flight table sees a call before anything acts on it; the worktree
+ * records before the outputs, so a writer's result finds its worktree.
  */
-export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [consumeAgents, consumeSwarm, consumeWorktrees, consumeOutput, consumeLifecycle]
+export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [
+  consumeAgents,
+  consumeInflight,
+  consumeSwarm,
+  consumeWorktrees,
+  consumeOutput,
+  consumeLifecycle,
+]

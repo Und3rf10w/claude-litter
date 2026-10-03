@@ -64,7 +64,7 @@ const tree = (root: string): string[] => (existsSync(root) ? (readdirSync(root, 
 describe('depth and peak', () => {
   test('the 15.7 example: depth 2 passes, peak 18 needs 22 of 20, a warning, and the snippet raises concurrency only', async () => {
     const r = await health(example())
-    expect(r.rows.map(x => x.id)).toEqual(['depth', 'concurrency', 'tool-concurrency', 'per-session', 'tools', 'jq', 'mode', 'worktrees', 'session-worktree', 'git'])
+    expect(r.rows.map(x => x.id)).toEqual(['depth', 'concurrency', 'tool-concurrency', 'per-session', 'tools', 'jq', 'mode', 'worktrees', 'session-worktree', 'git', 'trailers'])
     expect(rowOf(r, 'depth')).toEqual(expect.objectContaining({ severity: 'ok', values: { need: 2, sources: {} } }))
     const conc = rowOf(r, 'concurrency')
     expect(conc.severity).toBe('warning')

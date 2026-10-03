@@ -99,6 +99,72 @@ export type LandAbandonedBody = { gate: GateRef; verify_id: string; reason: stri
 export type LandBlockedBody = { gate: GateRef; verify_id: string; reason: string; paths?: string[] }
 
 // ---------------------------------------------------------------------------
+// Goal mode and amend (phase 3, AB's plan.ts; COMMON steps 2 and 3)
+
+/**
+ * One gate as the planner returns it (prompts, the planner's GATES schema):
+ * what plan.write takes and plan.ts's renderGateSection renders into section
+ * 10's format. `lines` cites the plan's lines it covers, '' for none.
+ */
+export type PlannedGate = {
+  id: string
+  title: string
+  /** The gate's scope, as prose. */
+  scope: string
+  lines: string
+  files: string[]
+  done_when: string
+  checks: string[]
+  adversary: boolean
+}
+
+/** `mcp__litter__record({ kind: 'plan.write', run, gates, continueOf? })`: a re-split names the execute run it continues. */
+export type PlanWriteInput = { kind: 'plan.write'; run: string; gates: PlannedGate[]; continueOf?: string }
+
+/** `mcp__litter__record({ kind: 'gate.amend', run, gate, before?, after, reason })`. */
+export type GateAmendInput = { kind: 'gate.amend'; run: string; gate: string; before?: string; after: string; reason: string }
+
+// ---------------------------------------------------------------------------
+// The gate critic's verdict (plan section 7, execute.js's VERDICT; phase 3)
+
+/** One dimension of a verdict (execute.js's DIM). */
+export type VerdictDimension = { pass: boolean; evidence: string; gaps: string[] }
+
+/** The four dimensions, in the order the verdict and its feedback list them. */
+export const VERDICT_DIMENSIONS = ['plan_adherence', 'tests_green', 'no_regressions', 'rules'] as const
+export type VerdictDimensionName = (typeof VERDICT_DIMENSIONS)[number]
+
+/**
+ * A gate critic's `verdict` record body: execute's VERDICT (plan 7:377-385)
+ * as the critic returned it, `tests_green` as output.sh overwrote it from the
+ * cited verify, and the StructuredOutput call it came from (output.ts).
+ */
+export type GateVerdictBody = {
+  /** The critic's own verify of the tree it judged. */
+  verify_id: string
+  plan_adherence: VerdictDimension
+  tests_green: VerdictDimension
+  no_regressions: VerdictDimension
+  /** The accepted rules in the gate's `<rules>` (section 16.5); "none apply" passes. */
+  rules: VerdictDimension
+  /** '' unless the gate can't pass without an amendment. */
+  plan_gap: string
+  /** Proposals only (section 16.4): each becomes a `rule.propose` in the rules ledger. */
+  proposed_rules: string[]
+  /** Absent for a swarm node's, which records its verdict through the tool. */
+  tool_use_id?: string
+}
+
+/**
+ * A plan-template swarm's verdict (AC's swarm/gate.ts; decisions 1, 14 and
+ * 15), in the run's ledger: execute's VERDICT plus the gate it judges, the
+ * attempt of the verify it cites, and what the mod derives. `approved`: all
+ * four dimensions pass and `plan_gap` is empty. `round` is set only on a
+ * rejection (decision 1); an approval's is null, so the rounds count skips it.
+ */
+export type SwarmGateVerdictBody = GateVerdictBody & { gate: string; attempt: number; approved: boolean; round: number | null }
+
+// ---------------------------------------------------------------------------
 // A repair swarm's verdict (plan 15.10, 15.11; phase 2b-2, Y's swarm/gate.ts)
 
 /** One task of the run, judged once: as fanout.js's FANOUT_CHECK has it. */

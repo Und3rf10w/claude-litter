@@ -30,8 +30,11 @@ export const KNOWN_KINDS = [
   'run.start', 'run.launch', 'run.resume', 'run.stopping', 'run.end',
   'worktree.intent', 'worktree.create', 'worktree.setup_failed', 'worktree.removed', 'worktree.kept',
   'plan.write', 'gate.amend', 'wiki.write',
+  // rules (phase 3; bodies in records/rules.ts): rule.propose above, and the
+  // rules ledger's other two the tool takes
+  'rule.open', 'rule.import',
   // read-only
-  'run.find',
+  'run.find', 'rule.find',
   // swarms (phase 2b; bodies in records/swarm.ts). Through the tool only
   // swarm.bind (a node) and swarm.end (the lead's end request); the rest are the mod's.
   'swarm.revision', 'swarm.proposal', 'swarm.proposal.decided',
@@ -111,7 +114,11 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'plan.write': launcherKind,
   'gate.amend': launcherKind,
   'wiki.write': { by: 'launcher', run: 'none' },
+  // Rules (phase 3): the rules ledger is no run's, so none is resolved.
+  'rule.open': { by: 'any', run: 'none' },
+  'rule.import': { by: 'launcher', run: 'none' },
   'run.find': { by: 'any', run: 'none' },
+  'rule.find': { by: 'any', run: 'none' },
   // Swarms: no run is resolved for the two the tool takes; their handlers find the launch.
   'swarm.revision': modKind,
   'swarm.proposal': modKind,
@@ -145,22 +152,21 @@ export const authorOf = (caller: Caller): Author =>
   caller.agentId === null ? { source: 'launcher' } : { source: 'agent', agentId: caller.agentId, agentType: caller.agentType }
 
 
-const RULE_MAX_BYTES = 8 * 1024
-const GATE_ID = /^G[0-9]+$/
 const VERSION = /^v[1-9][0-9]*$/
 const VERDICTS = ['PASS', 'CONDITIONAL', 'FAIL'] as const
 const OVERALLS = ['APPROVED', 'HOLDING'] as const
 
-const bytes = (text: string) => new TextEncoder().encode(text).length
+// needText, bodyOf and store are shared with the handlers phase 3 moved out
+// (plan.ts's plan.write and gate.amend, rules/records.ts's rule.propose).
 
 /** A required non-empty string field, or the error naming it. */
-function needText(input: RecordInput, field: string, what: string): RecordError | null {
+export function needText(input: RecordInput, field: string, what: string): RecordError | null {
   const v = input[field]
   return typeof v === 'string' && v.trim() !== '' ? null : fail(`litter: '${field}' is required: ${what}`, field)
 }
 
 /** The input without the envelope's own fields, as the record's body. */
-function bodyOf(input: RecordInput): Record<string, unknown> {
+export function bodyOf(input: RecordInput): Record<string, unknown> {
   const { kind: _kind, run: _run, ...rest } = input
   return rest
 }
@@ -173,7 +179,8 @@ function scoped(ctx: RecordCtx, input: RecordInput): Scoped {
   return { run: input.run, runDir: runDir(ctx.litterDir, input.run) }
 }
 
-async function store(ctx: RecordCtx, input: RecordInput, body: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<RecordReply> {
+/** Appends `body` to the resolved run's ledger, by the caller, and answers with its seq and `extra`. */
+export async function store(ctx: RecordCtx, input: RecordInput, body: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<RecordReply> {
   const { run, runDir: dir } = scoped(ctx, input)
   const rec = await appendRecord(ctx.p, dir, { run, kind: input.kind, by: authorOf(ctx.caller), body })
   return { ok: true, kind: rec.kind, run, seq: rec.seq, ...extra }
@@ -327,26 +334,6 @@ const verdict: RecordHandler = async (ctx, input) => {
   return store(ctx, input, { ...bodyOf(input), sha256: latest.sha256 ?? null })
 }
 
-/**
- * `rule.propose`. A proposal goes to the rules ledger (section 16.9), which
- * comes with rules in phase 3; until then one that names its run is stored in
- * that run's ledger, and one without a run is refused.
- */
-const ruleProposal: RecordHandler = async (ctx, input) => {
-  const missing = needText(input, 'rule', 'the rule as a person could accept it: the situation it applies to, then what to do or never do')
-  if (missing) return missing
-  if (bytes(input.rule as string) > RULE_MAX_BYTES) return fail(`litter: 'rule' is over ${RULE_MAX_BYTES} bytes; a rule goes into prompts, so cut it down`, 'rule')
-  if (input.source !== undefined && typeof input.source !== 'string') return fail("litter: 'source' must be a string, e.g. user or critic", 'source')
-  if (input.edits !== undefined && (typeof input.edits !== 'string' || !/^[A-Za-z0-9._-]+@[1-9][0-9]*$/.test(input.edits))) {
-    return fail("litter: 'edits' names the rule an edit is for, as <id>@<version>", 'edits')
-  }
-  if (typeof input.run !== 'string') {
-    return fail("litter: a rule.propose without a run goes to the rules ledger, which comes with rules (phase 3); name the run it came from in 'run'", 'run')
-  }
-  const source = input.source ?? (ctx.caller.agentId === null ? 'user' : 'agent')
-  return store(ctx, input, { ...bodyOf(input), source })
-}
-
 type BindTask = { id: string; bind: string; files: string[] }
 
 /** The writing tasks run.start put in run.json's args, each with its `bind` token (section 7, fanout.js step 2). */
@@ -487,34 +474,6 @@ async function writeBinding(ctx: RecordCtx, run: string, agentId: string, task: 
   await atomicWriteJson(ctx.p, agentPolicyPath(ctx.litterDir!, agentId), policy)
 }
 
-/** `plan.write { run, gates }`: the approved planner gates. Rendering them into plan.md comes with goal mode (phase 3). */
-const planWrite: RecordHandler = async (ctx, input) => {
-  const gates = input.gates
-  if (!Array.isArray(gates) || gates.length === 0) return fail("litter: 'gates' is required: the approved gates, in order", 'gates')
-  const seen = new Set<string>()
-  for (let i = 0; i < gates.length; i++) {
-    const g = gates[i] as { id?: unknown; title?: unknown } | null
-    if (!g || typeof g !== 'object' || typeof g.id !== 'string' || !GATE_ID.test(g.id)) {
-      return fail(`litter: 'gates[${i}].id' must be a gate id like G1`, `gates[${i}].id`)
-    }
-    if (seen.has(g.id)) return fail(`litter: gate id ${g.id} appears twice in 'gates'`, `gates[${i}].id`)
-    seen.add(g.id)
-    if (typeof g.title !== 'string' || g.title.trim() === '') return fail(`litter: 'gates[${i}].title' is required`, `gates[${i}].title`)
-  }
-  return store(ctx, input, bodyOf(input))
-}
-
-/** `gate.amend { run, gate, before, after, reason }`. Writing the amended plan.md comes with amend (phase 3). */
-const gateAmend: RecordHandler = async (ctx, input) => {
-  if (typeof input.gate !== 'string' || !GATE_ID.test(input.gate)) return fail("litter: 'gate' must be the gate id being amended, like G2", 'gate')
-  if (input.before !== undefined && typeof input.before !== 'string') return fail("litter: 'before' must be the gate's text before the amendment", 'before')
-  return (
-    needText(input, 'after', "the amended gate's text, in the plan's gate format") ??
-    needText(input, 'reason', 'why the gate is amended') ??
-    store(ctx, input, bodyOf(input))
-  )
-}
-
 /** `design.feedback { run, feedback }`: your feedback on a delivered plan. */
 const designFeedback: RecordHandler = async (ctx, input) =>
   needText(input, 'feedback', "the user's feedback, in their words") ?? store(ctx, input, bodyOf(input))
@@ -538,10 +497,7 @@ const HANDLERS: Partial<Record<KnownKind, RecordHandler>> = {
   proposal,
   verdict,
   'design.feedback': designFeedback,
-  'rule.propose': ruleProposal,
   'task.bind': taskBind,
-  'plan.write': planWrite,
-  'gate.amend': gateAmend,
   'wiki.write': wikiWrite,
 }
 

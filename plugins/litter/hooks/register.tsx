@@ -20,8 +20,9 @@
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallArgs } from 'claude-code'
-import type { DoctorPaneView, Ports, SpawnStream, Stat, SwarmPaneView } from './ports'
-import { session, setOptions, updateSession } from './session'
+import type { BoardView, DoctorPaneView, Ports, RulesPaneView, SpawnStream, Stat, SwarmPaneView } from './ports'
+import type { CommandRunCatch } from './hooktypes'
+import { getOptions, session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
 import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from './policy'
@@ -74,12 +75,26 @@ import {
   uiPressFailed,
   uiSelectFailed,
 } from './swarm/wiring'
+import { boardCommand, onBoardUi, registerPhase3Commands, renderBoardPane, startBoardTimer } from './board/pane'
+import { onRulesUi, renderRulesPane, rulesCommand } from './rules/pane'
 
-/** The two panes' views (types/index.d.ts); package N writes them through `p.setView`. */
+/** The panes' views (types/index.d.ts): package N's two and phase 3's board and rules pane (AF), written through `p.setView`. */
 const swarmPane = atom({ plugin: 'litter', key: 'swarmPane' } as const, null)
 const doctorPane = atom({ plugin: 'litter', key: 'doctorPane' } as const, null)
+const board = atom({ plugin: 'litter', key: 'board' } as const, null)
+const rulesPane = atom({ plugin: 'litter', key: 'rulesPane' } as const, null)
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/** Why a hook failed, on one line, for a catch's text (as swarm/wiring.ts's). */
+const failure = (next: { readonly error?: { readonly kind: string; readonly message?: string } }): string => {
+  const m = next.error?.message
+  return typeof m === 'string' && m !== '' ? m.replace(/\s+/g, ' ').slice(0, 300) : (next.error?.kind ?? 'unknown')
+}
+
+/** The phase 3 commands' catches: a line naming the command, as the swarm commands' (swarm/wiring.ts). */
+const boardCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-board failed (${failure(next)})` })
+const rulesCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-rules failed (${failure(next)})` })
 
 /** The ports over this dispatch's `$` (ports.ts). */
 function enginePorts($: EngineInterface): Ports {
@@ -171,7 +186,9 @@ function enginePorts($: EngineInterface): Ports {
     copy: async text => (await $.ui.copy({ text })).isCopied,
     setView: async (pane, view) => {
       if (pane === 'swarm') await update($, swarmPane, () => view as SwarmPaneView | null)
-      else await update($, doctorPane, () => view as DoctorPaneView | null)
+      else if (pane === 'doctor') await update($, doctorPane, () => view as DoctorPaneView | null)
+      else if (pane === 'board') await update($, board, () => view as BoardView | null)
+      else await update($, rulesPane, () => view as RulesPaneView | null)
     },
   }
 }
@@ -248,6 +265,7 @@ export const register: Register = (on, options) => {
         for (const f of failed) p.log(`role ${f.role} not registered: ${f.reason}`)
       })
       await step(p, 'swarm commands', () => registerSwarmCommands(p))
+      await step(p, 'board and rules commands', () => registerPhase3Commands(p))
       await step(p, 'litterDir', async () => {
         const r = await resolveLitterDir(p, e.cwd)
         updateSession(r.ok ? { litterDir: r.litterDir, litterDirError: null } : { litterDir: null, litterDirError: r.error })
@@ -270,9 +288,15 @@ export const register: Register = (on, options) => {
         // After recovery, so policy.json's entries say which swarms are live (FIX-U, U1).
         await step(p, 'leftover node policies', () => sweepNodePolicies(p, litterDir))
       }
+      await step(p, 'options', async () => {
+        // The trailers option's lines that aren't `Key: value`, once per session (decision 4).
+        const dropped = getOptions().trailersDropped
+        if (dropped.length > 0) p.log(`the trailers option's lines that aren't one Key: value each were dropped: ${dropped.map(l => JSON.stringify(l.slice(0, 80))).join(', ')}`)
+      })
       await step(p, 'timers', async () => startDrainTimer(p, SPOOL_CONSUMERS))
       await step(p, 'swarm timers', async () => startSwarmTimers(p))
       await step(p, 'pane timer', async () => startPaneTimer(p))
+      await step(p, 'board timer', async () => startBoardTimer(p))
     })
     updateSession({ ready: true })
     return next(e)
@@ -461,5 +485,76 @@ export const register: Register = (on, options) => {
     const p = enginePorts($)
     await rebound(p)
     return onUiSelect(p, e, next)
+  }).catch(uiSelectFailed)
+
+  // Phase 3 (AF): /litter-board and /litter-rules, registered at session.start
+  // and after a /clear; their panes' renders (like the swarm panes', these
+  // don't await `rebound`) and their ui.* events, with the swarm panes' catches.
+  on('command.run', { command: 'litter-board' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return boardCommand(p, e, next)
+  }).catch(boardCommandFailed)
+
+  on('command.run', { command: 'litter-rules' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return rulesCommand(p, e, next)
+  }).catch(rulesCommandFailed)
+
+  on('ui.render', { component: 'Pane', requestId: 'litter-board' }, async ($, e, next) => {
+    return renderBoardPane(await read($, board), $.ui.resolve(e), e)
+  }).catch(paneRenderFailed)
+
+  on('ui.render', { component: 'Pane', requestId: 'litter-rules' }, async ($, e, next) => {
+    return renderRulesPane(await read($, rulesPane), $.ui.resolve(e), e)
+  }).catch(paneRenderFailed)
+
+  on('ui.message', { requestId: 'litter-board' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onBoardUi.message(p, e, next)
+  }).catch(uiMessageFailed)
+
+  on('ui.press', { requestId: 'litter-board' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onBoardUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  on('ui.input', { requestId: 'litter-board' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onBoardUi.input(p, e, next)
+  }).catch(uiInputFailed)
+
+  on('ui.select', { requestId: 'litter-board' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onBoardUi.select(p, e, next)
+  }).catch(uiSelectFailed)
+
+  on('ui.message', { requestId: 'litter-rules' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onRulesUi.message(p, e, next)
+  }).catch(uiMessageFailed)
+
+  on('ui.press', { requestId: 'litter-rules' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onRulesUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  on('ui.input', { requestId: 'litter-rules' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onRulesUi.input(p, e, next)
+  }).catch(uiInputFailed)
+
+  on('ui.select', { requestId: 'litter-rules' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onRulesUi.select(p, e, next)
   }).catch(uiSelectFailed)
 }

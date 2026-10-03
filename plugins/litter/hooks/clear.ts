@@ -25,6 +25,7 @@ import { registerSwarmTools } from './swarm/tools'
 import { nodeTypeSpec } from './swarm/launch'
 import { briefTextFor } from './swarm/store'
 import { registerSwarmCommands, refreshPanes } from './swarm/panes'
+import { refreshBoard, registerPhase3Commands } from './board/pane'
 import { patchSwarmPolicy } from './swarm/guard'
 import { ownedSwarm, rebindOwnership, startOwnerBeat, stopOwnerBeat } from './swarm/owner'
 import { refreshReadOnly, typesAccepted } from './swarm/recover'
@@ -76,6 +77,9 @@ export const others = {
   ownedSwarm: (...a: Parameters<typeof ownedSwarm>) => ownedSwarm(...a),
   typesAccepted: (...a: Parameters<typeof typesAccepted>) => typesAccepted(...a),
   refreshReadOnly: (...a: Parameters<typeof refreshReadOnly>) => refreshReadOnly(...a),
+  // Phase 3 (AF): /litter-board and /litter-rules, and the board's view.
+  registerPhase3Commands: (p: Ports) => registerPhase3Commands(p),
+  refreshBoard: (p: Ports) => refreshBoard(p),
 }
 const defaults = { ...others }
 
@@ -346,6 +350,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     await step(p, 'the swarm tools', async () => updateSession({ swarmToolsRefused: await registerSwarmTools(p) }))
     if (litterDir) for (const s of owned) if (stillLive(s)) await registerTypes(p, litterDir, s)
     await step(p, 'the swarm commands', () => others.registerSwarmCommands(p))
+    await step(p, 'the board and rules commands', () => others.registerPhase3Commands(p))
     if (!litterDir) return
 
     // policy.json's session, and each owned swarm's entry (never one End removed: patchSwarmPolicy leaves a missing entry alone).
@@ -392,9 +397,10 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
   }
 }
 
-/** After the gate opens: the panes' views, since $.state was wiped (N). */
+/** After the gate opens: the panes' views, since $.state was wiped (N; the board, AF, from its ledger). */
 async function redraw(p: Ports): Promise<void> {
   await step(p, 'the panes', () => others.refreshPanes(p))
+  await step(p, 'the board', () => others.refreshBoard(p))
 }
 
 /** Resolves once the rebind in flight, and the redraw after it, are done (tests). */

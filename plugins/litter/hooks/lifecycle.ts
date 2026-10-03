@@ -37,6 +37,7 @@ import type {
   RunStoppingBody,
   Workflow,
 } from './records/run'
+import type { RuleRef, SelectInput, Selection, SelectUnit } from './records/rules'
 import type { Gate } from './gates'
 import type { LockHeld, LockRefused } from './lock'
 import type { SessionRebindBody } from './records/swarm'
@@ -73,6 +74,8 @@ import { getOptions, session } from './session'
 import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
 import { continueAsRepair, repairSummary } from './repair'
+import { executeSummary } from './execsummary'
+import { selectForRun } from './rules/select'
 import {
   acquireLock,
   leaseStale,
@@ -88,6 +91,14 @@ import {
 
 const MOD: Author = { source: 'mod' }
 const LAUNCHER: Author = { source: 'launcher' }
+
+// The other packages' functions phase 3 reaches from here (AE's selection,
+// AB's summary part), through one table so tier 2 can stand in for them
+// (COMMON, "Another package's module"). The mod never changes it.
+export const deps = {
+  selectForRun: (...a: Parameters<typeof selectForRun>) => selectForRun(...a),
+  executeSummary: (...a: Parameters<typeof executeSummary>) => executeSummary(...a),
+}
 
 /** The modes the launch check and run.start refuse (plan section 9, "Launch check"). */
 export const REFUSED_MODES = ['bypassPermissions', 'acceptEdits'] as const
@@ -1694,9 +1705,10 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
 // ---------------------------------------------------------------------------
 // run.start: the checks that read the repository
 
-type Git = (argv: readonly string[], stdin?: string) => Promise<{ code: number; stdout: string; stderr: string }>
+/** git in one directory, with argv the mod built (exported for plan.ts's chainLanded call, phase 3). */
+export type Git = (argv: readonly string[], stdin?: string) => Promise<{ code: number; stdout: string; stderr: string }>
 
-const gitAt = (p: Ports, dir: string): Git => (argv, stdin) =>
+export const gitAt = (p: Ports, dir: string): Git => (argv, stdin) =>
   p.run(['git', '-C', dir, ...argv], stdin === undefined ? { timeoutMs: 120_000 } : { stdin, timeoutMs: 120_000 })
 
 async function must(git: Git, argv: readonly string[], what: string): Promise<string> {
@@ -1811,10 +1823,11 @@ async function readPlan(p: Ports, checkout: string, path: string): Promise<{ ok:
   }
 }
 
-type Member = { run: string; json: RunJson; records: StoredRecord[] }
+/** One run of a chain, as resolveChain loaded it. Exported, with resolveChain and chainLanded, for plan.ts (phase 3). */
+export type Member = { run: string; json: RunJson; records: StoredRecord[] }
 
 /** A continuation's or amend's chain: the original run, its amends and its continuations (plan section 9, "Continuations"). */
-async function resolveChain(p: Ports, litterDir: string, run: string): Promise<{ ok: true; root: Member; members: Member[] } | RecordError> {
+export async function resolveChain(p: Ports, litterDir: string, run: string): Promise<{ ok: true; root: Member; members: Member[] } | RecordError> {
   const cache = new Map<string, Loaded>()
   const load = async (r: string): Promise<Loaded> => {
     let l = cache.get(r)
@@ -1855,10 +1868,10 @@ async function resolveChain(p: Ports, litterDir: string, run: string): Promise<{
   return { ok: true, root, members }
 }
 
-type Landed = { landed: Map<string, string>; foreign: string[] }
+export type Landed = { landed: Map<string, string>; foreign: string[] }
 
 /** A gate landed if it has a land record anywhere in the chain, or a commit with its trailer on the chain's ref. */
-async function chainLanded(git: Git, root: Member, members: Member[]): Promise<Landed> {
+export async function chainLanded(git: Git, root: Member, members: Member[]): Promise<Landed> {
   const landed = new Map<string, string>()
   const runs = new Set(members.map(m => m.run))
   for (const m of members) {
@@ -1899,8 +1912,43 @@ function argsGate(g: Gate, extra: Record<string, unknown> = {}): Record<string, 
   }
 }
 
-/** Your constraints for this run, first in args.rules (plan section 16.5). Accepted rules arrive in phase 3. */
+/** Your constraints for this run, first in args.rules (plan section 16.5), before the accepted rules selection adds. */
 const renderRunRules = (rules: readonly string[]): string[] => rules.map(r => `For this run (stated by you): ${r}`)
+
+/**
+ * AE's selection for a launch. A failure refuses the launch before anything
+ * is written: a run that can't be told its rules doesn't start (section 9,
+ * "Fail closed").
+ */
+async function selectRules(p: Ports, input: SelectInput): Promise<Parsed<Selection>> {
+  try {
+    return ok(await deps.selectForRun(p, input))
+  } catch (err) {
+    return fail(`litter: the accepted rules couldn't be selected for this run (${errText(err)}); /litter-rules shows them and their problems. Launch again once it's fixed`)
+  }
+}
+
+/**
+ * The adversary's Bash clamp (decision 23): fanout.js's read-only list
+ * (workflows/fanout.js, READ_ONLY_BASH), plus the verify command as a prefix,
+ * so it can run the suite and nothing else that writes.
+ */
+export const READ_ONLY_BASH = [
+  'Bash(cat:*)',
+  'Bash(git blame:*)',
+  'Bash(git diff:*)',
+  'Bash(git log:*)',
+  'Bash(git ls-files:*)',
+  'Bash(git show:*)',
+  'Bash(git status:*)',
+  'Bash(grep:*)',
+  'Bash(head:*)',
+  'Bash(ls:*)',
+  'Bash(pwd)',
+  'Bash(tail:*)',
+  'Bash(wc:*)',
+] as const
+const adversaryClamp = (verifyCommand: string): string[] => [...READ_ONLY_BASH, `Bash(${verifyCommand}:*)`]
 
 /** Asks you to approve an argv other than the configured one, showing it exactly. */
 async function approveArgv(p: Ports, what: string, given: string[] | null, configured: readonly string[] | undefined): Promise<Parsed<string[] | null>> {
@@ -1957,6 +2005,8 @@ type Prepared = {
   foreignCommits: string[]
   warnings: string[]
   barText: string | null
+  /** The accepted rule versions selection delivered (phase 3), for run.json's `rules`. */
+  rules: RuleRef[]
 }
 
 const SNAPSHOT_IDENTITY = {
@@ -1991,7 +2041,21 @@ async function prepare(
 ): Promise<{ ok: true; value: Prepared } | RecordError> {
   const git = gitAt(p, checkout)
   const runDir = runDirOf(litterDir, run)
-  const base: Record<string, unknown> = { run, nonce, authorized: spec.authorized.join('\n'), rules: renderRunRules(spec.runRules) }
+  const runRules = renderRunRules(spec.runRules)
+  // `rules` is filled once the accepted rules are selected (phase 3, AE): your run rules, then the run's.
+  const base: Record<string, unknown> = { run, nonce, authorized: spec.authorized.join('\n'), rules: runRules }
+  const select = (units: { gates?: SelectUnit[]; tasks?: SelectUnit[]; planText?: string | null }) =>
+    selectRules(p, {
+      litterDir,
+      workflow: spec.workflow,
+      gates: units.gates ?? [],
+      tasks: units.tasks ?? [],
+      planText: units.planText ?? null,
+      goal: spec.goal,
+      anchors: spec.anchors,
+      checkout,
+      runRules,
+    })
   const warnings: string[] = []
   const symbolic = await git(['symbolic-ref', '-q', 'HEAD'])
   const headRef = symbolic.code === 0 ? symbolic.stdout.trim() : null
@@ -2031,6 +2095,8 @@ async function prepare(
         plan = r
       }
     }
+    const sel = await select({ planText: plan?.text ?? null })
+    if (!sel.ok) return sel
     const snapBase = await snapshotBase(p, git, checkout, run)
     const ref = `refs/litter/${run}/base`
     const verify = spec.verify ?? (options.verify ? [...options.verify] : null)
@@ -2039,6 +2105,7 @@ async function prepare(
       spec.workflow === 'design'
         ? {
             ...base,
+            rules: [...runRules, ...sel.value.run],
             goal: spec.goal,
             deliverable: spec.deliverable,
             bar: spec.bar,
@@ -2052,8 +2119,11 @@ async function prepare(
           }
         : {
             ...base,
+            // The planner's own selection (phase 3): the pathless rules, and those the plan or goal's files bring.
+            rules: [...runRules, ...sel.value.planner],
             goal: spec.goal,
-            ...(plan ? { plan: plan.text } : {}),
+            // planPath for the planner's <plan> tag (AB's plan.js).
+            ...(plan ? { plan: plan.text, planPath: plan.path } : {}),
             ...(verify ? { verifyCommand: shellQuote(verify) } : {}),
             ...(goalCheck ? { goalCheckCommand: shellQuote(goalCheck) } : {}),
             ...landedArgs,
@@ -2078,6 +2148,7 @@ async function prepare(
         foreignCommits: [],
         warnings,
         barText: spec.workflow === 'design' ? renderBar(spec.bar) : null,
+        rules: sel.value.versions,
       },
     }
   }
@@ -2152,6 +2223,15 @@ async function prepare(
     }
   }
 
+  // The accepted rules (16.5, AE): each gate's by its Files, each task's by its owned files.
+  const sel = await select(
+    spec.workflow === 'execute'
+      ? { gates: gates.map(g => ({ id: String(g.id), files: [...(g.files as string[])] })), planText: plan?.text ?? null }
+      : { tasks: spec.tasks.map(t => ({ id: t.id, files: [...t.files] })) },
+  )
+  if (!sel.ok) return sel
+  const selection = sel.value
+
   const verify = await approveArgv(p, 'verify', spec.verify, options.verify)
   if (!verify.ok) return verify
   if (!verify.value) return fail("litter: no verify command: set the verify plugin option, or pass 'verify' as an argument list", 'verify')
@@ -2173,19 +2253,22 @@ async function prepare(
 
   const ref = chain ? chain.root.json.ref : `refs/heads/litter/${run}`
   const runPlan = runPlanPath(runDir)
+  const verifyCommand = shellQuote(verify.value)
   const common = {
     ...base,
-    verifyCommand: shellQuote(verify.value),
+    rules: [...runRules, ...selection.run],
+    verifyCommand,
   }
   const args: Record<string, unknown> =
     spec.workflow === 'execute'
       ? {
           ...common,
           planPath: runPlan,
-          gates,
+          gates: gates.map(g => ({ ...g, rules: selection.gates[String(g.id)] ?? [] })),
           ...landedArgs,
           maxAttempts: spec.maxAttempts,
           adversary: spec.adversary,
+          adversaryClamp: adversaryClamp(verifyCommand),
           ...(goalCheck.value ? { goalCheck: true, goalCheckCommand: shellQuote(goalCheck.value) } : {}),
           ...(baseline ? { baseline } : {}),
           ...(spec.continueOf ? { continueOf: spec.continueOf } : {}),
@@ -2193,9 +2276,19 @@ async function prepare(
         }
       : {
           ...common,
-          tasks: spec.tasks.map(t => ({ id: t.id, title: t.title, text: t.text, writes: t.writes, files: t.files, rules: [], ...(t.writes ? { bind: randomId() } : {}) })),
+          tasks: spec.tasks.map(t => ({
+            id: t.id,
+            title: t.title,
+            text: t.text,
+            writes: t.writes,
+            files: t.files,
+            rules: selection.tasks[t.id] ?? [],
+            ...(t.writes ? { bind: randomId() } : {}),
+          })),
           contract: spec.contract ?? '',
           mergeOrder: spec.mergeOrder,
+          // The verifier's own beyond args.rules, already capped (decision 20).
+          verifierRules: selection.verifier,
         }
 
   const isolatePath = spec.isolate ? `${checkout}/.claude/worktrees/litter-${run}` : null
@@ -2231,6 +2324,7 @@ async function prepare(
       foreignCommits,
       warnings,
       barText: null,
+      rules: selection.versions,
     },
   }
 }
@@ -2347,11 +2441,13 @@ async function startHeld(
     previousBranch: prep.previousBranch,
     continueOf: spec.continueOf,
     amendOf: spec.amendOf,
-    rules: [],
+    rules: prep.rules,
     planPath: prep.plan?.path ?? null,
     planSha256: prep.plan?.sha ?? null,
     session: sessionId,
     created: await p.now(),
+    // The trailers option's lines at launch (decision 4): land.ts's attribution adds them to every land's message.
+    ...(options.trailers.length > 0 ? { trailers: [...options.trailers] } : {}),
     // The repair setting the launch confirmation stated (2b-2), under runJsonSha256 with the rest.
     ...(spec.repair ? { repair: spec.repair } : {}),
   }
@@ -2597,14 +2693,19 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   if (end && records.length > 0) lines.push(`- Ended: ${iso(records.filter(r => r.kind === 'run.end').at(-1)?.at)}`)
   if (end?.payload) lines.push('', '## Result', '', '```json', JSON.stringify(end.payload, null, 2), '```')
 
-  const lands = records.filter(r => r.kind === 'land' && typeof r.body.gate === 'string')
-  const planned = Array.isArray(json?.args.gates) ? (json!.args.gates as { id?: unknown }[]).map(g => String(g.id)) : []
-  if (planned.length > 0 || lands.length > 0) {
-    lines.push('', '## Gates', '', '| Gate | Landed |', '|---|---|')
-    const landedBy = new Map(lands.map(r => [String(r.body.gate), String(r.body.commit ?? '')]))
-    for (const id of [...new Set([...planned, ...landedBy.keys()])]) lines.push(`| ${id} | ${landedBy.has(id) ? landedBy.get(id) : 'no'} |`)
-    const earlier = Array.isArray(json?.args.landed) ? (json!.args.landed as { id: string; commit: string }[]) : []
-    if (earlier.length > 0) lines.push('', `Landed earlier in this chain: ${earlier.map(l => `${l.id} (${l.commit})`).join(', ')}`)
+  if (workflow === 'execute') {
+    // AB's execute part (phase 3): attempts, verdicts, the halt, rules and proposals.
+    lines.push(...(await executePart(p, ref, json, records)))
+  } else {
+    const lands = records.filter(r => r.kind === 'land' && typeof r.body.gate === 'string')
+    const planned = Array.isArray(json?.args.gates) ? (json!.args.gates as { id?: unknown }[]).map(g => String(g.id)) : []
+    if (planned.length > 0 || lands.length > 0) {
+      lines.push('', '## Gates', '', '| Gate | Landed |', '|---|---|')
+      const landedBy = new Map(lands.map(r => [String(r.body.gate), String(r.body.commit ?? '')]))
+      for (const id of [...new Set([...planned, ...landedBy.keys()])]) lines.push(`| ${id} | ${landedBy.has(id) ? landedBy.get(id) : 'no'} |`)
+      const earlier = Array.isArray(json?.args.landed) ? (json!.args.landed as { id: string; commit: string }[]) : []
+      if (earlier.length > 0) lines.push('', `Landed earlier in this chain: ${earlier.map(l => `${l.id} (${l.commit})`).join(', ')}`)
+    }
   }
   // The fanout's own part describes how its workflow ended; a repair's verdicts and land are the repair's part below.
   const firstRepair = st.generations.find(g => g.repair !== null)
@@ -2624,6 +2725,16 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   }
   lines.push('')
   await atomicWrite(p, summaryPath(ref.runDir), lines.join('\n'))
+}
+
+/** AB's execute part (execsummary.ts). Its failure is logged, and the rest of the summary stands. */
+async function executePart(p: Ports, ref: RunRef, json: RunJson | null, records: readonly StoredRecord[]): Promise<string[]> {
+  try {
+    return await deps.executeSummary(p, ref, json, records)
+  } catch (err) {
+    p.log(`run ${ref.run}: the summary's execute part failed: ${errText(err)}`)
+    return []
+  }
 }
 
 /** X's "Repair" section (repair.ts). Its failure is logged, and the rest of the summary stands. */
