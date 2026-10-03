@@ -620,3 +620,106 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(rs.at(-1)!.body).toEqual(expect.objectContaining({ agentId: 'x1', adopted: true }))
   })
 })
+
+describe('U5: one budget per hook dispatch', () => {
+  /** The engine's `next.budget`, read fresh on each access: `left` ms when made, spent by the fake clock's sleeps. */
+  function metered<N extends object>(next: N, left: number): N {
+    const start = p.clock.now!
+    Object.defineProperty(next, 'budget', {
+      get: () => Object.freeze({ ms: 10_000, remainingMs: Math.max(0, left - (p.clock.now! - start)) }),
+      enumerable: true,
+    })
+    return next
+  }
+  const slept = () => p.sleeps.reduce((a, b) => a + b, 0)
+
+  async function settlingWorker(): Promise<void> {
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
+    await admit.settleNode(p, { agentId: 'w1', turnId: 't1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    expect(state.status('w1')).toBe('settling')
+  }
+
+  test('a send to a settling node after a slow rebind waits only what the hook has left, then refuses and queues nothing', async () => {
+    await settlingWorker()
+    const { next, calls } = sendNext()
+    // rebound spent 8.9 s of the 10 s: 1.1 s left, of which 500 ms is kept back.
+    const r = await send(sendE('w1', 'and the changelog'), metered(next as object, 1_100) as never)
+    expect(r).toEqual({ isDelivered: false, reason: expect.stringContaining('ran out of time to wait for it') })
+    expect(slept()).toBeLessThanOrEqual(600)
+    expect(calls).toEqual([])
+    expect(state.queued('alpha')).toEqual([])
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'send-refused', agentId: 'w1' }))
+  })
+
+  test("the ready gate takes only what's left too: a closed gate rejects before the hook's budget does", async () => {
+    await settlingWorker()
+    state.closeGate()
+    const { next, calls } = sendNext()
+    await expect(send(sendE('w1', 'and the changelog'), metered(next as object, 2_000) as never)).rejects.toThrow("litter: the swarm state isn't ready")
+    expect(slept()).toBeLessThanOrEqual(1_500)
+    expect(calls).toEqual([])
+    expect(state.queued('alpha')).toEqual([])
+  })
+
+  test("with nothing metering the dispatch, its waits share the hook's 10 s from the hook's start", async () => {
+    await settlingWorker()
+    state.closeGate()
+    // The gate opens after 7.9 s of polling, inside ready's own 8 s: the settle wait gets what's left of the 9.5 s.
+    p.onSleep = () => {
+      if (slept() === 7_900) state.openGate()
+    }
+    const { next, calls } = sendNext()
+    const r = await send(sendE('w1', 'and the changelog'), next)
+    expect(r).toEqual({ isDelivered: false, reason: expect.stringContaining('ran out of time to wait for it') })
+    expect(slept()).toBeLessThanOrEqual(9_500)
+    expect(calls).toEqual([])
+    expect(state.queued('alpha')).toEqual([])
+  })
+
+  test('plenty left: the settle wait keeps its own 2 s cap, then queues as before', async () => {
+    await settlingWorker()
+    const { next } = sendNext()
+    expect(await send(sendE('w1', 'and the changelog'), metered(next as object, 9_000) as never)).toEqual({ isDelivered: true })
+    expect(p.sleeps).toEqual(Array(8).fill(250))
+    expect(state.queued('alpha').map(m => m.text)).toEqual(['and the changelog'])
+  })
+
+  test("swarm_send: the lead's send to a settling node is refused in the tool's shape, with nothing queued", async () => {
+    await settlingWorker()
+    const next = metered(
+      (() => {
+        throw new Error('swarm_send is answered by the mod')
+      }) as object,
+      1_100,
+    )
+    const reply = (await admit.swarmSendTool(p, { tool: SWARM_SEND, tool_use_id: 'toolu_s', swarm: 'alpha', node: 'fixer#1', text: 'and the changelog' } as never, next as never)) as {
+      result: string
+    }
+    expect(JSON.parse(reply.result)).toEqual(expect.objectContaining({ ok: false, error: expect.stringContaining('ran out of time to wait for it') }))
+    expect(slept()).toBeLessThanOrEqual(600)
+    expect(state.queued('alpha')).toEqual([])
+  })
+
+  test("turn.step: a node's step waits on a closed gate only for what's left", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    state.closeGate()
+    const next = metered(async function* () {
+      yield { kind: 'text' as const, index: 0, text: 'model says hi' }
+    } as object, 1_000)
+    const gen = admit.admitStep(p, stepE('w1', 't1', 0) as never, next as never) as AsyncGenerator<unknown, unknown>
+    await expect(gen.next()).rejects.toThrow("litter: the swarm state isn't ready")
+    expect(slept()).toBeLessThanOrEqual(500)
+  })
+
+  test("the browser's send takes the budget it's handed", async () => {
+    await settlingWorker()
+    const budget = await admit.waitBudget(p, metered({}, 1_100))
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'and the changelog', when: 'interject', route: 'direct' }, budget)
+    expect(out).toEqual(expect.objectContaining({ kind: 'refused', canQueue: true, reason: expect.stringContaining('ran out of time to wait for it') }))
+    expect(slept()).toBeLessThanOrEqual(600)
+    expect(state.queued('alpha')).toEqual([])
+  })
+})

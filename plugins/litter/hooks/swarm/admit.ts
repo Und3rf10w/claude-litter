@@ -15,6 +15,7 @@
 // the swarm_send and ui.message dispatches, and submits to the lead only from
 // its own timers (decision 2; 15.9, item 19).
 
+import type { AgentPolicy } from '../hookfiles'
 import type { Ports, SessionSendResult } from '../ports'
 import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
@@ -22,6 +23,8 @@ import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply }
 import type { BrowserSend, ClearKill, ClearReason, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
+import { agentPolicyPath, hooksDir } from '../layout'
+import { readJson } from '../fsx'
 import { session } from '../session'
 import { renderSlots } from '../prompts/slots'
 import {
@@ -55,6 +58,34 @@ const CONTEXT_LINE_MAX = 160
 const utf8 = (text: string): number => new TextEncoder().encode(text).length
 const isMain = (to: string): boolean => to.trim().toLowerCase() === 'main'
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`)
+
+// ---------------------------------------------------------------------------
+// The hook's budget (FIX-U, U5)
+
+/** A hook's own time per dispatch (the d.ts's HookBudget): a `$.clock` wait spends it, no other `$` call does. */
+export const HOOK_BUDGET_MS = 10_000
+/** Kept back from every wait, for the hook's code after it. */
+export const BUDGET_MARGIN_MS = 500
+
+/** What a wait may still spend of this dispatch's budget, read fresh each time. */
+export type WaitBudget = { left(): Promise<number> }
+
+/**
+ * One budget per hook dispatch: from the engine's `next.budget`, which counts
+ * the hook's own time from its start (rebound's wait included) and stands
+ * still through every `$` call but a `$.clock` wait. Where nothing meters it
+ * (Infinity, or a test's bare next), the hook's 10 s from now. Each wait takes
+ * the smaller of its own cap and what's left, less the margin; past it, the
+ * hook refuses in its event's shape and queues nothing.
+ */
+export async function waitBudget(p: Ports, next?: object): Promise<WaitBudget> {
+  // `budget` is a getter on the engine's next: each read is the meter now.
+  const metered = (): number | undefined => (next as { readonly budget?: { readonly remainingMs: number } } | undefined)?.budget?.remainingMs
+  const first = metered()
+  if (first !== undefined && Number.isFinite(first)) return { left: async () => Math.max(0, (metered() ?? 0) - BUDGET_MARGIN_MS) }
+  const start = await p.now()
+  return { left: async () => Math.max(0, HOOK_BUDGET_MS - ((await p.now()) - start) - BUDGET_MARGIN_MS) }
+}
 
 // ---------------------------------------------------------------------------
 // What the spawn check and admission share (spawn.ts imports these)
@@ -406,20 +437,33 @@ async function queueFor(p: Ports, s: LiveSwarm, req: SendReq, at: number): Promi
 /**
  * Judges a send and carries it out with `deliver` (the hook's `next`, or the
  * mod's own `p.send`): delivered, resumed with a place, readdressed to the
- * parent, queued, or refused. Each ends in at most one `deliver`.
+ * parent, queued, or refused. Each ends in at most one `deliver`. Its settle
+ * wait spends `budget`, the dispatch's.
  */
-async function routeSend(p: Ports, req: SendReq, deliver: Deliver, depth = 0): Promise<Routed> {
+async function routeSend(p: Ports, req: SendReq, deliver: Deliver, budget: WaitBudget, depth = 0): Promise<Routed> {
   const b = req.to
   const s = state.liveSwarm(b.swarm)
   const at = await p.now()
   // Queue: held while the node runs or settles; sent at once when it's idle.
   if (req.delivery === 'queue' && s && swarmRefusal(s, b.swarm, false) === null && state.status(b.agentId) !== 'idle') return queueFor(p, s, req, at)
   let v = judge(b, req.sender, at)
-  // Settling: wait for the list to let it go, then judge again (a $.clock wait spends the hook's budget: keep it to 2 s).
+  // Settling: wait for the list to let it go, then judge again (a $.clock wait spends the hook's budget:
+  // 2 s at most, and never more than the dispatch has left).
+  let outOfTime = false
   for (let waited = 0; v.kind === 'settling' && waited < SETTLE_WAIT_MS; waited += SETTLE_STEP_MS) {
+    if ((await budget.left()) < SETTLE_STEP_MS) {
+      outOfTime = true
+      break
+    }
     await p.sleep(SETTLE_STEP_MS)
     await settleIfDone(p, b)
     v = judge(b, req.sender, await p.now())
+  }
+  if (v.kind === 'settling' && outOfTime) {
+    // Past the budget the engine treats the hook as absent, so it queues nothing it can't answer for.
+    const reason = `${labelOf(b)} is finishing its turn, and this hook ran out of time to wait for it; send it again, or queue it`
+    await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason })
+    return refused(reason, true)
   }
   if (v.kind === 'settling') return s ? queueFor(p, s, req, at) : refused(`swarm ${b.swarm} isn't live`, false)
   if (v.kind === 'refuse') {
@@ -427,7 +471,7 @@ async function routeSend(p: Ports, req: SendReq, deliver: Deliver, depth = 0): P
     await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason: v.reason })
     return refused(v.reason, v.canQueue)
   }
-  if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, depth)
+  if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, budget, depth)
   if (v.kind === 'deliver') {
     const r = await deliver(b.agentId, req.text)
     if (!r.isDelivered) return { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
@@ -475,7 +519,7 @@ async function resumeNow(p: Ports, s: LiveSwarm, req: SendReq, key: string, deli
 const REPLY_WHY = "it has finished its turn, so its parent passes the message on and keeps its report"
 
 /** The reply route (15.4): the message goes to the parent, wrapped, and through admission there in turn. */
-async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBinding | null, deliver: Deliver, depth: number): Promise<Routed> {
+async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBinding | null, deliver: Deliver, budget: WaitBudget, depth: number): Promise<Routed> {
   const b = req.to
   const wrapped = wrapFor(b, req.label, req.raw)
   await swarmEvent(p, s, { kind: 'readdressed', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, parent: parent?.agentId ?? 'lead', why: REPLY_WHY })
@@ -487,7 +531,7 @@ async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBind
       : { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
   }
   if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`, false)
-  const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, depth + 1)
+  const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, budget, depth + 1)
   if (up.outcome.kind === 'delivered') return { result: up.result, outcome: { kind: 'readdressed', to: parent.agentId, parentNode: parent.node, why: REPLY_WHY } }
   return up
 }
@@ -539,6 +583,57 @@ async function resolveTo(p: Ports, to: string): Promise<NodeBinding | 'ambiguous
   return bound.length === 1 && named.length === 1 ? bound[0]! : 'ambiguous'
 }
 
+/** An id the hooks name a file by (lib.sh's lt_id_ok). */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/**
+ * The swarm of an agent the mod no longer binds whose policy file is still
+ * there, when that swarm isn't live: End keeps a running agent's file, so
+ * the guard denies it, and admission refuses it too, or a later send or a
+ * late child's wake would resume an old node with nothing admitting it.
+ * Null for an agent with no such file, the mod never knew, or of a launch
+ * still live. A file that doesn't read is refused as the guard denies it.
+ * A former node resumed after the sweep removed its file is still denied by
+ * the guard (a `litter:sw-*` type with no binding); a former child resumed
+ * then is a plain subagent.
+ */
+async function endedSwarmOf(p: Ports, agentId: string): Promise<string | null> {
+  const dir = session().litterDir
+  if (!dir || !AGENT_ID.test(agentId)) return null
+  const path = agentPolicyPath(dir, agentId)
+  if (!(await p.fs.exists(path))) return null
+  let node: AgentPolicy['node']
+  try {
+    node = (await readJson<AgentPolicy>(p, path))?.node
+  } catch {
+    return 'an unknown swarm (its policy file is unreadable)'
+  }
+  if (!node || typeof node.swarm !== 'string') return null
+  return state.liveSwarm(node.swarm)?.launch === node.launch ? null : node.swarm
+}
+
+/** A send to an agent of an ended swarm: refused, naming it; null for any other recipient. */
+async function endedRefusal(p: Ports, to: string): Promise<SessionSendResult | null> {
+  const dir = session().litterDir
+  if (isMain(to) || !dir || !(await p.fs.exists(`${hooksDir(dir)}/agents`))) return null
+  const refusal = (swarm: string, id: string): SessionSendResult => ({
+    isDelivered: false,
+    reason: `litter: swarm ${swarm} has ended: ${id} was one of its agents, and takes no more messages`,
+  })
+  const id = to.trim()
+  const direct = await endedSwarmOf(p, id)
+  if (direct !== null) return refusal(direct, id)
+  // By name, or a received `from` address, as resolveTo takes them.
+  const addr = FROM_ADDRESS.exec(id)
+  const name = addr ? addr[1]! : id
+  for (const a of await p.listAgents()) {
+    if (a.id === id || !(a.name === name || (addr !== null && a.id.includes(addr[2]!)))) continue
+    const swarm = await endedSwarmOf(p, a.id)
+    if (swarm !== null) return refusal(swarm, a.id)
+  }
+  return null
+}
+
 /** Who sent, for the event and the wrapper. */
 function senderOf(e: Parameters<PortHook<SessionSendHook>>[1], fromB: NodeBinding | null): { from: string; label: string } {
   if (e.agentId !== undefined) return { from: e.agentId, label: fromB ? labelOf(fromB) : `agent ${e.agentId}` }
@@ -573,15 +668,17 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
  */
 export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
   if (e.origin.kind === 'plugin' && ownSends.has(ownKey(e.to, e.text))) return next(e)
-  await state.ready(p)
-  if (state.liveSwarms().length === 0) return next(e)
+  const budget = await waitBudget(p, next)
+  await state.ready(p, await budget.left())
+  // A send to no node passes, but not to an agent of a swarm that has ended (its file is still there).
+  if (state.liveSwarms().length === 0) return (await endedRefusal(p, e.to)) ?? next(e)
   const sender = e.agentId ?? null
   const fromB = sender !== null ? state.binding(sender) : null
   const toB = await resolveTo(p, e.to)
   if (toB === 'ambiguous') {
     return { isDelivered: false, reason: `litter: '${e.to}' could name more than one agent, a swarm node among them; address it by its agent id` }
   }
-  if (!toB && !fromB) return next(e)
+  if (!toB && !fromB) return (await endedRefusal(p, e.to)) ?? next(e)
   kick(p)
   const toParent = fromB !== null && (fromB.parent === null ? isMain(e.to) : toB?.agentId === fromB.parent)
   const toLead = fromB !== null && !toB && isMain(e.to)
@@ -594,6 +691,11 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
     }
   }
   if (!toB) {
+    // A node's SendMessage to `main` (and its hand-back, which never comes through here) is the
+    // engine's own message, shown to the lead as the agent's: litter passes its text as it is,
+    // and neutralises only the texts it writes itself (`unblock`).
+    const ended = await endedRefusal(p, e.to)
+    if (ended) return ended
     const r = await next(e)
     if (fromB && r.isDelivered) await noteFromNode(p, fromB, toLead, false, e.text)
     return r
@@ -603,6 +705,7 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
     p,
     { to: toB, text: e.text, raw: e.text, sender, from: who.from, label: who.label, route: 'direct', delivery: 'interject' },
     (to, text) => next({ ...e, to, text }),
+    budget,
   )
   if (fromB && routed.result.isDelivered) await noteFromNode(p, fromB, false, toParent, e.text)
   return routed.result
@@ -624,14 +727,18 @@ const NOT_ADMITTED_LATER = 'this turn was refused at its first step'
 export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, next) {
   const id = e.agentId
   if (id === undefined) return yield* next(e)
-  await state.ready(p)
-  const b = state.binding(id)
-  if (!b) return yield* next(e)
+  await state.ready(p, await (await waitBudget(p, next)).left())
   const refusal = async function* (reason: string) {
     const answer = `litter: not admitted: ${reason}; ending this turn`
     yield { kind: 'text' as const, index: 0, text: answer }
     yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage: null }
     return { turnId: e.turnId, index: e.index, answer, toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  }
+  const b = state.binding(id)
+  if (!b) {
+    // An agent of a swarm that has ended (End kept its file): a later send or a late child's wake resumes nothing.
+    const ended = await endedSwarmOf(p, id)
+    return ended === null ? yield* next(e) : yield* refusal(`swarm ${ended} has ended`)
   }
   if (state.isRefusedTurn(id, e.turnId)) return yield* refusal(NOT_ADMITTED_LATER)
   if (state.status(id) === 'running') return yield* next(e)
@@ -831,7 +938,7 @@ function joinQueued(list: readonly QueuedMessage[]): { text: string; raw: string
 }
 
 /** swarm_send `{ queued }`: the stored messages for that node, sent through admission, then dropped from the queue. */
-async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
+async function deliverQueued(p: Ports, id: unknown, budget: WaitBudget): Promise<SwarmSendReply> {
   if (typeof id !== 'string' || id.trim() === '') return { ok: false, error: "litter: 'queued' is a queued message id, as litter's request named it" }
   const m = state.queued().find(q => q.id === id.trim())
   if (!m) return { ok: false, error: `litter: no message is queued as '${id}': it was delivered or cancelled` }
@@ -851,6 +958,7 @@ async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
     p,
     { to: b, text: j.text, raw: j.raw, sender: null, from: j.from, label: j.label, route: 'direct', delivery: 'interject' },
     (to, text) => sendOwn(p, to, text),
+    budget,
   )
   const o = routed.outcome
   if (o.kind === 'refused' && o.canQueue) {
@@ -872,17 +980,17 @@ async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
 }
 
 /** tool.call on `mcp__litter__swarm_send`, after register.tsx's drain: answered here, never passed on. */
-export const swarmSendTool: PortHook<SwarmSendHook> = async (p, e) => {
-  const reply = await swarmSend(p, e.agentId, decodeSwarmInput(SWARM_SEND, e as unknown as Record<string, unknown>))
+export const swarmSendTool: PortHook<SwarmSendHook> = async (p, e, next) => {
+  const reply = await swarmSend(p, e.agentId, decodeSwarmInput(SWARM_SEND, e as unknown as Record<string, unknown>), await waitBudget(p, next))
   return { result: JSON.stringify(reply) }
 }
 
-async function swarmSend(p: Ports, agentId: string | undefined, input: Record<string, unknown>): Promise<SwarmSendReply> {
+async function swarmSend(p: Ports, agentId: string | undefined, input: Record<string, unknown>, budget: WaitBudget): Promise<SwarmSendReply> {
   if (agentId !== undefined) return { ok: false, error: "litter: mcp__litter__swarm_send is the lead's alone; a node sends with SendMessage" }
-  await state.ready(p)
+  await state.ready(p, await budget.left())
   if (!session().litterDir) return { ok: false, error: 'litter: this session has no litter directory, so no swarm is live in it' }
   kick(p)
-  if (input.queued !== undefined) return deliverQueued(p, input.queued)
+  if (input.queued !== undefined) return deliverQueued(p, input.queued, budget)
   const found = findInstance(input.swarm, input.node)
   if ('error' in found) return { ok: false, error: `litter: ${found.error}` }
   const text = input.text
@@ -894,13 +1002,18 @@ async function swarmSend(p: Ports, agentId: string | undefined, input: Record<st
     p,
     { to: b, text: frame('lead', 'the lead', text), raw: text, sender: null, from: 'lead', label: 'the lead', route: 'direct', delivery: deliver },
     (to, t) => sendOwn(p, to, t),
+    budget,
   )
   const o = routed.outcome
   if (o.kind === 'refused') return { ok: false, error: `litter: ${o.reason}`, outcome: o }
   return { ok: true, node: instanceName(b), agentId: b.agentId, outcome: o }
 }
 
-/** What the lead gets for a message you route through it (15.4, "Via lead"), with the delivery you chose spelled out. */
+/**
+ * What the lead gets for a message you route through it (15.4, "Via lead"),
+ * with the delivery you chose spelled out. Your text is neutralised, so it
+ * can't close the `<message>` block and go on as litter's own words.
+ */
 function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interject' | 'queue'): string {
   const how = when === 'interject' ? 'now, as an interject (it reads it at its next tool call)' : 'as a queued message (it starts the node\'s next turn)'
   return [
@@ -908,7 +1021,7 @@ function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interjec
     `Check it against what you know, add any context the node needs, then send it with mcp__litter__swarm_send (swarm "${s.name}", node "${instanceName(b)}", deliver "${when}"), and tell the user in a line what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.`,
     '',
     '<message>',
-    text,
+    unblock(text),
     '</message>',
   ].join('\n')
 }
@@ -916,7 +1029,7 @@ function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interjec
 /** A direct message from you, for the lead's next `<swarm>` block (15.4, "Direct skips the lead"). */
 function noteDirectSend(b: NodeBinding, text: string, o: SendOutcome): void {
   if (o.kind === 'refused') return
-  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), delivery: o.kind === 'queued' ? 'queued' : 'interjected', text: oneLine(text) }))
+  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), delivery: o.kind === 'queued' ? 'queued' : 'interjected', text: unblock(oneLine(text)) }))
 }
 
 /**
@@ -925,10 +1038,12 @@ function noteDirectSend(b: NodeBinding, text: string, o: SendOutcome): void {
  * dispatch; a queue is held until the node settles, or sent at once when it's
  * idle; a send to an idle worker takes the reply route. Via the lead, the
  * text is a row the busy lead reads now, or a prompt of its own, submitted
- * from a timer callback.
+ * from a timer callback. `budget` is the ui.message dispatch's (waitBudget
+ * over its next); without one, the hook's 10 s from this call.
  */
-export async function sendFromBrowser(p: Ports, input: BrowserSend): Promise<SendOutcome> {
-  await state.ready(p)
+export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: WaitBudget): Promise<SendOutcome> {
+  const wait = budget ?? (await waitBudget(p))
+  await state.ready(p, await wait.left())
   const s0 = state.liveSwarm(input.swarm)
   const off = swarmRefusal(s0, input.swarm, false)
   if (off) return { kind: 'refused', reason: off, canQueue: false }
@@ -967,6 +1082,7 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend): Promise<Sen
     p,
     { to, text: raw, raw, sender: null, from: 'user', label: 'the user', route, delivery: input.when },
     (t, x) => sendOwn(p, t, x),
+    wait,
   )
   const o = routed.outcome
   noteDirectSend(b, text, o)
@@ -989,10 +1105,25 @@ export async function cancelQueued(p: Ports, id: string): Promise<boolean> {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** A line of node text for the block: its first line, cut, unable to close the block. */
+/** Spacing a model may read past inside a tag: whitespace, zero-widths and the word joiners. */
+const TAG_GAP = '[\\s\\u200b-\\u200f\\u2060-\\u2064\\ufeff]*'
+const TAG_LIKE = new RegExp(`<${TAG_GAP}(/?)${TAG_GAP}(swarm|message)`, 'gi')
+
+/**
+ * The one neutraliser for node, user and spool text in a lead-facing text
+ * (the `<swarm>` block, its direct-message and kill lines, the via-lead
+ * hand-off): every `<swarm`, `</swarm`, `<message` and `</message`, in any
+ * case and spacing, becomes `[swarm`, `[/swarm`, `[message` or `[/message`,
+ * so the text can't open or close a block litter wraps around it.
+ */
+export function unblock(text: string): string {
+  return text.replace(TAG_LIKE, (_m, slash: string, word: string) => `[${slash}${word.toLowerCase()}`)
+}
+
+/** A line of node text for the block: its first line, cut, unable to open or close a block. */
 function firstLine(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-  return cut(oneLine(line), CONTEXT_LINE_MAX).replace(/<\/?swarm\b/gi, '[swarm')
+  return cut(unblock(oneLine(line)), CONTEXT_LINE_MAX)
 }
 
 /** One line of the block, and how readily it goes when the block is over 1 KiB (lower first, then oldest). */
@@ -1040,7 +1171,9 @@ function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly Clear
   for (const k of kills) {
     const mine = state.binding(k.agentId)?.swarm
     if (mine === s.name || (mine === undefined && first)) {
-      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: k.who, call: k.detail ? `${k.tool} (${firstLine(k.detail)})` : k.tool }), keep: P_KILL, at: 0 })
+      // `who` and `tool` come from the clear's table, filled from the spool: one line each, neutralised.
+      const tool = firstLine(k.tool)
+      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: firstLine(k.who), call: k.detail ? `${tool} (${firstLine(k.detail)})` : tool }), keep: P_KILL, at: 0 })
     }
   }
   for (const b of instancesOfSwarm(s)) {
@@ -1068,7 +1201,7 @@ function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly Clear
     const b = state.binding(q.agentId)
     out.push({ text: `${b ? instanceName(b) : q.node}  answered: ${firstLine(q.text)}`, keep: P_CLOSED, at: q.at })
   }
-  for (const d of state.takeDirect(s.name)) out.push({ text: cut(d, 300), keep: P_DIRECT, at: 0 })
+  for (const d of state.takeDirect(s.name)) out.push({ text: cut(unblock(oneLine(d)), 300), keep: P_DIRECT, at: 0 })
   out.push({ text: SWARM_CONTEXT_HINT, keep: KEEP, at: 0 }, { text: SWARM_CONTEXT_CLOSE, keep: KEEP, at: 0 })
   return out
 }

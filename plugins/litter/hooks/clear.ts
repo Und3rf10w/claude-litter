@@ -28,6 +28,7 @@ import { registerSwarmCommands, refreshPanes } from './swarm/panes'
 import { patchSwarmPolicy } from './swarm/guard'
 import { rebindOwnership, startOwnerBeat, stopOwnerBeat } from './swarm/owner'
 import { summaryTick } from './swarm/summary'
+import { DETAIL_MAX_BYTES, spoolLine, TOOL_MAX_BYTES } from './swarm/observe'
 import {
   attach,
   binding,
@@ -152,12 +153,22 @@ async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
 
 const age = (ms: number): string => (ms < 90_000 ? `${Math.max(0, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`)
 
-/** The ask's text: each agent with its open calls and how long each has run (15.4). `$.ui.ask` wants a question mark at the end. */
+/**
+ * The ask's text: each agent with its open calls and how long each has run
+ * (15.4). `$.ui.ask` wants a question mark at the end. A call's tool and
+ * detail come from the spool, which any writer to hooks/spool/ can append
+ * to: they're cleaned again here, one line each, whatever the table holds.
+ */
 function holdQuestion(running: readonly Running[], now: number): string {
+  const call = (c: InflightCall): string => {
+    const tool = spoolLine(c.tool, TOOL_MAX_BYTES)
+    const detail = spoolLine(c.detail ?? '', DETAIL_MAX_BYTES)
+    return detail ? `${tool} (${detail})` : tool
+  }
   const rows = running.map(r =>
     r.calls.length === 0
-      ? `- ${r.who}: running, between commands`
-      : `- ${r.who}: ${r.calls.map(c => `${c.detail ? `${c.tool} (${c.detail})` : c.tool}, running for ${age(now - c.at)}`).join('; ')}`,
+      ? `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: running, between commands`
+      : `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${r.calls.map(c => `${call(c)}, running for ${age(now - c.at)}`).join('; ')}`,
   )
   return `/clear stops these commands halfway (their shells are killed):\n${rows.join('\n')}\nClear anyway?`
 }

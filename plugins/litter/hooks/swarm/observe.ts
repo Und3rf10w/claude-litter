@@ -24,6 +24,7 @@ import { session } from '../session'
 import { errText, git, OID } from '../worktrees'
 import * as state from './state'
 import { others } from './end'
+import { plainText } from './summary'
 
 type Line<E extends SpoolLine['ev']> = Extract<SpoolLine, { ev: E }>
 
@@ -55,6 +56,27 @@ function cutBytes(text: string, max: number): string {
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, LIST_MAX) : [])
+
+/** A call's tool and its detail (guard.sh spools a command's first 80 characters), as the mod keeps them. */
+export const TOOL_MAX_BYTES = 128
+export const DETAIL_MAX_BYTES = 200
+
+/**
+ * Spool text as the mod takes it in: no terminal sequences, controls, bidi
+ * overrides or zero-widths (summary.ts's plainText), cut to `max` UTF-8
+ * bytes. guard.sh and watch.sh strip controls already (lib.sh), but any
+ * writer to hooks/spool/ can append a line naming any agent: a spool line is
+ * a report, never authority (15.4, 15.8), and R5 narrows who can write one,
+ * so its text is cleaned here, and again where the /clear ask shows it.
+ */
+export function spoolText(text: unknown, max: number): string {
+  return cutBytes(plainText(typeof text === 'string' ? text : String(text ?? '')), max)
+}
+
+/** spoolText on one line. */
+export function spoolLine(text: unknown, max: number): string {
+  return cutBytes(plainText(typeof text === 'string' ? text : String(text ?? '')).replace(/\s+/g, ' ').trim(), max)
+}
 
 /** A live swarm this session acts on: not another session's, not handed over. */
 export function actsOn(name: string): LiveSwarm | null {
@@ -147,7 +169,7 @@ async function onCall(p: Ports, line: Line<'call'>): Promise<void> {
   if (!who || typeof line.tool_use_id !== 'string' || line.tool_use_id === '') return
   const at = await lineAt(p, line)
   if (line.phase === 'start') {
-    state.callStart(line.agent_id, line.tool_use_id, String(line.tool), at, typeof line.detail === 'string' ? line.detail : '')
+    state.callStart(line.agent_id, line.tool_use_id, spoolLine(line.tool, TOOL_MAX_BYTES), at, typeof line.detail === 'string' ? spoolLine(line.detail, DETAIL_MAX_BYTES) : '')
     return
   }
   if (line.phase !== 'end') return
@@ -162,8 +184,8 @@ async function onDeny(p: Ports, litterDir: string, line: Line<'deny'>): Promise<
   if (typeof line.tool_use_id === 'string') state.callEnd(line.agent_id, line.tool_use_id)
   if (!who.bound) return
   const { b, s } = who.bound
-  const reason = cutBytes(String(line.reason), REASON_MAX_BYTES)
-  await recordEvent(p, litterDir, s, { kind: 'denied', node: b.node, agentId: b.agentId, tool: String(line.tool), reason })
+  const reason = spoolLine(line.reason, REASON_MAX_BYTES)
+  await recordEvent(p, litterDir, s, { kind: 'denied', node: b.node, agentId: b.agentId, tool: spoolLine(line.tool, TOOL_MAX_BYTES), reason })
   others.noteSummaryTrigger(s.name, 'denied')
 }
 
@@ -179,22 +201,24 @@ async function onHandback(p: Ports, litterDir: string, line: Line<'handback'>): 
   const who = whoIs(line.agent_id, line.agent_type)
   if (!who?.bound) return
   const { b, s } = who.bound
-  const text = typeof line.message === 'string' ? line.message : ''
+  const text = typeof line.message === 'string' ? spoolText(line.message, TEXT_MAX_BYTES) : ''
   if (text.trim() === '') return
   // The same report again is a line delivered twice (a crash mid-drain): it's recorded once.
   const last = state.lastReport(b.agentId)
-  if (last?.via === 'handback' && last.text === cutBytes(text, TEXT_MAX_BYTES)) return
+  if (last?.via === 'handback' && last.text === text) return
   state.noteReport(b.agentId, text, 'handback', await p.now())
-  await recordEvent(p, litterDir, s, { kind: 'report', node: b.node, agentId: b.agentId, via: 'handback', text: cutBytes(text, TEXT_MAX_BYTES) })
+  await recordEvent(p, litterDir, s, { kind: 'report', node: b.node, agentId: b.agentId, via: 'handback', text })
   // A worker's or child's report belongs to its parent; the engine gives it to the lead once the
   // worker's record is evicted (15.4, option B). The spool line can't say which, so the lead's
   // transcript is checked for the hand-back frame from this agent.
   if (b.parent !== null) {
     const key = `${b.agentId}\u0000${String(line.tool_use_id)}`
-    if (!(await reportToLead(p, litterDir, s.name, b, text, key))) {
+    // Matched as the engine framed it: the message as it was sent, not as litter cleaned it.
+    const sent = line.message as string
+    if (!(await reportToLead(p, litterDir, s.name, b, sent, key))) {
       // The engine doesn't await a timer's callback; the promise is handed back for a test's runAfters.
       p.after(LEAD_RECHECK_MS, () =>
-        reportToLead(p, litterDir, s.name, b, text, key).then(
+        reportToLead(p, litterDir, s.name, b, sent, key).then(
           () => undefined,
           err => p.log(`swarm ${s.name}: the report-to-lead check failed: ${errText(err)}`),
         ),
@@ -246,16 +270,18 @@ async function onIsolationLost(p: Ports, litterDir: string, line: Line<'isolatio
   if (!s.flags.isolationLost) state.patchLiveSwarm(s.name, { flags: { ...s.flags, isolationLost: true } })
   if (isolationNoted.has(b.agentId)) return
   isolationNoted.add(b.agentId)
+  const tool = spoolLine(line.tool, TOOL_MAX_BYTES)
+  const cwd = spoolLine(line.cwd, REASON_MAX_BYTES)
   p.log(
-    `swarm ${s.name}: ${b.node} (${b.agentId}) lost its isolation context on ${String(line.tool)} (cwd ${String(line.cwd)}); ` +
+    `swarm ${s.name}: ${b.node} (${b.agentId}) lost its isolation context on ${tool} (cwd ${cwd}); ` +
       "a plugin with a broad tool.call hook is the likely cause; new spawns are refused",
   )
   await recordEvent(p, litterDir, s, {
     kind: 'isolation-lost',
     node: b.node,
     agentId: b.agentId,
-    tool: String(line.tool),
-    cwd: String(line.cwd),
+    tool,
+    cwd,
     expected: typeof line.expected === 'string' ? line.expected : null,
   })
 }

@@ -478,7 +478,9 @@ describe('End swarm', () => {
     expect(readFileSync(summaryPath(), 'utf8')).toContain(`- Kept: ${wt} (branch sw/alpha/fixer-1), fixer`)
     expect(calls.map(c => c[0])).toContain('releaseOwnership')
     expect(state.liveSwarm('alpha')).toBeNull()
-    expect(p.timers.size).toBe(0)
+    // The settle wait is over; the sweep watches fixer #1's kept policy, since it still runs (FIX-U, U1).
+    expect(calls.filter(c => c[0] === 'removeNodePolicy')).toEqual([['removeNodePolicy', 'a-boss']])
+    expect(p.timers.size).toBe(1)
     // Ended straight from the browser (not stopping before): the stopping comes first.
     expect((await kinds()).filter(k => k === 'swarm.stopping').length).toBe(1)
   })
