@@ -684,12 +684,13 @@ export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<vo
     }
     swarms = policy.swarm?.swarms ?? {}
   }
-  const running = await runningIds(p)
-  for (const f of await nodePolicyFiles(p, litterDir)) {
+  const left = (await nodePolicyFiles(p, litterDir)).filter(f => {
     const e = Object.hasOwn(swarms, f.node.swarm) ? swarms[f.node.swarm] : undefined
-    if ((e && e.launch === f.node.launch) || kept.has(f.agentId)) continue
-    kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: running === null || running.has(f.agentId) })
-  }
+    return !(e && e.launch === f.node.launch) && !kept.has(f.agentId)
+  })
+  // The list is read only when there's a leftover to judge.
+  const running = left.length > 0 ? await runningIds(p) : null
+  for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: running === null || running.has(f.agentId) })
   if (kept.size === 0) return
   startSweep(p, litterDir)
   await sweepKept(p, litterDir)

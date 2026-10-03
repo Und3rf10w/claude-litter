@@ -328,6 +328,21 @@ describe('U1: End never leaves a running agent unguarded', () => {
     expect(hasPolicy('gone')).toBe(true)
     expect(calls).toEqual([])
   })
+
+  test('at session.start, with no leftover file, the sweep reads no agent list and starts no timer', async () => {
+    let lists = 0
+    p.listAgents = async () => {
+      lists++
+      return []
+    }
+    await sweepNodePolicies(p, litterDir)
+    // A run's writer binding is no node's.
+    await atomicWriteJson(p, agentPolicyPath(litterDir, 'writer'), { v: 1, run: 'r1', task: { id: 't1', owned: [] } })
+    await sweepNodePolicies(p, litterDir)
+    expect(lists).toBe(0)
+    expect(p.timers.size).toBe(0)
+    expect(calls).toEqual([])
+  })
 })
 
 const statMtime = (agentId: string): number => Bun.file(agentPolicyPath(litterDir, agentId)).lastModified
