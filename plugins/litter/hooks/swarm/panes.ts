@@ -15,10 +15,12 @@ import type { CommandRunHook, PortHook, UiInputHook, UiMessageHook, UiPressHook,
 import type { SwarmNotice } from '../../types/index'
 import type { Draft, SwarmNode, SwarmSpec, Template } from './types'
 import type { SwarmNav } from './view'
+import type { WaitBudget } from './admit'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
 import { liveSwarm, takeProposals, version } from './state'
 import { parameterize } from './templates'
+import { waitBudget } from './admit'
 import {
   LEAD_ROW,
   NODE_FIELDS,
@@ -360,7 +362,13 @@ export function stalePress(n: SwarmNav | null, k: PaneKey, doctorOpen: boolean):
   return null
 }
 
-type Input = { value?: string; kind?: 'change' | 'submit'; data?: Record<string, unknown> }
+type Input = {
+  value?: string
+  kind?: 'change' | 'submit'
+  data?: Record<string, unknown>
+  /** The dispatch's own (admit.ts's waitBudget over its next): a send's settle wait never runs past it (FIX-U, U5). */
+  budget?: WaitBudget
+}
 
 /** ui.message from the tree's Client (`e.element === 'swarm-tree'`). */
 export const onUiMessage: PortHook<UiMessageHook> = async (p, e, next) => {
@@ -375,16 +383,17 @@ export const onUiMessage: PortHook<UiMessageHook> = async (p, e, next) => {
   return {}
 }
 
-/** ui.press on the panes' buttons, keyed `swarm:<view>:<action>[:<arg>]`. */
+/** ui.press on the panes' buttons, keyed `swarm:<view>:<action>[:<arg>]`. [Send] carries the dispatch's budget. */
 export const onUiPress: PortHook<UiPressHook> = async (p, e, next) => {
   if (!parseKey(e.element)) return next(e)
-  await handle(p, e.element, {})
+  await handle(p, e.element, { budget: await waitBudget(p, next) })
   return { element: e.element }
 }
 
+/** ui.input on the panes' fields; ⏎ in the composer sends, with the dispatch's budget. */
 export const onUiInput: PortHook<UiInputHook> = async (p, e, next) => {
   if (!parseKey(e.element)) return next(e)
-  await handle(p, e.element, { value: e.value, kind: e.kind })
+  await handle(p, e.element, { value: e.value, kind: e.kind, budget: await waitBudget(p, next) })
   return { element: e.element, value: e.value }
 }
 
@@ -1305,7 +1314,7 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       return true
     case 'text':
       putInput(TEXT_KEY(name), input.value ?? '')
-      if (input.kind === 'submit') return send(p, name, null, '')
+      if (input.kind === 'submit') return send(p, name, null, '', input.budget)
       if (n.offerQueue) {
         setNav({ ...nav()!, offerQueue: false })
         return true
@@ -1328,9 +1337,9 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       return true
     }
     case 'send':
-      return send(p, name, null, arg)
+      return send(p, name, null, arg, input.budget)
     case 'queue-instead':
-      return send(p, name, 'queue', arg)
+      return send(p, name, 'queue', arg, input.budget)
     case 'cancel': {
       const r = await call(p, `cancelQueued ${arg}`, () => o.cancelQueued(p, arg))
       if (!r.ok) failed(p, 'cancelling', r.error)
@@ -1410,9 +1419,10 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
  * composer showed as `<node>#<n>` ([Send]'s key carries it; ⏎ takes the
  * selection's), by the Route it showed. The To and the Route are view.ts's
  * composerTarget and composerRoute, which the drawing uses too. L refuses an
- * address that's gone.
+ * address that's gone. `budget` is the press's or ⏎'s dispatch's, so L's
+ * settle wait never runs past what that hook has left.
  */
-async function send(p: Ports, name: string, when: 'queue' | null, shown: string): Promise<boolean> {
+async function send(p: Ports, name: string, when: 'queue' | null, shown: string, budget?: WaitBudget): Promise<boolean> {
   const n = nav()!
   const litterDir = litterDirOr()
   if (!litterDir) return true
@@ -1434,7 +1444,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string)
   const prefs = await prefsOf(p, litterDir, name)
   const route = composerRoute(prefs.route, selected)
   const r = await call(p, `sendFromBrowser ${name} ${address} ${when ?? prefs.when} ${route}`, () =>
-    owners().sendFromBrowser(p, { swarm: name, node: address, text, when: when ?? prefs.when, route }),
+    owners().sendFromBrowser(p, { swarm: name, node: address, text, when: when ?? prefs.when, route }, budget),
   )
   if (!r.ok) {
     failed(p, 'Send', r.error)

@@ -188,6 +188,21 @@ describe('what the check applies to', () => {
     expect(state.reservations()).toEqual([])
   })
 
+  // FIX-T 3: a closed gate (a slow /clear rebind) is waited on only for what the hook has left.
+  test("a spawn waits on a closed gate only for what its hook has left, then fails through its catch", async () => {
+    state.closeGate()
+    const { next, calls } = engine()
+    const start = p.clock.now!
+    Object.defineProperty(next, 'budget', { get: () => Object.freeze({ ms: 10_000, remainingMs: Math.max(0, 1_000 - (p.clock.now! - start)) }) })
+    try {
+      await expect(run(spawnE(T('part-a')), next)).rejects.toThrow("litter: the swarm state isn't ready")
+      expect(p.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(500)
+      expect(calls).toEqual([])
+    } finally {
+      state.openGate()
+    }
+  })
+
   test('a named spawn, and one with isolation, are denied', async () => {
     const { next, calls } = engine()
     expect((await run(spawnE(T('part-a'), undefined, { name: 'bob' }), next)).deny).toContain('swarm agents are never named')

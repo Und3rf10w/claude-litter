@@ -33,7 +33,7 @@ import {
   SWARM_RULES,
 } from '../prompts/swarm-instance'
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
-import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal } from './admit'
+import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
 import * as state from './state'
 
 type Spawn = Parameters<PortHook<SpawnHook>>[1]
@@ -286,7 +286,8 @@ async function removeFresh(p: Ports, dir: string, s: LiveSwarm, made: Made): Pro
  * it returns, so before the parent sees the Agent result.
  */
 export const swarmSpawn: PortHook<SpawnHook> = async (p, e, next) => {
-  await state.ready(p)
+  // A closed gate is waited on only for what the hook has left (admit.ts, waitBudget; FIX-U, U5).
+  await state.ready(p, await (await waitBudget(p, next)).left())
   const hit = state.swarmOfType(e.subagentType)
   const parentB = e.parentAgentId !== undefined ? state.binding(e.parentAgentId) : null
   if (!hit && !parentB) return next(e)
