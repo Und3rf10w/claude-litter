@@ -31,8 +31,8 @@ import { LedgerTampered, appendRecord, readLedger } from './ledgercore'
 import { integrationBranch, integrationName } from './layout'
 import { serial, sha256 } from './fsx'
 import { SNAPSHOT_PATHSPEC, snapshot } from './snapshot'
-import { addModWorktree } from './worktrees'
-import { patchRunPolicy, primaryOf } from './lifecycle'
+import { addModWorktree, recordedWorktrees, worktreeRootFor } from './worktrees'
+import { patchRunPolicy } from './lifecycle'
 import { readPolicy } from './policy'
 import { writeOut } from './output'
 import { MOD, OID, type RunFacts, agentOf, ledgerFailure, loadRun, message, roleOf, runClosed } from './verify'
@@ -142,18 +142,9 @@ export const owns = (files: readonly string[], path: string): boolean => files.s
 
 const body = <B>(r: StoredRecord): B => r.body as unknown as B
 
-/**
- * The latest `worktree.create` per name: recordedWorktrees' rule (worktrees.ts,
- * package F), kept here so integration and its tests don't depend on that body.
- */
+/** The latest `worktree.create` per name, the mod's own records only (worktrees.ts). */
 function createsByName(records: readonly StoredRecord[]): Map<string, WorktreeCreateBody> {
-  const out = new Map<string, WorktreeCreateBody>()
-  for (const r of records) {
-    if (r.kind !== 'worktree.create') continue
-    const b = body<WorktreeCreateBody>(r)
-    if (typeof b.name === 'string' && typeof b.path === 'string' && b.path.startsWith('/') && typeof b.branch === 'string') out.set(b.name, b)
-  }
-  return out
+  return new Map(recordedWorktrees(records).map(c => [c.name, c]))
 }
 
 /** The run's integration worktree, from its `worktree.create` record; null before integrate made it. */
@@ -308,24 +299,8 @@ async function markersIn(p: Ports, where: string, files: readonly string[]): Pro
 // ---------------------------------------------------------------------------
 // The integration worktree.
 
-async function realOf(p: Ports, path: string): Promise<string> {
-  try {
-    return (await p.fs.stat(path, { resolve: true })).realPath ?? path
-  } catch {
-    return path
-  }
-}
-
-const dirname = (path: string): string => path.slice(0, Math.max(1, path.lastIndexOf('/')))
-
-/** Where litter's worktrees go: policy.json's while it names the run, else as lifecycle's policyFor computes it. */
-async function worktreeRoot(p: Ports, litterDir: string, run: string): Promise<string> {
-  const policy = await readPolicy(p, litterDir).catch(() => undefined)
-  const root = policy?.run?.run === run ? policy.run.worktreeRoot : undefined
-  if (typeof root === 'string' && root.startsWith('/')) return root
-  const primary = primaryOf(litterDir)
-  return primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
-}
+/** Where litter's worktrees go: the root policy.json gave the run (worktrees.ts). */
+const worktreeRoot = (p: Ports, litterDir: string, run: string): Promise<string> => worktreeRootFor(p, litterDir, run)
 
 /**
  * The integration worktree: the recorded one, or made now with package F's
