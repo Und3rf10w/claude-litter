@@ -2,14 +2,15 @@
 // them, a node's verify run by the mod in its own directory, the critic's
 // verdict and its rounds, the proposals it carries, and the land's own
 // refusals before landRepaired (whose checks are repairland.spec.ts). Real
-// git and real ledgers, in the world repair-harness.ts builds; main's
-// runVerify is stood in for.
+// git and real ledgers, in the world repair-harness.ts builds; runVerify is
+// stood in for, except in "the real runVerify".
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import type { RecordError, RecordReply } from '../../hooks/records/core'
 import type { LiveSwarm } from '../../hooks/swarm/types'
-import type { SwarmVerdictBody } from '../../hooks/records/execute'
+import type { SwarmVerdictBody, VerifyBody } from '../../hooks/records/execute'
 import { appendRecord } from '../../hooks/ledgercore'
+import { snapshot } from '../../hooks/snapshot'
 import { normalizeOptions } from '../../hooks/options'
 import { swarmGateRecord } from '../../hooks/swarm/gate'
 import * as state from '../../hooks/swarm/state'
@@ -358,11 +359,19 @@ describe("land's own refusals", () => {
   })
 })
 
-describe('the seam', () => {
-  test("with runVerify not merged in, a node's verify is refused with the seam's text, and nothing is recorded", async () => {
+describe('the real runVerify', () => {
+  test("a node's verify runs the run's argv in the node's directory, gate repair, recorded as the node's agent", async () => {
     teardown(null)
     w = await repairWorld()
-    expect(asError(await gate(world(), 'verify', 'crit-1'))).toEqual({ ok: false, field: 'kind', error: "litter: runVerify isn't merged into this branch" })
-    expect(await since()).toEqual([])
+    const id = idOf(await gate(world(), 'verify', 'crit-1'))
+    const rec = (await runRecords(world())).find(r => r.kind === 'verify' && r.body.verify_id === id)!
+    const body = rec.body as unknown as VerifyBody
+    expect(body.gate).toBe('repair')
+    expect(id).toMatch(/^repair-1-[0-9a-f]{10}$/)
+    expect(rec.seq).toBeGreaterThan(world().gen.seq)
+    expect(rec.by).toEqual(expect.objectContaining({ source: 'agent', agentId: 'crit-1' }))
+    const snap = await snapshot(world().p, world().integration)
+    expect(body.tree_before).toBe(snap.tree)
+    expect(verifyCalls).toEqual([])
   })
 })

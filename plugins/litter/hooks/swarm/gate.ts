@@ -17,10 +17,10 @@ import type { Ports } from '../ports'
 import type { LitterOptions } from '../options'
 import type { Author, RecordCtx, RecordError, RecordInput, RecordReply, StoredRecord } from '../records/core'
 import type { RunRepairBody } from '../records/run'
-import type { SwarmVerdictBody, SwarmVerdictTask, VerifyBody, VerifyReply } from '../records/execute'
+import type { SwarmVerdictBody, SwarmVerdictTask, VerifyReply } from '../records/execute'
 import type { GateRecordKind, GateResult, SwarmEventBody, SwarmNodeBody } from '../records/swarm'
 import type { FanoutTask } from '../integrate'
-import type { RunFacts } from '../verify'
+import type { RunFacts, VerifyRan, VerifyRun } from '../verify'
 import type { BindingKind, LiveSwarm, NodeBinding, RunLink, SwarmNode } from './types'
 import { fail } from '../records/core'
 import { FANOUT_GATE } from '../records/fanout'
@@ -28,7 +28,7 @@ import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { appendRecord, readLedger } from '../ledgercore'
 import { runDir as runDirOf } from '../layout'
 import { serial } from '../fsx'
-import { readRunFacts, verifyBody } from '../verify'
+import { readRunFacts, runVerify, verifyBody } from '../verify'
 import { fanoutTasks, integrationWorktree } from '../integrate'
 import { landRepaired, REPAIR_GATE, repairGeneration } from '../land'
 import { nodeOf, swarmRefusal, writesFiles } from './admit'
@@ -63,17 +63,10 @@ export type SwarmGateCall = {
 }
 
 // ---------------------------------------------------------------------------
-// The verify runner. main extracted runVerify into verify.ts (fca57f6) during
-// the build; it isn't merged into this branch, so the gate calls it through
-// this seam, and the specs stand in for it.
-
-/** A verify the mod runs: its gate and attempt, the directory (the mod's, never the call's), who records it, its timeout. */
-export type VerifyRun = { gate: string; attempt: number; where: string; by: Author; timeoutMs: number }
-export type VerifyRan = { ok: true; body: VerifyBody; seq: number; log: string }
+// The verify runner (verify.ts), through a seam the specs stand in for.
 
 export const deps: { runVerify: (p: Ports, f: RunFacts, o: VerifyRun) => Promise<VerifyRan | RecordError> } = {
-  // At the merge: `runVerify: (...a) => runVerify(...a),` with `import { runVerify } from '../verify'`.
-  runVerify: async () => fail("litter: runVerify isn't merged into this branch", 'kind'),
+  runVerify: (...a) => runVerify(...a),
 }
 
 // ---------------------------------------------------------------------------

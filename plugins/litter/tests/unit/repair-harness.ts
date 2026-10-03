@@ -15,9 +15,9 @@ import type { Caller, RecordCtx, RecordError, RecordReply, StoredRecord } from '
 import type { RunJson, RunRepairBody } from '../../hooks/records/run'
 import type { VerifyBody, VerifyReply } from '../../hooks/records/execute'
 import type { IntegrateReply, WorktreeCreateBody } from '../../hooks/records/fanout'
-import type { RunFacts } from '../../hooks/verify'
+import type { RunFacts, VerifyRan, VerifyRun } from '../../hooks/verify'
 import type { LiveSwarm, NodeBinding, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
-import type { SwarmGateKind, VerifyRan, VerifyRun } from '../../hooks/swarm/gate'
+import type { SwarmGateKind } from '../../hooks/swarm/gate'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { normalizeOptions } from '../../hooks/options'
 import { verifyLogDir } from '../../hooks/layout'
@@ -281,9 +281,9 @@ export function bind(w: World, agentId: string, node: string, over: Partial<Node
 export const verifyCalls: VerifyRun[] = []
 
 /**
- * main's runVerify (verify.ts at fca57f6) as its doc comment says: the run's
- * stored argv in `o.where`, a snapshot before and after, the record appended
- * as `o.by`. No log parts: the tail is the output.
+ * verify.ts's runVerify, quicker: the run's stored argv in `o.where`, a
+ * snapshot before and after, the record appended as `o.by`. No log parts: the
+ * tail is the output. "the real runVerify" in gate.spec.ts runs the real one.
  */
 export async function standInVerify(p: Ports, f: RunFacts, o: VerifyRun): Promise<VerifyRan | RecordError> {
   verifyCalls.push(o)
