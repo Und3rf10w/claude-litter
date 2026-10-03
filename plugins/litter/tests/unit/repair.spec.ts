@@ -16,7 +16,7 @@ import type { RunEndBody, RunJson } from '../../hooks/records/run'
 import type { VerifyBody } from '../../hooks/records/execute'
 import type { SwarmStartBody } from '../../hooks/records/swarm'
 import type { RepairOpen, RepairOutcome } from '../../hooks/lifecycle'
-import type { RunFacts } from '../../hooks/verify'
+import type { RunFacts, VerifyRun } from '../../hooks/verify'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { integrationBranch, integrationName, ledgerDir, ledgerFileName, runDir as runDirOf, runJsonPath, summaryPath, swarmDir } from '../../hooks/layout'
 import { sha256 } from '../../hooks/fsx'
@@ -49,7 +49,6 @@ import {
   repairSummary,
   repairTurnComplete,
   resetRepairForTests,
-  type VerifyRun,
 } from '../../hooks/repair'
 import { aSpec, refOf, saveSwarm, settle, world, type World } from './swarmlaunch-harness'
 import { runAfters, SUBMIT_REFUSED, type TestPorts } from './support/node-ports'
@@ -380,7 +379,11 @@ describe('the eligibility checks, each failing alone', () => {
     { what: 'the checkout on another branch', set: async () => void (await w.git('switch', '-q', 'main')), reason: `the checkout changed: ${'{dir}'} is on main, not the run's branch litter/${RUN}` },
     { what: 'the checkout with a change', set: async () => void (await w.p.fs.write(join(w.dir, 'notes.txt'), 'mine\n')), reason: 'no longer matches the run\'s base' },
     { what: 'a red baseline', set: () => void (baselineGreen = false), reason: "the baseline verify v11 wasn't green on the run's base (exit 1)", verified: true },
-    { what: "a baseline that can't run", set: () => void (repairDeps.runVerify = originals.runVerify), reason: "the baseline verify couldn't run: runVerify isn't merged into this build" },
+    {
+      what: "a baseline that can't run",
+      set: () => void (repairDeps.runVerify = async () => ({ ok: false, error: 'litter: the snapshot before the verify failed: boom' })),
+      reason: "the baseline verify couldn't run: the snapshot before the verify failed: boom",
+    },
   ]
   for (const c of cases) {
     test(`${c.what}: repair.declined with the reason, and nothing else`, async () => {

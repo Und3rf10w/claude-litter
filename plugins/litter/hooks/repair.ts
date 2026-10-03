@@ -18,14 +18,13 @@
 // failure ends the repair generation halted, with the reason.
 
 import type { Ports } from './ports'
-import type { Author, RecordCtx, RecordError, RecordHandler, RecordReply, StoredRecord } from './records/core'
+import type { RecordCtx, RecordHandler, RecordReply, StoredRecord } from './records/core'
 import type { TurnCompleteHook } from './hooktypes'
 import type { RepairDeclinedBody, RunEndBody, RunJson, RunRepairBody } from './records/run'
 import type { IntegrateConflictBody, IntegrateDoneBody, IntegrateMergeBody, IntegrateSkipBody, TaskBindBody } from './records/fanout'
 import type { VerifyBody } from './records/execute'
 import type { SwarmEventBody } from './records/swarm'
 import type { RepairBudget, RunLink, SwarmNode, SwarmSpec } from './swarm/types'
-import type { RunFacts } from './verify'
 import type { LaunchPlan } from './swarm/launch'
 import type { RunRef, RunState } from './lifecycle'
 import { fail } from './records/core'
@@ -36,7 +35,7 @@ import { getOptions, session } from './session'
 import { readLock } from './lock'
 import { snapshot } from './snapshot'
 import { REPAIR_AGENTS, REPAIR_ROUNDS } from './options'
-import { MOD, howEnded, notGreen, verifyBody } from './verify'
+import { MOD, howEnded, notGreen, runVerify, verifyBody } from './verify'
 import { fanoutTasks, integrationWorktree } from './integrate'
 import { endRepairGeneration, loadLaunchable, reopenForRepair, repoOf, runState, writeSummary } from './lifecycle'
 import { appendLaunchRecord, newLaunchId } from './records/swarm'
@@ -68,20 +67,12 @@ import {
 // The other packages' functions, through one table so tier 2 can stand in for
 // them (COMMON, "Another package's module"). The mod never changes it.
 
-/** verify.ts's runVerify (main, fca57f6): what it's given. */
-export type VerifyRun = { gate: string; attempt: number; where: string; by: Author; timeoutMs: number }
-/** And what it answers: the verify body as recorded, its seq, and its log folder. */
-export type VerifyRan = { ok: true; body: VerifyBody; seq: number; log: string }
-
 export const deps = {
   reopenForRepair: (...a: Parameters<typeof reopenForRepair>) => reopenForRepair(...a),
   endRepairGeneration: (...a: Parameters<typeof endRepairGeneration>) => endRepairGeneration(...a),
   writeSummary: (...a: Parameters<typeof writeSummary>) => writeSummary(...a),
   saveRevision: (...a: Parameters<typeof saveRevision>) => saveRevision(...a),
-  // main's runVerify isn't in this package's branch: the merge swaps this default for
-  // `runVerify: (...a: Parameters<typeof runVerify>) => runVerify(...a),` with `import { runVerify } from './verify'`.
-  runVerify: async (_p: Ports, _f: RunFacts, _o: VerifyRun): Promise<VerifyRan | RecordError> =>
-    fail("litter: runVerify isn't merged into this build, so the baseline can't run"),
+  runVerify: (...a: Parameters<typeof runVerify>) => runVerify(...a),
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))

@@ -1,9 +1,8 @@
 // Tier 1: a halted fanout's notification settles before the <swarm> block
 // (phase 2b-2, WP-W, with V's wiring), as the engine runs it. On prompt.submit
 // the notice's run.end is recorded, then summary.md with its Repair section
-// (repair.ts's, which logs while it's a stub and leaves the rest written), then
-// the repair bridge is called; the <swarm> block and the repair note are built
-// only after, and the engine's turn last. A late notice for generation 1 while
+// (repair.ts's), then the repair bridge is called; the <swarm> block and the
+// repair note are built only after, and the engine's turn last. A late notice for generation 1 while
 // a repair generation is open records nothing and calls no bridge. The tier-2
 // cases are tests/unit/lifecyclerepair.spec.ts.
 
@@ -160,20 +159,20 @@ describe('a halted fanout notice and the repair', () => {
     expect(summary).toContain('- Status: halted (not verified: client failed the verifier)')
     expect(summary).not.toContain('## Repair generation')
 
+    // The bridge (repair.ts) is reached: with no run.start in this hand-built ledger it refuses, and that log marks the call.
     const order = {
       end: at(timeline, 'run.end'),
-      section: at(timeline, `run ${RUN}: the summary's Repair section failed:`),
       summary: timeline.lastIndexOf('summary.md'),
       bridge: at(timeline, `run ${RUN}: the repair bridge failed:`),
-      note: at(timeline, 'prompt.submit repair note failed:'),
       engine: at(timeline, 'engine'),
     }
+    expect(order).toEqual({ end: expect.any(Number), summary: expect.any(Number), bridge: expect.any(Number), engine: expect.any(Number) })
     expect(Object.values(order).every(i => i >= 0)).toBe(true)
-    expect(order.end).toBeLessThan(order.section)
-    expect(order.section).toBeLessThan(order.summary)
+    expect(order.end).toBeLessThan(order.summary)
     expect(order.summary).toBeLessThan(order.bridge)
-    expect(order.bridge).toBeLessThan(order.note)
-    expect(order.note).toBeLessThan(order.engine)
+    expect(order.bridge).toBeLessThan(order.engine)
+    // The Repair section and the note are built without failing.
+    expect(timeline.some(t => t.includes("the summary's Repair section failed") || t.includes('repair note failed'))).toBe(false)
   })
 
   test('a late notice for generation 1 while its repair generation is open records nothing and calls no bridge', async ($, on) => {
