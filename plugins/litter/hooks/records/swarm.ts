@@ -19,7 +19,9 @@ import type {
   BindingKind,
   DiffCounts,
   NodeDir,
+  RepairBudget,
   RevisionFrom,
+  RunLink,
   SendOutcome,
   SpecError,
   SwarmRoots,
@@ -117,6 +119,16 @@ export type SwarmStartBody = {
   worktreeRoot: string
   commonDir: string
   roots: SwarmRoots
+  /** A repair swarm's run (2b-2, X): recovery restores `LiveSwarm.run` from it. */
+  run?: RunLink
+  /** A repair swarm's budget at launch (2b-2, X); a raise is a `budget` event after it. */
+  budget?: RepairBudget
+  /**
+   * Whose message the launch's authority comes from (section 8): the builder's
+   * Launch, your answer to its ask; a repair under `repair: auto`, the run's
+   * own launch confirmation, which stated it (2b-2, X). Absent in older ledgers.
+   */
+  confirmedBy?: { run: string } | { ask: true }
 }
 
 /** swarm.worktree.intent (C's addSwarmWorktree): recorded before `git worktree add`. */
@@ -226,6 +238,18 @@ export type SwarmEventKind =
   | 'ready-to-push'
   | 'pushed'
   | 'clear-killed'
+  | 'gate'
+  | 'budget'
+
+/** The run-ledger records a repair swarm's `gate` event mirrors (2b-2, Y). */
+export type GateRecordKind = 'verify' | 'verdict' | 'land'
+
+/**
+ * A gate record's outcome, as the browser and the swarm summary show it: a
+ * verify's `green` or `red`, a verdict's `approved` or `rejected`, a land's
+ * `landed` or `not-landed`.
+ */
+export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 'not-landed'
 
 /**
  * Each event's own fields, beside `kind`, `node` and `agentId` (writer in brackets).
@@ -257,6 +281,8 @@ export type SwarmEventKind =
  * | ready-to-push (P) | branch, commit |
  * | pushed (P) | branch, commit |
  * | clear-killed (O) | tool, detail |
+ * | gate (Y) | run, seq (the run-ledger record's), record, gate, result, verify_id, round (a verdict's) |
+ * | budget (X) | requested, granted, budget (as it stands after) |
  *
  * A stale owner's stand-down records nothing: it may race the new owner's
  * appends, and the new owner's swarm.handover already says it.
@@ -285,6 +311,19 @@ export type SwarmEventFields = {
   'ready-to-push': { branch: string; commit: string }
   pushed: { branch: string; commit: string }
   'clear-killed': { tool: string; detail: string }
+  /**
+   * A verify, verdict or land a repair swarm's node recorded in its run's
+   * ledger (2b-2, decision 1), mirrored here for the browser. `record` is the
+   * run-ledger kind (the event's own `kind` is `gate`); `gate` is the verify's
+   * or land's gate field, and the cited verify's for a verdict.
+   */
+  gate: { run: string; seq: number; record: GateRecordKind; gate: string; result: GateResult; verify_id: string; round?: number }
+  /**
+   * A `repair.budget` request and your answer to the mod's ask (2b-2,
+   * decision 8): what was asked for, whether you granted it, and the budget
+   * as it stands after. Under `-p` the ask is refused, so `granted` is false.
+   */
+  budget: { requested: { rounds?: number; agents?: number }; granted: boolean; budget: RepairBudget }
 }
 
 /** swarm.event (L, P, O, K): one body per kind. */
@@ -321,6 +360,20 @@ export type SwarmEndBody = {
 
 /** session.rebind (O): after a /clear, in each live launch's ledger and in the open run's. */
 export type SessionRebindBody = { from: string; to: string }
+
+/**
+ * `repair.start` through the record tool (2b-2, X's recordRepairStart): the
+ * launcher's, under `repair: off`, once you picked "repair as a swarm". The
+ * mod then asks you itself and fills the prompt box (COMMON 2b-2, step 3).
+ */
+export type RepairStartInput = { kind: 'repair.start'; run: string }
+
+/**
+ * `repair.budget` through the record tool (2b-2, X's recordRepairBudget): the
+ * launcher's request for more of a live repair swarm's budget. Nothing
+ * changes until you grant it in the mod's own ask (decision 8).
+ */
+export type RepairBudgetInput = { kind: 'repair.budget'; swarm: string; rounds?: number; agents?: number }
 
 /** Every kind's body, for the typed helpers below. */
 export type SwarmBodies = {

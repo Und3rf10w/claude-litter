@@ -38,6 +38,7 @@ import type {
 import type { Gate } from './gates'
 import type { LockHeld } from './lock'
 import type { SessionRebindBody } from './records/swarm'
+import type { RepairBudget, RunLink } from './swarm/types'
 import { fail } from './records/core'
 import { DELIVERABLES, RUN_STATUSES, WORKFLOWS } from './records/run'
 import { parseGates } from './gates'
@@ -65,6 +66,7 @@ import { reconcileLands } from './land'
 import { getOptions, session } from './session'
 import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
+import { continueAsRepair } from './repair'
 import {
   acquireLock,
   leaseStale,
@@ -651,11 +653,12 @@ async function settleNotification(p: Ports, n: Notification): Promise<void> {
     await trySettle(p, ref)
     return
   }
-  let d = decodeReturn(await workflowOf(p, ref, st), end)
+  const workflow = await workflowOf(p, ref, st)
+  let d = decodeReturn(workflow, end)
   // A run that lost an agent's isolation halts, whatever its script returned (section 14).
   const lost = d.status === 'stopped' ? null : await isolationLoss(p, ref)
   if (lost) d = { status: 'halted', reason: lost }
-  await endRun(p, ref, {
+  const out = await endRun(p, ref, {
     taskId: gen.taskId,
     generation: gen.n,
     status: d.status,
@@ -663,20 +666,80 @@ async function settleNotification(p: Ports, n: Notification): Promise<void> {
     ...(d.payload ? { payload: d.payload } : {}),
     source: 'notification',
   })
+  await afterEnd(p, ref, workflow, out)
+}
+
+/**
+ * prompt.submit's first step: each task notification for a run's task writes
+ * run.end and summary.md, and hands a halted fanout to the repair bridge,
+ * before the prompt goes on. register.tsx builds the `<swarm>` block only
+ * after this resolves, so the block sees a repair swarm the bridge started (2b-2).
+ */
+export async function settleNotices(p: Ports, e: Parameters<PromptSubmitHook>[1]): Promise<void> {
+  if (e.origin?.kind !== 'task-notification' || !e.text.includes('<task-notification>')) return
+  for (const n of parseNotifications(e.text)) {
+    try {
+      await settleNotification(p, n)
+    } catch (err) {
+      p.log(`notification for task ${n.taskId} not settled: ${errText(err)}`)
+    }
+  }
 }
 
 /** prompt.submit: a task notification for a run's task writes run.end and summary.md, then next(e). */
 export const onPromptSubmit: PortHook<PromptSubmitHook> = async (p, e, next) => {
-  if (e.origin?.kind === 'task-notification' && e.text.includes('<task-notification>')) {
-    for (const n of parseNotifications(e.text)) {
-      try {
-        await settleNotification(p, n)
-      } catch (err) {
-        p.log(`notification for task ${n.taskId} not settled: ${errText(err)}`)
-      }
-    }
-  }
+  await settleNotices(p, e)
   return next(e)
+}
+
+// ---------------------------------------------------------------------------
+// The repair bridge's call-out, and a repair generation (phase 2b-2)
+
+/**
+ * Hands a halted fanout to X's bridge (repair.ts) once its run.end is
+ * recorded: after endRun returned, so outside the run's serial key, which the
+ * bridge's own records and summary rewrite take. Only the end this call
+ * recorded: a notification and the launcher's fallback can race, and the
+ * loser's endRun records nothing. A rejection is logged; the end stands.
+ */
+async function afterEnd(p: Ports, ref: RunRef, workflow: Workflow, out: { recorded: boolean; end: RunEndBody }): Promise<void> {
+  if (!out.recorded || out.end.status !== 'halted' || workflow !== 'fanout') return
+  try {
+    await continueAsRepair(p, ref.runDir)
+  } catch (err) {
+    p.log(`run ${ref.run}: the repair bridge failed: ${errText(err)}`)
+  }
+}
+
+/** What `run.repair` records besides its generation, which reopenForRepair assigns. */
+export type RepairOpen = { swarm: string; launch: string; budget: RepairBudget }
+
+/**
+ * How a repair generation ends (Z's finish, X's failure after the reopen):
+ * `done` when a land was recorded in it, else `halted` with why.
+ */
+export type RepairOutcome = { status: 'done' | 'halted'; reason: string | null }
+
+/**
+ * Reopens a halted run for its repair swarm (COMMON 2b-2, step 3): takes the
+ * run lock, records `run.repair` for the next generation, and activates
+ * `policy.run` as run.start does. With the lock held, or a generation still
+ * open, it refuses and writes nothing. Answers the link the swarm carries
+ * (`LiveSwarm.run`). Package V's stub refuses.
+ */
+export async function reopenForRepair(_p: Ports, _runDir: string, _open: RepairOpen): Promise<{ ok: true; link: RunLink } | { ok: false; reason: string }> {
+  return { ok: false, reason: "reopening a run for a repair isn't built yet (phase 2b-2)" }
+}
+
+/**
+ * Ends the open repair generation (COMMON 2b-2, step 7): its run.end (`done`
+ * only with a land of this generation in the ledger), the cleanup, the
+ * summary, `deactivate` and the lock's release, in endRun's order and under
+ * its serial key. Idempotent: an ended generation answers its run.end with
+ * `recorded: false`. Package V's stub throws.
+ */
+export async function endRepairGeneration(_p: Ports, _runDir: string, _outcome: RepairOutcome): Promise<{ recorded: boolean; end: RunEndBody }> {
+  throw new Error("litter: ending a repair generation isn't built yet (phase 2b-2)")
 }
 
 // ---------------------------------------------------------------------------
@@ -2213,6 +2276,7 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
     ...(decoded.payload ? { payload: decoded.payload } : {}),
     source: 'launcher',
   })
+  await afterEnd(p, ref, await workflowOf(p, ref, st), r)
   return { ok: true, recorded: r.recorded, end: r.end, summary: summaryPath(ref.runDir) }
 }
 

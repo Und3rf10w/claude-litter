@@ -19,6 +19,7 @@ import { consumeWorktrees } from './worktrees'
 import { recordSwarmBind } from './swarm/admit'
 import { recordSwarmEnd } from './swarm/end'
 import { consumeSwarm } from './swarm/observe'
+import { recordRepairBudget, recordRepairStart } from './repair'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
@@ -78,6 +79,12 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'swarm.handover': recordGeneric,
   'swarm.end': recordSwarmEnd,
   'session.rebind': recordGeneric,
+  // Repair (phase 2b-2): the launcher's two; the mod's own are refused before this table.
+  // A bound swarm node's verify, verdict and land never reach it (ledger.ts routes them to swarm/gate.ts).
+  'run.repair': recordGeneric,
+  'repair.declined': recordGeneric,
+  'repair.start': recordRepairStart,
+  'repair.budget': recordRepairBudget,
 }
 
 /**

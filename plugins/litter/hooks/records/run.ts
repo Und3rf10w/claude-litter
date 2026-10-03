@@ -3,6 +3,8 @@
 // work package D. Refine freely inside this file; other packages import only
 // the names below.
 
+import type { RepairBudget } from '../swarm/types'
+
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
 export const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
 
@@ -23,6 +25,14 @@ export type Lens = { role: LensRole; name: string; focus: string; anchors: strin
 
 /** A fanout task as the launcher passes it; `files` are owned paths, a trailing `/` owns a folder. */
 export type FanoutTaskInput = { id: string; title: string; text: string; writes?: boolean; files?: string[] }
+
+/**
+ * What a run does when its path ends without the result (plan 15.11, the
+ * `repair` option, phase 2b-2): the options' values, or the launch's override
+ * for this run, as the launch confirmation stated them. The bridge reads them
+ * only from the sha-checked run.json, never from the model or `args`.
+ */
+export type RepairSettings = { mode: 'auto' | 'off'; rounds: number; agents: number }
 
 /**
  * `mcp__litter__record({ kind: 'run.start', … })`, from a launcher skill. The
@@ -64,6 +74,10 @@ export type RunStartInput = {
   maxRounds?: number
   priorRun?: string
   feedback?: string
+  // The repair setting for this run (2b-2): unset, the options' values apply.
+  repair?: 'auto' | 'off'
+  repairRounds?: number
+  repairAgents?: number
 }
 
 export type RunStartReply = {
@@ -115,6 +129,12 @@ export type RunJson = {
    * filled yet: it needs a settings port.
    */
   trailers?: string[]
+  /**
+   * The run's repair setting (2b-2), covered by `runJsonSha256` like the
+   * rest. Optional because a run.json written before 2b-2 has none: such a
+   * run never repairs, since its launch confirmation never stated a repair.
+   */
+  repair?: RepairSettings
 }
 
 /** The `run.start` ledger body: run.json's facts, chained, with run.json's and the args' sha256. */
@@ -138,6 +158,8 @@ export type RunStartBody = {
   /** The run lock's oid at launch. */
   oid: string
   session: string
+  /** run.json's `repair` (2b-2); absent in a ledger from before it. */
+  repair?: RepairSettings
 }
 
 export type RunLaunchBody = { taskId: string; runId: string; scriptPath: string | null; generation: number; session: string; oid: string }
@@ -154,6 +176,20 @@ export type RunEndBody = {
   source: 'notification' | 'taskstop' | 'reconcile' | 'launcher' | 'mod'
   settled?: boolean
 }
+
+/**
+ * `run.repair` (W's reopenForRepair, the mod's only; 2b-2): after the run's
+ * run.end, it reopens the run for `generation`, which the repair swarm
+ * `swarm`'s launch `launch` works in, within `budget`. That generation's own
+ * run.end closes it (W's endRepairGeneration).
+ */
+export type RunRepairBody = { generation: number; swarm: string; launch: string; budget: RepairBudget }
+
+/**
+ * `repair.declined` (X's bridge, the mod's only; 2b-2): a halted run that
+ * started no repair, and why, in words for the summary's Repair section.
+ */
+export type RepairDeclinedBody = { reason: string }
 
 export type LockBlob = { run: string; session: string; acquiredAt: number }
 export type LockRecoveredBody = { oid: string; run: string; session: string; branch: string | null; previousBranch: string | null }

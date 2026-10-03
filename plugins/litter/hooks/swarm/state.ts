@@ -13,8 +13,8 @@
 //    more. Read-only and lost swarms are another session's to write.
 //  - Not mirrored, since they're this process's: reservations (a reload ends
 //    the hook that held one), the lead's turn state, the gate, the rebind and
-//    cleared flags, the clear's kills, the noted proposals, and run agents'
-//    calls (they belong to no swarm).
+//    cleared flags, the clear's kills, the noted proposals, run agents'
+//    calls (they belong to no swarm), and whether the session is interactive.
 //  - The objects the getters return are the state's own: read them, and
 //    change them only through the changers.
 //  - Bounded, since $.store is 4 MiB for the whole plugin and a full store
@@ -22,7 +22,8 @@
 //    queue is capped, an agent's entries go with its binding, and a part over
 //    256 KiB sheds old reports and closed questions before it's written.
 //
-// Contract owner: phase 2b-1, package C (built and tested here; tests/unit/state.spec.ts).
+// Contract owner: phase 2b-1, package C (built and tested here; tests/unit/state.spec.ts);
+// the repair budget's counters and the interactive flag are 2b-2's (package V).
 
 import type { Ports } from '../ports'
 import type {
@@ -130,6 +131,10 @@ export type SwarmPart = {
   questions: Question[]
   direct: string[]
   refused: Record<string, string[]>
+  /** 2b-2: the spawns counted against a repair swarm's agents, by reservation key. Absent in an older part. */
+  spawned?: string[]
+  /** 2b-2: the verify ids its verdicts cited, in round order (round n is entry n - 1). Absent in an older part. */
+  rounds?: string[]
 }
 
 /** The $.store key of one swarm's part. */
@@ -160,6 +165,9 @@ let clearKills: ClearKill[] = []
 let recorded: string | null = null
 let gate = 0
 let proposals: { name: string; n: number }[] = []
+const spawnedBy = new Map<string, Set<string>>()
+const roundsBy = new Map<string, string[]>()
+let interactiveFlag: boolean | null = null
 let ver = 0
 
 const callKey = (agentId: string, toolUseId: string) => `${agentId}\u0000${toolUseId}`
@@ -295,6 +303,8 @@ function partOf(name: string, s: LiveSwarm): SwarmPart {
     questions: questionList.filter(q => q.swarm === name),
     direct: [...(directBySwarm.get(name) ?? [])],
     refused: byAgent(refused),
+    spawned: [...(spawnedBy.get(name) ?? [])],
+    rounds: [...(roundsBy.get(name) ?? [])],
   }
 }
 
@@ -348,6 +358,8 @@ export async function loadSwarm(p: Ports, litterDir: string, name: string): Prom
   questionList = [...questionList, ...(part.questions ?? [])]
   directBySwarm.set(name, [...(part.direct ?? [])])
   for (const [id, turns] of Object.entries(part.refused ?? {})) refused.set(id, [...turns])
+  spawnedBy.set(name, new Set(Array.isArray(part.spawned) ? part.spawned.filter(k => typeof k === 'string') : []))
+  roundsBy.set(name, Array.isArray(part.rounds) ? part.rounds.filter(v => typeof v === 'string') : [])
   ver++
   return s
 }
@@ -373,6 +385,8 @@ function forget(name: string): void {
   instances.delete(name)
   questionList = questionList.filter(q => q.swarm !== name)
   directBySwarm.delete(name)
+  spawnedBy.delete(name)
+  roundsBy.delete(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +936,89 @@ export async function ready(p: Ports, maxMs: number = READY_MS): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// The repair budget (2b-2; plan 15.11): what a repair swarm used of it.
+// Mirrored with the swarm's part, and gone with the swarm.
+
+/**
+ * A spawn counted against the swarm's `budget.agents`, under its
+ * reservation's key (decision 7: workers and children, not the orchestrator,
+ * not resumes). Y notes it in the same synchronous step as the reservation,
+ * and gives it back with `unnoteSpawned` on undo. A key noted twice counts once.
+ */
+export function noteSpawned(swarm: string, key: string): void {
+  const keys = spawnedBy.get(swarm) ?? new Set<string>()
+  spawnedBy.set(swarm, keys)
+  if (keys.has(key)) return
+  keys.add(key)
+  changed(swarm)
+}
+
+/** Gives a counted spawn back (its reservation was undone). False when it wasn't counted. */
+export function unnoteSpawned(swarm: string, key: string): boolean {
+  if (!spawnedBy.get(swarm)?.delete(key)) return false
+  changed(swarm)
+  return true
+}
+
+export const spawnsUsed = (swarm: string): number => spawnedBy.get(swarm)?.size ?? 0
+
+/**
+ * The round of a verdict citing `verifyId` (decision 6: one verdict on a
+ * distinct verify is a round), numbered from 1 over the swarm's life: a verify
+ * noted already keeps its round. Y checks the budget before it notes one (see
+ * `roundOf` and `roundsUsed`); whether a second verdict on the same verify is
+ * taken is Y's to decide.
+ */
+export function noteRound(swarm: string, verifyId: string): number {
+  const list = roundsBy.get(swarm) ?? []
+  roundsBy.set(swarm, list)
+  const at = list.indexOf(verifyId)
+  if (at >= 0) return at + 1
+  list.push(verifyId)
+  changed(swarm)
+  return list.length
+}
+
+/** The round `verifyId` was noted as; null when no verdict has cited it. */
+export function roundOf(swarm: string, verifyId: string): number | null {
+  const at = roundsBy.get(swarm)?.indexOf(verifyId) ?? -1
+  return at >= 0 ? at + 1 : null
+}
+
+export const roundsUsed = (swarm: string): number => roundsBy.get(swarm)?.length ?? 0
+
+// ---------------------------------------------------------------------------
+// The session (2b-2, decision 15): whether anyone is at the prompt to watch a
+// repair. This process's, so not mirrored: session.start answers it again
+// after a reload (session.ts, "register() runs again on every reload").
+
+/** True, false, or null while unknown, which the bridge treats as false ("no one to watch it"). */
+export const interactive = (): boolean | null => interactiveFlag
+
+/**
+ * session.start's `isInteractive`: the engine's own answer, true under the
+ * REPL and false for `-p` or the SDK (d.ts, SessionStartInput). It wins over
+ * a prompt's origin.
+ */
+export function setInteractive(value: boolean): void {
+  if (interactiveFlag === value) return
+  interactiveFlag = value
+  ver++
+}
+
+/**
+ * A prompt.submit's origin, taken only while nothing has set the flag (a
+ * session.start that never reached this module): `sdk` (`claude -p`, the
+ * Agent SDK) is non-interactive, any other origin interactive. A prompt with
+ * no origin leaves it unknown, for the next one to set.
+ */
+export function notePromptOrigin(origin: { readonly kind?: unknown } | null | undefined): void {
+  if (interactiveFlag !== null || typeof origin?.kind !== 'string' || origin.kind === '') return
+  interactiveFlag = origin.kind !== 'sdk'
+  ver++
+}
+
+// ---------------------------------------------------------------------------
 // The rest
 
 /** J staged a proposal: N's pane timer picks it up. */
@@ -964,6 +1061,9 @@ export function resetForTests(): void {
   recorded = null
   gate = 0
   proposals = []
+  spawnedBy.clear()
+  roundsBy.clear()
+  interactiveFlag = null
   ver = 0
   ports = null
   mirrorDir = null
