@@ -28,6 +28,7 @@ import type {
   SwarmWorktreeRemovedBody,
 } from '../records/swarm'
 import type { LiveSwarm, NodeBinding, SettleProgress, SwarmSpec, TokenCount } from './types'
+import { LedgerTampered } from '../ledgercore'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import {
@@ -421,35 +422,53 @@ async function recordKept(p: Ports, litterDir: string, swarm: string, launch: st
  * policy entry, the node policies of the agents that aren't running (a
  * running one's stays until the sweep sees it go), the live state (after
  * which agent.offer hides its types), and the lead's hand-off from a timer.
- * Each step after swarm.end is logged when it fails, and the rest go on.
+ * Each step after swarm.end is logged when it fails, and the rest go on. A
+ * launch ledger that's broken (its chain or head check fails) ends the swarm
+ * too, with no cleanup and no swarm.end, said in a toast and in summary.md.
  */
 async function finish(p: Ports, litterDir: string, name: string, settled: boolean): Promise<void> {
   await serial(endKey(litterDir, name), async () => {
     const s = state.liveSwarm(name)
     if (!s || s.readOnly || s.lost || s.state !== 'stopping') return
     stopWait(name)
+    // A broken chain takes no more records, so it can't take swarm.end: the end goes on
+    // without one, and the toast and summary.md say so (FIX-U, U6).
+    let broken: { seq: number; reason: string } | null = null
     try {
-      if (settled) await cleanupLaunch(p, name, s.launch)
-      else {
-        const { records } = await readLaunchLedger(p, litterDir, name, s.launch)
-        for (const t of madeWorktrees(records, s.launch)) if (t.outcome !== 'removed') await recordKept(p, litterDir, name, s.launch, t, KEPT_UNSETTLED)
+      broken = (await readLaunchLedger(p, litterDir, name, s.launch)).tampered
+      if (broken === null) {
+        if (settled) await cleanupLaunch(p, name, s.launch)
+        else {
+          const { records } = await readLaunchLedger(p, litterDir, name, s.launch)
+          for (const t of madeWorktrees(records, s.launch)) if (t.outcome !== 'removed') await recordKept(p, litterDir, name, s.launch, t, KEPT_UNSETTLED)
+        }
+        const { records, tampered } = await readLaunchLedger(p, litterDir, name, s.launch)
+        broken = tampered
+        if (broken === null) {
+          const worktrees = await worktreesLeft(p, records, s.launch, s)
+          const body: SwarmEndBody = {
+            status: 'ended',
+            settled,
+            ...(settled ? {} : { reason: 'ended with [End, keep everything] before it settled' }),
+            nodes: nodesOf(s.spec, records, s.name),
+            worktrees,
+            branches: await branchesLeft(p, s, records, worktrees),
+          }
+          await appendLaunchRecord(p, litterDir, name, s.launch, 'swarm.end', body)
+        }
       }
-      const { records, tampered } = await readLaunchLedger(p, litterDir, name, s.launch)
-      if (tampered) throw new Error(`launch ${s.launch}'s ledger is tampered at record ${tampered.seq}; swarm.end isn't recorded`)
-      const worktrees = await worktreesLeft(p, records, s.launch, s)
-      const body: SwarmEndBody = {
-        status: 'ended',
-        settled,
-        ...(settled ? {} : { reason: 'ended with [End, keep everything] before it settled' }),
-        nodes: nodesOf(s.spec, records, s.name),
-        worktrees,
-        branches: await branchesLeft(p, s, records, worktrees),
-      }
-      await appendLaunchRecord(p, litterDir, name, s.launch, 'swarm.end', body)
     } catch (err) {
-      // Nothing was ended: the wait goes on, and tries again at its next tick.
-      waitFor(p, litterDir, name, waits.get(name)?.since ?? s.startedAt)
-      throw err
+      if (err instanceof LedgerTampered) broken = { seq: err.seq, reason: err.reason }
+      else {
+        // Nothing was ended: the wait goes on, and tries again at its next tick.
+        waitFor(p, litterDir, name, waits.get(name)?.since ?? s.startedAt)
+        throw err
+      }
+    }
+    if (broken !== null) {
+      const why = `its launch ledger is broken at record ${broken.seq} (${broken.reason}), so it holds no swarm.end, and no worktree was removed`
+      p.log(`swarm ${name}: ended, but ${why}`)
+      p.toast(`litter: swarm ${name} has ended, but ${why}; summary.md lists what's left`)
     }
     const step = async (what: string, work: () => Promise<void> | void) => {
       try {
@@ -460,7 +479,7 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
     }
     let summary: string | null = null
     await step('summary.md', async () => {
-      summary = await writeSwarmSummary(p, name, s.launch)
+      summary = await writeSwarmSummary(p, name, s.launch, { unrecordedEnd: broken !== null })
     })
     await step('releasing the ownership ref', () => others.releaseOwnership(p, litterDir, name))
     await step('stopping the ownership beat', () => others.stopOwnerBeat(name))
@@ -940,9 +959,10 @@ const count = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n 
  * instances, tokens and last report, the goal history from `swarm.summary`,
  * the worktrees and branches left, and the flags. Its opening lines, up to
  * the first section, are the mod's own facts, never a node's text: that part
- * is what the lead is handed. Answers the file's path.
+ * is what the lead is handed. Answers the file's path. `unrecordedEnd` is
+ * End's, for a launch it ended whose broken ledger couldn't take swarm.end.
  */
-export async function writeSwarmSummary(p: Ports, swarm: string, launch: string): Promise<string> {
+export async function writeSwarmSummary(p: Ports, swarm: string, launch: string, opts: { unrecordedEnd?: boolean } = {}): Promise<string> {
   const litterDir = needLitterDir()
   const { records, tampered } = await readLaunchLedger(p, litterDir, swarm, launch)
   const start = records.find(r => r.kind === 'swarm.start')?.body as SwarmStartBody | undefined
@@ -964,11 +984,13 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string)
       : end.settled
         ? 'ended, settled'
         : 'ended without settling: [End, keep everything] ended it while something still ran, so no worktree was removed'
-    : stopping
-      ? 'stopping'
-      : s
-        ? 'live'
-        : 'not live in this session'
+    : opts.unrecordedEnd
+      ? 'ended, but its launch ledger is broken, so it holds no swarm.end, and no worktree was removed'
+      : stopping
+        ? 'stopping'
+        : s
+          ? 'live'
+          : 'not live in this session'
   const total = zero()
   let agents = 0
   for (const n of Object.values(nodes)) {

@@ -10,7 +10,7 @@
 // real files, written and removed by guard.ts.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentPolicy, NodePolicy, Policy, SwarmEntry } from '../../hooks/hookfiles'
 import type { ListedAgent, SessionSendResult, ToolCallResult } from '../../hooks/ports'
@@ -405,6 +405,34 @@ describe('U2: after End, admission refuses an agent that still has a policy file
     // One the mod never bound passes straight through.
     expect((await step('plain-agent')).called).toBe(true)
   })
+})
+
+describe("U6: a broken launch ledger doesn't hold the end", () => {
+  /** Rewrites the launch ledger's swarm.stopping record, so its hash no longer chains. */
+  function tamper(): void {
+    const ledger = join(litterDir, 'swarms', 'alpha', 'launches', launch, 'ledger')
+    const name = readdirSync(ledger).find(f => f.endsWith('-swarm.stopping.json'))!
+    const path = join(ledger, name)
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"browser"', '"lead"'))
+  }
+
+  for (const how of ['settled', 'keep-everything'] as const) {
+    test(`End still finishes (${how}): the ref released, the entry and the state gone, and the toast and summary say there's no swarm.end`, async () => {
+      await live()
+      await endSwarm(p, 'alpha', 'request')
+      tamper()
+      expect((await readLaunchLedger(p, litterDir, 'alpha', launch)).tampered).not.toBeNull()
+      if (how === 'settled') await fireEvery(p)
+      else await endSwarm(p, 'alpha', 'keep-everything')
+      expect(calls.map(c => c[0])).toEqual(expect.arrayContaining(['releaseOwnership', 'stopOwnerBeat', 'writeSwarmPolicy', 'releaseActive']))
+      expect(state.liveSwarm('alpha')).toBeNull()
+      expect(p.timers.size).toBe(0)
+      expect(p.toasts).toEqual([expect.stringMatching(/swarm alpha has ended, but its launch ledger is broken at record \d+.*no swarm\.end/)])
+      const summary = readFileSync(launchSummaryPath(litterDir, 'alpha', launch), 'utf8')
+      expect(summary).toContain('- Status: ended, but its launch ledger is broken, so it holds no swarm.end')
+      expect(summary).toContain('- Ledger: tampered at record')
+    })
+  }
 })
 
 describe('U3: the cleanup counts a node as ended the way the settle wait does', () => {
