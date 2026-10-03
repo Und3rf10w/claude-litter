@@ -14,7 +14,7 @@
 import type { PortHook, PromptSubmitHook, SessionEndHook, TurnCompleteHook } from './hooktypes'
 import type { Ports } from './ports'
 import type { LitterOptions } from './options'
-import type { Policy, RolePolicy, SpoolConsumer } from './hookfiles'
+import type { AgentPolicy, Policy, RolePolicy, SpoolConsumer } from './hookfiles'
 import type { Author, RecordError, RecordHandler, RecordInput, StoredRecord } from './records/core'
 import type { VerifyBody } from './records/execute'
 import type {
@@ -43,6 +43,7 @@ import { DELIVERABLES, RUN_STATUSES, WORKFLOWS } from './records/run'
 import { parseGates } from './gates'
 import { appendRecord, readLedger } from './ledgercore'
 import {
+  hooksDir,
   modePath,
   planPath as runPlanPath,
   policyPath,
@@ -53,7 +54,7 @@ import {
   RUN_ID,
   SNAPSHOT_EXCLUDES,
 } from './layout'
-import { atomicWrite, randomId, readJson, serial, sha256 } from './fsx'
+import { atomicWrite, randomId, readJson, remove, serial, sha256 } from './fsx'
 import { forgetRunAgents, policyKey, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
 import { removeActiveIfUnbound } from './swarm/guard'
 import { endVerifies, verifiesInFlight } from './verify'
@@ -387,6 +388,26 @@ export async function deactivate(p: Ports, litterDir: string, run: string): Prom
   })
 }
 
+/**
+ * Removes the fanout writers' bindings (`agents/<id>.json` with `run` and no
+ * `node`, task.bind's in records/design.ts) whose run `gone` names. One left
+ * in agents/ keeps every hook off its fast path (lib.sh, lt_begin: a binding
+ * file there makes each script read its input), and once its run is off
+ * policy.json the guard denies that writer anyway ("no litter run is
+ * active"). A file that doesn't read is left: it may be a node's.
+ */
+async function removeRunBindings(p: Ports, litterDir: string, gone: (run: string) => boolean): Promise<void> {
+  const dir = `${hooksDir(litterDir)}/agents`
+  if (!(await p.fs.exists(dir))) return
+  for (const e of await p.fs.list(dir)) {
+    if (e.kind !== 'file' || !e.name.endsWith('.json')) continue
+    const path = `${dir}/${e.name}`
+    const file = await readJson<AgentPolicy>(p, path).catch(() => undefined)
+    if (!file || typeof file !== 'object' || file.node !== undefined || typeof file.run !== 'string' || !gone(file.run)) continue
+    await remove(p, path).catch(err => p.log(`agents/${e.name} wasn't removed: ${errText(err)}`))
+  }
+}
+
 /** Releases refs/litter-active if its blob names this run. */
 async function releaseRunLock(p: Ports, litterDir: string, run: string): Promise<void> {
   const repo = repoOf(litterDir)
@@ -426,6 +447,7 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
       await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
       await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
       await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
+      await removeRunBindings(p, ref.litterDir, run => run === ref.run).catch(err => p.log(`writer bindings of ${ref.run} not removed: ${errText(err)}`))
       await releaseRunLock(p, ref.litterDir, ref.run)
       const gen = body.generation > 0 ? st.generations[body.generation - 1] : null
       if (gen) await p.store.delete(taskKey(gen.taskId))
@@ -2284,6 +2306,18 @@ export async function reconcileRuns(p: Ports, litterDir: string): Promise<void> 
     const m = /^lock-lease-([0-9a-f]{40,64})\.json$/.exec(e.name)
     if (m && m[1] !== held) await removeLease(p, litterDir, m[1]!)
   }
+  // Writers' bindings of any run but the active one: a run.end that didn't finish its cleanup left them.
+  // A policy.json that doesn't parse, or of another version, removes none.
+  let policy: Policy | null | undefined
+  try {
+    policy = await readJson<Policy>(p, policyPath(litterDir))
+  } catch (err) {
+    p.log(`policy.json doesn't parse, so no writer binding was removed: ${errText(err)}`)
+    return
+  }
+  if (policy !== undefined && (policy === null || typeof policy !== 'object' || policy.v !== 1)) return
+  const active = policy?.run?.run ?? null
+  await removeRunBindings(p, litterDir, run => run !== active).catch(err => p.log(`leftover writer bindings not removed: ${errText(err)}`))
 }
 
 /** A run.start with no generation: still this session's pending launch, someone else's live one, or dead. */

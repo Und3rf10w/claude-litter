@@ -19,7 +19,8 @@ import { others as endOthers, resetEndForTests } from '../../hooks/swarm/end'
 import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
 import type { Owners } from '../../hooks/swarm/view'
 import { blankNav, clean, composerKey, nav, resetViewForTests, setNav, setOwnersForTests, swarmView } from '../../hooks/swarm/view'
-import { doctorCommand, handle, paneTick, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
+import { doctorCommand, handle, onUiInput, onUiPress, paneTick, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
+import type { WaitBudget } from '../../hooks/swarm/admit'
 import type {
   DoctorPaneView,
   SwarmBrowserView,
@@ -417,6 +418,37 @@ describe('S7: one To and one Route for the drawing and [Send]', () => {
   })
 })
 
+describe("FIX-T 1: the browser's send keeps to its dispatch's budget", () => {
+  /** The engine's `next`, its `budget` read fresh on each access: `left` ms when made, spent by the fake clock. */
+  function metered(left: number): never {
+    const start = p.clock.now!
+    const n = async () => ({})
+    Object.defineProperty(n, 'budget', { get: () => Object.freeze({ ms: 10_000, remainingMs: Math.max(0, left - (p.clock.now! - start)) }) })
+    return n as never
+  }
+
+  test("⏎ and [Send] hand L's sendFromBrowser what their hook has left, less the margin", async () => {
+    goLive()
+    const left: number[] = []
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async () => HEALTHY),
+      readOwner: fake('readOwner', async () => null),
+      sendFromBrowser: (async (_p: unknown, _input: unknown, budget?: WaitBudget) => {
+        left.push(budget ? await budget.left() : -1)
+        return { kind: 'delivered' }
+      }) as never,
+    })
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    // A slow /clear rebind spent 8.9 s of the ⏎'s 10 s: 1.1 s left, of which 500 ms is kept back.
+    await onUiInput(p, { element: 'swarm:browser:text:alpha', value: 'go on', kind: 'change' } as never, metered(10_000))
+    await onUiInput(p, { element: 'swarm:browser:text:alpha', value: 'go on', kind: 'submit' } as never, metered(1_100))
+    await onUiInput(p, { element: 'swarm:browser:text:alpha', value: 'and this', kind: 'change' } as never, metered(10_000))
+    await onUiPress(p, { element: 'swarm:browser:send:alpha/part-a#1' } as never, metered(2_000))
+    expect(left).toEqual([600, 1_500])
+  })
+})
+
 describe('S8: [Hard stop] on the unsettled report reaches an agent no binding knows', () => {
   test('TaskStop for it, on the stopped list, recorded as a stop', async () => {
     goLive({ state: 'stopping' })
@@ -424,6 +456,8 @@ describe('S8: [Hard stop] on the unsettled report reaches an agent no binding kn
     p.toolAnswer = () => ({ result: { message: 'ok' }, text: 'ok' }) as unknown as ToolCallResult
     const saved = { ...endOthers }
     endOthers.patchNodePolicies = async () => {}
+    // K's ref check before the stop's record (FIX-T): there's no real ref here, and this session owns the swarm.
+    Object.assign(endOthers, { confirmOwnership: async () => ({ launch: LAUNCH, generation: 1, oids: ['a'.repeat(40)] }) })
     try {
       setOwnersForTests({
         checkHealth: fake('checkHealth', async () => HEALTHY),

@@ -3,7 +3,8 @@
 // docs/litter-prompts.md ("Instance block", "The rules block"). Rendered with
 // renderSlots (slots.ts) for each spawn: one worker template runs under
 // several parents, and the spawns left change as instances start. `{nonce}`
-// is the swarm's, so text in a task can't close a block early.
+// is the instance's own, made at its spawn after the parent's task is fixed
+// (spawn.ts, R12), so text in a task can't close or forge a block.
 //
 // Contract owner: phase 2b-1, package C.
 

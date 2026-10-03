@@ -114,6 +114,24 @@ function owned(name: string): LiveSwarm {
 const ownedNames = (): string[] => state.liveSwarms().filter(s => !s.readOnly && !s.lost).map(s => s.name).sort()
 
 /**
+ * Before this process records into a swarm's launch ledger at your request
+ * (End's stopping, a Stop): the ref read again (Q2), since the beat that marks
+ * a swarm lost runs only every 10 s. A stale owner stands down
+ * (confirmOwnership marks it lost) and records nothing into the new owner's
+ * ledger: the request throws, as `owned` does once a swarm is marked lost.
+ * Git that can't tell holds up no stop; End's finish checks again before it
+ * removes anything.
+ */
+async function confirmMine(p: Ports, litterDir: string, name: string): Promise<void> {
+  const mine = await others.confirmOwnership(p, litterDir, name)
+  if (mine === null) p.log(`swarm ${name}: git couldn't read refs/litter-swarm/${name}; this session goes on as its owner`)
+  if (mine !== 'lost') return
+  stopWait(name)
+  waits.delete(name)
+  throw new Error(`litter: this session no longer owns the swarm ${name}: it was handed to another session`)
+}
+
+/**
  * TaskStop through `$.tool.call` (spike 7): `stopped`, `gone` (TaskStop says
  * the task is over, or there's none), or why it failed.
  */
@@ -157,6 +175,8 @@ export async function stopNode(p: Ports, swarm: string, agentId: string, how: 's
   if (b && b.swarm === swarm) who = b.node
   else if (!b && (await unboundRunning(p, s, agentId))) who = 'an agent no binding knows'
   else throw new Error(`litter: ${agentId} isn't a node of the swarm ${swarm}`)
+  // A stale owner stops no one, patches nothing and records no swarm.stop (FIX-T, from Q2).
+  await confirmMine(p, litterDir, swarm)
   let failed: string | null = null
   if (how === 'hard') {
     const r = await taskStop(p, agentId)
@@ -284,6 +304,8 @@ async function beginStopping(p: Ports, litterDir: string, name: string, by: 'bro
     const s = owned(name)
     let since = waits.get(name)?.since ?? null
     if (s.state !== 'stopping') {
+      // A stale owner's End records nothing into the new owner's ledger (FIX-T, from Q2).
+      await confirmMine(p, litterDir, name)
       since = (await appendLaunchRecord(p, litterDir, name, s.launch, 'swarm.stopping', { by })).at
       state.patchLiveSwarm(name, { state: 'stopping' })
     }
@@ -623,6 +645,20 @@ async function nodePolicyFiles(p: Ports, litterDir: string): Promise<{ agentId: 
   return out
 }
 
+/**
+ * For the swarm hooks' catches, which read no file (wiring.ts): the swarm of
+ * an agent whose policy file End or a sweep kept, while that launch isn't
+ * live; null for any other agent. What admit.ts's endedSwarmOf reads from
+ * the file, from module memory.
+ */
+export function keptSwarmOf(agentId: string): string | null {
+  const k = kept.get(agentId)
+  return k && state.liveSwarm(k.swarm)?.launch !== k.launch ? k.swarm : null
+}
+
+/** Whether a kept file is of an agent of this session's: a name or address a catch can't resolve could be its. */
+export const keepsOwn = (): boolean => [...kept.values()].some(k => k.own && state.liveSwarm(k.swarm)?.launch !== k.launch)
+
 /** The ids the list shows running; null when it can't be read, which keeps every file. */
 async function runningIds(p: Ports): Promise<Set<string> | null> {
   const list = await p.listAgents().catch(() => null)
@@ -695,12 +731,30 @@ async function sweepKept(p: Ports, litterDir: string): Promise<void> {
 }
 
 /**
+ * The one sweep of the node policy files an ended launch left (FIX-T):
+ * session.start's (sweepNodePolicies) and a stuck name's release
+ * (recover.ts, settleStuck) both call it. Each file `pick` takes is removed
+ * now, or kept and swept later: a running agent's file stays until it leaves
+ * this session's list; another session's is removed only once nobody touched
+ * it for a minute (that session's End may keep it for an agent running
+ * there), unless `holderGone` says the launch's holder is this session or
+ * gone, so nobody else can be keeping it. With no agent list, none goes yet.
+ */
+export async function sweepLeftPolicies(p: Ports, litterDir: string, pick: (node: NodePolicy) => boolean, holderGone: boolean): Promise<void> {
+  const left = (await nodePolicyFiles(p, litterDir)).filter(f => pick(f.node) && (holderGone || !kept.has(f.agentId)))
+  // The list is read only when there's a leftover to judge.
+  const running = left.length > 0 ? await runningIds(p) : null
+  for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: holderGone || running === null || running.has(f.agentId) })
+  if (kept.size === 0) return
+  startSweep(p, litterDir)
+  await sweepKept(p, litterDir)
+}
+
+/**
  * At session.start, after recovery: a node policy file whose swarm has no
  * live entry in policy.json (or whose entry names another launch) is a
- * leftover of an ended launch. It's removed unless its agent runs in this
- * session, or another session touched it within the last minute (that
- * session's End kept it for an agent still running there); both are swept
- * later. A policy.json that doesn't read removes nothing.
+ * leftover of an ended launch, for the one sweep above. A policy.json that
+ * doesn't read removes nothing.
  */
 export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<void> {
   let swarms: Record<string, { launch?: unknown }> = {}
@@ -712,16 +766,15 @@ export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<vo
     }
     swarms = policy.swarm?.swarms ?? {}
   }
-  const left = (await nodePolicyFiles(p, litterDir)).filter(f => {
-    const e = Object.hasOwn(swarms, f.node.swarm) ? swarms[f.node.swarm] : undefined
-    return !(e && e.launch === f.node.launch) && !kept.has(f.agentId)
-  })
-  // The list is read only when there's a leftover to judge.
-  const running = left.length > 0 ? await runningIds(p) : null
-  for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: running === null || running.has(f.agentId) })
-  if (kept.size === 0) return
-  startSweep(p, litterDir)
-  await sweepKept(p, litterDir)
+  await sweepLeftPolicies(
+    p,
+    litterDir,
+    node => {
+      const e = Object.hasOwn(swarms, node.swarm) ? swarms[node.swarm] : undefined
+      return !(e && e.launch === node.launch)
+    },
+    false,
+  )
 }
 
 /**
@@ -761,7 +814,12 @@ export const recordSwarmEnd: RecordHandler = async (ctx, input) => {
   if (!s) return fail(`litter: there's no live swarm named ${name}`, 'swarm', live)
   if (s.readOnly) return fail(`litter: another session owns the swarm ${name}; it can only be ended there`, 'swarm', live)
   if (s.lost) return fail(`litter: this session no longer owns the swarm ${name}: it was handed to another session`, 'swarm', live)
-  await beginStopping(ctx.p, ctx.litterDir, name, 'lead')
+  try {
+    await beginStopping(ctx.p, ctx.litterDir, name, 'lead')
+  } catch (err) {
+    // The ref moved since this session last looked (Q2), or the ledger didn't take the record.
+    return fail(errText(err).startsWith('litter: ') ? errText(err) : `litter: ${errText(err)}`, 'swarm', ownedNames())
+  }
   return { ok: true, status: 'stopping' }
 }
 
@@ -1122,7 +1180,9 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string,
       if (b.kind === 'branch-moved') {
         lines.push(`- ${iso(r.at)} branch-moved: ${flat(short(String(b.ref)))} ${flat(b.from ?? 'new')} -> ${flat(b.to ?? 'deleted')}${acked.has(r.seq) ? ', acknowledged' : ''}`)
       } else if (b.kind === 'rule-commit') {
-        lines.push(`- ${iso(r.at)} rule-commit${who}: ${(Array.isArray(b.files) ? b.files : []).slice(0, 10).map(flat).join(', ')}; not your acceptance`)
+        // [That was me] acknowledges a rule-commit by the same record (observe.ts, ackBranchMoved); it's never your acceptance (16.4).
+        const files = (Array.isArray(b.files) ? b.files : []).slice(0, 10).map(flat).join(', ')
+        lines.push(`- ${iso(r.at)} rule-commit${who}: ${files}${acked.has(r.seq) ? ', acknowledged' : ''}; not your acceptance`)
       } else lines.push(`- ${iso(r.at)} ${flat(b.kind)}${who}`)
     }
     const denials = events.filter(r => r.body.kind === 'denied').length

@@ -24,6 +24,7 @@ import { resetObserveForTests } from '../../hooks/swarm/observe'
 import { noteSummaryTrigger, resetSummaryForTests, summaryKey, summaryTick } from '../../hooks/swarm/summary'
 import * as admit from '../../hooks/swarm/admit'
 import * as state from '../../hooks/swarm/state'
+import { sessionSendFailed, turnStepFailed } from '../../hooks/swarm/wiring'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
 import { addSwarmWorktree } from '../../hooks/swarm/worktrees'
 import { fireEvery, nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
@@ -420,6 +421,58 @@ describe('U2: after End, admission refuses an agent that still has a policy file
     expect(r.result).toEqual(expect.objectContaining({ stopReason: 'end_turn', toolUses: [] }))
     // One the mod never bound passes straight through.
     expect((await step('plain-agent')).called).toBe(true)
+  })
+
+  // FIX-T 2: the hook that throws after End falls back to its catch, which reads no file.
+  test("the session.send and turn.step catches refuse a former node too, and still pass anyone else's", async () => {
+    await endedWithRunners()
+    const caught = () => {
+      const passed: unknown[] = []
+      const next = Object.assign(
+        async (e: unknown) => {
+          passed.push(e)
+          return { isDelivered: true }
+        },
+        { error: { kind: 'throw', message: 'gate', budget: 1000 }, called: false },
+      )
+      return { next: next as never, passed }
+    }
+    for (const to of ['a-fix1', 'c-1', 'fixy']) {
+      const { next, passed } = caught()
+      expect(await sessionSendFailed({} as never, sendE(to, 'another fix') as never, next)).toEqual({ isDelivered: false, reason: 'litter guard failed: session.send (gate)' })
+      expect(passed).toEqual([])
+    }
+    // The lead, and an id the mod never knew while no former node runs, pass on.
+    const lead = caught()
+    expect(await sessionSendFailed({} as never, sendE('main', 'done', 'a-boss') as never, lead.next)).toEqual({ isDelivered: true })
+    const turn = async (agentId: string) => {
+      let called = false
+      const next = Object.assign(
+        async function* () {
+          called = true
+          yield { kind: 'text' as const, index: 0, text: 'resumed' }
+          return { turnId: 't1', index: 0, answer: 'resumed', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+        },
+        { error: { kind: 'throw', message: 'gate', budget: 1000 }, called: false },
+      )
+      const gen = turnStepFailed({} as never, { turnId: 't1', index: 0, model: 'm', messageCount: 2, agentId } as never, next as never) as AsyncGenerator<unknown, unknown>
+      let s = await gen.next()
+      const chunks: unknown[] = []
+      while (!s.done) {
+        chunks.push(s.value)
+        s = await gen.next()
+      }
+      return { called, chunks }
+    }
+    expect(await turn('a-fix1')).toEqual({ called: false, chunks: [expect.objectContaining({ kind: 'text' }), expect.objectContaining({ kind: 'stop' })] })
+    expect((await turn('plain-agent')).called).toBe(true)
+
+    // Once the sweep removed their files, nothing is left to refuse.
+    p.agents = [listed('a-fix1', 'completed'), listed('c-1', 'completed', 'general-purpose')]
+    await fireEvery(p)
+    expect(['a-fix1', 'c-1'].map(hasPolicy)).toEqual([false, false])
+    const after = caught()
+    expect(await sessionSendFailed({} as never, sendE('teammate', 'hi', 'other') as never, after.next)).toEqual({ isDelivered: true })
   })
 })
 

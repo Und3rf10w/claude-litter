@@ -6,7 +6,9 @@
 // node's event from anyone else's: a node's is refused (fail closed), anyone
 // else's passes on, so a failing swarm hook never touches a session with no
 // swarm live. Where the state can't tell (a send's `to` by name), a session
-// with a swarm live refuses.
+// with a swarm live refuses. A former node whose policy file End kept, its
+// swarm ended, counts as a node (end.ts's kept files, also read synchronously),
+// as admission refuses it (admit.ts, endedSwarmOf).
 //
 // Contract owner: phase 2b-1, package C.
 
@@ -31,6 +33,7 @@ import type {
 import { SWARM_TYPE_PREFIX } from '../layout'
 import { roleSpawnFailed } from '../launch'
 import { binding, liveSwarm, liveSwarms, swarmOfType } from './state'
+import { keepsOwn, keptSwarmOf } from './end'
 
 /** Why the hook failed, on one line, for a refusal's text. */
 function why(next: { readonly error?: { readonly kind: string; readonly message?: string } }): string {
@@ -39,6 +42,9 @@ function why(next: { readonly error?: { readonly kind: string; readonly message?
 }
 
 const isBound = (agentId: string | undefined): boolean => agentId !== undefined && binding(agentId) !== null
+
+/** An agent of a swarm that has ended, whose policy file End kept while it ran (FIX-U, U2). */
+const isFormer = (agentId: string | undefined): boolean => agentId !== undefined && keptSwarmOf(agentId.trim()) !== null
 
 /**
  * agent.spawn's catch: a spawn of a swarm type, or by a bound node or child,
@@ -62,26 +68,28 @@ const knownNonNode = (to: string): boolean => to === 'main'
 
 /**
  * session.send's catch, failing closed: a send from a bound node isn't
- * delivered; while a swarm this session owns (not read-only) is live, neither
- * is one whose `to` isn't a known non-node (a bound agent's id, a name, or a
- * `from` address). It passes on only with no such swarm live, or to a known
- * non-node from an unbound sender.
+ * delivered, nor one to a bound node or to a former node of an ended swarm;
+ * while a swarm this session owns (not read-only) is live, or a former node
+ * of this session's still runs, neither is one whose `to` isn't a known
+ * non-node (a name, or a `from` address, could be one of theirs). It passes
+ * on only with none of those, or to a known non-node from an unbound sender.
  */
 export const sessionSendFailed: SessionSendCatch = async ($, e, next) => {
-  const ownedLive = liveSwarms().some(s => !s.readOnly)
-  if (isBound(e.agentId) || isBound(e.to) || (ownedLive && !knownNonNode(e.to))) {
+  const ownedLive = liveSwarms().some(s => !s.readOnly) || keepsOwn()
+  if (isBound(e.agentId) || isBound(e.to) || isFormer(e.to) || (ownedLive && !knownNonNode(e.to))) {
     return { isDelivered: false, reason: `litter guard failed: session.send (${why(next)})` }
   }
   return next(e)
 }
 
 /**
- * turn.step's catch, a generator like the hook: a bound node's step gets the
- * refusal stream and the whole TurnStepResult (without it the engine sends the
- * request anyway, 15.9 item 15); any other loop's passes on.
+ * turn.step's catch, a generator like the hook: a bound node's step, or a
+ * former node's, gets the refusal stream and the whole TurnStepResult
+ * (without it the engine sends the request anyway, 15.9 item 15); any other
+ * loop's passes on.
  */
 export const turnStepFailed: TurnStepCatch = async function* ($, e, next) {
-  if (!isBound(e.agentId)) return yield* next(e)
+  if (!isBound(e.agentId) && !isFormer(e.agentId)) return yield* next(e)
   const answer = `litter guard failed: turn.step (${why(next)}); ending this turn`
   yield { kind: 'text', index: 0, text: answer }
   yield { kind: 'stop', stopReason: 'end_turn', usage: null }

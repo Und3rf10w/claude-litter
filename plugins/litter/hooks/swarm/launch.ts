@@ -18,6 +18,7 @@ import type { PortHook, SwarmReadHook } from '../hooktypes'
 import type { SwarmEntry } from '../hookfiles'
 import type { SwarmReadInstance, SwarmReadLaunch, SwarmReadOrchestrator, SwarmReadReply, SwarmStartBody } from '../records/swarm'
 import type { LiveSwarm, NodeDir, ReportEvent, SwarmNode, SwarmRoots, SwarmSpec, ValidateCtx } from './types'
+import type { WaitBudget } from './admit'
 import { LAUNCH_ID, launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
 import { getOptions, session } from '../session'
 import { remove, sha256 } from '../fsx'
@@ -74,6 +75,7 @@ import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
 import { heldBy, writeSwarmPolicy } from './guard'
 import { cleanupLaunch, worktreesLeft } from './end'
+import { waitBudget } from './admit'
 
 /**
  * The other packages' functions this module calls, through one table so tier
@@ -791,7 +793,7 @@ async function continuationRead(p: Ports, s: LiveSwarm, node: string, how: 'resu
     : { ok: true, swarm: s.name, node, for: how, text, subagent_type: s.types[node] ?? servedType(s.name, node), description: `${node} re-spawned` }
 }
 
-async function readSwarm(p: Ports, e: Parameters<SwarmReadHook>[1]): Promise<SwarmReadReply> {
+async function readSwarm(p: Ports, e: Parameters<SwarmReadHook>[1], budget: WaitBudget): Promise<SwarmReadReply> {
   if (e.agentId !== undefined) return no("mcp__litter__swarm_read is the lead's; a swarm node asks its parent instead")
   const input = decodeSwarmInput(SWARM_READ, e as unknown as Readonly<Record<string, unknown>>)
   const name = input.swarm
@@ -806,7 +808,8 @@ async function readSwarm(p: Ports, e: Parameters<SwarmReadHook>[1]): Promise<Swa
   if (input.draft === true && how !== undefined) return no("'draft' and 'for' don't go together")
   const litterDir = session().litterDir
   if (!litterDir) return no(`this session has no litter directory (${session().litterDirError ?? "session.start hasn't resolved it"})`)
-  await ready(p)
+  // A closed gate is waited on only for what the hook has left (FIX-U, U5).
+  await ready(p, await budget.left())
   if (input.draft === true) return readDraftOf(p, litterDir, name)
   const s = liveSwarm(name)
   if (!s) return no(`swarm ${name} isn't live; launch it from the swarm builder (/litter-swarm ${name}), or read its draft with draft: true`)
@@ -816,6 +819,6 @@ async function readSwarm(p: Ports, e: Parameters<SwarmReadHook>[1]): Promise<Swa
 }
 
 /** tool.call on `mcp__litter__swarm_read`, after register.tsx's drain: answered here, never passed on. It writes nothing. */
-export const swarmReadTool: PortHook<SwarmReadHook> = async (p, e) => {
-  return { result: JSON.stringify(await readSwarm(p, e)) }
+export const swarmReadTool: PortHook<SwarmReadHook> = async (p, e, next) => {
+  return { result: JSON.stringify(await readSwarm(p, e, await waitBudget(p, next))) }
 }

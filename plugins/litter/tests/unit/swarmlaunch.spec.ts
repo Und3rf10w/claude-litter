@@ -18,16 +18,19 @@ import { updateSession } from '../../hooks/session'
 import { readLaunchLedger } from '../../hooks/records/swarm'
 import { REPORT_EVENT_PHRASES, DELEGATION_NO_OTHER, DELEGATION_NONE, AUTHORITY_COMMIT_YES, AUTHORITY_PATHS } from '../../hooks/prompts/swarm-node'
 import {
+  closeGate,
   enqueue,
   liveSwarm,
   markRunning,
   markSettled,
   noteQuestion,
   noteReport,
+  openGate,
   putLiveSwarm,
   stop,
 } from '../../hooks/swarm/state'
-import { deps as launchDeps, launchSwarm, nodeTypeSpec, specHash } from '../../hooks/swarm/launch'
+import { SWARM_READ } from '../../hooks/swarm/tools'
+import { deps as launchDeps, launchSwarm, nodeTypeSpec, specHash, swarmReadTool } from '../../hooks/swarm/launch'
 import { recoverSwarms } from '../../hooks/swarm/recover'
 import { writeSwarmSummary } from '../../hooks/swarm/end'
 import {
@@ -466,6 +469,26 @@ describe('nodeTypeSpec', () => {
 })
 
 describe('mcp__litter__swarm_read', () => {
+  // FIX-T 3: a closed gate (a slow /clear rebind) is waited on only for what the hook has left.
+  test('waits on a closed gate only for what its hook has left, then fails through its catch', async () => {
+    closeGate()
+    const start = w.p.clock.now!
+    const next = Object.defineProperty(
+      async () => {
+        throw new Error('passed on')
+      },
+      'budget',
+      { get: () => Object.freeze({ ms: 10_000, remainingMs: Math.max(0, 1_000 - (w.p.clock.now! - start)) }) },
+    )
+    const e = { tool: SWARM_READ, tool_use_id: 'tu-read', swarm: 'alpha' } as unknown as Parameters<typeof swarmReadTool>[1]
+    try {
+      await expect(swarmReadTool(w.p, e, next as never)).rejects.toThrow("litter: the swarm state isn't ready")
+      expect(w.p.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(500)
+    } finally {
+      openGate()
+    }
+  })
+
   test("a draft read: J's draft with its base revision, else the saved spec", async () => {
     expect(await read({ swarm: 'alpha', draft: true })).toEqual({ ok: false, error: expect.stringContaining('no draft and was never saved') })
     await saveSwarm(w, aSpec())

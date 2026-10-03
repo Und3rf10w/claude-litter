@@ -351,10 +351,11 @@ function admitWake(b: NodeBinding): Wake {
     state.promote(held.key, b.agentId)
     return { ok: true, patch: false }
   }
-  // Woken while settling (parked, or the engine's stranded-message resume): it keeps its place.
+  // Woken while settling (parked, or the engine's stranded-message resume): it keeps its place. Its policy
+  // is still admitted, but the patch removes the done/ its stop may have written: it runs again (R2).
   if (state.status(b.agentId) === 'settling') {
     state.markRunning(b.agentId)
-    return { ok: true, patch: false }
+    return { ok: true, patch: true }
   }
   const scope = instanceScope(s, b)
   const room = placeRefusal(s, b, scope)
