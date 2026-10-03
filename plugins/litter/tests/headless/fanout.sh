@@ -115,6 +115,12 @@ c_worktrees_at_base() {
     [ "$mb" = "$b" ] || { echo "the branch merged by $c forks from ${mb:-nothing}, not base"; return 1; }
   done
 }
+# The path worktree.sh printed is where the engine started the writer: its SubagentStart cwd, from bind/.
+c_cwd_is_path() {
+  want=$(ledger worktree.create | jq -r 'select(.body.name | endswith("-integration") | not) | .body.path' | sort)
+  got=$(cat "$LD"/hooks/bind/* 2>/dev/null | jq -r 'select(.agent_type == "litter:executor") | .cwd' | sort -u)
+  [ -n "$want" ] && [ "$got" = "$want" ] || { echo "the writers started in [$got], the recorded worktrees are [$want]"; return 1; }
+}
 c_integration_green() {
   g=$(ledger verify | jq -r 'select(.body.gate == "integration") | .body.exit_code' | tail -n 1)
   [ "$g" = 0 ] || { echo "the integration verify exit code is '${g:-none}'"; return 1; }
@@ -165,6 +171,7 @@ h_expect "the run's base is HEAD's tree at launch, ahead of origin/main" c_base
 case $mode in
 land)
   h_expect "every writer's worktree was made at base, and its branch forks there" c_worktrees_at_base
+  h_expect "each writer started in the worktree worktree.sh printed for it" c_cwd_is_path
   h_expect "the integration verify is green" c_integration_green
   h_expect "the land moved litter/<run> to the intent's commit, with both tasks' files, and the checkout with it" c_landed
   h_expect "the run ended done" c_status done
