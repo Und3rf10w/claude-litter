@@ -60,6 +60,38 @@ const isMain = (to: string): boolean => to.trim().toLowerCase() === 'main'
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`)
 
 // ---------------------------------------------------------------------------
+// The hook's budget (FIX-U, U5)
+
+/** A hook's own time per dispatch (the d.ts's HookBudget): a `$.clock` wait spends it, no other `$` call does. */
+export const HOOK_BUDGET_MS = 10_000
+/** Kept back from every wait, for the hook's code after it. */
+export const BUDGET_MARGIN_MS = 500
+
+/** What a wait may still spend of this dispatch's budget, read fresh each time. */
+export type WaitBudget = { left(): Promise<number> }
+
+/**
+ * One budget per hook dispatch: from the engine's `next.budget`, which counts
+ * the hook's own time from its start (rebound's wait included) and stands
+ * still through every `$` call but a `$.clock` wait. Where nothing meters it
+ * (Infinity, or a test's bare next), the hook's 10 s from now. Each wait takes
+ * the smaller of its own cap and what's left, less the margin; past it, the
+ * hook refuses in its event's shape and queues nothing.
+ */
+export async function waitBudget(p: Ports, next?: object): Promise<WaitBudget> {
+  // `budget` is a getter on the engine's next: each read is the meter now.
+  const metered = (): number | undefined => (next as { readonly budget?: { readonly remainingMs: number } } | undefined)?.budget?.remainingMs
+  const start = await p.now()
+  return {
+    async left() {
+      const m = metered()
+      const left = m !== undefined && Number.isFinite(m) ? m : HOOK_BUDGET_MS - ((await p.now()) - start)
+      return Math.max(0, left - BUDGET_MARGIN_MS)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // What the spawn check and admission share (spawn.ts imports these)
 
 export const nodeOf = (s: LiveSwarm, id: string): SwarmNode | null => s.spec.nodes.find(n => n.id === id) ?? null
@@ -409,20 +441,33 @@ async function queueFor(p: Ports, s: LiveSwarm, req: SendReq, at: number): Promi
 /**
  * Judges a send and carries it out with `deliver` (the hook's `next`, or the
  * mod's own `p.send`): delivered, resumed with a place, readdressed to the
- * parent, queued, or refused. Each ends in at most one `deliver`.
+ * parent, queued, or refused. Each ends in at most one `deliver`. Its settle
+ * wait spends `budget`, the dispatch's.
  */
-async function routeSend(p: Ports, req: SendReq, deliver: Deliver, depth = 0): Promise<Routed> {
+async function routeSend(p: Ports, req: SendReq, deliver: Deliver, budget: WaitBudget, depth = 0): Promise<Routed> {
   const b = req.to
   const s = state.liveSwarm(b.swarm)
   const at = await p.now()
   // Queue: held while the node runs or settles; sent at once when it's idle.
   if (req.delivery === 'queue' && s && swarmRefusal(s, b.swarm, false) === null && state.status(b.agentId) !== 'idle') return queueFor(p, s, req, at)
   let v = judge(b, req.sender, at)
-  // Settling: wait for the list to let it go, then judge again (a $.clock wait spends the hook's budget: keep it to 2 s).
+  // Settling: wait for the list to let it go, then judge again (a $.clock wait spends the hook's budget:
+  // 2 s at most, and never more than the dispatch has left).
+  let outOfTime = false
   for (let waited = 0; v.kind === 'settling' && waited < SETTLE_WAIT_MS; waited += SETTLE_STEP_MS) {
+    if ((await budget.left()) < SETTLE_STEP_MS) {
+      outOfTime = true
+      break
+    }
     await p.sleep(SETTLE_STEP_MS)
     await settleIfDone(p, b)
     v = judge(b, req.sender, await p.now())
+  }
+  if (v.kind === 'settling' && outOfTime) {
+    // Past the budget the engine treats the hook as absent, so it queues nothing it can't answer for.
+    const reason = `${labelOf(b)} is finishing its turn, and this hook ran out of time to wait for it; send it again, or queue it`
+    await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason })
+    return refused(reason, true)
   }
   if (v.kind === 'settling') return s ? queueFor(p, s, req, at) : refused(`swarm ${b.swarm} isn't live`, false)
   if (v.kind === 'refuse') {
@@ -430,7 +475,7 @@ async function routeSend(p: Ports, req: SendReq, deliver: Deliver, depth = 0): P
     await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason: v.reason })
     return refused(v.reason, v.canQueue)
   }
-  if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, depth)
+  if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, budget, depth)
   if (v.kind === 'deliver') {
     const r = await deliver(b.agentId, req.text)
     if (!r.isDelivered) return { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
@@ -478,7 +523,7 @@ async function resumeNow(p: Ports, s: LiveSwarm, req: SendReq, key: string, deli
 const REPLY_WHY = "it has finished its turn, so its parent passes the message on and keeps its report"
 
 /** The reply route (15.4): the message goes to the parent, wrapped, and through admission there in turn. */
-async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBinding | null, deliver: Deliver, depth: number): Promise<Routed> {
+async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBinding | null, deliver: Deliver, budget: WaitBudget, depth: number): Promise<Routed> {
   const b = req.to
   const wrapped = wrapFor(b, req.label, req.raw)
   await swarmEvent(p, s, { kind: 'readdressed', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, parent: parent?.agentId ?? 'lead', why: REPLY_WHY })
@@ -490,7 +535,7 @@ async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBind
       : { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
   }
   if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`, false)
-  const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, depth + 1)
+  const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, budget, depth + 1)
   if (up.outcome.kind === 'delivered') return { result: up.result, outcome: { kind: 'readdressed', to: parent.agentId, parentNode: parent.node, why: REPLY_WHY } }
   return up
 }
@@ -627,7 +672,8 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
  */
 export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
   if (e.origin.kind === 'plugin' && ownSends.has(ownKey(e.to, e.text))) return next(e)
-  await state.ready(p)
+  const budget = await waitBudget(p, next)
+  await state.ready(p, await budget.left())
   // A send to no node passes, but not to an agent of a swarm that has ended (its file is still there).
   if (state.liveSwarms().length === 0) return (await endedRefusal(p, e.to)) ?? next(e)
   const sender = e.agentId ?? null
@@ -663,6 +709,7 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
     p,
     { to: toB, text: e.text, raw: e.text, sender, from: who.from, label: who.label, route: 'direct', delivery: 'interject' },
     (to, text) => next({ ...e, to, text }),
+    budget,
   )
   if (fromB && routed.result.isDelivered) await noteFromNode(p, fromB, false, toParent, e.text)
   return routed.result
@@ -684,7 +731,7 @@ const NOT_ADMITTED_LATER = 'this turn was refused at its first step'
 export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, next) {
   const id = e.agentId
   if (id === undefined) return yield* next(e)
-  await state.ready(p)
+  await state.ready(p, await (await waitBudget(p, next)).left())
   const refusal = async function* (reason: string) {
     const answer = `litter: not admitted: ${reason}; ending this turn`
     yield { kind: 'text' as const, index: 0, text: answer }
@@ -895,7 +942,7 @@ function joinQueued(list: readonly QueuedMessage[]): { text: string; raw: string
 }
 
 /** swarm_send `{ queued }`: the stored messages for that node, sent through admission, then dropped from the queue. */
-async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
+async function deliverQueued(p: Ports, id: unknown, budget: WaitBudget): Promise<SwarmSendReply> {
   if (typeof id !== 'string' || id.trim() === '') return { ok: false, error: "litter: 'queued' is a queued message id, as litter's request named it" }
   const m = state.queued().find(q => q.id === id.trim())
   if (!m) return { ok: false, error: `litter: no message is queued as '${id}': it was delivered or cancelled` }
@@ -915,6 +962,7 @@ async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
     p,
     { to: b, text: j.text, raw: j.raw, sender: null, from: j.from, label: j.label, route: 'direct', delivery: 'interject' },
     (to, text) => sendOwn(p, to, text),
+    budget,
   )
   const o = routed.outcome
   if (o.kind === 'refused' && o.canQueue) {
@@ -936,17 +984,17 @@ async function deliverQueued(p: Ports, id: unknown): Promise<SwarmSendReply> {
 }
 
 /** tool.call on `mcp__litter__swarm_send`, after register.tsx's drain: answered here, never passed on. */
-export const swarmSendTool: PortHook<SwarmSendHook> = async (p, e) => {
-  const reply = await swarmSend(p, e.agentId, decodeSwarmInput(SWARM_SEND, e as unknown as Record<string, unknown>))
+export const swarmSendTool: PortHook<SwarmSendHook> = async (p, e, next) => {
+  const reply = await swarmSend(p, e.agentId, decodeSwarmInput(SWARM_SEND, e as unknown as Record<string, unknown>), await waitBudget(p, next))
   return { result: JSON.stringify(reply) }
 }
 
-async function swarmSend(p: Ports, agentId: string | undefined, input: Record<string, unknown>): Promise<SwarmSendReply> {
+async function swarmSend(p: Ports, agentId: string | undefined, input: Record<string, unknown>, budget: WaitBudget): Promise<SwarmSendReply> {
   if (agentId !== undefined) return { ok: false, error: "litter: mcp__litter__swarm_send is the lead's alone; a node sends with SendMessage" }
-  await state.ready(p)
+  await state.ready(p, await budget.left())
   if (!session().litterDir) return { ok: false, error: 'litter: this session has no litter directory, so no swarm is live in it' }
   kick(p)
-  if (input.queued !== undefined) return deliverQueued(p, input.queued)
+  if (input.queued !== undefined) return deliverQueued(p, input.queued, budget)
   const found = findInstance(input.swarm, input.node)
   if ('error' in found) return { ok: false, error: `litter: ${found.error}` }
   const text = input.text
@@ -958,6 +1006,7 @@ async function swarmSend(p: Ports, agentId: string | undefined, input: Record<st
     p,
     { to: b, text: frame('lead', 'the lead', text), raw: text, sender: null, from: 'lead', label: 'the lead', route: 'direct', delivery: deliver },
     (to, t) => sendOwn(p, to, t),
+    budget,
   )
   const o = routed.outcome
   if (o.kind === 'refused') return { ok: false, error: `litter: ${o.reason}`, outcome: o }
@@ -993,10 +1042,12 @@ function noteDirectSend(b: NodeBinding, text: string, o: SendOutcome): void {
  * dispatch; a queue is held until the node settles, or sent at once when it's
  * idle; a send to an idle worker takes the reply route. Via the lead, the
  * text is a row the busy lead reads now, or a prompt of its own, submitted
- * from a timer callback.
+ * from a timer callback. `budget` is the ui.message dispatch's (waitBudget
+ * over its next); without one, the hook's 10 s from this call.
  */
-export async function sendFromBrowser(p: Ports, input: BrowserSend): Promise<SendOutcome> {
-  await state.ready(p)
+export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: WaitBudget): Promise<SendOutcome> {
+  const wait = budget ?? (await waitBudget(p))
+  await state.ready(p, await wait.left())
   const s0 = state.liveSwarm(input.swarm)
   const off = swarmRefusal(s0, input.swarm, false)
   if (off) return { kind: 'refused', reason: off, canQueue: false }
@@ -1035,6 +1086,7 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend): Promise<Sen
     p,
     { to, text: raw, raw, sender: null, from: 'user', label: 'the user', route, delivery: input.when },
     (t, x) => sendOwn(p, t, x),
+    wait,
   )
   const o = routed.outcome
   noteDirectSend(b, text, o)

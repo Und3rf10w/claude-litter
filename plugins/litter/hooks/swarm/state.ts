@@ -906,11 +906,14 @@ export async function withGateClosed<T>(work: (open: () => void) => Promise<T>):
  * closed through its catch. A `$.clock` wait spends the waiting hook's 10 s
  * budget (ports.ts), so ready gives up with its own error before the budget
  * runs out. The gate starts open: a fresh module has nothing live, and tier 1
- * fires hooks without session.start.
+ * fires hooks without session.start. `maxMs`, when smaller, is what the
+ * hook's budget has left for this wait (admit.ts's waitBudget, FIX-U U5).
  */
-export async function ready(p: Ports): Promise<void> {
+export async function ready(p: Ports, maxMs: number = READY_MS): Promise<void> {
   if (gate === 0) return
-  const deadline = (await p.now()) + READY_MS
+  const wait = Math.min(READY_MS, maxMs)
+  if (!(wait > 0)) throw new Error("litter: the swarm state isn't ready")
+  const deadline = (await p.now()) + wait
   for (;;) {
     await p.sleep(READY_POLL_MS)
     if (gate === 0) return
