@@ -32,6 +32,14 @@ export const spoolBlobDir = (litterDir: LitterDir) => join(spoolDir(litterDir), 
  * holds the absolute path of the real hooks/ folder. lib.sh follows it.
  */
 export const pointerPath = (projectDir: string) => join(projectDir, '.claude', 'litter', 'hooks', 'pointer')
+// Phase 2b, the swarm markers (hookfiles.ts says who writes each).
+/** A spawn the mod has reserved and not yet bound: one file per `tool_use_id`, so the guard waits for its binding. */
+export const pendingDir = (litterDir: LitterDir) => join(hooksDir(litterDir), 'pending')
+export const pendingPath = (litterDir: LitterDir, key: string) => join(pendingDir(litterDir), key)
+/** A node or child that handed back, or whose stop hold.sh let go. */
+export const donePath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'done', agentId)
+/** hold.sh's list of the children a worker was already held for. */
+export const holdPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'hold', agentId)
 
 // Runs.
 export const runDir = (litterDir: LitterDir, run: string) => join(litterDir, run)
@@ -62,6 +70,53 @@ export const wikiPath = (litterDir: LitterDir) => join(litterDir, 'WIKI.md')
 
 // Lock lease (plan section 9, "Launch preconditions", step 0).
 export const leasePath = (litterDir: LitterDir, oid: string) => join(litterDir, `lock-lease-${oid}.json`)
+
+// Swarms (plan 15.8). Every name below has passed SWARM_NAME, NODE_ID or
+// LAUNCH_ID before it gets here: these join, they don't check.
+export const swarmsDir = (litterDir: LitterDir) => join(litterDir, 'swarms')
+export const swarmDir = (litterDir: LitterDir, name: string) => join(swarmsDir(litterDir), name)
+/** The spec at its latest saved revision. */
+export const swarmJsonPath = (litterDir: LitterDir, name: string) => join(swarmDir(litterDir, name), 'swarm.json')
+export const swarmBriefPath = (litterDir: LitterDir, name: string, node: string) => join(swarmDir(litterDir, name), 'briefs', `${node}.md`)
+/** Every saved or accepted revision, from 1. */
+export const revisionPath = (litterDir: LitterDir, name: string, n: number) => join(swarmDir(litterDir, name), 'revisions', `${n}.json`)
+export const revisionBriefPath = (litterDir: LitterDir, name: string, n: number, node: string) =>
+  join(swarmDir(litterDir, name), 'revisions', String(n), 'briefs', `${node}.md`)
+/** A lead proposal as staged: `spec.json` and `briefs/<node>.md` inside. */
+export const swarmProposalDir = (litterDir: LitterDir, name: string, n: number) => join(swarmDir(litterDir, name), 'proposals', String(n))
+export const launchesDir = (litterDir: LitterDir, name: string) => join(swarmDir(litterDir, name), 'launches')
+/** One launch: its ledger is `ledgerDir(launchDir(…))`, as the spec's is `ledgerDir(swarmDir(…))`. */
+export const launchDir = (litterDir: LitterDir, name: string, launch: string) => join(launchesDir(litterDir, name), launch)
+/** Written at swarm.end: nodes, last reports, goal history, the branches and worktrees left. */
+export const launchSummaryPath = (litterDir: LitterDir, name: string, launch: string) => join(launchDir(litterDir, name, launch), 'summary.md')
+/** The owner's lease beside its ref's blob (plan 15.4, "One session owns a live swarm"). */
+export const ownerLeasePath = (litterDir: LitterDir, name: string, oid: string) => join(swarmDir(litterDir, name), `owner-lease-${oid}.json`)
+/** This project's templates; repository content, so listing one does nothing else. */
+export const projectTemplatesDir = (litterDir: LitterDir) => join(litterDir, 'swarm-templates')
+/** Yours, for every project: `configDir` is `CLAUDE_CONFIG_DIR` or `~/.claude` (ports.ts, configDir). */
+export const userTemplatesDir = (configDir: string) => join(configDir, 'litter', 'swarm-templates')
+
+/** A swarm's ownership ref: create-only, at a blob naming the owning session (15.4). */
+export const swarmRef = (name: string) => `refs/litter-swarm/${name}`
+/** A node's type as `$.agent.register` takes it. The engine serves it as `litter:sw-<swarm>-<node>`. */
+export const nodeTypeName = (swarm: string, node: string) => `sw-${swarm}-${node}`
+/** The prefix of every swarm type as the engine serves it. Never split a type on it: look it up (state.ts, swarmOfType). */
+export const SWARM_TYPE_PREFIX = 'litter:sw-'
+/** A `new` worktree's folder under the worktree root (15.3). */
+export const swarmNewWorktreeName = (swarm: string, node: string) => `sw-${swarm}-${node}`
+/** An `own` worker's folder: one per instance. */
+export const swarmOwnWorktreeName = (swarm: string, node: string, n: number) => `sw-${swarm}-${node}-${n}`
+/** An `own` worker's branch, without `refs/heads/`. */
+export const swarmOwnBranch = (swarm: string, node: string, n: number) => `sw/${swarm}/${node}-${n}`
+/** The spec ledger's `run` field. */
+export const specRun = (name: string) => `swarm:${name}`
+/** A launch ledger's `run` field. */
+export const launchRun = (name: string, launch: string) => `swarm:${name}/${launch}`
+
+export const SWARM_NAME = /^[a-z0-9][a-z0-9-]{0,23}$/
+export const NODE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
+/** `<yyyymmdd-hhmmss>` in UTC, `-2`, `-3`… on a collision (records/swarm.ts, newLaunchId). */
+export const LAUNCH_ID = /^[0-9]{8}-[0-9]{6}(-[0-9]+)?$/
 
 /**
  * Paths the snapshot and the clean-tree check leave out (plan section 9, "Snapshot").

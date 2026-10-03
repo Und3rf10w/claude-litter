@@ -11,10 +11,43 @@
 // Contract owner: phase 1a. Implementers use these; they don't change them.
 // A port that's missing something is a contract change: say so in your report.
 
-import type { EngineInterface, ToolSpec } from 'claude-code'
+import type {
+  AgentInfo,
+  CommandSpec,
+  EngineInterface,
+  ModelCompleteRequest,
+  ModelCompleteResult,
+  SessionMessage,
+  SessionSendResult,
+  ToolCallResult,
+  ToolSpec,
+} from 'claude-code'
+import type { DoctorPaneView, SwarmPaneView } from '../types/index'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
+
+/** One row of `$.agent.list()` (the d.ts's AgentInfo; policy.ts has an AgentInfo of its own). */
+export type ListedAgent = AgentInfo
+export type { CommandSpec, ModelCompleteRequest, ModelCompleteResult, SessionMessage, SessionSendResult, ToolCallResult }
+
+/** The four subagent limits the health check reads (plan 15.7), each read with its name as a literal. */
+export const SUBAGENT_LIMIT_NAMES = [
+  'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH',
+  'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS',
+  'CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY',
+  'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION',
+] as const
+export type SubagentLimitName = (typeof SUBAGENT_LIMIT_NAMES)[number]
+/** This process's values, raw: `undefined` when unset, never parsed here. */
+export type SubagentLimits = Readonly<Record<SubagentLimitName, string | undefined>>
+
+/** The settings sources the health check reads one by one (`$.settings.read({ source })`; `flag` isn't a file you edit). */
+export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
+
+/** The two panes' views in `$.state` (types/index.d.ts; package N types them). */
+export type PaneName = 'swarm' | 'doctor'
+export type { DoctorPaneView, SwarmPaneView }
 
 export type RunInit = {
   cwd?: string
@@ -108,4 +141,68 @@ export interface Ports {
    * refuses then.
    */
   ask(question: string, options: { options: readonly string[]; header?: string }): Promise<string>
+
+  // Phase 2b, for swarms (plan 15.4; WP-C's port table).
+
+  /** `$.agent.list()`: the session's subagents so far, the model's and the plugins' alike. */
+  listAgents(): Promise<ListedAgent[]>
+  /**
+   * `$.session.send({ to, text })`: `to` as SendMessage spells it (an agent id,
+   * a name, a received `from` address). It goes through every litter hook but
+   * the calling one, so the mod sends only from a `swarm_send` or `ui.message`
+   * dispatch (COMMON, decision 2). Resolves once queued at the recipient.
+   */
+  send(to: string, text: string): Promise<SessionSendResult>
+  /**
+   * `$.session.append`: a user-role row of one text block in the lead's
+   * conversation, which a busy lead reads in its current turn (spike 10).
+   * Rejects with the reason when a hook refuses it (`{ deny }`).
+   */
+  appendUserRow(text: string): Promise<void>
+  /**
+   * `$.prompt.submit({ text })`: a lead turn of its own once the session is
+   * idle. Resolves once that turn starts, so never await it inside a hook:
+   * call it from a `p.after` or `p.every` callback, or a turn.complete (15.9,
+   * item 19). Rejects with the host's text on a refusal (from a tool.call
+   * hook) and on `{ drop }`.
+   */
+  submitPrompt(text: string): Promise<void>
+  /** `$.prompt.fill({ text })`: the prompt box takes the text as your draft. False under a dialog or headless. */
+  fillPrompt(text: string): Promise<boolean>
+  /** `$.session.messages()`, or an agent's with its id. Null when the engine can't read that agent's (`{ deny }`). */
+  messages(agentId?: string): Promise<SessionMessage[] | null>
+  /** `$.model.complete`: one tool-less completion. Resolves the reply or why there's none; rejects only on a request the engine won't send. */
+  complete(request: ModelCompleteRequest): Promise<ModelCompleteResult>
+  /**
+   * `$.tool.call({ tool, ...input })`: TaskStop for a hard stop. It runs
+   * through every litter hook but the calling one. Rejects when no tool has
+   * that name; refuses Agent, AskUserQuestion and Workflow (spike 7).
+   */
+  callTool(tool: string, input: Record<string, unknown>): Promise<ToolCallResult>
+  /**
+   * `$.clock.sleep(ms)`. The d.ts (2.1.288): unlike every other `$` call, the
+   * wait is the hook's own time, so a hook that polls with it spends its 10 s
+   * budget (WP-C's report). Poll in short steps under a cap well inside it.
+   */
+  sleep(ms: number): Promise<void>
+  /** `$.clock.after`: `fn` runs once after `ms`, outside any hook's dispatch, unless cancelled first. */
+  after(ms: number, fn: () => void): { cancel(): void }
+  /** The four subagent limits from this process's environment, each read with its name as a literal. */
+  limits(): Promise<SubagentLimits>
+  /** `$.settings.read({ source })`: that one file as loaded. Null when it has nothing (the engine answers `{}` for a missing file). */
+  settingsFrom(source: SettingsSourceName): Promise<Readonly<Record<string, unknown>> | null>
+  /** `CLAUDE_CONFIG_DIR`, else `$HOME/.claude`: absolute. Rejects when neither is set, or the value isn't absolute. */
+  configDir(): Promise<string>
+  /** `$.command.register`: `/<name>`, served by a `command.run` hook on `{ command: name }`. Rejects when refused. */
+  registerCommand(spec: CommandSpec): Promise<void>
+  /** `$.ui.open({ id, title })`: whether the pane was placed (drawn). An open answering your command is placed at any width. */
+  openPane(id: string, title: string): Promise<boolean>
+  /** `$.ui.close({ id })`; an id that isn't open is left alone. */
+  closePane(id: string): Promise<void>
+  /** `$.ui.toast(text)`: a few seconds over the transcript's corner. */
+  toast(text: string): void
+  /** `$.ui.copy({ text })`: whether the clipboard took it. */
+  copy(text: string): Promise<boolean>
+  /** Writes a pane's view into `$.state` (the atoms in register.tsx); the write redraws the pane. */
+  setView(pane: PaneName, view: SwarmPaneView | DoctorPaneView | null): Promise<void>
 }

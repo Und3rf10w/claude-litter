@@ -9,9 +9,35 @@ import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join } from 'node:path'
-import type { Entry, Ports, RunInit, RunResult, SpawnChunk, SpawnEnd, SpawnRequest, Stat } from '../../../hooks/ports'
+import type { ToolSpec } from 'claude-code'
+import type {
+  AgentSpec,
+  CommandSpec,
+  DoctorPaneView,
+  Entry,
+  ListedAgent,
+  ModelCompleteRequest,
+  ModelCompleteResult,
+  PaneName,
+  Ports,
+  RunInit,
+  RunResult,
+  SessionMessage,
+  SessionSendResult,
+  SettingsSourceName,
+  SpawnChunk,
+  SpawnEnd,
+  SpawnRequest,
+  Stat,
+  SubagentLimitName,
+  SwarmPaneView,
+  ToolCallResult,
+} from '../../../hooks/ports'
 
 const MAX_BYTES = 4 * 1024 * 1024
+
+/** One `after` timer: nothing runs until the spec calls `runAfters(p)`. */
+export type FakeAfter = { ms: number; fn: () => void; state: 'pending' | 'ran' | 'cancelled' }
 
 export type TestPorts = Ports & {
   /** Every line `log` got, in order. */
@@ -28,6 +54,81 @@ export type TestPorts = Ports & {
   clock: { now: number | null }
   /** What `settings()` answers, the merged settings; a spec sets its keys. */
   settingsValue: Record<string, unknown>
+
+  // Phase 2b, the swarm's ports (WP-C). Each records its calls; a spec sets each answer.
+
+  /** What `listAgents` answers (a copy); a spec changes it between calls. */
+  agents: ListedAgent[]
+  /** Every `send`, in order. */
+  sent: { to: string; text: string }[]
+  /** Answers a send; unset, it's delivered. */
+  sendAnswer?: (to: string, text: string) => SessionSendResult | Promise<SessionSendResult>
+  /** Every `appendUserRow` text, in order. */
+  appended: string[]
+  /** Every `submitPrompt` text, in order (recorded before `submitAnswer` runs). */
+  submitted: string[]
+  /** Answers a submit: return to resolve, throw to reject with the host's text. Unset, it resolves. */
+  submitAnswer?: (text: string) => void | Promise<void>
+  /** Every `fillPrompt` text, in order. */
+  filled: string[]
+  /** Answers a fill; unset, the box takes it (true). */
+  fillAnswer?: (text: string) => boolean
+  /** What `messages` answers, by agentId, `main` for the lead's. An agent with none answers null (the engine's deny); the lead's, []. */
+  transcripts: Record<string, SessionMessage[]>
+  /** Every `complete` request, in order. */
+  completions: ModelCompleteRequest[]
+  /** Answers a completion; unset, it rejects ("no model in tier 2"). */
+  completeAnswer?: (request: ModelCompleteRequest) => ModelCompleteResult | Promise<ModelCompleteResult>
+  /** Every `callTool`, in order. */
+  toolCalls: { tool: string; input: Record<string, unknown> }[]
+  /** Answers a tool call; unset, it rejects ("no tool in tier 2"). */
+  toolAnswer?: (tool: string, input: Record<string, unknown>) => ToolCallResult | Promise<ToolCallResult>
+  /**
+   * Every `sleep`'s ms, in order. A sleep advances `clock.now` by its ms when
+   * the fake clock is set, calls `onSleep`, then resolves on the next
+   * macrotask, so another hook's work runs in between. No real waiting.
+   */
+  sleeps: number[]
+  onSleep?: (ms: number) => void
+  /** Every `after`, in order: nothing runs until `runAfters(p)`. */
+  afters: FakeAfter[]
+  /** What `limits()` answers; unset names are undefined. */
+  limitsValue: { [K in SubagentLimitName]: string | undefined }
+  /** What `settingsFrom(source)` answers, by source; a source left out answers null. */
+  sourceSettings: Partial<Record<SettingsSourceName, Record<string, unknown>>>
+  /** What `configDir()` answers; null (the default) rejects, so no spec reaches your own ~/.claude by accident. */
+  configDirValue: string | null
+  /** Every `registerCommand` spec, in order. */
+  commands: CommandSpec[]
+  /** Every `openPane` and `closePane`, in order. `openPane` answers true (placed). */
+  panes: { opened: { id: string; title: string }[]; closed: string[] }
+  toasts: string[]
+  copied: string[]
+  /** The last view `setView` wrote, by pane. */
+  views: Partial<Record<PaneName, SwarmPaneView | DoctorPaneView | null>>
+  /** Every `registerAgent` and `registerTool` spec, in order (a spec that replaces the method records nothing here). */
+  registeredAgents: AgentSpec[]
+  registeredTools: ToolSpec[]
+  /** Answer a registration: throw to refuse it. Unset, it resolves. */
+  registerAgentAnswer?: (spec: AgentSpec) => void | Promise<void>
+  registerToolAnswer?: (spec: ToolSpec) => void | Promise<void>
+}
+
+/**
+ * Runs the `after` timers pending now, in the order they were made, awaiting
+ * each one's result (the engine doesn't; a spec wants their effects settled).
+ * Timers they make wait for the next call. Answers how many ran.
+ */
+export async function runAfters(p: TestPorts): Promise<number> {
+  let ran = 0
+  for (const a of p.afters.filter(x => x.state === 'pending')) {
+    // One an earlier callback cancelled doesn't run.
+    if (a.state !== 'pending') continue
+    a.state = 'ran'
+    ran++
+    await (a.fn() as unknown)
+  }
+  return ran
 }
 
 const kindOf = (s: { isFile(): boolean; isDirectory(): boolean }): Entry['kind'] =>
@@ -204,7 +305,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
   const asked: { question: string; options: readonly string[] }[] = []
   const settingsValue: Record<string, unknown> = {}
   const clone = (v: unknown) => (v === undefined ? undefined : structuredClone(v))
-  return {
+  // The methods below read the fakes' fields through `p` when called, so a spec may set an answer at any time.
+  const p: TestPorts = {
     fs: {
       read: async path => {
         const s = await stat(path)
@@ -250,8 +352,14 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     pluginRoot: options.pluginRoot ?? join(import.meta.dir, '..', '..', '..'),
     settings: async () => structuredClone(settingsValue),
     log: text => void logs.push(text),
-    registerTool: async () => {},
-    registerAgent: async () => {},
+    registerTool: async spec => {
+      p.registeredTools.push(spec)
+      await p.registerToolAnswer?.(spec)
+    },
+    registerAgent: async spec => {
+      p.registeredAgents.push(spec)
+      await p.registerAgentAnswer?.(spec)
+    },
     every: (_ms, fn) => {
       timers.add(fn)
       return { cancel: () => void timers.delete(fn) }
@@ -269,7 +377,102 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     timers,
     clock,
     settingsValue,
+
+    // Phase 2b, the swarm's ports.
+    listAgents: async () => structuredClone(p.agents),
+    send: async (to, text) => {
+      p.sent.push({ to, text })
+      return p.sendAnswer ? p.sendAnswer(to, text) : { isDelivered: true }
+    },
+    appendUserRow: async text => void p.appended.push(text),
+    submitPrompt: async text => {
+      p.submitted.push(text)
+      await p.submitAnswer?.(text)
+    },
+    fillPrompt: async text => {
+      p.filled.push(text)
+      return p.fillAnswer ? p.fillAnswer(text) : true
+    },
+    messages: async agentId => {
+      const found = p.transcripts[agentId ?? 'main']
+      if (found) return structuredClone(found)
+      return agentId === undefined ? [] : null
+    },
+    complete: async request => {
+      p.completions.push(request)
+      if (!p.completeAnswer) throw new Error('no model in tier 2')
+      return p.completeAnswer(request)
+    },
+    callTool: async (tool, input) => {
+      p.toolCalls.push({ tool, input })
+      if (!p.toolAnswer) throw new Error(`no tool in tier 2 (${tool})`)
+      return p.toolAnswer(tool, input)
+    },
+    sleep: async ms => {
+      p.sleeps.push(ms)
+      if (p.clock.now !== null) p.clock.now += ms
+      p.onSleep?.(ms)
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    },
+    after: (ms, fn) => {
+      const a: FakeAfter = { ms, fn, state: 'pending' }
+      p.afters.push(a)
+      return {
+        cancel: () => {
+          if (a.state === 'pending') a.state = 'cancelled'
+        },
+      }
+    },
+    limits: async () => ({ ...p.limitsValue }),
+    settingsFrom: async source => {
+      const s = p.sourceSettings[source]
+      return s === undefined ? null : structuredClone(s)
+    },
+    configDir: async () => {
+      if (p.configDirValue === null) throw new Error('no config dir in tier 2 (set configDirValue)')
+      return p.configDirValue
+    },
+    registerCommand: async spec => void p.commands.push(spec),
+    openPane: async (id, title) => {
+      p.panes.opened.push({ id, title })
+      return true
+    },
+    closePane: async id => void p.panes.closed.push(id),
+    toast: text => void p.toasts.push(text),
+    copy: async text => {
+      p.copied.push(text)
+      return true
+    },
+    setView: async (pane, view) => {
+      p.views[pane] = view === null ? null : structuredClone(view)
+    },
+    agents: [],
+    sent: [],
+    appended: [],
+    submitted: [],
+    filled: [],
+    transcripts: {},
+    completions: [],
+    toolCalls: [],
+    sleeps: [],
+    afters: [],
+    limitsValue: {
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: undefined,
+      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: undefined,
+      CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: undefined,
+      CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION: undefined,
+    },
+    sourceSettings: {},
+    configDirValue: null,
+    commands: [],
+    panes: { opened: [], closed: [] },
+    toasts: [],
+    copied: [],
+    views: {},
+    registeredAgents: [],
+    registeredTools: [],
   }
+  return p
 }
 
 /** A scratch folder, removed by the returned cleanup. */

@@ -15,12 +15,17 @@ export type SessionInfo = {
   litterDirError: string | null
   /** Set when $.tool.register was refused (e.g. managed allowedMcpServers): every litter launch is denied, naming it. */
   toolsRefused: string | null
+  /**
+   * Phase 2b: set when a swarm tool's registration was refused. Proposing and
+   * launching a swarm are refused while it's set (J, K); runs don't depend on it.
+   */
+  swarmToolsRefused: string | null
   /** True once session.start has finished its steps. */
   ready: boolean
 }
 
 let options: LitterOptions = normalizeOptions(undefined)
-let info: SessionInfo = { litterDir: null, litterDirError: null, toolsRefused: null, ready: false }
+let info: SessionInfo = { litterDir: null, litterDirError: null, toolsRefused: null, swarmToolsRefused: null, ready: false }
 
 export const getOptions = (): LitterOptions => options
 export const setOptions = (raw: Readonly<Record<string, unknown>> | undefined): void => {

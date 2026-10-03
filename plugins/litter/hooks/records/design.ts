@@ -32,6 +32,12 @@ export const KNOWN_KINDS = [
   'plan.write', 'gate.amend', 'wiki.write',
   // read-only
   'run.find',
+  // swarms (phase 2b; bodies in records/swarm.ts). Through the tool only
+  // swarm.bind (a node) and swarm.end (the lead's end request); the rest are the mod's.
+  'swarm.revision', 'swarm.proposal', 'swarm.proposal.decided',
+  'swarm.start', 'swarm.worktree.intent', 'swarm.worktree', 'swarm.worktree.failed', 'swarm.worktree.removed', 'swarm.worktree.kept',
+  'swarm.instance', 'swarm.node', 'swarm.bind', 'swarm.event', 'swarm.summary',
+  'swarm.stop', 'swarm.stopping', 'swarm.handover', 'swarm.end', 'session.rebind',
 ] as const
 
 export type KnownKind = (typeof KNOWN_KINDS)[number]
@@ -42,6 +48,10 @@ export const MOD_ONLY_KINDS: readonly KnownKind[] = [
   'lock.recovered', 'lock.forced', 'worktree.intent', 'worktree.create', 'worktree.setup_failed',
   'worktree.removed', 'worktree.kept', 'task.result',
   'integrate.merge', 'integrate.conflict', 'integrate.skip', 'integrate.done',
+  'swarm.revision', 'swarm.proposal', 'swarm.proposal.decided',
+  'swarm.start', 'swarm.worktree.intent', 'swarm.worktree', 'swarm.worktree.failed', 'swarm.worktree.removed', 'swarm.worktree.kept',
+  'swarm.instance', 'swarm.node', 'swarm.event', 'swarm.summary',
+  'swarm.stop', 'swarm.stopping', 'swarm.handover', 'session.rebind',
 ]
 
 /** Rule steps that are yours alone, from the rules pane (section 16.3); the tool refuses them whatever the caller. */
@@ -98,6 +108,26 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'gate.amend': launcherKind,
   'wiki.write': { by: 'launcher', run: 'none' },
   'run.find': { by: 'any', run: 'none' },
+  // Swarms: no run is resolved for the two the tool takes; their handlers find the launch.
+  'swarm.revision': modKind,
+  'swarm.proposal': modKind,
+  'swarm.proposal.decided': modKind,
+  'swarm.start': modKind,
+  'swarm.worktree.intent': modKind,
+  'swarm.worktree': modKind,
+  'swarm.worktree.failed': modKind,
+  'swarm.worktree.removed': modKind,
+  'swarm.worktree.kept': modKind,
+  'swarm.instance': modKind,
+  'swarm.node': modKind,
+  'swarm.bind': { by: 'agent', run: 'none' },
+  'swarm.event': modKind,
+  'swarm.summary': modKind,
+  'swarm.stop': modKind,
+  'swarm.stopping': modKind,
+  'swarm.handover': modKind,
+  'swarm.end': { by: 'launcher', run: 'none' },
+  'session.rebind': modKind,
 }
 
 /** The `by` of a record a caller made through the tool. */

@@ -16,6 +16,9 @@ import { consumeAgents } from './policy'
 import { consumeOutput } from './output'
 import { recordIntegrate } from './integrate'
 import { consumeWorktrees } from './worktrees'
+import { recordSwarmBind } from './swarm/admit'
+import { recordSwarmEnd } from './swarm/end'
+import { consumeSwarm } from './swarm/observe'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
@@ -55,10 +58,32 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'gate.amend': recordGeneric,
   'wiki.write': recordGeneric,
   'run.find': recordRunFind,
+  // Swarms (phase 2b): the two kinds the tool takes have handlers; the mod's own are refused before this table.
+  'swarm.revision': recordGeneric,
+  'swarm.proposal': recordGeneric,
+  'swarm.proposal.decided': recordGeneric,
+  'swarm.start': recordGeneric,
+  'swarm.worktree.intent': recordGeneric,
+  'swarm.worktree': recordGeneric,
+  'swarm.worktree.failed': recordGeneric,
+  'swarm.worktree.removed': recordGeneric,
+  'swarm.worktree.kept': recordGeneric,
+  'swarm.instance': recordGeneric,
+  'swarm.node': recordGeneric,
+  'swarm.bind': recordSwarmBind,
+  'swarm.event': recordGeneric,
+  'swarm.summary': recordGeneric,
+  'swarm.stop': recordGeneric,
+  'swarm.stopping': recordGeneric,
+  'swarm.handover': recordGeneric,
+  'swarm.end': recordSwarmEnd,
+  'session.rebind': recordGeneric,
 }
 
 /**
  * In order: the agent map first, so the others can look an agent up; the
- * worktree records before the outputs, so a writer's result finds its worktree.
+ * swarm's consumer next, so its in-flight table sees a call before anything
+ * acts on it; the worktree records before the outputs, so a writer's result
+ * finds its worktree.
  */
-export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [consumeAgents, consumeWorktrees, consumeOutput, consumeLifecycle]
+export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [consumeAgents, consumeSwarm, consumeWorktrees, consumeOutput, consumeLifecycle]
