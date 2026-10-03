@@ -244,6 +244,101 @@ describe('skills/fanout/SKILL.md', () => {
   })
 })
 
+// The swarm skill (WP-O; litter-prompts.md, "skills/swarm/SKILL.md").
+const SWARM_SKILL = join(PLUGIN, 'skills', 'swarm', 'SKILL.md')
+const swarmSkill = () => readFileSync(SWARM_SKILL, 'utf8')
+const SWARM_TOOLS = ['mcp__litter__swarm_read', 'mcp__litter__swarm_propose', 'mcp__litter__swarm_send', 'mcp__litter__record']
+/** Each section's body, from its `## n.` heading to the next. */
+const section = (text: string, n: number): string => {
+  const at = text.indexOf(`\n## ${n}. `)
+  if (at < 0) throw new Error(`no section ${n}`)
+  const next = text.indexOf('\n## ', at + 1)
+  return text.slice(at, next < 0 ? undefined : next)
+}
+
+describe('skills/swarm/SKILL.md', () => {
+  test('stays under the size every skill is held to', () => {
+    expect(swarmSkill().length).toBeLessThan(10_000)
+  })
+
+  test('its frontmatter names the skill, pre-approves the read-only tools and the four litter tools, and pins no model', () => {
+    const fm = frontmatter(swarmSkill())
+    expect(fm.name).toBe('swarm')
+    expect(typeof fm.description).toBe('string')
+    expect(typeof fm.when_to_use).toBe('string')
+    expect(typeof fm['argument-hint']).toBe('string')
+    expect(fm.model).toBeUndefined()
+    expect(fm.effort).toBeUndefined()
+    const tools = fm['allowed-tools'] as string[]
+    for (const t of SWARM_TOOLS) expect(tools).toContain(t)
+    for (const t of tools.filter(x => !SWARM_TOOLS.includes(x))) expect(t).toMatch(/^(Read|Grep|Glob|Bash\(git (status|log|branch|worktree list):\*\))$/)
+    for (const line of ['resume <name> <nodes>', 'respawn <name> <nodes>', 'start <name>', 'end <name>']) expect(String(fm['argument-hint'])).toContain(line)
+  })
+
+  test('$ARGUMENTS appears once, in <request>, never in a shell block', () => {
+    const text = swarmSkill()
+    expect(text.split('$ARGUMENTS').length - 1).toBe(1)
+    expect(text).toContain('<request>\n$ARGUMENTS\n</request>')
+    for (const part of shellParts(text)) expect(part).not.toContain('$ARGUMENTS')
+  })
+
+  test('loads the four tools with ToolSearch before any use, and stops without them', () => {
+    const text = swarmSkill()
+    const check = section(text, 1)
+    expect(check).toContain('ToolSearch')
+    for (const t of SWARM_TOOLS) expect(check).toContain(t)
+    expect(check).toContain('stop and say the litter mod')
+    expect(check).toContain("Don't build the swarm by hand instead")
+    const body = text.slice(text.indexOf('\n## 1. '))
+    expect(body.indexOf('ToolSearch')).toBeLessThan(body.indexOf('\n## 2. '))
+  })
+
+  test('has sections 1 to 7, in order', () => {
+    const text = swarmSkill()
+    const at = [1, 2, 3, 4, 5, 6, 7].map(n => text.indexOf(`\n## ${n}. `))
+    for (const a of at) expect(a).toBeGreaterThan(0)
+    expect([...at].sort((x, y) => x - y)).toEqual(at)
+    expect(text.indexOf('\n## 8. ')).toBe(-1)
+  })
+
+  test('section 4 has the bullet for the plugin\'s own requests: only the queued id', () => {
+    const lead = section(swarmSkill(), 4)
+    expect(lead).toContain("**The plugin's own requests.**")
+    expect(lead).toContain('call `mcp__litter__swarm_send` with only the `queued` id it names, and nothing else')
+  })
+
+  test("section 6 ends the swarm with the record tool's swarm.end, as written", () => {
+    const end = section(swarmSkill(), 6)
+    expect(end).toContain("Record `{ kind: 'swarm.end', swarm }` with `mcp__litter__record`.")
+  })
+
+  test('section 7 resumes with swarm_read for resume and an interject, and re-spawns with the returned type, never a name, isolation or model', () => {
+    const s7 = section(swarmSkill(), 7)
+    expect(s7).toContain('## 7. Resume or re-spawn (resume <name> <nodes> | respawn <name> <nodes>)')
+    expect(s7).toContain("`for: 'resume'`")
+    expect(s7).toContain("`deliver: 'interject'`")
+    expect(s7).toContain("`for: 'respawn'`")
+    expect(s7).toContain('`subagent_type` and `description`')
+    expect(s7).toContain('Leave `name`, `isolation` and `model` unset.')
+    expect(s7.indexOf("for: 'resume'")).toBeLessThan(s7.indexOf('mcp__litter__swarm_send'))
+  })
+
+  test('every inline code span is closed, and none holds a backtick a model would copy', () => {
+    const body = swarmSkill().replace(/^---\n[\s\S]*?\n---\n/, '')
+    for (const line of body.split('\n')) {
+      const ticks = line.split('`').length - 1
+      expect({ line, even: ticks % 2 === 0 }).toEqual({ line, even: true })
+    }
+    expect(body).not.toContain('``')
+    expect(shellParts(body)).toEqual([])
+  })
+
+  test('names no model and no vendor', () => {
+    const MODEL = /(?<!\.)\b(claude|anthropic|opus|sonnet|haiku|fable|gpt-?[0-9]|openai|gemini|llama)\b/i
+    expect(MODEL.exec(swarmSkill())?.[0] ?? null).toBeNull()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The eval cases (evals/, for `claude plugin eval`): they parse as the 2.1.287
 // case schema does, and their scaffolds make the repository they describe.

@@ -37,6 +37,7 @@ import type {
 } from './records/run'
 import type { Gate } from './gates'
 import type { LockHeld } from './lock'
+import type { SessionRebindBody } from './records/swarm'
 import { fail } from './records/core'
 import { DELIVERABLES, RUN_STATUSES, WORKFLOWS } from './records/run'
 import { parseGates } from './gates'
@@ -171,6 +172,12 @@ export type Generation = {
   runId: string
   scriptPath: string | null
   session: string
+  /**
+   * `session`, then each session a /clear moved it to while it was open
+   * (`session.rebind`, O): the engine writes a run's snapshot under the id
+   * current at the time (plan 15.4, "After /clear").
+   */
+  sessions: string[]
   oid: string
   openedAt: number
   end: RunEndBody | null
@@ -210,11 +217,16 @@ export function runState(records: readonly StoredRecord[]): RunState {
         runId: b.runId,
         scriptPath: b.scriptPath ?? null,
         session: b.session ?? '',
+        sessions: [b.session ?? ''],
         oid: b.oid ?? '',
         openedAt: r.at,
         end: null,
         stopping: null,
       })
+    } else if (r.kind === 'session.rebind') {
+      const b = r.body as unknown as SessionRebindBody
+      const g = generations.at(-1)
+      if (g && !g.end && typeof b.to === 'string' && !g.sessions.includes(b.to)) g.sessions.push(b.to)
     } else if (r.kind === 'run.stopping') {
       const b = r.body as unknown as RunStoppingBody
       const g = [...generations].reverse().find(x => x.taskId === b.taskId)
@@ -518,11 +530,15 @@ const notificationError = (n: Notification): string | null => {
   return m ? m[1]!.trim() : null
 }
 
-/** The engine's own snapshot of a run, `<projectDir>/<sessionId>/workflows/<runId>.json` ($mo). */
+/**
+ * The engine's own snapshot of a run, `<projectDir>/<sessionId>/workflows/<runId>.json`
+ * ($mo), under the session current when the engine wrote it: the one it
+ * launched under, one a /clear moved it to (`gen.sessions`), or this one.
+ */
 async function engineSnapshot(p: Ports, litterDir: string, gen: Generation): Promise<EngineEnd | null> {
   const projectDir = (await p.store.get(projectKey(litterDir))) as string | undefined
   if (typeof projectDir !== 'string' || !/^wf_[a-z0-9-]{6,}$/.test(gen.runId)) return null
-  const sessions = [...new Set([gen.session, await p.sessionId()].filter(s => /^[A-Za-z0-9-]+$/.test(s)))]
+  const sessions = [...new Set([...gen.sessions, await p.sessionId()].filter(s => /^[A-Za-z0-9-]+$/.test(s)))]
   for (const sid of sessions) {
     try {
       const snap = await readJson<{ status?: string; result?: unknown; error?: string }>(p, `${projectDir}/${sid}/workflows/${gen.runId}.json`)
@@ -672,8 +688,11 @@ async function unsettled(p: Ports, ref: RunRef, records: readonly StoredRecord[]
  */
 async function snapshotExpected(p: Ports, litterDir: string, gen: Generation): Promise<boolean> {
   const projectDir = (await p.store.get(projectKey(litterDir))) as string | undefined
-  if (typeof projectDir !== 'string' || !/^[A-Za-z0-9-]+$/.test(gen.session)) return false
-  return p.fs.exists(`${projectDir}/${gen.session}/workflows`).catch(() => false)
+  if (typeof projectDir !== 'string') return false
+  for (const sid of gen.sessions.filter(s => /^[A-Za-z0-9-]+$/.test(s))) {
+    if (await p.fs.exists(`${projectDir}/${sid}/workflows`).catch(() => false)) return true
+  }
+  return false
 }
 
 /** A stopping run settles to run.end stopped once nothing of it is live (plan section 9, "Settled means"). */
@@ -747,9 +766,14 @@ export const onTurnComplete: PortHook<TurnCompleteHook> = async (p, e, next) => 
  * session.end: stops the lease beat; a pending launch is released and ended
  * (launch_failed). The budget is 1.5 s, so the release comes first; reconcile
  * records what's left if the budget runs out.
+ *
+ * A /clear (reason `clear`) isn't the process ending: it goes on under a new
+ * session id and clear.ts rebinds it (plan 15.4, "After /clear"), so the beat
+ * isn't stopped. The cleared conversation's pending launch still ends: its
+ * Workflow call can't follow, and ending it stops its own beat.
  */
 export const onSessionEnd: PortHook<SessionEndHook> = async (p, e, next) => {
-  stopLease()
+  if (e.reason !== 'clear') stopLease()
   const litterDir = session().litterDir
   if (litterDir) {
     try {
@@ -760,6 +784,37 @@ export const onSessionEnd: PortHook<SessionEndHook> = async (p, e, next) => {
     }
   }
   return next(e)
+}
+
+/**
+ * After a /clear (clear.ts's rebind; plan 15.4, "After /clear"): the open run
+ * records `session.rebind { from, to }`, so the snapshot lookups above try
+ * every session it ran under; and a pending launch still under this
+ * process's old id (a clear whose session.end never reached the mod) becomes
+ * the new id's, which turn.complete and the launch check compare with the
+ * current one. `mine` is this process's earlier session ids: a run that
+ * another live session owns (policy.json is shared) is left alone. Answers the
+ * run it recorded in, or null.
+ */
+export async function rebindRun(p: Ports, litterDir: string, from: string, to: string, mine: readonly string[]): Promise<string | null> {
+  const ours = (id: string) => id === from || id === to || mine.includes(id)
+  const pending = await getPending(p, litterDir)
+  if (pending && pending.session !== to && ours(pending.session)) await p.store.set(pendingKey(litterDir), { ...pending, session: to } satisfies Pending)
+  const policy = await readPolicy(p, litterDir)
+  if (!policy?.run || !ours(policy.session)) return null
+  const ref: RunRef = { run: policy.run.run, runDir: policy.run.runDir, litterDir }
+  return serial(`run:${ref.runDir}`, async () => {
+    const ledger = await readLedger(p, ref.runDir, ref.run)
+    if (ledger.tampered) {
+      p.log(`run ${ref.run}: ledger tampered at ${ledger.tampered.seq}; session.rebind not recorded`)
+      return null
+    }
+    const st = runState(ledger.records)
+    if (!st.start || st.ended) return null
+    const again = ledger.records.some(r => r.kind === 'session.rebind' && r.body.from === from && r.body.to === to)
+    if (!again) await appendRecord<SessionRebindBody>(p, ref.runDir, { run: ref.run, kind: 'session.rebind', by: MOD, body: { from, to } })
+    return ref.run
+  })
 }
 
 // ---------------------------------------------------------------------------
