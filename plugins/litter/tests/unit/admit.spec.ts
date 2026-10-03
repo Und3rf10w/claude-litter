@@ -230,6 +230,21 @@ describe('resume admission', () => {
     expect(existsSync(donePath(litterDir, 'w1'))).toBe(false)
   })
 
+  // FIX-T 4: the last admission path, a wake while it's still settling, runs again too.
+  test("a wake while it's settling (the engine's stranded-message resume) removes the done/ its stop wrote", async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
+    await admit.settleNode(p, { agentId: 'w1', turnId: 't-1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    expect(state.status('w1')).toBe('settling')
+    // Its SubagentStop let it go with no background task: hold.sh's done/.
+    await p.fs.write(donePath(litterDir, 'w1'), '{"v":1,"at":1,"via":"stop"}\n')
+    expect((await step(stepE('w1', 't-2', 0))).called).toBe(true)
+    expect(state.status('w1')).toBe('running')
+    expect(existsSync(donePath(litterDir, 'w1'))).toBe(false)
+    expect(policyOf('w1')?.admitted).toBe(true)
+  })
+
   const conditions: [string, () => Promise<void>, string][] = [
     [
       'its parent is at its count',
