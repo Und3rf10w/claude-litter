@@ -211,4 +211,23 @@ describe('saving the current tree as a template', () => {
     expect(again.spec.goal).toBe('Add the flag')
     expect(again.spec.nodes[0]!.worktree).toEqual({ new: { from: 'HEAD', branch: 'work/other' } })
   })
+
+  test('long node ids still give param names a template takes, one per value, when two ids share their start', async () => {
+    // 32 characters each, the most a node id has.
+    const a = 'frontend-checkout-flow-refactor1'
+    const b = 'frontend-checkout-flow-refactor2'
+    const spec = {
+      name: 'long',
+      goal: 'g',
+      nodes: [a, b].map(id => ({ id, kind: 'orchestrator' as const, task: `do ${id}`, worktree: { new: { from: 'HEAD', branch: `work/${id}` } } })),
+    }
+    const offers = templateOffers(spec)
+    const params = offers.map(o => o.param)
+    expect(new Set(params).size).toBe(params.length)
+    expect(params.every(x => /^[a-z][a-z0-9_]{0,31}$/.test(x))).toBe(true)
+    const t = parameterize({ name: 'long-ids', description: 'Long ids', scope: 'project' }, spec, {}, offers.slice(2))
+    await saveTemplate(p, litterDir, t)
+    const back = (await loadTemplate(p, litterDir, 'project', 'long-ids'))!
+    expect(back.params.map(x => x.name)).toEqual(params.slice(2))
+  })
 })
