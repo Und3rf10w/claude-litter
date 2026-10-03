@@ -1,0 +1,622 @@
+// Tier 2: admission (hooks/swarm/admit.ts; WP-L): resumes through
+// SendMessage, the browser and a queued delivery, each refused when its
+// parent is at its count, it was stopped, a revision removed it, or the swarm
+// is stopping; the reply route; settling; the engine's own wakes at
+// turn.step; and swarm.bind with adoption after a reload.
+//
+// M's policy writer (guard.ts) is a stub in this package, so a local one
+// stands in for it, writing `agents/<id>.json` as `{ v: 1, node }`.
+
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import * as realGuard from '../../hooks/swarm/guard'
+import type { NodeFlags } from '../../hooks/swarm/guard'
+import type { NodePolicy } from '../../hooks/hookfiles'
+import { agentPolicyPath } from '../../hooks/layout'
+import { atomicWriteJson, readJson } from '../../hooks/fsx'
+import { normalizeOptions } from '../../hooks/options'
+import type { RecordCtx } from '../../hooks/records/core'
+import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
+import { updateSession } from '../../hooks/session'
+import * as state from '../../hooks/swarm/state'
+import * as admit from '../../hooks/swarm/admit'
+import { SWARM_SEND } from '../../hooks/swarm/tools'
+import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
+import type { ListedAgent, SessionSendResult } from '../../hooks/ports'
+import { fireEvery, nodePorts, scratch, type TestPorts } from './support/node-ports'
+
+// ---------------------------------------------------------------------------
+// M's writer, stood in for (restored after this file)
+
+const GUARD = '../../hooks/swarm/guard'
+const realGuardCopy = { ...realGuard }
+const localGuard = {
+  nodePolicyFor: (b: NodeBinding, s: LiveSwarm, flags: NodeFlags): NodePolicy => {
+    const node = s.spec.nodes.find(n => n.id === b.node)
+    return {
+      swarm: b.swarm,
+      launch: b.launch,
+      node: b.node,
+      n: b.n,
+      kind: b.kind,
+      of: b.of,
+      type: b.type,
+      parent: b.parent,
+      generation: b.generation,
+      dir: b.cwd,
+      paths: null,
+      protect: [],
+      branch: b.branch,
+      authority: node?.authority ?? {},
+      toolsDeny: node?.tools?.deny ?? [],
+      bashDeny: [],
+      spawns: Object.keys(node?.spawns ?? {}).map(w => s.types[w] ?? w),
+      spawnOther: node?.spawnOther !== false,
+      ...flags,
+    }
+  },
+  writeNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, node: NodePolicy) =>
+    atomicWriteJson(p, agentPolicyPath(litterDir, agentId), { v: 1, node }),
+  patchNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, patch: Partial<NodePolicy>) => {
+    const path = agentPolicyPath(litterDir, agentId)
+    const cur = await readJson<{ v: 1; node: NodePolicy }>(p, path)
+    if (cur) await atomicWriteJson(p, path, { v: 1, node: { ...cur.node, ...patch } })
+  },
+}
+mock.module(GUARD, () => ({ ...realGuardCopy, ...localGuard }))
+afterAll(() => mock.module(GUARD, () => realGuardCopy))
+
+// ---------------------------------------------------------------------------
+// Fixtures
+
+const NOW = 1_800_000_000_000
+const RO = { deny: ['Edit', 'Write', 'NotebookEdit'] }
+const T = (node: string) => `litter:sw-alpha-${node}`
+
+let p: TestPorts
+let dir: string
+let litterDir: string
+let launch: string
+let cleanup: () => void
+
+function spec(over: Partial<SwarmSpec> = {}): SwarmSpec {
+  return {
+    name: 'alpha',
+    goal: 'ship it',
+    nodes: [
+      { id: 'part-a', kind: 'orchestrator', tools: RO, spawns: { fixer: 1 } },
+      { id: 'part-b', kind: 'orchestrator', tools: RO, spawns: { fixer: 1 } },
+      { id: 'fixer', kind: 'worker', tools: RO, worktree: 'own' },
+    ],
+    ...over,
+  }
+}
+
+function live(over: Partial<LiveSwarm> = {}): LiveSwarm {
+  const s = over.spec ?? spec()
+  return {
+    name: 'alpha',
+    launch,
+    revision: 1,
+    spec: s,
+    nonce: 'n0nce',
+    types: { 'part-a': T('part-a'), 'part-b': T('part-b'), fixer: T('fixer') },
+    typesReady: true,
+    dirs: {},
+    sessionCwd: '/repo',
+    worktreeRoot: '/repo/.claude/worktrees',
+    commonDir: '/repo/.git',
+    roots: { litterDir, litterCopies: [litterDir], ruleDirs: [] },
+    tips: {},
+    owner: { ref: 'refs/litter-swarm/alpha', oid: 'a'.repeat(40), generation: 1, session: 'test-session' },
+    state: 'live',
+    readOnly: false,
+    lost: false,
+    flags: { isolationLost: false },
+    startedAt: NOW,
+    ...over,
+  }
+}
+
+function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
+  return {
+    agentId,
+    swarm: 'alpha',
+    launch,
+    node: 'fixer',
+    n: 1,
+    kind: 'worker',
+    of: null,
+    parent: 'o1',
+    type: T('fixer'),
+    cwd: '/repo/.claude/worktrees/sw-alpha-fixer-1',
+    branch: null,
+    token: null,
+    revision: 1,
+    generation: 1,
+    boundAt: NOW,
+    adopted: false,
+    ...over,
+  }
+}
+
+/** Binds an agent, writes its policy, and marks it running when asked. */
+async function put(b: NodeBinding, running: boolean): Promise<void> {
+  state.putBinding(b)
+  if (running) state.markRunning(b.agentId, null)
+  await localGuard.writeNodePolicy(p, litterDir, b.agentId, localGuard.nodePolicyFor(b, state.liveSwarm('alpha')!, { admitted: running, stopped: null, bind: false }))
+}
+
+const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo' })
+const o2 = () => bind('o2', { node: 'part-b', kind: 'orchestrator', parent: null, cwd: '/repo/b' })
+const w1 = () => bind('w1')
+const w2 = () => bind('w2', { n: 2, cwd: '/repo/.claude/worktrees/sw-alpha-fixer-2' })
+
+const policyOf = (agentId: string): NodePolicy | null => {
+  const path = agentPolicyPath(litterDir, agentId)
+  return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as { node: NodePolicy }).node : null
+}
+const events = async () =>
+  (await readLaunchLedger(p, litterDir, 'alpha', launch)).records.filter(r => r.kind === 'swarm.event').map(r => r.body as Record<string, unknown>)
+
+const sendE = (to: string, text: string, agentId?: string) => ({ to, text, origin: { kind: 'model' as const }, ...(agentId !== undefined ? { agentId } : {}) })
+
+/** The engine beneath session.send: records each send, delivers it unless `answer` says otherwise. */
+function sendNext(answer?: SessionSendResult) {
+  const calls: { to: string; text: string }[] = []
+  const next = async (e: { to: string; text: string }): Promise<SessionSendResult> => {
+    calls.push({ to: e.to, text: e.text })
+    return answer ?? { isDelivered: true }
+  }
+  return { next: next as never, calls }
+}
+
+const send = (e: ReturnType<typeof sendE>, next: never) => admit.admitSend(p, e as never, next) as Promise<SessionSendResult>
+
+/** The mod's own sends go through its session.send hook, as the engine's port does. */
+function wireOwnSends(): void {
+  p.sendHook = (to, text, deliver) =>
+    admit.admitSend(p, { to, text, origin: { kind: 'plugin', name: 'litter' } } as never, (async (e: { to: string; text: string }) => deliver(e.to, e.text)) as never)
+}
+
+const tool = async (input: Record<string, unknown>, agentId?: string) =>
+  JSON.parse(
+    ((await admit.swarmSendTool(p, { tool: SWARM_SEND, tool_use_id: 'toolu_s', ...(agentId ? { agentId } : {}), ...input } as never, (() => {
+      throw new Error('swarm_send is answered by the mod')
+    }) as never)) as { result: string }).result,
+  ) as Record<string, unknown>
+
+const stepE = (agentId: string | undefined, turnId: string, index: number) => ({ turnId, index, model: 'm', messageCount: 2, ...(agentId ? { agentId } : {}) })
+
+/** Runs admitStep, answering its chunks and result, and whether it called `next`. */
+async function step(e: ReturnType<typeof stepE>) {
+  let called = false
+  const next = async function* () {
+    called = true
+    yield { kind: 'text' as const, index: 0, text: 'model says hi' }
+    return { turnId: e.turnId, index: e.index, answer: 'model says hi', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  }
+  const gen = admit.admitStep(p, e as never, next as never) as AsyncGenerator<unknown, unknown>
+  const chunks: unknown[] = []
+  let s = await gen.next()
+  while (!s.done) {
+    chunks.push(s.value)
+    s = await gen.next()
+  }
+  return { chunks, result: s.value, called }
+}
+
+const agent = (id: string, type: string, status: string, parentId?: string): ListedAgent => ({
+  id,
+  description: 'a node',
+  type,
+  status,
+  ...(parentId !== undefined ? { parentId } : {}),
+})
+
+beforeEach(async () => {
+  state.resetForTests()
+  admit.resetForTests()
+  p = nodePorts()
+  ;({ dir, cleanup } = scratch())
+  litterDir = join(dir, '.claude', 'litter')
+  launch = await newLaunchId(p, litterDir, 'alpha')
+  p.clock.now = NOW
+  updateSession({ litterDir })
+  state.putLiveSwarm(live())
+})
+
+afterEach(() => {
+  admit.resetForTests()
+  state.resetForTests()
+  updateSession({ litterDir: null })
+  cleanup()
+})
+
+// ---------------------------------------------------------------------------
+
+describe('resume admission', () => {
+  test("a SendMessage from its parent resuming a finished worker takes a place, its policy admitted first", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    let admittedAtSend: boolean | undefined
+    const next = (async (e: { to: string; text: string }) => {
+      admittedAtSend = policyOf('w1')?.admitted
+      return { isDelivered: true }
+    }) as never
+    expect(await send(sendE('w1', 'one more fix', 'o1'), next)).toEqual({ isDelivered: true })
+    expect(admittedAtSend).toBe(true)
+    expect(state.status('w1')).toBe('running')
+    expect(state.reservations()).toEqual([])
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', agentId: 'w1', from: 'o1', to: 'w1', route: 'direct', delivery: 'interject' }))
+  })
+
+  const conditions: [string, () => Promise<void>, string][] = [
+    [
+      'its parent is at its count',
+      async () => put(w2(), true),
+      'part-a (o1) already runs 1 of its max 1 fixer at once; wait for one to finish',
+    ],
+    ['it was stopped', async () => state.stop('alpha', ['w1'], 'you stopped it'), 'fixer #1 (w1) was stopped (you stopped it)'],
+    [
+      "it's not in the current revision",
+      async () => state.putLiveSwarm(live({ revision: 2, spec: spec({ nodes: spec().nodes.filter(n => n.id !== 'fixer') }) })),
+      "fixer isn't in swarm alpha's revision 2",
+    ],
+    ['the swarm is stopping', async () => void state.patchLiveSwarm('alpha', { state: 'stopping' }), 'the swarm is ending; report and end your turn'],
+  ]
+
+  for (const [why, arrange, reason] of conditions) {
+    test(`a SendMessage resuming a finished worker is refused when ${why}`, async () => {
+      await put(o1(), true)
+      await put(w1(), false)
+      await arrange()
+      const { next, calls } = sendNext()
+      expect(await send(sendE('w1', 'one more fix', 'o1'), next)).toEqual({ isDelivered: false, reason: `litter: ${reason}` })
+      expect(calls).toEqual([])
+      expect(state.status('w1')).toBe('idle')
+      expect(state.reservations()).toEqual([])
+      expect(policyOf('w1')?.admitted).toBe(false)
+    })
+  }
+
+  const orchestratorConditions: [string, () => Promise<void>, string][] = [
+    [
+      'another instance of it runs',
+      async () => put(bind('o1b', { node: 'part-a', n: 2, kind: 'orchestrator', parent: null, cwd: '/repo', boundAt: NOW - 1 }), true),
+      'another instance of part-a is running; send to it instead',
+    ],
+    ['it was stopped', async () => state.stop('alpha', ['o1'], 'you stopped it'), 'part-a (o1) was stopped (you stopped it)'],
+    [
+      "it's not in the current revision",
+      async () => state.putLiveSwarm(live({ revision: 2, spec: spec({ nodes: spec().nodes.filter(n => n.id !== 'part-a') }) })),
+      "part-a isn't in swarm alpha's revision 2",
+    ],
+    ['the swarm is stopping', async () => void state.patchLiveSwarm('alpha', { state: 'stopping' }), 'swarm alpha is ending'],
+  ]
+
+  test('a browser send to a finished orchestrator takes a place', async () => {
+    wireOwnSends()
+    await put(o1(), false)
+    expect(await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', when: 'interject', route: 'direct' })).toEqual({
+      kind: 'delivered',
+    })
+    expect(p.sent).toEqual([{ to: 'o1', text: 'look at the flaky test' }])
+    expect(state.status('o1')).toBe('running')
+    expect(policyOf('o1')?.admitted).toBe(true)
+  })
+
+  for (const [why, arrange, reason] of orchestratorConditions) {
+    test(`a browser send to a finished orchestrator is refused when ${why}`, async () => {
+      wireOwnSends()
+      await put(o1(), false)
+      await arrange()
+      const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', when: 'interject', route: 'direct' })
+      expect(out).toEqual(expect.objectContaining({ kind: 'refused', reason }))
+      expect(p.sent).toEqual([])
+      expect(state.status('o1')).toBe('idle')
+      expect(state.reservations()).toEqual([])
+    })
+  }
+
+  test('a queued delivery to a finished orchestrator takes a place', async () => {
+    wireOwnSends()
+    await put(o1(), false)
+    const m = state.enqueue({ swarm: 'alpha', agentId: 'o1', node: 'part-a', text: 'when you can: rebase', from: 'user', at: NOW })
+    expect(await tool({ queued: m.id })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
+    expect(p.sent).toEqual([{ to: 'o1', text: 'when you can: rebase' }])
+    expect(state.queued()).toEqual([])
+    expect(state.status('o1')).toBe('running')
+    expect((await events()).map(e => e.kind)).toEqual(['message', 'queue-sent'])
+  })
+
+  for (const [why, arrange, reason] of orchestratorConditions) {
+    test(`a queued delivery to a finished orchestrator is refused when ${why}`, async () => {
+      wireOwnSends()
+      await put(o1(), false)
+      const m = state.enqueue({ swarm: 'alpha', agentId: 'o1', node: 'part-a', text: 'when you can: rebase', from: 'user', at: NOW })
+      await arrange()
+      const out = await tool({ queued: m.id })
+      expect(out.ok).toBe(false)
+      expect(String(out.error)).toContain(reason)
+      expect(p.sent).toEqual([])
+      expect(state.status('o1')).toBe('idle')
+      // Refused for room it stays queued, to be handed on again; otherwise it's dropped.
+      const kept = why === 'another instance of it runs'
+      expect(state.queued().map(q => q.id)).toEqual(kept ? [m.id] : [])
+      expect(String(out.error)).toContain(kept ? 'litter keeps the message queued' : 'the queued message was dropped')
+    })
+  }
+
+  test('an interject to a running node needs no place', async () => {
+    wireOwnSends()
+    await put(o1(), true)
+    await put(w1(), true)
+    expect(await tool({ node: 'fixer', text: 'also check the docs' })).toEqual({ ok: true, node: 'fixer#1', agentId: 'w1', outcome: { kind: 'delivered' } })
+    expect(p.sent).toEqual([{ to: 'w1', text: 'From the lead:\n\nalso check the docs' }])
+    expect(state.reservations()).toEqual([])
+    expect(state.countFor('alpha', 'o1', 'fixer')).toBe(1)
+  })
+})
+
+describe('the reply route', () => {
+  const wrapped = (from: string, text: string) => `For your worker fixer (w1), from ${from}:\n\n${text}\n\nPass it on with SendMessage, or answer it yourself.`
+
+  test("a SendMessage from the lead to an idle worker goes to its parent, wrapped", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'check the tests'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'o1', text: wrapped('the lead', 'check the tests') }])
+    expect(state.status('w1')).toBe('idle')
+    const ev = await events()
+    expect(ev[0]).toEqual(expect.objectContaining({ kind: 'readdressed', agentId: 'w1', from: 'lead', to: 'w1', parent: 'o1' }))
+    expect(ev[1]).toEqual(expect.objectContaining({ kind: 'message', agentId: 'o1', route: 'reply' }))
+  })
+
+  test("a browser send to an idle worker is readdressed too, and says why", async () => {
+    wireOwnSends()
+    await put(o1(), true)
+    await put(w1(), false)
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer', text: 'use the helper', when: 'interject', route: 'direct' })
+    expect(out).toEqual({ kind: 'readdressed', to: 'o1', parentNode: 'part-a', why: "via parent (it's idle)" })
+    expect(p.sent).toEqual([{ to: 'o1', text: wrapped('the user', 'use the helper') }])
+  })
+
+  test('an idle orchestrator the reply resumes for the lead takes its own place', async () => {
+    await put(o1(), false)
+    await put(w1(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'check the tests'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'o1', text: wrapped('the lead', 'check the tests') }])
+    expect(state.status('o1')).toBe('running')
+  })
+
+  test("another node's send, when the worker and its orchestrator are both idle, goes to the lead", async () => {
+    await put(o1(), false)
+    await put(o2(), true)
+    await put(w1(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'is the API stable?', 'o2'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([
+      {
+        to: 'main',
+        text: `For your orchestrator part-a (o1), from part-b (o2):\n\n${wrapped('part-b (o2)', 'is the API stable?')}\n\nPass it on with mcp__litter__swarm_send, or answer it yourself.`,
+      },
+    ])
+    expect(state.status('o1')).toBe('idle')
+    expect(state.status('w1')).toBe('idle')
+  })
+
+  test('an interject to a running worker goes direct, from anyone', async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'stop editing README'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'w1', text: 'stop editing README' }])
+  })
+
+  test('a send to no node from no node passes as it came', async () => {
+    await put(o1(), true)
+    const { next, calls } = sendNext()
+    const e = sendE('someone-else', 'hi')
+    expect(await send(e, next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'someone-else', text: 'hi' }])
+    expect(await events()).toEqual([])
+  })
+
+  test("a node's address in SendMessage's from form, or its listed name, resolves to it", async () => {
+    await put(o1(), true)
+    await put(bind('a1b2c3d4e5f60718', { parent: 'o1' }), true)
+    const { next, calls } = sendNext()
+    await send(sendE('fixer [a1b2c3d4]', 'via the from address'), next)
+    p.agents = [agent('a1b2c3d4e5f60718', T('fixer'), 'running', 'o1'), agent('x9', 'Explore', 'running')]
+    p.agents[0]!.name = 'helper'
+    await send(sendE('helper', 'via its name'), next)
+    expect(calls.map(c => c.to)).toEqual(['a1b2c3d4e5f60718', 'a1b2c3d4e5f60718'])
+  })
+})
+
+describe('settling', () => {
+  test("between a worker's turn.complete and its status leaving running, a send waits up to 2 s, then queues and answers delivered", async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
+    await admit.settleNode(p, { agentId: 'w1', turnId: 't1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    expect(state.status('w1')).toBe('settling')
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'and the changelog'), next)).toEqual({ isDelivered: true })
+    expect(p.sleeps).toEqual(Array(8).fill(250))
+    expect(calls).toEqual([])
+    const q = state.queued('alpha')
+    expect(q.map(m => [m.agentId, m.from, m.text])).toEqual([['w1', 'lead', 'and the changelog']])
+
+    // The list lets it go: the poll settles it and hands the message to the lead, from its timer.
+    p.agents = [agent('w1', T('fixer'), 'completed', 'o1')]
+    await fireEvery(p)
+    expect(state.status('w1')).toBe('idle')
+    expect(policyOf('w1')?.admitted).toBe(false)
+    expect(p.submitted.length).toBe(1)
+    expect(p.submitted[0]).toContain(`- fixer#1 in swarm alpha: 1 message, queued: "${q[0]!.id}"`)
+    expect(p.submitted[0]).toContain('mcp__litter__swarm_send')
+    // Nothing left to do: the poll stops, and the message isn't handed twice.
+    await fireEvery(p)
+    expect(p.timers.size).toBe(0)
+    expect(p.submitted.length).toBe(1)
+  })
+
+  test('a send to a settling node goes as soon as the list lets it go', async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
+    await admit.settleNode(p, { agentId: 'w1', turnId: 't1', answer: 'done', durationMs: 5, isAborted: true, reason: 'aborted' } as never)
+    p.onSleep = () => (p.agents = [agent('w1', T('fixer'), 'completed', 'o1')])
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'next file', 'o1'), next)).toEqual({ isDelivered: true })
+    expect(p.sleeps).toEqual([250])
+    expect(calls).toEqual([{ to: 'w1', text: 'next file' }])
+    expect(state.status('w1')).toBe('running')
+  })
+
+  test("the lead's turn start and end set and clear its busy state", async () => {
+    await admit.leadTurnStart(p, { text: 'hi', turnId: 'L1' } as never)
+    expect(state.leadBusy()).toBe(true)
+    await admit.settleNode(p, { turnId: 'L1', answer: 'ok', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    expect(state.leadBusy()).toBe(false)
+  })
+})
+
+describe('engine wakes (turn.step)', () => {
+  const refusal = (e: ReturnType<typeof stepE>, reason: string) => {
+    const answer = `litter: not admitted: ${reason}; ending this turn`
+    return {
+      chunks: [{ kind: 'text', index: 0, text: answer }, { kind: 'stop', stopReason: 'end_turn', usage: null }],
+      result: { turnId: e.turnId, index: e.index, answer, toolUses: [], stopReason: 'end_turn', usage: null },
+      called: false,
+    }
+  }
+
+  test("a stopped node's first step is refused without calling next, and a later step of that turn too", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    state.stop('alpha', ['w1'], 'you stopped it')
+    const first = stepE('w1', 'T1', 0)
+    expect(await step(first)).toEqual(refusal(first, 'fixer #1 (w1) was stopped (you stopped it)'))
+    const later = stepE('w1', 'T1', 1)
+    expect(await step(later)).toEqual(refusal(later, 'this turn was refused at its first step'))
+    expect((await events()).filter(e => e.kind === 'wake-refused')).toEqual([
+      { kind: 'wake-refused', node: 'fixer', agentId: 'w1', turnId: 'T1', reason: 'fixer #1 (w1) was stopped (you stopped it)' },
+    ])
+    expect(state.status('w1')).toBe('idle')
+  })
+
+  test('the same for a node a revision removed, and one past its parent\'s count', async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    await put(w2(), true)
+    const past = stepE('w1', 'T2', 0)
+    expect(await step(past)).toEqual(refusal(past, 'part-a (o1) already runs 1 of its max 1 fixer at once; wait for one to finish'))
+    state.putLiveSwarm(live({ revision: 2, spec: spec({ nodes: spec().nodes.filter(n => n.id !== 'fixer') }) }))
+    const gone = stepE('w1', 'T3', 0)
+    expect(await step(gone)).toEqual(refusal(gone, "fixer isn't in swarm alpha's revision 2"))
+    expect(await step(stepE('w1', 'T3', 4))).toEqual(refusal(stepE('w1', 'T3', 4), 'this turn was refused at its first step'))
+  })
+
+  test("an admitted wake takes a place and marks its policy admitted; a running node's step, and anyone else's, pass", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    const woke = await step(stepE('w1', 'T4', 0))
+    expect(woke.called).toBe(true)
+    expect(woke.chunks).toEqual([{ kind: 'text', index: 0, text: 'model says hi' }])
+    expect(state.status('w1')).toBe('running')
+    expect(policyOf('w1')?.admitted).toBe(true)
+    expect((await step(stepE('w1', 'T4', 1))).called).toBe(true)
+    expect((await step(stepE(undefined, 'L1', 0))).called).toBe(true)
+    expect((await step(stepE('not-a-node', 'X1', 0))).called).toBe(true)
+  })
+
+  test('a wake while it settles (parked, or a stranded message) keeps its place', async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    await put(w2(), false)
+    state.markSettling('w1')
+    expect((await step(stepE('w1', 'T5', 0))).called).toBe(true)
+    expect(state.status('w1')).toBe('running')
+  })
+})
+
+describe('swarm.bind and adoption after a reload', () => {
+  const TOK1 = '1'.repeat(32)
+  const TOK2 = '2'.repeat(32)
+  const TOK3 = '3'.repeat(32)
+  const instance = (n: number, token: string, over: Record<string, unknown> = {}) =>
+    appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.instance', {
+      node: 'fixer',
+      n,
+      parentAgentId: 'o1',
+      tool_use_id: `toolu_${n}`,
+      cwd: `/repo/.claude/worktrees/sw-alpha-fixer-${n}`,
+      branch: null,
+      token,
+      ...over,
+    } as never)
+  const ctx = (agentId: string | null): RecordCtx => ({ p, caller: { agentId, agentType: T('fixer') }, litterDir, options: normalizeOptions(undefined) })
+
+  test('two own workers of one template under one parent, bindings lost: neither is guessed; each binds with its own token', async () => {
+    await put(o1(), true)
+    await instance(1, TOK1)
+    await instance(2, TOK2)
+    p.agents = [agent('x1', T('fixer'), 'running', 'o1'), agent('x2', T('fixer'), 'running', 'o1')]
+    await admit.adoptUnbound(p)
+    expect(state.binding('x1')).toBeNull()
+    expect(state.binding('x2')).toBeNull()
+    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: true, admitted: true }))
+    expect(policyOf('x2')).toEqual(expect.objectContaining({ bind: true }))
+
+    expect(await admit.recordSwarmBind(ctx('x2'), { kind: 'swarm.bind', token: TOK2 })).toEqual({
+      ok: true,
+      node: 'fixer',
+      n: 2,
+      cwd: '/repo/.claude/worktrees/sw-alpha-fixer-2',
+      branch: null,
+    })
+    expect(state.binding('x2')).toEqual(expect.objectContaining({ node: 'fixer', n: 2, parent: 'o1', adopted: true, token: TOK2 }))
+    expect(policyOf('x2')).toEqual(expect.objectContaining({ bind: false, admitted: true, n: 2 }))
+    expect(state.status('x2')).toBe('running')
+    // The other's token, now bound, is refused; its own is taken.
+    expect(await admit.recordSwarmBind(ctx('x1'), { kind: 'swarm.bind', token: TOK2 })).toEqual(expect.objectContaining({ ok: false, field: 'token' }))
+    expect(await admit.recordSwarmBind(ctx('x1'), { kind: 'swarm.bind', token: TOK1 })).toEqual(expect.objectContaining({ ok: true, n: 1 }))
+    const rs = (await readLaunchLedger(p, litterDir, 'alpha', launch)).records
+    expect(rs.map(r => r.kind)).toEqual(['swarm.instance', 'swarm.instance', 'swarm.bind', 'swarm.node', 'swarm.bind', 'swarm.node'])
+    expect(rs[2]!.by).toEqual(expect.objectContaining({ source: 'agent', agentId: 'x2' }))
+    expect(rs[3]!.body).toEqual(expect.objectContaining({ agentId: 'x2', n: 2, adopted: true }))
+  })
+
+  test("a token of another node's instance, from a bound agent, or from an agent with another parent is refused", async () => {
+    await put(o1(), true)
+    await instance(1, TOK1)
+    await instance(1, TOK3, { node: 'scout' })
+    p.agents = [agent('x1', T('fixer'), 'running', 'o1'), agent('x3', T('fixer'), 'running', 'o2'), agent('o1', T('part-a'), 'running')]
+    const refusedToken = expect.objectContaining({ ok: false, field: 'token' })
+    expect(await admit.recordSwarmBind(ctx('x1'), { kind: 'swarm.bind', token: TOK3 })).toEqual(refusedToken)
+    expect(await admit.recordSwarmBind(ctx('x3'), { kind: 'swarm.bind', token: TOK1 })).toEqual(refusedToken)
+    expect(await admit.recordSwarmBind(ctx('o1'), { kind: 'swarm.bind', token: TOK1 })).toEqual(expect.objectContaining({ ok: false, field: 'kind' }))
+    expect(await admit.recordSwarmBind(ctx(null), { kind: 'swarm.bind', token: TOK1 })).toEqual(expect.objectContaining({ ok: false, field: 'kind' }))
+    expect(await admit.recordSwarmBind(ctx('x1'), { kind: 'swarm.bind', token: 'not-a-token' })).toEqual(refusedToken)
+    expect(state.binding('x1')).toBeNull()
+    expect(state.binding('x3')).toBeNull()
+  })
+
+  test('a single matching instance is adopted without a token', async () => {
+    await put(o1(), true)
+    await instance(1, TOK1)
+    p.agents = [agent('x1', T('fixer'), 'completed', 'o1')]
+    await admit.adoptUnbound(p)
+    expect(state.binding('x1')).toEqual(expect.objectContaining({ node: 'fixer', n: 1, adopted: true, cwd: '/repo/.claude/worktrees/sw-alpha-fixer-1' }))
+    expect(state.status('x1')).toBe('idle')
+    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: false }))
+    const rs = (await readLaunchLedger(p, litterDir, 'alpha', launch)).records
+    expect(rs.at(-1)!.body).toEqual(expect.objectContaining({ agentId: 'x1', adopted: true }))
+  })
+})
