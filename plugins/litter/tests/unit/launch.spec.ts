@@ -19,7 +19,7 @@ import {
   workflowCheckFailed,
 } from '../../hooks/launch'
 import { acquireLock, readLock, releaseLock, stopLease } from '../../hooks/lock'
-import { readLedger } from '../../hooks/ledgercore'
+import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { leasePath, modePath, runJsonPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
@@ -310,6 +310,17 @@ describe('resume', () => {
     await endRun(w.p, r.ref, { taskId: 'task-1', generation: 1, status: 'done', reason: null, source: 'notification' })
     expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), again.next))).toContain('ended done')
     expect(again.calls).toHaveLength(0)
+  })
+
+  test('a run with an open repair generation does not resume; its swarm ends that generation', async () => {
+    const w = await world()
+    const r = await stoppedRun(w)
+    const body = { generation: 2, swarm: 'repair-abc123', launch: '20261003-120000-abcd', budget: { rounds: 3, agents: 6 } }
+    await appendRecord(w.p, r.runDir, { run: r.run, kind: 'run.repair', by: { source: 'mod' }, body })
+    const { calls, next } = engine()
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), next))).toContain('being repaired by swarm repair-abc123')
+    expect(calls).toHaveLength(0)
+    expect(runState(await ledgerOf(w, r.ref)).open?.repair?.swarm).toBe('repair-abc123')
   })
 
   test('a resume the engine refuses gives the lock back', async () => {

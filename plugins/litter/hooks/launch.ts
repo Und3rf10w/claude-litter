@@ -239,6 +239,10 @@ async function resumeRun(p: Ports, e: E, next: Next, litterDir: string, workflow
   const latest = st.latest
   if (!latest) return deny(`litter: run ${ref.run} never launched, so there's nothing to resume`)
   if (latest.stopping && !latest.end) return deny(`litter: run ${ref.run} is still stopping; resume it once its stop has settled`)
+  // Only its swarm's End closes a repair generation (2b-2), so a resume can't mark it interrupted.
+  if (latest.repair && !latest.end) {
+    return deny(`litter: run ${ref.run} is being repaired by swarm ${latest.repair.swarm}; resume it only after that swarm ends (End swarm in /litter-swarm ${latest.repair.swarm})`)
+  }
   if (latest.end && !RESUMABLE.includes(latest.end.status)) {
     return deny(`litter: run ${ref.run} ended ${latest.end.status}; only failed, stopped and interrupted runs resume. Start a continuation (continueOf) instead`)
   }
@@ -256,7 +260,8 @@ async function resumeRun(p: Ports, e: E, next: Next, litterDir: string, workflow
     oid = t.held.oid
     took = true
   }
-  const runIds = [...new Set(st.generations.map(g => g.runId))]
+  // A repair generation runs no workflow, so it has no run id ('').
+  const runIds = [...new Set(st.generations.filter(g => g.runId !== '').map(g => g.runId))]
   await activate(p, litterDir, json, sessionId, { runIds, launching: true })
   const undo = async () => {
     if (took) await releaseLock(p, repo, oid)
