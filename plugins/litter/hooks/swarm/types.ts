@@ -442,6 +442,8 @@ export type InflightCall = {
   agentId: string
   toolUseId: string
   tool: string
+  /** A Bash or Monitor call's command as its `call` line had it (first 80 characters), or ''. */
+  detail: string
   at: number
   /** The agent's swarm, or null for a run agent. */
   swarm: string | null

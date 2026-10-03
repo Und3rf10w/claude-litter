@@ -41,6 +41,17 @@ case_call_start() {
   assert_eq 'number|number' "$(lines call '.ts | type')" ts
 }
 
+# A Bash start carries its command (cut, one line) for the /clear hold's ask; other tools carry none.
+case_call_start_detail() {
+  swarm_setup
+  bash_call "$LEAD" 'npm test
+  -- --watch=false' | run_hook guard.sh
+  assert_pass
+  call "$LEAD" Read '{"file_path":"/x"}' | run_hook guard.sh
+  assert_pass
+  assert_eq 'Bash npm test   -- --watch=false|Read none' "$(lines call '"\(.tool) \(.detail // "none")"')" "details"
+}
+
 case_call_start_run_agent() {
   project >/dev/null
   policy
@@ -179,6 +190,7 @@ case_spool_fails() {
 }
 
 t "guard.sh spools a call start for a node's and a child's call it passes" case_call_start
+t "a Bash start carries its command, cut to one line; a Read start none" case_call_start_detail
 t "guard.sh spools a call start for a run agent's call it passes" case_call_start_run_agent
 t "a denial spools a deny line and no start" case_deny_line
 t "no call lines for the main thread, an unrelated agent or a fork" case_no_lines_for_others

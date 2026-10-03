@@ -112,7 +112,7 @@ function busySwarm(): void {
   state.putBinding(bind('fix-2', { node: 'fixer', n: 2, kind: 'worker', parent: 'orch-b', type: 'litter:sw-alpha-fixer' }))
   state.markRunning('orch-b')
   state.markRunning('fix-2')
-  state.callStart('fix-2', 'tu-bash', 'Bash', NOW - 40_000)
+  state.callStart('fix-2', 'tu-bash', 'Bash', NOW - 40_000, 'npm test')
   p.agents = [listed('orch-b', 'litter:sw-alpha-part-b'), listed('fix-2', 'litter:sw-alpha-fixer')]
 }
 
@@ -176,7 +176,7 @@ describe('the clear is held', () => {
     expect(options).toEqual([...CLEAR_OPTIONS])
     expect(options[0]).toBe('Cancel')
     expect(question).toContain('/clear stops these commands halfway (their shells are killed)')
-    expect(question).toContain('- fixer #2 under part-b: Bash, running for 40 s')
+    expect(question).toContain('- fixer #2 under part-b: Bash (npm test), running for 40 s')
     expect(question).toContain('- part-b: running, between commands')
     expect(question.trimEnd().endsWith('?')).toBe(true)
   })
@@ -212,9 +212,9 @@ describe('the clear is held', () => {
     busySwarm()
     p.answers.push('Clear anyway')
     expect(await clear()).toEqual({ r: ENGINE, cleared: true })
-    expect(state.takeClearKills()).toEqual([{ agentId: 'fix-2', who: 'fixer #2 under part-b', tool: 'Bash', detail: '' }])
+    expect(state.takeClearKills()).toEqual([{ agentId: 'fix-2', who: 'fixer #2 under part-b', tool: 'Bash', detail: 'npm test' }])
     const events = (await readLaunchLedger(p, litterDir, 'alpha', LAUNCH)).records.filter(r => r.kind === 'swarm.event')
-    expect(events.map(r => r.body)).toEqual([{ kind: 'clear-killed', node: 'fixer', agentId: 'fix-2', tool: 'Bash', detail: '' }])
+    expect(events.map(r => r.body)).toEqual([{ kind: 'clear-killed', node: 'fixer', agentId: 'fix-2', tool: 'Bash', detail: 'npm test' }])
   })
 
   test('a run alone (no swarm) is held the same way: its agents are known by their open calls', async () => {

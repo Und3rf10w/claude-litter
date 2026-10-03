@@ -134,11 +134,11 @@ async function live(over: Partial<LiveSwarm> = {}, fixer: Partial<NodeBinding> =
 describe('consumeSwarm', () => {
   test('call starts and ends balance, and a background shell is recorded at its end', async () => {
     await live()
-    await callLine('a-fix1', 'tu-1', 'start')
-    await callLine('a-fix1', 'tu-2', 'start')
-    expect(state.inflight().map(c => [c.agentId, c.toolUseId, c.tool, c.swarm, c.at])).toEqual([
-      ['a-fix1', 'tu-1', 'Bash', 'alpha', T0],
-      ['a-fix1', 'tu-2', 'Bash', 'alpha', T0],
+    await callLine('a-fix1', 'tu-1', 'start', { detail: 'npm test' })
+    await callLine('a-fix1', 'tu-2', 'start', { detail: 42 })
+    expect(state.inflight().map(c => [c.agentId, c.toolUseId, c.tool, c.detail, c.swarm, c.at])).toEqual([
+      ['a-fix1', 'tu-1', 'Bash', 'npm test', 'alpha', T0],
+      ['a-fix1', 'tu-2', 'Bash', '', 'alpha', T0],
     ])
     await callLine('a-fix1', 'tu-1', 'end', { shell: 'bsh_42' })
     expect(state.inflight().map(c => c.toolUseId)).toEqual(['tu-2'])

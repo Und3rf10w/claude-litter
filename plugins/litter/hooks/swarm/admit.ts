@@ -1040,7 +1040,7 @@ function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly Clear
   for (const k of kills) {
     const mine = state.binding(k.agentId)?.swarm
     if (mine === s.name || (mine === undefined && first)) {
-      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: k.who, call: k.detail ? `${k.tool} (${k.detail})` : k.tool }), keep: P_KILL, at: 0 })
+      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: k.who, call: k.detail ? `${k.tool} (${firstLine(k.detail)})` : k.tool }), keep: P_KILL, at: 0 })
     }
   }
   for (const b of instancesOfSwarm(s)) {

@@ -310,6 +310,8 @@ export type SpoolLine =
       phase: 'start' | 'end'
       failed?: boolean
       shell?: string
+      /** On a start, a Bash or Monitor call's command: its first 80 characters, controls as spaces. */
+      detail?: string
     }>
   /** Phase 2b. watch.sh, for a node's SubagentHandback: its message (a blob when long), before `done/<agent_id>`. */
   | SpoolBase<'handback', { agent_id: string; agent_type: string; tool_use_id: string; message?: string; file?: string }>

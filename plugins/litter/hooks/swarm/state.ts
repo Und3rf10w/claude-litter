@@ -647,9 +647,9 @@ export function cancelQueued(id: string): QueuedMessage | null {
 // ---------------------------------------------------------------------------
 // In flight: tool calls and background shells (nodes, their children, run agents)
 
-export function callStart(agentId: string, toolUseId: string, tool: string, at: number): void {
+export function callStart(agentId: string, toolUseId: string, tool: string, at: number, detail = ''): void {
   const swarm = swarmOfAgent(agentId)
-  calls.set(callKey(agentId, toolUseId), { agentId, toolUseId, tool, at, swarm })
+  calls.set(callKey(agentId, toolUseId), { agentId, toolUseId, tool, detail, at, swarm })
   changed(swarm)
 }
 

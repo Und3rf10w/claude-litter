@@ -157,7 +157,7 @@ function holdQuestion(running: readonly Running[], now: number): string {
   const rows = running.map(r =>
     r.calls.length === 0
       ? `- ${r.who}: running, between commands`
-      : `- ${r.who}: ${r.calls.map(c => `${c.tool}, running for ${age(now - c.at)}`).join('; ')}`,
+      : `- ${r.who}: ${r.calls.map(c => `${c.detail ? `${c.tool} (${c.detail})` : c.tool}, running for ${age(now - c.at)}`).join('; ')}`,
   )
   return `/clear stops these commands halfway (their shells are killed):\n${rows.join('\n')}\nClear anyway?`
 }
@@ -179,7 +179,7 @@ export const holdClear: PortHook<CommandRunHook> = async (p, e, next) => {
   }
   if (answer !== 'Clear anyway') return { text: CLEAR_HELD }
   const kills: (ClearKill & { swarm: string | null; node: string | null })[] = running.flatMap(r =>
-    r.calls.map(c => ({ agentId: r.agentId, who: r.who, tool: c.tool, detail: '', swarm: r.swarm, node: r.node })),
+    r.calls.map(c => ({ agentId: r.agentId, who: r.who, tool: c.tool, detail: c.detail ?? '', swarm: r.swarm, node: r.node })),
   )
   // For the next <swarm> block's "Cut short by the clear" lines, which only a live swarm's block shows.
   if (kills.length > 0 && swarms.some(s => !s.lost)) noteClearKills(kills.map(({ swarm: _s, node: _n, ...k }) => k))

@@ -147,7 +147,7 @@ async function onCall(p: Ports, line: Line<'call'>): Promise<void> {
   if (!who || typeof line.tool_use_id !== 'string' || line.tool_use_id === '') return
   const at = await lineAt(p, line)
   if (line.phase === 'start') {
-    state.callStart(line.agent_id, line.tool_use_id, String(line.tool), at)
+    state.callStart(line.agent_id, line.tool_use_id, String(line.tool), at, typeof line.detail === 'string' ? line.detail : '')
     return
   }
   if (line.phase !== 'end') return

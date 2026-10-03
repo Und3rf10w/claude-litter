@@ -398,7 +398,10 @@ def denyline($in; $r): {v: 1, ev: "deny", ts: ts, session_id: ($in.session_id | 
 def out($in; $m; $extra): ($GP + " " + ($m | line)) as $r
   | (["deny", $r, sid($in)] + [$extra[] | tojson] + [denyline($in; $r)]) | join("\n");
 def deny($in; $m): out($in; $m; []);
-def callline($in): {v: 1, ev: "call", ts: ts, session_id: ($in.session_id | str), agent_id: ($in.agent_id | str),
-  agent_type: ($in.agent_type | str), tool: ($in.tool_name | str), tool_use_id: ($in.tool_use_id | str), phase: "start"} | tojson;
+def calldetail($in): if ($in.tool_name | str) == "Bash" or ($in.tool_name | str) == "Monitor"
+  then ($in.tool_input | if type == "object" then .command else null end | str | gsub("[[:cntrl:]]"; " ") | .[0:80]) else "" end;
+def callline($in): ({v: 1, ev: "call", ts: ts, session_id: ($in.session_id | str), agent_id: ($in.agent_id | str),
+  agent_type: ($in.agent_type | str), tool: ($in.tool_name | str), tool_use_id: ($in.tool_use_id | str), phase: "start"}
+  + (calldetail($in) as $d | if $d == "" then {} else {detail: $d} end)) | tojson;
 def passcall($in): if sid($in) != "" and ($in.tool_use_id | str) != "" then "pass\n" + sid($in) + "\n" + callline($in) else "pass" end;
 '
