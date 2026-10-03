@@ -96,6 +96,7 @@ describe('the instance and rules blocks', () => {
     cwd: '/repo/.claude/worktrees/sw-stack-review-fixer-2',
     branch: 'sw/stack-review/fixer-2',
     spawns_left: instance.SPAWNS_LEFT_NONE,
+    budget: null,
     token: 'tok123',
   }
 

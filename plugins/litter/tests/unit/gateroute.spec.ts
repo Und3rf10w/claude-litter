@@ -132,10 +132,11 @@ const asError = (r: RecordReply) => {
 
 const ledgerFiles = () => (existsSync(ledgerDir(runDir(dir, RUN))) ? readdirSync(ledgerDir(runDir(dir, RUN))) : [])
 
-const STUB = (kind: string) => `litter: a swarm node's '${kind}' record isn't built yet (phase 2b-2)`
+/** The real gate's answer (WP-Y) to a node whose swarm isn't live, as these bindings' isn't. */
+const STUB = (kind: string) => `litter: swarm ${SWARM} isn't live, so it records no ${kind}`
 
 describe("a bound swarm node's verify, verdict and land", () => {
-  test("go to swarm/gate.ts, whose stub refuses each, naming kind; nothing is written", async () => {
+  test("go to swarm/gate.ts, which refuses each for a swarm that isn't live, naming kind; nothing is written", async () => {
     await startAgent('node-1', `litter:sw-${SWARM}-critic`, null)
     bindNode('node-1')
     for (const kind of ['verify', 'verdict', 'land', 'VERDICT']) {

@@ -3,7 +3,9 @@
 // merge, idempotent per verify_id, with crash recovery by trailer (plan
 // sections 7 and 9). Owner: phase 1b, work package C. A fanout's land (gate
 // `fanout`), which moves the checkout's index and files to the integration
-// tip, and its recovery by the intent's commit: phase 2b, package G.
+// tip, and its recovery by the intent's commit: phase 2b, package G. A repair
+// swarm's land of the repaired integration tip, through the same tail: phase
+// 2b-2, package Y.
 //
 // Every git argv here is built from run.json's checked facts, the ledger's
 // trees and git's own answers. Nothing from the call becomes an argument: the
@@ -13,7 +15,8 @@
 
 import type { Ports } from './ports'
 import type { RecordCtx, RecordHandler, RecordReply, StoredRecord } from './records/core'
-import type { RunJson } from './records/run'
+import type { RunJson, RunRepairBody } from './records/run'
+import type { LiveSwarm, NodeBinding, RunLink } from './swarm/types'
 import type {
   GateRef,
   LandAbandonedBody,
@@ -30,6 +33,8 @@ import { integrationBranch, runJsonPath } from './layout'
 import { readJson, serial } from './fsx'
 import { snapshot } from './snapshot'
 import { fanoutTasks, integrationWorktree, wholeResult } from './integrate'
+import { bindings, liveSwarm, spawnsUsed } from './swarm/state'
+import { nodeOf, writesFiles } from './swarm/admit'
 import {
   FIXED_GATES,
   MOD,
@@ -714,8 +719,29 @@ async function landFanout(ctx: RecordCtx, f: RunFacts, verifyId: string): Promis
   }
 
   // The steps, in order.
-  const tip = done.tip
-  const intent: LandIntentBody = { gate, verify_id: verifyId, tree: done.tree, old: base, ref: json.ref, mode: 'checkout', commit: tip }
+  return landTip(p, f, verifyId, done.tip, done.tree, { refuse, landed })
+}
+
+/** How a checkout land answers: landFanout's writes the relay's out file first; a repair node's answers as it is. */
+type Answers = {
+  refuse: (reason: string, retry: boolean) => Promise<LandReply>
+  landed: (commit: string, note?: string) => Promise<LandReply>
+}
+
+/**
+ * The checkout land's steps once every check passed, landFanout's and
+ * landRepaired's (plan section 7, fanout.js step 5): the intent naming `tip`,
+ * the checkout's index and files moved from base to the tip by git's two-tree
+ * merge, the compare-and-swap of the run's ref from base to the tip, the
+ * re-sync to HEAD, and the land record, all with gate `fanout`. A crash after
+ * the intent is reconcileFanout's, by the intent's `commit`.
+ */
+async function landTip(p: Ports, f: RunFacts, verifyId: string, tip: string, tree: string, { refuse, landed }: Answers): Promise<LandReply> {
+  const { run, runDir, json } = f
+  const gate = FANOUT_GATE
+  const branch = branchOf(json.ref)
+  const base = json.base
+  const intent: LandIntentBody = { gate, verify_id: verifyId, tree, old: base, ref: json.ref, mode: 'checkout', commit: tip }
   try {
     await appendRecord(p, runDir, { run, kind: 'land.intent', by: MOD, body: intent })
   } catch (err) {
@@ -755,7 +781,7 @@ async function landFanout(ctx: RecordCtx, f: RunFacts, verifyId: string): Promis
   }
 
   const note = notes.length > 0 ? notes.join('; ') : undefined
-  const body: LandBody = { gate, verify_id: verifyId, commit: tip, tree: done.tree, old: base, ref: json.ref }
+  const body: LandBody = { gate, verify_id: verifyId, commit: tip, tree, old: base, ref: json.ref }
   if (note) body.note = note
   try {
     await appendRecord(p, runDir, { run, kind: 'land', by: MOD, body })
@@ -778,8 +804,204 @@ export type RepairedLand = { verifyId: string; swarm: string; agentId: string }
  * path owned by a task of the run, the checkout at base), then landFanout's
  * intent, two-tree merge and compare-and-swap tail, with gate `fanout` in the
  * run's ledger; a crash after the intent is reconciled as landFanout's is.
- * The reply is execute's LandReply. Package V's stub refuses.
+ * The reply is execute's LandReply, with no out file: a node's land has no
+ * StructuredOutput for one to fill.
  */
-export async function landRepaired(_ctx: RecordCtx, _f: RunFacts, _land: RepairedLand): Promise<RecordReply> {
-  return fail("litter: a repair swarm's land isn't built yet (phase 2b-2)", 'kind')
+export async function landRepaired(ctx: RecordCtx, f: RunFacts, land: RepairedLand): Promise<RecordReply> {
+  return serial(landKey(f.runDir), () => repairedLand(ctx.p, f, land))
+}
+
+/** A repair swarm node's verify gate (swarm/gate.ts): never one a record call can name (FIXED_GATES and plan gates). */
+export const REPAIR_GATE = 'repair'
+
+/**
+ * The `run.repair` that opened `link`'s generation, while it's the run's open
+ * one: the latest lifecycle record is that run.repair (verify.ts, runClosed).
+ * Else why not, completing "run <id> …".
+ */
+export function repairGeneration(
+  records: readonly StoredRecord[],
+  link: RunLink,
+): { ok: true; rec: StoredRecord<RunRepairBody> } | { ok: false; why: string } {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i]!
+    if (r.kind === 'run.repair') {
+      const g = (r.body as Partial<RunRepairBody>).generation
+      return g === link.generation
+        ? { ok: true, rec: r as StoredRecord<RunRepairBody> }
+        : { ok: false, why: `is open for repair generation ${String(g)}, not ${link.generation}` }
+    }
+    if (r.kind === 'run.end') return { ok: false, why: `has ended${records.slice(0, i).some(x => x.kind === 'run.repair') ? ' its repair generation' : ''}` }
+    if (r.kind === 'run.stopping') return { ok: false, why: 'is stopping' }
+    if (r.kind === 'run.launch' || r.kind === 'run.resume') return { ok: false, why: 'is running its workflow, not a repair' }
+  }
+  return { ok: false, why: 'has no repair generation open' }
+}
+
+/** The budget case's ending for a refusal a node reads (plan 15.11, "It asks you only when it can't proceed itself"). */
+const ASK_FOR_BUDGET = 'report blocked to your parent, saying what more you need and for what; the lead can ask the user for it with repair.budget'
+
+/**
+ * The checks of COMMON 2b-2 step 5's land, each refused on its own, then
+ * landTip. Under the land's key: reconcile, idempotency per verify_id and the
+ * ledger are read as landFanout reads them.
+ */
+async function repairedLand(p: Ports, f: RunFacts, { verifyId, swarm }: RepairedLand): Promise<LandReply> {
+  const { run, runDir, json } = f
+  const branch = branchOf(json.ref)
+  const base = json.base
+  const refuse = async (reason: string, retry: boolean): Promise<LandReply> => ({ ok: true, landed: false, reason, retry })
+  const landed = async (commit: string, note?: string): Promise<LandReply> =>
+    note ? { ok: true, landed: true, commit, retry: false, reason: note } : { ok: true, landed: true, commit, retry: false }
+
+  const s = liveSwarm(swarm)
+  const link = s?.run
+  if (!s || !link || link.run !== run || link.runDir !== runDir) return refuse(`swarm ${swarm} isn't a live repair swarm of run ${run}`, false)
+  if (!s.budget) return refuse(`repair swarm ${swarm} has no repair budget, so nothing it made lands`, false)
+  if (json.workflow !== 'fanout') return refuse(`run ${run} is a ${json.workflow} run; a repair swarm lands only a fanout's integration`, false)
+
+  const reconciled = await reconcileIn(p, f)
+  const ledger = await readLedger(p, runDir, run)
+  if (ledger.tampered) {
+    return refuse(`the run's ledger is tampered at record ${ledger.tampered.seq} (${ledger.tampered.reason}), so nothing more lands`, false)
+  }
+  const records = ledger.records
+  const prior = findLast(records, r => r.kind === 'land' && r.body.verify_id === verifyId)
+  if (prior) {
+    const b = prior.body as LandBody
+    if (b.gate !== FANOUT_GATE) return refuse(`verify ${verifyId} already landed gate ${b.gate}, not ${FANOUT_GATE}`, false)
+    return landed(b.commit, b.note)
+  }
+  if (reconciled.problems.length > 0) return refuse(`reconcile found what it can't settle: ${reconciled.problems.join('; ')}`, false)
+  const closed = runClosed(records)
+  if (closed) return refuse(`run ${run} ${closed}, so nothing more lands`, false)
+  const gen = repairGeneration(records, link)
+  if (!gen.ok) return refuse(`run ${run} ${gen.why}, so nothing more lands`, false)
+  const since = gen.rec.seq
+  const earlier = lastLand(records)
+  if (earlier) return refuse(`run ${run} already landed ${earlier.commit} with verify ${earlier.verify_id}; a fanout lands once`, false)
+
+  // 1. A green verify of this generation, as the gate ran it: gate repair, recorded by an agent.
+  const vRec = records.find(r => verifyBody(r)?.verify_id === verifyId)
+  const v = vRec ? verifyBody(vRec) : null
+  if (!vRec || !v) return refuse(`run ${run} has no verify ${verifyId}`, false)
+  if (vRec.seq < since) return refuse(`verify ${verifyId} is from before this repair (generation ${link.generation}); verify the repaired tree and have it judged`, false)
+  if (v.gate !== REPAIR_GATE) return refuse(`verify ${verifyId} is for gate ${v.gate}, not a repair swarm's verify`, false)
+  if (!isGreen(v)) return refuse(`verify ${verifyId} isn't green (${notGreen(v)})`, false)
+  const recorder = vRec.by.source === 'agent' ? vRec.by.agentId : null
+  if (recorder === null) return refuse(`verify ${verifyId} wasn't recorded by an agent, so no verdict can cite it`, false)
+
+  // 2. The critic's verdict on it: this generation's latest, from that agent, of a verdicts type, passing every task.
+  const verdicts = records.filter(r => r.seq > since && r.kind === 'verdict')
+  const verdict = findLast(verdicts, r => r.body.verify_id === verifyId)
+  if (!verdict) return refuse(`no verdict cites verify ${verifyId}; the critic records its own verify of the committed tree, then a verdict citing it`, false)
+  const latest = verdicts.at(-1)!
+  if (latest !== verdict) {
+    return refuse(`the verdict on verify ${verifyId} isn't this repair's latest: round ${String(latest.body.round)} on verify ${String(latest.body.verify_id)} came after it, and the critic's latest judgment is the one a land follows`, false)
+  }
+  if (agentOf(verdict) !== recorder) return refuse(`the verdict citing verify ${verifyId} isn't from the agent that recorded it`, false)
+  const type = verdict.by.source === 'agent' ? verdict.by.agentType : null
+  const judge = Object.entries(s.types).find(([, t]) => t === type)?.[0]
+  const judgeNode = judge === undefined ? null : nodeOf(s, judge)
+  if (!judgeNode || judgeNode.verdicts !== true) return refuse(`the verdict on verify ${verifyId} isn't from a node of swarm ${swarm} whose type has verdicts: true`, false)
+  const tasks = fanoutTasks(json)
+  const judged = Array.isArray(verdict.body.tasks) ? (verdict.body.tasks as { id?: unknown; pass?: unknown }[]) : []
+  const notPassed = tasks.filter(t => !judged.some(j => j !== null && typeof j === 'object' && j.id === t.id && j.pass === true)).map(t => t.id)
+  if (notPassed.length > 0) return refuse(`the verdict on verify ${verifyId} doesn't approve every task: ${notPassed.join(', ')} didn't pass`, false)
+
+  // 3. Within the budget (15.11: past it, the swarm can't land, and has to ask).
+  const round = verdict.body.round
+  if (typeof round !== 'number' || !(round <= s.budget.rounds)) {
+    return refuse(`the verdict on verify ${verifyId} is round ${String(round)}, past the repair budget's ${s.budget.rounds}; ${ASK_FOR_BUDGET}`, false)
+  }
+  if (spawnsUsed(swarm) > s.budget.agents) {
+    return refuse(`repair swarm ${swarm} started ${spawnsUsed(swarm)} agents, past its budget of ${s.budget.agents}; ${ASK_FOR_BUDGET}`, false)
+  }
+
+  // 4. No writer judged its own change: the verdict's agent is no writing binding in the verified directory.
+  const wt = integrationWorktree(records, run)
+  if (!wt) return refuse(`run ${run} has no integration worktree recorded`, false)
+  const writesThere = bindings(swarm).filter(b => b.cwd === wt.path && writes(s, b))
+  if (writesFiles(judgeNode) || writesThere.some(b => b.agentId === recorder)) {
+    return refuse(`the verdict on verify ${verifyId} is from an agent that may write in ${wt.path}, so it could be judging its own change`, false)
+  }
+
+  // 5. The verified tree is the integration branch's committed tip, and the integration worktree's snapshot.
+  const ib = integrationBranch(run)
+  const tip = await tipOf(p, json.checkout, `refs/heads/${ib}`)
+  if (tip === null) return refuse(`${ib} doesn't resolve to a commit`, false)
+  const tipTree = (await git(p, json.checkout, ['rev-parse', '--verify', '-q', `${tip}^{tree}`])).stdout.trim()
+  if (tipTree !== v.tree_after) {
+    return refuse(`verify ${verifyId} ran on tree ${v.tree_after}, but ${ib}'s tip ${tip} has tree ${tipTree || 'none'}: what lands is the committed tip, so verify and judge it as it is now`, true)
+  }
+  const wtHead = await headRef(p, wt.path)
+  if (wtHead !== `refs/heads/${ib}`) {
+    return refuse(`the integration worktree ${wt.path} is on ${wtHead ? branchOf(wtHead) : 'a detached HEAD'}, not ${ib}; the repair commits on ${ib}`, false)
+  }
+  let there: Awaited<ReturnType<typeof snapshot>>
+  try {
+    there = await snapshot(p, wt.path)
+  } catch (err) {
+    return refuse(`the integration worktree ${wt.path} can't be snapshotted: ${message(err)}`, false)
+  }
+  if (there.dirty_submodules.length > 0) {
+    return refuse(`submodules in the integration worktree have uncommitted changes (${there.dirty_submodules.join(', ')}); commit or discard them, then verify and judge again`, true)
+  }
+  if (there.tree !== tipTree) {
+    return refuse(`the integration worktree ${wt.path} has uncommitted changes on top of ${ib}'s tip; commit them on ${ib} or discard them, then verify and judge the tip`, true)
+  }
+
+  // 6. The tip adds to the integration's outcome: integrate.done's tip, or base when it stopped at a conflict.
+  const doneRec = findLast(records, r => r.kind === 'integrate.done')
+  const conflict = records.some(r => r.kind === 'integrate.conflict')
+  const from = doneRec ? (doneRec.body as IntegrateDoneBody).tip : conflict ? base : null
+  if (from === null) return refuse(`run ${run}'s integration never finished, so there's no integration result to repair`, false)
+  for (const anchor of new Set([base, from])) {
+    const descends = await git(p, json.checkout, ['merge-base', '--is-ancestor', anchor, tip])
+    if (descends.code !== 0) {
+      const what = anchor === base ? `the run's base ${base}` : `the integration's tip ${anchor}`
+      return refuse(`${ib}'s tip ${tip} doesn't descend from ${what}; a repair adds commits on ${ib}, it doesn't rewrite them`, false)
+    }
+  }
+
+  // 7. Every changed path against base is a task's: an unowned one changes what was asked (the scope case).
+  const whole = await wholeResult(p, f, records, tip, { owners: 'all' })
+  if (whole.blocked.length > 0) {
+    return refuse(
+      `the repaired change fails the ownership check: ${whole.blocked.join('; ')}. Changing a path no task of the run owns changes what was asked: that's the scope case, so report blocked to your parent with the paths and why`,
+      false,
+    )
+  }
+
+  // 8. The destination: on the run's branch, at base, and unchanged since the launch (as landFanout's step 6).
+  const head = await headRef(p, json.checkout)
+  if (head !== json.ref) {
+    return refuse(`the checkout is on ${head ? branchOf(head) : 'a detached HEAD'}, not ${branch}; switch back (git switch ${branch}) and land again`, false)
+  }
+  const at = await tipOf(p, json.checkout, json.ref)
+  if (at !== base) return refuse(`${branch} is at ${at ?? 'nothing'}, not the run's base ${base}; something else moved it`, false)
+  let now: Awaited<ReturnType<typeof snapshot>>
+  try {
+    now = await snapshot(p, json.checkout)
+  } catch (err) {
+    return refuse(`the snapshot before the land failed: ${message(err)}`, false)
+  }
+  if (now.dirty_submodules.length > 0) {
+    return refuse(`submodules have uncommitted changes (${now.dirty_submodules.join(', ')}); commit, stash or discard inside them, then land again`, false)
+  }
+  const baseTree = (await git(p, json.checkout, ['rev-parse', '--verify', '-q', `${base}^{tree}`])).stdout.trim()
+  if (now.tree !== baseTree) {
+    return refuse(
+      `the checkout changed after the launch (it no longer snapshots to base ${base}), so moving the repaired files in would overwrite or mix in those changes; commit, stash or discard them, then land again`,
+      true,
+    )
+  }
+
+  return landTip(p, f, verifyId, tip, tipTree, { refuse, landed })
+}
+
+/** A binding writes when its node does (a child, as its node). */
+const writes = (s: LiveSwarm, b: NodeBinding): boolean => {
+  const node = nodeOf(s, b.node)
+  return node === null || writesFiles(node)
 }
