@@ -261,6 +261,26 @@ describe('the spool drain', () => {
     expect(ids()).toEqual(['stale', 'theirs-too', 'theirs'])
   })
 
+  test('drainAllSpools leaves the spool of a swarm another live session owns, while its beat is fresh', async () => {
+    p.clock.now = 1_000_000_000
+    const entry = (session: string, checkedAt: number) => ({
+      launch: '20270115-093005',
+      state: 'live' as const,
+      commonDir: `${dir}/.git`,
+      owner: { ref: `refs/litter-swarm/${session}`, oid: 'a'.repeat(40), generation: 1, session, checkedAt },
+      nodeTypes: [],
+    })
+    await writePolicy(p, dir, {
+      ...policyFor(null, 'x'),
+      swarm: { swarms: { alpha: entry('owner', 1_000_000 - 5), beta: entry('gone', 1_000_000 - 120) } },
+    })
+    writeSpool('owner', [startLine('theirs', {}, 'owner')])
+    writeSpool('gone', [startLine('stale', {}, 'gone')])
+    await drainAllSpools(p, dir, [collect])
+    expect(ids()).toEqual(['stale'])
+    expect(spoolFiles()).toEqual(['owner.jsonl'])
+  })
+
   test("after a /clear the policy names the new session, and both sessions' spools are drained", async () => {
     let sid = 's-before'
     p.sessionId = async () => sid

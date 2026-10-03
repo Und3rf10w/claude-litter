@@ -255,34 +255,46 @@ async function currentSession(p: Ports): Promise<string> {
   return sid
 }
 
+/** A swarm owner's beat writes `checkedAt` every 10 s; past this (swarm/owner.ts's OWNER_STALE_MS) it's taken as gone. */
+const SWARM_OWNER_FRESH_S = 60
+
 /**
- * The session that owns the active run, when it's another live session's:
- * its spool is that session's to drain. Null when the run is this session's,
- * or nothing is active.
+ * The other live sessions whose spools are theirs to drain: the one that owns
+ * the active run, and each one that owns a live swarm while its beat is fresh
+ * (a swarm's lines are its owner's nodes', for that session's consumers).
+ * Empty when everything active is this session's.
  */
-async function foreignOwner(p: Ports, litterDir: string, sid: string): Promise<string | null> {
+async function foreignOwners(p: Ports, litterDir: string, sid: string): Promise<Set<string>> {
+  const owners = new Set<string>()
   const policy = await readPolicy(p, litterDir).catch(() => undefined)
-  if (!policy || policy.run === null || policy.session === sid || mySessions.has(policy.session)) return null
-  return (await p.fs.exists(activePath(litterDir))) ? policy.session : null
+  if (!policy) return owners
+  const foreign = (s: unknown): s is string => typeof s === 'string' && s !== '' && s !== sid && !mySessions.has(s)
+  if (policy.run !== null && foreign(policy.session) && (await p.fs.exists(activePath(litterDir)))) owners.add(policy.session)
+  const now = Math.floor((await p.now()) / 1000)
+  for (const entry of Object.values(policy.swarm?.swarms ?? {})) {
+    const owner = entry?.owner
+    if (foreign(owner?.session) && typeof owner.checkedAt === 'number' && now - owner.checkedAt <= SWARM_OWNER_FRESH_S) owners.add(owner.session)
+  }
+  return owners
 }
 
 /**
  * At session.start: drains every spool under hooks/spool/, earlier session ids
  * too, before reconcile (section 9, "Draining"): first the files an earlier
  * drain renamed aside and never finished, then each live spool, oldest first.
- * The spool of a run another live session owns is left to that session.
+ * The spool of a run or a swarm another live session owns is left to that session.
  */
 export async function drainAllSpools(p: Ports, litterDir: string, consumers: readonly SpoolConsumer[]): Promise<void> {
   const sid = await currentSession(p)
   await serial(spoolKey(litterDir), async () => {
     const dir = spoolDir(litterDir)
     if (!(await p.fs.exists(dir))) return
-    const owner = await foreignOwner(p, litterDir, sid)
+    const owners = await foreignOwners(p, litterDir, sid)
     const files: { name: string; session: string; aside: boolean; mtime: number }[] = []
     for (const e of await p.fs.list(dir)) {
       if (e.kind !== 'file') continue
       const m = ASIDE.exec(e.name) ?? LIVE.exec(e.name)
-      if (!m || m[1] === owner) continue
+      if (!m || owners.has(m[1]!)) continue
       const mtime = (await p.fs.stat(`${dir}/${e.name}`).catch(() => null))?.mtimeMs ?? 0
       files.push({ name: e.name, session: m[1]!, aside: ASIDE.test(e.name), mtime })
     }
