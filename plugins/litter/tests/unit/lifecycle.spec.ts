@@ -4,7 +4,7 @@
 // reconcile of each stale state. Real git and files in scratch repos.
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
 import type { RunEndBody, RunStartReply, Workflow } from '../../hooks/records/run'
@@ -29,7 +29,7 @@ import {
 } from '../../hooks/lifecycle'
 import { readLock, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
-import { activePath, leasePath, ledgerDir, modePath, runDir, summaryPath } from '../../hooks/layout'
+import { activePath, agentPolicyPath, leasePath, ledgerDir, modePath, policyPath, runDir, summaryPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { agentInfo, consumeAgents, readPolicy, stopInterrupted } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
@@ -565,5 +565,49 @@ describe('reconcile at session.start', () => {
     expect(w.p.logs.some(l => l.includes('tampered'))).toBe(true)
     expect(runState((await readLedger(w.p, r.ref.runDir, r.run)).records).ended).toBe(false)
     expect((await readLock(w.p, w.dir))?.blob?.run).toBe(r.run)
+  })
+})
+
+// FIX-T 8: a fanout writer's binding left in agents/ keeps every hook off its fast path (lib.sh, lt_begin).
+describe("a run's writer bindings", () => {
+  /** A writer's binding, as task.bind writes it (records/design.ts). */
+  const writer = (w: World, agentId: string, run: string) =>
+    atomicWriteJson(w.p, agentPolicyPath(w.litterDir, agentId), { v: 1, run, task: { id: 'T1', owned: ['a.txt'] }, worktree: { name: 'x', path: w.dir, branch: 'b' } })
+  const node = (w: World, agentId: string) => atomicWriteJson(w.p, agentPolicyPath(w.litterDir, agentId), { v: 1, node: { swarm: 'alpha', launch: '20261003-120000' } })
+  const left = (w: World, ...ids: string[]) => ids.map(id => existsSync(agentPolicyPath(w.litterDir, id)))
+
+  test("go at the run's end; another run's and a swarm node's stay", async () => {
+    const w = await world()
+    const r = await launched(w)
+    await writer(w, 'wr-1', r.run)
+    await writer(w, 'wr-2', r.run)
+    await writer(w, 'wr-other', '20260101-other')
+    await node(w, 'n-1')
+    await submit(w, notification(r.taskId, 'completed', '{"halted":null}'))
+    expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'done' }))
+    expect(left(w, 'wr-1', 'wr-2', 'wr-other', 'n-1')).toEqual([false, false, true, true])
+  })
+
+  test("at session.start, a leftover whose run isn't the active one goes, and the active run's stay", async () => {
+    const w = await world()
+    const r = await launched(w)
+    await writer(w, 'wr-1', r.run)
+    await writer(w, 'wr-old', '20260101-old')
+    await node(w, 'n-1')
+    // The open generation has no snapshot: still running, so its run stays active.
+    await reconcileRuns(w.p, w.litterDir)
+    expect((await readPolicy(w.p, w.litterDir))?.run?.run).toBe(r.run)
+    expect(left(w, 'wr-1', 'wr-old', 'n-1')).toEqual([true, false, true])
+  })
+
+  test("at session.start, with no run active every leftover goes; a policy.json that doesn't parse removes none", async () => {
+    const w = await world()
+    await writer(w, 'wr-old', '20260101-old')
+    writeFileSync(policyPath(w.litterDir), '{ not json')
+    await reconcileRuns(w.p, w.litterDir)
+    expect(left(w, 'wr-old')).toEqual([true])
+    rmSync(policyPath(w.litterDir))
+    await reconcileRuns(w.p, w.litterDir)
+    expect(left(w, 'wr-old')).toEqual([false])
   })
 })
