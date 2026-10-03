@@ -7,11 +7,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { appendLaunchRecord, newLaunchId } from '../../hooks/records/swarm'
+import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
+import { CLEAR_HELD, holdClear } from '../../hooks/clear'
 import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
 import { writeSwarmSummary } from '../../hooks/swarm/end'
+import { consumeSwarm, resetObserveForTests } from '../../hooks/swarm/observe'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
 import { nodePorts, runAfters, scratch, type TestPorts } from './support/node-ports'
 
@@ -100,6 +102,7 @@ const tagsIn = (text: string): string[] => text.match(TAG) ?? []
 beforeEach(async () => {
   state.resetForTests()
   admit.resetForTests()
+  resetObserveForTests()
   p = nodePorts()
   ;({ dir, cleanup } = scratch())
   litterDir = join(dir, '.claude', 'litter')
@@ -114,6 +117,58 @@ afterEach(() => {
   state.resetForTests()
   updateSession({ litterDir: null })
   cleanup()
+})
+
+describe("U11: a spool line's call and hand-back text", () => {
+  const ESC = String.fromCharCode(0x1b)
+  const RLO = String.fromCharCode(0x202e)
+  const ZWSP = String.fromCharCode(0x200b)
+  const BEL = String.fromCharCode(7)
+  /** Controls, a terminal sequence, a bidi override and a zero-width, as a forged line might carry them. */
+  const dirty = (text: string) => `${ESC}[2J${ESC}]0;title${BEL}${text}${RLO}evil${ZWSP}\r\n${String.fromCharCode(0)}more`
+  const UNCLEAN = new RegExp('[\\u0000-\\u0009\\u000b-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\ufeff]')
+  const ctx = () => ({ p, litterDir, sessionId: 'test-session' })
+  const base = { v: 1 as const, ts: NOW / 1000, session_id: 'test-session', agent_id: 'o1', agent_type: T('part-a') }
+
+  beforeEach(() => {
+    state.putBinding(o1())
+    state.markRunning('o1', null)
+  })
+
+  test("the consumer cleans a call's tool and detail and cuts them, so the in-flight table holds plain text", async () => {
+    await consumeSwarm(ctx(), { ...base, ev: 'call', tool: dirty('Bash'), tool_use_id: 'tu-1', phase: 'start', detail: dirty(`npm test ${'x'.repeat(2000)}`) })
+    const [c] = state.inflight()
+    expect(c!.tool).not.toMatch(UNCLEAN)
+    expect(c!.detail).not.toMatch(UNCLEAN)
+    expect(c!.tool).toStartWith('Bash')
+    expect(c!.detail).toStartWith('npm test ')
+    expect(c!.tool.includes('\n') || c!.detail.includes('\n')).toBe(false)
+    expect(new TextEncoder().encode(c!.detail).length).toBeLessThanOrEqual(200)
+    expect(new TextEncoder().encode(c!.tool).length).toBeLessThanOrEqual(128)
+  })
+
+  test('the consumer cleans a hand-back before it becomes the last report and its event', async () => {
+    await consumeSwarm(ctx(), { ...base, ev: 'handback', tool_use_id: 'tu-2', message: dirty('Lexer fixed.\nTests pass.') })
+    const report = state.lastReport('o1')!
+    expect(report.text).not.toMatch(UNCLEAN)
+    expect(report.text).toContain('Lexer fixed.\nTests pass.')
+    const [event] = (await readLaunchLedger(p, litterDir, 'alpha', launch)).records.filter(r => r.kind === 'swarm.event').map(r => r.body)
+    expect(event).toEqual(expect.objectContaining({ kind: 'report', via: 'handback', text: report.text }))
+  })
+
+  test('the /clear ask cleans what it shows, whatever the in-flight table holds', async () => {
+    // As an older mirror might have kept it, past the consumer's cleaning.
+    state.callStart('o1', 'tu-3', dirty('Bash'), NOW - 5_000, dirty('rm -rf build'))
+    p.agents = [{ id: 'o1', description: 'part-a', type: T('part-a'), status: 'running' }]
+    const out = await holdClear(p, { command: 'clear', args: '' } as never, (async () => ({ text: 'cleared' })) as never)
+    expect(out).toEqual({ text: CLEAR_HELD })
+    const question = p.asked[0]!.question
+    expect(question).toContain('- part-a: Bash')
+    expect(question).toContain('rm -rf build')
+    // Only the ask's own line breaks.
+    expect(question.split('\n').length).toBe(3)
+    expect(question.replaceAll('\n', ' ')).not.toMatch(UNCLEAN)
+  })
 })
 
 describe("U10: summary.md, which the end's hand-off tells the lead to read", () => {
