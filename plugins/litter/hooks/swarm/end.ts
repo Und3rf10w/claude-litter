@@ -731,12 +731,30 @@ async function sweepKept(p: Ports, litterDir: string): Promise<void> {
 }
 
 /**
+ * The one sweep of the node policy files an ended launch left (FIX-T):
+ * session.start's (sweepNodePolicies) and a stuck name's release
+ * (recover.ts, settleStuck) both call it. Each file `pick` takes is removed
+ * now, or kept and swept later: a running agent's file stays until it leaves
+ * this session's list; another session's is removed only once nobody touched
+ * it for a minute (that session's End may keep it for an agent running
+ * there), unless `holderGone` says the launch's holder is this session or
+ * gone, so nobody else can be keeping it. With no agent list, none goes yet.
+ */
+export async function sweepLeftPolicies(p: Ports, litterDir: string, pick: (node: NodePolicy) => boolean, holderGone: boolean): Promise<void> {
+  const left = (await nodePolicyFiles(p, litterDir)).filter(f => pick(f.node) && (holderGone || !kept.has(f.agentId)))
+  // The list is read only when there's a leftover to judge.
+  const running = left.length > 0 ? await runningIds(p) : null
+  for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: holderGone || running === null || running.has(f.agentId) })
+  if (kept.size === 0) return
+  startSweep(p, litterDir)
+  await sweepKept(p, litterDir)
+}
+
+/**
  * At session.start, after recovery: a node policy file whose swarm has no
  * live entry in policy.json (or whose entry names another launch) is a
- * leftover of an ended launch. It's removed unless its agent runs in this
- * session, or another session touched it within the last minute (that
- * session's End kept it for an agent still running there); both are swept
- * later. A policy.json that doesn't read removes nothing.
+ * leftover of an ended launch, for the one sweep above. A policy.json that
+ * doesn't read removes nothing.
  */
 export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<void> {
   let swarms: Record<string, { launch?: unknown }> = {}
@@ -748,16 +766,15 @@ export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<vo
     }
     swarms = policy.swarm?.swarms ?? {}
   }
-  const left = (await nodePolicyFiles(p, litterDir)).filter(f => {
-    const e = Object.hasOwn(swarms, f.node.swarm) ? swarms[f.node.swarm] : undefined
-    return !(e && e.launch === f.node.launch) && !kept.has(f.agentId)
-  })
-  // The list is read only when there's a leftover to judge.
-  const running = left.length > 0 ? await runningIds(p) : null
-  for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: running === null || running.has(f.agentId) })
-  if (kept.size === 0) return
-  startSweep(p, litterDir)
-  await sweepKept(p, litterDir)
+  await sweepLeftPolicies(
+    p,
+    litterDir,
+    node => {
+      const e = Object.hasOwn(swarms, node.swarm) ? swarms[node.swarm] : undefined
+      return !(e && e.launch === node.launch)
+    },
+    false,
+  )
 }
 
 /**

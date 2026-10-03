@@ -164,6 +164,12 @@ describe('a name a crash left stuck is settled at recovery and at Launch (Q1)', 
     expect(active()).toBe(true)
     expect(await kinds(launch)).toEqual(before)
     expect(liveSwarm('alpha')).toBeNull()
+
+    // FIX-T 6: the one sweep watches the file it kept: once ag-d1 leaves the list, its file goes, and hooks/active with it.
+    q.agents = [{ ...running('ag-d1', 'litter:sw-alpha-docs'), status: 'completed' }]
+    await fireEvery(q)
+    expect(existsSync(agentFile('ag-d1'))).toBe(false)
+    expect(active()).toBe(false)
   })
 
   test('at Launch, a launch that ended, its session gone: the release is finished, and the launch goes on', async () => {

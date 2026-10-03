@@ -13,7 +13,7 @@
 
 import type { Ports } from '../ports'
 import type { StoredRecord } from '../records/core'
-import type { AgentPolicy, SwarmEntry } from '../hookfiles'
+import type { SwarmEntry } from '../hookfiles'
 import type {
   SwarmEventBody,
   SwarmInstanceBody,
@@ -23,8 +23,7 @@ import type {
 } from '../records/swarm'
 import type { LiveSwarm, NodeBinding, RecoveryCard, RecoveryNode, SwarmSpec } from './types'
 import { listLaunches, readLaunchLedger } from '../records/swarm'
-import { hooksDir, LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
-import { readJson } from '../fsx'
+import { LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
 import { readPolicy } from '../policy'
 import { session } from '../session'
 import {
@@ -46,9 +45,9 @@ import {
   stop,
   stopped,
 } from './state'
-import { nodePolicyFor, notNewer, releaseActive, removeNodePolicy, writeNodePolicy, writeSwarmPolicy } from './guard'
+import { nodePolicyFor, notNewer, releaseActive, writeNodePolicy, writeSwarmPolicy } from './guard'
 import { readRevision } from './store'
-import { resumeStopping } from './end'
+import { resumeStopping, sweepLeftPolicies } from './end'
 import { adoptUnbound } from './admit'
 import { OWNER_STALE_MS, ownedSwarm, ownerGone, readOwnerRef, releaseStuckRef, retakeOwnership, startOwnerBeat } from './owner'
 import { endFailedLaunch, nodeTypeSpec, specHash } from './launch'
@@ -63,9 +62,9 @@ export const deps = {
   nodePolicyFor: (...a: Parameters<typeof nodePolicyFor>) => nodePolicyFor(...a),
   writeNodePolicy: (...a: Parameters<typeof writeNodePolicy>) => writeNodePolicy(...a),
   writeSwarmPolicy: (...a: Parameters<typeof writeSwarmPolicy>) => writeSwarmPolicy(...a),
-  removeNodePolicy: (...a: Parameters<typeof removeNodePolicy>) => removeNodePolicy(...a),
   releaseActive: (...a: Parameters<typeof releaseActive>) => releaseActive(...a),
   resumeStopping: (...a: Parameters<typeof resumeStopping>) => resumeStopping(...a),
+  sweepLeftPolicies: (...a: Parameters<typeof sweepLeftPolicies>) => sweepLeftPolicies(...a),
   adoptUnbound: (...a: Parameters<typeof adoptUnbound>) => adoptUnbound(...a),
 }
 
@@ -533,38 +532,22 @@ export async function settleStuck(p: Ports, litterDir: string, name: string): Pr
   return out
 }
 
-/** An ended launch's release, finished: the policies it left, its entry, its ref, then `active` if nothing needs it. */
+/**
+ * An ended launch's release, finished: the node policies it left (end.ts's
+ * one sweep: each goes now, but a running agent's, which the guard denies
+ * once the entry is gone, and which the sweep removes when it leaves the
+ * list; with no list, none goes yet), its entry, its ref, then `active` if
+ * nothing needs it.
+ */
 async function finishRelease(p: Ports, litterDir: string, name: string, launch: string, oid: string): Promise<boolean> {
-  await removeLeftPolicies(p, litterDir, name, launch)
+  // Its holder is this session or gone (settleStuck), so no other session keeps these files.
+  await deps
+    .sweepLeftPolicies(p, litterDir, node => node.swarm === name && node.launch === launch, true)
+    .catch(err => p.log(`swarm ${name}: launch ${launch}'s node policies weren't swept: ${errText(err)}`))
   await deps.writeSwarmPolicy(p, litterDir, name, null, e => e.launch === launch).catch(err => p.log(`swarm ${name}: its entry wasn't removed: ${errText(err)}`))
   const released = await releaseStuckRef(p, litterDir, name, oid)
   await deps.releaseActive(p, litterDir).catch(err => p.log(`swarm ${name}: hooks/active wasn't released: ${errText(err)}`))
   return released
-}
-
-/**
- * The node policies a launch left (`agents/<id>.json` whose node names that
- * swarm and launch), except a running agent's (U1), which the guard denies
- * once the entry is gone and U's sweep removes when it leaves the list. With
- * no list, none goes.
- */
-async function removeLeftPolicies(p: Ports, litterDir: string, name: string, launch: string): Promise<void> {
-  const dir = `${hooksDir(litterDir)}/agents`
-  if (!(await p.fs.exists(dir))) return
-  let running: Set<string>
-  try {
-    running = new Set((await p.listAgents()).filter(a => a.status === 'running').map(a => a.id))
-  } catch (err) {
-    p.log(`swarm ${name}: the agent list failed, so launch ${launch}'s node policies are left: ${errText(err)}`)
-    return
-  }
-  for (const e of await p.fs.list(dir)) {
-    const id = e.kind === 'file' && e.name.endsWith('.json') ? e.name.slice(0, -'.json'.length) : null
-    if (id === null || running.has(id)) continue
-    const file = await readJson<AgentPolicy>(p, `${dir}/${e.name}`).catch(() => undefined)
-    if (file?.node?.swarm !== name || file.node.launch !== launch) continue
-    await deps.removeNodePolicy(p, litterDir, id).catch(err => p.log(`swarm ${name}: ${id}'s policy wasn't removed: ${errText(err)}`))
-  }
 }
 
 /** policy.json's entry for `name`, when its ref is gone or names another launch, and its owner is this session or gone. */
