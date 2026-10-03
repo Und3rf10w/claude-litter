@@ -594,6 +594,9 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
     }
   }
   if (!toB) {
+    // A node's SendMessage to `main` (and its hand-back, which never comes through here) is the
+    // engine's own message, shown to the lead as the agent's: litter passes its text as it is,
+    // and neutralises only the texts it writes itself (`unblock`).
     const r = await next(e)
     if (fromB && r.isDelivered) await noteFromNode(p, fromB, toLead, false, e.text)
     return r
@@ -900,7 +903,11 @@ async function swarmSend(p: Ports, agentId: string | undefined, input: Record<st
   return { ok: true, node: instanceName(b), agentId: b.agentId, outcome: o }
 }
 
-/** What the lead gets for a message you route through it (15.4, "Via lead"), with the delivery you chose spelled out. */
+/**
+ * What the lead gets for a message you route through it (15.4, "Via lead"),
+ * with the delivery you chose spelled out. Your text is neutralised, so it
+ * can't close the `<message>` block and go on as litter's own words.
+ */
 function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interject' | 'queue'): string {
   const how = when === 'interject' ? 'now, as an interject (it reads it at its next tool call)' : 'as a queued message (it starts the node\'s next turn)'
   return [
@@ -908,7 +915,7 @@ function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interjec
     `Check it against what you know, add any context the node needs, then send it with mcp__litter__swarm_send (swarm "${s.name}", node "${instanceName(b)}", deliver "${when}"), and tell the user in a line what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.`,
     '',
     '<message>',
-    text,
+    unblock(text),
     '</message>',
   ].join('\n')
 }
@@ -916,7 +923,7 @@ function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interjec
 /** A direct message from you, for the lead's next `<swarm>` block (15.4, "Direct skips the lead"). */
 function noteDirectSend(b: NodeBinding, text: string, o: SendOutcome): void {
   if (o.kind === 'refused') return
-  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), delivery: o.kind === 'queued' ? 'queued' : 'interjected', text: oneLine(text) }))
+  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), delivery: o.kind === 'queued' ? 'queued' : 'interjected', text: unblock(oneLine(text)) }))
 }
 
 /**
@@ -989,10 +996,25 @@ export async function cancelQueued(p: Ports, id: string): Promise<boolean> {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** A line of node text for the block: its first line, cut, unable to close the block. */
+/** Spacing a model may read past inside a tag: whitespace, zero-widths and the word joiners. */
+const TAG_GAP = '[\\s\\u200b-\\u200f\\u2060-\\u2064\\ufeff]*'
+const TAG_LIKE = new RegExp(`<${TAG_GAP}(/?)${TAG_GAP}(swarm|message)`, 'gi')
+
+/**
+ * The one neutraliser for node, user and spool text in a lead-facing text
+ * (the `<swarm>` block, its direct-message and kill lines, the via-lead
+ * hand-off): every `<swarm`, `</swarm`, `<message` and `</message`, in any
+ * case and spacing, becomes `[swarm`, `[/swarm`, `[message` or `[/message`,
+ * so the text can't open or close a block litter wraps around it.
+ */
+export function unblock(text: string): string {
+  return text.replace(TAG_LIKE, (_m, slash: string, word: string) => `[${slash}${word.toLowerCase()}`)
+}
+
+/** A line of node text for the block: its first line, cut, unable to open or close a block. */
 function firstLine(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-  return cut(oneLine(line), CONTEXT_LINE_MAX).replace(/<\/?swarm\b/gi, '[swarm')
+  return cut(unblock(oneLine(line)), CONTEXT_LINE_MAX)
 }
 
 /** One line of the block, and how readily it goes when the block is over 1 KiB (lower first, then oldest). */
@@ -1040,7 +1062,9 @@ function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly Clear
   for (const k of kills) {
     const mine = state.binding(k.agentId)?.swarm
     if (mine === s.name || (mine === undefined && first)) {
-      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: k.who, call: k.detail ? `${k.tool} (${firstLine(k.detail)})` : k.tool }), keep: P_KILL, at: 0 })
+      // `who` and `tool` come from the clear's table, filled from the spool: one line each, neutralised.
+      const tool = firstLine(k.tool)
+      out.push({ text: renderSlots(SWARM_CONTEXT_CLEAR_KILLED, { who: firstLine(k.who), call: k.detail ? `${tool} (${firstLine(k.detail)})` : tool }), keep: P_KILL, at: 0 })
     }
   }
   for (const b of instancesOfSwarm(s)) {
@@ -1068,7 +1092,7 @@ function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly Clear
     const b = state.binding(q.agentId)
     out.push({ text: `${b ? instanceName(b) : q.node}  answered: ${firstLine(q.text)}`, keep: P_CLOSED, at: q.at })
   }
-  for (const d of state.takeDirect(s.name)) out.push({ text: cut(d, 300), keep: P_DIRECT, at: 0 })
+  for (const d of state.takeDirect(s.name)) out.push({ text: cut(unblock(oneLine(d)), 300), keep: P_DIRECT, at: 0 })
   out.push({ text: SWARM_CONTEXT_HINT, keep: KEEP, at: 0 }, { text: SWARM_CONTEXT_CLOSE, keep: KEEP, at: 0 })
   return out
 }
