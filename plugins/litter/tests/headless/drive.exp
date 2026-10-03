@@ -6,6 +6,8 @@
 #   wait <secs> <sh command>    the same, giving up after <secs>
 #   sleep <seconds>
 #   send <text>                 type the text, then Enter
+#   sendsh <sh command>         run the command; if it exits 0 with output, type
+#                               its first line, then Enter; otherwise send nothing
 #   key <name>...               press keys, a second apart: enter, tab, esc,
 #                               down, up, ctrl-x (ctrl-x then tab focuses a pane;
 #                               esc goes back to the prompt)
@@ -73,6 +75,12 @@ foreach line $lines {
     }
     sleep { set end [expr {[clock seconds] + $arg}]; while {[clock seconds] < $end} { pump 1 } }
     send { send -- $arg; sleep 1; send "\r"; pump 1 }
+    sendsh {
+      if {![catch {exec sh -c $arg} out]} {
+        set out [lindex [split $out "\n"] 0]
+        if {$out ne ""} { puts "drive: typing $out"; send -- $out; sleep 1; send "\r"; pump 1 }
+      }
+    }
     key {
       foreach k [split $arg " "] {
         if {![info exists keys($k)]} { puts "drive: unknown key $k"; exit 2 }
