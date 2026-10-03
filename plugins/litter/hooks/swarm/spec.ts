@@ -32,7 +32,9 @@ export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export const PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'] as const
 export const REPORT_EVENTS = ['ready-to-push', 'belongs-elsewhere', 'blocked', 'done'] as const
 export const PUSH_VALUES = ['none', 'own-branch', 'any'] as const
-const AUTHORITY_FIELDS = ['commit', 'push', 'forcePush', 'rewriteHistory', 'worktreeOps'] as const
+const AUTHORITY_FIELDS = ['commit', 'push', 'forcePush', 'rewriteHistory', 'worktreeOps', 'verify', 'land'] as const
+/** 2b-2's grants (15.10): unset is not given, where the fields before them are unchecked when unset. */
+const GRANT_FIELDS = ['verify', 'land'] as const
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 
 /** The engine's defaults (15.7): depth 3 or a server-side value, 20 at once, and the lead's own agents beside the swarm. */
@@ -43,7 +45,7 @@ export const LEAD_AGENTS = 4
 const SPEC_KEYS = ['name', 'goal', 'nodes', 'limits'] as const
 const NODE_KEYS = [
   'id', 'kind', 'brief', 'task', 'model', 'effort', 'tools', 'maxTurns', 'permissionMode', 'spawns',
-  'spawnOther', 'serial', 'worktree', 'paths', 'authority', 'bash', 'report',
+  'spawnOther', 'serial', 'worktree', 'paths', 'authority', 'bash', 'report', 'verdicts',
 ] as const
 
 type Raw = Record<string, unknown>
@@ -134,7 +136,7 @@ function parseWorktree(v: unknown, err: Push): WorktreeSpec | undefined {
 
 function parseAuthority(v: unknown, err: Push): Authority | undefined {
   if (!isObj(v)) {
-    err('authority', 'authority must be an object of commit, push, forcePush, rewriteHistory and worktreeOps')
+    err('authority', 'authority must be an object of commit, push, forcePush, rewriteHistory, worktreeOps, verify and land')
     return undefined
   }
   unknownKeys(v, AUTHORITY_FIELDS, k => `authority.${k}`, err, 'authority')
@@ -143,6 +145,11 @@ function parseAuthority(v: unknown, err: Push): Authority | undefined {
     if (v[f] === undefined) continue
     if (typeof v[f] === 'boolean') out[f] = v[f]
     else err(`authority.${f}`, `${f} must be true or false, or left unset (not checked by litter)`)
+  }
+  for (const f of GRANT_FIELDS) {
+    if (v[f] === undefined) continue
+    if (typeof v[f] === 'boolean') out[f] = v[f]
+    else err(`authority.${f}`, `${f} must be true or false, or left unset (not given)`)
   }
   if (v.push !== undefined) {
     if ((PUSH_VALUES as readonly unknown[]).includes(v.push)) out.push = v.push as Authority['push']
@@ -232,7 +239,7 @@ function parseNode(raw: unknown, i: number, seen: Set<string>, errors: SpecError
       node.spawns = spawns
     }
   }
-  for (const f of ['spawnOther', 'serial'] as const) {
+  for (const f of ['spawnOther', 'serial', 'verdicts'] as const) {
     if (raw[f] === undefined) continue
     if (typeof raw[f] === 'boolean') node[f] = raw[f]
     else err(f, `${f} must be true or false, or left unset`)
@@ -620,10 +627,12 @@ export async function nodeDirectories(p: Ports, spec: SwarmSpec, places: SpecPla
 
 const BOOL_RANK = (v: boolean | undefined): number => (v === undefined ? 2 : v ? 1 : 0)
 const PUSH_RANK = (v: Authority['push']): number => (v === undefined ? 3 : PUSH_VALUES.indexOf(v))
+const isGrant = (f: (typeof AUTHORITY_FIELDS)[number]): f is (typeof GRANT_FIELDS)[number] => (GRANT_FIELDS as readonly string[]).includes(f)
+/** A grant (verify, land) counts only when true: unset is the same as false. */
 const rankOf = (a: Authority | undefined, f: (typeof AUTHORITY_FIELDS)[number]): number =>
-  f === 'push' ? PUSH_RANK(a?.push) : BOOL_RANK(a?.[f])
+  f === 'push' ? PUSH_RANK(a?.push) : isGrant(f) ? (a?.[f] === true ? 1 : 0) : BOOL_RANK(a?.[f])
 const shown = (a: Authority | undefined, f: (typeof AUTHORITY_FIELDS)[number]): string =>
-  a?.[f] === undefined ? 'unset (not checked by litter)' : f === 'push' ? `'${a.push}'` : String(a[f])
+  a?.[f] === undefined ? (isGrant(f) ? 'unset (not given)' : 'unset (not checked by litter)') : f === 'push' ? `'${a.push}'` : String(a[f])
 
 /** `paths` entries meet when they're the same, or one is a folder (`dir/`) holding the other. */
 function pathsMeet(x: string, y: string): boolean {

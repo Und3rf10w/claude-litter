@@ -34,6 +34,14 @@ export type Authority = {
   forcePush?: boolean
   rewriteHistory?: boolean
   worktreeOps?: boolean
+  /**
+   * Phase 2b-2 (15.10): the node may record a `verify`, which the mod runs in
+   * its own directory. Unlike the fields above, unset means not given: these
+   * two are grants the mod's gates check, not limits the guard enforces.
+   */
+  verify?: boolean
+  /** Phase 2b-2 (15.10): the node may record a `land` of its run's repaired tree. Unset means not given. */
+  land?: boolean
 }
 
 /**
@@ -80,6 +88,12 @@ export type SwarmNode = {
   bash?: { deny?: string[] }
   /** Unset: report only when blocked. */
   report?: ReportEvent[]
+  /**
+   * Phase 2b-2 (15.10): its `verdict` records are the critic's veto a land
+   * needs. Such a node writes nothing (Z's spec rule), so it's never the agent
+   * that changed the tree it judges.
+   */
+  verdicts?: boolean
 }
 
 /** `<litterDir>/swarms/<name>/swarm.json` and each `revisions/<n>.json`. */
@@ -179,8 +193,8 @@ export type Draft = {
   updatedAt: number
 }
 
-/** How a revision came to be (`swarm.revision`'s `from`). */
-export type RevisionFrom = 'save' | 'proposal' | 'template'
+/** How a revision came to be (`swarm.revision`'s `from`); `repair` is the spec the failed-fanout bridge generates (2b-2, X). */
+export type RevisionFrom = 'save' | 'proposal' | 'template' | 'repair'
 
 /** How one proposed change reads against the draft. */
 export type ProposalChange = {
@@ -312,8 +326,25 @@ export type SwarmRoots = {
 }
 
 /**
+ * A repair swarm's budget (plan 15.11, "The repair budget"): the rounds (one
+ * verdict on a distinct verify each) and the agents (the workers and children
+ * its nodes spawn; not the orchestrator, not resumes). From the run's
+ * `run.json.repair` at the bridge, raised only by `repair.budget` and your
+ * answer to the mod's ask (2b-2, decision 8).
+ */
+export type RepairBudget = { rounds: number; agents: number }
+
+/**
+ * The run a repair swarm works for (2b-2): its gate records go to that run's
+ * ledger, in `generation`, the one its `run.repair` opened (decision 1).
+ * `runDir` is absolute.
+ */
+export type RunLink = { runDir: string; run: string; generation: number }
+
+/**
  * A live swarm. Put by K at Launch (step 6) and recovery, patched by K
  * (`lost`, `owner`, `typesReady`), P (`state`, `tips`, `flags`) and O (`owner.session`).
+ * 2b-2: X puts a repair swarm with `run` and `budget`, and raises `budget`.
  */
 export type LiveSwarm = {
   name: string
@@ -346,6 +377,10 @@ export type LiveSwarm = {
   lost: boolean
   flags: { isolationLost: boolean }
   startedAt: number
+  /** A repair swarm's run (2b-2): only a swarm with one may verify, judge or land. */
+  run?: RunLink
+  /** A repair swarm's budget (2b-2); a swarm without one has none to count. */
+  budget?: RepairBudget
 }
 
 export type BindingKind = 'orchestrator' | 'worker' | 'child'

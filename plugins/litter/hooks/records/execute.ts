@@ -97,3 +97,40 @@ export type LandBody = {
 
 export type LandAbandonedBody = { gate: GateRef; verify_id: string; reason: string }
 export type LandBlockedBody = { gate: GateRef; verify_id: string; reason: string; paths?: string[] }
+
+// ---------------------------------------------------------------------------
+// A repair swarm's verdict (plan 15.10, 15.11; phase 2b-2, Y's swarm/gate.ts)
+
+/** One task of the run, judged once: as fanout.js's FANOUT_CHECK has it. */
+export type SwarmVerdictTask = { id: string; pass: boolean; evidence: string; gaps: string[] }
+
+/**
+ * `mcp__litter__record({ kind: 'verdict', verify_id, tasks, combined, proposed_rules })`
+ * from a repair swarm's `verdicts: true` node. It cites a verify its own agent
+ * recorded in this generation, and judges every task of the run once.
+ */
+export type SwarmVerdictInput = {
+  kind: 'verdict'
+  verify_id: string
+  tasks: SwarmVerdictTask[]
+  /** The combined result against the run's contract, as FANOUT_CHECK's `combined`. */
+  combined: string
+  /** Proposals only: each is recorded as a `rule.propose` with the run (decision 14). */
+  proposed_rules?: string[]
+}
+
+/**
+ * The verdict's run-ledger body. The shape of the fanout verifier's (a
+ * `verdict` with `tasks`), so the run's summary reads both, plus what the mod
+ * adds: `round`, numbered by the mod (one per distinct verify cited,
+ * decision 6), and `approved`, which it derives (every task passes) rather
+ * than taking from the node.
+ */
+export type SwarmVerdictBody = {
+  verify_id: string
+  tasks: SwarmVerdictTask[]
+  combined: string
+  proposed_rules: string[]
+  round: number
+  approved: boolean
+}

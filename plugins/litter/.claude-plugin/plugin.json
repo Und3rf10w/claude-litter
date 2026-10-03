@@ -67,6 +67,29 @@
       "description": "The shortest gap between two generated swarm summaries.",
       "default": 60,
       "min": 10
+    },
+    "repair": {
+      "type": "string",
+      "title": "When a run fails",
+      "description": "auto: a failed fanout continues as a repair swarm, within the repair budget, without asking, and lands only a verified and independently approved result. off: it stops, keeps everything and recommends the repair. A launch can override it for its run.",
+      "default": "auto",
+      "options": ["auto", "off"]
+    },
+    "repairRounds": {
+      "type": "number",
+      "title": "Repair rounds",
+      "description": "How many verified and independently judged repairs a repair swarm gets before it has to ask you for more.",
+      "default": 3,
+      "min": 1,
+      "max": 10
+    },
+    "repairAgents": {
+      "type": "number",
+      "title": "Repair agents",
+      "description": "How many workers and helpers a repair swarm's nodes may spawn in all before it has to ask you for more.",
+      "default": 6,
+      "min": 1,
+      "max": 50
     }
   }
 }

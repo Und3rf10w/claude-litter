@@ -38,6 +38,9 @@ export const KNOWN_KINDS = [
   'swarm.start', 'swarm.worktree.intent', 'swarm.worktree', 'swarm.worktree.failed', 'swarm.worktree.removed', 'swarm.worktree.kept',
   'swarm.instance', 'swarm.node', 'swarm.bind', 'swarm.event', 'swarm.summary',
   'swarm.stop', 'swarm.stopping', 'swarm.handover', 'swarm.end', 'session.rebind',
+  // repair (phase 2b-2; bodies in records/run.ts and records/swarm.ts). Through
+  // the tool only the launcher's repair.start and repair.budget; the rest are the mod's.
+  'run.repair', 'repair.declined', 'repair.start', 'repair.budget',
 ] as const
 
 export type KnownKind = (typeof KNOWN_KINDS)[number]
@@ -52,6 +55,7 @@ export const MOD_ONLY_KINDS: readonly KnownKind[] = [
   'swarm.start', 'swarm.worktree.intent', 'swarm.worktree', 'swarm.worktree.failed', 'swarm.worktree.removed', 'swarm.worktree.kept',
   'swarm.instance', 'swarm.node', 'swarm.event', 'swarm.summary',
   'swarm.stop', 'swarm.stopping', 'swarm.handover', 'session.rebind',
+  'run.repair', 'repair.declined',
 ]
 
 /** Rule steps that are yours alone, from the rules pane (section 16.3); the tool refuses them whatever the caller. */
@@ -128,6 +132,12 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'swarm.handover': modKind,
   'swarm.end': { by: 'launcher', run: 'none' },
   'session.rebind': modKind,
+  // Repair (2b-2): repair.start names the run it repairs; repair.budget names
+  // a swarm, and its handler finds the swarm's run.
+  'run.repair': modKind,
+  'repair.declined': modKind,
+  'repair.start': launcherKind,
+  'repair.budget': { by: 'launcher', run: 'none' },
 }
 
 /** The `by` of a record a caller made through the tool. */

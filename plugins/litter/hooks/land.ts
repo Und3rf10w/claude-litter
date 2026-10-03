@@ -764,3 +764,22 @@ async function landFanout(ctx: RecordCtx, f: RunFacts, verifyId: string): Promis
   }
   return landed(tip, note)
 }
+
+// ---------------------------------------------------------------------------
+// A repair swarm's land (plan 15.10, 15.11; phase 2b-2, package Y).
+
+/** What a repair land acts on: the verify the node's land cites, and the swarm and node that asked. */
+export type RepairedLand = { verifyId: string; swarm: string; agentId: string }
+
+/**
+ * Lands a repair swarm's committed integration tip (COMMON 2b-2, step 5): every
+ * check before the intent (an approving verdict within the budget citing a
+ * green verify of that tip, no writer as the verdict's agent, every changed
+ * path owned by a task of the run, the checkout at base), then landFanout's
+ * intent, two-tree merge and compare-and-swap tail, with gate `fanout` in the
+ * run's ledger; a crash after the intent is reconciled as landFanout's is.
+ * The reply is execute's LandReply. Package V's stub refuses.
+ */
+export async function landRepaired(_ctx: RecordCtx, _f: RunFacts, _land: RepairedLand): Promise<RecordReply> {
+  return fail("litter: a repair swarm's land isn't built yet (phase 2b-2)", 'kind')
+}

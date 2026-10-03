@@ -15,7 +15,8 @@
 //    awaits O's `rebound` first, so the first hook after a /clear rebinds the
 //    session (plan 15.4). A render can't: a rebind writes $.state.
 //
-// Contract owner: phase 1a; the swarm wiring is phase 2b-1's (package C).
+// Contract owner: phase 1a; the swarm wiring is phase 2b-1's (package C), the
+// repair wiring phase 2b-2's (package V).
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallArgs } from 'claude-code'
@@ -27,11 +28,12 @@ import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from
 import { activePath } from './layout'
 import { registerRoles } from './roles'
 import { resolveLitterDir } from './litterdir'
-import { onPromptSubmit, onSessionEnd, onTurnComplete, reconcileRuns } from './lifecycle'
+import { onSessionEnd, onTurnComplete, reconcileRuns, settleNotices } from './lifecycle'
+import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
 import { roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 import { holdClear, noteSessionEnd, rebound, startSwarmTimers } from './clear'
-import { attach, binding, setRecordedSession, withGateClosed } from './swarm/state'
+import { attach, binding, notePromptOrigin, setInteractive, setRecordedSession, withGateClosed } from './swarm/state'
 import { registerSwarmTools } from './swarm/tools'
 import { clearPending } from './swarm/guard'
 import { recoverSwarms } from './swarm/recover'
@@ -228,6 +230,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const p = enginePorts($)
     updateSession({ ready: false })
+    // Whether anyone is at the prompt to watch a repair (2b-2, decision 15).
+    if (typeof e.isInteractive === 'boolean') setInteractive(e.isInteractive)
     // Recovery re-registers the swarms' types while the gate holds sends and
     // node turns (15.4); it opens right after, not after the slower steps.
     // withGateClosed opens it once: at openGateNow, or when the steps end if
@@ -358,15 +362,26 @@ export const register: Register = (on, options) => {
 
   // A run's completion notification: run.end and summary.md before the launcher's
   // turn. While a swarm is live, the lead's <swarm> block rides in `context`.
+  // In this order (2b-2): the notice settles first, since a halted fanout's
+  // may start a repair swarm; then the block, which shows it; then X's note.
   on('prompt.submit', async ($, e, next) => {
     const p = enginePorts($)
     await rebound(p)
     await drainFirst(p)
+    notePromptOrigin(e.origin)
+    await settleNotices(p, e)
     const block = await swarmContext(p).catch((err: unknown) => {
       p.log(`prompt.submit swarm context failed: ${errText(err)}`)
       return null
     })
-    return onPromptSubmit(p, block === null ? e : { ...e, context: [...(e.context ?? []), block] }, next)
+    let note: string | null = null
+    try {
+      note = repairNote(p)
+    } catch (err) {
+      p.log(`prompt.submit repair note failed: ${errText(err)}`)
+    }
+    const extra = [block, note].filter((x): x is string => typeof x === 'string' && x !== '')
+    return next(extra.length === 0 ? e : { ...e, context: [...(e.context ?? []), ...extra] })
   }).catch(($, e, next) => next(e))
 
   // A main turn that ends with a launch pending and no Workflow call releases the lock.
@@ -378,6 +393,8 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined && e.isAborted) await interrupted(p, e.agentId)
     await apart(p, 'turn.complete settle', () => settleNode(p, e))
     if (e.agentId !== undefined && binding(e.agentId) !== null) await apart(p, 'turn.complete observe', () => observeNodeTurn(p, e))
+    // The repair swarm's start, scheduled once the notification turn that started it ends (2b-2, X).
+    await apart(p, 'turn.complete repair', () => repairTurnComplete(p, e))
     return onTurnComplete(p, e, next)
   }).catch(($, e, next) => next(e))
 

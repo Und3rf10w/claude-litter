@@ -83,13 +83,18 @@ function runJsonProblem(json: RunJson, run: string): string | null {
   return null
 }
 
-/** Why the run takes no more records: its latest lifecycle record is a stop or an end (plan section 9, "Run lifecycle"). */
+/**
+ * Why the run takes no more records: its latest lifecycle record is a stop or
+ * an end (plan section 9, "Run lifecycle"). A `run.repair` after a run.end
+ * opens the next generation (2b-2), so the run takes records again until that
+ * generation's own run.end.
+ */
 export function runClosed(records: readonly StoredRecord[]): string | null {
   for (let i = records.length - 1; i >= 0; i--) {
     const kind = records[i]!.kind
     if (kind === 'run.end') return 'has ended'
     if (kind === 'run.stopping') return 'is stopping'
-    if (kind === 'run.launch' || kind === 'run.resume') return null
+    if (kind === 'run.launch' || kind === 'run.resume' || kind === 'run.repair') return null
   }
   return null
 }

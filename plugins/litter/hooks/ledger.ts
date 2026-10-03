@@ -11,9 +11,10 @@ import type { ToolSpec } from 'claude-code'
 import type { PortHook, RecordCatch, RecordHook } from './hooktypes'
 import type { Ports } from './ports'
 import type { LitterOptions } from './options'
-import type { Caller, RecordCtx, RecordInput, RecordReply } from './records/core'
+import type { Caller, RecordCtx, RecordError, RecordInput, RecordReply } from './records/core'
 import type { KindRule, KnownKind } from './records/design'
 import type { AgentInfo } from './policy'
+import type { SwarmGateCall } from './swarm/gate'
 import { fail, RECORD_MAX_BYTES } from './records/core'
 import { KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, USER_ONLY_KINDS } from './records/design'
 import { KIND_HANDLERS, SPOOL_CONSUMERS } from './registry'
@@ -22,6 +23,8 @@ import { agentInfo, drainOwnSpools } from './policy'
 import { RUN_ID, runDir, runJsonPath } from './layout'
 import { readJson } from './fsx'
 import { getOptions, session } from './session'
+import { binding, ready as swarmReady } from './swarm/state'
+import { isSwarmGateKind, swarmGateRecord } from './swarm/gate'
 
 type FieldType = 'strings' | 'objects' | 'object' | 'boolean' | 'integer'
 
@@ -53,6 +56,12 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
   maxAttempts: 'integer',
   maxRounds: 'integer',
   attempt: 'integer',
+  // 2b-2: run.start's repair override, a swarm verdict's proposals, repair.budget's request.
+  repairRounds: 'integer',
+  repairAgents: 'integer',
+  proposed_rules: 'strings',
+  rounds: 'integer',
+  agents: 'integer',
 }
 
 const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {
@@ -229,6 +238,20 @@ export async function dispatchRecord(
   if (isAgent && kind !== 'task.bind' && info?.role === 'executor' && agentRun !== null && (await unboundWriter(p, litterDir, agentRun, agentId))) {
     return fail('litter: bind first: record kind task.bind with the bind value from your <task>', 'kind', ['task.bind'])
   }
+  // A bound swarm node's verify, verdict and land are its swarm's gates (2b-2):
+  // swarm/gate.ts records them in the run the swarm repairs, never the run
+  // the input names. A run agent's go on below, by the agent map. The
+  // bindings are read once recovery has put them back (the state's gate).
+  if (isAgent && agentRun === null && isSwarmGateKind(kind)) {
+    await swarmReady(p)
+    const node = binding(agentId)
+    if (node) {
+      const big = overBound(input)
+      if (big) return big
+      const call: SwarmGateCall = { kind, input, caller: { agentId, agentType: caller.agentType }, binding: node, litterDir, options: env.options }
+      return answer(kind, input.run, () => swarmGateRecord(p, call))
+    }
+  }
   if (rule.run !== 'none') {
     if (agentRun !== null) {
       if (input.run !== undefined && input.run !== agentRun) {
@@ -256,20 +279,34 @@ export async function dispatchRecord(
     }
   }
 
-  // Bounded before anything is written (section 9, "Every record is bounded").
-  const size = bytes(JSON.stringify(input))
-  if (size > RECORD_MAX_BYTES) {
-    const field = largestField(input)
-    return fail(`litter: the record is ${size} bytes, over the ${RECORD_MAX_BYTES}-byte limit; cut '${field}' down and record again`, field)
-  }
-
+  const big = overBound(input)
+  if (big) return big
   const ctx: RecordCtx = { p, caller, litterDir, options: env.options }
+  return answer(kind, input.run, () => KIND_HANDLERS[kind](ctx, input))
+}
+
+/** Bounded before anything is written (section 9, "Every record is bounded"). */
+function overBound(input: RecordInput): RecordError | null {
+  const size = bytes(JSON.stringify(input))
+  if (size <= RECORD_MAX_BYTES) return null
+  const field = largestField(input)
+  return fail(`litter: the record is ${size} bytes, over the ${RECORD_MAX_BYTES}-byte limit; cut '${field}' down and record again`, field)
+}
+
+/**
+ * A handler's reply, with the ledger's own refusals in the error shape. Its
+ * other failures throw, so the hook's catch denies the call; so does a reply
+ * that isn't one.
+ */
+async function answer(kind: KnownKind, run: unknown, handle: () => Promise<RecordReply>): Promise<RecordReply> {
   let reply: RecordReply
   try {
-    reply = await KIND_HANDLERS[kind](ctx, input)
+    reply = await handle()
   } catch (err) {
     if (err instanceof RecordTooLarge) return fail(`litter: ${err.message}; cut it down and record again`, err.field ?? undefined)
-    if (err instanceof LedgerTampered) return fail(`litter: run ${String(input.run)}'s ${err.message}; nothing more is recorded for it`, 'run')
+    if (err instanceof LedgerTampered) {
+      return fail(`litter: ${typeof run === 'string' ? `run ${run}'s ` : 'the run '}${err.message}; nothing more is recorded for it`, 'run')
+    }
     throw err
   }
   if (!reply || typeof reply !== 'object' || typeof (reply as { ok?: unknown }).ok !== 'boolean') {
