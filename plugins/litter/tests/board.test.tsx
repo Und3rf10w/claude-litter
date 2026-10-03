@@ -300,19 +300,25 @@ describe('the board, from a recorded ledger', () => {
     await run($, 'litter-board', EXEC)
     const ui = await mountBoard($, 'terminal')
     // The header is the table's first row; G1 is the next.
+    // A post or press is handled after the act resolves, and the view is rebuilt
+    // after that: settle after each act before reading the redraw.
     await ui.pointer({ type: 'down', x: 4, y: 1, button: 'left', in: 'board-gates' })
+    await w.clock.settle()
     expect(await ui.find({ type: 'Text', text: 'G1 as planned' })).toBeDefined()
     await ui.press({ key: 'board:diff:G1' })
+    await w.clock.settle()
     const diff = w.argv.find(a => a[0] === 'git' && a.includes('diff'))
     expect(diff).toEqual(['git', '-C', '/repo', 'diff', '--stat', '--no-color', '--end-of-options', BASE, LANDED, '--'])
     expect(await ui.find({ type: 'Code', text: 'src/header.ts | 12' })).toBeDefined()
     // ↑↓ and Enter post too: back to G2.
     await ui.key({ key: 'down', in: 'board-gates' })
     await ui.key({ key: 'return', in: 'board-gates' })
+    await w.clock.settle()
     expect(await ui.find({ type: 'Text', text: 'the retry has no backoff' })).toBeDefined()
     // The diff was G1's, so it closed; [Plan] scrolls to G2's section.
     expect(await ui.find({ type: 'Code' })).toBeUndefined()
     await ui.press({ key: 'board:plan' })
+    await w.clock.settle()
     expect(await ui.find({ type: 'Text', text: 'plan.md from G2 (line 10)' })).toBeDefined()
     expect(await ui.find({ type: 'Code', text: '### G2: Retry the refresh once' })).toBeDefined()
   })
