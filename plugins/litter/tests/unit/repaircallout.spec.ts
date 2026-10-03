@@ -170,8 +170,8 @@ describe('from the task notification', () => {
     expect(bridged).toEqual([])
   })
 
-  test('the stub itself rejects "not built yet", which the call-out logs', async () => {
-    await expect(realRepairCopy.continueAsRepair(ports, '/x')).rejects.toThrow("isn't built yet (phase 2b-2)")
+  test("X's bridge itself rejects a folder that isn't a run's, which the call-out logs", async () => {
+    await expect(realRepairCopy.continueAsRepair(ports, '/x')).rejects.toThrow("/x isn't a run's folder")
   })
 })
 

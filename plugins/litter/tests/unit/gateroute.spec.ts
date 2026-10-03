@@ -264,22 +264,26 @@ describe("the repair kinds' caller rules", () => {
     expect(agent.error).toContain('main thread')
     expect(asError(await call({ kind: 'repair.start' })).field).toBe('run')
     expect(asError(await call({ kind: 'repair.start', run: '20261002-nope' })).error).toContain("there's no run 20261002-nope")
+    // X's handler (2b-2): this run has no run.start, so its run.json can't be checked, and nothing is recorded.
     expect(asError(await call({ kind: 'repair.start', run: RUN }))).toEqual({
       ok: false,
-      field: 'kind',
-      error: "litter: the 'repair.start' record isn't built yet (phase 2b-2)",
+      field: 'run',
+      error: `litter: run ${RUN} has no run.start record`,
     })
+    expect(ledgerFiles()).toEqual([])
   })
 
   test("repair.budget is the launcher's, naming a swarm, with no run resolved; it reaches the bridge's handler", async () => {
     await startAgent('a1', 'litter:relay', RUN)
     bindNode('node-1')
     for (const agentId of ['a1', 'node-1']) expect(asError(await call({ kind: 'repair.budget', swarm: SWARM }, agentId)).error).toContain('main thread')
+    // X's handler (2b-2), with the string decoded to an integer: no live swarm has the name, so nothing is asked.
     expect(asError(await call({ kind: 'repair.budget', swarm: SWARM, rounds: '2' }))).toEqual({
       ok: false,
-      field: 'kind',
-      error: "litter: the 'repair.budget' record isn't built yet (phase 2b-2)",
+      field: 'swarm',
+      error: `litter: swarm ${SWARM} isn't live`,
     })
+    expect(p.asked).toEqual([])
   })
 
   test('the table: each kind with its rule and handler, and who may record it', async () => {

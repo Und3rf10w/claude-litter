@@ -2,8 +2,9 @@
 // prompt.submit a task notification settles before anything else is built,
 // and a halted fanout's goes to the repair bridge after its run.end. Then the
 // <swarm> block and the repair note are built, and the prompt goes on with its
-// context kept. Each new call is caught in its event's shape: the stubs throw,
-// and every hook still passes on. The block built after the bridge is tier 2
+// context kept. Each new call is caught in its event's shape: X's bridge
+// rejects a run it can't check, and every hook still passes on (X's own
+// tier 1, repair.test.ts, has a swarm waiting for its start). The block built after the bridge is tier 2
 // (tests/unit/repaircallout.spec.ts), which can put a swarm in the state.
 
 import type { On } from 'claude-code'
@@ -131,14 +132,13 @@ describe('the repair wiring', () => {
     expect(at.context).toEqual(['earlier'])
     const end = JSON.parse(files.get(`${RUN_DIR}/ledger/000002-run.end.json`) ?? 'null') as { body?: { status?: string; source?: string } } | null
     expect(end?.body).toEqual(expect.objectContaining({ status: 'halted', source: 'notification' }))
-    // The stubs throw: the bridge's failure is logged after the end, then the note's, both before the engine's turn.
-    const bridge = at.logs.findIndex(l => l.includes(`run ${RUN}: the repair bridge failed: litter: the repair bridge isn't built yet (phase 2b-2)`))
-    const note = at.logs.findIndex(l => l.includes("prompt.submit repair note failed: litter: the repair note isn't built yet (phase 2b-2)"))
-    expect({ bridge: bridge >= 0, note: note >= 0 }).toEqual({ bridge: true, note: true })
-    expect(bridge).toBeLessThan(note)
+    // X's bridge reached the run after its end, before the engine's turn: with no run.start to check run.json
+    // against, it rejects, which is logged. No repair swarm waits, so there's no note, and nothing failed.
+    expect(at.logs.some(l => l.includes(`run ${RUN}: the repair bridge failed: run ${RUN} has no run.start record`))).toBe(true)
+    expect(at.logs.some(l => l.includes('prompt.submit repair note failed'))).toBe(false)
   })
 
-  test('prompt.submit: a plain prompt passes on with its context unchanged, the note failing apart', async ($, on) => {
+  test('prompt.submit: a plain prompt passes on with its context unchanged, and no note with no repair waiting', async ($, on) => {
     mock.store(on)
     const logs = logged(on)
     let seen: readonly string[] | undefined | null = null
@@ -149,14 +149,14 @@ describe('the repair wiring', () => {
     const r = await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, context: ['mine'], wait: false })
     expect(r).toEqual(expect.objectContaining({ text: 'hello', context: ['mine'] }))
     expect(seen).toEqual(['mine'])
-    expect(logs.some(l => l.includes('prompt.submit repair note failed'))).toBe(true)
+    expect(logs.some(l => l.includes('prompt.submit repair note failed'))).toBe(false)
     // With no context the prompt goes on as it came.
     seen = null
     await $.prompt.submit({ text: 'again', origin: { kind: 'sdk' }, wait: false })
     expect(seen).toBeUndefined()
   })
 
-  test("turn.complete: the repair call's throw is logged and the turn passes on, the lead's and a subagent's", async ($, on) => {
+  test("turn.complete: the repair call passes the turn on, the lead's and a subagent's, with nothing to start", async ($, on) => {
     mock.store(on)
     const logs = logged(on)
     on('turn.complete', async (_$, e) => ({ text: e.answer }))
@@ -166,7 +166,7 @@ describe('the repair wiring', () => {
     expect(await $.turn.complete({ turnId: 'turn-2', answer: 'sub', durationMs: 5, isAborted: false, reason: 'answer', agentId: 'agent-7' })).toEqual(
       expect.objectContaining({ text: 'sub' }),
     )
-    expect(logs.filter(l => l.includes("turn.complete repair failed: litter: the repair start isn't built yet (phase 2b-2)"))).toHaveLength(2)
+    expect(logs.filter(l => l.includes('turn.complete repair failed'))).toHaveLength(0)
   })
 
   test('session.start passes on with isInteractive either way', async ($, on) => {
