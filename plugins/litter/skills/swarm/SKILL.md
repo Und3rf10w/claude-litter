@@ -1,8 +1,8 @@
 ---
 name: swarm
 description: Draft, start, lead and end a litter swarm, a tree of agents led from this session, where orchestrators each own part of the work and delegate to their own workers. Drafts the swarm's shape into the litter swarm builder, starts it after the user launches it there, and keeps the lead role while it runs.
-when_to_use: Use when the user wants several long-running agents that each own a part of the work and delegate further, while the user talks only to this session, such as one agent per branch, per package or per review area. Also for the "/litter:swarm start <name>", "resume" and "respawn" lines that the litter swarm builder and browser put in the prompt box, and for the proposal requests, queued deliveries and routed messages that they send. Not for a fixed list of independent tasks (use /litter:fanout) or a step-by-step plan (use /litter:execute).
-argument-hint: "<description> | start <name> | lead <name> | revise <name> <node>: <change> | resume <name> <nodes> | respawn <name> <nodes> | end <name>"
+when_to_use: Use when the user wants several long-running agents that each own a part of the work and delegate further, while the user talks only to this session, such as one agent per branch, per package or per review area. Also for the "/litter:swarm start <name>", "resume" and "respawn" lines that the litter swarm builder and browser put in the prompt box, for the proposal requests, queued deliveries and routed messages that they send, and for repairing a failed fanout as a swarm. Not for a fixed list of independent tasks (use /litter:fanout) or a step-by-step plan (use /litter:execute).
+argument-hint: "<description> | start <name> | lead <name> | revise <name> <node>: <change> | resume <name> <nodes> | respawn <name> <nodes> | end <name> | repair <run>"
 allowed-tools: [Read, Grep, Glob, "Bash(git worktree list:*)", "Bash(git branch:*)", "Bash(git log:*)", "Bash(git status:*)", mcp__litter__swarm_read, mcp__litter__swarm_propose, mcp__litter__swarm_send, mcp__litter__record]
 ---
 
@@ -36,6 +36,12 @@ This covers a description from the user, and a request the builder sends you (it
 2. Spawn every orchestrator in one message with the Agent tool: its `subagent_type` and `description`, with its `task` as the prompt. Leave `name`, `isolation` and `model` unset; the mod sets each node's directory and model. If a spawn is refused, show the reason, and don't retry it another way.
 3. Tell the user in two or three lines which orchestrators started, and that `/litter-swarm` shows the tree. End your turn.
 
+A repair swarm starts the same way, from that line or from litter's own message asking you to start it.
+
+### Repair a fanout (repair <run>)
+
+Record `{ kind: 'repair.start', run }` with `mcp__litter__record`. The mod checks the run and its base, then asks the user itself; don't ask first. If it's refused, show the reason and stop; don't build a repair swarm by hand. If it's live, say its start line is in the prompt box, and end your turn.
+
 ## 4. While it runs: you are the lead
 
 This section also covers `lead <name>`, which picks a live swarm back up after the conversation was cleared: read it with `mcp__litter__swarm_read`, then carry on from here.
@@ -55,6 +61,7 @@ Each of the user's prompts carries a `<swarm>` block from the mod. It lists ever
 - **Findings that cross parts.** When a node reports something that belongs to another node's part, send it there and tell the user.
 - **Authority stays as launched.** If a node needs more, ask the user. Only the user can widen it, in the builder.
 - **Stuck nodes.** Tell the user, and offer to give the node more information, stop it, or re-spawn it from its last report.
+- **Repair swarms.** Their nodes record their own verify, verdict and land; you don't. When the orchestrator is blocked on the budget, record `{ kind: 'repair.budget', swarm, rounds, agents }` with only what it asked for (the mod asks the user), then send it the result.
 
 ## 5. Revise (revise <name> <node>: <change>)
 
@@ -63,6 +70,8 @@ Follow section 2 for that node's brief. Once the user accepts the change, a runn
 ## 6. End (end <name>)
 
 Record `{ kind: 'swarm.end', swarm }` with `mcp__litter__record`. The mod asks the nodes to stop and waits until they have, which can take a minute or two, so the result says the swarm is stopping. Tell the user that in a line and end your turn. When it has ended, the litter plugin hands you the summary. From it, report each node's outcome, the branches and worktrees left, and any open questions. If the summary says the swarm didn't settle, say which nodes or commands were still running, and that its worktrees were kept. If the summary says the launch ledger is broken, say it holds no swarm.end and no worktree was removed. Don't push, merge or remove anything yourself unless the user asks.
+
+End a repair swarm once its orchestrator reports done after its land (check the commit with `git log`). Then also report the Repair section of the run's summary.md, and how the run ended.
 
 ## 7. Resume or re-spawn (resume <name> <nodes> | respawn <name> <nodes>)
 
