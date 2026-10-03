@@ -105,7 +105,8 @@ export function section(el: PaneElements, label: string, aside?: SwarmSpan): Ren
   )
 }
 
-export type ButtonSpec = { key: string; label: string; primary?: boolean; dim?: boolean; hotkey?: string }
+/** `autoFocus`: the pane's focus ring starts here when it takes the keyboard (ctrl+x tab), so Enter presses it. */
+export type ButtonSpec = { key: string; label: string; primary?: boolean; dim?: boolean; hotkey?: string; autoFocus?: boolean }
 
 export function button(el: PaneElements, b: ButtonSpec): RenderElement {
   const { Button } = el
@@ -116,6 +117,7 @@ export function button(el: PaneElements, b: ButtonSpec): RenderElement {
       {...(b.primary ? { variant: 'primary' as const } : {})}
       {...(b.dim ? { dimColor: true } : {})}
       {...(b.hotkey ? { hotkey: b.hotkey } : {})}
+      {...(b.autoFocus ? { autoFocus: true as const } : {})}
       onPress={noop}
     />
   )
@@ -419,10 +421,10 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Pa
       <Box marginTop={1}>
         {buttons(el, [
           { key: `swarm:builder:validate:${s}`, label: 'Validate' },
-          { key: `swarm:builder:save:${s}`, label: 'Save', primary: view.unsaved },
+          { key: `swarm:builder:save:${s}`, label: 'Save', primary: view.unsaved, autoFocus: view.unsaved },
           view.unsaved && view.base > 0 && { key: `swarm:builder:discard:${s}`, label: 'Discard draft' },
           !view.saveAs && { key: `swarm:builder:save-as:${s}`, label: 'Save as template' },
-          { key: `swarm:builder:launch:${s}`, label: 'Launch', primary: !view.unsaved && !view.live },
+          { key: `swarm:builder:launch:${s}`, label: 'Launch', primary: !view.unsaved && !view.live, autoFocus: !view.unsaved && !view.live },
           { key: `swarm:builder:doctor:${s}`, label: 'Doctor' },
           view.live && { key: `swarm:builder:browser:${s}`, label: 'Browser' },
           { key: `swarm:builder:back:${s}`, label: 'Swarms' },

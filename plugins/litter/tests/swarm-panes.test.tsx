@@ -442,6 +442,22 @@ describe('the tree', () => {
     expect(seen.logs.some(l => l.includes("swarm pane: the tree's add on part-a"))).toBe(true)
   })
 
+  test('a saved draft focuses [Launch], so the keyboard reaches it (ctrl+x tab, Enter)', async ($, on) => {
+    mock.store(on)
+    views(on, BUILDER)
+    const ui = await mountSwarm($, 'terminal')
+    expect((await ui.find({ type: 'Button', key: 'swarm:builder:launch:demo' }))?.props).toEqual(expect.objectContaining({ autoFocus: true }))
+    expect((await ui.find({ type: 'Button', key: 'swarm:builder:save:demo' }))?.props.autoFocus).toBeUndefined()
+  })
+
+  test('an unsaved draft focuses [Save] instead', async ($, on) => {
+    mock.store(on)
+    views(on, { ...BUILDER, unsaved: true })
+    const ui = await mountSwarm($, 'terminal')
+    expect((await ui.find({ type: 'Button', key: 'swarm:builder:save:demo' }))?.props).toEqual(expect.objectContaining({ autoFocus: true }))
+    expect((await ui.find({ type: 'Button', key: 'swarm:builder:launch:demo' }))?.props.autoFocus).toBeUndefined()
+  })
+
   for (const surface of ['vscode', 'mobile'] as const) {
     test(`with no Client (${surface}), each row is a button and the edits are buttons under the selection`, async ($, on) => {
       mock.store(on)
