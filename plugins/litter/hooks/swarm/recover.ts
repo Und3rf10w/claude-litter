@@ -24,8 +24,8 @@ export async function requestResume(p: Ports, name: string, nodes: readonly stri
 
 /**
  * The text the lead resumes a node with (`how: 'resume'`) or re-spawns it
- * with (`'respawn'`), for swarm_read's `for`. C's choice: the brief's
- * `(p, name, node)` plus `how`, since the two texts differ.
+ * with (`'respawn'`), for swarm_read's `for`. The `how` parameter is added by
+ * C: the brief gives `(p, name, node)`, and the two texts differ.
  */
 export async function continuationText(p: Ports, name: string, node: string, how: 'resume' | 'respawn'): Promise<string> {
   throw new Error('litter: continuationText is not built yet (WP-K)')

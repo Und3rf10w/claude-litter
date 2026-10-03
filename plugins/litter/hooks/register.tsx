@@ -11,8 +11,9 @@
 //    function declared here but never across an import, so each hook is an
 //    inline literal that builds the ports and calls its module's handler;
 //  - no logic: each handler lives in its own module;
-//  - every hook but session.start and session.end awaits O's `rebound` first,
-//    so the first hook after a /clear rebinds the session (plan 15.4).
+//  - every hook but session.start, session.end and the two ui.render hooks
+//    awaits O's `rebound` first, so the first hook after a /clear rebinds the
+//    session (plan 15.4). A render can't: a rebind writes $.state.
 //
 // Contract owner: phase 1a; the swarm wiring is phase 2b-1's (package C).
 
@@ -30,7 +31,7 @@ import { onPromptSubmit, onSessionEnd, onTurnComplete, reconcileRuns } from './l
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
 import { roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 import { holdClear, noteSessionEnd, rebound, startSwarmTimers } from './clear'
-import { attach, binding, closeGate, openGate, setRecordedSession } from './swarm/state'
+import { attach, binding, setRecordedSession, withGateClosed } from './swarm/state'
 import { registerSwarmTools } from './swarm/tools'
 import { clearPending } from './swarm/guard'
 import { recoverSwarms } from './swarm/recover'
@@ -226,9 +227,11 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const p = enginePorts($)
     updateSession({ ready: false })
-    // Recovery re-registers the swarms' types while the gate holds sends and node turns (15.4).
-    closeGate()
-    try {
+    // Recovery re-registers the swarms' types while the gate holds sends and
+    // node turns (15.4); it opens right after, not after the slower steps.
+    // withGateClosed opens it once: at openGateNow, or when the steps end if
+    // one threw before that (the gate is a counter).
+    await withGateClosed(async openGateNow => {
       await step(p, 'tools', async () => {
         updateSession({ toolsRefused: await registerRecordTool(p) })
       })
@@ -251,18 +254,19 @@ export const register: Register = (on, options) => {
       })
       if (litterDir) {
         await step(p, 'swarm pending', () => clearPending(p, litterDir))
+        await step(p, 'swarms', () => recoverSwarms(p, litterDir))
+      }
+      openGateNow()
+      if (litterDir) {
         await step(p, 'worktree.json', () => startWorktreePolicy(p, litterDir))
         await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
         await step(p, 'reconcile', () => reconcileRuns(p, litterDir))
-        await step(p, 'swarms', () => recoverSwarms(p, litterDir))
         await step(p, 'leftover worktrees', () => cleanupLeftovers(p, litterDir))
       }
       await step(p, 'timers', async () => startDrainTimer(p, SPOOL_CONSUMERS))
       await step(p, 'swarm timers', async () => startSwarmTimers(p))
       await step(p, 'pane timer', async () => startPaneTimer(p))
-    } finally {
-      openGate()
-    }
+    })
     updateSession({ ready: true })
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -402,16 +406,15 @@ export const register: Register = (on, options) => {
     return doctorCommand(p, e, next)
   }).catch(doctorCommandFailed)
 
-  // The two panes: N's pure renderers, over the views in $.state.
+  // The two panes: N's pure renderers, over the views in $.state. These two
+  // are the hooks that don't await `rebound`: $.state.set is refused while a
+  // render draws (d.ts), and a rebind's refreshPanes writes the pane atoms.
+  // The next hook of any other kind rebinds.
   on('ui.render', { component: 'Pane', requestId: 'litter-swarm' }, async ($, e, next) => {
-    const p = enginePorts($)
-    await rebound(p)
     return renderSwarmPane(await read($, swarmPane), $.ui.resolve(e), e)
   }).catch(paneRenderFailed)
 
   on('ui.render', { component: 'Pane', requestId: 'litter-doctor' }, async ($, e, next) => {
-    const p = enginePorts($)
-    await rebound(p)
     return renderDoctorPane(await read($, doctorPane), $.ui.resolve(e), e)
   }).catch(paneRenderFailed)
 

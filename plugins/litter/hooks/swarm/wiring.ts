@@ -5,7 +5,8 @@
 // A catch never uses `$`. It may read state.ts synchronously, to tell a
 // node's event from anyone else's: a node's is refused (fail closed), anyone
 // else's passes on, so a failing swarm hook never touches a session with no
-// swarm live.
+// swarm live. Where the state can't tell (a send's `to` by name), a session
+// with a swarm live refuses.
 //
 // Contract owner: phase 2b-1, package C.
 
@@ -29,7 +30,7 @@ import type {
 } from '../hooktypes'
 import { SWARM_TYPE_PREFIX } from '../layout'
 import { roleSpawnFailed } from '../launch'
-import { binding, liveSwarm, swarmOfType } from './state'
+import { binding, liveSwarm, liveSwarms, swarmOfType } from './state'
 
 /** Why the hook failed, on one line, for a refusal's text. */
 function why(next: { readonly error?: { readonly kind: string; readonly message?: string } }): string {
@@ -52,9 +53,23 @@ export const agentSpawnFailed: SpawnCatch = async ($, e, next) => {
   return roleSpawnFailed(e, next)
 }
 
-/** session.send's catch: a send from or to a bound node isn't delivered; anyone else's passes on. */
+/**
+ * A `to` the state alone can tell isn't a node: `main`, the lead's address.
+ * A name or a received `from` address could still be a node's, and the state
+ * can't resolve those without the hook that failed.
+ */
+const knownNonNode = (to: string): boolean => to === 'main'
+
+/**
+ * session.send's catch, failing closed: a send from a bound node isn't
+ * delivered; while a swarm this session owns (not read-only) is live, neither
+ * is one whose `to` isn't a known non-node (a bound agent's id, a name, or a
+ * `from` address). It passes on only with no such swarm live, or to a known
+ * non-node from an unbound sender.
+ */
 export const sessionSendFailed: SessionSendCatch = async ($, e, next) => {
-  if (isBound(e.agentId) || isBound(e.to)) {
+  const ownedLive = liveSwarms().some(s => !s.readOnly)
+  if (isBound(e.agentId) || isBound(e.to) || (ownedLive && !knownNonNode(e.to))) {
     return { isDelivered: false, reason: `litter guard failed: session.send (${why(next)})` }
   }
   return next(e)

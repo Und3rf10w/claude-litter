@@ -3,6 +3,7 @@
 // Matches the engine's limits where a module could come to depend on them
 // (4 MiB reads and writes, a 30 s default run timeout, git with hooks off).
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
@@ -36,8 +37,23 @@ import type {
 
 const MAX_BYTES = 4 * 1024 * 1024
 
-/** One `after` timer: nothing runs until the spec calls `runAfters(p)`. */
-export type FakeAfter = { ms: number; fn: () => void; state: 'pending' | 'ran' | 'cancelled' }
+/**
+ * One `after` timer: nothing runs until the spec calls `runAfters(p)`. `at`
+ * is the clock when it was made (the fake clock's, or real time), so it's
+ * due at `at + ms`.
+ */
+export type FakeAfter = { ms: number; at: number; fn: () => void; state: 'pending' | 'ran' | 'cancelled' }
+
+/**
+ * The host's refusal of `$.prompt.submit` from a hook that holds the turn
+ * (2.1.288's text for tool.call): the real port is usable only from a timer
+ * callback or turn.complete.
+ */
+export const SUBMIT_REFUSED =
+  'prompt.submit: called from a tool.call hook, it would wait on the turn this hook is holding; submit from a later event (turn.complete)'
+
+/** Set while a timer callback runs (runAfters, fireEvery), through its awaits. */
+const inTimer = new AsyncLocalStorage<true>()
 
 export type TestPorts = Ports & {
   /** Every line `log` got, in order. */
@@ -59,16 +75,33 @@ export type TestPorts = Ports & {
 
   /** What `listAgents` answers (a copy); a spec changes it between calls. */
   agents: ListedAgent[]
-  /** Every `send`, in order. */
+  /** Every `send`, in order, as the module called the port (before `sendHook`). */
   sent: { to: string; text: string }[]
   /** Answers a send; unset, it's delivered. */
   sendAnswer?: (to: string, text: string) => SessionSendResult | Promise<SessionSendResult>
+  /**
+   * The session.send hook a send goes through, as the real port goes through
+   * litter's own (a spec sets it to call its admitSend). `deliver` is what's
+   * beneath: `sendAnswer`, or delivered. Unset, a send is delivered as `sendAnswer` says.
+   */
+  sendHook?: (
+    to: string,
+    text: string,
+    deliver: (to: string, text: string) => Promise<SessionSendResult>,
+  ) => SessionSendResult | Promise<SessionSendResult>
   /** Every `appendUserRow` text, in order. */
   appended: string[]
-  /** Every `submitPrompt` text, in order (recorded before `submitAnswer` runs). */
+  /**
+   * Every `submitPrompt` text the host took, in order (recorded before
+   * `submitAnswer` runs). As the real port, a submit outside a timer callback
+   * (runAfters, fireEvery) rejects with SUBMIT_REFUSED and isn't recorded,
+   * unless `submitAnywhere` is set.
+   */
   submitted: string[]
   /** Answers a submit: return to resolve, throw to reject with the host's text. Unset, it resolves. */
   submitAnswer?: (text: string) => void | Promise<void>
+  /** A submit is taken from anywhere: for a spec of a turn.complete hook, where the host takes one. */
+  submitAnywhere: boolean
   /** Every `fillPrompt` text, in order. */
   filled: string[]
   /** Answers a fill; unset, the box takes it (true). */
@@ -94,7 +127,7 @@ export type TestPorts = Ports & {
   afters: FakeAfter[]
   /** What `limits()` answers; unset names are undefined. */
   limitsValue: { [K in SubagentLimitName]: string | undefined }
-  /** What `settingsFrom(source)` answers, by source; a source left out answers null. */
+  /** What `settingsFrom(source)` answers, by source; a source left out, or `{}` (the engine's answer for a missing file), answers null. */
   sourceSettings: Partial<Record<SettingsSourceName, Record<string, unknown>>>
   /** What `configDir()` answers; null (the default) rejects, so no spec reaches your own ~/.claude by accident. */
   configDirValue: string | null
@@ -115,18 +148,47 @@ export type TestPorts = Ports & {
 }
 
 /**
- * Runs the `after` timers pending now, in the order they were made, awaiting
- * each one's result (the engine doesn't; a spec wants their effects settled).
- * Timers they make wait for the next call. Answers how many ran.
+ * Runs the `after` timers pending now that are due, in due order (`at + ms`,
+ * ties in the order made), awaiting each one's result (the engine doesn't; a
+ * spec wants their effects settled). Due means by `clock.now` with the fake
+ * clock set; with the real clock, every pending one. `{ all: true }` runs
+ * every pending one, due or not, in the order made. Each runs as a timer
+ * callback (submitPrompt takes it). Timers they make wait for the next call;
+ * one an earlier callback cancelled doesn't run. Answers how many ran.
  */
-export async function runAfters(p: TestPorts): Promise<number> {
+export async function runAfters(p: TestPorts, opts: { all?: boolean } = {}): Promise<number> {
+  const now = p.clock.now
+  const pending = p.afters.filter(x => x.state === 'pending')
+  const chosen = opts.all
+    ? pending
+    : pending
+        .map((a, i) => ({ a, i }))
+        .filter(({ a }) => now === null || a.at + a.ms <= now)
+        .sort((x, y) => x.a.at + x.a.ms - (y.a.at + y.a.ms) || x.i - y.i)
+        .map(({ a }) => a)
   let ran = 0
-  for (const a of p.afters.filter(x => x.state === 'pending')) {
-    // One an earlier callback cancelled doesn't run.
+  for (const a of chosen) {
     if (a.state !== 'pending') continue
     a.state = 'ran'
     ran++
-    await (a.fn() as unknown)
+    await inTimer.run(true, async () => {
+      await (a.fn() as unknown)
+    })
+  }
+  return ran
+}
+
+/**
+ * Fires every `every` timer once, as the engine's tick would, each as a timer
+ * callback (submitPrompt takes it), awaiting each one's result. Answers how many ran.
+ */
+export async function fireEvery(p: TestPorts): Promise<number> {
+  let ran = 0
+  for (const fn of [...p.timers]) {
+    ran++
+    await inTimer.run(true, async () => {
+      await (fn() as unknown)
+    })
   }
   return ran
 }
@@ -382,10 +444,12 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     listAgents: async () => structuredClone(p.agents),
     send: async (to, text) => {
       p.sent.push({ to, text })
-      return p.sendAnswer ? p.sendAnswer(to, text) : { isDelivered: true }
+      const deliver = async (t: string, x: string): Promise<SessionSendResult> => (p.sendAnswer ? p.sendAnswer(t, x) : { isDelivered: true })
+      return p.sendHook ? p.sendHook(to, text, deliver) : deliver(to, text)
     },
     appendUserRow: async text => void p.appended.push(text),
     submitPrompt: async text => {
+      if (!p.submitAnywhere && inTimer.getStore() !== true) throw new Error(SUBMIT_REFUSED)
       p.submitted.push(text)
       await p.submitAnswer?.(text)
     },
@@ -415,7 +479,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
       await new Promise<void>(resolve => setTimeout(resolve, 0))
     },
     after: (ms, fn) => {
-      const a: FakeAfter = { ms, fn, state: 'pending' }
+      const a: FakeAfter = { ms, at: p.clock.now ?? Date.now(), fn, state: 'pending' }
       p.afters.push(a)
       return {
         cancel: () => {
@@ -425,8 +489,9 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     },
     limits: async () => ({ ...p.limitsValue }),
     settingsFrom: async source => {
+      // As the real port: the engine answers {} for a missing file, read as null.
       const s = p.sourceSettings[source]
-      return s === undefined ? null : structuredClone(s)
+      return s === undefined || Object.keys(s).length === 0 ? null : structuredClone(s)
     },
     configDir: async () => {
       if (p.configDirValue === null) throw new Error('no config dir in tier 2 (set configDirValue)')
@@ -450,6 +515,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     sent: [],
     appended: [],
     submitted: [],
+    submitAnywhere: false,
     filled: [],
     transcripts: {},
     completions: [],

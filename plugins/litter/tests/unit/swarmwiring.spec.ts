@@ -1,8 +1,12 @@
 // Tier 2: the swarm hooks' catches and the agent.offer handler
 // (hooks/swarm/wiring.ts; WP-C §10), called directly with a fake `next`: a
 // node's event is refused in its event's own shape, anyone else's passes on.
+// And two checks of register.tsx's source: session.start's order, and the
+// renders that don't rebind.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import * as state from '../../hooks/swarm/state'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
 import {
@@ -136,10 +140,31 @@ describe('session.send', () => {
     }
   })
 
-  test("anyone else's passes on", async () => {
+  test('while a swarm this session owns is live, a send to anything but a known non-node is refused: a name or address could be a node', async () => {
+    for (const to of ['teammate', 'fixer', 'agent-xyz@session-1']) {
+      const { next, calls } = caught('gate')
+      expect(await sessionSendFailed($, { to, text: 'hi', origin: { kind: 'model' }, agentId: 'other' } as never, next)).toEqual({
+        isDelivered: false,
+        reason: 'litter guard failed: session.send (gate)',
+      })
+      expect(calls).toEqual([])
+    }
+  })
+
+  test("an unbound sender's send to main, the lead, passes on while a swarm is live", async () => {
     const { next, calls } = caught()
-    expect(await sessionSendFailed($, { to: 'teammate', text: 'hi', origin: { kind: 'model' }, agentId: 'other' } as never, next)).toBe(PASSED)
+    expect(await sessionSendFailed($, { to: 'main', text: 'hi', origin: { kind: 'model' }, agentId: 'other' } as never, next)).toBe(PASSED)
     expect(calls.length).toBe(1)
+  })
+
+  test("with no swarm live, or only another session's (read-only), anyone's unbound send passes on", async () => {
+    state.resetForTests()
+    for (const setup of [() => {}, () => state.putLiveSwarm(swarm('ro', { readOnly: true }))]) {
+      setup()
+      const { next, calls } = caught()
+      expect(await sessionSendFailed($, { to: 'teammate', text: 'hi', origin: { kind: 'model' }, agentId: 'other' } as never, next)).toBe(PASSED)
+      expect(calls.length).toBe(1)
+    }
   })
 })
 
@@ -228,6 +253,55 @@ describe('the commands and the tools', () => {
     })
     const r = (await swarmSendFailed($, { tool: 'mcp__litter__swarm_send' } as never, caught('x'.repeat(1000)).next)) as { deny: string }
     expect(r.deny.length).toBeLessThan(400)
+  })
+})
+
+// register.tsx is the engine's to load (tier 1), and its module state isn't a
+// spec's to read; validate lists its hooks, not what each body awaits. So
+// these two pin, from its source, what a behaviour test can't see yet.
+describe("register.tsx's order and its renders", () => {
+  const source = readFileSync(join(import.meta.dir, '..', '..', 'hooks', 'register.tsx'), 'utf8')
+  const hookBody = (head: string): string => {
+    const at = source.indexOf(head)
+    expect({ head, found: at >= 0 }).toEqual({ head, found: true })
+    return source.slice(at, source.indexOf('}).catch(', at))
+  }
+
+  test('session.start opens the gate right after the swarms are recovered, before the slower steps', () => {
+    const body = hookBody("on('session.start'")
+    expect(body).toContain('await withGateClosed(async openGateNow =>')
+    const marks = [...body.matchAll(/step\(p, '([^']+)'|openGateNow\(\)/g)].map(m => m[1] ?? 'the gate opens')
+    expect(marks).toEqual([
+      'tools',
+      'swarm tools',
+      'roles',
+      'swarm commands',
+      'litterDir',
+      'swarm state',
+      'swarm pending',
+      'swarms',
+      'the gate opens',
+      'worktree.json',
+      'drain',
+      'reconcile',
+      'leftover worktrees',
+      'timers',
+      'swarm timers',
+      'pane timer',
+    ])
+  })
+
+  test("neither pane's ui.render awaits rebound: a rebind writes $.state, which a render can't", () => {
+    for (const pane of ['litter-swarm', 'litter-doctor']) {
+      const body = hookBody(`on('ui.render', { component: 'Pane', requestId: '${pane}' }`)
+      expect({ pane, rebound: body.includes('rebound(') }).toEqual({ pane, rebound: false })
+    }
+    // Every other hook but session.start and session.end still does.
+    const others = [...source.matchAll(/on\('([a-z.]+)'[^\n]*\n([\s\S]*?)\}\)\.catch\(/g)].filter(
+      m => !['session.start', 'session.end', 'ui.render'].includes(m[1]!),
+    )
+    expect(others.length).toBeGreaterThan(15)
+    for (const m of others) expect({ hook: m[1], rebound: m[2]!.includes('await rebound(p)') }).toEqual({ hook: m[1], rebound: true })
   })
 })
 

@@ -39,9 +39,13 @@ export async function removeNodePolicy(p: Ports, litterDir: string, agentId: str
 }
 
 /**
- * Sets (or with null removes) policy.json's `swarm.swarms[name]` through
- * policy.ts's updatePolicy, creating policy.json when there's none, and
- * `active` when the first swarm goes live (removed when the last goes and no run is active).
+ * Sets (or with null removes) policy.json's `swarm.swarms[name]`, creating
+ * policy.json when there's none, and `active` when the first swarm goes live
+ * (removed when the last goes and no run is active). It can't use
+ * updatePolicy, which writes nothing when there's no policy.json, so it reads,
+ * changes and writes under `serial(policyKey(litterDir))` directly (policy.ts),
+ * the key activate, deactivate and updatePolicy share; never calling
+ * updatePolicy inside it, since a nested serial on the same key waits on itself.
  */
 export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null): Promise<void> {
   throw notBuilt('writeSwarmPolicy')

@@ -1,9 +1,10 @@
 // Tier 2: the swarm's fake ports (tests/unit/support/node-ports.ts; WP-C §1):
-// each records its calls and answers as its comment says, and a spec can set
-// an answer after the ports were made.
+// each records its calls and answers as its comment says, a spec can set an
+// answer after the ports were made, and they refuse what the real ports
+// refuse (a submit outside a timer callback, a settings file that's missing).
 
 import { describe, expect, test } from 'bun:test'
-import { nodePorts, runAfters } from './support/node-ports'
+import { fireEvery, nodePorts, runAfters, SUBMIT_REFUSED } from './support/node-ports'
 
 describe('the swarm fakes', () => {
   test('listAgents answers a copy of agents, changed between calls', async () => {
@@ -29,20 +30,61 @@ describe('the swarm fakes', () => {
     ])
   })
 
-  test('appendUserRow, submitPrompt and fillPrompt record their texts; submitAnswer can reject', async () => {
+  test('send goes through sendHook when a spec sets it, with the delivery beneath as its next', async () => {
+    const p = nodePorts()
+    const seen: string[] = []
+    p.sendAnswer = to => ({ isDelivered: false, reason: `no ${to}` })
+    p.sendHook = async (to, text, deliver) => {
+      seen.push(`${to}: ${text}`)
+      if (to === 'node-1') return { isDelivered: false, reason: 'queued' }
+      return deliver(to === 'old' ? 'new' : to, text)
+    }
+    expect(await p.send('node-1', 'hi')).toEqual({ isDelivered: false, reason: 'queued' })
+    expect(await p.send('old', 'yo')).toEqual({ isDelivered: false, reason: 'no new' })
+    expect(seen).toEqual(['node-1: hi', 'old: yo'])
+    expect(p.sent).toEqual([
+      { to: 'node-1', text: 'hi' },
+      { to: 'old', text: 'yo' },
+    ])
+    p.sendAnswer = undefined
+    expect(await p.send('main', 'up')).toEqual({ isDelivered: true })
+  })
+
+  test('appendUserRow and fillPrompt record their texts; fillAnswer can refuse', async () => {
     const p = nodePorts()
     await p.appendUserRow('row')
-    await p.submitPrompt('one')
-    p.submitAnswer = text => {
-      throw new Error(`the host refused ${text}`)
-    }
-    await expect(p.submitPrompt('two')).rejects.toThrow('the host refused two')
     expect(await p.fillPrompt('draft')).toBe(true)
     p.fillAnswer = () => false
     expect(await p.fillPrompt('again')).toBe(false)
     expect(p.appended).toEqual(['row'])
-    expect(p.submitted).toEqual(['one', 'two'])
     expect(p.filled).toEqual(['draft', 'again'])
+  })
+
+  test("submitPrompt is taken only in a timer callback, as the host's is; elsewhere it rejects and isn't recorded", async () => {
+    const p = nodePorts()
+    await expect(p.submitPrompt('from a hook')).rejects.toThrow(SUBMIT_REFUSED)
+    expect(SUBMIT_REFUSED).toStartWith('prompt.submit: called from a tool.call hook')
+    // Through an await inside the callback too.
+    p.after(0, async () => {
+      await Promise.resolve()
+      await p.submitPrompt('from after')
+    })
+    await runAfters(p)
+    const tick = async () => {
+      await new Promise<void>(r => setTimeout(r, 0))
+      await p.submitPrompt('from every')
+    }
+    p.every(1000, tick)
+    expect(await fireEvery(p)).toBe(1)
+    // The callback's context ends with it.
+    await expect(p.submitPrompt('after the timer')).rejects.toThrow(SUBMIT_REFUSED)
+    p.submitAnywhere = true
+    await p.submitPrompt('from turn.complete')
+    p.submitAnswer = text => {
+      throw new Error(`the host refused ${text}`)
+    }
+    await expect(p.submitPrompt('two')).rejects.toThrow('the host refused two')
+    expect(p.submitted).toEqual(['from after', 'from every', 'from turn.complete', 'two'])
   })
 
   test("messages answers transcripts by agentId, main for the lead's; an unknown agent is null", async () => {
@@ -113,12 +155,58 @@ describe('the swarm fakes', () => {
       [10, 'cancelled'],
       [5, 'pending'],
     ])
+    // The real clock: every pending one, in due order.
     expect(await runAfters(p)).toBe(2)
     expect(ran).toEqual(['a', 'c'])
     // One made while running waits for the next call.
     expect(await runAfters(p)).toBe(1)
     expect(ran).toEqual(['a', 'c', 'd'])
     expect(await runAfters(p)).toBe(0)
+  })
+
+  test('with the fake clock, runAfters runs only the timers due by clock.now, in due order', async () => {
+    const p = nodePorts()
+    p.clock.now = 1000
+    const ran: string[] = []
+    p.after(500, () => void ran.push('late'))
+    p.after(100, () => void ran.push('soon'))
+    p.after(100, () => void ran.push('soon too'))
+    p.clock.now = 1050
+    p.after(30, () => void ran.push('made later, due first'))
+    expect(await runAfters(p)).toBe(0)
+    p.clock.now = 1100
+    expect(await runAfters(p)).toBe(3)
+    expect(ran).toEqual(['made later, due first', 'soon', 'soon too'])
+    p.clock.now = 1499
+    expect(await runAfters(p)).toBe(0)
+    p.clock.now = 1500
+    expect(await runAfters(p)).toBe(1)
+    expect(ran.at(-1)).toBe('late')
+  })
+
+  test('runAfters with all runs every pending timer, due or not, in the order made', async () => {
+    const p = nodePorts()
+    p.clock.now = 0
+    const ran: string[] = []
+    p.after(60_000, () => void ran.push('a'))
+    p.after(10, () => void ran.push('b'))
+    p.after(30_000, () => void ran.push('c')).cancel()
+    expect(await runAfters(p, { all: true })).toBe(2)
+    expect(ran).toEqual(['a', 'b'])
+  })
+
+  test('fireEvery fires each every timer once, awaiting it', async () => {
+    const p = nodePorts()
+    const ran: string[] = []
+    p.every(1000, async () => {
+      await Promise.resolve()
+      ran.push('one')
+    })
+    const t = p.every(5000, () => void ran.push('two'))
+    expect(await fireEvery(p)).toBe(2)
+    expect(ran).toEqual(['one', 'two'])
+    t.cancel()
+    expect(await fireEvery(p)).toBe(1)
   })
 
   test("every keeps working as before: timers hold the callbacks, cancel drops one", () => {
@@ -145,6 +233,9 @@ describe('the swarm fakes', () => {
     const got = await p.settingsFrom('policy')
     expect(got).toEqual({ env: { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: '30' } })
     expect(await p.settingsFrom('project')).toBeNull()
+    // The engine answers {} for a missing file; the port reads it as null.
+    p.sourceSettings.local = {}
+    expect(await p.settingsFrom('local')).toBeNull()
     await expect(p.configDir()).rejects.toThrow('no config dir in tier 2')
     p.configDirValue = '/scratch/config'
     expect(await p.configDir()).toBe('/scratch/config')

@@ -203,6 +203,61 @@ describe('admission', () => {
     expect(state.activeScopes('alpha')).toEqual([])
   })
 
+  test('a promoted place counts before its binding is put, is mirrored, and goes with the binding', async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    state.reserve(res('t1', { scope: scope('/repo/wt', true) }))
+    expect(state.promote('t1', 'w1')).toBe(true)
+    // L awaits the swarm.node record here, before putBinding: a spawn checked now must still see the place.
+    expect(state.binding('w1')).toBeNull()
+    expect(state.countFor('alpha', 'orch-1', 'fixer')).toBe(1)
+    expect(state.countSwarm('alpha')).toBe(1)
+    expect(state.activeScopes('alpha')).toEqual([{ dir: '/repo/wt', paths: null, commit: true, swarm: 'alpha', node: 'fixer', agentId: 'w1', key: null }])
+    await state.flushed()
+    const part = p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart
+    expect(part.admission.map(a => [a.agentId, a.swarm, a.node, a.parent, a.kind])).toEqual([['w1', 'alpha', 'fixer', 'orch-1', 'worker']])
+    state.putBinding(bind('w1'))
+    expect(state.countFor('alpha', 'orch-1', 'fixer')).toBe(1)
+    state.dropBinding('w1')
+    expect(state.status('w1')).toBe('idle')
+    expect(state.countSwarm('alpha')).toBe(0)
+    expect(state.activeScopes('alpha')).toEqual([])
+  })
+
+  test("dropBinding frees a promoted agent's place even before its binding was put", () => {
+    state.reserve(res('t1'))
+    state.promote('t1', 'w1')
+    state.dropBinding('w1')
+    expect(state.countSwarm('alpha')).toBe(0)
+  })
+
+  test("a resume's markRunning takes its place from the binding, or the one given; with neither it throws", () => {
+    state.putBinding(bind('w1'))
+    state.markRunning('w1')
+    expect(state.countFor('alpha', 'orch-1', 'fixer')).toBe(1)
+    state.markRunning('w2', null, { swarm: 'alpha', node: 'fixer', parent: 'orch-2', kind: 'worker' })
+    expect(state.countFor('alpha', 'orch-2', 'fixer')).toBe(1)
+    expect(state.countSwarm('alpha')).toBe(2)
+    expect(() => state.markRunning('ghost')).toThrow('litter: ghost has no place to run in')
+    expect(state.status('ghost')).toBe('idle')
+    // Settling keeps the place it holds; one with no place and no binding is left alone.
+    state.markSettling('w2')
+    expect(state.countFor('alpha', 'orch-2', 'fixer')).toBe(1)
+    state.markSettling('ghost')
+    expect(state.status('ghost')).toBe('idle')
+  })
+
+  test('noteInstance stores the number it raises to, and the mirror carries it', async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    state.noteInstance('alpha', 'fixer', 4)
+    await state.flushed()
+    expect((p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart).instances).toEqual({ fixer: 4 })
+    state.resetForTests()
+    await state.loadSwarm(p, LITTER, 'alpha')
+    expect(state.nextInstance('alpha', 'fixer')).toBe(5)
+  })
+
   test('nextInstance counts from 1 per node; noteInstance only raises it', () => {
     expect(state.nextInstance('alpha', 'fixer')).toBe(1)
     expect(state.nextInstance('alpha', 'fixer')).toBe(2)
@@ -457,11 +512,61 @@ describe('the ready gate', () => {
     expect(p.sleeps).toEqual([25, 25, 25, 25, 25])
   })
 
-  test('rejects after 15 s of fake clock, so the waiting hook fails closed', async () => {
+  test('rejects after 8 s of fake clock, inside the 10 s hook budget, so the waiting hook fails closed with its own error', async () => {
+    expect(state.READY_MS).toBe(8_000)
     state.closeGate()
     await expect(state.ready(p)).rejects.toThrow("litter: the swarm state isn't ready")
     expect(p.sleeps.length).toBe(state.READY_MS / state.READY_POLL_MS)
     expect(p.clock.now).toBe(NOW + state.READY_MS)
+  })
+
+  /** The gate is open: ready resolves without one sleep. */
+  async function gateIsOpen(): Promise<boolean> {
+    const q = nodePorts()
+    q.clock.now = NOW
+    q.onSleep = () => {
+      throw new Error('closed')
+    }
+    try {
+      await state.ready(q)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  test('withGateClosed holds the gate until its open is called, then the rest of the work runs with it open', async () => {
+    const seen: boolean[] = []
+    const r = await state.withGateClosed(async open => {
+      seen.push(await gateIsOpen())
+      open()
+      seen.push(await gateIsOpen())
+      return 7
+    })
+    expect(seen).toEqual([false, true])
+    expect(r).toBe(7)
+    expect(await gateIsOpen()).toBe(true)
+  })
+
+  test("withGateClosed opens it once: a second open, and its finally, leave another holder's close in place", async () => {
+    state.closeGate()
+    await state.withGateClosed(async open => {
+      open()
+      open()
+      expect(await gateIsOpen()).toBe(false)
+    })
+    expect(await gateIsOpen()).toBe(false)
+    state.openGate()
+    expect(await gateIsOpen()).toBe(true)
+  })
+
+  test('withGateClosed opens the gate when the work throws before its open', async () => {
+    await expect(
+      state.withGateClosed(async () => {
+        throw new Error('a step threw')
+      }),
+    ).rejects.toThrow('a step threw')
+    expect(await gateIsOpen()).toBe(true)
   })
 
   test('openGate never goes below open', async () => {
@@ -617,5 +722,101 @@ describe('the mirror', () => {
     p.storeMap.set(state.swarmStateKey(LITTER, 'alpha'), { v: 1, swarm: { name: 'other' } })
     expect(await state.loadSwarm(p, LITTER, 'alpha')).toBeNull()
     expect(state.liveSwarms()).toEqual([])
+  })
+
+  test("loadSwarm brings typesReady back false: the types were registered in the earlier process, not this one", async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm('alpha', { typesReady: true }))
+    await state.flushed()
+    expect((p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart).swarm.typesReady).toBe(true)
+    state.resetForTests()
+    const back = await state.loadSwarm(p, LITTER, 'alpha')
+    expect(back?.typesReady).toBe(false)
+    expect(state.liveSwarm('alpha')?.typesReady).toBe(false)
+  })
+})
+
+describe('the bounds on what the mirror holds', () => {
+  const bytes = (text: string) => new TextEncoder().encode(text).length
+  const msg = (swarm: string, i: number) => ({ swarm, agentId: 'w1', node: 'fixer', text: `m${i}`, from: 'user', at: NOW + i })
+
+  test('a question and a direct message are cut to 4 KiB', () => {
+    state.putBinding(bind('w1'))
+    const q = state.noteQuestion('w1', 'é'.repeat(5_000), NOW)
+    expect(bytes(q!.text)).toBeLessThanOrEqual(state.NOTE_MAX_BYTES)
+    expect(q!.text.length).toBe(state.NOTE_MAX_BYTES / 2)
+    state.noteDirect('alpha', 'x'.repeat(10_000))
+    expect(state.takeDirect('alpha')[0]!.length).toBe(state.NOTE_MAX_BYTES)
+  })
+
+  test('a swarm queues at most 50 messages: the next throws naming the node, and queues nothing', () => {
+    for (let i = 0; i < state.QUEUE_MAX; i++) state.enqueue(msg('alpha', i))
+    expect(state.QUEUE_MAX).toBe(50)
+    expect(() => state.enqueue(msg('alpha', 99))).toThrow('litter: the queue for fixer is full')
+    expect(state.queued('alpha').length).toBe(50)
+    // Another swarm's queue is its own; a message taken off makes room.
+    state.enqueue(msg('beta', 0))
+    state.dequeue(state.queued('alpha')[0]!.id)
+    state.enqueue(msg('alpha', 100))
+    expect(state.queued('alpha').length).toBe(50)
+  })
+
+  test("dropBinding prunes the agent's report, tokens, refused turns, stop mark and questions, in memory and the mirror", async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    for (const id of ['w1', 'w2']) {
+      state.putBinding(bind(id))
+      state.noteReport(id, `report of ${id}`, 'handback', NOW)
+      state.addTokens(id, null)
+      state.refuseTurn(id, 'turn-1')
+      state.noteAgentStopped(id)
+      state.noteQuestion(id, `question of ${id}`, NOW)
+    }
+    state.dropBinding('w1')
+    expect(state.lastReport('w1')).toBeNull()
+    expect(state.tokens('w1').turns).toBe(0)
+    expect(state.isRefusedTurn('w1', 'turn-1')).toBe(false)
+    expect(state.agentStopped('w1')).toBe(false)
+    expect(state.questions('alpha').map(q => q.agentId)).toEqual(['w2'])
+    expect(state.lastReport('w2')?.text).toBe('report of w2')
+    expect(state.agentStopped('w2')).toBe(true)
+    await state.flushed()
+    const part = p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart
+    expect(Object.keys(part.reports)).toEqual(['w2'])
+    expect(part.questions.map(q => q.agentId)).toEqual(['w2'])
+    expect(part.agentStopped).toEqual(['w2'])
+  })
+
+  test('a part over 256 KiB drops the oldest reports and closed questions of agents not running, from memory too, and logs it', async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    // 80 settled workers with a 4 KiB report each: about 330 KiB.
+    for (let i = 0; i < 80; i++) {
+      state.putBinding(bind(`w${i}`))
+      state.noteReport(`w${i}`, 'r'.repeat(4096), 'handback', NOW + i)
+    }
+    // A running agent's report stays, however old.
+    state.putBinding(bind('busy'))
+    state.markRunning('busy')
+    state.noteReport('busy', 'b'.repeat(4096), 'handback', NOW - 10_000)
+    // Ten closed questions, older than every report, and an open one, older still.
+    state.noteQuestion('w1', 'still open?', NOW - 9_000)
+    for (let i = 0; i < 10; i++) state.noteQuestion('w0', 'q'.repeat(4096), NOW - 5_000 + i)
+    state.closeQuestion('w0', NOW)
+    await state.flushed()
+
+    const part = p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart
+    expect(bytes(JSON.stringify(part))).toBeLessThanOrEqual(state.PART_MAX_BYTES)
+    expect(part.reports.busy?.text.length).toBe(4096)
+    expect(part.questions.map(q => q.text)).toEqual(['still open?'])
+    // Oldest first: the closed questions, then the oldest reports; the newest stay.
+    expect(part.reports.w0).toBeUndefined()
+    expect(part.reports.w79).toBeDefined()
+    expect(state.lastReport('w0')).toBeNull()
+    expect(state.lastReport('w79')).not.toBeNull()
+    const line = p.logs.find(l => l.includes('its state was over 262144 bytes'))
+    expect(line).toContain('fixer (w0)')
+    expect(line).toContain('10 closed questions')
+    expect(line).not.toContain('busy')
   })
 })

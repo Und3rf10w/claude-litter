@@ -17,6 +17,10 @@
 //    calls (they belong to no swarm).
 //  - The objects the getters return are the state's own: read them, and
 //    change them only through the changers.
+//  - Bounded, since $.store is 4 MiB for the whole plugin and a full store
+//    breaks every ledger append (ledgercore's head write): texts are cut, the
+//    queue is capped, an agent's entries go with its binding, and a part over
+//    256 KiB sheds old reports and closed questions before it's written.
 //
 // Contract owner: phase 2b-1, package C (built and tested here; tests/unit/state.spec.ts).
 
@@ -24,6 +28,7 @@ import type { Ports } from '../ports'
 import type {
   ActiveScope,
   AdmissionStatus,
+  BindingKind,
   ClearKill,
   LiveSwarm,
   NodeBinding,
@@ -43,8 +48,18 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 /** A report kept per agent, and a queued message's text: cut to these many UTF-8 bytes. */
 export const REPORT_MAX_BYTES = 4 * 1024
 export const QUEUED_MAX_BYTES = 16 * 1024
-/** How long `ready` waits for the gate before it rejects. */
-export const READY_MS = 15_000
+/** A question's text, and a direct message's: cut to these many UTF-8 bytes. */
+export const NOTE_MAX_BYTES = 4 * 1024
+/** Queued messages held per swarm: `enqueue` throws past it. */
+export const QUEUE_MAX = 50
+/** A swarm's part in $.store, as JSON: over it, old reports and closed questions are dropped before the write. */
+export const PART_MAX_BYTES = 256 * 1024
+/**
+ * How long `ready` waits for the gate before it rejects: under the hook's
+ * 10 s budget, which a `$.clock` wait spends, so the hook ends with ready's
+ * own error rather than the budget's.
+ */
+export const READY_MS = 8_000
 /** `ready`'s poll step. */
 export const READY_POLL_MS = 25
 const QUESTIONS_KEPT = 100
@@ -66,8 +81,33 @@ function cutBytes(text: string, max: number): string {
   return text.slice(0, end)
 }
 
-/** One running or settling agent's place. */
-type AdmissionEntry = { agentId: string; status: 'running' | 'settling'; scope: WriteScope | null }
+/** UTF-8 bytes of a JSON-serialisable value. */
+function jsonBytes(v: unknown): number {
+  const text = JSON.stringify(v) ?? ''
+  let n = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      n += 4
+      i++
+    } else n += 3
+  }
+  return n
+}
+
+/** Where a place counts: its swarm, node, parent (null: the lead) and kind. */
+export type AdmissionPlace = { swarm: string; node: string; parent: string | null; kind: BindingKind }
+
+/**
+ * One running or settling agent's place. It carries what it counts under,
+ * copied from its reservation by `promote` (or from the binding, or given, by
+ * `markRunning`), so it counts before its binding is put.
+ */
+type AdmissionEntry = AdmissionPlace & { agentId: string; status: 'running' | 'settling'; scope: WriteScope | null }
+
+const placeOf = (x: AdmissionPlace): AdmissionPlace => ({ swarm: x.swarm, node: x.node, parent: x.parent, kind: x.kind })
 /** A stopped node or child, by agentId. */
 export type StoppedEntry = { agentId: string; swarm: string; reason: string }
 
@@ -180,10 +220,58 @@ async function writePart(p: Ports, dir: string, name: string): Promise<void> {
       return
     }
     if (!mirrored(s)) return
-    await p.store.set(swarmStateKey(dir, name), partOf(name, s))
+    await p.store.set(swarmStateKey(dir, name), fitPart(p, name, s))
   } catch (err) {
     p.log(`swarm ${name}: its state wasn't saved: ${errText(err)}`)
   }
+}
+
+/**
+ * The part to write, within PART_MAX_BYTES: over it, the reports and closed
+ * questions of the swarm's agents that aren't running go, oldest first, from
+ * memory too (so the state and its mirror agree), until it fits; what went is
+ * logged. Still over with nothing left to drop, it's written as it is.
+ */
+function fitPart(p: Ports, name: string, s: LiveSwarm): SwarmPart {
+  let part = partOf(name, s)
+  let size = jsonBytes(part)
+  if (size <= PART_MAX_BYTES) return part
+  const running = (id: string) => admission.get(id)?.status === 'running'
+  /** `report` names the agent whose report it is; null for a question. */
+  type Drop = { at: number; bytes: number; drop: () => void; report: string | null }
+  const drops: Drop[] = []
+  for (const b of part.bindings) {
+    const r = reports.get(b.agentId)
+    if (!r || running(b.agentId)) continue
+    drops.push({ at: r.at, bytes: jsonBytes(r) + b.agentId.length + 4, drop: () => reports.delete(b.agentId), report: `${b.node} (${b.agentId})` })
+  }
+  for (const q of part.questions) {
+    if (q.closedAt === null || running(q.agentId)) continue
+    drops.push({ at: q.at, bytes: jsonBytes(q) + 1, drop: () => (questionList = questionList.filter(x => x !== q)), report: null })
+  }
+  drops.sort((a, b) => a.at - b.at)
+  let next = 0
+  while (size > PART_MAX_BYTES && next < drops.length) {
+    // Drop by estimate, then measure again.
+    let over = size - PART_MAX_BYTES
+    while (over > 0 && next < drops.length) {
+      const d = drops[next++]!
+      d.drop()
+      over -= d.bytes
+    }
+    part = partOf(name, s)
+    size = jsonBytes(part)
+  }
+  if (next > 0) ver++
+  const gone = drops.slice(0, next)
+  const ofAgents = gone.flatMap(d => (d.report === null ? [] : [d.report]))
+  const questionsGone = gone.length - ofAgents.length
+  const still = size > PART_MAX_BYTES ? `; still ${size} bytes, written as it is` : ''
+  p.log(
+    `swarm ${name}: its state was over ${PART_MAX_BYTES} bytes: dropped the last report of ` +
+      `${ofAgents.length === 0 ? 'no agent' : ofAgents.join(', ')} and ${questionsGone} closed questions, of agents not running${still}`,
+  )
+  return part
 }
 
 function partOf(name: string, s: LiveSwarm): SwarmPart {
@@ -194,7 +282,7 @@ function partOf(name: string, s: LiveSwarm): SwarmPart {
     v: 1,
     swarm: s,
     bindings: bs,
-    admission: [...admission.values()].filter(a => ids.has(a.agentId)),
+    admission: [...admission.values()].filter(a => a.swarm === name),
     stopped: [...stoppedById.values()].filter(x => x.swarm === name),
     queue: [...queue.values()].filter(q => q.swarm === name),
     instances: Object.fromEntries(instances.get(name) ?? []),
@@ -236,14 +324,16 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
  * Reads one swarm's part back from $.store into memory, over anything held
  * for it, and answers its LiveSwarm (null when there's none, or it isn't
  * readable). K's recovery calls it, then rebuilds over it from the ledger.
- * It writes nothing.
+ * It writes nothing. `typesReady` comes back false: it says the types are
+ * registered in this process, and a part is from an earlier one.
  */
 export async function loadSwarm(p: Ports, litterDir: string, name: string): Promise<LiveSwarm | null> {
   const raw = await p.store.get(swarmStateKey(litterDir, name))
   if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.swarm) || raw.swarm.name !== name) return null
   const part = raw as unknown as SwarmPart
   forget(name)
-  swarms.set(name, part.swarm)
+  const s: LiveSwarm = { ...part.swarm, typesReady: false }
+  swarms.set(name, s)
   for (const b of part.bindings ?? []) bindingsById.set(b.agentId, b)
   for (const a of part.admission ?? []) admission.set(a.agentId, a)
   for (const x of part.stopped ?? []) stoppedById.set(x.agentId, x)
@@ -258,7 +348,7 @@ export async function loadSwarm(p: Ports, litterDir: string, name: string): Prom
   directBySwarm.set(name, [...(part.direct ?? [])])
   for (const [id, turns] of Object.entries(part.refused ?? {})) refused.set(id, [...turns])
   ver++
-  return part.swarm
+  return s
 }
 
 /** Drops everything held for one swarm, in memory only. */
@@ -273,6 +363,7 @@ function forget(name: string): void {
     tokenCounts.delete(id)
     refused.delete(id)
   }
+  for (const [k, a] of admission) if (a.swarm === name) admission.delete(k)
   for (const [k, r] of reserved) if (r.swarm === name) reserved.delete(k)
   for (const [k, x] of stoppedById) if (x.swarm === name) stoppedById.delete(k)
   for (const [k, q] of queue) if (q.swarm === name) queue.delete(k)
@@ -340,11 +431,22 @@ export function putBinding(b: NodeBinding): void {
   changed(b.swarm)
 }
 
+/**
+ * Drops an agent's binding, the place it holds, and its per-agent entries
+ * (report, tokens, refused turns, its SubagentStop mark, its questions), so
+ * nothing of a dropped agent stays in memory or in the mirror.
+ */
 export function dropBinding(agentId: string): void {
-  const b = bindingsById.get(agentId)
-  if (!b) return
+  const swarm = bindingsById.get(agentId)?.swarm ?? admission.get(agentId)?.swarm
+  if (swarm === undefined) return
   bindingsById.delete(agentId)
-  changed(b.swarm)
+  admission.delete(agentId)
+  reports.delete(agentId)
+  tokenCounts.delete(agentId)
+  refused.delete(agentId)
+  stoppedAgents.delete(agentId)
+  questionList = questionList.filter(q => q.agentId !== agentId)
+  changed(swarm)
 }
 
 /** The bindings whose `parent` is this agent: its workers and children. */
@@ -380,13 +482,18 @@ export function reserve(r: Reservation): void {
   ver++
 }
 
-/** The reserved place becomes `agentId`'s running place, with the reservation's scope. False when nothing was reserved under `key`. */
+/**
+ * The reserved place becomes `agentId`'s running place, with the
+ * reservation's swarm, node, parent, kind and scope, so it keeps counting
+ * (countFor, countSwarm, activeScopes) before the binding is put. False when
+ * nothing was reserved under `key`.
+ */
 export function promote(key: string, agentId: string): boolean {
   const r = reserved.get(key)
   if (!r) return false
   reserved.delete(key)
-  admission.set(agentId, { agentId, status: 'running', scope: r.scope })
-  changed(swarmOfAgent(agentId) ?? r.swarm)
+  admission.set(agentId, { agentId, status: 'running', scope: r.scope, ...placeOf(r) })
+  changed(r.swarm)
   return true
 }
 
@@ -402,40 +509,56 @@ export const reservations = (swarm?: string): Reservation[] =>
 
 export const status = (agentId: string): AdmissionStatus => admission.get(agentId)?.status ?? 'idle'
 
-/** Running (a spawn bound, a resume admitted). Clears a stop noted earlier: the agent runs again. The scope stays unless given. */
-export function markRunning(agentId: string, scope?: WriteScope | null): void {
+/**
+ * Running (a spawn bound, a resume admitted). Clears a stop noted earlier: the
+ * agent runs again. The scope stays unless given. The place it counts under
+ * is `place` when given, else the one it holds, else its binding's; with none
+ * of them it throws, as a caller's bug (a resume of an agent nothing knows).
+ */
+export function markRunning(agentId: string, scope?: WriteScope | null, place?: AdmissionPlace): void {
   const cur = admission.get(agentId)
-  admission.set(agentId, { agentId, status: 'running', scope: scope !== undefined ? scope : (cur?.scope ?? null) })
+  const b = bindingsById.get(agentId)
+  const at = place ? placeOf(place) : cur ? placeOf(cur) : b ? placeOf(b) : null
+  if (!at) throw new Error(`litter: ${agentId} has no place to run in: it holds none, has no binding, and none was given`)
+  admission.set(agentId, { agentId, status: 'running', scope: scope !== undefined ? scope : (cur?.scope ?? null), ...at })
   stoppedAgents.delete(agentId)
-  changed(swarmOfAgent(agentId))
+  changed(at.swarm)
 }
 
-/** Settling: from its turn.complete until the list stops showing it running. It keeps its place. */
+/**
+ * Settling: from its turn.complete until the list stops showing it running.
+ * It keeps its place; one that holds none takes its binding's, and an agent
+ * with neither (no swarm's) is left as it is.
+ */
 export function markSettling(agentId: string): void {
   const cur = admission.get(agentId)
-  admission.set(agentId, { agentId, status: 'settling', scope: cur?.scope ?? null })
-  changed(swarmOfAgent(agentId))
+  const b = bindingsById.get(agentId)
+  const at = cur ? placeOf(cur) : b ? placeOf(b) : null
+  if (!at) return
+  admission.set(agentId, { agentId, status: 'settling', scope: cur?.scope ?? null, ...at })
+  changed(at.swarm)
 }
 
 /** Settled: its place is free. */
 export function markSettled(agentId: string): void {
-  if (!admission.delete(agentId)) return
-  changed(swarmOfAgent(agentId))
+  const cur = admission.get(agentId)
+  if (!cur) return
+  admission.delete(agentId)
+  changed(cur.swarm)
 }
 
-/** The places an agent and its swarm's reservations hold, each agent once. */
-function places(swarm: string): { node: string; parent: string | null; kind: NodeBinding['kind']; scope: WriteScope | null; agentId: string | null; key: string | null }[] {
+/** The places an agent and its swarm's reservations hold, each agent once, as the entries and reservations carry them. */
+function places(swarm: string): (AdmissionPlace & { scope: WriteScope | null; agentId: string | null; key: string | null })[] {
   const out: ReturnType<typeof places> = []
   const counted = new Set<string>()
   for (const a of admission.values()) {
-    const b = bindingsById.get(a.agentId)
-    if (!b || b.swarm !== swarm) continue
+    if (a.swarm !== swarm) continue
     counted.add(a.agentId)
-    out.push({ node: b.node, parent: b.parent, kind: b.kind, scope: a.scope, agentId: a.agentId, key: null })
+    out.push({ ...placeOf(a), scope: a.scope, agentId: a.agentId, key: null })
   }
   for (const r of reserved.values()) {
     if (r.swarm !== swarm || (r.agentId !== undefined && counted.has(r.agentId))) continue
-    out.push({ node: r.node, parent: r.parent, kind: r.kind, scope: r.scope, agentId: null, key: r.key })
+    out.push({ ...placeOf(r), scope: r.scope, agentId: null, key: r.key })
   }
   return out
 }
@@ -486,8 +609,13 @@ export const stopped = (swarm: string): StoppedEntry[] => [...stoppedById.values
 // ---------------------------------------------------------------------------
 // The queue (15.4, "Messages from you")
 
-/** Queues a message, assigning its id; its text is cut to 16 KiB. */
+/**
+ * Queues a message, assigning its id; its text is cut to 16 KiB. A swarm
+ * holds at most QUEUE_MAX queued messages: past it, this throws "the queue
+ * for <node> is full" and queues nothing.
+ */
 export function enqueue(msg: Omit<QueuedMessage, 'id'>): QueuedMessage {
+  if (queued(msg.swarm).length >= QUEUE_MAX) throw new Error(`litter: the queue for ${msg.node} is full`)
   let id = ''
   do id = `q${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`
   while (queue.has(id))
@@ -571,7 +699,11 @@ export const agentStopped = (agentId: string): boolean => stoppedAgents.has(agen
 // ---------------------------------------------------------------------------
 // Reports and the lead's view
 
-/** A node's last report, cut to 4 KiB. */
+/**
+ * A node's last report, cut to 4 KiB. `at` is when it came (the caller's
+ * `p.now()`): C added it, since WP-P's brief omits it, and the mirror's
+ * trimming drops the oldest first.
+ */
 export function noteReport(agentId: string, text: string, via: NodeReport['via'], at: number): void {
   reports.set(agentId, { text: cutBytes(text, REPORT_MAX_BYTES), via, at })
   changed(swarmOfAgent(agentId))
@@ -610,11 +742,15 @@ export function tokens(agentIdOrSwarm: string): TokenCount {
   return sum
 }
 
-/** A bound agent's question, open until closeQuestion. Null for an agent no binding knows. */
+/**
+ * A bound agent's question, open until closeQuestion, its text cut to 4 KiB.
+ * Null for an agent no binding knows. `at` is when it was asked (the caller's
+ * `p.now()`): C added it, since WP-P's brief omits it.
+ */
 export function noteQuestion(agentId: string, text: string, at: number): Question | null {
   const b = bindingsById.get(agentId)
   if (!b) return null
-  const q: Question = { swarm: b.swarm, agentId, node: b.node, text, at, closedAt: null }
+  const q: Question = { swarm: b.swarm, agentId, node: b.node, text: cutBytes(text, NOTE_MAX_BYTES), at, closedAt: null }
   questionList.push(q)
   // Bounded per swarm: the oldest closed ones go first, then the oldest.
   const mine = questionList.filter(x => x.swarm === b.swarm)
@@ -626,7 +762,10 @@ export function noteQuestion(agentId: string, text: string, at: number): Questio
   return q
 }
 
-/** Closes the agent's open questions; answers how many. */
+/**
+ * Closes the agent's open questions; answers how many. `at` is when (the
+ * caller's `p.now()`), kept as `closedAt`: C added it, since WP-P's brief omits it.
+ */
 export function closeQuestion(agentId: string, at: number): number {
   let n = 0
   questionList = questionList.map(q => (q.agentId === agentId && q.closedAt === null ? (n++, { ...q, closedAt: at }) : q))
@@ -638,9 +777,9 @@ export const openQuestions = (swarm: string): Question[] => questionList.filter(
 /** Every question kept for the swarm, open and closed, oldest first. */
 export const questions = (swarm: string): Question[] => questionList.filter(q => q.swarm === swarm)
 
-/** Something you sent a node directly, for the lead's next `<swarm>` block. */
+/** Something you sent a node directly, for the lead's next `<swarm>` block; cut to 4 KiB. */
 export function noteDirect(swarm: string, text: string): void {
-  const list = [...(directBySwarm.get(swarm) ?? []), text].slice(-DIRECT_KEPT)
+  const list = [...(directBySwarm.get(swarm) ?? []), cutBytes(text, NOTE_MAX_BYTES)].slice(-DIRECT_KEPT)
   directBySwarm.set(swarm, list)
   changed(swarm)
 }
@@ -739,12 +878,33 @@ export function openGate(): void {
 }
 
 /**
+ * Runs `work` with the gate closed and opens it once: when `work` calls the
+ * `open` it's handed (session.start, right after recovery), or when `work`
+ * ends, a throw included. The gate is a counter, so a second open would open
+ * it under someone else who holds it closed: `open` after the first does nothing.
+ */
+export async function withGateClosed<T>(work: (open: () => void) => Promise<T>): Promise<T> {
+  closeGate()
+  let opened = false
+  const open = () => {
+    if (opened) return
+    opened = true
+    openGate()
+  }
+  try {
+    return await work(open)
+  } finally {
+    open()
+  }
+}
+
+/**
  * Resolves at once while the gate is open; otherwise polls with
- * `p.sleep(25)`, and rejects after 15 s, so a hook that waits fails closed
- * through its catch. The gate starts open: a fresh module has nothing live,
- * and tier 1 fires hooks without session.start. Note that `$.clock.sleep`
- * spends the waiting hook's 10 s budget (ports.ts): a hook overruns before
- * the 15 s, and its catch refuses, which is the same answer.
+ * `p.sleep(25)`, and rejects after READY_MS (8 s), so a hook that waits fails
+ * closed through its catch. A `$.clock` wait spends the waiting hook's 10 s
+ * budget (ports.ts), so ready gives up with its own error before the budget
+ * runs out. The gate starts open: a fresh module has nothing live, and tier 1
+ * fires hooks without session.start.
  */
 export async function ready(p: Ports): Promise<void> {
   if (gate === 0) return
