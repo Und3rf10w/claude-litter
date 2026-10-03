@@ -485,9 +485,50 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
   if (closed) return fail(`litter: run ${run} ${closed}; it takes no more verifies`, 'run')
   const target = verifyTarget(facts, gate, ledger.records)
   if (!target.ok) return target
-  const where = target.where
 
-  const verifyId = `${gate}-${attempt}-${randomId().replace(/-/g, '').slice(0, 10)}`
+  const ran = await runVerify(p, facts, { gate, attempt, where: target.where, by: authorFor(ctx.caller), timeoutMs: ctx.options.verifyTimeoutMs })
+  if (!ran.ok) return ran
+  const { body } = ran
+
+  const fields = verifyFields(roleOf(ctx.caller), body)
+  if (fields) await observe(ctx, { verify_id: body.verify_id }, fields)
+
+  const reply: VerifyReply = {
+    ok: true,
+    verify_id: body.verify_id,
+    exit_code: body.exit_code,
+    signal: body.signal,
+    timed_out: body.timed_out,
+    green: body.green,
+    tree: body.tree_before,
+    tree_changed: body.tree_before !== body.tree_after,
+    dirty_submodules: body.dirty_submodules,
+    spawn_error: body.spawn_error,
+    log: ran.log,
+    output_tail: body.output_tail,
+  }
+  return reply
+}
+
+/** A verify the mod runs: its gate and attempt, the directory (chosen by the mod, never the call), who records it, its timeout. */
+export type VerifyRun = { gate: string; attempt: number; where: string; by: Author; timeoutMs: number }
+export type VerifyRan = { ok: true; body: VerifyBody; seq: number; log: string }
+
+/**
+ * Runs the run's stored argv for `o.gate` in `o.where` and records it in the
+ * run's ledger: snapshot, streamed run, snapshot, append. A stop's
+ * `endVerifies` ends it. It checks neither the gate nor whether the run is
+ * closed: recordVerify does that for the record tool, and the repair bridge's
+ * baseline and a repair swarm's gates for their own (2b-2).
+ */
+export async function runVerify(p: Ports, f: RunFacts, o: VerifyRun): Promise<VerifyRan | RecordError> {
+  const { json, run, runDir } = f
+  // The stored argv, never text from the call or the args (plan section 9, "Mod safety").
+  const argv = o.gate === 'goal' ? json.goalCheck : json.verify
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every(a => typeof a === 'string')) {
+    return fail(`litter: run ${run} has no ${o.gate === 'goal' ? 'goal-check' : 'verify'} argv in run.json`, 'run')
+  }
+  const verifyId = `${o.gate}-${o.attempt}-${randomId().replace(/-/g, '').slice(0, 10)}`
   const ends = inflight.get(run) ?? new Set<() => void>()
   inflight.set(run, ends)
   const stop = signal<'ended'>('ended')
@@ -497,15 +538,15 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
   let afterSnap: Awaited<ReturnType<typeof snapshot>>
   try {
     try {
-      before = await snapshot(p, where)
+      before = await snapshot(p, o.where)
     } catch (err) {
       return fail(`litter: the snapshot before the verify failed: ${message(err)}`)
     }
     await mkdirp(p, verifyLogDir(runDir, verifyId))
-    ran = await runStreamed(p, argv, where, runDir, verifyId, ctx.options.verifyTimeoutMs, stop.promise)
+    ran = await runStreamed(p, argv, o.where, runDir, verifyId, o.timeoutMs, stop.promise)
     if (ran.ended) return fail(`litter: run ${run} is stopping; verify ${verifyId} was ended and isn't recorded`, 'run')
     try {
-      afterSnap = await snapshot(p, where)
+      afterSnap = await snapshot(p, o.where)
     } catch (err) {
       return fail(`litter: the snapshot after verify ${verifyId} failed, so it isn't recorded: ${message(err)}`)
     }
@@ -516,8 +557,8 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
 
   const body: VerifyBody = {
     verify_id: verifyId,
-    gate,
-    attempt,
+    gate: o.gate,
+    attempt: o.attempt,
     argv: [...argv],
     tree_before: before.tree,
     tree_after: afterSnap.tree,
@@ -533,30 +574,13 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
     output_tail: ran.tail,
   }
   body.green = isGreen(body)
+  let seq: number
   try {
-    await appendRecord(p, runDir, { run, kind: 'verify', by: authorFor(ctx.caller), body })
+    seq = (await appendRecord(p, runDir, { run, kind: 'verify', by: o.by, body })).seq
   } catch (err) {
     return ledgerFailure(err)
   }
-
-  const fields = verifyFields(roleOf(ctx.caller), body)
-  if (fields) await observe(ctx, { verify_id: verifyId }, fields)
-
-  const reply: VerifyReply = {
-    ok: true,
-    verify_id: verifyId,
-    exit_code: body.exit_code,
-    signal: body.signal,
-    timed_out: body.timed_out,
-    green: body.green,
-    tree: body.tree_before,
-    tree_changed: body.tree_before !== body.tree_after,
-    dirty_submodules: body.dirty_submodules,
-    spawn_error: body.spawn_error,
-    log: verifyLogDir(runDir, verifyId),
-    output_tail: body.output_tail,
-  }
-  return reply
+  return { ok: true, body, seq, log: verifyLogDir(runDir, verifyId) }
 }
 
 /** A record's body as a verify's, when it is one. */

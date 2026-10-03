@@ -13,6 +13,7 @@ import {
   howEnded,
   lastLines,
   recordVerify,
+  runVerify,
   utf8Length,
   verifiesInFlight,
   verifyFields,
@@ -427,6 +428,36 @@ describe('verify: stops and the observed fields', () => {
   test('the main thread may record a verify; it is authored by the launcher', async () => {
     ok(await verify(['true'], {}, { agentId: null, agentType: null }))
     expect((await records()).at(-1)!.by).toEqual({ source: 'launcher' })
+  })
+
+  test("runVerify runs in the directory it's given, records the author it's given, and doesn't check the gate or a closed run", async () => {
+    // The repair bridge's baseline runs after run.end, and a repair swarm's node verifies use gate 'repair' (2b-2).
+    const mod = { source: 'mod' } as const
+    await appendRecord(p, runDir, { run: RUN, kind: 'run.launch', by: mod, body: {} })
+    await appendRecord(p, runDir, { run: RUN, kind: 'run.end', by: mod, body: {} })
+    const elsewhere = scratch()
+    cleanups.push(elsewhere.cleanup)
+    const other = (await scratchRepo(p, elsewhere.dir)).git
+    writeFileSync(join(elsewhere.dir, 'only-here.txt'), 'x\n')
+    await other('add', 'only-here.txt')
+    await other('commit', '-q', '-m', 'only here')
+    await writeRun({ verify: ['test', '-f', 'only-here.txt'] })
+    const facts = { run: RUN, runDir, json: JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson }
+    const by = { source: 'agent', agentId: 'fixer-1', agentType: 'swarm:fix' } as const
+    const r = await runVerify(p, facts, { gate: 'repair', attempt: 2, where: elsewhere.dir, by, timeoutMs: 60_000 })
+    if (!r.ok) throw new Error(r.error)
+    expect(r.body.gate).toBe('repair')
+    expect(r.body.verify_id).toMatch(/^repair-2-[0-9a-f]{10}$/)
+    expect(r.body.green).toBe(true)
+    expect(r.log).toBe(verifyLogDir(runDir, r.body.verify_id))
+    const rec = (await records()).at(-1)!
+    expect(rec.seq).toBe(r.seq)
+    expect(rec.by).toEqual(by)
+    expect(r.body.tree_before).toBe((await other('rev-parse', 'HEAD^{tree}')).trim())
+    expect(verifiesInFlight(RUN)).toBe(0)
+
+    const none = await runVerify(p, { ...facts, json: { ...facts.json, verify: [] } }, { gate: 'baseline', attempt: 1, where: dir, by: mod, timeoutMs: 60_000 })
+    expect(none.ok).toBe(false)
   })
 
   // The engine's strict schema check, as far as these schemas need it: types, required, no extra keys.
