@@ -205,6 +205,8 @@ export type BriefDiff = {
   lines: { op: ' ' | '+' | '-'; text: string }[]
   reason: string | null
   conflict: boolean
+  /** Your draft's line diff against the same base, when `conflict` (15.5: a brief conflict is "two diffs"). */
+  yoursLines?: { op: ' ' | '+' | '-'; text: string }[]
 }
 
 /** The counts swarm_propose answers with, and N's header shows. */
