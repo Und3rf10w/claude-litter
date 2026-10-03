@@ -10,8 +10,18 @@ export type LitterBoard = {
   version: number
 }
 
+/**
+ * The `litter-swarm` pane's view (plan 15.5, 15.6): plain data the mod writes
+ * through `p.setView('swarm', …)` and register.tsx's ui.render hook draws.
+ * Phase 2b's package N types it; until then it's loose.
+ */
+export type SwarmPaneView = { view: string; v: number } & Record<string, unknown>
+
+/** The `litter-doctor` pane's view (plan 15.7). Package N types it. */
+export type DoctorPaneView = { view: string; v: number } & Record<string, unknown>
+
 declare module 'claude-code' {
   interface PluginState {
-    litter: { board: LitterBoard }
+    litter: { board: LitterBoard; swarmPane: SwarmPaneView | null; doctorPane: DoctorPaneView | null }
   }
 }

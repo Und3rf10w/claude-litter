@@ -3,15 +3,57 @@
 // Matches the engine's limits where a module could come to depend on them
 // (4 MiB reads and writes, a 30 s default run timeout, git with hooks off).
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join } from 'node:path'
-import type { Entry, Ports, RunInit, RunResult, SpawnChunk, SpawnEnd, SpawnRequest, Stat } from '../../../hooks/ports'
+import type { ToolSpec } from 'claude-code'
+import type {
+  AgentSpec,
+  CommandSpec,
+  DoctorPaneView,
+  Entry,
+  ListedAgent,
+  ModelCompleteRequest,
+  ModelCompleteResult,
+  PaneName,
+  Ports,
+  RunInit,
+  RunResult,
+  SessionMessage,
+  SessionSendResult,
+  SettingsSourceName,
+  SpawnChunk,
+  SpawnEnd,
+  SpawnRequest,
+  Stat,
+  SubagentLimitName,
+  SwarmPaneView,
+  ToolCallResult,
+} from '../../../hooks/ports'
 
 const MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * One `after` timer: nothing runs until the spec calls `runAfters(p)`. `at`
+ * is the clock when it was made (the fake clock's, or real time), so it's
+ * due at `at + ms`.
+ */
+export type FakeAfter = { ms: number; at: number; fn: () => void; state: 'pending' | 'ran' | 'cancelled' }
+
+/**
+ * The host's refusal of `$.prompt.submit` from a hook that holds the turn
+ * (2.1.288's text for tool.call): the real port is usable only from a timer
+ * callback or turn.complete.
+ */
+export const SUBMIT_REFUSED =
+  'prompt.submit: called from a tool.call hook, it would wait on the turn this hook is holding; submit from a later event (turn.complete)'
+
+/** Set while a timer callback runs (runAfters, fireEvery), through its awaits. */
+const inTimer = new AsyncLocalStorage<true>()
 
 export type TestPorts = Ports & {
   /** Every line `log` got, in order. */
@@ -28,6 +70,127 @@ export type TestPorts = Ports & {
   clock: { now: number | null }
   /** What `settings()` answers, the merged settings; a spec sets its keys. */
   settingsValue: Record<string, unknown>
+
+  // Phase 2b, the swarm's ports (WP-C). Each records its calls; a spec sets each answer.
+
+  /** What `listAgents` answers (a copy); a spec changes it between calls. */
+  agents: ListedAgent[]
+  /** Every `send`, in order, as the module called the port (before `sendHook`). */
+  sent: { to: string; text: string }[]
+  /** Answers a send; unset, it's delivered. */
+  sendAnswer?: (to: string, text: string) => SessionSendResult | Promise<SessionSendResult>
+  /**
+   * The session.send hook a send goes through, as the real port goes through
+   * litter's own (a spec sets it to call its admitSend). `deliver` is what's
+   * beneath: `sendAnswer`, or delivered. Unset, a send is delivered as `sendAnswer` says.
+   */
+  sendHook?: (
+    to: string,
+    text: string,
+    deliver: (to: string, text: string) => Promise<SessionSendResult>,
+  ) => SessionSendResult | Promise<SessionSendResult>
+  /** Every `appendUserRow` text, in order. */
+  appended: string[]
+  /**
+   * Every `submitPrompt` text the host took, in order (recorded before
+   * `submitAnswer` runs). As the real port, a submit outside a timer callback
+   * (runAfters, fireEvery) rejects with SUBMIT_REFUSED and isn't recorded,
+   * unless `submitAnywhere` is set.
+   */
+  submitted: string[]
+  /** Answers a submit: return to resolve, throw to reject with the host's text. Unset, it resolves. */
+  submitAnswer?: (text: string) => void | Promise<void>
+  /** A submit is taken from anywhere: for a spec of a turn.complete hook, where the host takes one. */
+  submitAnywhere: boolean
+  /** Every `fillPrompt` text, in order. */
+  filled: string[]
+  /** Answers a fill; unset, the box takes it (true). */
+  fillAnswer?: (text: string) => boolean
+  /** What `messages` answers, by agentId, `main` for the lead's. An agent with none answers null (the engine's deny); the lead's, []. */
+  transcripts: Record<string, SessionMessage[]>
+  /** Every `complete` request, in order. */
+  completions: ModelCompleteRequest[]
+  /** Answers a completion; unset, it rejects ("no model in tier 2"). */
+  completeAnswer?: (request: ModelCompleteRequest) => ModelCompleteResult | Promise<ModelCompleteResult>
+  /** Every `callTool`, in order. */
+  toolCalls: { tool: string; input: Record<string, unknown> }[]
+  /** Answers a tool call; unset, it rejects ("no tool in tier 2"). */
+  toolAnswer?: (tool: string, input: Record<string, unknown>) => ToolCallResult | Promise<ToolCallResult>
+  /**
+   * Every `sleep`'s ms, in order. A sleep advances `clock.now` by its ms when
+   * the fake clock is set, calls `onSleep`, then resolves on the next
+   * macrotask, so another hook's work runs in between. No real waiting.
+   */
+  sleeps: number[]
+  onSleep?: (ms: number) => void
+  /** Every `after`, in order: nothing runs until `runAfters(p)`. */
+  afters: FakeAfter[]
+  /** What `limits()` answers; unset names are undefined. */
+  limitsValue: { [K in SubagentLimitName]: string | undefined }
+  /** What `settingsFrom(source)` answers, by source; a source left out, or `{}` (the engine's answer for a missing file), answers null. */
+  sourceSettings: Partial<Record<SettingsSourceName, Record<string, unknown>>>
+  /** What `configDir()` answers; null (the default) rejects, so no spec reaches your own ~/.claude by accident. */
+  configDirValue: string | null
+  /** Every `registerCommand` spec, in order. */
+  commands: CommandSpec[]
+  /** Every `openPane` and `closePane`, in order. `openPane` answers true (placed). */
+  panes: { opened: { id: string; title: string }[]; closed: string[] }
+  toasts: string[]
+  copied: string[]
+  /** The last view `setView` wrote, by pane. */
+  views: Partial<Record<PaneName, SwarmPaneView | DoctorPaneView | null>>
+  /** Every `registerAgent` and `registerTool` spec, in order (a spec that replaces the method records nothing here). */
+  registeredAgents: AgentSpec[]
+  registeredTools: ToolSpec[]
+  /** Answer a registration: throw to refuse it. Unset, it resolves. */
+  registerAgentAnswer?: (spec: AgentSpec) => void | Promise<void>
+  registerToolAnswer?: (spec: ToolSpec) => void | Promise<void>
+}
+
+/**
+ * Runs the `after` timers pending now that are due, in due order (`at + ms`,
+ * ties in the order made), awaiting each one's result (the engine doesn't; a
+ * spec wants their effects settled). Due means by `clock.now` with the fake
+ * clock set; with the real clock, every pending one. `{ all: true }` runs
+ * every pending one, due or not, in the order made. Each runs as a timer
+ * callback (submitPrompt takes it). Timers they make wait for the next call;
+ * one an earlier callback cancelled doesn't run. Answers how many ran.
+ */
+export async function runAfters(p: TestPorts, opts: { all?: boolean } = {}): Promise<number> {
+  const now = p.clock.now
+  const pending = p.afters.filter(x => x.state === 'pending')
+  const chosen = opts.all
+    ? pending
+    : pending
+        .map((a, i) => ({ a, i }))
+        .filter(({ a }) => now === null || a.at + a.ms <= now)
+        .sort((x, y) => x.a.at + x.a.ms - (y.a.at + y.a.ms) || x.i - y.i)
+        .map(({ a }) => a)
+  let ran = 0
+  for (const a of chosen) {
+    if (a.state !== 'pending') continue
+    a.state = 'ran'
+    ran++
+    await inTimer.run(true, async () => {
+      await (a.fn() as unknown)
+    })
+  }
+  return ran
+}
+
+/**
+ * Fires every `every` timer once, as the engine's tick would, each as a timer
+ * callback (submitPrompt takes it), awaiting each one's result. Answers how many ran.
+ */
+export async function fireEvery(p: TestPorts): Promise<number> {
+  let ran = 0
+  for (const fn of [...p.timers]) {
+    ran++
+    await inTimer.run(true, async () => {
+      await (fn() as unknown)
+    })
+  }
+  return ran
 }
 
 const kindOf = (s: { isFile(): boolean; isDirectory(): boolean }): Entry['kind'] =>
@@ -204,7 +367,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
   const asked: { question: string; options: readonly string[] }[] = []
   const settingsValue: Record<string, unknown> = {}
   const clone = (v: unknown) => (v === undefined ? undefined : structuredClone(v))
-  return {
+  // The methods below read the fakes' fields through `p` when called, so a spec may set an answer at any time.
+  const p: TestPorts = {
     fs: {
       read: async path => {
         const s = await stat(path)
@@ -250,8 +414,14 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     pluginRoot: options.pluginRoot ?? join(import.meta.dir, '..', '..', '..'),
     settings: async () => structuredClone(settingsValue),
     log: text => void logs.push(text),
-    registerTool: async () => {},
-    registerAgent: async () => {},
+    registerTool: async spec => {
+      p.registeredTools.push(spec)
+      await p.registerToolAnswer?.(spec)
+    },
+    registerAgent: async spec => {
+      p.registeredAgents.push(spec)
+      await p.registerAgentAnswer?.(spec)
+    },
     every: (_ms, fn) => {
       timers.add(fn)
       return { cancel: () => void timers.delete(fn) }
@@ -269,7 +439,106 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     timers,
     clock,
     settingsValue,
+
+    // Phase 2b, the swarm's ports.
+    listAgents: async () => structuredClone(p.agents),
+    send: async (to, text) => {
+      p.sent.push({ to, text })
+      const deliver = async (t: string, x: string): Promise<SessionSendResult> => (p.sendAnswer ? p.sendAnswer(t, x) : { isDelivered: true })
+      return p.sendHook ? p.sendHook(to, text, deliver) : deliver(to, text)
+    },
+    appendUserRow: async text => void p.appended.push(text),
+    submitPrompt: async text => {
+      if (!p.submitAnywhere && inTimer.getStore() !== true) throw new Error(SUBMIT_REFUSED)
+      p.submitted.push(text)
+      await p.submitAnswer?.(text)
+    },
+    fillPrompt: async text => {
+      p.filled.push(text)
+      return p.fillAnswer ? p.fillAnswer(text) : true
+    },
+    messages: async agentId => {
+      const found = p.transcripts[agentId ?? 'main']
+      if (found) return structuredClone(found)
+      return agentId === undefined ? [] : null
+    },
+    complete: async request => {
+      p.completions.push(request)
+      if (!p.completeAnswer) throw new Error('no model in tier 2')
+      return p.completeAnswer(request)
+    },
+    callTool: async (tool, input) => {
+      p.toolCalls.push({ tool, input })
+      if (!p.toolAnswer) throw new Error(`no tool in tier 2 (${tool})`)
+      return p.toolAnswer(tool, input)
+    },
+    sleep: async ms => {
+      p.sleeps.push(ms)
+      if (p.clock.now !== null) p.clock.now += ms
+      p.onSleep?.(ms)
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    },
+    after: (ms, fn) => {
+      const a: FakeAfter = { ms, at: p.clock.now ?? Date.now(), fn, state: 'pending' }
+      p.afters.push(a)
+      return {
+        cancel: () => {
+          if (a.state === 'pending') a.state = 'cancelled'
+        },
+      }
+    },
+    limits: async () => ({ ...p.limitsValue }),
+    settingsFrom: async source => {
+      // As the real port: the engine answers {} for a missing file, read as null.
+      const s = p.sourceSettings[source]
+      return s === undefined || Object.keys(s).length === 0 ? null : structuredClone(s)
+    },
+    configDir: async () => {
+      if (p.configDirValue === null) throw new Error('no config dir in tier 2 (set configDirValue)')
+      return p.configDirValue
+    },
+    registerCommand: async spec => void p.commands.push(spec),
+    openPane: async (id, title) => {
+      p.panes.opened.push({ id, title })
+      return true
+    },
+    closePane: async id => void p.panes.closed.push(id),
+    toast: text => void p.toasts.push(text),
+    copy: async text => {
+      p.copied.push(text)
+      return true
+    },
+    setView: async (pane, view) => {
+      p.views[pane] = view === null ? null : structuredClone(view)
+    },
+    agents: [],
+    sent: [],
+    appended: [],
+    submitted: [],
+    submitAnywhere: false,
+    filled: [],
+    transcripts: {},
+    completions: [],
+    toolCalls: [],
+    sleeps: [],
+    afters: [],
+    limitsValue: {
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: undefined,
+      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: undefined,
+      CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: undefined,
+      CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION: undefined,
+    },
+    sourceSettings: {},
+    configDirValue: null,
+    commands: [],
+    panes: { opened: [], closed: [] },
+    toasts: [],
+    copied: [],
+    views: {},
+    registeredAgents: [],
+    registeredTools: [],
   }
+  return p
 }
 
 /** A scratch folder, removed by the returned cleanup. */

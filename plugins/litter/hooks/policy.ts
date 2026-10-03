@@ -30,6 +30,14 @@ export async function readPolicy(p: Ports, litterDir: string): Promise<Policy | 
 }
 
 /**
+ * The serial key every read-modify-write of policy.json runs under: updatePolicy,
+ * a run's activate and deactivate (lifecycle.ts), and the swarm part's writer
+ * (swarm/guard.ts), which creates the file when there's none. Work under it
+ * never calls updatePolicy: a nested serial on the same key waits on itself.
+ */
+export const policyKey = (litterDir: string) => `policy:${litterDir}`
+
+/**
  * Read-modify-write of policy.json, serialised in this module instance, so two
  * changes (a /clear rebind and a stop, say) can't both start from the same
  * file. Resolves the policy written, or undefined when there was none. `change`
@@ -40,7 +48,7 @@ export function updatePolicy(
   litterDir: string,
   change: (policy: Policy) => Policy | null,
 ): Promise<Policy | undefined> {
-  return serial(`policy:${litterDir}`, async () => {
+  return serial(policyKey(litterDir), async () => {
     const policy = await readPolicy(p, litterDir)
     if (!policy) return undefined
     const next = change(policy)
@@ -93,6 +101,10 @@ const REQUIRED: Readonly<Record<SpoolEvent, readonly string[]>> = {
   'isolation-lost': ['agent_id', 'agent_type', 'tool'],
   deny: ['tool', 'reason'],
   worktree: ['step', 'run', 'name', 'path', 'branch', 'base'],
+  // Phase 2b's swarm lines (consumed by swarm/observe.ts).
+  call: ['agent_id', 'agent_type', 'tool', 'tool_use_id', 'phase'],
+  handback: ['agent_id', 'agent_type', 'tool_use_id'],
+  hold: ['agent_id', 'phase'],
 }
 
 /**

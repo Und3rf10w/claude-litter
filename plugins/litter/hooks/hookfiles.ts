@@ -8,14 +8,19 @@
 // denies). A field added later is optional, so old readers keep working.
 //
 // Who writes what:
-//   mod   -> active, policy.json, worktree.json, agents/<id>.json, out/<id>.json, pointer
-//   hooks -> bind/<id>, mode, wt/<name>, spool/<session>.jsonl, spool/blobs/*
+//   mod   -> active, policy.json, worktree.json, agents/<id>.json, out/<id>.json, pointer,
+//            pending/<tool_use_id> (phase 2b: written and removed by the spawn check, L)
+//   hooks -> bind/<id>, mode, wt/<name>, spool/<session>.jsonl, spool/blobs/*,
+//            done/<agent_id> (phase 2b: watch.sh at a hand-back, hold.sh at a stop it lets go),
+//            hold/<agent_id> (phase 2b: hold.sh)
 // worktree.sh also writes setup logs under the run's verify/setup-<name>/.
 // The mod replaces its files atomically (temp file + mv, fsx.atomicWrite).
 // The hooks write bind/ and mode through a temp file + mv too, and append
-// spool lines with one `>>` each.
+// spool lines with one `>>` each. The mod removes an agent's done/ and hold/
+// files with its policy (swarm/guard.ts, removeNodePolicy).
 
 import type { Ports } from './ports'
+import type { Authority } from './swarm/types'
 
 /** litter's role names, without the `litter:` prefix (plan section 6). */
 export type RoleName =
@@ -49,9 +54,83 @@ export type Policy = {
   run: RunPolicy | null
   /** Per role. Every litter role is listed while a run is active. */
   roles: Partial<Record<RoleName, RolePolicy>>
-  /** Phase 2b. Null until swarms land. */
-  swarm: null | Record<string, unknown>
+  /**
+   * Phase 2b: every live swarm in this repository, whichever session owns it.
+   * Null whenever none is, never an empty `swarms`: lifecycle.ts's `deactivate`
+   * keeps `active` while it isn't null.
+   */
+  swarm: SwarmPolicy | null
 }
+
+/** policy.json's swarm part: written by swarm/guard.ts (M) for K's Launch, beat and handover, and P's End. */
+export type SwarmPolicy = { swarms: Record<string, SwarmEntry> }
+
+export type SwarmEntry = {
+  launch: string
+  state: 'live' | 'stopping'
+  /** Resolved. The guard runs `git --git-dir=<commonDir> rev-parse -q --verify <owner.ref>` when the check is stale. */
+  commonDir: string
+  /**
+   * The ownership ref and the last beat's check (15.4, "One session owns a live swarm").
+   * `checkedAt` is in seconds, as `date +%s` reads. Only the owner's beat writes it.
+   */
+  owner: { ref: string; oid: string; generation: number; session: string; checkedAt: number }
+  /** Every node's type, `litter:sw-<swarm>-<node>`, for the guard's unknown-agent wait and the Agent rules. */
+  nodeTypes: string[]
+}
+
+/**
+ * A swarm node's, or a node's child's, half of its binding: `agents/<agent_id>.json`
+ * as `{ v: 1, node }`, with no `run`. Rendered by swarm/guard.ts's nodePolicyFor (M)
+ * and written by L at binding, P at Stop and End, K at recovery.
+ */
+export type NodePolicy = {
+  swarm: string
+  launch: string
+  node: string
+  /** The instance number, from 1 over the swarm's life; 0 for a child. */
+  n: number
+  kind: 'orchestrator' | 'worker' | 'child'
+  /** A child's node: that node's agentId. */
+  of: string | null
+  /** litter:sw-<swarm>-<node>. A child's is its node's; the guard checks `agent_type` against it only for a node. */
+  type: string
+  /** The spawning loop's agentId; null for an orchestrator, whose parent is the lead. */
+  parent: string | null
+  /**
+   * The owner's generation when this binding was written. The guard denies everything when it isn't
+   * the entry's `owner.generation`: the swarm was handed to another session (15.4, "A stale owner stands down").
+   */
+  generation: number
+  /** Resolved. Relative paths in a call are taken against it. */
+  dir: string
+  /** Resolved, under `dir`; a trailing `/` is a folder. Null: anywhere. */
+  paths: string[] | null
+  /** Resolved paths no write may land in: every `.claude/litter/` copy, and the rule folders under the primary checkout and under `dir`. */
+  protect: string[]
+  /** `refs/heads/<branch>`, for a node with `authority.commit` set; null otherwise. */
+  branch: string | null
+  authority: Authority
+  toolsDeny: string[]
+  bashDeny: string[]
+  /** The types it may spawn, `litter:sw-…`; a child's are its node's. */
+  spawns: string[]
+  spawnOther: boolean
+  admitted: boolean
+  /** Why it was stopped, or null. */
+  stopped: string | null
+  /** True until the node presents its token (15.4, adoption). */
+  bind: boolean
+}
+
+/** hooks/pending/<tool_use_id>: a reserved spawn not yet bound (L). `at` in seconds. */
+export type PendingMarker = { v: 1; swarm: string; node: string; parent: string | null; at: number }
+
+/** hooks/done/<agent_id>: the agent handed back (watch.sh) or stopped with no background tasks (hold.sh). `at` in seconds. */
+export type DoneMarker = { v: 1; at: number; via: 'handback' | 'stop' }
+
+/** hooks/hold/<agent_id>: the children hold.sh already waited for, so a worker is held once per child. */
+export type HoldMarker = { v: 1; children: string[] }
 
 export type RunPolicy = {
   run: string
@@ -113,21 +192,22 @@ export type WorktreePolicy = {
 
 /**
  * agents/<agent_id>.json: the mod's half of a binding, written by task.bind
- * before it answers (fanout writers; 2b adds swarm nodes). Absent for most
- * run agents, and for a fanout writer that hasn't bound yet: the guard then
- * denies it every tool but StructuredOutput, which output.sh accepts only as
- * a blocked result (plan section 7, fanout.js step 2).
+ * before it answers (fanout writers), or at a swarm node's binding. Absent for
+ * most run agents, and for a fanout writer that hasn't bound yet: the guard
+ * then denies it every tool but StructuredOutput, which output.sh accepts only
+ * as a blocked result (plan section 7, fanout.js step 2).
  *  - `task.owned`: the task's `files` as run.start validated them,
  *    repo-relative, a trailing `/` owning a folder. The guard scopes the
  *    writer's Write/Edit to `<its bind cwd>/<owned>`.
  *  - `worktree`: the recorded worktree it's bound to (its bind cwd, resolved).
+ *  - `node`: a swarm node's or child's file is `{ v: 1, node }`, with no `run`.
  */
 export type AgentPolicy = {
   v: 1
   run?: string
   task?: { id: string; owned: string[] }
   worktree?: { name: string; path: string; branch: string }
-  node?: Record<string, unknown>
+  node?: NodePolicy
 }
 
 /**
@@ -215,6 +295,26 @@ export type SpoolLine =
       timed_out?: boolean
       log?: string
     }>
+  /**
+   * Phase 2b. A tool call of a node, a node's child or a run agent (`litter:*`):
+   * `start` from guard.sh for every call it passes, `end` from watch.sh
+   * (PostToolUse and PostToolUseFailure, `failed` on the latter), with `shell`
+   * when a Bash ran in the background. A call guard.sh denies gets a `deny`
+   * line instead, which closes it.
+   */
+  | SpoolBase<'call', {
+      agent_id: string
+      agent_type: string
+      tool: string
+      tool_use_id: string
+      phase: 'start' | 'end'
+      failed?: boolean
+      shell?: string
+    }>
+  /** Phase 2b. watch.sh, for a node's SubagentHandback: its message (a blob when long), before `done/<agent_id>`. */
+  | SpoolBase<'handback', { agent_id: string; agent_type: string; tool_use_id: string; message?: string; file?: string }>
+  /** Phase 2b. hold.sh: a worker held for `children`, released once they're done, or let go at its cap (`timeout`). */
+  | SpoolBase<'hold', { agent_id: string; phase: 'held' | 'released' | 'timeout'; children: string[] }>
 
 type SpoolBase<E extends string, P> = { v: 1; ev: E; ts: number; session_id: string } & P
 

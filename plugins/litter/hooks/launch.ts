@@ -317,19 +317,31 @@ export const taskStopFailed: TaskStopCatch = async ($, e, next) => next(e)
 const isRole = (type: string) => type.startsWith('litter:') && !type.startsWith('litter:sw-')
 
 /**
- * agent.spawn: the main thread can't spawn a litter role (section 6). The
- * spawner is `parentAgentId`, absent on the main thread. Swarm types pass on
- * to the swarm's spawn check (phase 2b).
+ * The role block's check alone: the main thread can't spawn a litter role
+ * (section 6). The spawner is `parentAgentId`, absent on the main thread.
+ * Swarm types aren't roles. The refusal's text, or null. register.tsx calls it,
+ * then the swarm's spawn check with the engine's own `next` (phase 2b-1).
  */
+export function roleSpawnRefusal(e: Pick<Parameters<PortHook<SpawnHook>>[1], 'parentAgentId' | 'subagentType'>): string | null {
+  return e.parentAgentId === undefined && isRole(e.subagentType)
+    ? `litter roles run inside litter workflows only; use /litter:design, /litter:execute or /litter:fanout instead of spawning ${e.subagentType}`
+    : null
+}
+
+/** agent.spawn's role block on its own: the check, then next(e). */
 export const spawnBlock: PortHook<SpawnHook> = async (_p, e, next) => {
-  if (e.parentAgentId === undefined && isRole(e.subagentType)) {
-    return { deny: `litter roles run inside litter workflows only; use /litter:design, /litter:execute or /litter:fanout instead of spawning ${e.subagentType}` }
-  }
-  return next(e)
+  const refused = roleSpawnRefusal(e)
+  return refused ? { deny: refused } : next(e)
 }
 
 /** Its catch: refuses a main-thread spawn of a litter type, swarm types included. */
-export const spawnBlockFailed: SpawnCatch = async ($, e, next) => {
+export const spawnBlockFailed: SpawnCatch = async ($, e, next) => roleSpawnFailed(e, next)
+
+/**
+ * spawnBlockFailed's answer without `$`, so the swarm's spawn catch
+ * (swarm/wiring.ts) can fall back to it: validate never follows `$` across an import.
+ */
+export async function roleSpawnFailed(e: Parameters<SpawnCatch>[1], next: Parameters<SpawnCatch>[2]) {
   return e.parentAgentId === undefined && e.subagentType.startsWith('litter:')
     ? { deny: 'litter guard failed: agent.spawn; refusing' }
     : next(e)

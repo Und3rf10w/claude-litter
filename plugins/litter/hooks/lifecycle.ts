@@ -52,14 +52,14 @@ import {
   SNAPSHOT_EXCLUDES,
 } from './layout'
 import { atomicWrite, randomId, readJson, serial, sha256 } from './fsx'
-import { forgetRunAgents, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
+import { forgetRunAgents, policyKey, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
 import { endVerifies, verifiesInFlight } from './verify'
 import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
 import { reconcileLands } from './land'
 import { getOptions, session } from './session'
-import { cleanupRun, worktreeSummary } from './worktrees'
+import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
 import {
   acquireLock,
@@ -270,7 +270,7 @@ async function policyFor(
   const bases = [...new Set([primary ? await realOf(p, primary) : null, checkout].filter((x): x is string => x !== null))]
   const ruleDirs = bases.flatMap(b => ['.litter', '.litter.local', '.claude/rules/litter', '.claude/rules/litter-local'].map(r => `${b}/${r}`))
   // Every litter worktree goes under the primary checkout, even from a run worktree (plan section 9, "Run worktrees").
-  const worktreeRoot = primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+  const worktreeRoot = await litterWorktreeRoot(p, litterDir)
   // A fanout's writers run isolated, each bound to its own worktree (plan section 7, fanout.js step 2).
   const roles = json.workflow === 'fanout' ? { ...ROLE_POLICIES, executor: FANOUT_WRITER } : { ...ROLE_POLICIES }
   return {
@@ -311,7 +311,12 @@ const FANOUT_WRITER: RolePolicy = { write: 'own-worktree', bash: 'rw', isolated:
 /** worktree.sh's setup limit: the WorktreeCreate hook gets 600 s, and the script needs time to answer after. */
 const SETUP_HOOK_LIMIT_SEC = 570
 
-/** Makes the run active for the hooks: policy.json first, then `active` (policy.ts). */
+/**
+ * Makes the run active for the hooks: policy.json first, then `active` (policy.ts).
+ * The read of the old file and the write run under updatePolicy's key, so a
+ * swarm entry written at the same moment (swarm/guard.ts) isn't lost: policyFor
+ * keeps the swarm part it reads.
+ */
 export async function activate(
   p: Ports,
   litterDir: string,
@@ -319,7 +324,7 @@ export async function activate(
   sessionId: string,
   flags: { runIds: string[]; launching: boolean },
 ): Promise<void> {
-  await writePolicy(p, litterDir, await policyFor(p, litterDir, json, sessionId, flags))
+  await serial(policyKey(litterDir), async () => writePolicy(p, litterDir, await policyFor(p, litterDir, json, sessionId, flags)))
   await setActive(p, litterDir, true)
 }
 
@@ -341,12 +346,18 @@ export async function patchRunPolicy(
   return wrote
 }
 
-/** The run is no longer active: `active` goes first (unless a swarm is live), then policy.json's run. */
+/**
+ * The run is no longer active: `active` goes first (unless a swarm is live),
+ * then policy.json's run. One read-modify-write under updatePolicy's key, so
+ * a swarm entry written meanwhile is neither lost nor left without `active`.
+ */
 export async function deactivate(p: Ports, litterDir: string, run: string): Promise<void> {
-  const policy = await readPolicy(p, litterDir).catch(() => undefined)
-  if (policy && policy.run && policy.run.run !== run) return
-  if (!policy || policy.swarm === null) await setActive(p, litterDir, false)
-  if (policy?.run) await updatePolicy(p, litterDir, pol => (pol.run?.run === run ? { ...pol, run: null } : null))
+  await serial(policyKey(litterDir), async () => {
+    const policy = await readPolicy(p, litterDir).catch(() => undefined)
+    if (policy && policy.run && policy.run.run !== run) return
+    if (!policy || policy.swarm === null) await setActive(p, litterDir, false)
+    if (policy?.run) await writePolicy(p, litterDir, { ...policy, run: null })
+  })
 }
 
 /** Releases refs/litter-active if its blob names this run. */

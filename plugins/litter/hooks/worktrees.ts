@@ -49,27 +49,29 @@ export type WorktreeRun = { run: string; runDir: string; litterDir: string }
 
 const MOD: Author = { source: 'mod' }
 
-const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+// Exported (unchanged) where swarm/worktrees.ts reuses them (phase 2b-1, package C).
+
+export const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const nfc = (s: string): string => s.normalize('NFC')
 const dirname = (path: string): string => path.slice(0, Math.max(1, path.lastIndexOf('/')))
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
-const firstLine = (s: string): string => s.split('\n').map(l => l.trim()).find(l => l !== '') ?? 'no output'
+export const firstLine = (s: string): string => s.split('\n').map(l => l.trim()).find(l => l !== '') ?? 'no output'
 const shown = (paths: readonly string[]): string =>
   paths.slice(0, 10).join(', ') + (paths.length > 10 ? `, and ${paths.length - 10} more` : '')
 
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 /** A worktree name: one plain folder name. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/
 /** A branch the mod makes or removes: never an option, never a pattern git would refuse. */
-const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)(?!.*\.lock$)(?!.*\/$)[A-Za-z0-9._/-]{1,200}$/
+export const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)(?!.*\.lock$)(?!.*\/$)[A-Za-z0-9._/-]{1,200}$/
 /** A workflow run id (`wf_` + the first 12 characters of a UUID, `:1493288`). */
 const WF_ID = /^wf_[a-z0-9-]{6,}$/
 
 /** Absolute, with no empty, `.` or `..` part, and nothing a line or a NUL could split. */
-const cleanAbsolute = (path: string): boolean =>
+export const cleanAbsolute = (path: string): boolean =>
   path.startsWith('/') && path.length > 1 && !/[\0\n\r]/.test(path) && !path.slice(1).split('/').some(s => s === '' || s === '.' || s === '..')
 
-async function realOf(p: Ports, path: string): Promise<string> {
+export async function realOf(p: Ports, path: string): Promise<string> {
   try {
     return (await p.fs.stat(path, { resolve: true })).realPath ?? path
   } catch {
@@ -80,35 +82,35 @@ async function realOf(p: Ports, path: string): Promise<string> {
 /** `path` is `dir` or inside it. */
 const inside = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir}/`)
 
-function git(p: Ports, cwd: string, argv: readonly string[], timeoutMs = 120_000): Promise<RunResult> {
+export function git(p: Ports, cwd: string, argv: readonly string[], timeoutMs = 120_000): Promise<RunResult> {
   return p.run(['git', '-C', cwd, ...argv], { timeoutMs })
 }
 
 /** A checkout can take a while on a large repository: up to the engine's 10 minutes. */
 const SLOW_GIT_MS = 600_000
 
-async function revParse(p: Ports, repo: string, ref: string): Promise<string | null> {
+export async function revParse(p: Ports, repo: string, ref: string): Promise<string | null> {
   const r = await git(p, repo, ['rev-parse', '-q', '--verify', `${ref}^{commit}`])
   return r.code === 0 ? r.stdout.trim() : null
 }
 
 /** Is `a` an ancestor of `b` (or `b` itself)? Null when git can't tell. */
-async function isAncestor(p: Ports, repo: string, a: string, b: string): Promise<boolean | null> {
+export async function isAncestor(p: Ports, repo: string, a: string, b: string): Promise<boolean | null> {
   const r = await git(p, repo, ['merge-base', '--is-ancestor', a, b])
   return r.code === 0 ? true : r.code === 1 ? false : null
 }
 
 /** The commits on `branch` past `base`; null when git can't count them. */
-async function commitsPast(p: Ports, repo: string, base: string, branch: string): Promise<number | null> {
+export async function commitsPast(p: Ports, repo: string, base: string, branch: string): Promise<number | null> {
   const r = await git(p, repo, ['rev-list', '--count', `${base}..refs/heads/${branch}`])
   const n = Number(r.stdout.trim())
   return r.code === 0 && Number.isInteger(n) ? n : null
 }
 
-type Listed = { path: string; head: string | null; branch: string | null; locked: boolean }
+export type Listed = { path: string; head: string | null; branch: string | null; locked: boolean }
 
 /** `git worktree list --porcelain -z`: every worktree git has registered, paths as git resolved them. */
-async function listWorktrees(p: Ports, repo: string): Promise<Listed[] | null> {
+export async function listWorktrees(p: Ports, repo: string): Promise<Listed[] | null> {
   const r = await git(p, repo, ['worktree', 'list', '--porcelain', '-z'])
   if (r.code !== 0) return null
   const out: Listed[] = []
@@ -134,15 +136,15 @@ async function listWorktrees(p: Ports, repo: string): Promise<Listed[] | null> {
 }
 
 /** The registered worktree at `path`, matched as git resolved it. */
-async function listedAt(p: Ports, list: readonly Listed[], path: string): Promise<Listed | undefined> {
+export async function listedAt(p: Ports, list: readonly Listed[], path: string): Promise<Listed | undefined> {
   const want = new Set([nfc(path), nfc(await realOf(p, path))])
   return list.find(w => want.has(nfc(w.path)))
 }
 
-type Status = { changes: string[]; ignored: string[] }
+export type Status = { changes: string[]; ignored: string[] }
 
 /** `git status --porcelain --ignored -z` in a worktree: what's uncommitted, and the ignored paths, apart. */
-async function statusOf(p: Ports, path: string): Promise<Status | null> {
+export async function statusOf(p: Ports, path: string): Promise<Status | null> {
   const r = await git(p, path, ['status', '--porcelain', '--ignored', '-z'])
   if (r.code !== 0) return null
   const fields = r.stdout.split('\0')
@@ -160,7 +162,7 @@ async function statusOf(p: Ports, path: string): Promise<Status | null> {
 }
 
 /** Ignored paths now that the setup didn't leave: one is new unless a recorded path is it or holds it. */
-function newIgnored(now: readonly string[], recorded: readonly string[]): string[] {
+export function newIgnored(now: readonly string[], recorded: readonly string[]): string[] {
   const bare = (s: string) => s.replace(/\/+$/, '')
   const known = recorded.map(bare)
   return now.filter(path => !known.some(k => bare(path) === k || path.startsWith(`${k}/`)))
@@ -245,11 +247,22 @@ function tracked(records: readonly StoredRecord[]): Map<string, Tracked> {
 const rootKey = (runDir: string) => `litter.worktreeRoot.${runDir}`
 
 /**
+ * Where litter's worktrees go for a litter directory: the primary checkout's
+ * `.claude/worktrees`, resolved, or `litter-worktrees` beside a bare
+ * repository's litter folder (its common dir). The one computation:
+ * policyFor (lifecycle.ts) gives a run this root, worktreeRootFor falls back
+ * to it, and swarm/worktrees.ts checks a swarm worktree's path against it.
+ */
+export async function litterWorktreeRoot(p: Ports, litterDir: string): Promise<string> {
+  const primary = primaryOf(litterDir)
+  return primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+}
+
+/**
  * Where the run's litter worktrees go: the root policy.json gave the run,
  * kept in the store with the run so a drain or a cleanup after its end still
- * checks against it. Without either, it's computed as policyFor computes it
- * (lifecycle.ts): the primary checkout's `.claude/worktrees`, resolved, or
- * `litter-worktrees` beside a bare repository's litter folder.
+ * checks against it. Without either, it's litterWorktreeRoot's, as policyFor
+ * computes it (lifecycle.ts).
  */
 export async function worktreeRootFor(p: Ports, litterDir: string, run: string): Promise<string> {
   const dir = runDirOf(litterDir, run)
@@ -261,8 +274,7 @@ export async function worktreeRootFor(p: Ports, litterDir: string, run: string):
   }
   const kept = await p.store.get(rootKey(dir))
   if (typeof kept === 'string' && cleanAbsolute(kept)) return kept
-  const primary = primaryOf(litterDir)
-  return primary ? `${await realOf(p, primary)}/.claude/worktrees` : `${await realOf(p, dirname(litterDir))}/litter-worktrees`
+  return litterWorktreeRoot(p, litterDir)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +448,7 @@ async function occupied(p: Ports, path: string): Promise<boolean> {
  * the fork point, and nothing is unmerged or mid-operation. `gone` when the
  * worktree isn't there any more but its branch would pass.
  */
-async function replayCheck(p: Ports, spec: ModWorktreeSpec): Promise<'reuse' | 'gone' | string> {
+export async function replayCheck(p: Ports, spec: ModWorktreeSpec): Promise<'reuse' | 'gone' | string> {
   const list = await listWorktrees(p, spec.checkout)
   if (!list) return `git worktree list failed in ${spec.checkout}`
   const at = await listedAt(p, list, spec.path)
@@ -473,7 +485,7 @@ async function replayCheck(p: Ports, spec: ModWorktreeSpec): Promise<'reuse' | '
  * needs only `base` as an ancestor; one never handed out needs the branch at
  * `base`. Null when the worktree is in place, else the facts that block it.
  */
-async function place(p: Ports, spec: ModWorktreeSpec, created: boolean): Promise<string | null> {
+export async function place(p: Ports, spec: ModWorktreeSpec, created: boolean): Promise<string | null> {
   const repo = spec.checkout
   const list = await listWorktrees(p, repo)
   if (!list) return `git worktree list failed in ${repo}`
@@ -565,7 +577,7 @@ function after(p: Ports, ms: number): { promise: Promise<'timeout'>; cancel: () 
   return { promise, cancel: () => t.cancel() }
 }
 
-type SetupEnd = { exit_code: number | null; signal: string | null; timed_out: boolean; spawn_error: string | null; parts: number }
+export type SetupEnd = { exit_code: number | null; signal: string | null; timed_out: boolean; spawn_error: string | null; parts: number }
 
 /**
  * The approved setup argv in the worktree's root, streamed with
@@ -573,7 +585,7 @@ type SetupEnd = { exit_code: number | null; signal: string | null; timed_out: bo
  * `$.process.spawn` has no timeout, so the mod leaves the read loop at
  * `verifyTimeoutMs`, which kills the child.
  */
-async function runSetup(p: Ports, argv: readonly string[], spec: ModWorktreeSpec, timeoutMs: number): Promise<SetupEnd> {
+export async function runSetup(p: Ports, argv: readonly string[], spec: ModWorktreeSpec, timeoutMs: number): Promise<SetupEnd> {
   // A retry starts its log afresh, so no part of an earlier run is left beside it.
   await remove(p, verifyLogDir(spec.runDir, `setup-${spec.name}`)).catch(() => undefined)
   const log = new SetupLog(p, spec.runDir, spec.name)
@@ -618,7 +630,7 @@ async function runSetup(p: Ports, argv: readonly string[], spec: ModWorktreeSpec
 }
 
 /** How a setup ended, for a refusal. */
-function setupEnded(e: SetupEnd): string {
+export function setupEnded(e: SetupEnd): string {
   if (e.spawn_error !== null) return `couldn't run (${e.spawn_error})`
   if (e.timed_out) return 'timed out'
   if (e.exit_code === null) return `was killed by ${e.signal ?? 'a signal'}`
@@ -632,7 +644,7 @@ function setupEnded(e: SetupEnd): string {
  * without its slash); a link that already points at the checkout's folder is
  * left alone. Null when every link is in place, else why not.
  */
-async function linkDirs(p: Ports, spec: ModWorktreeSpec): Promise<string | null> {
+export async function linkDirs(p: Ports, spec: ModWorktreeSpec): Promise<string | null> {
   for (const entry of spec.linkDirs) {
     const rel = entry.replace(/\/+$/, '')
     if (rel === '' || rel.startsWith('/') || rel.split('/').some(s => s === '' || s === '.' || s === '..')) {
