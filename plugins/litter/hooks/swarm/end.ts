@@ -27,7 +27,7 @@ import type {
   SwarmWorktreeLeft,
   SwarmWorktreeRemovedBody,
 } from '../records/swarm'
-import type { LiveSwarm, NodeBinding, SettleProgress, SwarmSpec, TokenCount } from './types'
+import type { LiveSwarm, SettleProgress, SwarmSpec, TokenCount } from './types'
 import { LedgerTampered } from '../ledgercore'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
@@ -50,9 +50,8 @@ import { repoOf, UNSETTLED_MS } from '../lifecycle'
 import { BRANCH, cleanAbsolute, errText, firstLine, git, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
 import { inspectWorktree } from './worktrees'
 import * as state from './state'
-import { patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
-import * as guardModule from './guard'
-import { releaseOwnership, stopOwnerBeat } from './owner'
+import { heldBy, patchNodePolicies, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from './guard'
+import { confirmOwnership, releaseOwnership, stopOwnerBeat } from './owner'
 import { noteSummaryTrigger, noteSwarmEnding, plainText } from './summary'
 
 /**
@@ -68,17 +67,11 @@ export const others = {
   writeSwarmPolicy: (...a: Parameters<typeof writeSwarmPolicy>) => writeSwarmPolicy(...a),
   removeNodePolicy: (...a: Parameters<typeof removeNodePolicy>) => removeNodePolicy(...a),
   releaseOwnership: (...a: Parameters<typeof releaseOwnership>) => releaseOwnership(...a),
+  confirmOwnership: (...a: Parameters<typeof confirmOwnership>) => confirmOwnership(...a),
   stopOwnerBeat: (...a: Parameters<typeof stopOwnerBeat>) => stopOwnerBeat(...a),
   noteSummaryTrigger: (...a: Parameters<typeof noteSummaryTrigger>) => noteSummaryTrigger(...a),
-  /**
-   * FIX-Q's releaseActive (Q10): removes `active` once policy.json holds no
-   * swarm and no run and agents/ holds no binding file; a no-op otherwise.
-   * Looked up by name, so this module builds before that package lands.
-   */
-  releaseActive: async (p: Ports, litterDir: string): Promise<void> => {
-    const release = (guardModule as { releaseActive?: (p: Ports, litterDir: string) => Promise<void> }).releaseActive
-    if (release) await release(p, litterDir)
-  },
+  /** Removes `active` once policy.json holds no swarm and no run and agents/ holds no binding file; a no-op otherwise. */
+  releaseActive: (...a: Parameters<typeof releaseActive>) => releaseActive(...a),
 }
 
 /** What a stopped node's policy carries, and the guard's denial names (15.4, "Ending"). */
@@ -244,7 +237,16 @@ function stopWait(name: string): void {
 
 async function markPolicyStopping(p: Ports, name: string, w: Wait): Promise<void> {
   try {
-    await others.patchSwarmPolicy(p, w.litterDir, name, e => (e.state === 'stopping' ? null : { ...e, state: 'stopping' }))
+    // The ref read again first (Q2): a stale owner stands down, and changes no entry.
+    const mine = await others.confirmOwnership(p, w.litterDir, name)
+    if (mine === 'lost') {
+      stopWait(name)
+      waits.delete(name)
+      return
+    }
+    // Git couldn't tell: the settle wait tries again.
+    if (mine === null) return
+    await others.patchSwarmPolicy(p, w.litterDir, name, e => (e.state === 'stopping' ? null : { ...e, state: 'stopping' }), heldBy(mine))
     w.policyStopping = true
   } catch (err) {
     // The settle wait tries again: until it takes, the guard doesn't know the swarm is ending.
@@ -471,6 +473,15 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
   await serial(endKey(litterDir, name), async () => {
     const s = state.liveSwarm(name)
     if (!s || s.readOnly || s.lost || s.state !== 'stopping') return
+    // The ref read again before anything is written or removed (Q2): the beat that marks a swarm lost runs only
+    // every 10 s. A new owner holds it: this process stands down, and its cleanup, record and removals don't run.
+    const mine = await others.confirmOwnership(p, litterDir, name)
+    if (mine === null) throw new Error(`git couldn't read refs/litter-swarm/${name}, so swarm ${name} isn't ended yet`)
+    if (mine === 'lost') {
+      stopWait(name)
+      waits.delete(name)
+      return
+    }
     stopWait(name)
     // A broken chain takes no more records, so it can't take swarm.end: the end goes on
     // without one, and the toast and summary.md say so (FIX-U, U6).
@@ -529,9 +540,12 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
     await step('summary.md', async () => {
       summary = await writeSwarmSummary(p, name, s.launch, { unrecordedEnd: broken !== null })
     })
-    await step('releasing the ownership ref', () => others.releaseOwnership(p, litterDir, name))
+    let released = false
+    await step('releasing the ownership ref', async () => void (released = await others.releaseOwnership(p, litterDir, name)))
+    // The ref moved since the check above (a handover): the entry and the nodes' policies are the new owner's (Q2).
+    if (!released && state.liveSwarm(name)?.lost) return void waits.delete(name)
     await step('stopping the ownership beat', () => others.stopOwnerBeat(name))
-    await step("removing policy.json's entry", () => others.writeSwarmPolicy(p, litterDir, name, null))
+    await step("removing policy.json's entry", () => others.writeSwarmPolicy(p, litterDir, name, null, heldBy(mine)))
     await step('removing the node policies', () => removeEndedPolicies(p, litterDir, name, s.launch))
     state.dropLiveSwarm(name)
     waits.delete(name)
@@ -917,7 +931,7 @@ export async function cleanupLaunch(p: Ports, swarm: string, launch: string): Pr
  * up yet); one whose making failed after git added it, kept; and each node's
  * `existing` worktree, which is never removed.
  */
-async function worktreesLeft(p: Ports, records: readonly StoredRecord[], launch: string, s: LiveSwarm | null): Promise<SwarmWorktreeLeft[]> {
+export async function worktreesLeft(p: Ports, records: readonly StoredRecord[], launch: string, s: LiveSwarm | null): Promise<SwarmWorktreeLeft[]> {
   const out: SwarmWorktreeLeft[] = []
   const seen = new Set<string>()
   for (const t of madeWorktrees(records, launch)) {

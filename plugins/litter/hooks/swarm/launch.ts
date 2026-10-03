@@ -18,13 +18,13 @@ import type { PortHook, SwarmReadHook } from '../hooktypes'
 import type { SwarmEntry } from '../hookfiles'
 import type { SwarmReadInstance, SwarmReadLaunch, SwarmReadOrchestrator, SwarmReadReply, SwarmStartBody } from '../records/swarm'
 import type { LiveSwarm, NodeDir, ReportEvent, SwarmNode, SwarmRoots, SwarmSpec, ValidateCtx } from './types'
-import { launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
+import { LAUNCH_ID, launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
 import { getOptions, session } from '../session'
 import { remove, sha256 } from '../fsx'
 import { primaryOf, repoOf } from '../lifecycle'
 import { BRANCH, litterWorktreeRoot, listedAt, listWorktrees, realOf } from '../worktrees'
 import { readPolicy } from '../policy'
-import { appendLaunchRecord, newLaunchId } from '../records/swarm'
+import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../records/swarm'
 import { renderSlots } from '../prompts/slots'
 import {
   AUTHORITY_COMMIT_NO,
@@ -68,12 +68,12 @@ import {
 import { decodeSwarmInput, SWARM_READ } from './tools'
 import { addSwarmWorktree } from './worktrees'
 import { acquireOwnership, readOwnerRef, releaseOwnership, startOwnerBeat, stopOwnerBeat } from './owner'
-import { authorityLines, continuationText, readLaunchFacts, resumeTargets } from './recover'
+import { authorityLines, continuationText, readLaunchFacts, refreshReadOnly, resumeTargets, settleStuck } from './recover'
 import { validateSpec } from './spec'
 import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
-import { writeSwarmPolicy } from './guard'
-import { cleanupLaunch } from './end'
+import { heldBy, writeSwarmPolicy } from './guard'
+import { cleanupLaunch, worktreesLeft } from './end'
 
 /**
  * The other packages' functions this module calls, through one table so tier
@@ -355,6 +355,84 @@ async function rootsOf(p: Ports, litterDir: string, dirs: readonly string[]): Pr
 const launching = new Set<string>()
 
 /**
+ * The types other live swarms serve, type → swarm (Launch refuses a type
+ * another live swarm has). A swarm that would collide is read again first
+ * (Q5): another session's copy from its ref and ledger, and a policy.json
+ * entry counts only while its ref names its launch and that launch hasn't
+ * ended, so a leftover entry, or a copy whose owner ended it, takes nothing.
+ */
+async function takenTypes(
+  p: Ports,
+  litterDir: string,
+  name: string,
+  entries: Readonly<Record<string, SwarmEntry>>,
+  ours: ReadonlySet<string>,
+): Promise<Map<string, string>> {
+  const collides = (ts: readonly string[]) => ts.some(t => ours.has(t))
+  const copies = liveSwarms().filter(s => s.name !== name && s.readOnly && collides(Object.values(s.types)))
+  if (copies.length > 0) await refreshReadOnly(p, litterDir, copies.map(s => s.name))
+  const taken = new Map<string, string>()
+  for (const s of liveSwarms()) if (s.name !== name) for (const t of Object.values(s.types)) taken.set(t, s.name)
+  for (const [other, entry] of Object.entries(entries)) {
+    const ts = Array.isArray(entry?.nodeTypes) ? entry.nodeTypes : []
+    if (other === name || !collides(ts)) continue
+    if (!liveSwarm(other) && !(await entryLive(p, litterDir, other, entry))) continue
+    for (const t of ts) taken.set(t, other)
+  }
+  return taken
+}
+
+/** A policy.json entry's launch is live: its ref names it, with swarm.start and no swarm.end. Git failing counts as live. */
+async function entryLive(p: Ports, litterDir: string, name: string, entry: SwarmEntry): Promise<boolean> {
+  const ref = await readOwnerRef(p, litterDir, name)
+  if (ref === undefined) return true
+  if (!ref?.blob || ref.blob.launch !== entry.launch || !LAUNCH_ID.test(entry.launch)) return false
+  const facts = await readLaunchFacts(p, litterDir, name, entry.launch)
+  return facts.start !== null && !facts.ended
+}
+
+/**
+ * A launch that failed after its ref was taken, or whose session ended before
+ * `swarm.start` (recover.ts, settleStuck): End's order (end.ts; Q6), so
+ * swarm.end and summary.md say what's left. The cleanup of the worktrees it
+ * made first, then `swarm.end { status: 'launch_failed' }` with the worktrees
+ * and branches left (a `new` branch is never deleted), unless the ledger has a
+ * swarm.end already, then the release: this process's ownership, or a stuck
+ * ref's compare-and-delete. Each step's failure is logged, and the next runs:
+ * a ledger that can't take swarm.end still lets the name go.
+ */
+export async function endFailedLaunch(
+  p: Ports,
+  litterDir: string,
+  name: string,
+  launch: string,
+  reason: string,
+  release: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await deps.cleanupLaunch(p, name, launch)
+  } catch (err) {
+    p.log(`swarm ${name}: the failed launch's cleanup failed: ${errText(err)}`)
+  }
+  try {
+    const { records, tampered } = await readLaunchLedger(p, litterDir, name, launch)
+    if (tampered) throw new Error(`launch ${launch}'s ledger is tampered at record ${tampered.seq}`)
+    if (!records.some(r => r.kind === 'swarm.end')) {
+      const worktrees = await worktreesLeft(p, records, launch, null)
+      const repo = repoOf(litterDir)
+      const branches: string[] = []
+      for (const b of [...new Set(worktrees.map(w => w.branch))].sort()) {
+        if (BRANCH.test(b) && (await gitOut(p, repo, ['show-ref', '--verify', '--quiet', `refs/heads/${b}`])).code === 0) branches.push(b)
+      }
+      await appendLaunchRecord(p, litterDir, name, launch, 'swarm.end', { status: 'launch_failed', settled: true, reason, nodes: {}, worktrees, branches })
+    }
+  } catch (err) {
+    p.log(`swarm ${name}: launch_failed wasn't recorded: ${errText(err)}`)
+  }
+  await release().catch((err: unknown) => p.log(`swarm ${name}: its ref wasn't released: ${errText(err)}`))
+}
+
+/**
  * Launches swarm `name` at its saved revision, or `opts.revision`. Every
  * refusing check runs before anything is written. Reads `session().litterDir`.
  */
@@ -381,14 +459,22 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   if (info.toolsRefused) return refused(name, [`litter's tools were refused (${info.toolsRefused}), and a swarm runs unguarded without them`])
   if (info.swarmToolsRefused) return refused(name, [`the swarm tools were refused (${info.swarmToolsRefused})`])
   if (!(await hasJq(p))) return refused(name, ["jq isn't on PATH, and every litter command hook needs it; install jq, then launch again"])
+  // Another session's copy is read again first: one its owner has ended since doesn't refuse (Q5).
+  if (liveSwarm(name)?.readOnly) await refreshReadOnly(p, litterDir, [name])
   const live = liveSwarm(name)
   if (live) {
     return refused(name, [live.readOnly ? `it's live, owned by session ${live.owner.session}` : `it's already live (launch ${live.launch})`])
   }
+  // A ref a crash left (its launch ended, or never started) whose holder is this session or gone is finished first (Q1).
+  const stuck = await settleStuck(p, litterDir, name)
   const holder = await readOwnerRef(p, litterDir, name)
   if (holder) {
     const who = holder.blob ? `session ${holder.blob.session} (launch ${holder.blob.launch})` : `an unreadable blob (${holder.oid})`
-    return refused(name, [`refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter-swarm ${name}`])
+    return refused(name, [
+      stuck.left
+        ? `refs/litter-swarm/${name} exists: ${stuck.left}; launch again once that session has closed`
+        : `refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter-swarm ${name}`,
+    ])
   }
   // An entry of its own name with no ref is a leftover no one owns: this launch's entry replaces it.
   const policy = await readPolicy(p, litterDir).catch(() => undefined)
@@ -401,11 +487,7 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   const problems: string[] = []
   const types = Object.fromEntries(spec.nodes.map(n => [n.id, servedType(name, n.id)]))
   const ours = new Set(Object.values(types))
-  const taken = new Map<string, string>()
-  for (const s of liveSwarms()) if (s.name !== name) for (const t of Object.values(s.types)) taken.set(t, s.name)
-  for (const [other, entry] of Object.entries(policy?.swarm?.swarms ?? {})) {
-    if (other !== name) for (const t of entry.nodeTypes ?? []) taken.set(t, other)
-  }
+  const taken = await takenTypes(p, litterDir, name, policy?.swarm?.swarms ?? {}, ours)
   for (const t of ours) if (taken.has(t)) problems.push(`its type ${t} is live swarm ${taken.get(t)}'s too; rename the node, or end ${taken.get(t)} first`)
 
   const repo = repoOf(litterDir)
@@ -513,21 +595,12 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   let isLive = false
   const failed = async (reason: string): Promise<LaunchResult> => {
     stopOwnerBeat(name)
-    try {
-      await appendLaunchRecord(p, litterDir, name, launchId, 'swarm.end', { status: 'launch_failed', settled: true, reason, nodes: {}, worktrees: [], branches: [] })
-    } catch (err) {
-      p.log(`swarm ${name}: launch_failed wasn't recorded: ${errText(err)}`)
-    }
     if (isLive) {
       dropLiveSwarm(name)
-      await deps.writeSwarmPolicy(p, litterDir, name, null).catch((err: unknown) => p.log(`swarm ${name}: its policy entry wasn't removed: ${errText(err)}`))
+      const mine = heldBy({ launch: launchId, generation: own.generation, oids: [own.oid] })
+      await deps.writeSwarmPolicy(p, litterDir, name, null, mine).catch((err: unknown) => p.log(`swarm ${name}: its policy entry wasn't removed: ${errText(err)}`))
     }
-    try {
-      await deps.cleanupLaunch(p, name, launchId)
-    } catch (err) {
-      p.log(`swarm ${name}: the failed launch's cleanup failed: ${errText(err)}`)
-    }
-    await releaseOwnership(p, litterDir, name).catch((err: unknown) => p.log(`swarm ${name}: its ref wasn't released: ${errText(err)}`))
+    await endFailedLaunch(p, litterDir, name, launchId, reason, () => releaseOwnership(p, litterDir, name))
     return refused(name, [`the launch failed: ${reason}`])
   }
 

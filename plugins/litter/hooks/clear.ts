@@ -26,7 +26,8 @@ import { nodeTypeSpec } from './swarm/launch'
 import { briefTextFor } from './swarm/store'
 import { registerSwarmCommands, refreshPanes } from './swarm/panes'
 import { patchSwarmPolicy } from './swarm/guard'
-import { rebindOwnership, startOwnerBeat, stopOwnerBeat } from './swarm/owner'
+import { ownedSwarm, rebindOwnership, startOwnerBeat, stopOwnerBeat } from './swarm/owner'
+import { refreshReadOnly, typesAccepted } from './swarm/recover'
 import { summaryTick } from './swarm/summary'
 import { DETAIL_MAX_BYTES, spoolLine, TOOL_MAX_BYTES } from './swarm/observe'
 import {
@@ -72,6 +73,9 @@ export const others = {
   rebindOwnership: (...a: Parameters<typeof rebindOwnership>) => rebindOwnership(...a),
   startOwnerBeat: (...a: Parameters<typeof startOwnerBeat>) => startOwnerBeat(...a),
   stopOwnerBeat: (name?: string) => stopOwnerBeat(name),
+  ownedSwarm: (...a: Parameters<typeof ownedSwarm>) => ownedSwarm(...a),
+  typesAccepted: (...a: Parameters<typeof typesAccepted>) => typesAccepted(...a),
+  refreshReadOnly: (...a: Parameters<typeof refreshReadOnly>) => refreshReadOnly(...a),
 }
 const defaults = { ...others }
 
@@ -285,13 +289,35 @@ async function step(p: Ports, name: string, work: () => Promise<unknown>): Promi
 /** Is `id` this process's session, the current one or one before it? */
 const mine = (id: string, to: string): boolean => id === to || pastSessions.has(id)
 
+/**
+ * Registers a swarm's types again (Q7): only one whose spec recovery took (a
+ * specHash mismatch leaves its types unregistered on purpose), and once every
+ * one is in, the swarm is ready for a resume, as recovery would have left it.
+ */
 async function registerTypes(p: Ports, litterDir: string, s: LiveSwarm): Promise<void> {
+  if (!others.typesAccepted(s)) {
+    p.log(`/clear rebind: swarm ${s.name}'s types aren't registered: recovery didn't take its spec`)
+    return
+  }
+  let all = true
   for (const node of s.spec.nodes) {
-    await step(p, `swarm ${s.name} type ${node.id}`, async () => {
+    const ok = await step(p, `swarm ${s.name} type ${node.id}`, async () => {
       const brief = await others.briefTextFor(p, litterDir, s.name, s.revision, node.id)
       await p.registerAgent(others.nodeTypeSpec(s.spec, node.id, { brief }))
     })
+    all &&= ok
   }
+  if (all && stillLive(s) && !liveSwarm(s.name)!.typesReady) patchLiveSwarm(s.name, { typesReady: true })
+}
+
+/**
+ * The rebind's swarm is still live here, this launch, owned and held (Q8):
+ * after each await, a swarm End finished (or another session took) meanwhile
+ * gets no more of the rebind, so nothing is recorded after its swarm.end.
+ */
+function stillLive(s: LiveSwarm): boolean {
+  const cur = liveSwarm(s.name)
+  return cur !== null && cur.launch === s.launch && !cur.readOnly && !cur.lost && others.ownedSwarm(s.name) !== null
 }
 
 /**
@@ -318,7 +344,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     })
     await step(p, 'the record tool', async () => updateSession({ toolsRefused: await registerRecordTool(p) }))
     await step(p, 'the swarm tools', async () => updateSession({ swarmToolsRefused: await registerSwarmTools(p) }))
-    if (litterDir) for (const s of owned) await registerTypes(p, litterDir, s)
+    if (litterDir) for (const s of owned) if (stillLive(s)) await registerTypes(p, litterDir, s)
     await step(p, 'the swarm commands', () => others.registerSwarmCommands(p))
     if (!litterDir) return
 
@@ -327,6 +353,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
       updatePolicy(p, litterDir, (policy: Policy) => (policy.session !== to && mine(policy.session, to) ? { ...policy, session: to } : null)),
     )
     for (const s of owned) {
+      if (!stillLive(s)) continue
       await step(p, `swarm ${s.name}'s policy entry`, () =>
         others.patchSwarmPolicy(p, litterDir, s.name, entry =>
           entry.owner.generation === s.owner.generation && entry.owner.session !== to && mine(entry.owner.session, to)
@@ -341,19 +368,22 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     for (const s of owned) await step(p, `swarm ${s.name}'s beat`, async () => others.stopOwnerBeat(s.name))
     const swapped = await step(p, 'the ownership swap', () => others.rebindOwnership(p, litterDir, to))
     for (const s of owned) {
-      const cur = liveSwarm(s.name)
-      if (swapped && cur && !cur.lost && cur.owner.session !== to) patchLiveSwarm(s.name, { owner: { ...cur.owner, session: to } })
+      // Each step after an await checks again (Q8): End may have finished a swarm meanwhile.
+      if (!stillLive(s)) continue
+      const cur = liveSwarm(s.name)!
+      if (swapped && cur.owner.session !== to) patchLiveSwarm(s.name, { owner: { ...cur.owner, session: to } })
       await step(p, `swarm ${s.name}'s beat`, async () => others.startOwnerBeat(p, litterDir, s.name))
     }
 
     // session.rebind in the open run's ledger (lifecycle.ts) and in each live launch's.
     await step(p, 'the run', () => rebindRun(p, litterDir, from, to, [...pastSessions]))
     for (const s of owned) {
+      if (!stillLive(s)) continue
       await step(p, `swarm ${s.name}'s session.rebind`, () => appendLaunchRecord(p, litterDir, s.name, s.launch, 'session.rebind', { from, to }))
     }
 
     // Only a live swarm's <swarm> block reads the mark; with none, a later swarm's first block would say it wrongly.
-    if (owned.length > 0) markCleared(why)
+    if (owned.some(stillLive)) markCleared(why)
   } catch (err) {
     p.log(`/clear rebind failed: ${errText(err)}`)
   } finally {
@@ -382,6 +412,7 @@ export function startSwarmTimers(p: Ports): void {
   timer = p.every(TICK_MS, () => {
     // The summary keeps its own one-at-a-time guard; a call can take 20 s, so the rebind check doesn't wait on it.
     void summaryTick(p).catch(err => p.log(`summary tick: ${errText(err)}`))
+    void refreshTick(p).catch(err => p.log(`read-only refresh: ${errText(err)}`))
     if (ticking) return
     ticking = true
     void tick(p)
@@ -404,6 +435,30 @@ async function tick(p: Ports): Promise<void> {
   if (from !== null && rebinding === null && now !== from) await startRebind(p, from, now)
 }
 
+/** How often the tick reads another session's swarms again (Q5). */
+export const READ_ONLY_REFRESH_MS = 10_000
+let refreshedAt: number | null = null
+let refreshing = false
+
+/**
+ * About every 10 s, another session's swarms read again (recover.ts,
+ * refreshReadOnly), so one its owner ended stops showing live here (Q5). Its
+ * own one-at-a-time guard: its git reads never hold up the rebind check.
+ */
+async function refreshTick(p: Ports): Promise<void> {
+  const litterDir = session().litterDir
+  if (refreshing || !litterDir || !liveSwarms().some(s => s.readOnly)) return
+  refreshing = true
+  try {
+    const at = await p.now()
+    if (refreshedAt !== null && at - refreshedAt < READ_ONLY_REFRESH_MS) return
+    refreshedAt = at
+    await others.refreshReadOnly(p, litterDir)
+  } finally {
+    refreshing = false
+  }
+}
+
 /** A fresh module's memory, for tests: no rebind, no timer, the real calls back in `others`. */
 export function resetClearForTests(): void {
   rebinding = null
@@ -413,5 +468,7 @@ export function resetClearForTests(): void {
   timer?.cancel()
   timer = null
   ticking = false
+  refreshedAt = null
+  refreshing = false
   Object.assign(others, defaults)
 }

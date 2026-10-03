@@ -13,7 +13,7 @@
 
 import type { Ports } from '../ports'
 import type { StoredRecord } from '../records/core'
-import type { SwarmEntry } from '../hookfiles'
+import type { AgentPolicy, SwarmEntry } from '../hookfiles'
 import type {
   SwarmEventBody,
   SwarmInstanceBody,
@@ -23,13 +23,17 @@ import type {
 } from '../records/swarm'
 import type { LiveSwarm, NodeBinding, RecoveryCard, RecoveryNode, SwarmSpec } from './types'
 import { listLaunches, readLaunchLedger } from '../records/swarm'
-import { LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
+import { hooksDir, LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
+import { readJson } from '../fsx'
+import { readPolicy } from '../policy'
 import { session } from '../session'
 import {
   bindings,
+  dropLiveSwarm,
   isStopped,
   lastReport,
   liveSwarm,
+  liveSwarms,
   loadSwarm,
   markRunning,
   markSettled,
@@ -42,12 +46,12 @@ import {
   stop,
   stopped,
 } from './state'
-import { nodePolicyFor, writeNodePolicy, writeSwarmPolicy } from './guard'
+import { nodePolicyFor, notNewer, releaseActive, removeNodePolicy, writeNodePolicy, writeSwarmPolicy } from './guard'
 import { readRevision } from './store'
 import { resumeStopping } from './end'
 import { adoptUnbound } from './admit'
-import { ownedSwarm, readOwnerRef, retakeOwnership, startOwnerBeat } from './owner'
-import { nodeTypeSpec, specHash } from './launch'
+import { OWNER_STALE_MS, ownedSwarm, ownerGone, readOwnerRef, releaseStuckRef, retakeOwnership, startOwnerBeat } from './owner'
+import { endFailedLaunch, nodeTypeSpec, specHash } from './launch'
 
 /**
  * The other packages' functions this module calls, through one table so tier
@@ -59,6 +63,8 @@ export const deps = {
   nodePolicyFor: (...a: Parameters<typeof nodePolicyFor>) => nodePolicyFor(...a),
   writeNodePolicy: (...a: Parameters<typeof writeNodePolicy>) => writeNodePolicy(...a),
   writeSwarmPolicy: (...a: Parameters<typeof writeSwarmPolicy>) => writeSwarmPolicy(...a),
+  removeNodePolicy: (...a: Parameters<typeof removeNodePolicy>) => removeNodePolicy(...a),
+  releaseActive: (...a: Parameters<typeof releaseActive>) => releaseActive(...a),
   resumeStopping: (...a: Parameters<typeof resumeStopping>) => resumeStopping(...a),
   adoptUnbound: (...a: Parameters<typeof adoptUnbound>) => adoptUnbound(...a),
 }
@@ -218,15 +224,18 @@ const handled = new Set<string>()
  */
 export async function recoverSwarms(p: Ports, litterDir: string): Promise<void> {
   const root = swarmsDir(litterDir)
-  if (!(await p.fs.exists(root))) return
-  const names = (await p.fs.list(root))
-    .filter(e => e.kind === 'dir' && !e.isLink && SWARM_NAME.test(e.name))
-    .map(e => e.name)
-    .sort()
+  const dirs = (await p.fs.exists(root))
+    ? (await p.fs.list(root)).filter(e => e.kind === 'dir' && !e.isLink && SWARM_NAME.test(e.name)).map(e => e.name)
+    : []
+  // policy.json's entries too: one whose swarm has no folder can be a leftover as well (settleStuck).
+  const entries = Object.keys((await readPolicy(p, litterDir).catch(() => undefined))?.swarm?.swarms ?? {}).filter(n => SWARM_NAME.test(n))
+  const names = [...new Set([...dirs, ...entries])].sort()
   const sessionId = await p.sessionId()
   let owned = 0
   for (const name of names) {
     try {
+      // A ref or entry a crash left is finished first (Q1), so recovery sees only what's live.
+      await settleStuck(p, litterDir, name)
       if (await recoverSwarm(p, litterDir, name, sessionId)) owned++
     } catch (err) {
       p.log(`swarm ${name}: recovery failed: ${errText(err)}`)
@@ -313,6 +322,9 @@ export async function recoverOwnedLaunch(
   // 1. The types, before anything can resume (spike 3): the gate holds sends and node turns meanwhile.
   let typesReady = false
   const missing = spec.nodes.filter(n => n.brief !== undefined && typeof briefs?.[n.id] !== 'string').map(n => n.id)
+  // Only a spec that matched is registered, here or by a /clear rebind later (typesAccepted, Q7).
+  if (verified && missing.length === 0) unaccepted.delete(launchKey(name, facts.launch))
+  else unaccepted.add(launchKey(name, facts.launch))
   if (!verified) p.log(`swarm ${name}: its spec doesn't match launch ${facts.launch}'s specHash; its types aren't registered`)
   else if (missing.length > 0) p.log(`swarm ${name}: the briefs of ${missing.join(', ')} at revision ${b.revision} are missing; its types aren't registered`)
   else {
@@ -361,7 +373,8 @@ export async function recoverOwnedLaunch(
     nodeTypes: Object.values(b.types),
   }
   try {
-    await deps.writeSwarmPolicy(p, litterDir, name, entry)
+    // Over this launch's older entry (the earlier process's oid, an older generation), never a newer owner's.
+    await deps.writeSwarmPolicy(p, litterDir, name, entry, notNewer(facts.launch, owner.generation))
   } catch (err) {
     p.log(`swarm ${name}: its policy entry wasn't rewritten: ${errText(err)}`)
   }
@@ -414,6 +427,164 @@ async function recoverReadOnly(
   putLiveSwarm(liveOf(facts, start, spec, mirror, { ref: start.body.owner.ref, ...owner }, { typesReady: false, readOnly: true }))
   for (const rec of facts.nodes.values()) putBinding(bindingOf(facts, start.body, rec))
   cards.delete(name)
+}
+
+/** Launches whose spec recovery didn't take (a specHash mismatch, briefs missing): no type of theirs is registered. */
+const unaccepted = new Set<string>()
+const launchKey = (name: string, launch: string) => `${name}/${launch}`
+
+/**
+ * Whether the swarm's types may be registered from its spec (Q7): a launch
+ * this process made, or one recovery took. A /clear rebind asks before it
+ * registers them again.
+ */
+export const typesAccepted = (s: LiveSwarm): boolean => !unaccepted.has(launchKey(s.name, s.launch))
+
+/**
+ * Another session's swarms, as this one shows them (Q5), read again from the
+ * ref and the ledger: a copy whose ref is gone or names another launch, or
+ * whose ledger has swarm.end, is dropped; otherwise its owner and state
+ * follow the ref and the ledger. Git failing changes nothing. The swarm tick
+ * runs it about every 10 s (clear.ts), and Launch before it refuses a name or
+ * counts a type as taken. `only` limits it to those names.
+ */
+export async function refreshReadOnly(p: Ports, litterDir: string, only?: readonly string[]): Promise<void> {
+  for (const s of liveSwarms()) {
+    if (!s.readOnly || (only && !only.includes(s.name))) continue
+    try {
+      const ref = await readOwnerRef(p, litterDir, s.name)
+      if (ref === undefined) continue
+      const facts = ref?.blob?.launch === s.launch ? await readLaunchFacts(p, litterDir, s.name, s.launch) : null
+      const cur = liveSwarm(s.name)
+      // Changed meanwhile: a handover to this session, or another refresh.
+      if (!cur || !cur.readOnly || cur.launch !== s.launch) continue
+      if (!ref?.blob || !facts?.start || facts.ended) {
+        p.log(`swarm ${s.name}: launch ${s.launch}, which session ${s.owner.session} owns, isn't live any more; it's no longer shown`)
+        dropLiveSwarm(s.name)
+        continue
+      }
+      const owner = { ref: cur.owner.ref, oid: ref.oid, generation: ref.blob.generation, session: ref.blob.session }
+      const state = facts.stopping ? 'stopping' : 'live'
+      const same = cur.owner.oid === owner.oid && cur.owner.generation === owner.generation && cur.owner.session === owner.session && cur.state === state
+      if (!same) patchLiveSwarm(s.name, { owner, state })
+    } catch (err) {
+      p.log(`swarm ${s.name}: its read-only copy wasn't refreshed: ${errText(err)}`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A stuck name (Q1)
+
+/** What settleStuck did: whether it released the name's ref, and, when it left a stuck one, why. */
+export type Settled = { released: boolean; left: string | null }
+
+/**
+ * A swarm name a crash or a failed step left stuck (Q1): its ref, or its
+ * policy entry, outliving its launch, so the name can't be launched or taken
+ * over, and the entry keeps the guard denying the lead's EnterWorktree
+ * everywhere. Run by recoverSwarms at session.start for each name, and by
+ * Launch right before its "exists" refusal, so a live session needn't
+ * restart. Only a holder that's this session, or gone (owner.ts, ownerGone),
+ * is settled; one that may be running is left, and `left` says why.
+ *  - The ref's launch has `swarm.end`: its release is finished. Its node
+ *    policies go, except a running agent's (U1: the guard denies it once the
+ *    entry is gone), the entry goes if it names that launch, and the ref is
+ *    deleted on the oid it was read at. Nothing new is recorded.
+ *  - It has no `swarm.start`: it ends as a failed launch does (launch.ts,
+ *    endFailedLaunch): its worktrees' cleanup, `swarm.end launch_failed`, the
+ *    release.
+ *  - An entry whose ref is gone, or names another launch, is removed, when its
+ *    owner is this session or hasn't beaten for over 60 s.
+ * A ledger that's broken is read up to the break: with its ref already
+ * released there's nothing to settle, and nothing is ever appended to it (U6).
+ */
+export async function settleStuck(p: Ports, litterDir: string, name: string): Promise<Settled> {
+  const none: Settled = { released: false, left: null }
+  if (!SWARM_NAME.test(name) || ownedSwarm(name)) return none
+  const live = liveSwarm(name)
+  // This process acts on it: whatever it left, it finishes itself.
+  if (live && !live.readOnly && !live.lost) return none
+  let out = none
+  const ref = await readOwnerRef(p, litterDir, name)
+  if (ref?.blob && ref.blob.swarm === name && LAUNCH_ID.test(ref.blob.launch) && (await listLaunches(p, litterDir, name)).includes(ref.blob.launch)) {
+    const { launch, session: holder } = ref.blob
+    const facts = await readLaunchFacts(p, litterDir, name, launch)
+    const stuck = facts.ended ? 'ended' : facts.start === null ? 'never started' : null
+    if (stuck !== null) {
+      if (await ownerGone(p, litterDir, name, { oid: ref.oid, blob: ref.blob })) {
+        p.log(`swarm ${name}: launch ${launch} ${stuck === 'ended' ? 'ended' : 'never started'}, and its session ${holder} is gone; its ref is released`)
+        let released = false
+        if (stuck === 'ended') released = await finishRelease(p, litterDir, name, launch, ref.oid)
+        else {
+          // No swarm.start, so no entry or node policy of its own: Launch writes those after it.
+          await endFailedLaunch(p, litterDir, name, launch, 'the launching session ended before swarm.start', async () => {
+            released = await releaseStuckRef(p, litterDir, name, ref.oid)
+          })
+        }
+        out = { released, left: null }
+      } else {
+        const what = stuck === 'ended' ? 'has ended' : 'never reached swarm.start'
+        out = { released: false, left: `its launch ${launch} ${what}, but its session ${holder} on ${ref.blob.host} may still be running` }
+      }
+    }
+  }
+  await settleEntry(p, litterDir, name)
+  return out
+}
+
+/** An ended launch's release, finished: the policies it left, its entry, its ref, then `active` if nothing needs it. */
+async function finishRelease(p: Ports, litterDir: string, name: string, launch: string, oid: string): Promise<boolean> {
+  await removeLeftPolicies(p, litterDir, name, launch)
+  await deps.writeSwarmPolicy(p, litterDir, name, null, e => e.launch === launch).catch(err => p.log(`swarm ${name}: its entry wasn't removed: ${errText(err)}`))
+  const released = await releaseStuckRef(p, litterDir, name, oid)
+  await deps.releaseActive(p, litterDir).catch(err => p.log(`swarm ${name}: hooks/active wasn't released: ${errText(err)}`))
+  return released
+}
+
+/**
+ * The node policies a launch left (`agents/<id>.json` whose node names that
+ * swarm and launch), except a running agent's (U1), which the guard denies
+ * once the entry is gone and U's sweep removes when it leaves the list. With
+ * no list, none goes.
+ */
+async function removeLeftPolicies(p: Ports, litterDir: string, name: string, launch: string): Promise<void> {
+  const dir = `${hooksDir(litterDir)}/agents`
+  if (!(await p.fs.exists(dir))) return
+  let running: Set<string>
+  try {
+    running = new Set((await p.listAgents()).filter(a => a.status === 'running').map(a => a.id))
+  } catch (err) {
+    p.log(`swarm ${name}: the agent list failed, so launch ${launch}'s node policies are left: ${errText(err)}`)
+    return
+  }
+  for (const e of await p.fs.list(dir)) {
+    const id = e.kind === 'file' && e.name.endsWith('.json') ? e.name.slice(0, -'.json'.length) : null
+    if (id === null || running.has(id)) continue
+    const file = await readJson<AgentPolicy>(p, `${dir}/${e.name}`).catch(() => undefined)
+    if (file?.node?.swarm !== name || file.node.launch !== launch) continue
+    await deps.removeNodePolicy(p, litterDir, id).catch(err => p.log(`swarm ${name}: ${id}'s policy wasn't removed: ${errText(err)}`))
+  }
+}
+
+/** policy.json's entry for `name`, when its ref is gone or names another launch, and its owner is this session or gone. */
+async function settleEntry(p: Ports, litterDir: string, name: string): Promise<void> {
+  const policy = await readPolicy(p, litterDir).catch(() => undefined)
+  const swarms = policy?.swarm?.swarms
+  const entry = swarms && Object.hasOwn(swarms, name) ? swarms[name] : undefined
+  if (!entry) return
+  const ref = await readOwnerRef(p, litterDir, name)
+  // Git couldn't tell, the ref names this entry's launch, or a blob no one can read: not a leftover anyone can prove.
+  if (ref === undefined || (ref && (!ref.blob || ref.blob.launch === entry.launch))) return
+  const beatAgo = (await p.now()) / 1000 - (typeof entry.owner?.checkedAt === 'number' ? entry.owner.checkedAt : 0)
+  if (entry.owner?.session !== (await p.sessionId()) && !(beatAgo * 1000 > OWNER_STALE_MS)) {
+    p.log(`swarm ${name}: policy.json's entry names launch ${entry.launch}, which its ref doesn't; its owner beat ${Math.round(beatAgo)} s ago, so it's left`)
+    return
+  }
+  p.log(`swarm ${name}: policy.json's entry for launch ${entry.launch} has no ref of its own; it's removed`)
+  const same = (e: SwarmEntry) => e.launch === entry.launch && e.owner?.oid === entry.owner?.oid
+  await deps.writeSwarmPolicy(p, litterDir, name, null, same).catch(err => p.log(`swarm ${name}: its entry wasn't removed: ${errText(err)}`))
+  await deps.releaseActive(p, litterDir).catch(err => p.log(`swarm ${name}: hooks/active wasn't released: ${errText(err)}`))
 }
 
 // ---------------------------------------------------------------------------
@@ -558,4 +729,5 @@ export async function continuationText(p: Ports, name: string, node: string, how
 export function resetRecoveryForTests(): void {
   cards.clear()
   handled.clear()
+  unaccepted.clear()
 }

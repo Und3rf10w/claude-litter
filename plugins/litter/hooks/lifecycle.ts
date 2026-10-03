@@ -45,6 +45,7 @@ import { appendRecord, readLedger } from './ledgercore'
 import {
   modePath,
   planPath as runPlanPath,
+  policyPath,
   runDir as runDirOf,
   runJsonPath,
   summaryPath,
@@ -54,6 +55,7 @@ import {
 } from './layout'
 import { atomicWrite, randomId, readJson, serial, sha256 } from './fsx'
 import { forgetRunAgents, policyKey, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
+import { removeActiveIfUnbound } from './swarm/guard'
 import { endVerifies, verifiesInFlight } from './verify'
 import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
@@ -359,15 +361,28 @@ export async function patchRunPolicy(
 }
 
 /**
- * The run is no longer active: `active` goes first (unless a swarm is live),
- * then policy.json's run. One read-modify-write under updatePolicy's key, so
- * a swarm entry written meanwhile is neither lost nor left without `active`.
+ * The run is no longer active: `active` goes first (unless a swarm is live,
+ * or a node's binding file is left: swarm/guard.ts, Q10), then policy.json's
+ * run. One read-modify-write under updatePolicy's key, so a swarm entry
+ * written meanwhile is neither lost nor left without `active`. A policy.json
+ * that doesn't parse, or of another version, is the guard's "unreadable, so
+ * deny": `active` stays (removing it would pass every call), and it's logged.
  */
 export async function deactivate(p: Ports, litterDir: string, run: string): Promise<void> {
   await serial(policyKey(litterDir), async () => {
-    const policy = await readPolicy(p, litterDir).catch(() => undefined)
+    let policy: Policy | null | undefined
+    try {
+      policy = await readJson<Policy>(p, policyPath(litterDir))
+    } catch (err) {
+      p.log(`run ${run}: policy.json doesn't parse, so hooks/active is left and the run isn't taken off it: ${errText(err)}`)
+      return
+    }
+    if (policy !== undefined && (policy === null || typeof policy !== 'object' || policy.v !== 1)) {
+      p.log(`run ${run}: policy.json isn't version 1, so hooks/active is left and the run isn't taken off it`)
+      return
+    }
     if (policy && policy.run && policy.run.run !== run) return
-    if (!policy || policy.swarm === null) await setActive(p, litterDir, false)
+    if (!policy || policy.swarm == null) await removeActiveIfUnbound(p, litterDir)
     if (policy?.run) await writePolicy(p, litterDir, { ...policy, run: null })
   })
 }

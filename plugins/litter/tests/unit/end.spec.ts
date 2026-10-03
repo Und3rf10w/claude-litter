@@ -95,7 +95,9 @@ beforeEach(async () => {
     entry = e
   }
   others.removeNodePolicy = async (_p, _dir, agentId) => void calls.push(['removeNodePolicy', agentId])
-  others.releaseOwnership = async (_p, _dir, name) => void calls.push(['releaseOwnership', name])
+  others.releaseOwnership = async (_p, _dir, name) => (calls.push(['releaseOwnership', name]), true)
+  // K's ref check (Q2) against the entry's owner: there's no real ref in this world. ownership.spec has the real one.
+  others.confirmOwnership = async () => (entry ? { launch: entry.launch, generation: entry.owner.generation, oids: [entry.owner.oid] } : 'lost')
   others.stopOwnerBeat = name => void calls.push(['stopOwnerBeat', name])
   others.noteSummaryTrigger = () => undefined
 

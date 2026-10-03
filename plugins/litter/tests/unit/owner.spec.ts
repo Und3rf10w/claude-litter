@@ -110,18 +110,18 @@ describe('the beat', () => {
     expect(leases()).toEqual(before.leases)
   })
 
-  test("a beat whose entry now names another generation or oid leaves the entry as it is", async () => {
+  test("a beat never writes over a newer generation's entry; one of its own launch at its generation it writes back whole (Q4)", async () => {
     await launched(w)
     const oid = (await refOf(w))!
     const e = await entry()
     await ownerDeps.writeSwarmPolicy(w.p, w.litterDir, 'alpha', { ...e, owner: { ...e.owner, generation: 2, session: 'sess-b', checkedAt: 1 } })
-    let text = await policyText(w)
+    const text = await policyText(w)
     await tick()
     expect(await policyText(w)).toBe(text)
+    // Its own generation with an oid it doesn't hold (another session's stale read brought it back): the ref is its own, so the entry is.
     await ownerDeps.writeSwarmPolicy(w.p, w.litterDir, 'alpha', { ...e, owner: { ...e.owner, oid: 'f'.repeat(40), checkedAt: 1 } })
-    text = await policyText(w)
     await tick()
-    expect(await policyText(w)).toBe(text)
+    expect(await entry()).toEqual({ ...e, owner: { ...e.owner, oid, checkedAt: (NOW + 20_000) / 1000 } })
     // The ref is still this session's, so the lease is still beaten.
     expect(lease(oid).beatAt).toBe(NOW + 20_000)
   })
