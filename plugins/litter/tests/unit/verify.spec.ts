@@ -249,7 +249,7 @@ describe('verify: dirty submodules', () => {
     // The same with the submodule ignored in config, which hides it from git status.
     await git('config', 'submodule.vendor/sub.ignore', 'all')
     expect(ok(await verify(['true']))).toMatchObject({ green: false, dirty_submodules: ['vendor/sub'] })
-  }, 30_000)
+  })
 })
 
 describe('verify: output', () => {
@@ -268,7 +268,7 @@ describe('verify: output', () => {
     expect(partText(r.verify_id, '0005.log').endsWith('LAST LINE\n')).toBe(true)
     expect(r.output_tail.endsWith('LAST LINE\n')).toBe(true)
     expect(lastLines(r.output_tail, 1000).split('\n').length - 1).toBe(TAIL_LINES)
-  }, 30_000)
+  })
 
   test('the tail of 200 very long lines is cut to the last 64 KiB', async () => {
     const r = ok(await verify(['awk', 'BEGIN { for (i = 0; i < 300; i++) { s = sprintf("%04d", i); while (length(s) < 1000) s = s "x"; print s } }']))

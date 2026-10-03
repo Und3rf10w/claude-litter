@@ -243,7 +243,7 @@ describe('land: the six steps', () => {
     if (!r.landed) throw new Error(`not landed: ${r.reason}`)
     expect(await git('ls-tree', r.commit, 'vendor/sub')).toContain(moved)
     expect(await status()).toBe('')
-  }, 30_000)
+  })
 
   test('after a restart (fresh module state, the same store), a land still goes through', async () => {
     const verifyId = await approvedChange()
@@ -369,7 +369,7 @@ describe('land: each precondition refused on its own, nothing moved', () => {
       await approve(v.verify_id, CRITIC, patch)
       await refusedWith(v.verify_id, new RegExp(`doesn't pass ${name}`))
     }
-  }, 30_000)
+  })
 
   test("a verdict from another agent than the verify's recorder", async () => {
     write('src/x.ts', 'x\n')
@@ -421,7 +421,7 @@ describe('land: each precondition refused on its own, nothing moved', () => {
     const verifyId = await approvedChange()
     writeFileSync(join(dir, 'vendor/sub/README.md'), 'edit inside\n')
     await refusedWith(verifyId, /submodules have uncommitted changes \(vendor\/sub\)/)
-  }, 30_000)
+  })
 
   test('a tampered ledger', async () => {
     const verifyId = await approvedChange()
