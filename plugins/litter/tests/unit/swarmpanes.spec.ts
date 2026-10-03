@@ -1,0 +1,672 @@
+// Tier 2: the swarm panes against what they call (FIX-S). Each finding's
+// scenario through the pane functions (handle, paneTick, the commands), with
+// the owners' real bodies wherever they run in tier 2: J's store and
+// templates, P's ack and stop, K's resume request. Only what tier 2 can't run
+// is faked: the health check, L's send, K's card and owner read.
+
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { ToolCallResult } from '../../hooks/ports'
+import { projectTemplatesDir, swarmBriefPath, swarmProposalDir } from '../../hooks/layout'
+import { appendLaunchRecord, readLaunchLedger, readSpecLedger } from '../../hooks/records/swarm'
+import { updateSession } from '../../hooks/session'
+import * as state from '../../hooks/swarm/state'
+import { readDraft, readProposal, readSaved, saveRevision, stageProposal, writeDraft } from '../../hooks/swarm/store'
+import { asTemplate, loadTemplate, parameterize, templateOffers } from '../../hooks/swarm/templates'
+import { requestResume } from '../../hooks/swarm/recover'
+import { others as endOthers, resetEndForTests } from '../../hooks/swarm/end'
+import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
+import type { Owners } from '../../hooks/swarm/view'
+import { blankNav, clean, composerKey, nav, resetViewForTests, setNav, setOwnersForTests, swarmView } from '../../hooks/swarm/view'
+import { doctorCommand, handle, paneTick, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
+import type {
+  DoctorPaneView,
+  SwarmBrowserView,
+  SwarmBuilderView,
+  SwarmProposalView,
+  SwarmRecoveryView,
+  SwarmStartView,
+} from '../../types/index'
+import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+setDefaultTimeout(120_000)
+
+const NOW = 1_800_000_000_000
+const SWARM = 'alpha'
+const LAUNCH = '20270115-093000'
+const W = ['Edit', 'Write', 'NotebookEdit']
+const RO = { commit: false, push: 'none', forcePush: false, rewriteHistory: false, worktreeOps: false } as const
+const HEALTHY: HealthReport = { rows: [], errors: 0, warnings: 0, snippet: null }
+// Built, not written: a bidi override in source reads as something else (CVE-2021-42574).
+const RLO = String.fromCharCode(0x202e)
+const LRI = String.fromCharCode(0x2066)
+const ZWSP = String.fromCharCode(0x200b)
+const BOM = String.fromCharCode(0xfeff)
+const LS = String.fromCharCode(0x2028)
+
+let p: TestPorts
+let dir: string
+let litterDir: string
+let cleanup: () => void
+let calls: { fn: string; args: unknown[] }[]
+
+const node = (id: string, over: Partial<SwarmNode> = {}): SwarmNode => ({ id, kind: 'worker', tools: { deny: W }, authority: RO, ...over })
+const lead = (id: string, over: Partial<SwarmNode> = {}): SwarmNode => node(id, { kind: 'orchestrator', worktree: 'none', ...over })
+
+/** Revision 1: part-a (with reviewer workers) and part-c, each with a brief. */
+const rev1 = (): SwarmSpec => ({
+  name: SWARM,
+  goal: 'Base',
+  nodes: [
+    lead('part-a', { brief: 'briefs/part-a.md', task: 'Review a', spawns: { reviewer: 2 } }),
+    node('reviewer', { brief: 'briefs/reviewer.md' }),
+    lead('part-c', { brief: 'briefs/part-c.md', task: 'Review c' }),
+  ],
+})
+const REV1_BRIEFS = { 'part-a': 'Own branch a.\n', reviewer: 'Review what you are sent.\n', 'part-c': 'Own branch c.\n' }
+const saveRev1 = () => saveRevision(p, litterDir, SWARM, { spec: rev1(), briefs: REV1_BRIEFS }, { from: 'save', changes: [] })
+
+/** A fake owner that records its call (without the ports) and answers. */
+function fake<K extends keyof Owners>(fn: K, answer: (...args: any[]) => unknown): Owners[K] {
+  return ((...args: unknown[]) => {
+    calls.push({ fn, args: args.filter(a => a !== p) })
+    return answer(...args)
+  }) as unknown as Owners[K]
+}
+const called = (fn: string) => calls.filter(c => c.fn === fn).map(c => c.args)
+
+const command = (args = '') => ({ command: 'litter-swarm', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const next = (async () => ({ text: 'engine' })) as never
+const shown = <T>() => p.views.swarm as T
+
+function live(over: Partial<LiveSwarm> = {}): LiveSwarm {
+  return {
+    name: SWARM,
+    launch: LAUNCH,
+    revision: 1,
+    spec: rev1(),
+    nonce: 'n0nce',
+    types: { 'part-a': 'litter:sw-alpha-part-a', reviewer: 'litter:sw-alpha-reviewer', 'part-c': 'litter:sw-alpha-part-c' },
+    typesReady: true,
+    dirs: {},
+    sessionCwd: dir,
+    worktreeRoot: join(dir, '.claude', 'worktrees'),
+    commonDir: join(dir, '.git'),
+    roots: { litterDir, litterCopies: [litterDir], ruleDirs: [] },
+    tips: {},
+    owner: { ref: 'refs/litter-swarm/alpha', oid: 'a'.repeat(40), generation: 1, session: 's1' },
+    state: 'live',
+    readOnly: false,
+    lost: false,
+    flags: { isolationLost: false },
+    startedAt: NOW - 125_000,
+    ...over,
+  }
+}
+
+function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
+  return {
+    agentId,
+    swarm: SWARM,
+    launch: LAUNCH,
+    node: 'reviewer',
+    n: 1,
+    kind: 'worker',
+    of: null,
+    parent: 'o1',
+    type: 'litter:sw-alpha-reviewer',
+    cwd: dir,
+    branch: null,
+    token: `tok-${agentId}`,
+    revision: 1,
+    generation: 1,
+    boundAt: NOW - 60_000,
+    adopted: false,
+    ...over,
+  }
+}
+
+/** part-a #1 (o1), its reviewer #1 (w1), part-c #1 (o2). */
+function goLive(over: Partial<LiveSwarm> = {}): void {
+  state.putLiveSwarm(live(over))
+  state.putBinding(bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, type: 'litter:sw-alpha-part-a' }))
+  state.putBinding(bind('w1'))
+  state.putBinding(bind('o2', { node: 'part-c', kind: 'orchestrator', parent: null, type: 'litter:sw-alpha-part-c', boundAt: NOW - 50_000 }))
+  p.agents = [
+    { id: 'o1', description: 'part-a', type: 'litter:sw-alpha-part-a', status: 'completed' },
+    { id: 'w1', description: 'reviewer', type: 'litter:sw-alpha-reviewer', status: 'completed' },
+    { id: 'o2', description: 'part-c', type: 'litter:sw-alpha-part-c', status: 'completed' },
+  ] as never
+}
+
+beforeEach(async () => {
+  state.resetForTests()
+  resetViewForTests()
+  resetPanesForTests()
+  resetEndForTests()
+  ;({ dir, cleanup } = scratch())
+  p = nodePorts({ sessionId: 's1', cwd: dir })
+  await scratchRepo(p, dir)
+  p.clock.now = NOW
+  litterDir = join(dir, '.claude', 'litter')
+  updateSession({ litterDir, litterDirError: null })
+  calls = []
+  // The real owners, but for what tier 2 can't run.
+  setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY) })
+})
+
+afterEach(() => {
+  updateSession({ litterDir: null })
+  setOwnersForTests({})
+  resetEndForTests()
+  state.resetForTests()
+  cleanup()
+})
+
+/** The proposal view for proposal 1, as the pane opens it when staged while the builder shows the swarm. */
+async function openProposal(): Promise<SwarmProposalView> {
+  setNav(blankNav('builder', SWARM))
+  state.noteProposal(SWARM, 1)
+  await paneTick(p)
+  expect(nav()?.view).toBe('proposal')
+  return shown<SwarmProposalView>()
+}
+
+describe('S1: a brief of an added or removed node goes with its node', () => {
+  test('unticking the add and the removal keeps both nodes as they were, whatever their briefs showed', async () => {
+    await saveRev1()
+    const [a, reviewer] = rev1().nodes
+    await stageProposal(p, litterDir, SWARM, {
+      baseRevision: 1,
+      spec: { ...rev1(), nodes: [{ ...a!, task: 'Review a, carefully' }, reviewer!, lead('part-b', { brief: 'briefs/part-b.md', task: 'Review b' })] },
+      briefs: { 'part-b': 'Own branch b.\n' },
+      changes: [
+        { path: 'nodes.part-a.task', reason: 'clearer' },
+        { path: 'nodes.part-b', reason: 'split it' },
+        { path: 'nodes.part-c', reason: 'folded into b' },
+      ],
+    })
+    const v = await openProposal()
+    const briefs = Object.fromEntries(v.briefs.map(b => [b.node, b]))
+    // No pick of their own: each shows its node's.
+    expect(briefs['part-b']).toEqual(expect.objectContaining({ withNode: true, picked: true }))
+    expect(briefs['part-c']).toEqual(expect.objectContaining({ withNode: true, picked: true }))
+    const index = (path: string) => v.changes.find(c => c.path === path)!.index
+    await handle(p, `swarm:proposal:pick:alpha/1/${index('nodes.part-b')}`, {})
+    await handle(p, `swarm:proposal:pick:alpha/1/${index('nodes.part-c')}`, {})
+    const after = shown<SwarmProposalView>()
+    expect(after.briefs.map(b => [b.node, b.picked])).toEqual([
+      ['part-b', false],
+      ['part-c', false],
+    ])
+    expect(after.picked).toBe(1)
+    await handle(p, 'swarm:proposal:accept-selected:alpha/1', {})
+    expect(nav()?.notice?.text).toBe('accepted 1 change: revision 2')
+    const saved = await readSaved(p, litterDir, SWARM)
+    expect(saved?.revision).toBe(2)
+    expect(saved?.spec.nodes.map(x => x.id)).toEqual(['part-a', 'reviewer', 'part-c'])
+    expect(saved?.spec.nodes[0]?.task).toBe('Review a, carefully')
+    expect(saved?.briefs['part-c']).toBe('Own branch c.\n')
+  })
+})
+
+describe("S2: [Accept all] takes the conflicts you took the lead's side of", () => {
+  test("goal: yours 'Mine', the lead's 'Lead'; [Take the lead's] then [Accept all] saves 'Lead'", async () => {
+    await saveRev1()
+    await writeDraft(p, litterDir, SWARM, { base: 1, edits: [{ path: 'goal', at: NOW }], spec: { ...rev1(), goal: 'Mine' }, briefs: REV1_BRIEFS, updatedAt: NOW })
+    await stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: { ...rev1(), goal: 'Lead' }, briefs: {}, changes: [{ path: 'goal', reason: 'sharper' }] })
+    const v = await openProposal()
+    expect(v.changes).toEqual([expect.objectContaining({ path: 'goal', conflict: true, picked: false })])
+    await handle(p, 'swarm:proposal:take:alpha/1/0', {})
+    await handle(p, 'swarm:proposal:accept-all:alpha/1', {})
+    expect((await readSaved(p, litterDir, SWARM))?.spec.goal).toBe('Lead')
+  })
+
+  test('with no conflict taken, [Accept all] still keeps your side', async () => {
+    await saveRev1()
+    await writeDraft(p, litterDir, SWARM, { base: 1, edits: [{ path: 'goal', at: NOW }], spec: { ...rev1(), goal: 'Mine' }, briefs: REV1_BRIEFS, updatedAt: NOW })
+    const [a, ...rest] = rev1().nodes
+    await stageProposal(p, litterDir, SWARM, {
+      baseRevision: 1,
+      spec: { ...rev1(), goal: 'Lead', nodes: [{ ...a!, task: 'Review a twice' }, ...rest] },
+      briefs: {},
+      changes: [
+        { path: 'goal', reason: 'sharper' },
+        { path: 'nodes.part-a.task', reason: 'twice' },
+      ],
+    })
+    await openProposal()
+    await handle(p, 'swarm:proposal:accept-all:alpha/1', {})
+    const saved = await readSaved(p, litterDir, SWARM)
+    expect(saved?.spec.goal).toBe('Mine')
+    expect(saved?.spec.nodes[0]?.task).toBe('Review a twice')
+  })
+})
+
+describe('S3: [Save as template] makes parameters J accepts', () => {
+  test("a task and a new worktree's branch become parameters, saved and read back by J", async () => {
+    const spec: SwarmSpec = {
+      name: SWARM,
+      goal: 'Ship it',
+      nodes: [lead('part-a', { task: 'Work on part-a', worktree: { new: { from: 'main', branch: 'part-a' } } })],
+    }
+    await saveRevision(p, litterDir, SWARM, { spec, briefs: {} }, { from: 'save', changes: [] })
+    setNav(blankNav('builder', SWARM))
+    await handle(p, 'swarm:builder:save-as:alpha', {})
+    const form = shown<SwarmBuilderView>().saveAs!
+    expect(form.candidates.map(c => c.id)).toEqual(['name', 'goal', 'nodes.part-a.task', 'nodes.part-a.worktree.new.from', 'nodes.part-a.worktree.new.branch'])
+    await handle(p, 'swarm:builder:saveas-param:alpha/nodes.part-a.task', {})
+    await handle(p, 'swarm:builder:saveas-param:alpha/nodes.part-a.worktree.new.branch', {})
+    await handle(p, 'swarm:builder:saveas-scope:alpha', { value: 'project' })
+    await handle(p, 'swarm:builder:saveas-name:alpha', { value: 'per-part', kind: 'change' })
+    await handle(p, 'swarm:builder:saveas-save:alpha', {})
+    expect(nav()?.notice?.level).toBe('ok')
+    const t = await loadTemplate(p, litterDir, 'project', 'per-part')
+    expect(t?.params.map(x => [x.name, x.default])).toEqual([
+      ['part_a_task', 'Work on part-a'],
+      ['part_a_branch', 'part-a'],
+    ])
+    expect(t?.spec.nodes[0]?.task).toBe('{part_a_task}')
+  })
+
+  test("a long node id's parameter names still fit J's 32 characters", () => {
+    const id = 'orchestrator-for-the-backend-api'
+    const spec: SwarmSpec = { name: SWARM, goal: 'g', nodes: [lead(id, { task: 't', worktree: { new: { from: 'main', branch: 'b' } } })] }
+    const offers = templateOffers(spec)
+    const t = parameterize({ name: 'long', description: 'd', scope: 'user' }, spec, {}, offers)
+    const { scope: _scope, ...file } = t
+    expect(asTemplate(file, 'user')).toEqual(expect.objectContaining({ name: 'long' }))
+    expect(new Set(offers.map(o => o.param)).size).toBe(offers.length)
+  })
+
+  test('[Use template] reads a project template through J', async () => {
+    mkdirSync(projectTemplatesDir(litterDir), { recursive: true })
+    const file = {
+      name: 'mine',
+      description: 'one orchestrator',
+      params: [{ name: 'name', type: 'string' }],
+      spec: { name: '{name}', goal: 'do it', nodes: [lead('solo', { task: 'do it' })] },
+      briefs: {},
+    }
+    writeFileSync(join(projectTemplatesDir(litterDir), 'mine.json'), JSON.stringify(file))
+    setNav(blankNav('start', null))
+    await handle(p, 'swarm:start:name', { value: 'fresh', kind: 'change' })
+    await handle(p, 'swarm:start:template', { value: 'project:mine' })
+    await handle(p, 'swarm:start:use-template', {})
+    expect(nav()?.view).toBe('builder')
+    expect((await readDraft(p, litterDir, 'fresh'))?.spec.nodes.map(x => x.id)).toEqual(['solo'])
+  })
+})
+
+describe('S4: [That was me] on a rule-commit flag', () => {
+  test('records the ack, and the flag clears', async () => {
+    goLive()
+    const flag = await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', {
+      kind: 'rule-commit',
+      node: 'part-a',
+      agentId: 'o1',
+      from: 'a'.repeat(40),
+      to: 'b'.repeat(40),
+      files: ['.claude/rules/x.md'],
+    })
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    expect(shown<SwarmBrowserView>().flags.map(f => [f.kind, f.seq])).toEqual([['rule-commit', flag.seq]])
+    await handle(p, `swarm:browser:ack:alpha/${flag.seq}`, {})
+    expect(nav()?.notice?.level).not.toBe('error')
+    expect(shown<SwarmBrowserView>().flags).toEqual([])
+    const { records } = await readLaunchLedger(p, litterDir, SWARM, LAUNCH)
+    expect(records.filter(r => r.kind === 'swarm.event' && r.body.kind === 'branch-moved-ack').map(r => r.body)).toEqual([{ kind: 'branch-moved-ack', seq: flag.seq }])
+  })
+})
+
+describe('S5, S6: the recovery card offers orchestrators K can act on, and stays for what is left', () => {
+  const CARD: RecoveryCard = {
+    swarm: SWARM,
+    launch: LAUNCH,
+    stopping: false,
+    at: NOW - 1_000,
+    nodes: [
+      { node: 'part-a', n: 1, agentId: 'o1', kind: 'orchestrator', state: 'settled', lastReport: 'half done', respawnOnly: false },
+      { node: 'reviewer', n: 1, agentId: 'w1', kind: 'worker', state: 'settled', lastReport: null, respawnOnly: false },
+      { node: 'part-c', n: 1, agentId: 'o2', kind: 'orchestrator', state: 'settled', lastReport: null, respawnOnly: false },
+    ],
+  }
+  /** K's card, less the nodes K's requestResume marked handled (as recoveryCard does). */
+  let handled: Set<string>
+  const ownersWith = (card: RecoveryCard) => {
+    handled = new Set()
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async () => HEALTHY),
+      recoveryCard: fake('recoveryCard', () => ({ ...card, nodes: card.nodes.filter(x => !handled.has(x.node)) })),
+      requestResume: fake('requestResume', async (_p, name: string, nodes: string[], how: 'resume' | 'respawn') => {
+        await requestResume(p, name, nodes, how)
+        for (const x of nodes) handled.add(x)
+      }),
+      readOwner: fake('readOwner', async () => null),
+    })
+  }
+
+  test('[Resume all] asks for the orchestrators with an instance to resume: no worker, no stopped one', async () => {
+    goLive()
+    state.stop(SWARM, ['o2'], 'stopped from the swarm browser')
+    ownersWith(CARD)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    const v = shown<SwarmRecoveryView>()
+    expect(v.view).toBe('recovery')
+    expect(v.rows.map(r => [r.node, r.kind, r.pickable, r.resumable])).toEqual([
+      ['part-a', 'orchestrator', true, true],
+      ['part-c', 'orchestrator', true, false],
+      ['reviewer', 'worker', false, false],
+    ])
+    expect(v.rows[2]?.instances.map(x => x.name)).toEqual(['reviewer #1'])
+    await handle(p, 'swarm:recovery:resume-all:alpha', {})
+    expect(called('requestResume')).toEqual([[SWARM, ['part-a'], 'resume']])
+    expect(p.filled.at(-1)).toContain('/litter:swarm resume alpha part-a')
+  })
+
+  test('[Re-spawn …] after a handover offers the orchestrators only, and K takes it', async () => {
+    goLive()
+    const card: RecoveryCard = { ...CARD, nodes: CARD.nodes.map(x => ({ ...x, respawnOnly: true })) }
+    state.patchLiveSwarm(SWARM, { owner: { ...live().owner, generation: 2 } })
+    ownersWith(card)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    await handle(p, 'swarm:recovery:respawn:alpha', {})
+    expect(called('requestResume')).toEqual([[SWARM, ['part-a', 'part-c'], 'respawn']])
+    expect(nav()?.notice?.level).toBe('ok')
+  })
+
+  test('a resume of one orchestrator leaves the card showing the other; its worker goes with it', async () => {
+    goLive()
+    ownersWith(CARD)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    await handle(p, 'swarm:recovery:pick:alpha/part-a', {})
+    await handle(p, 'swarm:recovery:resume-selected:alpha', {})
+    expect(called('requestResume')).toEqual([[SWARM, ['part-a'], 'resume']])
+    expect(nav()?.view).toBe('recovery')
+    await paneTick(p)
+    const v = shown<SwarmRecoveryView>()
+    expect(v.view).toBe('recovery')
+    expect(v.rows.map(r => r.node)).toEqual(['part-c'])
+    await handle(p, 'swarm:recovery:resume-all:alpha', {})
+    expect(called('requestResume').at(-1)).toEqual([SWARM, ['part-c'], 'resume'])
+    expect(nav()?.view).toBe('browser')
+  })
+})
+
+describe('S7: one To and one Route for the drawing and [Send]', () => {
+  test('⏎ sends to the To the composer shows, by the Route it shows', async () => {
+    goLive()
+    p.storeMap.set(composerKey(litterDir, SWARM), { when: 'interject', route: 'parent' })
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async () => HEALTHY),
+      readOwner: fake('readOwner', async () => null),
+      sendFromBrowser: fake('sendFromBrowser', async () => ({ kind: 'delivered' })),
+    })
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    const c = shown<SwarmBrowserView>().composer!
+    expect([c.to, c.address, c.route]).toEqual(['o1', 'part-a#1', 'direct'])
+    await handle(p, 'swarm:browser:text:alpha', { value: 'go on', kind: 'change' })
+    await handle(p, 'swarm:browser:text:alpha', { value: 'go on', kind: 'submit' })
+    expect(called('sendFromBrowser')).toEqual([[{ swarm: SWARM, node: 'part-a#1', text: 'go on', when: 'interject', route: 'direct' }]])
+  })
+})
+
+describe('S8: [Hard stop] on the unsettled report reaches an agent no binding knows', () => {
+  test('TaskStop for it, on the stopped list, recorded as a stop', async () => {
+    goLive({ state: 'stopping' })
+    p.agents = [...p.agents, { id: 'ag-x', description: 'part-a', type: 'litter:sw-alpha-part-a', status: 'running' }] as never
+    p.toolAnswer = () => ({ result: { message: 'ok' }, text: 'ok' }) as unknown as ToolCallResult
+    const saved = { ...endOthers }
+    endOthers.patchNodePolicies = async () => {}
+    try {
+      setOwnersForTests({
+        checkHealth: fake('checkHealth', async () => HEALTHY),
+        readOwner: fake('readOwner', async () => null),
+        settleProgress: fake('settleProgress', () => ({
+          swarm: SWARM,
+          since: NOW - 130_000,
+          nodes: [{ agentId: 'ag-x', node: 'part-a', n: 0, status: 'running, not bound' }],
+          calls: [],
+          shells: [],
+          reservations: 0,
+        })),
+      })
+      setNav(blankNav('unsettled', SWARM))
+      await handle(p, 'swarm:unsettled:hard-stop:alpha', {})
+      expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'ag-x' } }])
+      expect(state.isStopped('ag-x')).toBe(true)
+      const { records } = await readLaunchLedger(p, litterDir, SWARM, LAUNCH)
+      expect(records.filter(r => r.kind === 'swarm.stop').map(r => r.body)).toEqual([{ nodes: ['ag-x'], how: 'hard' }])
+      expect(nav()?.notice?.level).not.toBe('error')
+    } finally {
+      Object.assign(endOthers, saved)
+    }
+  })
+})
+
+describe('S9: the read-only browser shows the last recorded summary', () => {
+  test("from the launch ledger's swarm.summary, with its age", async () => {
+    goLive({ readOnly: true })
+    setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY), readOwner: fake('readOwner', async () => null) })
+    p.clock.now = NOW - 60_000
+    await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.summary', {
+      text: 'Goal now: parser first\nProgress:\n- tokenizer done\nWaiting on you:\n- which branch',
+      goal: 'parser first',
+      inputsHash: 'h1',
+      usage: null,
+    })
+    p.clock.now = NOW
+    setNav(blankNav('browser', SWARM))
+    const v = (await swarmView(p)) as SwarmBrowserView
+    expect(v.summary).toEqual({ goal: 'parser first', progress: ['tokenizer done'], waiting: ['which branch'], age: '1m ago', stale: false })
+  })
+})
+
+describe('S10: a template whose parameters fall short makes no draft', () => {
+  test('the errors stay on the start screen until a parameter changes; the Name fills its name', async () => {
+    setNav(blankNav('start', null))
+    await handle(p, 'swarm:start:name', { value: 'fresh', kind: 'change' })
+    await handle(p, 'swarm:start:template', { value: 'builtin:research-fan-out' })
+    const form = shown<SwarmStartView>().template!
+    expect(form.params.map(x => x.name)).toEqual(['goal'])
+    await handle(p, 'swarm:start:use-template', {})
+    expect(nav()?.view).toBe('start')
+    expect(await readDraft(p, litterDir, 'fresh')).toBeNull()
+    expect(shown<SwarmStartView>().template?.errors).toEqual([expect.stringContaining('params.goal')])
+    await paneTick(p)
+    p.clock.now = NOW + 5_000
+    await paneTick(p)
+    expect(shown<SwarmStartView>().template?.errors.length).toBe(1)
+    await handle(p, 'swarm:start:param:goal', { value: 'find the slow queries', kind: 'change' })
+    expect(shown<SwarmStartView>().template?.errors).toEqual([])
+    await handle(p, 'swarm:start:use-template', {})
+    expect(nav()?.view).toBe('builder')
+    const draft = await readDraft(p, litterDir, 'fresh')
+    expect(draft?.spec.name).toBe('fresh')
+    expect(draft?.spec.goal).toBe('find the slow queries')
+  })
+})
+
+describe("S11: a proposal J can't read can still be rejected", () => {
+  test('the builder shows why, with [Reject]; J records the decision', async () => {
+    await saveRev1()
+    await stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: rev1(), briefs: { 'part-a': 'Own a, the lead says.\n' }, changes: [{ path: 'brief:part-a', reason: 'x' }] })
+    writeFileSync(join(swarmProposalDir(litterDir, SWARM, 1), 'briefs', 'part-a.md'), 'tampered\n')
+    await expect(readProposal(p, litterDir, SWARM, 1)).rejects.toThrow('sha256 differs')
+    setNav(blankNav('builder', SWARM))
+    state.noteProposal(SWARM, 1)
+    await paneTick(p)
+    const v = shown<SwarmBuilderView>()
+    expect(v.view).toBe('builder')
+    expect(v.unreadable).toEqual([{ n: 1, error: expect.stringContaining('sha256 differs') }])
+    await handle(p, 'swarm:builder:reject:alpha/1', {})
+    const decided = (await readSpecLedger(p, litterDir, SWARM)).records.filter(r => r.kind === 'swarm.proposal.decided').map(r => r.body)
+    expect(decided).toEqual([{ proposal: 1, accepted: 'none' }])
+    expect(shown<SwarmBuilderView>().unreadable).toEqual([])
+    expect(shown<SwarmBuilderView>().proposals).toEqual([])
+  })
+})
+
+describe('S12: a brief conflict shows both sides', () => {
+  test("the lead's diff and yours, with [Keep yours] and [Take the lead's]", async () => {
+    await saveRev1()
+    await writeDraft(p, litterDir, SWARM, {
+      base: 1,
+      edits: [{ path: 'brief:part-a', at: NOW }],
+      spec: rev1(),
+      briefs: { ...REV1_BRIEFS, 'part-a': 'Own branch a, mine.\n' },
+      updatedAt: NOW,
+    })
+    await stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: rev1(), briefs: { 'part-a': 'Own branch a, the lead.\n' }, changes: [{ path: 'brief:part-a', reason: 'x' }] })
+    const pv = await readProposal(p, litterDir, SWARM, 1)
+    expect(pv?.briefs[0]).toEqual(
+      expect.objectContaining({
+        conflict: true,
+        lines: [{ op: '+', text: 'Own branch a, the lead.' }, { op: '-', text: 'Own branch a.' }],
+        yoursLines: [{ op: '+', text: 'Own branch a, mine.' }, { op: '-', text: 'Own branch a.' }],
+      }),
+    )
+    await openProposal()
+    await handle(p, 'swarm:proposal:diff:alpha/1/part-a', {})
+    const b = shown<SwarmProposalView>().briefs[0]!
+    expect(b.picked).toBe(false)
+    expect(b.lines.map(l => l.text)).toEqual(['+ Own branch a, the lead.', '− Own branch a.'])
+    expect(b.yoursLines.map(l => l.text)).toEqual(['+ Own branch a, mine.', '− Own branch a.'])
+    await handle(p, 'swarm:proposal:take-brief:alpha/1/part-a', {})
+    expect(shown<SwarmProposalView>().briefs[0]?.picked).toBe(true)
+    await handle(p, 'swarm:proposal:accept-selected:alpha/1', {})
+    expect((await readSaved(p, litterDir, SWARM))?.briefs['part-a']).toBe('Own branch a, the lead.\n')
+  })
+})
+
+describe('S13: [Test] runs once per press', () => {
+  test('[Copy] after [Test] checks again without the summaryModel test, and keeps its row', async () => {
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async (_p, input: { testSummaryModel?: boolean }) => ({
+        rows: [
+          { id: 'depth', severity: 'ok', title: 'depth fits', detail: '' },
+          ...(input.testSummaryModel ? [{ id: 'summary-model', severity: 'ok' as const, title: 'summaryModel answers', detail: '' }] : []),
+        ],
+        errors: 0,
+        warnings: 0,
+        snippet: { env: { X: '1' } },
+      })),
+    })
+    await doctorCommand(p, { command: 'litter-doctor', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never, next)
+    await handle(p, 'swarm:doctor:test', {})
+    const tests = () => called('checkHealth').filter(a => (a[0] as { testSummaryModel?: boolean }).testSummaryModel === true).length
+    expect(tests()).toBe(1)
+    await handle(p, 'swarm:doctor:copy', {})
+    await handle(p, 'swarm:doctor:ask-lead', {})
+    expect(tests()).toBe(1)
+    const body = (p.views.doctor as DoctorPaneView).body!
+    expect(body.tested).toBe(true)
+    expect(body.rows.map(r => r.id)).toEqual(['depth', 'summary-model'])
+    await handle(p, 'swarm:doctor:test', {})
+    expect(tests()).toBe(2)
+  })
+})
+
+describe('S14: undecided proposals come back from the spec ledger', () => {
+  test('/litter-swarm <name> opens one staged before a reload', async () => {
+    await saveRev1()
+    await stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: { ...rev1(), goal: 'Lead' }, briefs: {}, changes: [{ path: 'goal', reason: 'x' }] })
+    // A reload: nothing in module memory, nothing in state's queue.
+    state.takeProposals()
+    resetViewForTests()
+    setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY) })
+    expect(await swarmCommand(p, command(SWARM), next)).toEqual({ text: "litter: the swarm pane shows the lead's proposal 1 for alpha" })
+    expect(shown<SwarmProposalView>().view).toBe('proposal')
+  })
+})
+
+describe('S15: external text is cleaned, every label too, and brief links are text', () => {
+  test('bidi overrides and zero-widths go, as controls do', () => {
+    expect(clean('a' + RLO + 'b' + ZWSP + 'c' + LRI + 'd' + BOM + 'e\u0007f')).toBe('abcdef')
+    expect(clean('a\u001b[31mb')).toBe('ab')
+    expect(clean('one' + LS + 'two')).toBe('one\ntwo')
+  })
+
+  test("a report's bidi override never reaches the browser", async () => {
+    goLive()
+    state.noteReport('w1', 'fixed ' + RLO + 'it' + ZWSP,'handback', NOW - 1_000)
+    setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY), readOwner: fake('readOwner', async () => null) })
+    const v = (await (async () => {
+      setNav(blankNav('browser', SWARM))
+      return swarmView(p)
+    })()) as SwarmBrowserView
+    expect(v.rows.find(r => r.agentId === 'w1')?.report).toBe('fixed it')
+  })
+
+  test("the model option, the spawn picks and the tree's workers are cleaned", async () => {
+    const spec: SwarmSpec = {
+      name: SWARM,
+      goal: 'g',
+      nodes: [lead('part-a', { model: 'evil' + RLO + 'model', spawns: {} }), node('rev' + RLO + 'iewer')],
+    }
+    await writeDraft(p, litterDir, SWARM, { base: 0, edits: [], spec, briefs: {}, updatedAt: NOW })
+    setNav({ ...blankNav('builder', SWARM), selected: 'part-a' })
+    const v = (await swarmView(p)) as SwarmBuilderView
+    const labels = v.inspector.fields.flatMap(f => [f.label, ...f.options.map(o => o.label)])
+    expect(labels.some(l => l.includes(RLO))).toBe(false)
+    expect(labels).toContain('evilmodel')
+    expect(labels).toContain('reviewer')
+    expect(v.tree.workers).toEqual(['reviewer'])
+  })
+
+  test('a brief draws its links as text naming the target', async () => {
+    await saveRevision(
+      p,
+      litterDir,
+      SWARM,
+      {
+        spec: { name: SWARM, goal: 'g', nodes: [lead('part-a', { brief: 'briefs/part-a.md' })] },
+        briefs: {
+          'part-a':
+            // The panel shows the first 8 lines.
+            'See [the docs](https://evil.example/x), <https://auto.example/>, ![img](file:///etc/passwd) and https://bare.example/y.\n\n' +
+            '[ref]: https://ref.example/\n\n' +
+            'A [[nested] link](https://nest.example/) and `[code](https://code.example/)` as written.\n' +
+            '```\n[fenced](https://fence.example/)\n```\n',
+        },
+      },
+      { from: 'save', changes: [] },
+    )
+    setNav({ ...blankNav('builder', SWARM), selected: 'part-a' })
+    const md = ((await swarmView(p)) as SwarmBuilderView).brief!.markdown
+    const prose = md.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '')
+    expect(prose).not.toMatch(/\]\(/)
+    expect(prose).not.toMatch(/<https?:/)
+    expect(prose).not.toMatch(/https?:/)
+    expect(md).toContain('the docs (`https://evil.example/x`)')
+    expect(md).toContain('`https://auto.example/`')
+    expect(md).toContain('img (`file:///etc/passwd`)')
+    expect(md).toContain('`https://bare.example/y`.')
+    expect(md).toContain('`https://nest.example/`')
+    expect(md).toContain('`[code](https://code.example/)`')
+    expect(md).toContain('```\n[fenced](https://fence.example/)\n```')
+    expect(md).not.toMatch(/^\[ref\]:/m)
+    expect(md).toContain('`https://ref.example/`')
+  })
+})
+
+describe('S16: the strip checks what [Save] saves', () => {
+  test("a draft without a node's brief text fails the strip, as it fails [Save]", async () => {
+    await saveRevision(p, litterDir, SWARM, { spec: { name: SWARM, goal: 'g', nodes: [lead('part-a', { brief: 'briefs/part-a.md' })] }, briefs: { 'part-a': 'Own it.\n' } }, { from: 'save', changes: [] })
+    expect(readFileSync(swarmBriefPath(litterDir, SWARM, 'part-a'), 'utf8')).toBe('Own it.\n')
+    // A draft that holds no text for part-a's brief: the saved file isn't what [Save] sends.
+    await writeDraft(p, litterDir, SWARM, { base: 1, edits: [{ path: 'goal', at: NOW }], spec: { name: SWARM, goal: 'g2', nodes: [lead('part-a', { brief: 'briefs/part-a.md' })] }, briefs: {}, updatedAt: NOW })
+    setNav(blankNav('builder', SWARM))
+    await paneTick(p)
+    const strip = shown<SwarmBuilderView>().strip
+    expect(strip.some(r => r.glyph === '✕' && r.text.includes('nodes.part-a.brief'))).toBe(true)
+    await handle(p, 'swarm:builder:save:alpha', {})
+    expect(nav()?.notice?.text).toContain('nodes.part-a.brief')
+  })
+})

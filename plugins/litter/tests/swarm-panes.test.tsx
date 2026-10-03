@@ -63,6 +63,7 @@ const START: SwarmStartView = {
     name: 'fan-out',
     description: 'one worker per part',
     params: [{ name: 'parts', list: true, description: 'one per part', value: 'a, b', suggestions: ['main', 'feature/x'] }],
+    errors: [],
   },
   swarms: [{ name: 'demo', goal: 'ship the parser', revision: 2, nodes: 3, live: false }],
 }
@@ -122,6 +123,7 @@ const BUILDER: SwarmBuilderView = {
   askLead: '',
   saveAs: { name: 'demo', description: '', scope: 'user', candidates: [{ id: 'goal', label: 'the goal', value: 'ship the parser', param: true }] },
   proposals: [1],
+  unreadable: [],
 }
 
 const PROPOSAL: SwarmProposalView = {
@@ -145,11 +147,13 @@ const PROPOSAL: SwarmProposalView = {
       color: 'warning',
       reason: 'clearer',
       conflict: false,
+      withNode: false,
       open: true,
       lines: [
         { text: '− old', color: 'diffRemovedWord' },
         { text: '+ new', color: 'diffAddedWord' },
       ],
+      yoursLines: [],
       picked: true,
     },
   ],
@@ -217,8 +221,33 @@ const RECOVERY: SwarmRecoveryView = {
   launch: '20270115-093000',
   stopping: false,
   rows: [
-    { agentId: 'o1', node: 'part-a', name: 'part-a #1', kind: 'orchestrator', state: 'alive', glyph: '', color: 'background', report: '', respawnOnly: false, picked: true },
-    { agentId: 'w2', node: 'fixer', name: 'fixer #2', kind: 'worker', state: 'gone', glyph: '−', color: 'inactive', report: 'half done', respawnOnly: true, picked: false },
+    {
+      node: 'part-a',
+      kind: 'orchestrator',
+      pickable: true,
+      resumable: true,
+      picked: true,
+      note: '',
+      instances: [{ agentId: 'o1', name: 'part-a #1', state: 'settled', glyph: '✓', color: 'success', report: 'half done', respawnOnly: false }],
+    },
+    {
+      node: 'part-c',
+      kind: 'orchestrator',
+      pickable: true,
+      resumable: false,
+      picked: false,
+      note: 're-spawn only',
+      instances: [{ agentId: 'o3', name: 'part-c #1', state: 'gone', glyph: '−', color: 'inactive', report: '', respawnOnly: true }],
+    },
+    {
+      node: 'fixer',
+      kind: 'worker',
+      pickable: false,
+      resumable: false,
+      picked: false,
+      note: 'comes back through part-a',
+      instances: [{ agentId: 'w2', name: 'fixer #2', state: 'gone', glyph: '−', color: 'inactive', report: '', respawnOnly: true }],
+    },
   ],
 }
 
@@ -410,6 +439,61 @@ describe('the swarm panes draw every view', () => {
     views(on, BUILDER)
     const ui = await mountSwarm($, 'terminal', 60)
     expect(await ui.find({ type: 'Button', key: 'swarm:builder:save:demo' })).toBeDefined()
+  })
+
+  test("a brief that comes with its node has no pick of its own (S1)", async ($, on) => {
+    mock.store(on)
+    const brief = PROPOSAL.briefs[0]!
+    views(on, { ...PROPOSAL, briefs: [brief, { ...brief, node: 'reviewer', glyph: '+', withNode: true, open: false, lines: [] }] })
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Button', key: 'swarm:proposal:pick-brief:demo/1/fixer' })).toBeDefined()
+    expect(await ui.find({ key: 'swarm:proposal:pick-brief:demo/1/reviewer' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'with its node' })).toBeDefined()
+  })
+
+  test("a brief you edited too shows both diffs, with [Keep yours] and [Take the lead's] (S12)", async ($, on) => {
+    mock.store(on)
+    const brief = {
+      ...PROPOSAL.briefs[0]!,
+      conflict: true,
+      picked: false,
+      lines: [{ text: "+ the lead's line", color: 'diffAddedWord' }],
+      yoursLines: [{ text: '+ your line', color: 'diffAddedWord' }],
+    }
+    views(on, { ...PROPOSAL, briefs: [brief] })
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: "+ the lead's line" })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '+ your line' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:proposal:keep-brief:demo/1/fixer' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:proposal:take-brief:demo/1/fixer' })).toBeDefined()
+    expect(await ui.find({ key: 'swarm:proposal:pick-brief:demo/1/fixer' })).toBeUndefined()
+  })
+
+  test('the recovery card picks orchestrators by node; a worker says what brings it back (S5)', async ($, on) => {
+    mock.store(on)
+    views(on, RECOVERY)
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Button', key: 'swarm:recovery:pick:demo/part-a' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:recovery:pick:demo/part-c' })).toBeDefined()
+    expect(await ui.find({ key: 'swarm:recovery:pick:demo/fixer' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'comes back through part-a' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 're-spawn only' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'last report: half done' })).toBeDefined()
+  })
+
+  test("a template's values that don't check are shown on its form (S10)", async ($, on) => {
+    mock.store(on)
+    views(on, { ...START, template: { ...START.template!, errors: ['params.parts: needs a value'] } })
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: 'params.parts: needs a value' })).toBeDefined()
+  })
+
+  test("a proposal that can't be read still has [Reject] (S11)", async ($, on) => {
+    mock.store(on)
+    views(on, { ...BUILDER, proposals: [], unreadable: [{ n: 2, error: 'not JSON' }] })
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Button', key: 'swarm:builder:reject:demo/2' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: "proposal 2 can't be read: not JSON" })).toBeDefined()
   })
 })
 

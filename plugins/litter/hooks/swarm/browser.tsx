@@ -234,17 +234,25 @@ function renderRecovery(view: SwarmRecoveryView, el: PaneElements): RenderElemen
       <Text wrap="wrap">
         {view.stopping
           ? 'It was ending when the session stopped: finish ending it, or leave it stopped.'
-          : 'These were running when the session stopped. Resume them, re-spawn them, or leave them stopped.'}
+          : 'These were running when the session stopped. Resume or re-spawn the orchestrators (their workers come back through them), or leave them stopped.'}
       </Text>
       {view.rows.map(r => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            {!view.stopping && button(el, { key: `swarm:recovery:pick:${s}/${r.agentId}`, label: r.picked ? '[x]' : '[ ]' })}
-            <Text>{r.name}</Text>
-            <Text color={r.color}>{`${r.glyph ? `${r.glyph} ` : ''}${r.state}`}</Text>
-            {r.respawnOnly && <Text dimColor>re-spawn only</Text>}
+            {r.pickable ? button(el, { key: `swarm:recovery:pick:${s}/${r.node}`, label: r.picked ? '[x]' : '[ ]' }) : !view.stopping && <Text>{'   '}</Text>}
+            <Text bold={r.kind === 'orchestrator'}>{r.node}</Text>
+            <Text dimColor>{r.kind}</Text>
+            {r.note !== '' && <Text dimColor>{r.note}</Text>}
           </Box>
-          {r.report !== '' && <Text dimColor wrap="truncate-end">{`    last report: ${r.report}`}</Text>}
+          {r.instances.map(x => (
+            <Box flexDirection="column">
+              <Box flexDirection="row" columnGap={1}>
+                <Text>{`    ${x.name}`}</Text>
+                <Text color={x.color}>{`${x.glyph ? `${x.glyph} ` : ''}${x.state}`}</Text>
+              </Box>
+              {x.report !== '' && <Text dimColor wrap="truncate-end">{`      last report: ${x.report}`}</Text>}
+            </Box>
+          ))}
         </Box>
       ))}
       <Box marginTop={1}>

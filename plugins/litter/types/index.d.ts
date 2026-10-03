@@ -52,7 +52,15 @@ export type SwarmParamField = {
   /** From `git branch` and `git worktree list`, for a list parameter. */
   suggestions: string[]
 }
-export type SwarmTemplateForm = { id: string; name: string; description: string; params: SwarmParamField[] }
+export type SwarmTemplateForm = {
+  id: string
+  name: string
+  description: string
+  /** Its parameters but `name`, which the start screen's Name fills. */
+  params: SwarmParamField[]
+  /** Why [Use template] made no draft, each `<field>: <error>`; kept until a parameter changes. */
+  errors: string[]
+}
 export type SwarmListRow = { name: string; goal: string; revision: number; nodes: number; live: boolean }
 
 export type SwarmStartView = SwarmViewCommon & {
@@ -159,6 +167,8 @@ export type SwarmBuilderView = SwarmViewCommon & {
   saveAs: SwarmSaveAsForm | null
   /** The lead's staged proposals not yet decided, by number. */
   proposals: number[]
+  /** Those of them J can't read (a staged brief changed, its base revision gone): why, and [Reject]. */
+  unreadable: { n: number; error: string }[]
 }
 
 // A lead's proposal (15.5, "Asking the lead").
@@ -182,9 +192,14 @@ export type SwarmBriefRow = {
   color: string
   reason: string | null
   conflict: boolean
-  /** Its diff is open: `lines` holds it. */
+  /** Its node is added or removed: it has no pick of its own, and `picked` is its node's (15.5). */
+  withNode: boolean
+  /** Its diff is open: `lines` holds it, base → the lead's. */
   open: boolean
   lines: SwarmSpan[]
+  /** A conflict's other diff, base → yours, when open; else empty. */
+  yoursLines: SwarmSpan[]
+  /** The lead's is taken. */
   picked: boolean
 }
 
@@ -281,17 +296,32 @@ export type SwarmBrowserView = SwarmViewCommon & {
 
 export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }
 
-export type SwarmRecoveryRow = {
+/** One instance on the recovery card: shown, never picked. */
+export type SwarmRecoveryInstance = {
   agentId: string
-  node: string
+  /** `<node> #<n>`. */
   name: string
-  kind: string
   state: 'alive' | 'settled' | 'gone'
   glyph: string
   color: string
   report: string
   respawnOnly: boolean
+}
+
+/**
+ * One node on the recovery card. Only an orchestrator is picked: a worker
+ * comes back through its orchestrator (15.4, "Recreating a swarm", step 4).
+ */
+export type SwarmRecoveryRow = {
+  node: string
+  kind: 'orchestrator' | 'worker'
+  pickable: boolean
+  /** It has an instance this session can resume (K's resumeTargets); else only a re-spawn. */
+  resumable: boolean
   picked: boolean
+  /** What it needs, in words: "re-spawn only", "with part-a". */
+  note: string
+  instances: SwarmRecoveryInstance[]
 }
 
 export type SwarmRecoveryView = SwarmViewCommon & { view: 'recovery'; swarm: string; launch: string; stopping: boolean; rows: SwarmRecoveryRow[] }
