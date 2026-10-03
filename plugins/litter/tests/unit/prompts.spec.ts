@@ -365,7 +365,8 @@ describe('skills/swarm/SKILL.md', () => {
 // case schema does, and their scaffolds make the repository they describe.
 
 const EVALS = join(PLUGIN, 'evals')
-const caseDirs = () => readdirSync(EVALS, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name).sort()
+// results/ is where `claude plugin eval` writes its reports (evals/.gitignore), not a case.
+const caseDirs = () => readdirSync(EVALS, { withFileTypes: true }).filter(e => e.isDirectory() && e.name !== 'results').map(e => e.name).sort()
 const TOP_KEYS = ['schema_version', 'name', 'description', 'tags', 'plugins', 'context', 'execution', 'runs', 'graders', 'expected_outcome']
 const EXECUTION_KEYS = ['prompt', 'max_turns', 'timeout_seconds', 'model', 'allowed_tools', 'artifact_publish', 'growthbook_overrides', 'append_system_prompt', 'env']
 const GRADER_KEYS: Record<string, string[]> = {
