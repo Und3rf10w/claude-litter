@@ -219,7 +219,6 @@ export type SwarmEventKind =
   | 'ready-to-push'
   | 'pushed'
   | 'clear-killed'
-  | 'stood-down'
 
 /**
  * Each event's own fields, beside `kind`, `node` and `agentId` (writer in brackets).
@@ -251,7 +250,9 @@ export type SwarmEventKind =
  * | ready-to-push (P) | branch, commit |
  * | pushed (P) | branch, commit |
  * | clear-killed (O) | tool, detail |
- * | stood-down (K) | generation |
+ *
+ * A stale owner's stand-down records nothing: it may race the new owner's
+ * appends, and the new owner's swarm.handover already says it.
  */
 export type SwarmEventFields = {
   message: { from: string; to: string; route: string; delivery: 'interject' | 'queue'; text: string }
@@ -277,7 +278,6 @@ export type SwarmEventFields = {
   'ready-to-push': { branch: string; commit: string }
   pushed: { branch: string; commit: string }
   'clear-killed': { tool: string; detail: string }
-  'stood-down': { generation: number }
 }
 
 /** swarm.event (L, P, O, K): one body per kind. */

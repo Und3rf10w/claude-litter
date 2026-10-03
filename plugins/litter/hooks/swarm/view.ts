@@ -1668,8 +1668,6 @@ function swarmEventRow(at: string, e: SwarmEventBody, all: readonly NodeBinding[
       return { at, who: 'lead', text: `pushed ${shortSha(e.commit)} to ${oneLine(e.branch, 40)}`, color: COLOR.done }
     case 'clear-killed':
       return { at, who, text: `/clear cut short ${oneLine(e.tool, 20)} (${oneLine(e.detail, 60)})`, color: COLOR.waiting }
-    case 'stood-down':
-      return { at, who: 'litter', text: `this session stood down (generation ${e.generation})`, color: COLOR.waiting }
     default:
       return null
   }
