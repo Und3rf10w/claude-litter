@@ -228,6 +228,9 @@ export async function checkHealth(p: Ports, input: HealthInput): Promise<HealthR
       rows.push(row('mode', 'warning', 'Session mode', "bypassPermissions: the nodes would run without the classifier; and a switch to it mid-swarm holds them"))
     } else if (mode === 'acceptEdits') {
       rows.push(row('mode', 'warning', 'Session mode', "acceptEdits: a node's Bash may stop to ask you; and a switch to it mid-swarm holds them"))
+    } else if (mode === 'dontAsk') {
+      // The ask is an AskUserQuestion call, which asks even when a rule allows it, and dontAsk refuses every ask (2.1.288).
+      rows.push(row('mode', 'error', 'Session mode', "dontAsk: this session can't show Launch's confirmation, even with AskUserQuestion allowed; switch modes (shift+tab), then recheck"))
     } else rows.push(row('mode', 'ok', 'Session mode', mode))
 
     const places = new SpecPlaces(p, repoOf(litterDir), litterDir)

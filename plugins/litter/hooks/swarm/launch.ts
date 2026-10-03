@@ -487,7 +487,16 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   const authority = Object.fromEntries(spec.nodes.map(n => [n.id, authorityLine(name, n, dirs)]))
   const options = getOptions()
   const question = confirmText(spec, saved.revision, dirs, authority, made, warnings, types, options.setup)
-  const answer = await p.ask(question, { options: ['Launch', 'Cancel'], header: `Launch ${name}` }).catch(() => null)
+  // The ask is an AskUserQuestion call (2.1.288), which a permission refusal fails; the health check above refuses dontAsk, the usual one.
+  let askFailed: string | null = null
+  const answer = await p.ask(question, { options: ['Launch', 'Cancel'], header: `Launch ${name}` }).catch((err: unknown) => {
+    askFailed = errText(err)
+    return null
+  })
+  if (askFailed !== null) {
+    const why: string = askFailed
+    return refused(name, [`Launch needs your confirmation, and the ask couldn't be shown: ${why.length > 160 ? `${why.slice(0, 159)}…` : why}`])
+  }
   if (answer !== 'Launch') return refused(name, ['Launch needs your confirmation'])
 
   // Step 3: ownership, then the `new` worktrees. From here a failure ends the launch as launch_failed.

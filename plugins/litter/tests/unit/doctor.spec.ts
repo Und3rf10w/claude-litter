@@ -207,12 +207,13 @@ describe('the other rows', () => {
     expect(rowOf(await health(null), 'jq').severity).toBe(there ? 'ok' : 'error')
   })
 
-  test('the mode: none recorded is an error, bypassPermissions and acceptEdits warnings', async () => {
+  test('the mode: none recorded and dontAsk are errors, bypassPermissions and acceptEdits warnings', async () => {
     const modeFile = join(litterDir, 'hooks', 'mode')
     expect(rowOf(await health(null), 'mode')).toEqual(expect.objectContaining({ severity: 'ok', detail: 'auto' }))
     for (const [mode, severity] of [
       ['bypassPermissions', 'warning'],
       ['acceptEdits', 'warning'],
+      ['dontAsk', 'error'],
       ['default', 'ok'],
       ['', 'error'],
     ] as const) {
