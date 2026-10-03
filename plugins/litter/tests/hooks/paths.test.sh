@@ -194,6 +194,20 @@ case_user_rule_folders() {
   assert_deny 'rules change only through /litter:rules'
 }
 
+# The rules store's files under the config dir (WP-AD) before any exist:
+# your rules ledger, where a forged rule.accept would go, a user rule, and
+# its .history, each denied with every write tool.
+case_user_rules_store() {
+  setup
+  mkdir -p "$T_DIR/config"
+  policy ".run.roots.checkout = \"$(cd -P "$T_DIR" && pwd -P)\""
+  CLAUDE_CONFIG_DIR=$T_DIR/config
+  export CLAUDE_CONFIG_DIR
+  deny_all_tools "$T_DIR/config/litter/rules-ledger/ledger/000001-rule.accept.json" 'rules change only through /litter:rules'
+  deny_all_tools "$T_DIR/config/litter/rules/U-answer-tersely.md" 'rules change only through /litter:rules'
+  deny_all_tools "$T_DIR/config/litter/rules/.history/U-answer-tersely@1.md" 'rules change only through /litter:rules'
+}
+
 t "Write, Edit and NotebookEdit into the ledger are denied" case_direct_ledger
 t "the same through a symlink alias -> .claude/litter are denied" case_alias_dir
 t "a new file in a new folder below the alias is denied" case_alias_new_folder
@@ -215,4 +229,5 @@ t "the project and local rule folders and their exports are denied" case_rule_fo
 t "a rule folder through a link is denied" case_rule_folder_link
 t "the rule folders policy.json lists are denied" case_rule_dirs_from_policy
 t "the user rule folders under the config dir are denied" case_user_rule_folders
+t "the user rules ledger, a user rule and its .history are denied before they exist" case_user_rules_store
 done_testing

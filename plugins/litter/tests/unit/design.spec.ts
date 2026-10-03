@@ -11,6 +11,7 @@ import { readLedger } from '../../hooks/ledgercore'
 import { agentPolicyPath, outPath, proposalPath, runDir, runJsonPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
+import { readRuleLedger } from '../../hooks/rules/ledger'
 import { sha256 } from '../../hooks/fsx'
 import { bareBacktickPaths, KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, recordGeneric } from '../../hooks/records/design'
 import { wikiPath } from '../../hooks/layout'
@@ -81,6 +82,7 @@ const asOk = (r: RecordReply) => {
 }
 
 const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records
+const ruleRecords = async () => (await readRuleLedger(p, dir, 'repo')).records
 
 describe('KIND_RULES', () => {
   test("covers every kind, and the mod-only kinds are the mod's", () => {
@@ -200,6 +202,7 @@ describe('verdict', () => {
   })
 })
 
+// AD's rules ledger holds every proposal (decision 17); the run's ledger has none.
 describe('rule.propose', () => {
   test('from the launcher, stored with the run and its source', async () => {
     expect(asError(await call({ kind: 'rule.propose', run: RUN })).field).toBe('rule')
@@ -207,18 +210,20 @@ describe('rule.propose', () => {
     expect(asError(await call({ kind: 'rule.propose', run: RUN, rule: 'r', edits: 'nope' })).field).toBe('edits')
     const r = await call({ kind: 'rule.propose', run: RUN, rule: 'When touching hooks, run tier 3.' })
     expect(r.ok).toBe(true)
-    expect((await records())[0]!.body).toEqual({ rule: 'When touching hooks, run tier 3.', source: 'user' })
+    expect((await ruleRecords())[0]!.body).toEqual({ rule: 'When touching hooks, run tier 3.', source: 'user', run: RUN })
+    expect(await records()).toEqual([])
   })
 
-  test('without a run it waits for the rules ledger', async () => {
-    expect(asError(await call({ kind: 'rule.propose', rule: 'r' })).field).toBe('run')
+  test('without a run it goes to the rules ledger all the same', async () => {
+    expect(asOk(await call({ kind: 'rule.propose', rule: 'r' })).kind).toBe('rule.propose')
+    expect((await ruleRecords())[0]!.body).toEqual({ rule: 'r', source: 'user' })
   })
 
   test("from a run's agent, the run is its own", async () => {
     await startAgent('gc', 'gate-critic')
     const r = await call({ kind: 'rule.propose', rule: 'r' }, 'gc')
     expect(r).toEqual(expect.objectContaining({ ok: true, run: RUN }))
-    expect((await records())[0]!.body.source).toBe('agent')
+    expect((await ruleRecords())[0]!.body).toEqual({ rule: 'r', source: 'agent', run: RUN })
   })
 })
 

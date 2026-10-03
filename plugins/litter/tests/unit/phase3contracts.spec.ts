@@ -25,6 +25,7 @@ import { KIND_HANDLERS, SPOOL_CONSUMERS } from '../../hooks/registry'
 import { recordGateAmend, recordPlanWrite } from '../../hooks/plan'
 import { consumeInflight } from '../../hooks/inflight'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from '../../hooks/rules/records'
+import { readRuleLedger } from '../../hooks/rules/ledger'
 import { deps as lifecycleDeps, READ_ONLY_BASH, recordRunStart, runState, writeSummary } from '../../hooks/lifecycle'
 import { deps as outputDeps, consumeOutput } from '../../hooks/output'
 import { deps as verifyDeps, recordVerify } from '../../hooks/verify'
@@ -136,25 +137,30 @@ describe('the new kinds', () => {
     expect(SPOOL_CONSUMERS.indexOf(consumeInflight)).toBe(1)
   })
 
-  test('rule.find and rule.open, from an agent and from the main thread, reach their stubs', async () => {
+  // AD's handlers (rulesrecords.spec.ts has their cases): here, only that each is reached.
+  test('rule.find and rule.open, from an agent and from the main thread, reach their handlers', async () => {
     const w = await toolWorld()
     await startAgent(w, 'gc', 'litter:gate-critic')
     for (const agentId of [undefined, 'gc']) {
       for (const kind of ['rule.find', 'rule.open']) {
         const e = asError(await call(w, { kind, id: 'keep-tests-near' }, agentId))
-        expect(e).toEqual(expect.objectContaining({ field: 'kind', error: `litter: the '${kind}' record isn't built yet (phase 3)` }))
+        expect(e).toEqual(expect.objectContaining({ field: 'id', error: "litter: 'id' is a rule id: U-, P- or L-, then its slug" }))
       }
     }
     expect(ledgerFiles(w)).toEqual([])
+    expect(existsSync(join(w.dir, 'rules-ledger'))).toBe(false)
   })
 
-  test('rule.import is refused from an agent, and reaches its stub from the main thread', async () => {
+  test('rule.import is refused from an agent, and reaches its handler from the main thread', async () => {
     const w = await toolWorld()
     await startAgent(w, 'gc', 'litter:gate-critic')
     const e = asError(await call(w, { kind: 'rule.import', from: 'deepwork' }, 'gc'))
     expect(e.field).toBe('kind')
     expect(e.error).toContain('main thread')
-    expect(asError(await call(w, { kind: 'rule.import', from: 'deepwork' })).error).toBe("litter: the 'rule.import' record isn't built yet (phase 3)")
+    // This world's litterDir is no checkout's <primary>/.claude/litter, so it has no project scope to import into.
+    expect(asError(await call(w, { kind: 'rule.import', from: 'deepwork' })).error).toBe(
+      'litter: a bare repository has no project scope, so there is nothing to import deepwork guardrails into',
+    )
   })
 
   test('rule.accept, rule.dismiss and rule.retire are refused whoever calls, naming the two a tool call has', async () => {
@@ -181,11 +187,15 @@ describe('the new kinds', () => {
     expect(asError(await call(w, { kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a' })).field).toBe('reason')
     expect((await call(w, { kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a', reason: 'r' })).ok).toBe(true)
     expect(asError(await call(w, { kind: 'rule.propose', run: RUN, rule: 'x'.repeat(8 * 1024 + 1) })).field).toBe('rule')
-    expect(asError(await call(w, { kind: 'rule.propose', rule: 'r' })).field).toBe('run')
     expect((await call(w, { kind: 'rule.propose', run: RUN, rule: 'When touching hooks, run tier 3.' })).ok).toBe(true)
     const { records } = await readLedger(w.p, runDir(w.dir, RUN), RUN)
-    expect(records.map(r => r.kind)).toEqual(['plan.write', 'gate.amend', 'rule.propose'])
-    expect(records[2]!.body).toEqual({ rule: 'When touching hooks, run tier 3.', source: 'user' })
+    expect(records.map(r => r.kind)).toEqual(['plan.write', 'gate.amend'])
+    // AD's: a proposal is in the rules ledger, with or without a run (decision 17).
+    expect((await call(w, { kind: 'rule.propose', rule: 'r' })).ok).toBe(true)
+    expect((await readRuleLedger(w.p, w.dir, 'repo')).records.map(r => r.body)).toEqual([
+      { rule: 'When touching hooks, run tier 3.', source: 'user', run: RUN },
+      { rule: 'r', source: 'user' },
+    ])
   })
 })
 
