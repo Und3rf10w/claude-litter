@@ -30,6 +30,7 @@ import type {
   AdmissionStatus,
   BindingKind,
   ClearKill,
+  ClearReason,
   LiveSwarm,
   NodeBinding,
   NodeReport,
@@ -154,7 +155,7 @@ const directBySwarm = new Map<string, string[]>()
 const refused = new Map<string, string[]>()
 let lead = false
 let rebind: string | null = null
-let cleared = false
+let cleared: ClearReason | null = null
 let clearKills: ClearKill[] = []
 let recorded: string | null = null
 let gate = 0
@@ -830,16 +831,17 @@ export function clearRebind(): void {
   ver++
 }
 
-/** The next `<swarm>` block opens with the cleared lines. */
-export function markCleared(): void {
-  cleared = true
+/** The next `<swarm>` block opens with the cleared lines, worded for `why`. A clear wins over a move. */
+export function markCleared(why: ClearReason = 'clear'): void {
+  cleared = cleared === 'clear' ? 'clear' : why
   ver++
 }
 
-export function takeCleared(): boolean {
+/** Why the next block opens with the cleared lines, once; null when it doesn't. */
+export function takeCleared(): ClearReason | null {
   const was = cleared
-  cleared = false
-  if (was) ver++
+  cleared = null
+  if (was !== null) ver++
   return was
 }
 
@@ -954,7 +956,7 @@ export function resetForTests(): void {
   refused.clear()
   lead = false
   rebind = null
-  cleared = false
+  cleared = null
   clearKills = []
   recorded = null
   gate = 0

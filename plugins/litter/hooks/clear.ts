@@ -14,7 +14,7 @@
 import type { ListedAgent, Ports } from './ports'
 import type { CommandRunHook, PortHook, SessionEndHook } from './hooktypes'
 import type { Policy } from './hookfiles'
-import type { ClearKill, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
+import type { ClearKill, ClearReason, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
 import { session, updateSession } from './session'
 import { agentInfo, readPolicy, roleOf, updatePolicy } from './policy'
 import { registerRecordTool } from './ledger'
@@ -167,9 +167,9 @@ export const holdClear: PortHook<CommandRunHook> = async (p, e, next) => {
   const litterDir = session().litterDir
   const swarms = ownSwarms()
   const run = litterDir ? ((await readPolicy(p, litterDir))?.run?.run ?? null) : null
-  if (swarms.length === 0 && run === null) return next(e)
+  if (swarms.length === 0 && run === null) return passClear(e, next)
   const running = await whatRuns(p, run)
-  if (running.length === 0) return next(e)
+  if (running.length === 0) return passClear(e, next)
   let answer: string | null = null
   try {
     answer = await p.ask(holdQuestion(running, await p.now()), { options: CLEAR_OPTIONS, header: 'litter' })
@@ -196,6 +196,18 @@ export const holdClear: PortHook<CommandRunHook> = async (p, e, next) => {
       }).catch(err => p.log(`swarm ${s.name}: clear-killed not recorded: ${errText(err)}`))
     }
   }
+  return passClear(e, next)
+}
+
+/**
+ * Why the next rebind runs: a clear this hook passed on, or one whose
+ * session.end came, is `clear`; an id the tick saw move with neither is
+ * `session-moved` (backgrounding, where the lead still remembers).
+ */
+let clearSeen = false
+
+function passClear(e: Parameters<PortHook<CommandRunHook>>[1], next: Parameters<PortHook<CommandRunHook>>[2]) {
+  clearSeen = true
   return next(e)
 }
 
@@ -205,6 +217,7 @@ export const holdClear: PortHook<CommandRunHook> = async (p, e, next) => {
 /** session.end, within its 1.5 s bound, before lifecycle.ts's onSessionEnd: reason `clear` sets the rebind flag; any other stops the owner beats. */
 export async function noteSessionEnd(p: Ports, e: Parameters<SessionEndHook>[1]): Promise<void> {
   if (e.reason === 'clear') {
+    clearSeen = true
     setRebindPending(e.sessionId)
     return
   }
@@ -278,6 +291,8 @@ async function registerTypes(p: Ports, litterDir: string, s: LiveSwarm): Promise
  */
 async function rebind(p: Ports, from: string, to: string): Promise<void> {
   closeGate()
+  const why: ClearReason = clearSeen ? 'clear' : 'session-moved'
+  clearSeen = false
   try {
     pastSessions.add(from)
     setRecordedSession(to)
@@ -327,7 +342,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     }
 
     // Only a live swarm's <swarm> block reads the mark; with none, a later swarm's first block would say it wrongly.
-    if (owned.length > 0) markCleared()
+    if (owned.length > 0) markCleared(why)
   } catch (err) {
     p.log(`/clear rebind failed: ${errText(err)}`)
   } finally {
@@ -383,6 +398,7 @@ export function resetClearForTests(): void {
   rebinding = null
   after = Promise.resolve()
   pastSessions.clear()
+  clearSeen = false
   timer?.cancel()
   timer = null
   ticking = false

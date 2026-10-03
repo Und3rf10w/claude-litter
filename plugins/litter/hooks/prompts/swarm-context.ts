@@ -21,6 +21,14 @@ export const SWARM_CONTEXT_CLEARED =
   "The conversation was cleared, but this swarm kept running and you are still its lead. Load the lead's instructions with the litter swarm skill: lead {swarm}."
 
 /**
+ * In SWARM_CONTEXT_CLEARED's place when the session id moved with no /clear
+ * the mod saw (backgrounding, or a clear whose end it missed): the lead may
+ * still remember the swarm, so it's told only what to do if it doesn't. Slot: {swarm}.
+ */
+export const SWARM_CONTEXT_MOVED =
+  "This session moved to a new id; this swarm kept running and you are still its lead. If you no longer have the lead's instructions, load them with the litter swarm skill: lead {swarm}."
+
+/**
  * After SWARM_CONTEXT_CLEARED, one per command the clear killed (state.takeClearKills(),
  * only when you chose [Clear anyway]). Slots: {who} ("fixer #2 under part-b", the
  * ClearKill's `who`), {call} (its `tool`, then its `detail` in parentheses when there

@@ -465,9 +465,16 @@ export type ClearKill = {
   /** A node's name and instance (`fixer #2 under part-b`) or a run role. */
   who: string
   tool: string
-  /** What it was running, as the in-flight table had it (`Bash (npm test)`). */
+  /** What it was running, as the in-flight table had it (`npm test`; the line renders `Bash (npm test)`), or ''. */
   detail: string
 }
+
+/**
+ * Why the next `<swarm>` block opens with the cleared lines (O): a /clear
+ * whose session.end the mod saw, or a session id that moved with none (a
+ * missed clear's, or backgrounding's), where the lead may still remember.
+ */
+export type ClearReason = 'clear' | 'session-moved'
 
 /** The usage a turn reports, as addTokens takes it. */
 export type { TurnUsage }

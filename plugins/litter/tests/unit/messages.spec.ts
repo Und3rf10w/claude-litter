@@ -494,6 +494,20 @@ describe("the lead's <swarm> block", () => {
     expect(await admit.swarmContext(p)).not.toContain('The conversation was cleared')
   })
 
+  test('after the session id moved with no clear seen: the moved line, then every node', async () => {
+    await put(o1(), true)
+    await put(w(1), false)
+    await admit.swarmContext(p)
+    state.markCleared('session-moved')
+    const block = (await admit.swarmContext(p))!.split('\n')
+    expect(block.slice(0, 2)).toEqual([
+      '<swarm name="alpha" status="live">',
+      "This session moved to a new id; this swarm kept running and you are still its lead. If you no longer have the lead's instructions, load them with the litter swarm skill: lead alpha.",
+    ])
+    expect(block.join('\n')).not.toContain('The conversation was cleared')
+    expect(block.some(l => l.startsWith('fixer#1  worker'))).toBe(true)
+  })
+
   test("a stopped orchestrator's workers' last reports go to the lead", async () => {
     await put(o1(), false)
     await put(w(1), false)

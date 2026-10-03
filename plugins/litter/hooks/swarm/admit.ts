@@ -19,7 +19,7 @@ import type { Ports, SessionSendResult } from '../ports'
 import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
 import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply } from '../records/swarm'
-import type { BrowserSend, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
+import type { BrowserSend, ClearKill, ClearReason, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { session } from '../session'
@@ -30,6 +30,7 @@ import {
   SWARM_CONTEXT_CLOSE,
   SWARM_CONTEXT_DIRECT,
   SWARM_CONTEXT_HINT,
+  SWARM_CONTEXT_MOVED,
   SWARM_CONTEXT_OPEN,
 } from '../prompts/swarm-context'
 import { decodeSwarmInput, SWARM_SEND } from './tools'
@@ -1032,9 +1033,10 @@ function instancesOfSwarm(s: LiveSwarm): NodeBinding[] {
   return [...byKey.values()].sort((a, b) => a.boundAt - b.boundAt)
 }
 
-function blockLines(s: LiveSwarm, cleared: boolean, kills: readonly { agentId: string; who: string; tool: string; detail: string }[], first: boolean): Line[] {
+function blockLines(s: LiveSwarm, why: ClearReason | null, kills: readonly ClearKill[], first: boolean): Line[] {
+  const cleared = why !== null
   const out: Line[] = [{ text: renderSlots(SWARM_CONTEXT_OPEN, { swarm: s.name, status: s.state }), keep: KEEP, at: 0 }]
-  if (cleared) out.push({ text: renderSlots(SWARM_CONTEXT_CLEARED, { swarm: s.name }), keep: KEEP, at: 0 })
+  if (cleared) out.push({ text: renderSlots(why === 'clear' ? SWARM_CONTEXT_CLEARED : SWARM_CONTEXT_MOVED, { swarm: s.name }), keep: KEEP, at: 0 })
   for (const k of kills) {
     const mine = state.binding(k.agentId)?.swarm
     if (mine === s.name || (mine === undefined && first)) {
@@ -1103,9 +1105,9 @@ export async function swarmContext(p: Ports): Promise<string | null> {
   if (live.length === 0) return null
   kick(p)
   const now = await p.now()
-  const cleared = state.takeCleared()
-  const kills = cleared ? state.takeClearKills() : []
-  const lines = fit(live.flatMap((s, i) => blockLines(s, cleared, kills, i === 0)))
+  const why = state.takeCleared()
+  const kills = why !== null ? state.takeClearKills() : []
+  const lines = fit(live.flatMap((s, i) => blockLines(s, why, kills, i === 0)))
   for (const l of lines) if (l.shownKey !== undefined) shown.set(l.shownKey, l.text)
   lastBlockAt = now
   let text = lines.map(l => l.text).join('\n')

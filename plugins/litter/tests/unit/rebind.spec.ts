@@ -16,7 +16,7 @@ import type { Policy, SwarmEntry } from '../../hooks/hookfiles'
 import type { AgentSpec, Ports } from '../../hooks/ports'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
 import * as state from '../../hooks/swarm/state'
-import { TICK_MS, noteSessionEnd, others, rebindSettled, rebound, resetClearForTests, startSwarmTimers } from '../../hooks/clear'
+import { TICK_MS, holdClear, noteSessionEnd, others, rebindSettled, rebound, resetClearForTests, startSwarmTimers } from '../../hooks/clear'
 import {
   consumeLifecycle,
   getPending,
@@ -327,7 +327,7 @@ describe('the rebind after a /clear', () => {
     // The panes redrawn after the gate opened; the next <swarm> block marked; the flag down; the new id recorded.
     expect(calls.at(-1)).toEqual({ name: 'refreshPanes', args: [], gateOpen: true, pending: null })
     expect(calls.filter(c => c.name === 'refreshPanes')).toHaveLength(1)
-    expect(state.takeCleared()).toBe(true)
+    expect(state.takeCleared()).toBe('clear')
     expect(state.rebindPending()).toBeNull()
     expect(state.recordedSession()).toBe('session-b')
 
@@ -368,7 +368,7 @@ describe('the rebind after a /clear', () => {
     await rebindSettled()
     expect((await readPolicy(w.p, w.litterDir))?.session).toBe('session-b')
     expect((await launchRecords(w)).map(x => x.kind)).toEqual(['session.rebind'])
-    expect(state.takeCleared()).toBe(true)
+    expect(state.takeCleared()).toBe('clear')
   })
 
   test("a run alone: policy.json and the run's ledger move, and no <swarm> block is marked", async () => {
@@ -386,7 +386,7 @@ describe('the rebind after a /clear', () => {
     expect(calls.filter(c => c.name === 'rebindOwnership')).toHaveLength(1)
     expect(calls.filter(c => c.name === 'patchSwarmPolicy' || c.name === 'startOwnerBeat')).toEqual([])
     // Only a live swarm's <swarm> block reads it; with none, a later swarm's first block would say it wrongly.
-    expect(state.takeCleared()).toBe(false)
+    expect(state.takeCleared()).toBeNull()
   })
 
   test("an entry another session took over since (a newer generation) isn't rewritten", async () => {
@@ -506,7 +506,7 @@ describe('the rebind after a /clear', () => {
     // The steps after it ran.
     expect((await readPolicy(w.p, w.litterDir))?.session).toBe('session-b')
     expect((await launchRecords(w)).filter(x => x.kind === 'session.rebind')).toHaveLength(1)
-    expect(state.takeCleared()).toBe(true)
+    expect(state.takeCleared()).toBe('clear')
     expect(calls.at(-1)?.name).toBe('refreshPanes')
     expect(state.rebindPending()).toBeNull()
     const slept = w.p.sleeps.length
@@ -526,7 +526,7 @@ describe('the rebind after a /clear', () => {
     await rebound(w.p)
     await rebindSettled()
     expect(w.p.logs).toContain('/clear rebind: the panes failed: no pane')
-    expect(state.takeCleared()).toBe(true)
+    expect(state.takeCleared()).toBe('clear')
   })
 })
 
@@ -583,7 +583,22 @@ describe('the tick', () => {
     expect((await launchRecords(w)).filter(x => x.kind === 'session.rebind').map(x => x.body)).toEqual([{ from: 'session-a', to: 'session-b' }])
     expect(calls.filter(c => c.name === 'rebindOwnership').map(c => c.args)).toEqual([[w.litterDir, 'session-b']])
     expect(state.rebindPending()).toBeNull()
-    expect(state.takeCleared()).toBe(true)
+    // No clear was seen, so the block says the session moved, not that it was cleared.
+    expect(state.takeCleared()).toBe('session-moved')
+  })
+
+  test('a /clear the hold passed on, whose session.end never came, still marks the block cleared', async () => {
+    const w = await world()
+    fakes([])
+    await liveSwarms(w)
+    startSwarmTimers(w.p)
+    const r = await holdClear(w.p, { command: 'clear', args: '' } as never, (async () => ({ text: 'engine cleared' })) as never)
+    expect(r).toEqual({ text: 'engine cleared' })
+    await clearTo(w, 'session-b', { sessionEnd: false })
+    await fireEvery(w.p)
+    await until(() => state.recordedSession() === 'session-b')
+    await rebindSettled()
+    expect(state.takeCleared()).toBe('clear')
   })
 
   test('a rebind flag the tick finds first runs from the tick too', async () => {
