@@ -285,6 +285,7 @@ describe("register.tsx's order and its renders", () => {
       'drain',
       'reconcile',
       'leftover worktrees',
+      'leftover node policies',
       'timers',
       'swarm timers',
       'pane timer',

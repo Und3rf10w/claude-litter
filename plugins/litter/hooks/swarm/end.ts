@@ -16,6 +16,7 @@
 // summary, the ownership ref, the policy entry, the node policies, the live
 // state, and the lead's hand-off from a timer.
 
+import type { AgentPolicy, NodePolicy } from '../hookfiles'
 import type { ListedAgent, Ports, ToolCallResult } from '../ports'
 import type { RecordHandler, StoredRecord } from '../records/core'
 import type {
@@ -30,7 +31,10 @@ import type { LiveSwarm, NodeBinding, SettleProgress, SwarmSpec, TokenCount } fr
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import {
+  agentPolicyPath,
+  hooksDir,
   launchSummaryPath,
+  policyPath,
   revisionPath,
   spoolDir,
   SWARM_NAME,
@@ -40,11 +44,13 @@ import {
 } from '../layout'
 import { atomicWrite, readJson, serial } from '../fsx'
 import { session } from '../session'
+import { readPolicy } from '../policy'
 import { repoOf, UNSETTLED_MS } from '../lifecycle'
 import { BRANCH, cleanAbsolute, errText, firstLine, git, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
 import { inspectWorktree } from './worktrees'
 import * as state from './state'
 import { patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
+import * as guardModule from './guard'
 import { releaseOwnership, stopOwnerBeat } from './owner'
 import { noteSummaryTrigger, plainText } from './summary'
 
@@ -63,6 +69,15 @@ export const others = {
   releaseOwnership: (...a: Parameters<typeof releaseOwnership>) => releaseOwnership(...a),
   stopOwnerBeat: (...a: Parameters<typeof stopOwnerBeat>) => stopOwnerBeat(...a),
   noteSummaryTrigger: (...a: Parameters<typeof noteSummaryTrigger>) => noteSummaryTrigger(...a),
+  /**
+   * FIX-Q's releaseActive (Q10): removes `active` once policy.json holds no
+   * swarm and no run and agents/ holds no binding file; a no-op otherwise.
+   * Looked up by name, so this module builds before that package lands.
+   */
+  releaseActive: async (p: Ports, litterDir: string): Promise<void> => {
+    const release = (guardModule as { releaseActive?: (p: Ports, litterDir: string) => Promise<void> }).releaseActive
+    if (release) await release(p, litterDir)
+  },
 }
 
 /** What a stopped node's policy carries, and the guard's denial names (15.4, "Ending"). */
@@ -403,9 +418,10 @@ async function recordKept(p: Ports, litterDir: string, swarm: string, launch: st
 /**
  * Ended (15.4, step 3): the cleanup (settled) or every made worktree kept
  * (not settled), then `swarm.end`, `summary.md`, the ownership ref, the
- * policy entry and `active` with it, every node's policy, the live state
- * (after which agent.offer hides its types), and the lead's hand-off from a
- * timer. Each step after swarm.end is logged when it fails, and the rest go on.
+ * policy entry, the node policies of the agents that aren't running (a
+ * running one's stays until the sweep sees it go), the live state (after
+ * which agent.offer hides its types), and the lead's hand-off from a timer.
+ * Each step after swarm.end is logged when it fails, and the rest go on.
  */
 async function finish(p: Ports, litterDir: string, name: string, settled: boolean): Promise<void> {
   await serial(endKey(litterDir, name), async () => {
@@ -449,7 +465,7 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
     await step('releasing the ownership ref', () => others.releaseOwnership(p, litterDir, name))
     await step('stopping the ownership beat', () => others.stopOwnerBeat(name))
     await step("removing policy.json's entry", () => others.writeSwarmPolicy(p, litterDir, name, null))
-    for (const b of state.bindings(name)) await step(`removing ${b.agentId}'s policy`, () => others.removeNodePolicy(p, litterDir, b.agentId))
+    await step('removing the node policies', () => removeEndedPolicies(p, litterDir, name, s.launch))
     state.dropLiveSwarm(name)
     waits.delete(name)
     if (summary !== null) handOff(p, name, summary)
@@ -476,6 +492,154 @@ export function headOf(summary: string): string {
   const lines = summary.split('\n')
   const cut = lines.findIndex((l, i) => i > 0 && l.startsWith('## '))
   return (cut < 0 ? lines : lines.slice(0, cut)).join('\n').trim()
+}
+
+// ---------------------------------------------------------------------------
+// The node policies End keeps (End never leaves a running agent unguarded)
+//
+// [End, keep everything] ends a swarm while its nodes still run. Were their
+// policy files removed with the entry, a node's non-swarm child would be an
+// agent no swarm knows, which the guard passes, and its node's paths, commit
+// and push limits and bash.deny would no longer apply. So End removes only
+// the files of agents the list doesn't show running; a running one's file
+// stays, and with its swarm's entry gone the guard denies its every call
+// ("the swarm is not live", guard.sh). The sweep removes a kept file once its
+// agent leaves the list, and asks for `active` to go once none is left
+// (FIX-Q's releaseActive keeps `active` while any binding file remains).
+// A former node resumed after its file went is still denied, by its
+// `litter:sw-*` type with no binding; a former child resumed then is a plain
+// subagent.
+
+/** A kept file: `own`, its agent is this session's, watched in the list; else another session's, watched by its age. */
+type Kept = { swarm: string; launch: string; own: boolean }
+const kept = new Map<string, Kept>()
+let sweepTimer: { cancel(): void } | null = null
+let sweeping = false
+let lastBeat = 0
+/** A kept file of this session's is touched this often while its agent runs, so another session's start sees it's held. */
+const KEPT_BEAT_MS = 20_000
+/** Another session's kept file that nobody touched for this long is a leftover (owner.ts's OWNER_STALE_MS). */
+const KEPT_STALE_MS = 60_000
+/** An id the hooks name a file by (lib.sh's lt_id_ok). */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** Every swarm node's or child's policy file under agents/, with its node part and age; a file that doesn't read is left out. */
+async function nodePolicyFiles(p: Ports, litterDir: string): Promise<{ agentId: string; node: NodePolicy }[]> {
+  const dir = `${hooksDir(litterDir)}/agents`
+  if (!(await p.fs.exists(dir))) return []
+  const out: { agentId: string; node: NodePolicy }[] = []
+  for (const e of await p.fs.list(dir)) {
+    const agentId = e.kind === 'file' && e.name.endsWith('.json') ? e.name.slice(0, -'.json'.length) : ''
+    if (!AGENT_ID.test(agentId)) continue
+    try {
+      const file = await readJson<AgentPolicy>(p, `${dir}/${e.name}`)
+      const node = file?.v === 1 ? file.node : undefined
+      if (node && typeof node === 'object' && typeof node.swarm === 'string' && typeof node.launch === 'string') out.push({ agentId, node })
+    } catch (err) {
+      p.log(`agents/${e.name} isn't readable, so the sweep leaves it: ${errText(err)}`)
+    }
+  }
+  return out
+}
+
+/** The ids the list shows running; null when it can't be read, which keeps every file. */
+async function runningIds(p: Ports): Promise<Set<string> | null> {
+  const list = await p.listAgents().catch(() => null)
+  return list ? new Set(list.filter(a => a.status === 'running').map(a => a.id)) : null
+}
+
+/**
+ * At the end of a launch: every binding's policy file and every other file
+ * naming the launch (holdToBind's, which no binding knows) is removed when
+ * its agent isn't running, and kept, for the sweep, when it is.
+ */
+async function removeEndedPolicies(p: Ports, litterDir: string, name: string, launch: string): Promise<void> {
+  const running = await runningIds(p)
+  const ids = new Set(state.bindings(name).map(b => b.agentId))
+  for (const f of await nodePolicyFiles(p, litterDir)) if (f.node.swarm === name && f.node.launch === launch) ids.add(f.agentId)
+  for (const id of ids) {
+    if (running === null || running.has(id)) {
+      kept.set(id, { swarm: name, launch, own: true })
+      continue
+    }
+    await others.removeNodePolicy(p, litterDir, id).catch(err => p.log(`swarm ${name}: ${id}'s policy wasn't removed: ${errText(err)}`))
+  }
+  await others.releaseActive(p, litterDir)
+  if (kept.size > 0) startSweep(p, litterDir)
+}
+
+function startSweep(p: Ports, litterDir: string): void {
+  if (sweepTimer) return
+  // The engine doesn't await a timer's callback; the promise is handed back for a test's fireEvery.
+  sweepTimer = p.every(SETTLE_EVERY_MS, () => sweepKept(p, litterDir).catch(err => p.log(`the node policy sweep failed: ${errText(err)}`)))
+}
+
+/** One sweep: a kept file goes once its agent isn't running here, or (another session's) once nobody touches it. */
+async function sweepKept(p: Ports, litterDir: string): Promise<void> {
+  if (sweeping) return
+  sweeping = true
+  try {
+    const running = await runningIds(p)
+    if (running === null) return
+    const now = await p.now()
+    const beat = now - lastBeat >= KEPT_BEAT_MS
+    let removed = false
+    for (const [id, k] of [...kept]) {
+      const path = agentPolicyPath(litterDir, id)
+      if (k.own && running.has(id)) {
+        if (beat) await p.run(['touch', '-c', '--', path]).catch(() => undefined)
+        continue
+      }
+      if (!k.own) {
+        const stat = await p.fs.stat(path).catch(() => null)
+        if (stat && now - stat.mtimeMs < KEPT_STALE_MS) continue
+      }
+      try {
+        await others.removeNodePolicy(p, litterDir, id)
+        kept.delete(id)
+        removed = true
+      } catch (err) {
+        p.log(`swarm ${k.swarm}: ${id}'s policy wasn't removed (the sweep tries again): ${errText(err)}`)
+      }
+    }
+    if (beat) lastBeat = now
+    if (removed) await others.releaseActive(p, litterDir)
+    if (kept.size === 0) {
+      sweepTimer?.cancel()
+      sweepTimer = null
+    }
+  } finally {
+    sweeping = false
+  }
+}
+
+/**
+ * At session.start, after recovery: a node policy file whose swarm has no
+ * live entry in policy.json (or whose entry names another launch) is a
+ * leftover of an ended launch. It's removed unless its agent runs in this
+ * session, or another session touched it within the last minute (that
+ * session's End kept it for an agent still running there); both are swept
+ * later. A policy.json that doesn't read removes nothing.
+ */
+export async function sweepNodePolicies(p: Ports, litterDir: string): Promise<void> {
+  let swarms: Record<string, { launch?: unknown }> = {}
+  if (await p.fs.exists(policyPath(litterDir))) {
+    const policy = await readPolicy(p, litterDir).catch(() => undefined)
+    if (!policy) {
+      p.log("policy.json doesn't read, so no node policy was swept")
+      return
+    }
+    swarms = policy.swarm?.swarms ?? {}
+  }
+  const running = await runningIds(p)
+  for (const f of await nodePolicyFiles(p, litterDir)) {
+    const e = Object.hasOwn(swarms, f.node.swarm) ? swarms[f.node.swarm] : undefined
+    if ((e && e.launch === f.node.launch) || kept.has(f.agentId)) continue
+    kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: running === null || running.has(f.agentId) })
+  }
+  if (kept.size === 0) return
+  startSweep(p, litterDir)
+  await sweepKept(p, litterDir)
 }
 
 /**
@@ -885,8 +1049,13 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string)
   return path
 }
 
-/** For tests: cancels every settle wait and forgets them. */
+/** For tests: cancels every settle wait and the sweep, and forgets them. */
 export function resetEndForTests(): void {
   for (const w of waits.values()) w.timer?.cancel()
   waits.clear()
+  sweepTimer?.cancel()
+  sweepTimer = null
+  sweeping = false
+  lastBeat = 0
+  kept.clear()
 }

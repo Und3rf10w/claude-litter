@@ -19,7 +19,7 @@ import { atomicWriteJson } from '../../hooks/fsx'
 import { normalizeOptions } from '../../hooks/options'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
-import { endSwarm, others, resetEndForTests } from '../../hooks/swarm/end'
+import { endSwarm, others, resetEndForTests, sweepNodePolicies } from '../../hooks/swarm/end'
 import { resetObserveForTests } from '../../hooks/swarm/observe'
 import * as admit from '../../hooks/swarm/admit'
 import * as state from '../../hooks/swarm/state'
@@ -67,7 +67,12 @@ beforeEach(async () => {
   calls = []
   others.patchSwarmPolicy = async (_p, _dir, name) => void calls.push(['patchSwarmPolicy', name])
   others.writeSwarmPolicy = async (_p, _dir, name, e) => void calls.push(['writeSwarmPolicy', name, e])
-  others.releaseOwnership = async (_p, _dir, name) => void calls.push(['releaseOwnership', name])
+  // Answers as FIX-Q's releaseOwnership does (released), and its confirmOwnership (still this session's).
+  others.releaseOwnership = (async (_p: unknown, _dir: unknown, name: string) => {
+    calls.push(['releaseOwnership', name])
+    return true
+  }) as unknown as typeof others.releaseOwnership
+  Object.assign(others, { confirmOwnership: async () => ({ launch, generation: 1, oids: ['a'.repeat(40)] }) })
   others.stopOwnerBeat = name => void calls.push(['stopOwnerBeat', name])
   others.releaseActive = async () => void calls.push(['releaseActive'])
   others.noteSummaryTrigger = () => undefined
@@ -200,6 +205,131 @@ async function ownWorktree(n: number): Promise<string> {
 const records = async () => (await readLaunchLedger(p, litterDir, 'alpha', launch)).records
 const kinds = async () => (await records()).map(r => r.kind)
 const bodyOf = async (kind: string) => (await records()).filter(r => r.kind === kind).map(r => r.body)
+
+describe('U1: End never leaves a running agent unguarded', () => {
+  /** A held agent of the launch with no binding (admit.ts's holdToBind). */
+  const heldFile = (agentId: string) => writePolicy(agentId, policyFor(bindingOf(agentId, { token: null }), { bind: true }))
+
+  test('[End, keep everything] keeps the policies of the agents still running, removes the rest, then sweeps the kept ones', async () => {
+    const wt = await ownWorktree(1)
+    await live(wt)
+    const child = bindingOf('c-1', { kind: 'child', n: 0, of: 'a-fix1', parent: 'a-fix1', token: null, type: 'general-purpose', cwd: wt })
+    state.putBinding(child)
+    await writePolicy('c-1', policyFor(child))
+    await heldFile('h-idle')
+    await heldFile('h-run')
+    // Not this launch's, nor this swarm's: End leaves them to their own.
+    await writePolicy('old-1', policyFor(bindingOf('old-1'), { launch: '20200101-000000' }))
+    await writePolicy('b-1', policyFor(bindingOf('b-1', { swarm: 'beta' })))
+    state.markRunning('a-fix1')
+    state.markRunning('c-1')
+    p.agents = [
+      listed('a-boss', 'completed', 'litter:sw-alpha-boss'),
+      listed('a-fix1', 'running'),
+      listed('c-1', 'running', 'general-purpose'),
+      listed('h-idle', 'completed'),
+      listed('h-run', 'running'),
+    ]
+    await endSwarm(p, 'alpha', 'keep-everything')
+    expect(await bodyOf('swarm.end')).toEqual([expect.objectContaining({ settled: false })])
+    expect(state.liveSwarm('alpha')).toBeNull()
+    // The running ones keep theirs, so the guard denies them ("the swarm is not live").
+    expect(['a-fix1', 'c-1', 'h-run'].map(hasPolicy)).toEqual([true, true, true])
+    expect(['a-boss', 'h-idle'].map(hasPolicy)).toEqual([false, false])
+    expect(['old-1', 'b-1'].map(hasPolicy)).toEqual([true, true])
+    // `active` is Q's to remove, once no binding file is left: asked after the removal.
+    expect(calls.at(-1)).toEqual(['releaseActive'])
+    expect(p.timers.size).toBe(1)
+
+    // The node and the held agent leave the list; the child still runs.
+    p.agents = [listed('a-fix1', 'completed'), listed('c-1', 'running', 'general-purpose'), listed('h-run', 'completed')]
+    await fireEvery(p)
+    expect(['a-fix1', 'h-run'].map(hasPolicy)).toEqual([false, false])
+    expect(hasPolicy('c-1')).toBe(true)
+    expect(p.timers.size).toBe(1)
+
+    // While it runs, its file is beaten, so another session's start leaves it.
+    utimesSync(agentPolicyPath(litterDir, 'c-1'), (T0 - 300_000) / 1000, (T0 - 300_000) / 1000)
+    p.clock.now = T0 + 30_000
+    await fireEvery(p)
+    expect(Math.round(statMtime('c-1'))).not.toBe(T0 - 300_000)
+
+    p.agents = [listed('c-1', 'completed', 'general-purpose')]
+    calls = []
+    await fireEvery(p)
+    expect(hasPolicy('c-1')).toBe(false)
+    expect(calls).toEqual([['releaseActive']])
+    expect(p.timers.size).toBe(0)
+    expect(['old-1', 'b-1'].map(hasPolicy)).toEqual([true, true])
+  })
+
+  test("a list that can't be read keeps every file, for the sweep to try again", async () => {
+    await live()
+    p.listAgents = async () => {
+      throw new Error('the engine is busy')
+    }
+    await endSwarm(p, 'alpha', 'keep-everything')
+    expect(['a-boss', 'a-fix1'].map(hasPolicy)).toEqual([true, true])
+    p.listAgents = async () => [listed('a-boss', 'completed'), listed('a-fix1', 'completed')]
+    await fireEvery(p)
+    expect(['a-boss', 'a-fix1'].map(hasPolicy)).toEqual([false, false])
+    expect(p.timers.size).toBe(0)
+  })
+
+  test("a settled End removes every policy of the launch, held ones too, and starts no sweep", async () => {
+    await live()
+    await heldFile('h-idle')
+    await endSwarm(p, 'alpha', 'request')
+    await fireEvery(p)
+    expect(await kinds()).toContain('swarm.end')
+    expect(['a-boss', 'a-fix1', 'h-idle'].map(hasPolicy)).toEqual([false, false, false])
+    expect(calls.at(-1)).toEqual(['releaseActive'])
+    expect(p.timers.size).toBe(0)
+  })
+
+  test("at session.start, a file whose swarm isn't live goes, unless its agent runs here or another session still beats it", async () => {
+    const entry: SwarmEntry = {
+      launch: 'L-beta',
+      state: 'live',
+      commonDir: realpathSync(join(dir, '.git')),
+      owner: { ref: 'refs/litter-swarm/beta', oid: 'b'.repeat(40), generation: 1, session: 'other', checkedAt: T0 / 1000 },
+      nodeTypes: [],
+    }
+    const policy: Policy = { v: 1, session: 'other', litterDir, run: null, roles: {}, swarm: { swarms: { beta: entry } } }
+    await atomicWriteJson(p, policyPath(litterDir), policy)
+    const at = (id: string, ms: number) => utimesSync(agentPolicyPath(litterDir, id), ms / 1000, ms / 1000)
+    await writePolicy('b-live', policyFor(bindingOf('b-live', { swarm: 'beta', launch: 'L-beta' })))
+    await writePolicy('b-old', policyFor(bindingOf('b-old', { swarm: 'beta', launch: 'L-older' })))
+    await writePolicy('gone', policyFor(bindingOf('gone')))
+    await writePolicy('theirs', policyFor(bindingOf('theirs')))
+    await writePolicy('mine', policyFor(bindingOf('mine')))
+    await atomicWriteJson(p, agentPolicyPath(litterDir, 'writer'), { v: 1, run: 'r1', task: { id: 't1', owned: [] } })
+    for (const id of ['b-live', 'b-old', 'gone', 'mine', 'writer']) at(id, T0 - 600_000)
+    at('theirs', T0 - 5_000)
+    p.agents = [listed('mine', 'running')]
+    await sweepNodePolicies(p, litterDir)
+    expect(['b-old', 'gone'].map(hasPolicy)).toEqual([false, false])
+    expect(['b-live', 'theirs', 'mine', 'writer'].map(hasPolicy)).toEqual([true, true, true, true])
+    expect(calls).toEqual([['releaseActive']])
+    // The sweep watches the two it kept: one once its agent leaves this session's list, one once nobody beats it.
+    p.agents = [listed('mine', 'completed')]
+    p.clock.now = T0 + 120_000
+    await fireEvery(p)
+    expect(['mine', 'theirs'].map(hasPolicy)).toEqual([false, false])
+    expect(['b-live', 'writer'].map(hasPolicy)).toEqual([true, true])
+    expect(p.timers.size).toBe(0)
+  })
+
+  test("at session.start, a policy.json that doesn't parse removes nothing", async () => {
+    await writePolicy('gone', policyFor(bindingOf('gone')))
+    writeFileSync(policyPath(litterDir), '{ not json')
+    await sweepNodePolicies(p, litterDir)
+    expect(hasPolicy('gone')).toBe(true)
+    expect(calls).toEqual([])
+  })
+})
+
+const statMtime = (agentId: string): number => Bun.file(agentPolicyPath(litterDir, agentId)).lastModified
 
 describe('U3: the cleanup counts a node as ended the way the settle wait does', () => {
   test("a node whose turn.complete landed, still listed running, doesn't keep its worktree", async () => {

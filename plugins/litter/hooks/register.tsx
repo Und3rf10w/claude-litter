@@ -40,6 +40,7 @@ import { swarmProposeTool } from './swarm/propose'
 import { swarmSpawn } from './swarm/spawn'
 import { admitSend, admitStep, leadTurnStart, settleNode, swarmContext, swarmSendTool } from './swarm/admit'
 import { observeNodeTurn } from './swarm/observe'
+import { sweepNodePolicies } from './swarm/end'
 import {
   doctorCommand,
   onUiInput,
@@ -262,6 +263,8 @@ export const register: Register = (on, options) => {
         await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
         await step(p, 'reconcile', () => reconcileRuns(p, litterDir))
         await step(p, 'leftover worktrees', () => cleanupLeftovers(p, litterDir))
+        // After recovery, so policy.json's entries say which swarms are live (FIX-U, U1).
+        await step(p, 'leftover node policies', () => sweepNodePolicies(p, litterDir))
       }
       await step(p, 'timers', async () => startDrainTimer(p, SPOOL_CONSUMERS))
       await step(p, 'swarm timers', async () => startSwarmTimers(p))
