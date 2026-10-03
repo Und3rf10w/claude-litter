@@ -423,9 +423,12 @@ async function ruleCommit(p: Ports, litterDir: string, s: LiveSwarm, owner: Node
 // [That was me]
 
 /**
- * [That was me] on a branch-moved event: records `branch-moved-ack` for its
- * `seq`, once. Throws, with the reason, for a swarm this session doesn't act
- * on, or a `seq` that isn't one of its launch's branch-moved events.
+ * [That was me] on a flag the browser shows, a branch-moved or a rule-commit
+ * event: records `branch-moved-ack` for its `seq`, once. The plan names no
+ * kind of its own for a rule-commit's ack, so both take that record, by seq;
+ * an ack only clears the flag, and a rule-commit still never counts as your
+ * acceptance of a rule (16.4). Throws, with the reason, for a swarm this
+ * session doesn't act on, or a `seq` that isn't one of those events.
  */
 export async function ackBranchMoved(p: Ports, swarm: string, seq: number): Promise<void> {
   const litterDir = session().litterDir
@@ -435,8 +438,8 @@ export async function ackBranchMoved(p: Ports, swarm: string, seq: number): Prom
   await serial(`swarm-ack:${litterDir}:${swarm}`, async () => {
     const { records, tampered } = await readLaunchLedger(p, litterDir, swarm, s.launch)
     if (tampered) throw new Error(`litter: launch ${s.launch} of ${swarm} has a tampered ledger at record ${tampered.seq}`)
-    const moved = records.find(r => r.seq === seq && r.kind === 'swarm.event' && r.body.kind === 'branch-moved')
-    if (!moved) throw new Error(`litter: record ${seq} of ${swarm}'s launch ${s.launch} isn't a branch-moved event`)
+    const moved = records.find(r => r.seq === seq && r.kind === 'swarm.event' && (r.body.kind === 'branch-moved' || r.body.kind === 'rule-commit'))
+    if (!moved) throw new Error(`litter: record ${seq} of ${swarm}'s launch ${s.launch} isn't a branch-moved or rule-commit event`)
     if (records.some(r => r.kind === 'swarm.event' && r.body.kind === 'branch-moved-ack' && r.body.seq === seq)) return
     await appendLaunchRecord(p, litterDir, swarm, s.launch, 'swarm.event', { kind: 'branch-moved-ack', seq })
   })
