@@ -51,7 +51,7 @@ case_not_bound() {
 }
 
 case_not_held() {
-  for nh_case in orchestrator child stopping stopped unadmitted generation; do
+  for nh_case in orchestrator child stopping stopped unadmitted generation launch; do
     rm -rf "$(hooks_dir)"
     case $nh_case in
       orchestrator) worker; child c1 a1; nh_id=a1; nh_ty=litter:sw-s-lead ;;
@@ -60,6 +60,8 @@ case_not_held() {
       stopped) worker '.stopped = "browser"'; child c1; nh_id=w1; nh_ty=$FIXER ;;
       unadmitted) worker '.admitted = false'; child c1; nh_id=w1; nh_ty=$FIXER ;;
       generation) worker '.' '.swarm.swarms.s.owner.generation = 2'; child c1; nh_id=w1; nh_ty=$FIXER ;;
+      # A policy left from an earlier launch of the same swarm (R4).
+      launch) worker '.launch = "20261002-090000"'; child c1; nh_id=w1; nh_ty=$FIXER ;;
     esac
     stop_input "$nh_id" "$nh_ty" | run_hook hold.sh
     ( assert_goes ) || fail "$nh_case was held"
@@ -178,7 +180,9 @@ case_lets_go() {
 
 case_done_marker() {
   worker
-  # A shell or a monitor in flight: not done.
+  # A shell or a monitor of its own in flight (watch.sh listed it in shells/w1): not done.
+  mkdir -p "$(hooks_dir)/shells"
+  printf 'b0\nb1\n' >|"$(hooks_dir)/shells/w1"
   for dm_ty in shell monitor; do
     w1_stop ".background_tasks += [{id: \"b1\", type: \"$dm_ty\", status: \"running\", description: \"d\"}]"
     assert_goes
@@ -192,6 +196,78 @@ case_done_marker() {
   # An orchestrator and a child are marked as well.
   stop_input a1 litter:sw-s-lead | run_hook hold.sh
   assert_file "$(done_file a1)"
+}
+
+# R3: background_tasks is the whole session's, with no owner. The lead's dev
+# server, or another node's shell, must not keep this agent from done/.
+case_done_others_shells() {
+  worker
+  child c1
+  mkdir -p "$(hooks_dir)/shells"
+  printf 'b7\n' >|"$(hooks_dir)/shells/a1"
+  stop_input c1 general-purpose '.background_tasks += [
+    {id: "b1", type: "shell", status: "running", description: "npm run dev", command: "npm run dev"},
+    {id: "b7", type: "shell", status: "running", description: "the lead node", command: "sleep 99"},
+    {id: "m1", type: "monitor", status: "pending", description: "an MCP monitor"}]' | run_hook hold.sh
+  assert_goes
+  assert_file "$(done_file c1)"
+  # The worker's hold on c1 lets go at once.
+  w1_stop '.background_tasks += [{id: "b1", type: "shell", status: "running", description: "d"}]'
+  assert_goes
+  assert_file "$(done_file w1)"
+  assert_eq '' "$(hold_lines)" "hold lines"
+  # Its own file names b9, which is no longer running: done again.
+  rm -f "$(done_file w1)"
+  printf 'b9\nnot an id\n\n' >|"$(hooks_dir)/shells/w1"
+  w1_stop '.background_tasks += [{id: "b1", type: "shell", status: "running", description: "d"}]'
+  assert_file "$(done_file w1)"
+}
+
+# --- the listing of children (R11) ------------------------------------------------
+
+# A malformed sibling binding fails the listing: a worker is still held, the
+# listing tried again on each poll, here until the bad file is gone.
+case_listing_retried() {
+  worker
+  child c1
+  mark_done c1
+  printf '{"v":1,"node":' >|"$(hooks_dir)/agents/x9.json"
+  (sleep 3 && rm -f "$(hooks_dir)/agents/x9.json") &
+  lr_bg=$!
+  lr_t0=$(date +%s)
+  w1_stop
+  lr_t1=$(date +%s)
+  wait "$lr_bg"
+  # Its one child was done already: once the listing reads, the stop goes ahead, marked done.
+  assert_goes
+  [ $((lr_t1 - lr_t0)) -ge 2 ] || fail "went ahead after $((lr_t1 - lr_t0)) s, before the listing could read"
+  assert_file "$(done_file w1)"
+  assert_eq '' "$(hold_lines)" "hold lines"
+}
+
+# The same with an open child, and the bad file staying: on the cap it's the cap.
+case_listing_cap() {
+  worker
+  child c1
+  : >|"$(hooks_dir)/agents/x9.json"
+  LT_HOLD_CAP=1
+  export LT_HOLD_CAP
+  w1_stop
+  assert_goes
+  assert_eq 'timeout ' "$(hold_lines)" "hold lines"
+  assert_no_file "$(done_file w1)"
+  assert_stderr_contains 'agents/x9.json'
+  # An orchestrator, never held, goes ahead at once, unmarked: an open child can't be ruled out.
+  stop_input a1 litter:sw-s-lead | run_hook hold.sh
+  assert_goes
+  assert_no_file "$(done_file a1)"
+  # A binding that vanished (a dangling name) is no failure: the mod removed it.
+  rm -f "$(hooks_dir)/agents/x9.json"
+  ln -s "$T_DIR/gone.json" "$(hooks_dir)/agents/x8.json"
+  mark_done c1
+  w1_stop
+  assert_goes
+  assert_file "$(done_file w1)"
 }
 
 # --- failures --------------------------------------------------------------------
@@ -210,11 +286,23 @@ case_no_jq() {
 case_fast_path() {
   worker
   child c1
-  rm -f "$(hooks_dir)/active"
+  rm -f "$(hooks_dir)/active" "$(hooks_dir)"/agents/*.json
   w1_stop
   assert_goes
   assert_eq '' "$(cat "$T_DIR/err")" stderr
   assert_no_file "$(hooks_dir)/hold"
+}
+
+# R5: `active` gone while bindings remain (a node removed it): the hold still holds.
+case_no_active_bound() {
+  worker
+  child c1
+  rm -f "$(hooks_dir)/active"
+  LT_HOLD_CAP=0
+  export LT_HOLD_CAP
+  w1_stop
+  assert_goes
+  assert_eq 'held c1|timeout c1' "$(hold_lines)" "hold lines"
 }
 
 case_failures_go_ahead() {
@@ -241,15 +329,19 @@ case_failures_go_ahead() {
 }
 
 t "an agent with no node binding is never held or marked" case_not_bound
-t "an orchestrator, a child, and a worker stopping, stopped, unadmitted or handed over are not held" case_not_held
+t "an orchestrator, a child, and a worker stopping, stopped, unadmitted, handed over or of another launch are not held" case_not_held
 t "a worker with no children goes ahead, marked done" case_no_children
 t "a worker whose children are all done or gone goes ahead, marked done" case_all_done
 t "a child done after 3 s releases the hold with the block" case_poll_releases
 t "under stop_hook_active a worker is held once per child" case_once_per_child
 t "the hold ends at LT_HOLD_CAP, and the stop goes ahead" case_cap
 t "a swarm that starts stopping lets the held worker go" case_lets_go
-t "done/ at a stop it lets go, unless a shell or monitor runs" case_done_marker
+t "done/ at a stop it lets go, unless a shell or monitor of its own runs" case_done_marker
+t "the session's other shells and monitors don't keep an agent from done/" case_done_others_shells
+t "a listing a malformed binding fails is tried again on the next poll" case_listing_retried
+t "a listing that keeps failing ends at the cap; a vanished binding is no failure" case_listing_cap
 t "without jq there is no hold" case_no_jq
-t "with nothing active it exits at once" case_fast_path
+t "with nothing active and no binding it exits at once" case_fast_path
+t "with active gone while bindings remain it still holds" case_no_active_bound
 t "a broken binding, a missing lib.sh or an unwritable hold folder never blocks" case_failures_go_ahead
 done_testing

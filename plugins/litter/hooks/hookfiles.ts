@@ -328,7 +328,10 @@ export type SpoolLine =
     }>
   /** Phase 2b. watch.sh, for a node's SubagentHandback: its message (a blob when long), before `done/<agent_id>`. */
   | SpoolBase<'handback', { agent_id: string; agent_type: string; tool_use_id: string; message?: string; file?: string }>
-  /** Phase 2b. hold.sh: a worker held for `children`, released once they're done, or let go at its cap (`timeout`). */
+  /**
+   * Phase 2b. hold.sh: a worker held for `children`, released once they're done, or let go at its
+   * cap (`timeout`). A `timeout` names no children when the bindings couldn't be listed until the cap.
+   */
   | SpoolBase<'hold', { agent_id: string; phase: 'held' | 'released' | 'timeout'; children: string[] }>
 
 type SpoolBase<E extends string, P> = { v: 1; ev: E; ts: number; session_id: string } & P

@@ -117,7 +117,7 @@ const toLeadNoted = new Set<string>()
  *    node's stop is noted for the settle wait;
  *  - `handback` is the node's report: a `report` event, and `report-to-lead`
  *    when the lead got a worker's or a child's;
- *  - `hold`: a timeout is `worker-ended-early`, a release `held`;
+ *  - `hold`: a timeout is `worker-ended-early` when a child still runs, a release `held`;
  *  - `isolation-lost` flags the swarm, and L refuses new spawns from then on.
  * A line about an agent nobody knows changes nothing. Each line changes the
  * state idempotently; an event can be recorded twice only after a crash
@@ -232,9 +232,15 @@ async function onHold(p: Ports, litterDir: string, line: Line<'hold'>): Promise<
   const bound = typeof line.agent_id === 'string' ? boundIn(line.agent_id) : null
   if (!bound) return
   const { b, s } = bound
-  const children = strings(line.children)
-  if (line.phase === 'timeout') await recordEvent(p, litterDir, s, { kind: 'worker-ended-early', node: b.node, agentId: b.agentId, children })
-  else if (line.phase === 'released') await recordEvent(p, litterDir, s, { kind: 'held', node: b.node, agentId: b.agentId, children })
+  const named = strings(line.children)
+  if (line.phase === 'timeout') {
+    // The worker ends its turn while children run: only those still running count, since a hold
+    // that missed a child's done/ waited on nothing. A listing hold.sh couldn't read until the cap
+    // names none; the worker's own bound children stand in.
+    const ids = named.length > 0 ? named : state.childrenOf(b.agentId).map(c => c.agentId).slice(0, LIST_MAX)
+    const children = ids.filter(id => state.binding(id) !== null && state.status(id) === 'running' && !state.agentStopped(id))
+    if (children.length > 0) await recordEvent(p, litterDir, s, { kind: 'worker-ended-early', node: b.node, agentId: b.agentId, children })
+  } else if (line.phase === 'released') await recordEvent(p, litterDir, s, { kind: 'held', node: b.node, agentId: b.agentId, children: named })
 }
 
 async function onIsolationLost(p: Ports, litterDir: string, line: Line<'isolation-lost'>): Promise<void> {
