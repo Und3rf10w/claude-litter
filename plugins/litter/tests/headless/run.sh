@@ -11,7 +11,8 @@
 
 here=$(cd "$(dirname "$0")" && pwd)
 failed=0
-for c in 'isolation.sh alone' 'isolation.sh broad' 'land.sh edit' 'land.sh clean'; do
+for c in 'isolation.sh alone' 'isolation.sh broad' 'land.sh edit' 'land.sh clean' \
+  'fanout.sh land' 'fanout.sh edit' 'fanout.sh red' 'fanout.sh stop'; do
   # A word list on purpose: the script and its mode.
   # shellcheck disable=SC2086
   sh "$here"/$c || failed=$((failed + 1))
