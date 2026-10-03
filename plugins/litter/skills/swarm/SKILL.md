@@ -62,7 +62,7 @@ Follow section 2 for that node's brief. Once the user accepts the change, a runn
 
 ## 6. End (end <name>)
 
-Record `{ kind: 'swarm.end', swarm }` with `mcp__litter__record`. The mod asks the nodes to stop and waits until they have, which can take a minute or two, so the result says the swarm is stopping. Tell the user that in a line and end your turn. When it has ended, the litter plugin hands you the summary. From it, report each node's outcome, the branches and worktrees left, and any open questions. If the summary says the swarm didn't settle, say which nodes or commands were still running, and that its worktrees were kept. Don't push, merge or remove anything yourself unless the user asks.
+Record `{ kind: 'swarm.end', swarm }` with `mcp__litter__record`. The mod asks the nodes to stop and waits until they have, which can take a minute or two, so the result says the swarm is stopping. Tell the user that in a line and end your turn. When it has ended, the litter plugin hands you the summary. From it, report each node's outcome, the branches and worktrees left, and any open questions. If the summary says the swarm didn't settle, say which nodes or commands were still running, and that its worktrees were kept. If the summary says the launch ledger is broken, say it holds no swarm.end and no worktree was removed. Don't push, merge or remove anything yourself unless the user asks.
 
 ## 7. Resume or re-spawn (resume <name> <nodes> | respawn <name> <nodes>)
 
