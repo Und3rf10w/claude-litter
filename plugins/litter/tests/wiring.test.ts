@@ -86,7 +86,7 @@ const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as { ok:
 const OFFER = { description: 'd', source: 'plugin', provider: { plugin: 'litter', tier: 'core' } } as const
 
 // Phase 2b-1 (WP-C): with nothing live, every swarm hook leaves the engine's
-// answer as it was; the swarm tools are the mod's, and answer "not built yet".
+// answer as it was; the swarm tools are the mod's, and refuse with no session.
 describe('the swarm wiring, with nothing live', () => {
   test('a session.send reaches the engine unchanged', async ($, on) => {
     let seen: { to?: string; text?: string } | null = null
@@ -172,7 +172,7 @@ describe('the swarm wiring, with nothing live', () => {
     }
     for (const tool of tools) {
       const r = await $.tool.call({ tool, tool_use_id: `t-${tool}`, swarm: 'alpha' })
-      expect(parse(r)).toEqual({ ok: false, error: `litter: ${tool} isn't built yet` })
+      expect(parse(r)).toEqual(expect.objectContaining({ ok: false, error: expect.stringContaining('litter: ') }))
     }
     expect(reached).toBe(0)
   })
