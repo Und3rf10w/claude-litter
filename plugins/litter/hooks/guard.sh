@@ -27,8 +27,12 @@
 set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
 if [ ! -r "$lt_here/lib.sh" ]; then
-  # No lib, no checks: refuse while a run may be active, pass otherwise.
-  [ -f "${CLAUDE_PROJECT_DIR:-/nonexistent}/.claude/litter/hooks/active" ] || exit 0
+  # No lib, no checks: refuse while a run may be active or a binding remains
+  # (lib.sh's lt_begin), pass otherwise.
+  lt_d=${CLAUDE_PROJECT_DIR:-/nonexistent}/.claude/litter/hooks
+  lt_any=
+  for lt_f in "$lt_d"/agents/*.json; do [ -e "$lt_f" ] && lt_any=1; done
+  [ -f "$lt_d/active" ] || [ -n "$lt_any" ] || exit 0
   printf 'litter guard failed: loading lib.sh; refusing\n' >&2
   exit 2
 fi
@@ -91,21 +95,39 @@ def other($in; $id; $tool; $ti; $sub):
 # commands at every separator, even inside quotes, since sh -c "a; b" runs
 # both; quotes and backslashes are then dropped from each word. A command's
 # first word counts, and after a wrapper (sudo, env, sh -c, find -exec, xargs,
-# …) every later word may start one too.
+# …) every later word that names a command some rule checks (git, a writer, a
+# deploy or install tool, a bash.deny entry) starts one too.
+#
+# The hook has 30 s, and a command hook that runs out of time lets the call
+# run, so the parse stays linear in the command (bashparse): a command over
+# 32 KiB or 4,000 words is denied unread, and so is one with more than 32
+# such words after a wrapper.
 GUARD_JQ_BASH='
 def oneof($xs): . as $x | ($xs | index([$x])) != null;
 def base: split("/") | last | ascii_downcase;
-def words: [splits("[ \\t]+")] | map(gsub("[\"\\x27\\\\]"; "")) | map(select(. != ""));
-def segs: [splits("\\$\\(|`|&&|\\|\\||[;&|\\n\\r(){}]")] | map(words) | map(select(length > 0));
+# Plain-string splits, not regex ones: jq 1.7 finds each regex match from the
+# start of the string, so a regex over a command with thousands of matches
+# takes seconds.
+def dequote: split("\"") | join("") | split([39] | implode) | join("") | split("\\") | join("");
+def cuts($seps): reduce $seps[] as $sep ([.]; [.[] | split($sep)[]]);
+def words: [cuts([" ", "\t"])[] | dequote | select(. != "")];
+def segs: cuts(["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"]) | map(words) | map(select(length > 0));
 def wrappers: ["env", "sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "timeout",
   "gtimeout", "stdbuf", "ionice", "eval", "xargs", "watch", "setsid", "chroot", "flock", "unbuffer",
   "caffeinate", "then", "else", "elif", "do", "if", "while", "until", "!", "sh", "bash", "zsh", "dash",
   "ksh", "ash", "mksh", "busybox", "su", "runuser", "find", "parallel", "script", "strace"];
-def cmds: (map(test("^[A-Za-z_][A-Za-z0-9_]*=")) | index(false)) as $i
+# A simple command, past its assignments, and after a wrapper each later word
+# in $hs (an object: name to true) with the rest of the command after it, or
+# "many" when there are more than 32 of those.
+def cmds($hs): (map(test("^[A-Za-z_][A-Za-z0-9_]*=")) | index(false)) as $i
   | if $i == null then empty
     else .[$i:] as $c
-    | $c, (if ($c[0] | base | oneof(wrappers)) then range(1; $c | length) as $k | $c[$k:] else empty end)
+    | $c, (if ($c[0] | base | oneof(wrappers)) then
+        [range(1; $c | length) as $k | select($hs[$c[$k] | base] == true) | $k] as $ks
+        | if ($ks | length) > 32 then "many" else ($ks[] as $k | $c[$k:]) end
+      else empty end)
     end;
+def toolong: "this command is too long for the guard to check; split it";
 
 def has1($f): any(.[]; . == $f);
 def hasp($p): any(.[]; startswith($p));
@@ -114,21 +136,27 @@ def pos: map(select(startswith("-") | not));
 def first1: (pos | .[0]) // "";
 
 # git past its global options; -c and --config-env are noted, and so is every
-# -C, --git-dir and --work-tree, as [option, value] in loc.
+# -C, --git-dir and --work-tree, as [option, value] in loc. One pass by index:
+# each option is an event, and the first word that is no option is the
+# subcommand, which ends the pass.
 def gitsub:
-  def go($cfg; $loc):
-    if length == 0 then {sub: "", args: [], cfg: $cfg, loc: $loc}
-    else .[0] as $w
-    | if $w == "-c" then .[2:] | go(true; $loc)
-      elif ($w | startswith("--config-env")) then (if ($w | contains("=")) then .[1:] else .[2:] end) | go(true; $loc)
-      elif ($w | oneof(["-C", "--git-dir", "--work-tree"])) then (.[1] // "") as $v | .[2:] | go($cfg; $loc + [[$w, $v]])
-      elif ($w | startswith("--git-dir=")) or ($w | startswith("--work-tree=")) then
-        .[1:] | go($cfg; $loc + [[($w | split("=") | .[0]), ($w | sub("^[^=]*="; ""))]])
-      elif ($w | oneof(["--namespace", "--super-prefix", "--attr-source"])) then .[2:] | go($cfg; $loc)
-      elif ($w | startswith("-")) then .[1:] | go($cfg; $loc)
-      else {sub: ($w | ascii_downcase), args: .[1:], cfg: $cfg, loc: $loc} end
-    end;
-  go(false; []);
+  . as $w
+  | [label $out | foreach range(0; $w | length) as $k ({at: 0, ev: null};
+      if $k < .at then .ev = null
+      else $w[$k] as $x
+      | if $x == "-c" then .at = $k + 2 | .ev = {cfg: true}
+        elif ($x | startswith("--config-env")) then .at = $k + (if ($x | contains("=")) then 1 else 2 end) | .ev = {cfg: true}
+        elif ($x | oneof(["-C", "--git-dir", "--work-tree"])) then .at = $k + 2 | .ev = {loc: [$x, ($w[$k + 1] // "")]}
+        elif ($x | startswith("--git-dir=")) or ($x | startswith("--work-tree=")) then
+          .at = $k + 1 | .ev = {loc: [($x | split("=") | .[0]), ($x | sub("^[^=]*="; ""))]}
+        elif ($x | oneof(["--namespace", "--super-prefix", "--attr-source"])) then .at = $k + 2 | .ev = null
+        elif ($x | startswith("-")) then .at = $k + 1 | .ev = null
+        else .ev = {sub: $k} end
+      end;
+      if .ev == null then empty elif .ev.sub != null then (.ev, break $out) else .ev end)] as $evs
+  | ([$evs[] | .sub // empty] | .[0]) as $s
+  | {sub: (if $s == null then "" else $w[$s] | ascii_downcase end), args: (if $s == null then [] else $w[$s + 1:] end),
+     cfg: any($evs[]; .cfg == true), loc: [$evs[] | .loc // empty]};
 # A long option, spelled in full or by any prefix git would accept for it.
 def longopt($full; $min): any(.[]; . as $w | ($w | startswith("--")) and ($w | length) >= $min and ($full | startswith($w)));
 # The git commands that write the index (section 9, "Bash"): only a bound
@@ -245,9 +273,14 @@ def installs: [["npm", "install"], ["npm", "i"], ["npm", "ci"], ["npm", "add"], 
   ["gem", "install"], ["bundle", "install"], ["brew", "install"], ["apt", "install"], ["apt-get", "install"],
   ["dnf", "install"], ["yum", "install"], ["apk", "add"], ["conda", "install"], ["composer", "install"],
   ["composer", "require"]];
-def pairwhy($table; $what): (.[0] | base) as $n | (.[1:] | map(ascii_downcase)) as $r
-  | [$table[] | select(.[0] == $n and (.[1] == "" or (.[1] as $s | $r | index([$s]) != null)))] | .[0]
-  | if . == null then empty else "\(.[0])\(if .[1] == "" then "" else " " + .[1] end) \($what)" end;
+# The head first: the rest of the command is read only when the table has it.
+def pairwhy($table; $what): (.[0] | base) as $n
+  | [$table[] | select(.[0] == $n)] as $rows
+  | if ($rows | length) == 0 then empty
+    else (.[1:] | map(ascii_downcase)) as $r
+    | [$rows[] | select(.[1] == "" or (.[1] as $s | $r | index([$s]) != null))] | .[0]
+    | if . == null then empty else "\(.[0])\(if .[1] == "" then "" else " " + .[1] end) \($what)" end
+    end;
 
 # Commands that write files: denied to read-only roles (the deepwork
 # state-bash-gate port), and to everyone when the command names a litter folder.
@@ -266,29 +299,50 @@ def writes: (.[0] | base) as $n | .[1:] as $r
 # quotes only without $ or a backtick), then /dev/null and descriptor copies.
 def unquoted: gsub("\\x27[^\\x27]*\\x27"; "") | gsub("\"([^\"\\\\$`]|\\\\.)*\""; "");
 def redirects: unquoted | gsub("[0-9]*>&[0-9-]+"; "") | gsub("[0-9&]*>>?\\|?[ \\t]*/dev/null"; "") | test(">");
-def targets: [gsub("[\"\\x27\\\\]"; "") | scan("[0-9&]*>>?\\|?[ \\t]*([^ \\t;&|<>()]+)") | .[0]];
+def targets: [dequote | scan("[0-9&]*>>?\\|?[ \\t]*([^ \\t;&|<>()]+)") | .[0]];
 # Names .claude/litter, a rule folder (section 16.1) or one of the run roots.
 def prot($roots): ascii_downcase as $s
   | ($s | contains(".claude/litter")) or ($s | contains(".claude/rules/litter"))
     or ($s | test("(^|[^A-Za-z0-9_-])\\.litter(\\.local)?($|[^A-Za-z0-9_.-])"))
     or any($roots[]; . as $r | $s | contains($r));
 
+# Every word that may start a command after a wrapper: the heads the rules
+# check, and $extra (a node bash.deny heads).
+def cmdheads($extra): [deploys[][0], installs[][0], writers[], "git", "sed", "perl", "ruby", "curl", "tar", "unzip", "find", $extra[]]
+  | reduce .[] as $h ({}; .[$h] = true);
+# $cmd as {ss: its simple commands, cs: the commands in them}, or {why: the
+# reason it cannot be checked}: the sizes first, before any parse.
+def bashparse($cmd; $extra):
+  if ($cmd | utf8bytelength) > 32768 then {why: toolong}
+  else [$cmd | segs[]] as $ss
+  | if ([$ss[] | length] | add // 0) > 4000 then {why: toolong}
+    else cmdheads($extra) as $hs
+    | [$ss[] | cmds($hs)] as $cs
+    | if any($cs[]; . == "many") then
+        {why: "this command has too many words that may start a command (over 32 after a wrapper) for the guard to check; split it"}
+      else {ss: $ss, cs: $cs} end
+    end
+  end;
+
 # The first reason to deny a Bash call, or null. $fw and $wcwd: the caller is
 # a bound fanout writer, and its worktree.
 def bashwhy($rowhy; $noinstall; $roots; $fw; $wcwd):
   (.tool_input.command | str) as $cmd
   | if $cmd == "" then "Bash needs a command"
-    else [$cmd | segs[] | cmds] as $cs
-    | [ (if $fw and any($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub; gitwrite) then fanoutcmdwhy($cmd; $wcwd) else empty end),
-        ($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub | gitwhy($rowhy; $fw; $wcwd)),
-        ($cs[] | pairwhy(deploys; "publishes or deploys, which litter agents never do")),
-        (if $noinstall != "" then ($cs[] | pairwhy(installs; "installs packages: \($noinstall)")) else empty end),
-        (if ($cmd | prot($roots)) and (any($cs[]; writes) or ([$cmd | targets[] | select(. != "/dev/null")] | length) > 0) then
-          "Bash may not write under .claude/litter or a litter rule folder (this command names one and writes): records go through mcp__litter__record and rules through /litter:rules, and reading them is fine"
-         else empty end),
-        (if $rowhy != "" and ($cmd | redirects) then "\($rowhy): Bash output may go only to /dev/null or another descriptor, not to a file" else empty end),
-        (if $rowhy != "" then ($cs[] | select(writes) | "\($rowhy): \(.[0] | base) writes files") else empty end)
-      ] | .[0]
+    else bashparse($cmd; []) as $bp
+    | if $bp.why != null then $bp.why
+      else $bp.cs as $cs
+      | [ (if $fw and any($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub; gitwrite) then fanoutcmdwhy($cmd; $wcwd) else empty end),
+          ($cs[] | select((.[0] | base) == "git") | .[1:] | gitsub | gitwhy($rowhy; $fw; $wcwd)),
+          ($cs[] | pairwhy(deploys; "publishes or deploys, which litter agents never do")),
+          (if $noinstall != "" then ($cs[] | pairwhy(installs; "installs packages: \($noinstall)")) else empty end),
+          (if ($cmd | prot($roots)) and (any($cs[]; writes) or ([$cmd | targets[] | select(. != "/dev/null")] | length) > 0) then
+            "Bash may not write under .claude/litter or a litter rule folder (this command names one and writes): records go through mcp__litter__record and rules through /litter:rules, and reading them is fine"
+           else empty end),
+          (if $rowhy != "" and ($cmd | redirects) then "\($rowhy): Bash output may go only to /dev/null or another descriptor, not to a file" else empty end),
+          (if $rowhy != "" then ($cs[] | select(writes) | "\($rowhy): \(.[0] | base) writes files") else empty end)
+        ] | .[0]
+      end
     end;
 '
 
@@ -487,15 +541,49 @@ def denyprefix($deny): . as $c
   | first($deny[] | . as $e | ($e | words) as $ew
       | select(($ew | length) > 0 and ($c | length) >= ($ew | length)
           and ($c[0] | base) == ($ew[0] | base) and $c[1:($ew | length)] == $ew[1:]) | $e) // empty;
-def nodebashwhy($n; $cmd; $roots; $dir; $branch):
+# The litter hooks folder and the ledgers, named in a node Bash (boundary
+# review 1d): a node that removed hooks/active, or rewrote policy.json or its
+# own binding, would switch these rules off. Bash is not parsed for writes
+# (plan 15.3), so this is a fence against the obvious spellings, not a
+# sandbox: a command that reaches the folder in steps (cd litter, then cd
+# hooks) still passes. Each word, quotes and backslashes dropped and folded to
+# lower case, is cut at < > = : , into paths and each path at /, with empty
+# and . parts dropped. A path is denied when
+#  - a litter part, at its start or after .claude, .. or a part the shell
+#    expands ($, ~, a glob), comes before a hooks or ledger part (so
+#    plugins/litter/hooks, the plugin source, passes);
+#  - or a hooks part is followed by one of the hooks/ names (hookfiles.ts).
+# A glob part counts when it would match the name, and a bare * or ? does not
+# (src/hooks/* passes), but for a litter part right after .claude.
+def hooknames: ["active", "policy.json", "agents", "pending", "done", "hold", "spool", "bind", "out", "mode", "pointer",
+  "worktree.json", "wt", "shells"];
+def isglob: test("[*?\\[]");
+def pureglob: test("^[*?]+$");
+def globmatch($name): ("^" + (gsub("(?<c>[.+^$])"; "\\\(.c)") | gsub("\\[!"; "[^") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$") as $re
+  | try ($name | test($re)) catch false;
+def segis($name): . == $name or (isglob and (pureglob | not) and globmatch($name));
+def pathparts: ascii_downcase | cuts(["<", ">", "=", ":", ","])[] | select(. != "") | split("/") | map(select(. != "" and . != "."));
+def anchors: . == ".claude" or . == ".." or test("[$~*?\\[]") or segis(".claude");
+def litterpath: . as $s
+  | ([range(0; $s | length) as $j | select($s[$j] | segis("hooks") or segis("ledger")) | $j] | max) as $last
+  | $last != null and any(range(0; $last) as $i
+      | select(($s[$i] | segis("litter")) or ($i > 0 and ($s[$i] | pureglob) and $s[$i - 1] == ".claude")) | $i;
+      . == 0 or ($s[. - 1] | anchors));
+def hooksfile: . as $s
+  | any(range(1; $s | length) as $j | select($s[$j - 1] | segis("hooks")) | $s[$j] as $x | hooknames[] as $h | $x | segis($h); .);
+def litterhit($ss): first($ss[][] | pathparts | select(litterpath or hooksfile) | join("/")) // null;
+def nodebashwhy($n; $cmd; $roots; $dir; $branch; $bp):
   ($n.authority | if type == "object" then . else {} end) as $au
   | ($n.node | str) as $node
-  | [$cmd | segs[] | cmds] as $cs
+  | $bp.cs as $cs
   | [$cs[] | select((.[0] | base) == "git") | .[1:] | gitsub] as $gs
   | [ ($gs[] | nodegitwhy($node; $au; $dir; $branch)),
       (if $au.commit == true and any($gs[]; commitlike or indexwrite) then nodecmdwhy($cmd; $dir) else empty end),
       ($cs[] | pairwhy(deploys; "publishes or deploys, which litter agents never do")),
       ($cs[] | denyprefix($n.bashDeny | strs) | "\(.) is denied to node \($node) by its spec (bash.deny)"),
+      (litterhit($bp.ss) | if . == null then empty else
+        "Bash may not name the litter hooks folder or a litter ledger (this command names \(.[0:120])): the mod alone changes them, and the guard reads them. To look at one, use Read"
+       end),
       (if ($cmd | prot($roots)) and (any($cs[]; writes) or ([$cmd | targets[] | select(. != "/dev/null")] | length) > 0) then
         "Bash may not write under .claude/litter or a litter rule folder (this command names one and writes): records go through mcp__litter__record and rules through /litter:rules, and reading them is fine"
        else empty end)
@@ -555,9 +643,10 @@ def nodetools($in; $n; $tool; $ti):
     elif $tool == "Bash" or ($tool == "Monitor" and ($ti.command | str) != "") then
       ($ti.command | str) as $cmd
       | if $cmd == "" then deny($in; "Bash needs a command")
-        else nodebashwhy($n; $cmd; $roots; $dir; $branch) as $why
+        else bashparse($cmd; [$n.bashDeny | strs[] | words | .[0] // empty | base]) as $bp
+        | (if $bp.why != null then $bp.why else nodebashwhy($n; $cmd; $roots; $dir; $branch; $bp) end) as $why
         | if $why != null then deny($in; $why)
-          elif $au.commit == true and any([$cmd | segs[] | cmds | select((.[0] | base) == "git") | .[1:] | gitsub][]; commitlike) then
+          elif $au.commit == true and any($bp.cs[] | select((.[0] | base) == "git") | .[1:] | gitsub; commitlike) then
             (if $branch == "" then deny($in; "node \($node) has no bound branch, so it cannot commit; report blocked to your parent")
              elif $head == "" then "head\n" + $dir
              elif ($head | ltrimstr("=")) == $branch then passcall($in)
@@ -588,6 +677,10 @@ def nodetools($in; $n; $tool; $ti):
   | if ($e | type) != "object" then deny($in; "swarm \($sw) is not live, so this node has nothing to do; make no more tool calls and end your turn")
     elif ($e.owner | type) != "object" or ($n.generation | num) == null or $n.generation != $e.owner.generation then
       deny($in; "swarm \($sw) was handed to another session; make no more tool calls and end your turn")
+    elif ($n.launch | str) == "" or ($n.launch | str) != ($e.launch | str) then
+      # Every launch starts at generation 1, so a binding left from an earlier
+      # launch of the same swarm would pass the check above.
+      deny($in; "this binding belongs to launch \($n.launch | str) of swarm \($sw), not to its live launch \($e.launch | str); make no more tool calls and end your turn")
     elif $owner == "" and ($t == null or ($e.owner.checkedAt | num) == null or ($t - $e.owner.checkedAt) > 10) then
       (if ($e.owner.ref | str) != "refs/litter-swarm/" + $sw or ($sw | test("^[a-z0-9][a-z0-9-]{0,23}$") | not)
           or ($e.commonDir | str | startswith("/") | not) or ($e.commonDir | str | test("[\\x00-\\x1f]"))
@@ -706,7 +799,15 @@ guard_node() {
 guard_work() {
   echo 'step finding the hooks folder'
   if [ -n "$LT_DIR_ERR" ]; then
-    lt_cant "$LT_PREFIX can't find litter's hooks folder ($LT_DIR_ERR); refusing"
+    # No binding can be read, so an agent in a swarm worktree (a node's
+    # child keeps its own type) is refused like a litter agent. The main
+    # thread isn't: refusing it would lock the session out.
+    lt_why="$LT_PREFIX can't find litter's hooks folder ($LT_DIR_ERR); refusing"
+    if ! lt_raw_litter && lt_raw_swarm_cwd; then
+      printf 'who litter\nblock\n%s\n' "$lt_why"
+    else
+      lt_cant "$lt_why"
+    fi
     return 0
   fi
   echo 'step checking for jq'

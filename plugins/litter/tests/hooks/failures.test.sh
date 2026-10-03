@@ -36,6 +36,22 @@ inputs() {
     error: "the working-directory isolation context for this agent was lost"}' >|"$T_DIR/in.post"
   jq -cn '{session_id: "s1", transcript_path: "/t", cwd: "/p", permission_mode: "plan",
     hook_event_name: "UserPromptSubmit", prompt: "hi"}' >|"$T_DIR/in.prompt"
+  # A node's child, which keeps its own type, in a swarm worktree; the main thread there; and
+  # an agent naming such a folder only in its tool input.
+  bash_call general-purpose 'ls' | jq -c '.cwd = "/r/.claude/worktrees/sw-s-fixer-1/src"' >|"$T_DIR/in.swchild"
+  bash_call - 'ls' | jq -c '.cwd = "/r/.claude/worktrees/sw-s-fixer-1"' >|"$T_DIR/in.swmain"
+  call general-purpose Agent '{"subagent_type":"Explore","prompt":"p","description":"d","cwd":"/r/.claude/worktrees/sw-s-x"}' >|"$T_DIR/in.swinput"
+}
+
+# R7: with the hooks folder lost, a caller in a swarm worktree is refused like a litter agent.
+swarm_cwd_refused() {
+  run_hook guard.sh <"$T_DIR/in.swchild"
+  assert_blocked "$1"
+  assert_stderr_contains "can't find litter's hooks folder"
+  for sc_in in swmain swinput other; do
+    run_hook guard.sh <"$T_DIR/in.$sc_in"
+    ( assert_pass ) || fail "$sc_in was refused"
+  done
 }
 
 # A run in progress, with executor a1 bound.
@@ -201,6 +217,7 @@ case_project_dir_bad() {
   assert_blocked 'CLAUDE_PROJECT_DIR is not an absolute path'
   run_hook guard.sh <"$T_DIR/in.main"
   assert_pass
+  swarm_cwd_refused 'CLAUDE_PROJECT_DIR is not an absolute path'
   run_hook output.sh <"$T_DIR/in.so"
   assert_blocked 'CLAUDE_PROJECT_DIR is not an absolute path'
   run_hook identity.sh start <"$T_DIR/in.start"
@@ -252,12 +269,14 @@ case_pointer_bad() {
   assert_blocked "doesn't hold an absolute path"
   run_hook guard.sh <"$T_DIR/in.main"
   assert_pass
+  swarm_cwd_refused "doesn't hold an absolute path"
   : >|"$ptr"
   run_hook guard.sh <"$T_DIR/in.litter"
   assert_blocked "doesn't hold an absolute path"
   printf '%s\n' "$T_DIR/gone/.claude/litter" >|"$ptr"
   run_hook guard.sh <"$T_DIR/in.litter"
   assert_blocked "which isn't a folder"
+  swarm_cwd_refused "which isn't a folder"
   run_hook guard.sh <"$T_DIR/in.enter"
   assert_pass
   run_hook identity.sh start <"$T_DIR/in.start"
@@ -384,9 +403,9 @@ t "a missing, half-written, wrong-version or unreadable policy.json denies" case
 t "malformed input refuses a litter agent and passes anyone else" case_bad_stdin
 t "a jq that fails or dies refuses a litter agent, passes the main thread's Bash" case_jq_fails
 t "a broken git changes no decision, and the hooks never run it" case_git_fails
-t "an unset or relative CLAUDE_PROJECT_DIR refuses litter agents only" case_project_dir_bad
+t "an unset or relative CLAUDE_PROJECT_DIR refuses litter agents and agents in a swarm worktree only" case_project_dir_bad
 t "the pointer from a linked worktree is followed, in both forms" case_pointer_followed
-t "a bad pointer refuses litter agents only" case_pointer_bad
+t "a bad pointer refuses litter agents and agents in a swarm worktree only" case_pointer_bad
 t "without lib.sh, a run refuses (guard, output) or reports (identity, watch)" case_no_lib
 t "a read that doesn't end in 3 s refuses the call" case_read_times_out
 t "an input over 8 MiB is cut, and refuses a litter agent" case_input_too_big

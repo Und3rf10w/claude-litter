@@ -10,7 +10,7 @@
 # "Mod-to-hook state"). Keep the two identical:
 #   <hooks>/active  policy.json  worktree.json  agents/<id>.json  out/<id>.json
 #   <hooks>/bind/<id>  mode  wt/<name>  spool/<session_id>.jsonl  spool/blobs/<name>.json
-#   <hooks>/pending/<key>  done/<id>  hold/<id>   (phase 2b, the swarm markers)
+#   <hooks>/pending/<key>  done/<id>  hold/<id>  shells/<id>   (phase 2b, the swarm markers)
 #   $CLAUDE_PROJECT_DIR/.claude/litter/hooks/pointer
 # and, for worktree.sh, the run's setup log and its writers' branches
 # (lt_wt_marker, lt_setup_log, lt_writer_branch below):
@@ -63,15 +63,29 @@ lt_locate() {
   [ -d "$LT_DIR" ] || { LT_DIR_ERR="the pointer names $LT_DIR, which isn't a folder"; return 1; }
 }
 
-# The fast path, then the one read. With nothing active a hook costs one sh and
-# one stat, and never reads its input or starts jq. When hooks/ can't be found,
-# nobody can say whether a run is active, so the script goes on and refuses
-# litter agents (LT_DIR_ERR).
+# The fast path, then the one read. With nothing active and no binding in
+# agents/ a hook costs one sh, a stat and a glob, and never reads its input or
+# starts jq. With `active` gone while a binding remains (a node could remove
+# it from Bash), the input is read, and only an agent bound there goes on:
+# the swarm rules are keyed by the binding, not by `active`. When hooks/ can't
+# be found, nobody can say whether a run is active, so the script goes on and
+# refuses litter agents (LT_DIR_ERR).
 lt_begin() {
-  if lt_locate; then
-    [ -f "$LT_DIR/active" ] || exit 0
+  if lt_locate && [ ! -f "$LT_DIR/active" ]; then
+    lt_bindings || exit 0
+    lt_read_input
+    lt_raw_node || exit 0
+    return 0
   fi
   lt_read_input
+}
+
+# agents/ holds a binding file: a glob, no jq.
+lt_bindings() {
+  for lt_bf in "$LT_DIR"/agents/*.json; do
+    [ -e "$lt_bf" ] && return 0
+  done
+  return 1
 }
 
 # The one bounded read of the hook's input: at most LT_MAX_IN bytes, for at
@@ -165,13 +179,19 @@ lt_wait_for() {
   [ -e "$1" ]
 }
 
+# lt_now: LT_NOW, the time in epoch seconds, or 0 when date fails or prints
+# something else, so a line or a blob name built from it stays valid.
+lt_now() {
+  LT_NOW=$(date +%s 2>/dev/null) || LT_NOW=0
+  case $LT_NOW in '' | *[!0-9]*) LT_NOW=0 ;; esac
+}
+
 # lt_done <agent_id> <via>: done/<agent_id> (hookfiles.ts, DoneMarker), the
 # agent handed back or stopped with nothing of its own still running.
 lt_done() {
   lt_id_ok "$1" || return 1
-  lt_at=$(date +%s 2>/dev/null) || lt_at=0
-  case $lt_at in '' | *[!0-9]*) lt_at=0 ;; esac
-  lt_mkdir "$LT_DIR/done" && lt_write "$LT_DIR/done/$1" "{\"v\":1,\"at\":$lt_at,\"via\":\"$2\"}"
+  lt_now
+  lt_mkdir "$LT_DIR/done" && lt_write "$LT_DIR/done/$1" "{\"v\":1,\"at\":$LT_NOW,\"via\":\"$2\"}"
 }
 
 # An id that's safe as a file name: agent, session and tool_use ids.
@@ -257,7 +277,9 @@ lt_spool() {
   if [ $((lt_bytes)) -ge "$LT_LINE_MAX" ]; then
     lt_mkdir "$LT_DIR/spool/blobs" || return 1
     LT_SEQ=$((${LT_SEQ:-0} + 1))
-    lt_blob=$(date +%s)-$$-$LT_SEQ.json
+    # A name BLOB_NAME (policy.ts) takes, a failing date included.
+    lt_now
+    lt_blob=$LT_NOW-$$-$LT_SEQ.json
     lt_write "$LT_DIR/spool/blobs/$lt_blob" "$lt_line" || return 1
     lt_line=$(printf '%s' "$lt_line" | jq -c --arg f "$lt_blob" \
       'with_entries(select(.key == "v" or .key == "ev" or .key == "ts" or .key == "session_id" or .key == "agent_id" or .key == "agent_type" or .key == "tool" or .key == "tool_use_id")) + {file: $f}') || return 1
@@ -289,7 +311,7 @@ lt_note() {
 # Runs a script's work, "$@", in a subshell. The work prints `step <what>` and
 # `who litter|other` lines as it goes, then its decision, one value per line:
 # a verb, then the text, the session id and the spool lines it needs. Leaves
-# LT_STEP, LT_WHO and LT_L1..LT_L5, the decision's lines (all empty when the
+# LT_STEP, LT_WHO and LT_L1..LT_L6, the decision's lines (all empty when the
 # work failed or decided nothing).
 lt_run() {
   lt_res=$("$@")
@@ -313,6 +335,7 @@ lt_run() {
   lt_take; LT_L3=$lt_t
   lt_take; LT_L4=$lt_t
   lt_take; LT_L5=$lt_t
+  lt_take; LT_L6=$lt_t
 }
 
 lt_take() {
@@ -356,6 +379,17 @@ lt_finish() {
   exit 0
 }
 
+# An agent working in a swarm worktree, recognised without jq or hooks/: its
+# own cwd, a base field ahead of "hook_event_name":, has a
+# /.claude/worktrees/sw- part. A node's child keeps its own type, so
+# lt_raw_litter can't see it, and with hooks/ lost no binding can be read.
+lt_raw_swarm_cwd() {
+  lt_raw_agent_id >/dev/null || return 1
+  lt_c=$(printf '%s\n' "$LT_IN" | sed -n -e 's/"hook_event_name":.*//' \
+    -e '/"cwd":"[^"]*\/\.claude\/worktrees\/sw-/p') || return 1
+  [ -n "$lt_c" ]
+}
+
 # The work's answer when it can't go on: no hooks folder, or no jq. A litter
 # agent's call is refused, anyone else's passes.
 lt_cant() {
@@ -368,11 +402,16 @@ lt_cant() {
 
 # How jq gets a shared file: `--rawfile <name> <path>` when it exists, else
 # `--arg <name> ""`, so the program tells a missing file from a bad one, and a
-# file that can't be read fails the jq call. Sets LT_FF (the flag) and LT_FV.
+# file that can't be read fails the jq call. A file that exists but is empty
+# is a bad one, not a missing one: it comes as a single space, which readj
+# can't parse and why() calls empty. Sets LT_FF (the flag) and LT_FV.
 lt_file() {
-  if [ -f "$1" ]; then
+  if [ -f "$1" ] && [ -s "$1" ]; then
     LT_FF=--rawfile
     LT_FV=$1
+  elif [ -f "$1" ]; then
+    LT_FF=--arg
+    LT_FV=' '
   else
     LT_FF=--arg
     LT_FV=
@@ -388,7 +427,7 @@ def okid: str | test("^[A-Za-z0-9_-]{1,128}$");
 def sid($in): if $in.session_id | okid then $in.session_id else "" end;
 def readj($t): if $t == "" then null else (try ($t | fromjson) catch "unparsable") end;
 def ok1: type == "object" and .v == 1;
-def why($t; $j): if $t == "" then "missing" elif $j == "unparsable" then "it does not parse"
+def why($t; $j): if $t == "" then "missing" elif ($t | test("^[ \\t\\r\\n]*$")) then "empty" elif $j == "unparsable" then "it does not parse"
   elif ($j | type) != "object" then "not a JSON object" else "not version 1" end;
 def ts: now | floor;
 def orNull: if . == "" then null else . end;
@@ -399,7 +438,7 @@ def out($in; $m; $extra): ($GP + " " + ($m | line)) as $r
   | (["deny", $r, sid($in)] + [$extra[] | tojson] + [denyline($in; $r)]) | join("\n");
 def deny($in; $m): out($in; $m; []);
 def calldetail($in): if ($in.tool_name | str) == "Bash" or ($in.tool_name | str) == "Monitor"
-  then ($in.tool_input | if type == "object" then .command else null end | str | gsub("[[:cntrl:]]"; " ") | .[0:80]) else "" end;
+  then ($in.tool_input | if type == "object" then .command else null end | str | .[0:80] | gsub("[[:cntrl:]]"; " ")) else "" end;
 def callline($in): ({v: 1, ev: "call", ts: ts, session_id: ($in.session_id | str), agent_id: ($in.agent_id | str),
   agent_type: ($in.agent_type | str), tool: ($in.tool_name | str), tool_use_id: ($in.tool_use_id | str), phase: "start"}
   + (calldetail($in) as $d | if $d == "" then {} else {detail: $d} end)) | tojson;

@@ -322,6 +322,60 @@ case_node_bash_protect() {
   pass_each "cat $bp_co/.claude/litter/f" "ls $bp_co/.litter"
 }
 
+# R5: litter's hooks and ledgers, however the command spells them, whether or
+# not the guard sees a write: a fence against the obvious spellings.
+case_node_bash_litter_paths() {
+  swarm_setup
+  lp_co=$(real_project)
+  deny_each 'Bash may not name the litter hooks folder or a litter ledger' \
+    'cd .claude; rm litter/hooks/active' \
+    'cd .claude && rm -f ./litter//hooks/policy.json' \
+    "rm -rf $lp_co/.claude/lit\"\"ter/hooks" \
+    "rm -rf $lp_co/.CLAUDE/Litter/HOOKS" \
+    'cd .claude/litter; python3 -c "import os; os.remove(\"hooks/active\")"' \
+    'cd .claude/litter && mv hooks/agents /tmp/x' \
+    'cat > hooks/policy.json' \
+    "printf x >> $lp_co/.claude/litter/swarms/s/launches/20261003-120000/ledger/000009-swarm.end.json" \
+    'cd .claude/foo; rm -r ../litter/hooks' \
+    'cd .claude; rm -r lit?er/hooks' \
+    'cd .claude; rm -r */hooks/done' \
+    'ls hooks/pending hooks/done hooks/spool'
+  # Litter's own source, a React hooks folder, the litter folder itself and its notes are fine.
+  pass_each 'cat plugins/litter/hooks/guard.sh' 'sh plugins/litter/tests/hooks/run.sh' 'ls src/hooks/useAgent.ts src/hooks/*' \
+    "ls $lp_co/.claude/litter" "cat $lp_co/.claude/litter/WIKI.md" 'git log -- src/hooks' 'grep -r active hooks.ts'
+}
+
+# R6: a command too long to check is denied, and one at the limit is checked
+# well inside the hook's 30 s timeout, in the worst shape the parse has.
+case_node_bash_too_long() {
+  swarm_setup
+  tl_words=$(awk 'BEGIN { for (i = 0; i < 4001; i++) printf "a " }')
+  deny_each 'this command is too long for the guard to check; split it' "echo $tl_words" "env $tl_words; git push"
+  tl_bytes=$(awk 'BEGIN { s = "x"; for (i = 0; i < 15; i++) s = s s; printf "%s", s }')
+  deny_each 'this command is too long for the guard to check; split it' "echo $tl_bytes"
+  lead Monitor "$(jq -cn --arg c "tail $tl_words" '{command: $c, description: "d"}')" | run_hook guard.sh
+  assert_deny 'too long for the guard to check'
+  # At the limit, one simple command after a wrapper: every later word may start a command.
+  tl_at=$(awk 'BEGIN { for (i = 0; i < 3990; i++) printf "a " }')
+  tl_t0=$(date +%s)
+  lead_bash "env $tl_at git push --force" | run_hook guard.sh
+  tl_t1=$(date +%s)
+  assert_deny 'git push is denied to swarm nodes'
+  [ $((tl_t1 - tl_t0)) -le 10 ] || fail "a command at the limit took $((tl_t1 - tl_t0)) s"
+  # The most words that may start one (32), each with the rest of the command after it.
+  tl_many=$(awk 'BEGIN { for (i = 0; i < 32; i++) printf "git -C x "; for (i = 0; i < 1950; i++) printf "-C x " }')
+  tl_t0=$(date +%s)
+  lead_bash "sudo $tl_many push" | run_hook guard.sh
+  tl_t1=$(date +%s)
+  assert_deny 'git push is denied to swarm nodes'
+  [ $((tl_t1 - tl_t0)) -le 10 ] || fail "a command of 32 starts at the limit took $((tl_t1 - tl_t0)) s"
+  # More than that, after a wrapper: too many to check.
+  tl_starts=$(awk 'BEGIN { for (i = 0; i < 33; i++) printf "git -C x " }')
+  lead_bash "sudo $tl_starts status" | run_hook guard.sh
+  assert_deny 'too many words that may start a command'
+  pass_each 'sudo -u root env A=1 nice -n 5 make test' 'find . -name x -exec grep -l y {} +'
+}
+
 case_node_monitor() {
   swarm_setup
   lead Monitor '{"command":"git push","description":"d"}' | run_hook guard.sh
@@ -348,6 +402,22 @@ case_swarm_handed_over() {
     assert_deny 'swarm s was handed to another session; make no more tool calls and end your turn'
   done
   node_policy a1 '.generation = 2'
+  lead Read '{}' | run_hook guard.sh
+  assert_pass
+}
+
+# R4: every launch starts at generation 1, so a policy left from an earlier
+# launch of the same swarm is told apart by its launch.
+case_swarm_other_launch() {
+  swarm_setup '.launch = "20261002-090000"'
+  for ol_tool in Read SubagentHandback SendMessage mcp__litter__record; do
+    lead "$ol_tool" '{}' | run_hook guard.sh
+    assert_deny 'belongs to launch 20261002-090000 of swarm s, not to its live launch 20261003-120000; make no more tool calls and end your turn'
+  done
+  node_policy a1 '.launch = null'
+  lead Read '{}' | run_hook guard.sh
+  assert_deny 'belongs to launch'
+  node_policy a1
   lead Read '{}' | run_hook guard.sh
   assert_pass
 }
@@ -633,6 +703,58 @@ case_fail_binding_unreadable() {
   assert_pass
 }
 
+# R8: a binding that exists but is empty, or can't be read, is malformed, not missing.
+case_fail_binding_empty() {
+  swarm_setup
+  node_policy c1 '.kind = "child" | .parent = "a1"'
+  : >|"$(hooks_dir)/agents/c1.json"
+  as_agent c1 call general-purpose Read '{}' | run_hook guard.sh
+  assert_deny 'agents/c1.json is unreadable (empty), so the swarm rules for this agent cannot be read'
+  : >|"$(hooks_dir)/agents/a1.json"
+  lead Read '{}' | run_hook guard.sh
+  assert_deny 'agents/a1.json is unreadable (empty)'
+  [ "$(id -u)" != 0 ] || return 0
+  node_policy c1 '.kind = "child" | .parent = "a1"'
+  chmod 000 "$(hooks_dir)/agents/c1.json"
+  as_agent c1 call general-purpose Read '{}' | run_hook guard.sh
+  fb_code=$(cat "$T_DIR/code")
+  chmod 644 "$(hooks_dir)/agents/c1.json"
+  [ "$fb_code" != 0 ] || assert_deny 'agents/c1.json'
+  [ "$fb_code" = 0 ] || assert_blocked
+  call - Read '{}' | run_hook guard.sh
+  assert_pass
+}
+
+# R5: `active` removed (from a node's Bash, say) while bindings remain: bound
+# agents are still checked, and everyone else passes as with nothing active.
+case_fail_no_active() {
+  swarm_setup
+  node_policy c1 '.kind = "child" | .parent = "a1"'
+  rm -f "$(hooks_dir)/active"
+  lead_bash 'git push' | run_hook guard.sh
+  assert_deny 'git push is denied to swarm nodes'
+  as_agent c1 bash_call general-purpose 'git push' | run_hook guard.sh
+  assert_deny 'git push is denied to swarm nodes'
+  call - ExitWorktree '{"action":"keep"}' >|"$T_DIR/in.main"
+  as_agent o1 bash_call general-purpose 'git push' >|"$T_DIR/in.other"
+  na_path=$PATH
+  PATH=$(fake_tool jq ": >|$T_DIR/jq-ran; exit 1"):$na_path
+  for na_in in main other; do
+    run_hook guard.sh <"$T_DIR/in.$na_in"
+    ( assert_pass ) || fail "the $na_in call was refused"
+  done
+  PATH=$na_path
+  assert_no_file "$T_DIR/jq-ran"
+  # With no binding left either, nothing runs past the stat.
+  lead_bash 'git push' >|"$T_DIR/in.node"
+  rm -f "$(hooks_dir)"/agents/*.json
+  PATH=$(fake_tool jq ": >|$T_DIR/jq-ran; exit 1"):$na_path
+  run_hook guard.sh <"$T_DIR/in.node"
+  PATH=$na_path
+  assert_pass
+  assert_no_file "$T_DIR/jq-ran"
+}
+
 case_fail_no_jq() {
   swarm_setup
   node_policy c1 '.kind = "child" | .parent = "a1"'
@@ -702,9 +824,12 @@ t "worktreeOps false denies git worktree and -C outside dir" case_node_worktree_
 t "bash.deny entries are command prefixes, by program name" case_node_bash_deny
 t "publish and deploy commands are denied to nodes" case_node_deploys
 t "Bash writing under .claude/litter or a rule folder is denied" case_node_bash_protect
+t "Bash naming litter's hooks or a ledger is denied, however it's spelled" case_node_bash_litter_paths
+t "a command too long to check is denied, and one at the limit is checked in time" case_node_bash_too_long
 t "Monitor's command is checked as Bash" case_node_monitor
 t "a swarm with no entry denies everything" case_swarm_missing
 t "a node of an older generation denies everything" case_swarm_handed_over
+t "a node policy of another launch denies everything" case_swarm_other_launch
 t "a stale check whose ref agrees passes" case_swarm_stale_agrees
 t "a stale check whose ref disagrees denies" case_swarm_stale_disagrees
 t "a stale check with the ref gone denies" case_swarm_stale_ref_missing
@@ -727,6 +852,8 @@ t "the main thread's worktree moves are denied before, during and after a /clear
 t "a live swarm overrides the run's EnterWorktree before the launch" case_main_with_run
 t "after the swarm, the main thread's worktree moves pass" case_main_after_swarm
 t "an unreadable node binding denies the node and the child, not the main thread" case_fail_binding_unreadable
+t "an empty or unreadable binding is malformed, not missing" case_fail_binding_empty
+t "with active gone while bindings remain, bound agents are still checked" case_fail_no_active
 t "without jq, nodes and children are refused, others pass" case_fail_no_jq
 t "a broken policy.json denies nodes and children, not the main thread" case_fail_policy_broken
 t "git failing at the head check denies the commit" case_fail_git_head
