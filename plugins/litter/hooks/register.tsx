@@ -19,7 +19,7 @@ import type { Ports, SpawnStream, Stat } from './ports'
 import { session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
-import { drainAllSpools, drainOwnSpools, startDrainTimer } from './policy'
+import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from './policy'
 import { activePath } from './layout'
 import { registerRoles } from './roles'
 import { resolveLitterDir } from './litterdir'
@@ -81,6 +81,21 @@ async function drainFirst(p: Ports): Promise<void> {
     if (await p.fs.exists(activePath(litterDir))) await drainOwnSpools(p, litterDir, SPOOL_CONSUMERS)
   } catch (err) {
     p.log(`drain before the hook failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * A subagent's interrupted turn: its stop, while a run is active, since no
+ * SubagentStop reports it (policy.ts, stopInterrupted). Here for the same
+ * reason as drainFirst.
+ */
+async function interrupted(p: Ports, agentId: string): Promise<void> {
+  const litterDir = session().litterDir
+  if (!litterDir) return
+  try {
+    if (await p.fs.exists(activePath(litterDir))) await stopInterrupted(p, litterDir, agentId, SPOOL_CONSUMERS)
+  } catch (err) {
+    p.log(`interrupted agent ${agentId}: its stop wasn't counted: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
@@ -150,5 +165,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // A main turn that ends with a launch pending and no Workflow call releases the lock.
-  on('turn.complete', async ($, e, next) => onTurnComplete(enginePorts($), e, next)).catch(($, e, next) => next(e))
+  // A subagent's interrupted turn is its stop, which settles a stopping run.
+  on('turn.complete', async ($, e, next) => {
+    const p = enginePorts($)
+    if (e.agentId !== undefined && e.isAborted) await interrupted(p, e.agentId)
+    return onTurnComplete(p, e, next)
+  }).catch(($, e, next) => next(e))
 }

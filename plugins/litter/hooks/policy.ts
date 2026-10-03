@@ -439,3 +439,42 @@ export const consumeAgents: SpoolConsumer = async (ctx, line) => {
     if (known.stopped === null) await ctx.p.store.set(agentKey(line.agent_id), { ...known, stopped: Math.round(line.ts * 1000) } satisfies AgentInfo)
   }
 }
+
+/**
+ * The stop of an agent whose loop was interrupted, which no SubagentStop
+ * reports: the engine marks the loop done before it checks the abort, so
+ * runAgent's SubagentStop for an interrupted query returns at once (2.1.288
+ * `:739409`, `:739446`; 2.1.287 the same). A TaskStop'd workflow's agents end
+ * that way, and a stopping run would never settle. The agent's aborted
+ * turn.complete stands in: the consumers get the stop line identity.sh would
+ * have spooled, after a drain, so its start is in the map. An agent the map
+ * doesn't know, or has seen stop, changes nothing.
+ */
+export async function stopInterrupted(p: Ports, litterDir: string, agentId: string, consumers: readonly SpoolConsumer[]): Promise<boolean> {
+  await drainOwnSpools(p, litterDir, consumers)
+  const sessionId = await currentSession(p)
+  const ts = (await p.now()) / 1000
+  return serial(spoolKey(litterDir), async () => {
+    const known = await agentInfo(p, agentId)
+    if (!known || known.stopped !== null) return false
+    const line: SpoolLine = {
+      v: 1,
+      ev: 'stop',
+      ts,
+      session_id: known.sessionId ?? sessionId,
+      agent_id: agentId,
+      agent_type: known.agentType,
+      transcript_path: known.transcriptPath ?? '',
+      stop_hook_active: false,
+      background_tasks: 0,
+    }
+    for (const consumer of consumers) {
+      try {
+        await consumer({ p, litterDir, sessionId }, line)
+      } catch (err) {
+        p.log(`interrupted agent ${agentId}: a consumer failed on its stop: ${errText(err)}`)
+      }
+    }
+    return true
+  })
+}

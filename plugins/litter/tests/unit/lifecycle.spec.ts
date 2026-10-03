@@ -31,7 +31,7 @@ import { readLock, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { activePath, leasePath, ledgerDir, modePath, runDir, summaryPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
-import { readPolicy } from '../../hooks/policy'
+import { agentInfo, consumeAgents, readPolicy, stopInterrupted } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
@@ -418,6 +418,33 @@ describe('TaskStop settling', () => {
     expect(await trySettle(w.p, r.ref)).toBe(true)
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'stopped', settled: true }))
     await released(w, r)
+  })
+
+  // A TaskStop'd workflow's agents get no SubagentStop (policy.ts, stopInterrupted): tier 4 saw a stop never settle.
+  test('agents interrupted with no SubagentStop: their aborted turns settle the stop, even when they come first', async () => {
+    const w = await world()
+    const r = await launched(w)
+    const consumers = [consumeAgents, consumeLifecycle]
+    const sctx = { p: w.p, litterDir: w.litterDir, sessionId: 'session-a' }
+    for (const ag of ['ag1', 'ag2']) for (const c of consumers) await c(sctx, line('start', ag, w))
+
+    // ag1's turn ends aborted before the stop is observed, as the engine orders them.
+    expect(await stopInterrupted(w.p, w.litterDir, 'ag1', consumers)).toBe(true)
+    expect(await stopInterrupted(w.p, w.litterDir, 'ag1', consumers)).toBe(false)
+    expect((await agentInfo(w.p, 'ag1'))?.stopped).toEqual(expect.any(Number))
+    expect(await observeStop(w.p, r.taskId)).toBe(true)
+    expect(await lastEnd(w, r.ref)).toBeUndefined()
+
+    expect(await stopInterrupted(w.p, w.litterDir, 'ag2', consumers)).toBe(true)
+    expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'stopped', settled: true, source: 'taskstop' }))
+    await released(w, r)
+  })
+
+  test("an interrupted turn of an agent the map doesn't know changes nothing", async () => {
+    const w = await world()
+    await launched(w)
+    expect(await stopInterrupted(w.p, w.litterDir, 'stranger', [consumeAgents, consumeLifecycle])).toBe(false)
+    expect(await agentInfo(w.p, 'stranger')).toBeUndefined()
   })
 
   test("a stop of a task that isn't a run's is only passed on", async () => {
