@@ -283,8 +283,7 @@ def writecheck($in; $p; $b; $rp; $type; $tool; $ti):
     else (if $fp | startswith("/") then $fp else (($b.cwd | str) + "/" + $fp) end | gsub("/+"; "/")) as $t
       | if ($t | startswith("/") | not) or ($t | split("/") | .[1:] | any(. == "" or . == "." or . == "..")) then
           deny($in; "could not resolve \($fp): give an absolute path with no empty, . or .. parts")
-        else ({"checkout": ($p.run.roots.checkout | str), "own-worktree": ($b.cwd | str),
-               "integration": ($p.run.roots.integration | str)}[$w] // "") as $root
+        else ({"checkout": ($p.run.roots.checkout | str), "own-worktree": ($b.cwd | str)}[$w] // "") as $root
         | if $root == "" then deny($in; "\($type) writes only inside the run \($w), and run \($p.run.run | str) has none recorded")
           else ["path", $w, $t, $root, $fp] | join("\n") end
         end
@@ -348,9 +347,6 @@ def taskof($p; $a):
     # never comes here; were it to, denying it would leave no way to bind.
     (if $tool == "StructuredOutput" or $tool == "mcp__litter__record" then "pass"
      else deny($in; "bind first: call mcp__litter__record with kind task.bind and the bind value from your <task>") end)
-  elif $role == "integrator" and ($p.run.roots.integration | str) == ""
-      and $tool != "StructuredOutput" and $tool != "mcp__litter__record" then
-    deny($in; "run \($p.run.run | str) has no integration worktree yet, so \($type) has nothing to work on; say so in your result")
   else rules($in; $p; $b; $role; $type; $tool; $ti; fanoutwriter($p; $role)) end
 '
 

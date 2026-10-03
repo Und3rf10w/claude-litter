@@ -153,7 +153,6 @@ T_ROLES='{
   "executor": {"write": "checkout", "bash": "rw", "isolated": false},
   "adversary": {"write": "none", "bash": "ro", "isolated": false},
   "relay": {"write": "none", "bash": "ro", "isolated": false},
-  "integrator": {"write": "integration", "bash": "rw", "isolated": false},
   "planner": {"write": "none", "bash": "ro", "isolated": false},
   "verifier": {"write": "none", "bash": "ro", "isolated": false},
   "researcher": {"write": "none", "bash": "ro", "isolated": false}
@@ -172,7 +171,7 @@ policy() {
     {v: 1, session: "s1", litterDir: $ld,
      run: {run: "20261002-test", workflow: "execute", runDir: ($ld + "/20261002-test"), checkout: $co, base: "0000000",
            runIds: ["wf_abc123-456"], launching: false, stopping: false, inflight: null, isolationLost: false,
-           roots: {checkout: $co, litterDir: $ld, litterCopies: [], ruleDirs: [], worktrees: [], integration: null},
+           roots: {checkout: $co, litterDir: $ld, litterCopies: [], ruleDirs: [], worktrees: []},
            setup: null, linkDirs: []},
      roles: $roles, swarm: null}' | jq "${1:-.}" >|"$pl_hooks/policy.json" || fail "policy fixture"
   : >|"$pl_hooks/active"

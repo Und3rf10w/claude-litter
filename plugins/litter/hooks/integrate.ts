@@ -1,8 +1,10 @@
 // A fanout's integration (plan section 7, fanout.js steps 3 and 4): the
 // `integrate` record kind, which merges the task branches onto the
 // integration branch in the confirmed order, checks ownership per branch and
-// for the whole result, stops at a conflict for the integrator, and finishes
-// that merge on the next call. Owner: phase 2b, work package G. The
+// for the whole result, and stops for good at a conflict. Fanout has no
+// integrator (plan 15.11): disjoint ownership rules a conflict out for any
+// run that run.start accepts, so one halts the run with the paths, and the
+// merge is left in progress as evidence. Owner: phase 2b, work package G. The
 // signatures are the contract; the bodies are G's.
 //
 // The mod decides what to merge, never the model: the integrate call names
@@ -29,11 +31,9 @@ import type { ModWorktreeSpec } from './worktrees'
 import { fail } from './records/core'
 import { LedgerTampered, appendRecord, readLedger } from './ledgercore'
 import { integrationBranch, integrationName } from './layout'
-import { serial, sha256 } from './fsx'
-import { SNAPSHOT_PATHSPEC, snapshot } from './snapshot'
+import { serial } from './fsx'
+import { SNAPSHOT_PATHSPEC } from './snapshot'
 import { addModWorktree, recordedWorktrees, worktreeRootFor } from './worktrees'
-import { patchRunPolicy } from './lifecycle'
-import { readPolicy } from './policy'
 import { writeOut } from './output'
 import { MOD, OID, type RunFacts, agentOf, ledgerFailure, loadRun, message, roleOf, runClosed } from './verify'
 
@@ -85,12 +85,6 @@ async function uncommitted(p: Ports, path: string): Promise<{ paths: string[] } 
   const r = await git(p, path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--', ...SNAPSHOT_PATHSPEC])
   if (r.code !== 0) return { error: said(r) }
   return { paths: [...new Set(nul(r.stdout).map(e => e.slice(3)))].sort() }
-}
-
-/** The index as `ls-files -s` shows it, hashed: staging or unstaging anything changes it, a stat refresh doesn't. */
-async function indexPrint(p: Ports, dir: string): Promise<string | null> {
-  const r = await git(p, dir, ['ls-files', '-s', '-z'])
-  return r.code === 0 ? sha256(r.stdout) : null
 }
 
 /** At most `n` names, then how many more: reasons a model reads stay short. */
@@ -176,19 +170,17 @@ function bindings(records: readonly StoredRecord[]): Binding[] {
 type IntegrationState = {
   merges: StoredRecord<IntegrateMergeBody>[]
   skips: StoredRecord<IntegrateSkipBody>[]
-  /** A conflict whose task has no later integrate.merge: the integrator's turn. */
-  open: StoredRecord<IntegrateConflictBody> | null
+  /** The merge that stopped at a conflict: the outcome, like integrate.done. */
+  conflict: StoredRecord<IntegrateConflictBody> | null
   done: StoredRecord<IntegrateDoneBody> | null
 }
 
 function stateOf(records: readonly StoredRecord[]): IntegrationState {
-  const st: IntegrationState = { merges: [], skips: [], open: null, done: null }
+  const st: IntegrationState = { merges: [], skips: [], conflict: null, done: null }
   for (const r of records) {
-    if (r.kind === 'integrate.merge') {
-      st.merges.push(r as StoredRecord<IntegrateMergeBody>)
-      if (st.open && st.open.body.task === body<IntegrateMergeBody>(r).task) st.open = null
-    } else if (r.kind === 'integrate.skip') st.skips.push(r as StoredRecord<IntegrateSkipBody>)
-    else if (r.kind === 'integrate.conflict') st.open = r as StoredRecord<IntegrateConflictBody>
+    if (r.kind === 'integrate.merge') st.merges.push(r as StoredRecord<IntegrateMergeBody>)
+    else if (r.kind === 'integrate.skip') st.skips.push(r as StoredRecord<IntegrateSkipBody>)
+    else if (r.kind === 'integrate.conflict') st.conflict ??= r as StoredRecord<IntegrateConflictBody>
     else if (r.kind === 'integrate.done') st.done = r as StoredRecord<IntegrateDoneBody>
   }
   return st
@@ -202,9 +194,9 @@ const expectedTip = (st: IntegrationState, base: string): string => st.merges.at
 
 /**
  * Checks the combined change at `tip`: every path of `git diff --name-only -z
- * --no-renames <base> <tip>` is owned by a merged task or is integrator_extra,
- * and every recorded worktree with commits past base or uncommitted changes
- * has a binding (a superseded one counts). `blocked` names each failure.
+ * --no-renames <base> <tip>` is owned by a merged task, and every recorded
+ * worktree with commits past base or uncommitted changes has a binding (a
+ * superseded one counts). `blocked` names each failure.
  */
 export async function wholeResult(
   p: Ports,
@@ -217,7 +209,6 @@ export async function wholeResult(
   const st = stateOf(records)
   const mergedIds = new Set(st.merges.map(m => m.body.task))
   const merged = tasks.filter(t => mergedIds.has(t.id))
-  const extra = new Set(st.merges.flatMap(m => m.body.resolved?.integrator_extra ?? []))
   const changed: ChangedPath[] = []
   const blocked: string[] = []
 
@@ -226,9 +217,8 @@ export async function wholeResult(
   else {
     for (const path of names.paths) {
       const owner = merged.find(t => owns(t.files, path)) ?? null
-      const isExtra = extra.has(path)
-      changed.push({ path, task: owner?.id ?? null, integrator_extra: isExtra })
-      if (owner || isExtra) continue
+      changed.push({ path, task: owner?.id ?? null })
+      if (owner) continue
       const other = tasks.find(t => t.writes && owns(t.files, path))
       blocked.push(other ? `${path} belongs to task ${other.id}, which wasn't merged` : `${path} is owned by no task`)
     }
@@ -256,47 +246,6 @@ export async function wholeResult(
 }
 
 // ---------------------------------------------------------------------------
-// Conflict markers (the brief's rule: `<<<<<<< `, `>>>>>>> `, or `=======` alone between them).
-
-/** The 1-based lines of a text that are conflict markers. */
-export function markerLines(text: string): number[] {
-  const out: number[] = []
-  let open = false
-  const lines = text.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.replace(/\r$/, '')
-    if (line.startsWith('<<<<<<< ') || line === '<<<<<<<') {
-      out.push(i + 1)
-      open = true
-    } else if (line.startsWith('>>>>>>> ') || line === '>>>>>>>') {
-      out.push(i + 1)
-      open = false
-    } else if (open && line === '=======') out.push(i + 1)
-  }
-  return out
-}
-
-/** `path:line,…` for each conflicted file that still holds a marker. A file resolved by deletion, or a link, has none. */
-async function markersIn(p: Ports, where: string, files: readonly string[]): Promise<string[]> {
-  const out: string[] = []
-  for (const file of files) {
-    const path = `${where}/${file}`
-    const st = await p.fs.stat(path).catch(() => null)
-    if (!st || st.isLink || st.kind !== 'file') continue
-    let text: string
-    try {
-      text = await p.fs.read(path)
-    } catch (err) {
-      out.push(`${file} (it can't be read: ${message(err)})`)
-      continue
-    }
-    const lines = markerLines(text)
-    if (lines.length > 0) out.push(`${file}:${lines.slice(0, 5).join(',')}${lines.length > 5 ? ',…' : ''}`)
-  }
-  return out
-}
-
-// ---------------------------------------------------------------------------
 // The integration worktree.
 
 /** Where litter's worktrees go: the root policy.json gave the run (worktrees.ts). */
@@ -305,9 +254,8 @@ const worktreeRoot = (p: Ports, litterDir: string, run: string): Promise<string>
 /**
  * The integration worktree: the recorded one, or made now with package F's
  * addModWorktree at `<worktreeRoot>/litter-<run>-integration` on
- * `litter/<run>-integration` at base, setup or linkDirs first. Either way
- * policy.json's `roots.integration` names it, so the guard lets the
- * integrator write there and nowhere else.
+ * `litter/<run>-integration` at base, setup or linkDirs first. No agent
+ * writes in it: the verifier only reads it, and the mod alone merges there.
  */
 async function integrationTree(ctx: RecordCtx, f: RunFacts, records: readonly StoredRecord[]): Promise<{ ok: true; where: string } | { ok: false; where: string; reason: string }> {
   const { p } = ctx
@@ -343,15 +291,6 @@ async function integrationTree(ctx: RecordCtx, f: RunFacts, records: readonly St
     }
     if (!made.ok) return { ok: false, where: spec.path, reason: `the integration worktree couldn't be made: ${made.reason}` }
     where = made.path
-  }
-  try {
-    const policy = await readPolicy(p, litterDir)
-    if (policy?.run?.run === run && policy.run.roots.integration !== where) {
-      await patchRunPolicy(p, litterDir, run, r => ({ ...r, roots: { ...r.roots, integration: where } }))
-    }
-  } catch (err) {
-    // The integrator's writes are then denied, and it reports the conflict unresolved: the run halts.
-    p.log(`integrate ${run}: roots.integration not set (${message(err)})`)
   }
   return { ok: true, where }
 }
@@ -454,74 +393,6 @@ const mergeArgv = (msg: string, commit: string): string[] => [
   '-s', 'ort', '-X', 'no-renames', '-m', msg, '--', commit,
 ]
 
-/**
- * Finishes the open conflict after the integrator: the worktree still
- * mid-merge as the conflict left it, no marker left, then everything staged,
- * the tree written, committed with both parents, the branch swapped, the
- * merge state ended. `unchanged` when nothing happened since the conflict
- * (the integrator hasn't run, or changed nothing): the same conflict again.
- */
-async function finishConflict(
-  p: Ports,
-  f: RunFacts,
-  where: string,
-  c: IntegrateConflictBody,
-): Promise<'unchanged' | { stop: string } | { merged: IntegrateMergeBody }> {
-  const { run, json } = f
-  const ib = integrationBranch(run)
-  const ref = `refs/heads/${ib}`
-  const head = await headRef(p, where)
-  const tip = await commitOf(p, where, ref)
-  const mergeHead = await commitOf(p, where, 'MERGE_HEAD')
-  const index = await indexPrint(p, where)
-  let now: Awaited<ReturnType<typeof snapshot>>
-  try {
-    now = await snapshot(p, where)
-  } catch (err) {
-    return { stop: `the integration worktree ${where} can't be snapshotted after the integrator: ${message(err)}` }
-  }
-  if (head === ref && tip === c.head && mergeHead === c.commit && index === c.index && now.tree === c.left) return 'unchanged'
-
-  const found: string[] = []
-  if (head !== ref) found.push(`the integration worktree is on ${head ?? 'a detached HEAD'}, not ${ib}`)
-  if (tip !== c.head) found.push(`a commit was made: ${ib} moved from ${c.head} to ${tip ?? 'nothing'}`)
-  if (mergeHead === null) found.push(`the merge of ${c.branch} is no longer in progress (it was aborted or committed)`)
-  else if (mergeHead !== c.commit) found.push(`the merge in progress is of ${mergeHead}, not ${c.commit}`)
-  // An ended merge changed the index too; that's said above.
-  else if (index === null) found.push("the integration worktree's index can't be read")
-  else if (index !== c.index) found.push('files were staged or unstaged; litter stages the resolution itself')
-  const marked = await markersIn(p, where, c.files)
-  if (marked.length > 0) found.push(`conflict markers are left in ${list(marked)}`)
-  if (now.dirty_submodules.length > 0) found.push(`submodules have uncommitted changes (${list(now.dirty_submodules)})`)
-  if (found.length > 0) {
-    return { stop: `the resolution of ${c.task}'s merge can't be committed: ${found.join('; ')}. The integration worktree ${where} is left as it is` }
-  }
-
-  // What the integrator changed beyond the conflicted files: the verifier reads each in full.
-  const since = await git(p, where, ['diff-tree', '-r', '--name-only', '-z', '--no-renames', c.left, now.tree, '--'])
-  if (since.code !== 0) return { stop: `what the integrator changed can't be listed: ${said(since)}` }
-  const extra = [...new Set(nul(since.stdout))].filter(x => !c.files.includes(x)).sort()
-
-  const msg = mergeMessage(c.task, run)
-  const added = await git(p, where, ['add', '-A', '--', ...SNAPSHOT_PATHSPEC])
-  if (added.code !== 0) return { stop: `staging the resolution failed: ${said(added)}` }
-  const written = await git(p, where, ['write-tree'])
-  const tree = written.stdout.trim()
-  if (written.code !== 0 || !OID.test(tree)) return { stop: `writing the resolved tree failed: ${said(written)}` }
-  const made = await git(p, where, ['commit-tree', tree, '-p', c.head, '-p', c.commit, '-F', '-'], `${msg}\n`)
-  const commit = made.stdout.trim()
-  if (made.code !== 0 || !OID.test(commit)) return { stop: `committing the resolution failed: ${said(made)}` }
-  const swap = await git(p, where, ['update-ref', '-m', msg, ref, commit, c.head])
-  if (swap.code !== 0) return { stop: `${ib} moved while the resolution was committed: ${said(swap)}` }
-  // HEAD and the index are the commit now; only the merge state is left. If it stays, the next merge's check stops.
-  const quit = await git(p, where, ['merge', '--quit'])
-  if (quit.code !== 0) p.log(`integrate ${run}: git merge --quit failed in ${where}: ${said(quit)}`)
-  const names = await diffNames(p, json.checkout, json.base, c.commit)
-  return {
-    merged: { task: c.task, branch: c.branch, commit, paths: names.ok ? names.paths : [], resolved: { files: [...c.files], integrator_extra: extra } },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The record.
 
@@ -595,11 +466,12 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
   const closed = runClosed(got)
   if (closed) return fail(`litter: run ${run} ${closed}; it takes no more integrate records`, 'run')
 
-  // The outcome is recorded once; every later call answers the same and changes nothing.
+  // The outcome is recorded once, a conflict or integrate.done; every later call answers the same and changes nothing.
   const settled = stateOf(got)
-  if (settled.done) {
+  if (settled.conflict || settled.done) {
     const where = integrationWorktree(got, run)?.path ?? `${await worktreeRoot(p, ctx.litterDir!, run)}/${integrationName(run)}`
-    return answer(ctx, run, doneReply(commonOf(f, where, settled), settled.done))
+    const common = commonOf(f, where, settled)
+    return answer(ctx, run, settled.conflict ? conflictReply(common, settled.conflict) : doneReply(common, settled.done!))
   }
 
   // 1. The integration worktree.
@@ -622,16 +494,7 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
   // No worktree, nothing merged: that's the outcome too, so the run halts with the reason.
   if (!wt.ok) return stop(wt.reason)
 
-  // 2. An open conflict: finish it, or answer it again when nothing happened since.
-  const open = stateOf(records).open
-  if (open) {
-    const r = await finishConflict(p, f, where, open.body)
-    if (r === 'unchanged') return answer(ctx, run, conflictReply(commonOf(f, where, stateOf(records)), open))
-    if ('stop' in r) return stop(r.stop)
-    await append<IntegrateMergeBody>('integrate.merge', r.merged)
-  }
-
-  // 3. Each remaining writing task, in merge order.
+  // 2. Each remaining writing task, in merge order.
   const tasks = fanoutTasks(json)
   for (const task of mergeOrder(json, tasks)) {
     const st = stateOf(records)
@@ -654,32 +517,17 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
       await append<IntegrateMergeBody>('integrate.merge', { task: task.id, branch: checked.branch, commit: made, paths: checked.paths })
       continue
     }
-    // A conflict leaves the merge in progress, for the integrator; anything else stops the integration.
+    // A conflict is the outcome: the merge is left in progress as evidence, and
+    // the run halts with its paths (plan 15.11). Anything else stops the integration.
     const mergeHead = await commitOf(p, where, 'MERGE_HEAD')
     const u = await git(p, where, ['diff', '--name-only', '-z', '--diff-filter=U', '--'])
     const files = u.code === 0 ? [...new Set(nul(u.stdout))].sort() : []
-    if (mergeHead !== checked.commit || files.length === 0) return stop(`git merge of ${checked.branch} failed without a conflict to resolve: ${said(m)}`)
-    let left: Awaited<ReturnType<typeof snapshot>>
-    try {
-      left = await snapshot(p, where)
-    } catch (err) {
-      return stop(`the conflicted merge of ${checked.branch} can't be snapshotted: ${message(err)}`)
-    }
-    const index = await indexPrint(p, where)
-    if (index === null) return stop(`the conflicted merge of ${checked.branch} left an index that can't be read`)
-    const rec = await append<IntegrateConflictBody>('integrate.conflict', {
-      task: task.id,
-      branch: checked.branch,
-      files,
-      head: expected,
-      commit: checked.commit,
-      left: left.tree,
-      index,
-    })
+    if (mergeHead !== checked.commit || files.length === 0) return stop(`git merge of ${checked.branch} failed without a conflict: ${said(m)}`)
+    const rec = await append<IntegrateConflictBody>('integrate.conflict', { task: task.id, branch: checked.branch, files })
     return answer(ctx, run, conflictReply(commonOf(f, where, stateOf(records)), rec))
   }
 
-  // 4. The whole result, once nothing is left.
+  // 3. The whole result, once nothing is left.
   const st = stateOf(records)
   const tip = expectedTip(st, base)
   const problem = await notReady(p, where, run, tip)
@@ -698,9 +546,11 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
 const cell = (s: string): string => oneLine(s, 200).replace(/\|/g, '\\|')
 
 /**
- * summary.md's fanout lines: each task's result, merge and verdict, the
- * conflicts the integrator resolved, and what blocked the land. Empty for a
- * run that isn't a fanout.
+ * summary.md's fanout lines: each task's result, merge and verdict, and,
+ * when nothing landed, what blocked it: the merge that stopped at a conflict
+ * (its paths and the branches merged before it), a red integration verify
+ * (where its log is), and each task the verifier failed, with its evidence.
+ * Empty for a run that isn't a fanout.
  */
 export function fanoutSummary(json: RunJson | null, records: readonly StoredRecord[]): string[] {
   if (json?.workflow !== 'fanout') return []
@@ -712,7 +562,7 @@ export function fanoutSummary(json: RunJson | null, records: readonly StoredReco
   // The verdict the land cited, else the latest one (the verifier's FANOUT_CHECK).
   const verdicts = records.filter(r => r.kind === 'verdict' && Array.isArray(r.body.tasks))
   const verdict = (land ? verdicts.find(v => v.body.verify_id === land.body.verify_id) : undefined) ?? verdicts.at(-1)
-  const checks = (verdict?.body.tasks as { id?: unknown; pass?: unknown; gaps?: unknown }[] | undefined) ?? []
+  const checks = (verdict?.body.tasks as { id?: unknown; pass?: unknown; evidence?: unknown; gaps?: unknown }[] | undefined) ?? []
 
   const lines = ['', '## Tasks', '', '| Task | Kind | Result | Integration | Verifier |', '|---|---|---|---|---|']
   for (const t of tasks) {
@@ -730,11 +580,11 @@ export function fanoutSummary(json: RunJson | null, records: readonly StoredReco
     const integration = !t.writes
       ? '-'
       : merge
-        ? `merged${merge.body.resolved ? ' after a conflict' : ''}`
+        ? 'merged'
         : skip
           ? `skipped: ${skip.body.reason}`
-          : st.open?.body.task === t.id
-            ? 'conflict, not resolved'
+          : st.conflict?.body.task === t.id
+            ? `conflict in ${list(st.conflict.body.files)}`
             : 'not merged'
     const check = checks.find(c => c?.id === t.id)
     const gaps = Array.isArray(check?.gaps) ? (check!.gaps as unknown[]).filter((g): g is string => typeof g === 'string') : []
@@ -748,25 +598,31 @@ export function fanoutSummary(json: RunJson | null, records: readonly StoredReco
     lines.push('', `An unbound writer returned ${String(b.result?.status ?? 'nothing')}: ${oneLine(summary)}${b.bind_refusal ? ` (its bind was refused: ${oneLine(b.bind_refusal)})` : ''}`)
   }
 
-  const resolved = st.merges.filter(m => m.body.resolved)
-  if (resolved.length > 0 || st.open) {
-    lines.push('', '## Conflicts', '')
-    for (const m of resolved) {
-      const extra = m.body.resolved!.integrator_extra
-      lines.push(`- ${m.body.task}: the integrator resolved ${list(m.body.resolved!.files)}; integrator_extra: ${extra.length > 0 ? list(extra) : 'none'}`)
-    }
-    if (st.open) lines.push(`- ${st.open.body.task}: ${list(st.open.body.files)}, not resolved`)
-  }
-
   if (land) {
     lines.push('', '## Landed', '', `${json.base}..${String(land.body.commit)} on ${json.ref.replace(/^refs\/heads\//, '')}`)
     return lines
   }
   const blocked: string[] = []
-  if (!st.done) blocked.push(st.open ? `the merge of ${st.open.body.task} stopped at a conflict` : 'the integration never finished')
+  if (st.conflict) {
+    const c = st.conflict.body
+    const before = st.merges.map(m => `${m.body.task} (${m.body.branch})`)
+    blocked.push(
+      `the merge of task ${c.task} (branch ${c.branch}) stopped at a conflict in ${list(c.files)}, after ${before.length > 0 ? list(before) : 'no other branch'}; the integration worktree is left mid-merge`,
+    )
+  } else if (!st.done) blocked.push('the integration never finished')
   else blocked.push(...st.done.body.blocked)
   for (const s of st.skips) blocked.push(`task ${s.body.task} wasn't merged: ${s.body.reason}`)
-  for (const c of checks) if (c && c.pass !== true && typeof c.id === 'string') blocked.push(`the verifier failed task ${c.id}`)
+  // The verify the verdict cites, else the latest for gate integration: red is a behavioural failure (plan 15.11).
+  const verifies = records.filter(r => r.kind === 'verify' && r.body.gate === 'integration' && typeof r.body.verify_id === 'string')
+  const verify = (verdict ? verifies.find(v => v.body.verify_id === verdict.body.verify_id) : undefined) ?? verifies.at(-1)
+  if (verify && verify.body.green !== true) {
+    const id = String(verify.body.verify_id)
+    blocked.push(`the integration verify ${id} isn't green (exit ${String(verify.body.exit_code ?? 'none')}${verify.body.timed_out === true ? ', timed out' : ''}); its full log is in verify/${id}/ beside this summary`)
+  }
+  for (const c of checks) {
+    if (!c || c.pass === true || typeof c.id !== 'string') continue
+    blocked.push(`the verifier failed task ${c.id}${typeof c.evidence === 'string' && c.evidence.trim() !== '' ? `: ${oneLine(c.evidence)}` : ''}`)
+  }
   for (const r of records) {
     if ((r.kind === 'land.blocked' || r.kind === 'land.abandoned') && r.body.gate === 'fanout' && typeof r.body.reason === 'string') blocked.push(r.body.reason)
   }

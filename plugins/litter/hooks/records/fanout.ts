@@ -69,10 +69,8 @@ export type IntegrateInput = { kind: 'integrate'; run: string }
 /** One path of the combined change (`<changed>`, section 7 fanout.js step 4). */
 export type ChangedPath = {
   path: string
-  /** The merged task that owns it, or null when none does (which blocks the land, unless the integrator changed it). */
+  /** The merged task that owns it, or null when none does, which blocks the land. */
   task: string | null
-  /** Changed by the integrator beyond the conflicted files: the verifier reads it in full. */
-  integrator_extra: boolean
 }
 
 /** A task the mod didn't merge, and why. `unowned` lists the paths outside the task's ownership. */
@@ -85,7 +83,8 @@ export type SkippedTask = { task: string; reason: string; unowned?: string[] }
  *  - `merged`: every task branch that should be merged is merged, and the
  *    whole-result path check holds. `changed` is the complete path list.
  *  - `conflict`: the merge of `conflict.task` stopped with conflicted files,
- *    left in `where` for the integrator. The next integrate call finishes it.
+ *    left mid-merge in `where`. It's final (plan 15.11): the run halts, and
+ *    every later integrate call answers the same.
  *  - `refused`: nothing more can be merged (`reason`); the run halts.
  */
 export type IntegrateReply = {
@@ -107,7 +106,7 @@ export type IntegrateReply = {
   reason?: string
 }
 
-/** `integrate.merge`: one task branch merged onto the integration branch, cleanly or after the integrator. */
+/** `integrate.merge`: one task branch merged cleanly onto the integration branch. */
 export type IntegrateMergeBody = {
   task: string
   branch: string
@@ -115,26 +114,17 @@ export type IntegrateMergeBody = {
   commit: string
   /** `git diff --name-only -z --no-renames <base> <branch>`, all owned by `task`. */
   paths: string[]
-  /** Set when the integrator resolved this merge. */
-  resolved?: { files: string[]; integrator_extra: string[] }
 }
 
 /**
- * `integrate.conflict`: the merge of `task` stopped; `files` are `--diff-filter=U`, recorded before the integrator runs.
- * The rest is how the merge left the integration worktree, so the next integrate call can tell what the integrator did.
+ * `integrate.conflict`: the merge of `task` stopped, and that's the
+ * integration's outcome (plan section 7, fanout.js step 3). `files` are
+ * `--diff-filter=U`; the merge stays in progress in the integration worktree.
  */
 export type IntegrateConflictBody = {
   task: string
   branch: string
   files: string[]
-  /** The integration branch's tip the merge started from: `HEAD`, which the finished merge's first parent must be. */
-  head: string
-  /** The task branch's commit being merged: `MERGE_HEAD`, the second parent. */
-  commit: string
-  /** The integration worktree's snapshot tree as the merge left it, markers and all. */
-  left: string
-  /** sha256 of `git ls-files -s -z` as the merge left it: any staging since changes it. */
-  index: string
 }
 
 /** `integrate.skip`: a task not merged (blocked, no result, no branch, unowned paths, a fork point that isn't base). */
@@ -144,9 +134,8 @@ export type IntegrateSkipBody = SkippedTask
  * `integrate.done`: the integration's outcome, after which every integrate
  * call answers the same. Either every merge finished and this is the
  * whole-result check's outcome, or the integration stopped (no integration
- * worktree, a resolution the mod won't commit, a merge that failed without a
- * conflict, an integration branch moved under it), with `tip` the last merge
- * it made, or base. `blocked`
+ * worktree, a merge that failed without a conflict, an integration branch
+ * moved under it), with `tip` the last merge it made, or base. `blocked`
  * non-empty means no land: each entry names the path, worktree or step.
  */
 export type IntegrateDoneBody = { tip: string; tree: string; changed: ChangedPath[]; blocked: string[] }
