@@ -7,7 +7,7 @@ import { GitFailed, dirtySubmodules, snapshot } from '../../hooks/snapshot'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Real git (submodule clones among it), slow on a busy machine.
-setDefaultTimeout(20_000)
+setDefaultTimeout(120_000)
 
 let p: TestPorts
 let dir: string

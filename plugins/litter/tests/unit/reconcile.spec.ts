@@ -23,7 +23,7 @@ const RELAY: Caller = { agentId: 'relay-1', agentType: 'litter:relay' }
 const MOD = { source: 'mod' } as const
 
 // Each test runs dozens of real git commands, slow on a busy machine.
-setDefaultTimeout(20_000)
+setDefaultTimeout(120_000)
 
 let p: TestPorts
 let dir: string

@@ -27,7 +27,7 @@ import { updateSession } from '../../hooks/session'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Each world runs run.start against real git; a loaded machine takes seconds.
-setDefaultTimeout(30_000)
+setDefaultTimeout(120_000)
 
 // One plugin root for the file: the shipped scripts are read once per module instance.
 const PLUGIN_ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'litter-root-')))

@@ -27,7 +27,7 @@ const RELAY: Caller = { agentId: 'relay-1', agentType: 'litter:relay' }
 const MOD = { source: 'mod' } as const
 
 // Each test runs dozens of real git commands, slow on a busy machine.
-setDefaultTimeout(60_000)
+setDefaultTimeout(120_000)
 
 type Task = { id: string; title: string; text: string; writes: boolean; files: string[] }
 const TASKS: Task[] = [

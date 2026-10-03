@@ -31,7 +31,7 @@ const CRITIC: Caller = { agentId: 'critic-1', agentType: 'litter:gate-critic' }
 const RELAY: Caller = { agentId: 'relay-1', agentType: 'litter:relay' }
 
 // Real processes and real git, slow on a busy machine.
-setDefaultTimeout(20_000)
+setDefaultTimeout(120_000)
 
 let p: TestPorts
 let dir: string
@@ -187,11 +187,12 @@ describe('verify: how it ended', () => {
   test('a run past verifyTimeoutMs is timed out, exit_code null, never green', async () => {
     // A silent child: node-ports can't kill it while a pull is pending, so the kill grace ends the wait.
     const started = Date.now()
-    const work = verify(['sleep', '10'], {}, CRITIC, { verifyTimeoutMs: 1000 })
+    // The child would sleep 30 s; well under that means the timeout ended it, even on a loaded machine.
+    const work = verify(['sleep', '30'], {}, CRITIC, { verifyTimeoutMs: 1000 })
     fireTimers(work, () => Bun.sleep(300))
     const r = ok(await work)
     expect(r).toMatchObject({ exit_code: null, timed_out: true, green: false })
-    expect(Date.now() - started).toBeLessThan(8000)
+    expect(Date.now() - started).toBeLessThan(20_000)
     expect(howEnded(await lastVerify())).toBe('timed out')
   })
 

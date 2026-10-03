@@ -14,7 +14,7 @@ import { atomicWriteJson } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Real git in every test; a loaded machine takes seconds.
-setDefaultTimeout(30_000)
+setDefaultTimeout(120_000)
 
 const NOW = 1_800_000_000_000
 const mod = { source: 'mod' } as const

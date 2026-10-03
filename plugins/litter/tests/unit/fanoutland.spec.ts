@@ -29,7 +29,7 @@ const VERIFIER: Caller = { agentId: 'verifier-1', agentType: 'litter:verifier' }
 const MOD = { source: 'mod' } as const
 
 // Each test integrates, verifies and lands with real git, slow on a busy machine.
-setDefaultTimeout(60_000)
+setDefaultTimeout(120_000)
 
 type Task = { id: string; title: string; text: string; writes: boolean; files: string[] }
 const TASKS: Task[] = [

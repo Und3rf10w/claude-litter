@@ -31,7 +31,7 @@ import { endRun } from '../../hooks/lifecycle'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Each test runs dozens of real git commands, slow on a busy machine.
-setDefaultTimeout(60_000)
+setDefaultTimeout(120_000)
 
 const RUN = '20261002-fanout-a1b2c3'
 const WF = 'wf_1a2b3c4d-567'

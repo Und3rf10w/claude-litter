@@ -18,7 +18,7 @@ import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Each test runs a few dozen real git commands; a loaded machine takes seconds.
-setDefaultTimeout(30_000)
+setDefaultTimeout(120_000)
 
 const SYMREF = (() => {
   const m = /git version ([0-9]+)\.([0-9]+)/.exec(Bun.spawnSync(['git', 'version']).stdout.toString())

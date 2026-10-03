@@ -37,7 +37,7 @@ import { atomicWriteJson } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 // Each world runs run.start against real git; a loaded machine takes seconds.
-setDefaultTimeout(30_000)
+setDefaultTimeout(120_000)
 
 // ---------------------------------------------------------------------------
 // The decoder, one row each

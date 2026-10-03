@@ -51,9 +51,11 @@ jobs:
         run: claude plugin validate --json . | bun tests/unit/allowlist.ts
       - name: Tier 1 (the engine's plugin test)
         run: claude plugin test .
+      # `bun run test`: its 120 s per-test limit is a CLI flag, the only place
+      # bun 1.3 takes one for every file.
       - name: Tier 2 (bun specs)
         working-directory: plugins/litter/tests/unit
-        run: bun test
+        run: bun run test
       - name: Tier 3 (hook scripts under sh and dash)
         run: |
           sh tests/hooks/run.sh

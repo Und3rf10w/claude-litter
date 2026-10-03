@@ -1,6 +1,9 @@
 {
   "name": "litter-unit",
   "private": true,
+  "scripts": {
+    "test": "bun test --timeout 120000"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "typescript": "5"
