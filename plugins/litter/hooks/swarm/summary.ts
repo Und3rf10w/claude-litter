@@ -70,12 +70,30 @@ const lastHash = new Map<string, string>()
 const recordedGoal = new Map<string, string>()
 /** `<swarm>\0<launch>` once its stored summary and goal line were read back. */
 const loaded = new Set<string>()
+/** `<swarm>\0<launch>` once End records its end: a summary call still out for it is dropped. */
+const ending = new Set<string>()
 let ticking = false
 
 /** Synchronous: only marks the swarm due. */
 export function noteSummaryTrigger(swarm: string, why: SummaryTrigger): void {
   due.add(swarm)
   triggers.set(swarm, (triggers.get(swarm) ?? 0) + 1)
+}
+
+/**
+ * End's, synchronously before it appends swarm.end (FIX-U, U4): from then on
+ * a summary call for that launch that answers late records and stores
+ * nothing. Its check and its append run in one step, and appends to a ledger
+ * go in call order, so no swarm.summary lands after swarm.end.
+ */
+export function noteSwarmEnding(swarm: string, launch: string): void {
+  ending.add(`${swarm}\u0000${launch}`)
+}
+
+/** Whether the launch a summary call was made for is still live here, owned, and not ending. */
+function stillCurrent(s: LiveSwarm): boolean {
+  const now = liveSwarms().find(x => x.name === s.name)
+  return now !== undefined && now.launch === s.launch && !now.readOnly && !now.lost && !ending.has(`${s.name}\u0000${s.launch}`)
 }
 
 /** The last good summary, with whether a newer event exists; null when there's none. */
@@ -129,6 +147,7 @@ function forget(name: string): void {
   lastHash.delete(name)
   recordedGoal.delete(name)
   for (const k of [...loaded]) if (k.startsWith(`${name}\u0000`)) loaded.delete(k)
+  for (const k of [...ending]) if (k.startsWith(`${name}\u0000`)) ending.delete(k)
 }
 
 /** Once per launch in this process: the stored summary, or the goal line from the ledger's last swarm.summary. */
@@ -178,6 +197,9 @@ async function summarise(p: Ports, litterDir: string, s: LiveSwarm): Promise<voi
     p.log(`swarm ${s.name}: the summary call was refused: ${errText(err)}`)
     return
   }
+  // The call can take 20 s: the swarm may have ended meanwhile, and its summary goes with it.
+  // Nothing below awaits before the append, so this check holds for it.
+  if (!stillCurrent(s)) return
   if (!r.isAnswered) {
     // It fails quietly: the last good summary stays, and the next tick past the debounce tries again.
     due.add(s.name)
@@ -197,6 +219,7 @@ async function summarise(p: Ports, litterDir: string, s: LiveSwarm): Promise<voi
     const body: SwarmSummaryBody = { text: summaryText(summary), goal: parsed.goalNow, inputsHash: hash, usage: r.usage ?? null }
     await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.summary', body)
     recordedGoal.set(s.name, goal)
+    if (!stillCurrent(s)) return
   }
   const stored: Stored = { v: 1, launch: s.launch, summary, hash, goal: recordedGoal.get(s.name) ?? null }
   await p.store.set(summaryKey(litterDir, s.name), stored)
@@ -403,5 +426,6 @@ export function resetSummaryForTests(): void {
   lastHash.clear()
   recordedGoal.clear()
   loaded.clear()
+  ending.clear()
   ticking = false
 }

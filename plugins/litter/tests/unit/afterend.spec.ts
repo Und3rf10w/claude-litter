@@ -18,9 +18,10 @@ import { agentPolicyPath, launchSummaryPath, policyPath, spoolDir, swarmOwnBranc
 import { atomicWriteJson } from '../../hooks/fsx'
 import { normalizeOptions } from '../../hooks/options'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
-import { updateSession } from '../../hooks/session'
+import { setOptions, updateSession } from '../../hooks/session'
 import { endSwarm, others, resetEndForTests, sweepNodePolicies } from '../../hooks/swarm/end'
 import { resetObserveForTests } from '../../hooks/swarm/observe'
+import { noteSummaryTrigger, resetSummaryForTests, summaryKey, summaryTick } from '../../hooks/swarm/summary'
 import * as admit from '../../hooks/swarm/admit'
 import * as state from '../../hooks/swarm/state'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
@@ -404,6 +405,95 @@ describe('U2: after End, admission refuses an agent that still has a policy file
     expect(r.result).toEqual(expect.objectContaining({ stopReason: 'end_turn', toolUses: [] }))
     // One the mod never bound passes straight through.
     expect((await step('plain-agent')).called).toBe(true)
+  })
+})
+
+describe('U4: a summary call that answers after swarm.end is dropped', () => {
+  const USAGE = { input_tokens: 900, output_tokens: 80, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+  beforeEach(() => {
+    resetSummaryForTests()
+    setOptions({ summaryModel: 'haiku', summaryEverySec: 60 })
+  })
+  afterEach(() => {
+    resetSummaryForTests()
+    setOptions(undefined)
+  })
+
+  /** A summary call held open until `answer()`; `asked` settles once the call is out. */
+  function heldCall(): { answer: () => void; asked: Promise<void> } {
+    let answer!: () => void
+    let asked!: () => void
+    const out = new Promise<void>(r => (asked = r))
+    const gate = new Promise<void>(r => (answer = r))
+    p.completeAnswer = async () => {
+      asked()
+      await gate
+      return { isAnswered: true, text: 'Goal now: Ship the parser.\nProgress:\n- fixer #1 is done\nWaiting on you: nothing', usage: USAGE }
+    }
+    return { answer, asked: out }
+  }
+
+  /** End held at the ownership ref: after swarm.end, before the live state goes. */
+  function holdAtRelease(): { reached: Promise<void>; release: () => void } {
+    let release!: () => void
+    let reach!: () => void
+    const reached = new Promise<void>(r => (reach = r))
+    const gate = new Promise<void>(r => (release = r))
+    others.releaseOwnership = (async (_p: unknown, _dir: unknown, name: string) => {
+      calls.push(['releaseOwnership', name])
+      reach()
+      await gate
+      return true
+    }) as unknown as typeof others.releaseOwnership
+    return { reached, release }
+  }
+
+  test('swarm.end recorded and the live state not yet dropped: the answer records nothing and stores nothing', async () => {
+    await live()
+    const call = heldCall()
+    noteSummaryTrigger('alpha', 'report')
+    const tick = summaryTick(p)
+    await call.asked
+    const hold = holdAtRelease()
+    const ending = endSwarm(p, 'alpha', 'keep-everything')
+    await hold.reached
+    expect(await kinds()).toContain('swarm.end')
+    expect(state.liveSwarm('alpha')).not.toBeNull()
+    call.answer()
+    await tick
+    hold.release()
+    await ending
+    expect(await kinds()).not.toContain('swarm.summary')
+    expect(p.storeMap.get(summaryKey(litterDir, 'alpha'))).toBeUndefined()
+  })
+
+  test('the swarm gone before the answer: nothing either; one that answers while the swarm is stopping is recorded', async () => {
+    await live()
+    const call = heldCall()
+    noteSummaryTrigger('alpha', 'report')
+    const tick = summaryTick(p)
+    await call.asked
+    await endSwarm(p, 'alpha', 'keep-everything')
+    expect(state.liveSwarm('alpha')).toBeNull()
+    call.answer()
+    await tick
+    expect(await kinds()).not.toContain('swarm.summary')
+    expect(p.storeMap.get(summaryKey(litterDir, 'alpha'))).toBeUndefined()
+
+    // A new launch that's only stopping still takes its summary.
+    resetSummaryForTests()
+    launch = await newLaunchId(p, litterDir, 'alpha')
+    await live()
+    await endSwarm(p, 'alpha', 'request')
+    const again = heldCall()
+    noteSummaryTrigger('alpha', 'report')
+    const second = summaryTick(p)
+    await again.asked
+    again.answer()
+    await second
+    expect(await kinds()).toContain('swarm.summary')
+    expect(p.storeMap.get(summaryKey(litterDir, 'alpha'))).toEqual(expect.objectContaining({ launch }))
   })
 })
 

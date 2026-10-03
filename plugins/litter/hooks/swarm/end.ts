@@ -53,7 +53,7 @@ import * as state from './state'
 import { patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
 import * as guardModule from './guard'
 import { releaseOwnership, stopOwnerBeat } from './owner'
-import { noteSummaryTrigger, plainText } from './summary'
+import { noteSummaryTrigger, noteSwarmEnding, plainText } from './summary'
 
 /**
  * The other packages' functions this module and observe.ts call (M's policy
@@ -454,6 +454,8 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
             worktrees,
             branches: await branchesLeft(p, s, records, worktrees),
           }
+          // In the same step as the append, so a summary call that answers late lands before it or not at all (U4).
+          noteSwarmEnding(name, s.launch)
           await appendLaunchRecord(p, litterDir, name, s.launch, 'swarm.end', body)
         }
       }
@@ -466,6 +468,7 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
       }
     }
     if (broken !== null) {
+      noteSwarmEnding(name, s.launch)
       const why = `its launch ledger is broken at record ${broken.seq} (${broken.reason}), so it holds no swarm.end, and no worktree was removed`
       p.log(`swarm ${name}: ended, but ${why}`)
       p.toast(`litter: swarm ${name} has ended, but ${why}; summary.md lists what's left`)
