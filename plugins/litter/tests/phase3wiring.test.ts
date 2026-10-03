@@ -2,8 +2,8 @@
 // engine loading the mod. /litter-board and /litter-rules are registered at
 // session.start and again after a /clear; each new hook's catch answers in
 // its event's shape; setView writes the board's and the rules pane's atoms;
-// and the doctor's trailers row, from the option. AF's handlers are stubs
-// here, so a hook is made to throw beneath them: a render through an atom
+// and the doctor's trailers row, from the option. A hook is made to throw
+// beneath AF's handlers: a render through an atom
 // whose body the renderer can't draw, every other hook through `rebound`
 // after a /clear whose new session id can't be read.
 
@@ -136,13 +136,14 @@ describe('/litter-board and /litter-rules', () => {
 
   test("setView writes the board's and the rules pane's atoms, which their panes draw", async ($, on) => {
     mock.store(on)
+    on('ui.open', async () => ({ value: { isPlaced: true } }))
     const writes = stateWrites(on)
-    expect((await run($, 'litter-board')).text).toBe("litter: the board isn't built yet (phase 3, package AF)")
-    expect((await run($, 'litter-rules')).text).toBe("litter: the rules pane isn't built yet (phase 3, package AF)")
-    expect(writes).toEqual([
-      { key: 'board', value: { view: 'board', v: 0, run: null } },
-      { key: 'rulesPane', value: { view: 'rules', v: 0, tab: 'proposed' } },
-    ])
+    // No session.start, so there's no litter directory: each pane draws that.
+    expect((await run($, 'litter-board')).text).toBe('litter: the board has no litter directory to read')
+    expect((await run($, 'litter-rules')).text).toBe('litter: the rules pane has no litter directory to read')
+    expect(writes.map(w => w.key)).toEqual(['board', 'rulesPane'])
+    expect(writes[0]!.value).toEqual(expect.objectContaining({ view: 'board', v: 0, run: null }))
+    expect(writes[1]!.value).toEqual(expect.objectContaining({ view: 'rules', v: 0, tab: 'proposed' }))
     const board = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'Pane', requestId: 'litter-board', props: pane('litter board') })
     expect((await board.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
     const rules = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
