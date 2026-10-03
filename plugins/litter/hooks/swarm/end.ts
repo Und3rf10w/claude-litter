@@ -704,7 +704,7 @@ export async function cleanupLaunch(p: Ports, swarm: string, launch: string): Pr
  * up yet); one whose making failed after git added it, kept; and each node's
  * `existing` worktree, which is never removed.
  */
-async function worktreesLeft(p: Ports, records: readonly StoredRecord[], launch: string, s: LiveSwarm | null): Promise<SwarmWorktreeLeft[]> {
+export async function worktreesLeft(p: Ports, records: readonly StoredRecord[], launch: string, s: LiveSwarm | null): Promise<SwarmWorktreeLeft[]> {
   const out: SwarmWorktreeLeft[] = []
   const seen = new Set<string>()
   for (const t of madeWorktrees(records, launch)) {

@@ -114,12 +114,16 @@ async function refOid(p: Ports, repo: string, name: string): Promise<string | nu
   }
 }
 
-/** The ref's oid and its blob (null when it doesn't parse), or null when no one holds it. */
-export async function readOwnerRef(p: Ports, litterDir: string, name: string): Promise<{ oid: string; blob: OwnerBlob | null } | null> {
+/**
+ * The ref's oid and its blob (null when it doesn't parse), or null when no one
+ * holds it; undefined when git couldn't tell (a caller that only asks whether
+ * it's held reads that as no, as before; one that removes on "gone" mustn't).
+ */
+export async function readOwnerRef(p: Ports, litterDir: string, name: string): Promise<{ oid: string; blob: OwnerBlob | null } | null | undefined> {
   if (!SWARM_NAME.test(name)) return null
   const repo = repoOf(litterDir)
   const oid = await refOid(p, repo, name)
-  if (!oid) return null
+  if (oid === null || oid === undefined) return oid
   const b = await git(p, repo, ['cat-file', 'blob', oid])
   return { oid, blob: b.code === 0 ? parseBlob(b.stdout) : null }
 }
@@ -555,7 +559,8 @@ export async function rebindOwnership(p: Ports, litterDir: string, newSession: s
  * lease file. Answers whether it released (Q2): false for a process that
  * doesn't hold it, for a stale owner (the ref names another oid; it stands
  * down), and when git failed; a ref already gone counts as released. Either
- * way this process holds it no longer.
+ * way this process holds it no longer: a ref git kept is settled later
+ * (recover.ts, settleStuck).
  */
 export async function releaseOwnership(p: Ports, litterDir: string, name: string): Promise<boolean> {
   stopOwnerBeat(name)
@@ -579,6 +584,46 @@ export async function releaseOwnership(p: Ports, litterDir: string, name: string
     await remove(p, ownerLeasePath(litterDir, name, h.oid)).catch(() => {})
     if (held.get(name) === h) held.delete(name)
     return released
+  })
+}
+
+/**
+ * Whether the session holding `ref` is this one, or is gone (Q1, a stuck
+ * ref), while this process doesn't hold it:
+ *  - this session's: a release that failed, or an earlier process's (a
+ *    crash-respawn, --resume). Recovery retakes this session's live launches
+ *    on the same test (recoverSwarm);
+ *  - another session's: handover's own test without your confirmation, since
+ *    nothing asks at session.start. On this host only, since another host's
+ *    process can't be checked from here: its pid gone, and its lease over 60 s
+ *    stale. A blob with this process's pid is taken as running: nothing here
+ *    tells a second session in one process apart.
+ * False whenever it can't tell.
+ */
+export async function ownerGone(p: Ports, litterDir: string, name: string, ref: { oid: string; blob: OwnerBlob }): Promise<boolean> {
+  const h = held.get(name)
+  if (h && !h.lost && h.litterDir === litterDir) return false
+  const b = ref.blob
+  if (b.session === (await p.sessionId())) return true
+  const { host, pid } = await whoAmI(p)
+  if (b.host !== host || !PID.test(b.pid) || b.pid === pid) return false
+  if ((await pidAlive(p, b.pid)) !== false) return false
+  const now = await p.now()
+  const age = (await leaseAge(p, litterDir, name, ref.oid, now)) ?? Math.max(0, now - b.acquiredAt)
+  return age > OWNER_STALE_MS
+}
+
+/** A stuck ref's release (Q1): a compare-and-delete on the oid it was read at, then that oid's lease. */
+export async function releaseStuckRef(p: Ports, litterDir: string, name: string, oid: string): Promise<boolean> {
+  if (!SWARM_NAME.test(name) || !OID.test(oid)) return false
+  return serial(ownerKey(litterDir, name), async () => {
+    const r = await git(p, repoOf(litterDir), ['update-ref', '-m', `litter: swarm ${name}: settled`, '-d', swarmRef(name), oid])
+    if (r.code !== 0) {
+      p.log(`swarm ${name}: ${swarmRef(name)} wasn't released (it doesn't name ${oid}): ${r.stderr.trim()}`)
+      return false
+    }
+    await remove(p, ownerLeasePath(litterDir, name, oid)).catch(() => {})
+    return true
   })
 }
 

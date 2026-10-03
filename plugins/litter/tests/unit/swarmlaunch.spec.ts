@@ -5,7 +5,7 @@
 // failure after the ref; the node type specs; and mcp__litter__swarm_read.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentSpec } from '../../hooks/ports'
 import type { SwarmStartBody } from '../../hooks/records/swarm'
@@ -29,6 +29,7 @@ import {
 } from '../../hooks/swarm/state'
 import { deps as launchDeps, launchSwarm, nodeTypeSpec, specHash } from '../../hooks/swarm/launch'
 import { recoverSwarms } from '../../hooks/swarm/recover'
+import { writeSwarmSummary } from '../../hooks/swarm/end'
 import {
   aSpec,
   bind,
@@ -350,7 +351,8 @@ describe('launchSwarm: a launch', () => {
     expect(await refOf()).toBe(oid)
   })
 
-  test('a failure after the ref records launch_failed, hands the launch to the cleanup, and releases the ref', async () => {
+  test('a failure after the ref cleans up first, then records launch_failed with what is left, and releases the ref (Q6)', async () => {
+    w.realCleanup = true
     w.p.registerAgentAnswer = spec => {
       if (spec.name === 'sw-alpha-scout') throw new Error('agent.register: refused for the test')
     }
@@ -359,15 +361,19 @@ describe('launchSwarm: a launch', () => {
     const r = await launchSwarm(w.p, 'alpha')
     expect(r).toEqual({ ok: false, reason: expect.stringContaining('the engine refused the types of scout: agent.register: refused for the test') })
     const rs = await records()
-    expect(rs.map(x => x.kind)).toEqual(['swarm.worktree.intent', 'swarm.worktree', 'swarm.end'])
-    expect(rs[2]!.body).toEqual({
+    // End's order: the cleanup's records before swarm.end, so it says what was removed and what's left.
+    expect(rs.map(x => x.kind)).toEqual(['swarm.worktree.intent', 'swarm.worktree', 'swarm.worktree.removed', 'swarm.end'])
+    expect(rs[3]!.body).toEqual({
       status: 'launch_failed',
       settled: true,
       reason: 'the engine refused the types of scout: agent.register: refused for the test',
       nodes: {},
-      worktrees: [],
-      branches: [],
+      worktrees: [{ path: wtPath(), branch: 'feature/alpha', node: 'lead-a', removed: true }],
+      // A `new` branch you named is kept (15.4, "Cleanup"), and the next Launch's refusal names it.
+      branches: ['feature/alpha'],
     })
+    expect(existsSync(wtPath())).toBe(false)
+    expect(readFileSync(await writeSwarmSummary(w.p, 'alpha', LAUNCH), 'utf8')).toContain('- Branches left: feature/alpha')
     expect(w.calls.cleanups).toEqual([{ swarm: 'alpha', launch: LAUNCH }])
     expect(await refOf()).toBeNull()
     expect(leases()).toEqual([])

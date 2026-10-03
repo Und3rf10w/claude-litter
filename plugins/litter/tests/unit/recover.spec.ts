@@ -171,16 +171,18 @@ describe('recoverSwarms, a swarm this session owns', () => {
     for (const id of AGENTS) expect(await readNodePolicy(w, id)).toBeUndefined()
   })
 
-  test('a launch that ended, or a ref naming nothing live, is left as it is', async () => {
+  test('a launch that ended, its process gone before the release, is not recovered: its release is finished (Q1)', async () => {
     const launch = await liveInSessionA()
     await appendLaunchRecord(w.p, w.litterDir, 'alpha', launch, 'swarm.end', { status: 'ended', settled: true, nodes: {}, worktrees: [], branches: [] })
     const { q } = await crashRespawn()
-    const ref = await refOf(w)
+    const kinds = (await readLaunchLedger(q, w.litterDir, 'alpha', launch)).records.map(r => r.kind)
     await recoverSwarms(q, w.litterDir)
     expect(liveSwarm('alpha')).toBeNull()
     expect(q.registeredAgents).toEqual([])
-    expect(await refOf(w)).toBe(ref)
+    expect(await refOf(w)).toBeNull()
     expect(w.calls.adopted).toBe(0)
+    // Nothing new recorded.
+    expect((await readLaunchLedger(q, w.litterDir, 'alpha', launch)).records.map(r => r.kind)).toEqual(kinds)
   })
 })
 

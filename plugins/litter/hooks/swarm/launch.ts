@@ -24,7 +24,7 @@ import { remove, sha256 } from '../fsx'
 import { primaryOf, repoOf } from '../lifecycle'
 import { BRANCH, litterWorktreeRoot, listedAt, listWorktrees, realOf } from '../worktrees'
 import { readPolicy } from '../policy'
-import { appendLaunchRecord, newLaunchId } from '../records/swarm'
+import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../records/swarm'
 import { renderSlots } from '../prompts/slots'
 import {
   AUTHORITY_COMMIT_NO,
@@ -68,12 +68,12 @@ import {
 import { decodeSwarmInput, SWARM_READ } from './tools'
 import { addSwarmWorktree } from './worktrees'
 import { acquireOwnership, readOwnerRef, releaseOwnership, startOwnerBeat, stopOwnerBeat } from './owner'
-import { authorityLines, continuationText, readLaunchFacts, resumeTargets } from './recover'
+import { authorityLines, continuationText, readLaunchFacts, resumeTargets, settleStuck } from './recover'
 import { validateSpec } from './spec'
 import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
 import { heldBy, writeSwarmPolicy } from './guard'
-import { cleanupLaunch } from './end'
+import { cleanupLaunch, worktreesLeft } from './end'
 
 /**
  * The other packages' functions this module calls, through one table so tier
@@ -355,6 +355,47 @@ async function rootsOf(p: Ports, litterDir: string, dirs: readonly string[]): Pr
 const launching = new Set<string>()
 
 /**
+ * A launch that failed after its ref was taken, or whose session ended before
+ * `swarm.start` (recover.ts, settleStuck): End's order (end.ts; Q6), so
+ * swarm.end and summary.md say what's left. The cleanup of the worktrees it
+ * made first, then `swarm.end { status: 'launch_failed' }` with the worktrees
+ * and branches left (a `new` branch is never deleted), unless the ledger has a
+ * swarm.end already, then the release: this process's ownership, or a stuck
+ * ref's compare-and-delete. Each step's failure is logged, and the next runs:
+ * a ledger that can't take swarm.end still lets the name go.
+ */
+export async function endFailedLaunch(
+  p: Ports,
+  litterDir: string,
+  name: string,
+  launch: string,
+  reason: string,
+  release: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await deps.cleanupLaunch(p, name, launch)
+  } catch (err) {
+    p.log(`swarm ${name}: the failed launch's cleanup failed: ${errText(err)}`)
+  }
+  try {
+    const { records, tampered } = await readLaunchLedger(p, litterDir, name, launch)
+    if (tampered) throw new Error(`launch ${launch}'s ledger is tampered at record ${tampered.seq}`)
+    if (!records.some(r => r.kind === 'swarm.end')) {
+      const worktrees = await worktreesLeft(p, records, launch, null)
+      const repo = repoOf(litterDir)
+      const branches: string[] = []
+      for (const b of [...new Set(worktrees.map(w => w.branch))].sort()) {
+        if (BRANCH.test(b) && (await gitOut(p, repo, ['show-ref', '--verify', '--quiet', `refs/heads/${b}`])).code === 0) branches.push(b)
+      }
+      await appendLaunchRecord(p, litterDir, name, launch, 'swarm.end', { status: 'launch_failed', settled: true, reason, nodes: {}, worktrees, branches })
+    }
+  } catch (err) {
+    p.log(`swarm ${name}: launch_failed wasn't recorded: ${errText(err)}`)
+  }
+  await release().catch((err: unknown) => p.log(`swarm ${name}: its ref wasn't released: ${errText(err)}`))
+}
+
+/**
  * Launches swarm `name` at its saved revision, or `opts.revision`. Every
  * refusing check runs before anything is written. Reads `session().litterDir`.
  */
@@ -385,10 +426,16 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   if (live) {
     return refused(name, [live.readOnly ? `it's live, owned by session ${live.owner.session}` : `it's already live (launch ${live.launch})`])
   }
+  // A ref a crash left (its launch ended, or never started) whose holder is this session or gone is finished first (Q1).
+  const stuck = await settleStuck(p, litterDir, name)
   const holder = await readOwnerRef(p, litterDir, name)
   if (holder) {
     const who = holder.blob ? `session ${holder.blob.session} (launch ${holder.blob.launch})` : `an unreadable blob (${holder.oid})`
-    return refused(name, [`refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter-swarm ${name}`])
+    return refused(name, [
+      stuck.left
+        ? `refs/litter-swarm/${name} exists: ${stuck.left}; launch again once that session has closed`
+        : `refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter-swarm ${name}`,
+    ])
   }
   // An entry of its own name with no ref is a leftover no one owns: this launch's entry replaces it.
   const policy = await readPolicy(p, litterDir).catch(() => undefined)
@@ -513,22 +560,12 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   let isLive = false
   const failed = async (reason: string): Promise<LaunchResult> => {
     stopOwnerBeat(name)
-    try {
-      await appendLaunchRecord(p, litterDir, name, launchId, 'swarm.end', { status: 'launch_failed', settled: true, reason, nodes: {}, worktrees: [], branches: [] })
-    } catch (err) {
-      p.log(`swarm ${name}: launch_failed wasn't recorded: ${errText(err)}`)
-    }
     if (isLive) {
       dropLiveSwarm(name)
       const mine = heldBy({ launch: launchId, generation: own.generation, oids: [own.oid] })
       await deps.writeSwarmPolicy(p, litterDir, name, null, mine).catch((err: unknown) => p.log(`swarm ${name}: its policy entry wasn't removed: ${errText(err)}`))
     }
-    try {
-      await deps.cleanupLaunch(p, name, launchId)
-    } catch (err) {
-      p.log(`swarm ${name}: the failed launch's cleanup failed: ${errText(err)}`)
-    }
-    await releaseOwnership(p, litterDir, name).catch((err: unknown) => p.log(`swarm ${name}: its ref wasn't released: ${errText(err)}`))
+    await endFailedLaunch(p, litterDir, name, launchId, reason, () => releaseOwnership(p, litterDir, name))
     return refused(name, [`the launch failed: ${reason}`])
   }
 
