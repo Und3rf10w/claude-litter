@@ -225,21 +225,42 @@ describe('skills/fanout/SKILL.md', () => {
     for (const part of shellParts(text)) expect(part).not.toContain('${user_config.')
   })
 
-  test("when nothing lands, it says what's kept and names the manual routes; it promises no repair (plan 15.11)", () => {
+  test("when nothing lands, it says what's kept and reports the Repair section; with no repair started, it offers the routes, the repair first (plan 15.11)", () => {
     const text = skillText()
     expect(text).toContain('if a merge ever does, the run stops with the conflicted paths')
     expect(text).toContain('nothing was thrown away')
     for (const kept of ['the task branches', 'the integration worktree at its merged tip', "the integration verify's output", "the verifier's gaps"]) {
       expect(text).toContain(kept)
     }
-    expect(text).toContain('rerun the failed tasks as a new fanout')
-    expect(text).toContain('merge chosen passing task branches yourself')
-    expect(text).not.toMatch(/resolves conflicts|swarm/i)
+    expect(text).toContain('Then report its Repair section.')
+    // A repair the bridge started: the lead only says so; litter starts it after the turn (COMMON 2b-2, step 3).
+    expect(text).toContain('litter starts it after this turn (`/litter-swarm <name>` shows it). Don\'t start it yourself or offer other routes.')
+    // No repair started: the routes, through AskUserQuestion, the repair as a swarm first.
+    const routes = text.slice(text.indexOf('**No repair started**'))
+    expect(routes).toContain('offer with AskUserQuestion')
+    const order = ["{ kind: 'repair.start', run }", 'rerun the failed tasks as a new fanout', 'merge chosen passing task branches yourself', 'stop and leave the branches']
+    const at = order.map(s => routes.indexOf(s))
+    expect(at.every(i => i > 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(text).not.toMatch(/resolves conflicts/i)
   })
 
-  test('records run.start with the fields run.start takes, and launches litter:fanout by name', () => {
+  test("states the repair setting in the confirmation, in COMMON 2b-2's words, with the override for one run (plan 15.11, \"Where it's set\")", () => {
     const text = skillText()
-    expect(text).toContain("{ kind: 'run.start', workflow: 'fanout', tasks, contract, verify, setup, linkDirs, authorized, mergeOrder, runRules }")
+    const settings = text.slice(text.indexOf('## 3. Settings'), text.indexOf('## 4. Launch'))
+    expect(settings).toContain('**If it fails.** The configured setting is `${user_config.repair}` with `${user_config.repairRounds}` rounds and `${user_config.repairAgents}` agents')
+    expect(settings).toContain(
+      "\"If it fails, a repair swarm takes over the integration worktree, commits fixes on the integration branch, and the mod lands the result only if it's verified and an independent check approves it: up to N rounds and M agents; nothing is pushed.\"",
+    )
+    expect(settings).toContain('"If it fails, it stops and keeps everything."')
+    expect(settings).toContain('`repair off`, rounds 1 to 10, agents 1 to 50')
+  })
+
+  test('records run.start with the fields run.start takes, the repair setting as stated, and launches litter:fanout by name', () => {
+    const text = skillText()
+    expect(text).toContain(
+      "{ kind: 'run.start', workflow: 'fanout', tasks, contract, verify, setup, linkDirs, authorized, mergeOrder, runRules, repair, repairRounds, repairAgents }`, the repair setting as you stated it.",
+    )
     expect(text).toContain("Call Workflow with `name: 'litter:fanout'`")
   })
 })
@@ -368,8 +389,8 @@ function runScaffold(dir: string): { cwd: string; cleanup: () => void; status: s
 }
 
 describe('the eval cases', () => {
-  test('are the three fanout cases', () => {
-    expect(caseDirs()).toEqual(['fanout-dirty-tree', 'fanout-launch', 'fanout-no-record-tool'])
+  test('are the four fanout cases', () => {
+    expect(caseDirs()).toEqual(['fanout-dirty-tree', 'fanout-launch', 'fanout-no-record-tool', 'fanout-repair-confirm'])
   })
 
   test("parse as the case schema, with every grader's keys its type's", () => {

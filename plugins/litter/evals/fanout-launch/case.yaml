@@ -11,7 +11,8 @@ description: >-
   when the run ends, reports it from summary.md. Each task adds one file in
   its own package; the mod merges both branches, runs sh check.sh on the
   result, a verifier checks each task, and the mod lands the result in the
-  checkout. Needs litter's verify option set to ["sh", "check.sh"] in the
+  checkout. The request sets repair off for the run, which run.start must
+  carry (the launch's override, plan 15.11). Needs litter's verify option set to ["sh", "check.sh"] in the
   eval session, since $.ui.ask can't approve another command under -p. The
   eval child reads plugin options only from settings it can't be given per
   case, so set it in managed settings (pluginConfigs.litter.options.verify)
@@ -29,7 +30,7 @@ execution:
     Task A, titled "Hello in a": it changes files and owns a/. Add a/hello.txt holding the single line "hello from a", and extend a/test.sh so it fails unless a/hello.txt holds exactly that line.
     Task B, titled "Hello in b": it changes files and owns b/. Add b/hello.txt holding the single line "hello from b", and extend b/test.sh so it fails unless b/hello.txt holds exactly that line.
 
-    There's no shared contract. The verify command is sh check.sh, which passes today. The worktrees need no dependencies: no setup command and no directories to link. Authorized actions: the defaults. Merge order: A, then B. No extra rules for this run.
+    There's no shared contract. The verify command is sh check.sh, which passes today. The worktrees need no dependencies: no setup command and no directories to link. Authorized actions: the defaults. If it fails: repair off for this run, so it stops and keeps everything. Merge order: A, then B. No extra rules for this run.
 
     I've read the task list and these settings, and I confirm them: Launch. When the run finishes, report the result from its summary.
 runs: 1
@@ -40,6 +41,12 @@ graders:
     input_match: "litter:fanout"
     min: 1
     max: 1
+  - type: tool_used
+    name: run-start-carries-repair-off
+    tool: mcp__litter__record
+    input_match: "\"repair\"\\s*:\\s*\"off\""
+    min: 1
+    weight: 0.5
   - type: tool_order
     name: run-start-before-launch
     before: { tool: mcp__litter__record, input_match: "run\\.start" }

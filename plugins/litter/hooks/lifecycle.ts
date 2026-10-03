@@ -26,9 +26,11 @@ import type {
   LockBlob,
   LockForcedBody,
   LockRecoveredBody,
+  RepairSettings,
   RunEndBody,
   RunJson,
   RunLaunchBody,
+  RunRepairBody,
   RunStartBody,
   RunStartReply,
   RunStatus,
@@ -36,11 +38,13 @@ import type {
   Workflow,
 } from './records/run'
 import type { Gate } from './gates'
-import type { LockHeld } from './lock'
+import type { LockHeld, LockRefused } from './lock'
 import type { SessionRebindBody } from './records/swarm'
 import type { RepairBudget, RunLink } from './swarm/types'
 import { fail } from './records/core'
-import { DELIVERABLES, RUN_STATUSES, WORKFLOWS } from './records/run'
+import { DELIVERABLES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS } from './records/run'
+import { readLaunchLedger } from './records/swarm'
+import { REPAIR_AGENTS, REPAIR_ROUNDS } from './options'
 import { parseGates } from './gates'
 import { appendRecord, readLedger } from './ledgercore'
 import {
@@ -52,8 +56,10 @@ import {
   runJsonPath,
   summaryPath,
   verifyLogPart,
+  LAUNCH_ID,
   RUN_ID,
   SNAPSHOT_EXCLUDES,
+  SWARM_NAME,
 } from './layout'
 import { atomicWrite, randomId, readJson, remove, serial, sha256 } from './fsx'
 import { forgetRunAgents, policyKey, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
@@ -66,7 +72,7 @@ import { reconcileLands } from './land'
 import { getOptions, session } from './session'
 import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
-import { continueAsRepair } from './repair'
+import { continueAsRepair, repairSummary } from './repair'
 import {
   acquireLock,
   leaseStale,
@@ -173,7 +179,9 @@ async function noteEvent(p: Ports, runDir: string, event: Record<string, unknown
 
 export type Generation = {
   n: number
+  /** The workflow task's id; '' for a repair generation, which runs no workflow. */
   taskId: string
+  /** The workflow run's `wf_` id; '' for a repair generation. */
   runId: string
   scriptPath: string | null
   session: string
@@ -187,6 +195,16 @@ export type Generation = {
   openedAt: number
   end: RunEndBody | null
   stopping: { at: number } | null
+  /**
+   * A repair generation's `run.repair` (2b-2): the swarm that works in it
+   * and its budget at launch. Null for a workflow's (run.launch, run.resume).
+   */
+  repair: RunRepairBody | null
+  /** The commit of the first `land` recorded in this generation, or null. */
+  land: string | null
+  /** The seq of the record that opened it, and of its run.end. */
+  seq: number
+  endSeq: number | null
 }
 
 export type RunState = {
@@ -204,12 +222,19 @@ export type RunState = {
   oid: string | null
 }
 
-/** A run's state from its ledger records, in seq order. */
+/**
+ * A run's state from its ledger records, in seq order. Generation 1 is the
+ * workflow's launch; each run.resume, and each run.repair (2b-2: a repair
+ * swarm's, after the run.end before it), opens the next, and each run.end
+ * closes the one it names.
+ */
 export function runState(records: readonly StoredRecord[]): RunState {
   let start: RunStartBody | null = null
   let startedAt: number | null = null
   let launchEnd: RunEndBody | null = null
   const generations: Generation[] = []
+  // A land belongs to the generation its intent was recorded in: a recovered land is recorded later (land.ts, reconcile).
+  const intentOf = new Map<string, Generation>()
   for (const r of records) {
     if (r.kind === 'run.start' && start === null) {
       start = r.body as unknown as RunStartBody
@@ -227,7 +252,36 @@ export function runState(records: readonly StoredRecord[]): RunState {
         openedAt: r.at,
         end: null,
         stopping: null,
+        repair: null,
+        land: null,
+        seq: r.seq,
+        endSeq: null,
       })
+    } else if (r.kind === 'run.repair') {
+      const b = r.body as unknown as RunRepairBody
+      generations.push({
+        n: generations.length + 1,
+        taskId: '',
+        runId: '',
+        scriptPath: null,
+        session: '',
+        sessions: [],
+        oid: '',
+        openedAt: r.at,
+        end: null,
+        stopping: null,
+        repair: b,
+        land: null,
+        seq: r.seq,
+        endSeq: null,
+      })
+    } else if (r.kind === 'land.intent' || r.kind === 'land') {
+      const v = typeof r.body.verify_id === 'string' ? r.body.verify_id : null
+      const g = (v !== null ? intentOf.get(v) : undefined) ?? generations.at(-1)
+      if (!g) continue
+      if (r.kind === 'land.intent') {
+        if (v !== null && !intentOf.has(v)) intentOf.set(v, g)
+      } else if (g.land === null && typeof r.body.commit === 'string') g.land = r.body.commit
     } else if (r.kind === 'session.rebind') {
       const b = r.body as unknown as SessionRebindBody
       const g = generations.at(-1)
@@ -241,7 +295,10 @@ export function runState(records: readonly StoredRecord[]): RunState {
       if (b.generation === 0) launchEnd ??= b
       else {
         const g = generations[b.generation - 1]
-        if (g && !g.end) g.end = b
+        if (g && !g.end) {
+          g.end = b
+          g.endSeq = r.seq
+        }
       }
     }
   }
@@ -443,23 +500,32 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
       if (g.end) return { recorded: false, end: g.end }
       current = g === st.latest
     }
-    await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body })
-    if (current) {
-      // Cleanup first, so the summary lists what it kept (plan section 9, "Cleanup is the mod's").
-      await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
-      await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
-      await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
-      await removeRunBindings(p, ref.litterDir, run => run === ref.run).catch(err => p.log(`writer bindings of ${ref.run} not removed: ${errText(err)}`))
-      await releaseRunLock(p, ref.litterDir, ref.run)
-      const gen = body.generation > 0 ? st.generations[body.generation - 1] : null
-      if (gen) await p.store.delete(taskKey(gen.taskId))
-      await p.store.delete(agentsKey(ref.runDir))
-      await forgetRunAgents(p, ref.run).catch(err => p.log(`agent map for ${ref.run} not pruned: ${errText(err)}`))
-      const pending = await getPending(p, ref.litterDir)
-      if (pending?.run === ref.run) await clearPending(p, ref.litterDir)
-    }
-    return { recorded: true, end: body }
+    return recordEnd(p, ref, st, body, current)
   })
+}
+
+/**
+ * endRun's steps once it chose to record, under the run's serial key, which
+ * the caller holds: run.end, then for the current generation the cleanup,
+ * summary.md, the policy files, the bindings, the lock and the indexes.
+ */
+async function recordEnd(p: Ports, ref: RunRef, st: RunState, body: RunEndBody, current: boolean): Promise<{ recorded: true; end: RunEndBody }> {
+  await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body })
+  if (current) {
+    // Cleanup first, so the summary lists what it kept (plan section 9, "Cleanup is the mod's").
+    await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
+    await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
+    await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
+    await removeRunBindings(p, ref.litterDir, run => run === ref.run).catch(err => p.log(`writer bindings of ${ref.run} not removed: ${errText(err)}`))
+    await releaseRunLock(p, ref.litterDir, ref.run)
+    const gen = body.generation > 0 ? st.generations[body.generation - 1] : null
+    if (gen && gen.taskId !== '') await p.store.delete(taskKey(gen.taskId))
+    await p.store.delete(agentsKey(ref.runDir))
+    await forgetRunAgents(p, ref.run).catch(err => p.log(`agent map for ${ref.run} not pruned: ${errText(err)}`))
+    const pending = await getPending(p, ref.litterDir)
+    if (pending?.run === ref.run) await clearPending(p, ref.litterDir)
+  }
+  return { recorded: true, end: body }
 }
 
 // ---------------------------------------------------------------------------
@@ -643,7 +709,8 @@ async function settleNotification(p: Ports, n: Notification): Promise<void> {
     return
   }
   const st = runState(ledger.records)
-  const gen = st.generations.find(g => g.taskId === n.taskId)
+  // A repair generation has no workflow task: no notification is its, and its swarm ends it (2b-2).
+  const gen = st.generations.find(g => g.repair === null && g.taskId === n.taskId)
   if (!gen || gen.end) return
   let end = await notificationEnd(p, n)
   if (end?.status === 'completed' && end.result === undefined) end = (await engineSnapshot(p, ref.litterDir, gen)) ?? end
@@ -720,15 +787,104 @@ export type RepairOpen = { swarm: string; launch: string; budget: RepairBudget }
  */
 export type RepairOutcome = { status: 'done' | 'halted'; reason: string | null }
 
+type Reopened = { ok: true; link: RunLink } | { ok: false; reason: string }
+
+/** The run a run folder is, `<litterDir>/<run>`; null for any other path. */
+function runRefOf(runDir: string): RunRef | null {
+  const cut = runDir.lastIndexOf('/')
+  const run = runDir.slice(cut + 1)
+  const litterDir = runDir.slice(0, Math.max(0, cut))
+  return cut > 0 && RUN_ID.test(run) && runDirOf(litterDir, run) === runDir ? { run, runDir, litterDir } : null
+}
+
+const wholeIn = (v: unknown, lo: number, hi: number): boolean => typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi
+
 /**
  * Reopens a halted run for its repair swarm (COMMON 2b-2, step 3): takes the
  * run lock, records `run.repair` for the next generation, and activates
  * `policy.run` as run.start does. With the lock held, or a generation still
  * open, it refuses and writes nothing. Answers the link the swarm carries
- * (`LiveSwarm.run`). Package V's stub refuses.
+ * (`LiveSwarm.run`).
+ *
+ * Also refused, writing nothing: a run.json that isn't run.start's (its sha),
+ * a run that isn't a fanout, one launched before repairs (no `repair` in
+ * run.json, so its confirmation never stated one), one that never launched or
+ * ended done, and a budget over the one its launch approved. A lock whose run
+ * has ended is stale (a crash before its release) and is released first, as
+ * reconcile would. If the policy can't be written after run.repair, the
+ * generation is ended halted with why, so a refusal never leaves one open.
  */
-export async function reopenForRepair(_p: Ports, _runDir: string, _open: RepairOpen): Promise<{ ok: true; link: RunLink } | { ok: false; reason: string }> {
-  return { ok: false, reason: "reopening a run for a repair isn't built yet (phase 2b-2)" }
+export async function reopenForRepair(p: Ports, runDir: string, open: RepairOpen): Promise<Reopened> {
+  const ref = runRefOf(runDir)
+  if (!ref) return { ok: false, reason: `litter: ${runDir} isn't a litter run's folder` }
+  const no = (why: string): Reopened => ({ ok: false, reason: `litter: run ${ref.run} can't be reopened for a repair: ${why}` })
+  if (typeof open?.swarm !== 'string' || !SWARM_NAME.test(open.swarm)) return no(`'${String(open?.swarm)}' isn't a swarm name`)
+  if (typeof open.launch !== 'string' || !LAUNCH_ID.test(open.launch)) return no(`'${String(open.launch)}' isn't a launch id`)
+  const b = open.budget
+  if (!b || !wholeIn(b.rounds, REPAIR_ROUNDS.min, REPAIR_ROUNDS.max) || !wholeIn(b.agents, REPAIR_AGENTS.min, REPAIR_AGENTS.max)) {
+    return no(`the budget must be ${REPAIR_ROUNDS.min} to ${REPAIR_ROUNDS.max} rounds and ${REPAIR_AGENTS.min} to ${REPAIR_AGENTS.max} agents, whole numbers`)
+  }
+  const sessionId = await p.sessionId()
+  return serial(`run:${ref.runDir}`, async (): Promise<Reopened> => {
+    const loaded = await loadLaunchable(p, ref)
+    if (!loaded.ok) return no(loaded.reason)
+    const { json, st } = loaded
+    if (json.workflow !== 'fanout') return no(`its workflow is ${json.workflow}, and in this version only a fanout continues as a repair swarm`)
+    const approved: RepairSettings | undefined = json.repair
+    if (!approved) return no("its run.json has no repair setting (it was launched before repairs), so its launch confirmation never stated one")
+    if (b.rounds > approved.rounds || b.agents > approved.agents) {
+      return no(`the budget (${b.rounds} rounds, ${b.agents} agents) is more than its launch approved (${approved.rounds} rounds, ${approved.agents} agents)`)
+    }
+    if (st.open) return no(`its generation ${st.open.n} is still open`)
+    if (!st.latest) return no('it never launched')
+    if (st.latest.end?.status === 'done') return no('it ended done, so there is nothing to repair')
+
+    const lock = await takeRepairLock(p, ref.litterDir, { run: ref.run, session: sessionId, acquiredAt: await p.now() })
+    if (!lock.ok) return no(lock.reason)
+    const n = st.generations.length + 1
+    const body: RunRepairBody = { generation: n, swarm: open.swarm, launch: open.launch, budget: { rounds: b.rounds, agents: b.agents } }
+    try {
+      await appendRecord<RunRepairBody>(p, ref.runDir, { run: ref.run, kind: 'run.repair', by: MOD, body })
+    } catch (err) {
+      await releaseLock(p, repoOf(ref.litterDir), lock.oid)
+      return no(`run.repair couldn't be recorded (${errText(err)}), so nothing was reopened`)
+    }
+    try {
+      await activate(p, ref.litterDir, json, sessionId, { runIds: [], launching: false })
+    } catch (err) {
+      const why = `the run's policy couldn't be written for the repair (${errText(err)})`
+      try {
+        const now = runState((await readLedger(p, ref.runDir, ref.run)).records)
+        await recordEnd(p, ref, now, { taskId: null, generation: n, status: 'halted', reason: why, source: 'mod' }, true)
+      } catch (e) {
+        p.log(`run ${ref.run}: repair generation ${n} wasn't ended after its policy failed: ${errText(e)}`)
+      }
+      return no(why)
+    }
+    return { ok: true, link: { runDir: ref.runDir, run: ref.run, generation: n } }
+  })
+}
+
+/** The run lock for a reopen: free, or held by a run that has ended (stale, released first); anyone else's refuses. */
+async function takeRepairLock(p: Ports, litterDir: string, blob: LockBlob): Promise<LockHeld | { ok: false; reason: string }> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await acquireLock(p, repoOf(litterDir), blob)
+    if (r.ok) return r
+    if (!(await releaseIfEnded(p, litterDir, r))) return { ok: false, reason: r.reason.replace(/^litter: /, '') }
+  }
+  return { ok: false, reason: "the project's run lock kept changing hands" }
+}
+
+/** A lock whose run's ledger has ended it: a crash came between that run.end and the release. Released as reconcile does. */
+async function releaseIfEnded(p: Ports, litterDir: string, r: LockRefused): Promise<boolean> {
+  const blob = r.holder
+  if (!r.oid || !blob || !RUN_ID.test(blob.run)) return false
+  const ledger = await readLedger(p, runDirOf(litterDir, blob.run), blob.run)
+  if (ledger.tampered || !runState(ledger.records).ended) return false
+  if (!(await releaseLock(p, repoOf(litterDir), r.oid))) return false
+  await removeLease(p, litterDir, r.oid)
+  p.log(`released a stale lock of ended run ${blob.run}`)
+  return true
 }
 
 /**
@@ -736,10 +892,78 @@ export async function reopenForRepair(_p: Ports, _runDir: string, _open: RepairO
  * only with a land of this generation in the ledger), the cleanup, the
  * summary, `deactivate` and the lock's release, in endRun's order and under
  * its serial key. Idempotent: an ended generation answers its run.end with
- * `recorded: false`. Package V's stub throws.
+ * `recorded: false`.
+ *
+ * The ledger decides the status, not `outcome`: `done` exactly when a land
+ * belongs to the generation, else `halted` with the outcome's reason (or
+ * "ended without a land"). Lands are reconciled first (land.ts, under its own
+ * key), so a land a crash left between its intent and its record counts. The
+ * generation is the open one, or the latest repair generation once it ended.
+ * Throws for a run with none, or a tampered ledger.
  */
-export async function endRepairGeneration(_p: Ports, _runDir: string, _outcome: RepairOutcome): Promise<{ recorded: boolean; end: RunEndBody }> {
-  throw new Error("litter: ending a repair generation isn't built yet (phase 2b-2)")
+export async function endRepairGeneration(p: Ports, runDir: string, outcome: RepairOutcome): Promise<{ recorded: boolean; end: RunEndBody }> {
+  const ref = runRefOf(runDir)
+  if (!ref) throw new Error(`litter: ${runDir} isn't a litter run's folder`)
+  await reconcileLands(p, ref.runDir, ref.run).catch(err => p.log(`run ${ref.run}: lands not reconciled before its repair generation ended: ${errText(err)}`))
+  return serial(`run:${ref.runDir}`, async () => {
+    const ledger = await readLedger(p, ref.runDir, ref.run)
+    if (ledger.tampered) throw new Error(`litter: run ${ref.run}'s ledger is tampered at ${ledger.tampered.seq}; its repair generation isn't ended`)
+    const st = runState(ledger.records)
+    const gen = [...st.generations].reverse().find(g => g.repair !== null)
+    if (!gen) throw new Error(`litter: run ${ref.run} has no repair generation to end`)
+    if (gen.end) return { recorded: false, end: gen.end }
+    const swarm = gen.repair!.swarm
+    if (outcome.status === 'done' && gen.land === null) p.log(`run ${ref.run}: repair swarm ${swarm} ended done, but generation ${gen.n} has no land, so it ends halted`)
+    const body: RunEndBody =
+      gen.land !== null
+        ? { taskId: null, generation: gen.n, status: 'done', reason: null, source: 'mod' }
+        : {
+            taskId: null,
+            generation: gen.n,
+            status: 'halted',
+            reason: outcome.status === 'halted' && outcome.reason ? outcome.reason : `repair swarm ${swarm} ended without a land`,
+            source: 'mod',
+          }
+    return recordEnd(p, ref, st, body, gen === st.latest)
+  })
+}
+
+/**
+ * How long a repair generation's swarm may go without swarm.start before
+ * reconcile ends the generation: its launch may still be going live in the
+ * session that reopened the run (X's bridge, between run.repair and swarm.start).
+ */
+export const REPAIR_LAUNCH_GRACE_MS = UNSETTLED_MS
+
+type RepairFate = { live: boolean; why: string }
+
+/**
+ * Whether an open repair generation's swarm still owns it, from that launch's
+ * own ledger: live from swarm.start until swarm.end (records/swarm.ts). One
+ * that ended, whose ledger is broken (it could never record swarm.end), or
+ * that never reached swarm.start within the grace, doesn't, and `why` is the
+ * generation's halted reason.
+ */
+async function repairFate(p: Ports, litterDir: string, gen: Generation): Promise<RepairFate> {
+  const r = gen.repair!
+  if (!SWARM_NAME.test(r.swarm) || !LAUNCH_ID.test(r.launch)) return { live: false, why: `its run.repair names no valid swarm launch (${r.swarm} ${r.launch})` }
+  const { records, tampered } = await readLaunchLedger(p, litterDir, r.swarm, r.launch)
+  if (records.some(x => x.kind === 'swarm.end')) return { live: false, why: `repair swarm ${r.swarm} ended without a land` }
+  if (tampered) return { live: false, why: `repair swarm ${r.swarm}'s launch ledger is broken at record ${tampered.seq}, so it can never end` }
+  if (records.some(x => x.kind === 'swarm.start')) return { live: true, why: `repair swarm ${r.swarm} is live` }
+  if ((await p.now()) - gen.openedAt < REPAIR_LAUNCH_GRACE_MS) return { live: true, why: `repair swarm ${r.swarm} is going live` }
+  return { live: false, why: `repair swarm ${r.swarm} never went live` }
+}
+
+/**
+ * Reconcile of an open repair generation (WP-W): a live swarm owns it and is
+ * left alone; one that ended, or never went live, is ended here. The
+ * engine's snapshot has nothing to say about it: no workflow runs in it.
+ */
+async function reconcileRepair(p: Ports, ref: RunRef, gen: Generation): Promise<void> {
+  const fate = await repairFate(p, ref.litterDir, gen)
+  if (fate.live) return
+  await endRepairGeneration(p, ref.runDir, { status: 'halted', reason: fate.why })
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1229,22 @@ async function reconcileHolder(
   }
 
   const gen = st.open!
+  // A repair generation's lock is its swarm's: never marked interrupted, only ended once that swarm can't end it (2b-2).
+  if (gen.repair) {
+    const fate = await repairFate(p, litterDir, gen)
+    if (!fate.live) {
+      await endRepairGeneration(p, ref.runDir, { status: 'halted', reason: fate.why })
+      return (await readLock(p, repo))?.oid === oid
+        ? { freed: false, message: `litter: run ${blob.run}'s repair generation ended, but its lock wasn't released; launch again` }
+        : { freed: true }
+    }
+    return {
+      freed: false,
+      message:
+        `litter: run ${blob.run} holds the project's run lock while ${fate.why.replace(/^repair swarm/, 'its repair swarm')} (generation ${gen.n}); ` +
+        `the lock is released when that swarm ends (End swarm in /litter-swarm ${gen.repair.swarm}), then launch again`,
+    }
+  }
   if (gen.stopping) {
     if (await trySettle(p, ref)) return { freed: true }
     const open = await unsettled(p, ref, ledger.records, gen)
@@ -1121,6 +1361,8 @@ type Spec = {
   maxRounds: number
   priorRun: string | null
   feedback: string | null
+  /** A fanout's repair setting (2b-2), the options' values filled in; null for every other workflow. */
+  repair: RepairSettings | null
 }
 
 type Parsed<T> = { ok: true; value: T } | RecordError
@@ -1266,7 +1508,31 @@ const KNOWN_FIELDS = new Set([
   'kind', 'workflow', 'authorized', 'planPath', 'goal', 'verify', 'goalCheck', 'setup', 'maxAttempts', 'adversary',
   'isolate', 'continueOf', 'amendOf', 'carryOver', 'runRules', 'tasks', 'contract', 'linkDirs', 'mergeOrder',
   'deliverable', 'bar', 'lenses', 'empiricalUnknowns', 'anchors', 'maxRounds', 'priorRun', 'feedback',
+  'repair', 'repairRounds', 'repairAgents',
 ])
+const REPAIR_FIELDS = ['repair', 'repairRounds', 'repairAgents'] as const
+
+/**
+ * A fanout's repair setting (plan 15.11, "Where it's set"): the launch's
+ * override for this run, as its confirmation stated it, else the options'
+ * values. In this version only a failed fanout continues as a repair swarm,
+ * so another workflow refuses the fields (execute's bridge is phase 3).
+ */
+function parseRepair(input: RecordInput, options: LitterOptions, workflow: Workflow): Parsed<RepairSettings | null> {
+  if (workflow !== 'fanout') {
+    const given = REPAIR_FIELDS.find(f => input[f] !== undefined && input[f] !== null)
+    return given ? fail(`'${given}' is for fanout runs, not ${workflow}: in this version only a failed fanout continues as a repair swarm`, given) : ok(null)
+  }
+  const mode = input.repair ?? options.repair
+  if (!(REPAIR_MODES as readonly unknown[]).includes(mode)) {
+    return fail("'repair' must be 'auto' (a failed run continues as a repair swarm) or 'off' (it stops and keeps everything)", 'repair', REPAIR_MODES)
+  }
+  const rounds = intIn(input.repairRounds, 'repairRounds', REPAIR_ROUNDS.min, REPAIR_ROUNDS.max, options.repairRounds)
+  if (!rounds.ok) return rounds
+  const agents = intIn(input.repairAgents, 'repairAgents', REPAIR_AGENTS.min, REPAIR_AGENTS.max, options.repairAgents)
+  if (!agents.ok) return agents
+  return ok({ mode: mode as RepairSettings['mode'], rounds: rounds.value, agents: agents.value })
+}
 /** The record tool's own fields, which reach a handler with the input. */
 const RESERVED_FIELDS = new Set(['tool', 'tool_use_id', 'agentId', 'consent', 'run'])
 
@@ -1343,6 +1609,7 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     maxRounds: maxRounds.value,
     priorRun: null,
     feedback: null,
+    repair: null,
   }
 
   if (workflow === 'execute') {
@@ -1418,6 +1685,9 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
   if (workflow === 'plan' && !goal.value && !planPath.value && !continueOf.value) {
     return fail("a plan run needs 'goal', or 'planPath' for a prose plan to split into gates", 'goal')
   }
+  const repair = parseRepair(input, options, workflow)
+  if (!repair.ok) return repair
+  spec.repair = repair.value
   return ok(spec)
 }
 
@@ -2082,6 +2352,8 @@ async function startHeld(
     planSha256: prep.plan?.sha ?? null,
     session: sessionId,
     created: await p.now(),
+    // The repair setting the launch confirmation stated (2b-2), under runJsonSha256 with the rest.
+    ...(spec.repair ? { repair: spec.repair } : {}),
   }
   const jsonText = `${JSON.stringify(json, null, 2)}\n`
 
@@ -2154,6 +2426,7 @@ async function startHeld(
       runJsonSha256: await sha256(jsonText),
       oid: held.oid,
       session: sessionId,
+      ...(spec.repair ? { repair: spec.repair } : {}),
     }
     if (!(await stillHeld(p, repo, held.oid))) return await abort('the lock was lost before the run files were written')
     await appendRecord<RunStartBody>(p, ref.runDir, { run, kind: 'run.start', by: LAUNCHER, body: start })
@@ -2246,10 +2519,15 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return fail(`litter: run ${ref.run}'s ledger is tampered at ${ledger.tampered.seq}; litter won't act on it`, 'run')
   const st = runState(ledger.records)
-  const gen = st.generations.find(g => g.taskId === input.taskId)
-  if (!gen) return fail(`litter: task ${input.taskId} isn't a generation of run ${ref.run}${st.latest ? ` (its latest task is ${st.latest.taskId})` : ''}`, 'taskId')
+  const gen = st.generations.find(g => g.repair === null && g.taskId === input.taskId)
+  // A repair generation has no task: its swarm's End closes it (2b-2), never this fallback.
+  const repairing = st.open?.repair ? `; its open generation ${st.open.n} is repair swarm ${st.open.repair.swarm}'s, which ends it when the swarm ends` : ''
+  if (!gen) {
+    const latest = [...st.generations].reverse().find(g => g.repair === null)
+    return fail(`litter: task ${input.taskId} isn't a generation of run ${ref.run}${latest ? ` (its latest task is ${latest.taskId})` : ''}${repairing}`, 'taskId')
+  }
   if (gen.end) return { ok: true, recorded: false, end: gen.end }
-  if (gen !== st.open) return fail(`litter: task ${input.taskId} isn't run ${ref.run}'s open generation (task ${st.latest?.taskId})`, 'taskId')
+  if (gen !== st.open) return fail(`litter: task ${input.taskId} isn't run ${ref.run}'s open generation${repairing || ` (task ${st.latest?.taskId})`}`, 'taskId')
   let decoded: Decoded
   if (status === 'completed' || status === 'done') {
     // Done only from a script return the decoder recognises; a claim alone fails closed (the decoder table's last row).
@@ -2285,7 +2563,16 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
 
 const iso = (ms: number | null | undefined): string => (typeof ms === 'number' ? new Date(ms).toISOString() : 'unknown')
 
-/** summary.md from the ledger: the latest generation's end, earlier ones as history, the gates that landed. */
+/**
+ * summary.md from the ledger: the latest generation's end, earlier ones as
+ * history, the gates that landed. A fanout's own part (integrate.ts) reads
+ * the records up to its first repair; the "Repair" section is X's
+ * (repair.ts, repairSummary), and each repair generation adds its own part.
+ *
+ * Exported so the repair bridge can rewrite it outside the run's serial key
+ * (COMMON 2b-2, step 3); endRun writes it inside that key, so nothing it
+ * calls takes the key.
+ */
 export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   const { json, records, tampered } = await loadRun(p, ref.litterDir, ref.run)
   const st = runState(records)
@@ -2293,7 +2580,10 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   const workflow = json?.workflow ?? start?.workflow ?? 'unknown'
   const end = st.latest ? st.latest.end : st.launchEnd
   const lines: string[] = [`# litter run ${ref.run}`, '']
-  const status = end ? `${end.status}${end.reason ? ` (${end.reason})` : ''}${end.source === 'launcher' ? ', recorded by the launcher' : ''}` : st.open?.stopping ? 'stopping' : 'running'
+  const repairing = st.open?.repair ? `repairing (generation ${st.open.n}, repair swarm ${st.open.repair.swarm})` : null
+  const status = end
+    ? `${end.status}${end.reason ? ` (${end.reason})` : ''}${end.source === 'launcher' ? ', recorded by the launcher' : ''}`
+    : (repairing ?? (st.open?.stopping ? 'stopping' : 'running'))
   lines.push(`- Workflow: ${workflow}`, `- Status: ${status}`)
   if (end?.settled === false) lines.push('- Settled: no (released before every agent had stopped)')
   if (tampered) lines.push(`- Ledger: tampered at record ${tampered.seq} (${tampered.reason}); nothing from there on is acted on`)
@@ -2316,18 +2606,107 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
     const earlier = Array.isArray(json?.args.landed) ? (json!.args.landed as { id: string; commit: string }[]) : []
     if (earlier.length > 0) lines.push('', `Landed earlier in this chain: ${earlier.map(l => `${l.id} (${l.commit})`).join(', ')}`)
   }
-  lines.push(...fanoutSummary(json, records), ...worktreeSummary(records))
+  // The fanout's own part describes how its workflow ended; a repair's verdicts and land are the repair's part below.
+  const firstRepair = st.generations.find(g => g.repair !== null)
+  lines.push(...fanoutSummary(json, firstRepair ? records.filter(r => r.seq < firstRepair.seq) : records))
+  lines.push(...(await repairSection(p, ref)))
+  for (const g of st.generations) if (g.repair) lines.push(...(await repairPart(p, ref, json, records, g)))
+  lines.push(...worktreeSummary(records))
   if (st.generations.length > 1 || (st.generations.length === 1 && st.generations[0]!.stopping)) {
     lines.push('', '## Generations', '')
     for (const g of st.generations) {
       const e = g.end
+      const what = g.repair ? `repair swarm ${g.repair.swarm} (launch ${g.repair.launch})` : `task ${g.taskId} (${g.runId})`
       lines.push(
-        `${g.n}. task ${g.taskId} (${g.runId}): ${e ? `${e.status}${e.reason ? ` (${e.reason})` : ''}, from ${e.source}` : g.stopping ? 'stopping' : 'open'}${g.stopping ? `; stop requested ${iso(g.stopping.at)}` : ''}`,
+        `${g.n}. ${what}: ${e ? `${e.status}${e.reason ? ` (${e.reason})` : ''}, from ${e.source}` : g.stopping ? 'stopping' : 'open'}${g.stopping ? `; stop requested ${iso(g.stopping.at)}` : ''}`,
       )
     }
   }
   lines.push('')
   await atomicWrite(p, summaryPath(ref.runDir), lines.join('\n'))
+}
+
+/** X's "Repair" section (repair.ts). Its failure is logged, and the rest of the summary stands. */
+async function repairSection(p: Ports, ref: RunRef): Promise<string[]> {
+  try {
+    const text = (await repairSummary(p, ref.runDir)).trim()
+    return text === '' ? [] : ['', ...text.split('\n')]
+  } catch (err) {
+    p.log(`run ${ref.run}: the summary's Repair section failed: ${errText(err)}`)
+    return []
+  }
+}
+
+const counted = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`
+const oneLine = (s: string, max = 300): string => {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+/**
+ * The budget a repair swarm has now: its run.repair's, or the last one you
+ * granted through `repair.budget` (a `budget` event in its launch ledger, X).
+ */
+async function budgetNow(p: Ports, litterDir: string, r: RunRepairBody): Promise<{ budget: RepairBudget; raised: boolean }> {
+  let budget = r.budget
+  let raised = false
+  if (!SWARM_NAME.test(r.swarm) || !LAUNCH_ID.test(r.launch)) return { budget, raised }
+  try {
+    for (const x of (await readLaunchLedger(p, litterDir, r.swarm, r.launch)).records) {
+      const b = x.body as { kind?: unknown; granted?: unknown; budget?: { rounds?: unknown; agents?: unknown } }
+      if (x.kind !== 'swarm.event' || b.kind !== 'budget' || b.granted !== true) continue
+      if (wholeIn(b.budget?.rounds, 1, 1_000) && wholeIn(b.budget?.agents, 1, 1_000)) {
+        budget = { rounds: b.budget!.rounds as number, agents: b.budget!.agents as number }
+        raised = true
+      }
+    }
+  } catch {
+    // an unreadable launch ledger: the budget the run.repair recorded
+  }
+  return { budget, raised }
+}
+
+/**
+ * A repair generation's own part of summary.md (WP-W): its swarm and budget,
+ * its verifies, each round's verdict, its land (or what refused one), and how
+ * it ended. From the run's ledger, the records between its run.repair and its
+ * run.end (decision 1: the swarm's gate records go there).
+ */
+async function repairPart(p: Ports, ref: RunRef, json: RunJson | null, records: readonly StoredRecord[], g: Generation): Promise<string[]> {
+  const r = g.repair!
+  const mine = records.filter(x => x.seq > g.seq && (g.endSeq === null || x.seq < g.endSeq))
+  const { budget, raised } = await budgetNow(p, ref.litterDir, r)
+  const verifies = mine.filter(x => x.kind === 'verify' && typeof x.body.verify_id === 'string')
+  const green = verifies.filter(x => x.body.green === true).length
+  const verdicts = mine.filter(x => x.kind === 'verdict' && typeof x.body.verify_id === 'string')
+  const lines = [
+    '',
+    `## Repair generation ${g.n}`,
+    '',
+    `- Swarm: ${r.swarm}, launch ${r.launch}`,
+    `- Budget: ${counted(budget.rounds, 'round')} and ${counted(budget.agents, 'agent')}${raised ? ` (raised from ${r.budget.rounds} and ${r.budget.agents})` : ''}`,
+    `- Verifies: ${verifies.length} (${green} green)`,
+    `- Rounds: ${verdicts.length} of ${budget.rounds}`,
+  ]
+  verdicts.forEach((v, i) => {
+    const tasks = Array.isArray(v.body.tasks) ? (v.body.tasks as { id?: unknown; pass?: unknown }[]) : []
+    const failing = tasks.filter(t => t !== null && typeof t === 'object' && t.pass !== true && typeof t.id === 'string').map(t => String(t.id))
+    const approved = typeof v.body.approved === 'boolean' ? v.body.approved : tasks.length > 0 && failing.length === 0
+    const round = typeof v.body.round === 'number' ? v.body.round : i + 1
+    lines.push(`  ${round}. verify ${String(v.body.verify_id)}: ${approved ? 'approved' : `rejected${failing.length > 0 ? `, failing ${failing.join(', ')}` : ''}`}`)
+  })
+  const land = g.land !== null ? records.find(x => x.kind === 'land' && x.body.commit === g.land) : undefined
+  if (land) {
+    const branch = String(json?.ref ?? land.body.ref ?? '').replace(/^refs\/heads\//, '')
+    lines.push(`- Landed: ${json?.base ?? String(land.body.old ?? '')}..${String(land.body.commit)} on ${branch}, verify ${String(land.body.verify_id)}`)
+  } else {
+    lines.push('- Landed: no')
+    for (const x of mine) {
+      if ((x.kind === 'land.blocked' || x.kind === 'land.abandoned') && typeof x.body.reason === 'string') lines.push(`  - ${oneLine(x.body.reason)}`)
+    }
+  }
+  lines.push(`- Ended: ${g.end ? `${g.end.status}${g.end.reason ? ` (${g.end.reason})` : ''}` : 'not yet: the swarm is working in it'}`)
+  return lines
 }
 
 // ---------------------------------------------------------------------------
@@ -2350,6 +2729,7 @@ export async function reconcileRuns(p: Ports, litterDir: string): Promise<void> 
       const st = runState(ledger.records)
       if (st.start && !st.ended) {
         if (st.generations.length === 0) await reconcilePending(p, ref, st, lock, pending, sessionId)
+        else if (st.open?.repair) await reconcileRepair(p, ref, st.open)
         else if (st.open?.stopping) await trySettle(p, ref)
         else if (st.open) await reconcileOpen(p, ref, st, st.open, sessionId)
       }

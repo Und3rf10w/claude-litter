@@ -33,6 +33,8 @@ export type FanoutTaskInput = { id: string; title: string; text: string; writes?
  * only from the sha-checked run.json, never from the model or `args`.
  */
 export type RepairSettings = { mode: 'auto' | 'off'; rounds: number; agents: number }
+/** The `repair` values run.start takes (W): anything else is refused with the field named. */
+export const REPAIR_MODES: readonly RepairSettings['mode'][] = ['auto', 'off']
 
 /**
  * `mcp__litter__record({ kind: 'run.start', … })`, from a launcher skill. The
@@ -74,9 +76,13 @@ export type RunStartInput = {
   maxRounds?: number
   priorRun?: string
   feedback?: string
-  // The repair setting for this run (2b-2): unset, the options' values apply.
+  // The repair setting for this run (2b-2), as the launch confirmation stated
+  // it: unset, the options' values apply. A fanout's only in this version;
+  // run.start refuses them for another workflow, and a bad value names its field.
   repair?: 'auto' | 'off'
+  /** 1 to 10. */
   repairRounds?: number
+  /** 1 to 50. */
   repairAgents?: number
 }
 
