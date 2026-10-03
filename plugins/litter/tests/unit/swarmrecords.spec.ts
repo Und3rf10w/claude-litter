@@ -140,8 +140,8 @@ describe('the kind rules, through the record tool', () => {
 
   test("a node's swarm.bind reaches its handler with no run resolved", async () => {
     const r = asError(await call({ kind: 'swarm.bind', token: 'abc' }, 'agent-1'))
-    expect(r.error).toBe("litter: 'swarm.bind' isn't built yet (phase 2b)")
-    expect(r.field).toBe('kind')
+    expect(r.error).toBe("litter: 'token' is required: the Bind token line of your <instance> block")
+    expect(r.field).toBe('token')
   })
 
   test("the lead's swarm.end reaches its handler with no run resolved", async () => {
