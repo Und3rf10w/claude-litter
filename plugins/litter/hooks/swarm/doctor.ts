@@ -238,6 +238,7 @@ export async function checkHealth(p: Ports, input: HealthInput): Promise<HealthR
     rows.push(await sessionWorktreeRow(p, spec, places, litterDir))
   }
   rows.push(await gitRow(p))
+  rows.push(trailersRow())
 
   if (litterDir) for (const live of liveSwarms()) rows.push(await ownerRow(p, litterDir, live.name))
 
@@ -313,6 +314,15 @@ async function gitRow(p: Ports): Promise<HealthRow> {
   const version = m[0]
   if (major > GIT_MIN[0] || (major === GIT_MIN[0] && minor >= GIT_MIN[1])) return row('git', 'ok', 'git', version)
   return row('git', 'warning', 'git', `${version} is older than ${GIT_MIN.join('.')}, which litter's fenced branch switch needs: runs still launch, with the small window the run card describes`)
+}
+
+/** The trailers option (decision 4): litter can't read the session's own attribution settings, so it says when it adds none. */
+function trailersRow(): HealthRow {
+  const n = getOptions().trailers.length
+  if (n === 0) {
+    return row('trailers', 'info', 'Commit trailers', "litter's commits carry no attribution lines; set the trailers option if your organization requires them")
+  }
+  return row('trailers', 'ok', 'Commit trailers', `litter adds ${n} line${n === 1 ? '' : 's'} from the trailers option to each commit it lands`)
 }
 
 /** The doctor's [Test]: one completion to summaryModel. */

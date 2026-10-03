@@ -2,7 +2,8 @@
 // field with no default reaches the mod as "" (plan section 10, "\"\" means
 // unset"), so every "" becomes undefined here and nowhere else.
 //
-// Contract owner: phase 1a; the repair options are phase 2b-2's (package V).
+// Contract owner: phase 1a; the repair options are phase 2b-2's (package V),
+// `trailers` phase 3's (package AA).
 
 export type RepairMode = 'auto' | 'off'
 
@@ -23,7 +24,23 @@ export type LitterOptions = {
   repairRounds: number
   /** The repair budget's agents: the workers and children a repair swarm's nodes spawn. */
   repairAgents: number
+  /**
+   * The lines litter adds to every land's commit message (decision 4), one
+   * `Key: value` each, in order; empty by default. run.start copies them into
+   * run.json, where land.ts's attribution reads them.
+   */
+  trailers: readonly string[]
+  /** The option's lines that weren't `Key: value` lines, dropped; session.start logs them once. */
+  trailersDropped: readonly string[]
 }
+
+/**
+ * One commit trailer line litter writes (section 9, "Commit message"):
+ * `Key: value` on one line, never litter's own `Litter-Run`. land.ts's
+ * attribution checks run.json's lines with it again.
+ */
+export const TRAILER_LINE = /^[A-Za-z][A-Za-z0-9-]*: \S[^\r\n]*$/
+export const isTrailerLine = (line: string): boolean => TRAILER_LINE.test(line) && !/^litter-run:/i.test(line)
 
 /** Section 10's defaults and ranges for the repair budget; run.start holds an override to the same ranges. */
 export const REPAIR_ROUNDS = { default: 3, min: 1, max: 10 } as const
@@ -53,9 +70,27 @@ const within = (v: unknown, range: { default: number; min: number; max: number }
 /** `off` (any case, trimmed) is off; anything else, unset included, is the default `auto`. */
 const repairMode = (v: unknown): RepairMode => (typeof v === 'string' && v.trim().toLowerCase() === 'off' ? 'off' : 'auto')
 
+/**
+ * The trailers option (decision 4), a list or one string ("" is unset). Each
+ * entry is split into lines and trimmed, and blank lines are skipped; a line
+ * that isn't a trailer litter writes is dropped, and kept in `dropped`.
+ */
+function trailerLines(v: unknown): { kept: string[]; dropped: string[] } {
+  const entries = typeof v === 'string' ? [v] : Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  const kept: string[] = []
+  const dropped: string[] = []
+  for (const line of entries.flatMap(e => e.split(/\r\n|\r|\n/)).map(l => l.trim())) {
+    if (line === '') continue
+    if (isTrailerLine(line)) kept.push(line)
+    else dropped.push(line)
+  }
+  return { kept, dropped }
+}
+
 export function normalizeOptions(raw: Readonly<Record<string, unknown>> | undefined): LitterOptions {
   const o = raw ?? {}
   const model = typeof o.summaryModel === 'string' ? o.summaryModel.trim() : ''
+  const trailers = trailerLines(o.trailers)
   const out: LitterOptions = {
     linkDirs: argv(o.linkDirs) ?? [],
     verifyTimeoutMs: num(o.verifyTimeoutMs, 30 * 60 * 1000),
@@ -65,6 +100,8 @@ export function normalizeOptions(raw: Readonly<Record<string, unknown>> | undefi
     repair: repairMode(o.repair),
     repairRounds: within(o.repairRounds, REPAIR_ROUNDS),
     repairAgents: within(o.repairAgents, REPAIR_AGENTS),
+    trailers: trailers.kept,
+    trailersDropped: trailers.dropped,
   }
   const verify = argv(o.verify)
   const goalCheck = argv(o.goalCheck)

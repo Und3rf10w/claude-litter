@@ -56,6 +56,14 @@ export const planPath = (runDir: string) => join(runDir, 'plan.md')
 export const summaryPath = (runDir: string) => join(runDir, 'summary.md')
 export const proposalPath = (runDir: string, version: string) => join(runDir, 'proposals', `${version}.md`)
 export const verdictsDir = (runDir: string) => join(runDir, 'verdicts')
+/**
+ * An execute verdict, rendered from its ledger record (plan section 10): the
+ * gate and attempt of the verify it cites. Both have passed `isPlanGate` (or
+ * are `goal`) and are a whole number, so they join.
+ */
+export const verdictFile = (runDir: string, gate: string, attempt: number) => join(verdictsDir(runDir), `${gate}-${attempt}.md`)
+/** An earlier `plan.md`, kept by plan.write and gate.amend (plan section 10), from 1. */
+export const planVersionPath = (runDir: string, n: number) => join(runDir, `plan.${n}.md`)
 /** A worktree's setup log, `verify/setup-<name>/0001.log`, written by worktree.sh or the mod. */
 export const setupLogPart = (runDir: string, name: string) => verifyLogPart(runDir, `setup-${name}`, 1)
 
@@ -97,6 +105,26 @@ export const ownerLeasePath = (litterDir: LitterDir, name: string, oid: string) 
 export const projectTemplatesDir = (litterDir: LitterDir) => join(litterDir, 'swarm-templates')
 /** Yours, for every project: `configDir` is `CLAUDE_CONFIG_DIR` or `~/.claude` (ports.ts, configDir). */
 export const userTemplatesDir = (configDir: string) => join(configDir, 'litter', 'swarm-templates')
+
+// Rules (plan 16.1, 16.4; phase 3). `primary` is the primary checkout
+// (lifecycle.ts, primaryOf); a bare repository has no project or local scope.
+/** Your rules, for every project. */
+export const userRulesDir = (configDir: string) => join(configDir, 'litter', 'rules')
+/** The project's rules, committed. */
+export const projectRulesDir = (primary: string) => join(primary, '.litter', 'rules')
+/** Your rules for this repository, never committed (`/.litter.local/` in `<common dir>/info/exclude`). */
+export const localRulesDir = (primary: string) => join(primary, '.litter.local', 'rules')
+/** A rule folder's earlier and retired versions, `<id>@<v>.md`; never loaded. */
+export const ruleHistoryDir = (rulesDir: string) => join(rulesDir, '.history')
+/**
+ * The rules ledgers (decision 17), each a ledgercore directory, so the
+ * records are under its `ledger/`: the repository's holds every project and
+ * local rule's records and every proposal made here; yours every user rule's.
+ */
+export const repoRulesLedgerDir = (litterDir: LitterDir) => join(litterDir, 'rules-ledger')
+export const userRulesLedgerDir = (configDir: string) => join(configDir, 'litter', 'rules-ledger')
+/** The rules ledgers' `run` field (ledgercore's records carry one). */
+export const RULES_LEDGER_RUN = 'rules'
 
 /** A swarm's ownership ref: create-only, at a blob naming the owning session (15.4). */
 export const swarmRef = (name: string) => `refs/litter-swarm/${name}`

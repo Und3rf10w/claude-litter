@@ -107,7 +107,7 @@ describe('record tool', () => {
     })
     const r = await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 't1', kind: 'rule.accept' })
     expect(reached).toBe(false)
-    expect(parse(r)).toEqual(expect.objectContaining({ ok: false, field: 'kind', allowed: ['rule.propose'] }))
+    expect(parse(r)).toEqual(expect.objectContaining({ ok: false, field: 'kind', allowed: ['rule.propose', 'rule.open'] }))
   })
 
   test("a throw inside the dispatcher reaches recordFailed's deny", async ($, on) => {

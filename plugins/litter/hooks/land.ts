@@ -32,6 +32,8 @@ import { appendRecord, readLedger } from './ledgercore'
 import { integrationBranch, runJsonPath } from './layout'
 import { readJson, serial } from './fsx'
 import { snapshot } from './snapshot'
+import { isTrailerLine } from './options'
+import { withInflight } from './inflight'
 import { fanoutTasks, integrationWorktree, wholeResult } from './integrate'
 import { bindings, liveSwarm, spawnsUsed } from './swarm/state'
 import { nodeOf, writesFiles } from './swarm/admit'
@@ -113,11 +115,11 @@ function planRef(json: RunJson): string | null {
   return oneLine(at >= 0 ? path.slice(at + 1) : path)
 }
 
-/** Attribution lines the session requires, as run.start stored them (`trailers`), one `Key: value` each. */
+/** Attribution lines the session requires, as run.start stored them (`trailers`, the option's lines), one `Key: value` each. */
 function attribution(json: RunJson): string[] {
   const t = (json as RunJson & { trailers?: unknown }).trailers
   if (!Array.isArray(t)) return []
-  return t.filter((x): x is string => typeof x === 'string' && /^[A-Za-z][A-Za-z0-9-]*: \S[^\r\n]*$/.test(x) && !/^litter-run:/i.test(x))
+  return t.filter((x): x is string => typeof x === 'string' && isTrailerLine(x))
 }
 
 /** The subject from the gate's title, then one trailer paragraph: Refs, Litter-Run, attribution. */
@@ -452,16 +454,35 @@ export const recordLand: RecordHandler = async (ctx, input) => {
   if (typeof verifyId !== 'string' || verifyId === '') {
     return fail("litter: 'verify_id' must be the verify_id the critic's verdict cites, as your instruction gives it", 'verify_id')
   }
-  return serial(landKey(facts.runDir), () => land(ctx, facts, gate, verifyId))
+  // The in-flight flag reads `land` for the land's duration (AB's inflight.ts, decision 24).
+  return deps.withInflight(ctx.p, ctx.litterDir!, facts.run, 'land', () => landGate(ctx, facts, gate, verifyId))
 }
 
-async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string): Promise<RecordReply> {
+// The other packages' functions reached from here, through one table so tier 2
+// can stand in for them (COMMON, "Another package's module").
+export const deps = {
+  withInflight: <T>(...a: Parameters<typeof withInflight<T>>) => withInflight<T>(...a),
+}
+
+/**
+ * An execute land of plan gate `gate` from the verify `verifyId`, serialized
+ * per run with every other land: the six steps of plan section 9. Exported
+ * for the plan template's land (AC, swarm/gate.ts), which passes
+ * `observe: false`, since a node's land answers through the tool and has no
+ * out file to write. The caller has checked the gate is a plan gate and the
+ * verify id a string.
+ */
+export function landGate(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string, opts?: { observe?: boolean }): Promise<RecordReply> {
+  return serial(landKey(f.runDir), () => land(ctx, f, gate, verifyId, opts))
+}
+
+async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string, opts?: { observe?: boolean }): Promise<RecordReply> {
   const { p } = ctx
   const { run, runDir, json } = f
   const branch = branchOf(json.ref)
 
   const answer = async (reply: LandReply): Promise<LandReply> => {
-    await observe(ctx, { land_of: verifyId }, landFields(reply))
+    if (opts?.observe !== false) await observe(ctx, { land_of: verifyId }, landFields(reply))
     return reply
   }
   const refuse = (reason: string, retry: boolean) => answer({ ok: true, landed: false, reason, retry })

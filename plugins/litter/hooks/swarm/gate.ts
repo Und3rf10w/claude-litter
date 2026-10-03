@@ -21,6 +21,7 @@ import type { SwarmVerdictBody, SwarmVerdictTask, VerifyReply } from '../records
 import type { GateRecordKind, GateResult, SwarmEventBody, SwarmNodeBody } from '../records/swarm'
 import type { FanoutTask } from '../integrate'
 import type { RunFacts, VerifyRan, VerifyRun } from '../verify'
+import type { CriticProposal } from '../records/rules'
 import type { BindingKind, LiveSwarm, NodeBinding, RunLink, SwarmNode } from './types'
 import { fail } from '../records/core'
 import { FANOUT_GATE } from '../records/fanout'
@@ -32,6 +33,7 @@ import { readRunFacts, runVerify, verifyBody } from '../verify'
 import { fanoutTasks, integrationWorktree } from '../integrate'
 import { landRepaired, REPAIR_GATE, repairGeneration } from '../land'
 import { nodeOf, swarmRefusal, writesFiles } from './admit'
+import { proposeFromCritic } from '../rules/store'
 import * as state from './state'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -63,10 +65,15 @@ export type SwarmGateCall = {
 }
 
 // ---------------------------------------------------------------------------
-// The verify runner (verify.ts), through a seam the specs stand in for.
+// The verify runner (verify.ts) and AD's proposals (rules/store.ts, phase 3),
+// through a seam the specs stand in for.
 
-export const deps: { runVerify: (p: Ports, f: RunFacts, o: VerifyRun) => Promise<VerifyRan | RecordError> } = {
+export const deps: {
+  runVerify: (p: Ports, f: RunFacts, o: VerifyRun) => Promise<VerifyRan | RecordError>
+  proposeFromCritic: (p: Ports, litterDir: string, input: CriticProposal) => Promise<void>
+} = {
   runVerify: (...a) => runVerify(...a),
+  proposeFromCritic: (...a) => proposeFromCritic(...a),
 }
 
 // ---------------------------------------------------------------------------
@@ -362,11 +369,11 @@ async function judged(p: Ports, call: SwarmGateCall, g: Gated, input: VerdictIn)
   const body: SwarmVerdictBody = { verify_id: id, tasks: input.tasks, combined: input.combined, proposed_rules: input.proposed_rules, round, approved }
   const rec = await appendRecord(p, link.runDir, { run: link.run, kind: 'verdict', by: g.by, body })
   state.noteRound(s.name, id)
-  // Proposals stay proposals (decision 14): each a rule.propose of the run, labelled as the critic's.
+  // Proposals stay proposals (decision 14): each one to the rules ledger through AD's store, labelled as the critic's.
   let proposed = 0
-  for (const rule of input.proposed_rules) {
+  for (const [index, rule] of input.proposed_rules.entries()) {
     try {
-      await appendRecord(p, link.runDir, { run: link.run, kind: 'rule.propose', by: g.by, body: { rule, source: 'critic', verify_id: id, round } })
+      await deps.proposeFromCritic(p, call.litterDir, { run: link.run, rule, source: 'critic', by: g.by, index, swarm: s.name, verify_id: id, round })
       proposed++
     } catch (err) {
       p.log(`swarm ${s.name}: a proposed rule from the verdict on ${id} wasn't recorded: ${errText(err)}`)

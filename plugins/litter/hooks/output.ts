@@ -12,10 +12,23 @@ import type { OutFile, SpoolConsumer } from './hookfiles'
 import type { Author } from './records/core'
 import type { RunJson } from './records/run'
 import type { TaskResultBody } from './records/fanout'
+import type { CriticProposal } from './records/rules'
 import { appendRecord, readLedger } from './ledgercore'
 import { outPath, runDir, runJsonPath } from './layout'
 import { atomicWriteJson, readJson, serial } from './fsx'
 import { agentInfo } from './policy'
+import { writeVerdictFile } from './verdicts'
+import { proposeFromCritic } from './rules/store'
+
+// The other packages' functions reached from here (AB's verdict file, AD's
+// store), through one table so tier 2 can stand in for them (COMMON,
+// "Another package's module").
+export const deps = {
+  writeVerdictFile: (...a: Parameters<typeof writeVerdictFile>) => writeVerdictFile(...a),
+  proposeFromCritic: (...a: Parameters<typeof proposeFromCritic>) => proposeFromCritic(...a),
+}
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 /** An id that can name a file in one folder: no separator, no NUL, not `.` or `..`. */
 export const safeFileName = (id: string): boolean =>
@@ -51,8 +64,9 @@ const VERDICT_ROLES: readonly string[] = ['gate-critic', 'verifier']
 
 /**
  * Spool consumer: a run agent's spooled result becomes its `verdict` record,
- * the body being the result as returned with its `tool_use_id`, and each of a
- * gate critic's `proposed_rules` a `rule.propose` with the run (section 16.4).
+ * the body being the result as returned with its `tool_use_id` (a gate
+ * critic's also its verdict file, AB's), and each of a gate critic's
+ * `proposed_rules` a proposal through AD's proposeFromCritic (section 16.4).
  * A fanout writer's becomes its `task.result`, with the task from its latest
  * `task.bind` (null when unbound): integration reads it (fanout.js step 3).
  * Recorded once per tool_use_id, so a line drained twice changes nothing. A
@@ -101,20 +115,27 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
       await appendRecord(ctx.p, dir, { run, kind: 'task.result', by, body: result })
       return
     }
-    const done = new Set(
-      records
-        .filter(r => (r.kind === 'verdict' || r.kind === 'rule.propose') && r.by.source === 'agent')
-        .map(r => `${r.kind}:${String(r.body.tool_use_id)}:${String(r.body.index ?? '')}`),
-    )
-    if (!done.has(`verdict:${line.tool_use_id}:`)) {
-      await appendRecord(ctx.p, dir, { run, kind: 'verdict', by, body: { ...input, tool_use_id: line.tool_use_id } })
+    const recorded = records.some(r => r.kind === 'verdict' && r.by.source === 'agent' && r.body.tool_use_id === line.tool_use_id)
+    if (!recorded) {
+      const rec = await appendRecord(ctx.p, dir, { run, kind: 'verdict', by, body: { ...input, tool_use_id: line.tool_use_id } })
+      // Its file, verdicts/<gate>-<attempt>.md (AB's): an execute verdict's, so a gate critic's only.
+      if (info.role === 'gate-critic') {
+        await deps.writeVerdictFile(ctx.p, dir, rec).catch(err => ctx.p.log(`verdict ${run} seq ${rec.seq}: its file wasn't written: ${errText(err)}`))
+      }
     }
     if (info.role !== 'gate-critic') return
+    // Each proposal goes to the rules ledger (AD's store, decision 16), with the gate and
+    // verify of the verify the verdict cites; the store records each once per tool_use_id and index.
+    const cited = typeof input.verify_id === 'string' ? records.find(r => r.kind === 'verify' && r.body.verify_id === input.verify_id) : undefined
+    const gate = typeof cited?.body.gate === 'string' ? cited.body.gate : undefined
     const proposed = Array.isArray(input.proposed_rules) ? input.proposed_rules : []
     for (let i = 0; i < proposed.length; i++) {
       const rule = proposed[i]
-      if (typeof rule !== 'string' || rule.trim() === '' || done.has(`rule.propose:${line.tool_use_id}:${i}`)) continue
-      await appendRecord(ctx.p, dir, { run, kind: 'rule.propose', by, body: { rule, source: 'critic', tool_use_id: line.tool_use_id, index: i } })
+      if (typeof rule !== 'string' || rule.trim() === '') continue
+      const proposal: CriticProposal = { run, rule, source: 'critic', by, index: i, tool_use_id: line.tool_use_id }
+      if (gate !== undefined) proposal.gate = gate
+      if (cited) proposal.verify_id = input.verify_id as string
+      await deps.proposeFromCritic(ctx.p, ctx.litterDir, proposal).catch(err => ctx.p.log(`output ${line.tool_use_id}: proposed rule ${i} wasn't recorded: ${errText(err)}`))
     }
   })
 }

@@ -4,6 +4,7 @@
 // the names below.
 
 import type { RepairBudget } from '../swarm/types'
+import type { RuleRef } from './rules'
 
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
 export const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
@@ -77,8 +78,9 @@ export type RunStartInput = {
   priorRun?: string
   feedback?: string
   // The repair setting for this run (2b-2), as the launch confirmation stated
-  // it: unset, the options' values apply. A fanout's only in this version;
-  // run.start refuses them for another workflow, and a bad value names its field.
+  // it: unset, the options' values apply. Fanout and, from phase 3 (AC's
+  // parseRepair), execute runs; run.start refuses them for the other
+  // workflows, and a bad value names its field.
   repair?: 'auto' | 'off'
   /** 1 to 10. */
   repairRounds?: number
@@ -123,22 +125,26 @@ export type RunJson = {
   previousBranch: string | null
   continueOf: string | null
   amendOf: { run: string; gate: string } | null
-  rules: { id: string; version: number }[]
+  /** The accepted rule versions selection delivered anywhere in the run (section 16.1; decision 19), shown as `id@version`. */
+  rules: RuleRef[]
   /** The plan file as given, and the sha256 of the text step 2 parsed. */
   planPath: string | null
   planSha256: string | null
   session: string
   created: number
   /**
-   * The attribution lines the session requires on commits, one `Key: value`
-   * each, added to every land's message (section 9, "Commit message"). Not
-   * filled yet: it needs a settings port.
+   * The `trailers` plugin option's lines at launch, one `Key: value` each
+   * (decision 4), under `runJsonSha256` with the rest: land.ts adds them to
+   * every land's message (section 9, "Commit message"). Absent when the
+   * option is empty.
    */
   trailers?: string[]
   /**
    * The run's repair setting (2b-2), covered by `runJsonSha256` like the
    * rest. Optional because a run.json written before 2b-2 has none: such a
    * run never repairs, since its launch confirmation never stated a repair.
+   * Written for fanout and execute runs (phase 3), an amend's included,
+   * though an amend's halt never bridges (decision 13).
    */
   repair?: RepairSettings
 }

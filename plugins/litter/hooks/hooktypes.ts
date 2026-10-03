@@ -67,6 +67,13 @@ export type UiInputHook = Hook<'ui.input'>
 export type UiInputCatch = CatchHandler<UiInputHook>
 export type UiSelectHook = Hook<'ui.select'>
 export type UiSelectCatch = CatchHandler<UiSelectHook>
+/** One pane's `ui.*` handlers, as the board and the rules pane export them (phase 3, AF); register.tsx matches each on the pane's `requestId`. */
+export type PaneUiHandlers = {
+  message: PortHook<UiMessageHook>
+  press: PortHook<UiPressHook>
+  input: PortHook<UiInputHook>
+  select: PortHook<UiSelectHook>
+}
 /** The three swarm tools, answered in their hooks, never passed on. */
 export type SwarmProposeHook = MatchedHook<'tool.call', { readonly tool: 'mcp__litter__swarm_propose' }>
 export type SwarmProposeCatch = CatchHandler<SwarmProposeHook>

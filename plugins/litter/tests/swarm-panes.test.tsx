@@ -664,7 +664,8 @@ describe('the commands', () => {
     on('session.id', async () => ({ value: SESSION }))
     on('ui.log', async () => ({ value: undefined }))
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    expect(commands).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }])
+    // Phase 3's two follow (AA's registerPhase3Commands, tests/phase3wiring.test.ts).
+    expect(commands.slice(0, 2)).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }])
   })
 
   test('/litter-swarm answers with a line and opens its pane', async ($, on) => {

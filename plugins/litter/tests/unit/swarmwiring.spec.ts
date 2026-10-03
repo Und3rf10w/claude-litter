@@ -276,6 +276,7 @@ describe("register.tsx's order and its renders", () => {
       'swarm tools',
       'roles',
       'swarm commands',
+      'board and rules commands',
       'litterDir',
       'swarm state',
       'swarm pending',
@@ -286,9 +287,11 @@ describe("register.tsx's order and its renders", () => {
       'reconcile',
       'leftover worktrees',
       'leftover node policies',
+      'options',
       'timers',
       'swarm timers',
       'pane timer',
+      'board timer',
     ])
   })
 
