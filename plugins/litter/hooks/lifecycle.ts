@@ -1008,10 +1008,16 @@ function ownedPathError(path: string): string | null {
   return null
 }
 
+/**
+ * One entry is the other, or lies under it at a `/`: `x`, `x/` and `x/f` all
+ * overlap, since a file and a folder of one name conflict in a merge. Case and
+ * Unicode normalization are folded: names that differ only in either collide
+ * on a case-insensitive or normalization-insensitive checkout (macOS), where
+ * git merges them without a conflict into one file.
+ */
 const overlaps = (a: string, b: string): boolean => {
-  if (a === b) return true
-  const under = (x: string, dir: string) => dir.endsWith('/') && x.startsWith(dir)
-  return under(a, b) || under(b, a) || `${a}/` === b || `${b}/` === a
+  const [x, y] = [a, b].map(s => s.replace(/\/+$/, '').normalize('NFC').toLowerCase()) as [string, string]
+  return x === y || y.startsWith(`${x}/`) || x.startsWith(`${y}/`)
 }
 
 function parseTasks(v: unknown): Parsed<Task[]> {

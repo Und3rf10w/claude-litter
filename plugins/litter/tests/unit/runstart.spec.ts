@@ -531,6 +531,36 @@ describe('run.start: isolate, design, plan, fanout', () => {
     expect((shared as { error: string }).error).toContain("'b' and 'c' both own")
     await nothingWritten(w)
 
+    // A file and a folder of one name, and names that differ only in case or normalization, collide in the merge too.
+    // The last pair is café.md composed (U+00E9) and decomposed (e, U+0301).
+    const pairs = [['x', 'x/f.txt'], ['x/f.txt', 'x'], ['Notes.md', 'notes.md'], ['B/', 'b/y.txt'], ['café.md', 'café.md']] as const
+    for (const [mine, theirs] of pairs) {
+      const clash = await recordRunStart(w.ctx, {
+        kind: 'run.start',
+        workflow: 'fanout',
+        ...AUTH,
+        tasks: [
+          { id: 'm', title: 'M', text: 'do m', files: [mine] },
+          { id: 't', title: 'T', text: 'do t', files: [theirs] },
+        ],
+      })
+      expect(clash).toEqual(expect.objectContaining({ ok: false, field: 'tasks' }))
+      expect((clash as { error: string }).error).toContain("'m' and 't' both own")
+    }
+    await nothingWritten(w)
+    // A shared stem without a `/` between is two names.
+    const w2 = await world()
+    const stems = okReply(await recordRunStart(w2.ctx, {
+      kind: 'run.start',
+      workflow: 'fanout',
+      ...AUTH,
+      tasks: [
+        { id: 'm', title: 'M', text: 'do m', files: ['x'] },
+        { id: 't', title: 'T', text: 'do t', files: ['x.txt', 'xy/'] },
+      ],
+    }))
+    expect(stems.args.mergeOrder).toEqual(['m', 't'])
+
     const r = okReply(await recordRunStart(w.ctx, { kind: 'run.start', workflow: 'fanout', ...AUTH, tasks, contract: 'one function each' }))
     const out = r.args.tasks as { id: string; bind?: string; writes: boolean }[]
     expect(out.map(t => [t.id, t.writes, typeof t.bind])).toEqual([
