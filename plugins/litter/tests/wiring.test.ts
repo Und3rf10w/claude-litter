@@ -190,6 +190,6 @@ describe('the swarm wiring, with nothing live', () => {
     const start = parse(await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 'r1', kind: 'swarm.start', swarm: 'alpha' }))
     expect(start).toEqual(expect.objectContaining({ ok: false, field: 'kind', error: "litter: 'swarm.start' is recorded by litter itself, never through this tool" }))
     const end = parse(await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 'r2', kind: 'swarm.end', swarm: 'alpha' }))
-    expect(end).toEqual(expect.objectContaining({ ok: false, field: 'kind', error: "litter: 'swarm.end' isn't built yet (phase 2b)" }))
+    expect(end).toEqual(expect.objectContaining({ ok: false, field: 'swarm', error: "litter: there's no live swarm named alpha" }))
   })
 })

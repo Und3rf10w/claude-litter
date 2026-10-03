@@ -146,7 +146,8 @@ describe('the kind rules, through the record tool', () => {
 
   test("the lead's swarm.end reaches its handler with no run resolved", async () => {
     const r = asError(await call({ kind: 'swarm.end', swarm: 'alpha' }))
-    expect(r.error).toBe("litter: 'swarm.end' isn't built yet (phase 2b)")
+    expect(r.error).toBe("litter: there's no live swarm named alpha")
+    expect(r.field).toBe('swarm')
   })
 
   test('swarm.bind from the main thread, and swarm.end from an agent, are refused naming kind', async () => {
