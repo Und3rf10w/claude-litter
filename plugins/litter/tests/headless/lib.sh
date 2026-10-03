@@ -28,7 +28,8 @@ h_git() { git -c user.name=tier4 -c user.email=tier4@example.invalid -c commit.g
 # parent-local.txt (PARENT-LOCAL): ignored by git, so no snapshot, base or
 # worktree has it, and un-ignored for ripgrep by the committed .ignore, so
 # Grep finds it in the parent. An answer naming it came from the parent's
-# files. The tree stays clean, which run.start needs.
+# files. The tree stays clean, which run.start needs. Like many repos, it
+# ignores litter's and the engine's folders under .claude/.
 h_scratch() {
   H_CASE=$1
   H_DIR=$H_OUT/$1
@@ -41,7 +42,7 @@ h_scratch() {
   mkdir -p "$H_REPO/.claude"
   printf 'hi\n' >|"$H_REPO/README"
   printf '{ "worktree": { "baseRef": "fresh" } }\n' >|"$H_REPO/.claude/settings.json"
-  printf 'parent-local.txt\n' >|"$H_REPO/.gitignore"
+  printf 'parent-local.txt\n/.claude/litter/\n/.claude/worktrees/\n' >|"$H_REPO/.gitignore"
   printf '!parent-local.txt\n' >|"$H_REPO/.ignore"
   h_git -C "$H_REPO" add README .claude/settings.json .gitignore .ignore
   h_git -C "$H_REPO" commit -q -m init || exit 1

@@ -8,7 +8,10 @@ import type { Snapshot } from './records/execute'
 import { SNAPSHOT_EXCLUDES } from './layout'
 import { randomId, remove } from './fsx'
 
-/** `.` plus one `:(exclude)` per mod-owned path, for every snapshot and clean check. */
+/**
+ * `.` plus one `:(exclude)` per mod-owned path, for the clean checks (`git
+ * status`). A snapshot's `add -A` builds its own with addSpec.
+ */
 export const SNAPSHOT_PATHSPEC: readonly string[] = ['.', ...SNAPSHOT_EXCLUDES.map(p => `:(exclude)${p}`)]
 
 export class GitFailed extends Error {
@@ -100,6 +103,24 @@ async function absentSkipWorktree(p: Ports, git: Git, checkout: string): Promise
 }
 
 /**
+ * The snapshot's `add -A` pathspec: `.` plus an exclude for each mod-owned
+ * path the checkout's ignore rules don't already leave out, and the ones they
+ * do. git (2.50) exits 1 for an exclude that names an ignored path, though the
+ * index comes out right, so with every exclude a repo that ignores `.claude/`
+ * failed each snapshot. `add -A .` skips an ignored path anyway, except for
+ * files tracked there, so the snapshot resets those to HEAD's afterwards.
+ * `--no-index`, since check-ignore leaves out a path with tracked files under it.
+ */
+async function addSpec(p: Ports, checkout: string): Promise<{ spec: string[]; ignored: string[] }> {
+  const argv = ['check-ignore', '--no-index', '--stdin', '-z']
+  const r = await p.run(['git', '-C', checkout, ...argv], { stdin: `${SNAPSHOT_EXCLUDES.join('\0')}\0`, timeoutMs: 120_000 })
+  if (r.code !== 0 && r.code !== 1) throw new GitFailed(argv, r.code, r.stderr)
+  const hit = new Set(r.stdout.split('\0'))
+  const ignored = SNAPSHOT_EXCLUDES.filter(x => hit.has(x))
+  return { spec: ['.', ...SNAPSHOT_EXCLUDES.filter(x => !hit.has(x)).map(x => `:(exclude)${x}`)], ignored }
+}
+
+/**
  * Snapshots the working tree at `checkout` (absolute) without touching the
  * real index: what a land would commit, the mod's own paths left out.
  * Rejects with GitFailed when git does.
@@ -114,15 +135,18 @@ export async function snapshot(p: Ports, checkout: string): Promise<Snapshot> {
     const sparse = await isSparse(p, checkout)
     const head = await p.run(['git', '-C', checkout, 'rev-parse', '--verify', '-q', 'HEAD^{tree}'])
     await git(head.code === 0 ? ['read-tree', 'HEAD'] : ['read-tree', '--empty'], { env })
+    const { spec, ignored } = await addSpec(p, checkout)
     if (sparse) {
       const absent = await absentSkipWorktree(p, git, checkout)
       if (absent.length > 0) {
         await git(['update-index', '-z', '--skip-worktree', '--stdin'], { env, stdin: `${absent.join('\0')}\0` })
       }
-      await git(['-c', 'core.sparseCheckout=false', 'add', '-A', '--', ...SNAPSHOT_PATHSPEC], { env })
+      await git(['-c', 'core.sparseCheckout=false', 'add', '-A', '--', ...spec], { env })
     } else {
-      await git(['add', '-A', '--', ...SNAPSHOT_PATHSPEC], { env })
+      await git(['add', '-A', '--', ...spec], { env })
     }
+    // Files tracked under an ignored mod-owned path stay as HEAD has them, as an exclude would leave them.
+    if (ignored.length > 0 && head.code === 0) await git(['reset', '-q', 'HEAD', '--', ...ignored], { env })
     const tree = (await git(['write-tree'], { env })).trim()
     return { tree, dirty_submodules: await dirtySubmodules(p, checkout), sparse }
   } finally {

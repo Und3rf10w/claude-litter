@@ -63,6 +63,48 @@ describe('snapshot', () => {
     expect((await snapshot(p, dir)).tree).toBe(await headTree())
   })
 
+  // git exits 1 for an exclude naming an ignored path, so these failed every snapshot.
+  for (const ignore of ['.claude/\n', '/.claude/litter/\n/.claude/worktrees/\n', '.claude/*\n', '.litter\n.claude/rules/\n']) {
+    test(`with ${JSON.stringify(ignore)} ignored, the mod's own paths are left out and an edit is taken`, async () => {
+      write('.gitignore', ignore)
+      await git('add', '.gitignore')
+      await git('commit', '-q', '-m', 'ignore')
+      write('.claude/litter/20261002-x/ledger/000001-finding.json', '{}\n')
+      write('.claude/worktrees/w/file', 'x\n')
+      write('.litter/rules.json', '{}\n')
+      write('.claude/rules/litter/a.md', 'x\n')
+      expect((await snapshot(p, dir)).tree).toBe(await headTree())
+      write('README.md', 'changed\n')
+      const s = await snapshot(p, dir)
+      expect(s.tree).not.toBe(await headTree())
+      expect((await git('diff-tree', '-r', '--name-only', await headTree(), s.tree)).trim()).toBe('README.md')
+    })
+  }
+
+  test('a mod-owned path that is only partly ignored is still left out', async () => {
+    write('.gitignore', '.claude/litter/**/*.json\n')
+    await git('add', '.gitignore')
+    await git('commit', '-q', '-m', 'ignore')
+    write('.claude/litter/20261002-x/ledger/000001-finding.json', '{}\n')
+    write('.claude/litter/20261002-x/summary.md', 'x\n')
+    expect((await snapshot(p, dir)).tree).toBe(await headTree())
+  })
+
+  test('a file tracked under an ignored mod-owned path stays as HEAD has it, edited or deleted', async () => {
+    write('.gitignore', '.claude/\n')
+    write('.claude/litter/kept.md', 'kept\n')
+    await git('add', '.gitignore')
+    await git('add', '-f', '.claude/litter/kept.md')
+    await git('commit', '-q', '-m', 'a tracked file under an ignored path')
+    write('.claude/litter/kept.md', 'edited\n')
+    expect((await snapshot(p, dir)).tree).toBe(await headTree())
+    rmSync(join(dir, '.claude/litter/kept.md'))
+    expect((await snapshot(p, dir)).tree).toBe(await headTree())
+    write('README.md', 'changed\n')
+    const s = await snapshot(p, dir)
+    expect((await git('diff-tree', '-r', '--name-only', await headTree(), s.tree)).trim()).toBe('README.md')
+  })
+
   test('the temporary index is removed', async () => {
     await snapshot(p, dir)
     const gitDir = join(dir, '.git')
@@ -127,7 +169,7 @@ describe('snapshot', () => {
       c1()
       c2()
     }
-  }, 30_000)
+  })
 
   test("a submodule whose HEAD moved (SC..) is an ordinary change: a new gitlink, and clean", async () => {
     const { dir: subDir, cleanup: c2 } = scratch()
