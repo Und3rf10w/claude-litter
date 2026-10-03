@@ -2353,6 +2353,8 @@ export const consumeLifecycle: SpoolConsumer = async (ctx, line) => {
       return
     }
     case 'isolation-lost': {
+      // A run agent's only: a swarm node's (or a node's child's) is the swarm's (observe.ts), and halts no run.
+      if (!line.agent_type.startsWith('litter:') || line.agent_type.startsWith('litter:sw-')) return
       // Every later call of the run is denied, so the run halts rather than reading the parent checkout.
       await patchRunPolicy(p, litterDir, active.run, r => ({ ...r, isolationLost: true }))
       p.log(`run ${active.run}: agent ${line.agent_id} (${line.agent_type}) lost its isolation context on ${line.tool} (cwd ${line.cwd}); ${ISOLATION_CAUSE}`)

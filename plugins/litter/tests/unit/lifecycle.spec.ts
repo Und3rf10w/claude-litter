@@ -265,6 +265,17 @@ describe('run.end from the notification', () => {
     await released(w, r)
   })
 
+  test("a swarm node's lost isolation, or a node child's, halts no run", async () => {
+    const w = await world()
+    await launched(w)
+    for (const agent_type of ['litter:sw-alpha-fixer', 'Explore']) {
+      const lost = { v: 1, ev: 'isolation-lost', ts: 1, session_id: 'session-a', agent_id: 'sw1', agent_type,
+        tool: 'Read', cwd: w.dir, expected: join(w.dir, '.claude', 'worktrees', 'sw-alpha-fixer'), source: 'guard' }
+      await consumeLifecycle({ p: w.p, litterDir: w.litterDir, sessionId: 'session-a' }, lost as never)
+    }
+    expect((await readPolicy(w.p, w.litterDir))?.run?.isolationLost).not.toBe(true)
+  })
+
   test("a notification for a task that isn't a run's, or not from a notification, is passed on untouched", async () => {
     const w = await world()
     const r = await launched(w)
