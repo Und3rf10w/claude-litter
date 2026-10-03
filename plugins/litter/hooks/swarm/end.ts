@@ -623,6 +623,20 @@ async function nodePolicyFiles(p: Ports, litterDir: string): Promise<{ agentId: 
   return out
 }
 
+/**
+ * For the swarm hooks' catches, which read no file (wiring.ts): the swarm of
+ * an agent whose policy file End or a sweep kept, while that launch isn't
+ * live; null for any other agent. What admit.ts's endedSwarmOf reads from
+ * the file, from module memory.
+ */
+export function keptSwarmOf(agentId: string): string | null {
+  const k = kept.get(agentId)
+  return k && state.liveSwarm(k.swarm)?.launch !== k.launch ? k.swarm : null
+}
+
+/** Whether a kept file is of an agent of this session's: a name or address a catch can't resolve could be its. */
+export const keepsOwn = (): boolean => [...kept.values()].some(k => k.own && state.liveSwarm(k.swarm)?.launch !== k.launch)
+
 /** The ids the list shows running; null when it can't be read, which keeps every file. */
 async function runningIds(p: Ports): Promise<Set<string> | null> {
   const list = await p.listAgents().catch(() => null)
