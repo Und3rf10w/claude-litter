@@ -142,6 +142,35 @@ export async function removeNodePolicy(p: Ports, litterDir: string, agentId: str
 }
 
 /**
+ * Whether the swarm entry policy.json holds now is one a writer may change.
+ * policy.json is shared by every session in the repository, so each writer
+ * says whose entry it expects (15.4, "A stale owner stands down"): a stale
+ * owner never writes over, or removes, a new owner's entry.
+ */
+export type EntryCheck = (cur: SwarmEntry) => boolean
+
+/**
+ * The entry is the one this owner holds: its launch and generation, and a ref
+ * oid it held under them (a /clear rebind moves the oid, and the entry follows
+ * a step later). What a destructive write expects: End's removal, the
+ * stopping, a failed launch's removal.
+ */
+export const heldBy =
+  (o: { launch: string; generation: number; oids: readonly string[] }): EntryCheck =>
+  e =>
+    e.launch === o.launch && e.owner?.generation === o.generation && o.oids.includes(e.owner.oid)
+
+/**
+ * Anything but a newer owner's entry for the same launch (a handover's next
+ * generation): what the owner's beat (healing its own entry), recovery and a
+ * handover write over. A leftover of another launch is written over too.
+ */
+export const notNewer =
+  (launch: string, generation: number): EntryCheck =>
+  e =>
+    !(e.launch === launch && typeof e.owner?.generation === 'number' && e.owner.generation > generation)
+
+/**
  * Whether `agents/` still holds a node's or child's binding file. One that
  * doesn't parse counts: it may be a node's, and the guard denies on it. A
  * fanout writer's (`run`, no `node`) doesn't: a run's leftovers would keep
@@ -209,15 +238,24 @@ export async function releaseActive(p: Ports, litterDir: string): Promise<void> 
  * `serial(policyKey(litterDir))` directly (policy.ts), the key activate,
  * deactivate and updatePolicy share; never calling updatePolicy inside it,
  * since a nested serial on the same key waits on itself.
+ *
+ * `expected` says whose entry the writer may change (heldBy, notNewer): an
+ * entry there that fails it is left, and nothing is written. Only Launch's
+ * first write passes none, so it replaces a leftover no one owns.
  */
-export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null): Promise<void> {
+export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null, expected?: EntryCheck): Promise<void> {
   await serial(policyKey(litterDir), async () => {
     const path = policyPath(litterDir)
     // A file that doesn't parse, or of another version, may hold a run's state: it's never written over.
     const cur = await readJson<Policy>(p, path)
     if (cur !== undefined && (cur === null || cur.v !== 1)) throw new Error(`litter: ${path} isn't version 1; the swarm entry for ${name} isn't written`)
     const swarms: Record<string, SwarmEntry> = { ...(cur?.swarm?.swarms ?? {}) }
-    if (entry === null && !Object.hasOwn(swarms, name)) return
+    const there = Object.hasOwn(swarms, name) ? swarms[name] : undefined
+    if (there !== undefined && expected && !expected(there)) {
+      p.log(`swarm ${name}: policy.json's entry is another owner's (launch ${String(there.launch)}, generation ${String(there.owner?.generation)}); left as it is`)
+      return
+    }
+    if (entry === null && there === undefined) return
     if (entry === null) delete swarms[name]
     else swarms[name] = entry
     const swarm = Object.keys(swarms).length > 0 ? { swarms } : null
@@ -235,14 +273,22 @@ export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string
 }
 
 /**
- * Changes the entry through updatePolicy; `change` returning null, or a
- * missing entry, leaves the file alone. That's how a stale owner's beat
- * leaves the entry a new owner wrote.
+ * Changes the entry through updatePolicy; `change` returning null, a missing
+ * entry, or one that fails `expected` (whose entry the writer may change, as
+ * writeSwarmPolicy's) leaves the file alone. That's how a stale owner leaves
+ * the entry a new owner wrote.
  */
-export async function patchSwarmPolicy(p: Ports, litterDir: string, name: string, change: (entry: SwarmEntry) => SwarmEntry | null): Promise<void> {
+export async function patchSwarmPolicy(
+  p: Ports,
+  litterDir: string,
+  name: string,
+  change: (entry: SwarmEntry) => SwarmEntry | null,
+  expected?: EntryCheck,
+): Promise<void> {
   await updatePolicy(p, litterDir, policy => {
     const swarms = policy.swarm?.swarms
     if (!swarms || !Object.hasOwn(swarms, name)) return null
+    if (expected && !expected(swarms[name]!)) return null
     const next = change(swarms[name]!)
     return next === null ? null : { ...policy, swarm: { swarms: { ...swarms, [name]: next } } }
   })

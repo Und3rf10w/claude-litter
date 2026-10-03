@@ -1,19 +1,19 @@
-// The world K's tier-2 specs share (swarmlaunch, owner and recover; WP-K): a
-// scratch repository with its litter directory, the session set, every
-// module's tables reset, and stand-ins for the other packages' functions K
-// calls through its `deps` tables, since their bodies are stubs in K's
-// worktree (COMMON, "Another package's module"). The stand-ins do what each
-// stub's doc comment says, on real files: policy.json's swarm entry and
-// `active`, a node's `agents/<id>.json`, J's revision files. Not a spec itself.
+// The world K's tier-2 specs share (swarmlaunch, owner, recover and
+// ownership; WP-K, FIX-Q): a scratch repository with its litter directory,
+// the session set, every module's tables reset, and stand-ins for some of the
+// other packages' functions K calls through its `deps` tables (COMMON,
+// "Another package's module"). The stand-ins do what each one's doc comment
+// says, on real files: a node's `agents/<id>.json`, J's revision files. M's
+// policy.json writers are the real ones (guard.ts), since the ownership
+// checks live in them. Not a spec itself.
 
 import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ports } from '../../hooks/ports'
-import type { NodePolicy, Policy, SwarmEntry } from '../../hooks/hookfiles'
+import type { NodePolicy } from '../../hooks/hookfiles'
 import type { HealthInput, HealthReport, NodeBinding, OwnerBlob, SavedSwarm, SpecCheck, SwarmSpec, ValidateCtx } from '../../hooks/swarm/types'
 import { agentPolicyPath, revisionBriefPath, revisionPath, swarmBriefPath, swarmDir, swarmJsonPath } from '../../hooks/layout'
-import { atomicWriteJson, readJson, serial } from '../../hooks/fsx'
-import { policyKey, readPolicy, setActive, updatePolicy, writePolicy } from '../../hooks/policy'
+import { atomicWriteJson, readJson } from '../../hooks/fsx'
 import { setOptions, updateSession } from '../../hooks/session'
 import { appendLaunchRecord } from '../../hooks/records/swarm'
 import { attach, flushed, putBinding, resetForTests } from '../../hooks/swarm/state'
@@ -22,6 +22,7 @@ import { SWARM_READ } from '../../hooks/swarm/tools'
 import { deps as launchDeps, launchSwarm, swarmReadTool } from '../../hooks/swarm/launch'
 import { deps as ownerDeps, resetOwnersForTests } from '../../hooks/swarm/owner'
 import { deps as recoverDeps, resetRecoveryForTests } from '../../hooks/swarm/recover'
+import { resetEndForTests } from '../../hooks/swarm/end'
 import { fireEvery, nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 /** 2026-10-03 12:00:00 UTC, so a launch id is `20261003-120000`. */
@@ -50,6 +51,8 @@ export type World = {
   check: SpecCheck
   /** What checkHealth answers (J). */
   health: HealthReport
+  /** P's real cleanupLaunch runs behind the recording stand-in (off by default: most specs only check it's called). */
+  realCleanup: boolean
   /**
    * Another process on the same repository and machine (`$.store` is shared by
    * every session there): the module's tables reset, as a reload starts them,
@@ -119,30 +122,6 @@ async function readRevisionFile(p: Ports, litterDir: string, name: string, n: nu
   return { spec, revision: n, briefs }
 }
 
-/** M's writeSwarmPolicy, as its doc comment says: creates policy.json when there's none, and `active` while anything is live. */
-async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null): Promise<void> {
-  await serial(policyKey(litterDir), async () => {
-    const cur = await readPolicy(p, litterDir)
-    const base: Policy = cur ?? { v: 1, session: await p.sessionId(), litterDir, run: null, roles: {}, swarm: null }
-    const swarms = { ...(base.swarm?.swarms ?? {}) }
-    if (entry) swarms[name] = entry
-    else delete swarms[name]
-    const next: Policy = { ...base, swarm: Object.keys(swarms).length > 0 ? { swarms } : null }
-    await writePolicy(p, litterDir, next)
-    await setActive(p, litterDir, next.swarm !== null || next.run !== null)
-  })
-}
-
-/** M's patchSwarmPolicy: through updatePolicy; a missing entry, or `change` answering null, leaves the file alone. */
-async function patchSwarmPolicy(p: Ports, litterDir: string, name: string, change: (e: SwarmEntry) => SwarmEntry | null): Promise<void> {
-  await updatePolicy(p, litterDir, policy => {
-    const e = policy.swarm?.swarms[name]
-    if (!e) return null
-    const next = change(e)
-    return next ? { ...policy, swarm: { swarms: { ...policy.swarm!.swarms, [name]: next } } } : null
-  })
-}
-
 /** M's nodePolicyFor, cut to what K's specs read: the binding's identity, its generation and the flags. */
 export function nodePolicyOf(b: NodeBinding, flags: { admitted: boolean; stopped: string | null; bind: boolean }): NodePolicy {
   return {
@@ -195,15 +174,16 @@ function install(w: World): void {
     },
     readRevision: readRevisionFile,
     readDraft: async (p: Ports, litterDir: string, name: string) => (await p.store.get(`litter.swarm.draft.${litterDir}.${name}`)) ?? null,
-    writeSwarmPolicy,
-    cleanupLaunch: async (_p: unknown, swarm: string, launch: string) => void w.calls.cleanups.push({ swarm, launch }),
+    // M's policy writers are the real ones (guard.ts): the ownership checks (Q2) live in them.
+    cleanupLaunch: async (p: Ports, swarm: string, launch: string) => {
+      w.calls.cleanups.push({ swarm, launch })
+      if (w.realCleanup) await originals.launch.cleanupLaunch(p, swarm, launch)
+    },
   } as Partial<typeof launchDeps>)
-  Object.assign(ownerDeps, { writeSwarmPolicy, patchSwarmPolicy } as Partial<typeof ownerDeps>)
   Object.assign(recoverDeps, {
     readRevision: readRevisionFile,
     nodePolicyFor: (b: NodeBinding, _s: unknown, flags: { admitted: boolean; stopped: string | null; bind: boolean }) => nodePolicyOf(b, flags),
     writeNodePolicy: (p: Ports, litterDir: string, agentId: string, node: NodePolicy) => atomicWriteJson(p, agentPolicyPath(litterDir, agentId), { v: 1, node }),
-    writeSwarmPolicy,
     resumeStopping: async (_p: unknown, swarm: string) => void w.calls.stopping.push(swarm),
     adoptUnbound: async () => void w.calls.adopted++,
   } as Partial<typeof recoverDeps>)
@@ -213,6 +193,7 @@ function resetModules(): void {
   resetForTests()
   resetOwnersForTests()
   resetRecoveryForTests()
+  resetEndForTests()
 }
 
 /** A scratch repository on `main` with `.claude/` ignored, its litter directory, and the session set for `sessionId`. */
@@ -238,6 +219,7 @@ export async function world(sessionId = 'sess-a'): Promise<World> {
     calls: { validated: [], health: [], cleanups: [], stopping: [], adopted: 0 },
     check: { ok: true, errors: [], warnings: [] },
     health: { rows: [], errors: 0, warnings: 0, snippet: null },
+    realCleanup: false,
     restart: async next => {
       await settle(w.p)
       const q = nodePorts({ sessionId: next, cwd: dir })

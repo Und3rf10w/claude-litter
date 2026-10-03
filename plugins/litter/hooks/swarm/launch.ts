@@ -72,7 +72,7 @@ import { authorityLines, continuationText, readLaunchFacts, resumeTargets } from
 import { validateSpec } from './spec'
 import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
-import { writeSwarmPolicy } from './guard'
+import { heldBy, writeSwarmPolicy } from './guard'
 import { cleanupLaunch } from './end'
 
 /**
@@ -520,7 +520,8 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
     }
     if (isLive) {
       dropLiveSwarm(name)
-      await deps.writeSwarmPolicy(p, litterDir, name, null).catch((err: unknown) => p.log(`swarm ${name}: its policy entry wasn't removed: ${errText(err)}`))
+      const mine = heldBy({ launch: launchId, generation: own.generation, oids: [own.oid] })
+      await deps.writeSwarmPolicy(p, litterDir, name, null, mine).catch((err: unknown) => p.log(`swarm ${name}: its policy entry wasn't removed: ${errText(err)}`))
     }
     try {
       await deps.cleanupLaunch(p, name, launchId)

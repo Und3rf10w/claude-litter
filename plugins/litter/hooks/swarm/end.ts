@@ -44,8 +44,8 @@ import { repoOf, UNSETTLED_MS } from '../lifecycle'
 import { BRANCH, cleanAbsolute, errText, firstLine, git, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
 import { inspectWorktree } from './worktrees'
 import * as state from './state'
-import { patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
-import { releaseOwnership, stopOwnerBeat } from './owner'
+import { heldBy, patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
+import { confirmOwnership, releaseOwnership, stopOwnerBeat } from './owner'
 import { noteSummaryTrigger } from './summary'
 
 /**
@@ -61,6 +61,7 @@ export const others = {
   writeSwarmPolicy: (...a: Parameters<typeof writeSwarmPolicy>) => writeSwarmPolicy(...a),
   removeNodePolicy: (...a: Parameters<typeof removeNodePolicy>) => removeNodePolicy(...a),
   releaseOwnership: (...a: Parameters<typeof releaseOwnership>) => releaseOwnership(...a),
+  confirmOwnership: (...a: Parameters<typeof confirmOwnership>) => confirmOwnership(...a),
   stopOwnerBeat: (...a: Parameters<typeof stopOwnerBeat>) => stopOwnerBeat(...a),
   noteSummaryTrigger: (...a: Parameters<typeof noteSummaryTrigger>) => noteSummaryTrigger(...a),
 }
@@ -211,7 +212,16 @@ function stopWait(name: string): void {
 
 async function markPolicyStopping(p: Ports, name: string, w: Wait): Promise<void> {
   try {
-    await others.patchSwarmPolicy(p, w.litterDir, name, e => (e.state === 'stopping' ? null : { ...e, state: 'stopping' }))
+    // The ref read again first (Q2): a stale owner stands down, and changes no entry.
+    const mine = await others.confirmOwnership(p, w.litterDir, name)
+    if (mine === 'lost') {
+      stopWait(name)
+      waits.delete(name)
+      return
+    }
+    // Git couldn't tell: the settle wait tries again.
+    if (mine === null) return
+    await others.patchSwarmPolicy(p, w.litterDir, name, e => (e.state === 'stopping' ? null : { ...e, state: 'stopping' }), heldBy(mine))
     w.policyStopping = true
   } catch (err) {
     // The settle wait tries again: until it takes, the guard doesn't know the swarm is ending.
@@ -409,6 +419,15 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
   await serial(endKey(litterDir, name), async () => {
     const s = state.liveSwarm(name)
     if (!s || s.readOnly || s.lost || s.state !== 'stopping') return
+    // The ref read again before anything is written or removed (Q2): the beat that marks a swarm lost runs only
+    // every 10 s. A new owner holds it: this process stands down, and its cleanup, record and removals don't run.
+    const mine = await others.confirmOwnership(p, litterDir, name)
+    if (mine === null) throw new Error(`git couldn't read refs/litter-swarm/${name}, so swarm ${name} isn't ended yet`)
+    if (mine === 'lost') {
+      stopWait(name)
+      waits.delete(name)
+      return
+    }
     stopWait(name)
     try {
       if (settled) await cleanupLaunch(p, name, s.launch)
@@ -444,9 +463,12 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
     await step('summary.md', async () => {
       summary = await writeSwarmSummary(p, name, s.launch)
     })
-    await step('releasing the ownership ref', () => others.releaseOwnership(p, litterDir, name))
+    let released = false
+    await step('releasing the ownership ref', async () => void (released = await others.releaseOwnership(p, litterDir, name)))
+    // The ref moved since the check above (a handover): the entry and the nodes' policies are the new owner's (Q2).
+    if (!released && state.liveSwarm(name)?.lost) return void waits.delete(name)
     await step('stopping the ownership beat', () => others.stopOwnerBeat(name))
-    await step("removing policy.json's entry", () => others.writeSwarmPolicy(p, litterDir, name, null))
+    await step("removing policy.json's entry", () => others.writeSwarmPolicy(p, litterDir, name, null, heldBy(mine)))
     for (const b of state.bindings(name)) await step(`removing ${b.agentId}'s policy`, () => others.removeNodePolicy(p, litterDir, b.agentId))
     state.dropLiveSwarm(name)
     waits.delete(name)

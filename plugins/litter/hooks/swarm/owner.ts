@@ -16,18 +16,26 @@
 
 import type { Ports, RunResult } from '../ports'
 import type { SwarmEntry } from '../hookfiles'
-import type { OwnerBlob, OwnerView } from './types'
+import type { LiveSwarm, OwnerBlob, OwnerView } from './types'
 import { ownerLeasePath, SWARM_NAME, swarmRef } from '../layout'
 import { atomicWriteJson, readJson, remove, serial } from '../fsx'
 import { repoOf } from '../lifecycle'
 import { OID } from '../worktrees'
 import { appendLaunchRecord } from '../records/swarm'
 import { liveSwarm, patchLiveSwarm, withGateClosed } from './state'
-import { patchSwarmPolicy, writeSwarmPolicy } from './guard'
+import { heldBy, notNewer, patchSwarmPolicy, writeSwarmPolicy } from './guard'
 import { readLaunchFacts, recoverOwnedLaunch } from './recover'
 
 /** The ownership a launch took: `refs/litter-swarm/<name>` at its blob. */
 export type Ownership = { ref: string; oid: string; generation: number }
+
+/**
+ * What this process holds of a swarm, checked against the ref just now
+ * (confirmOwnership): the launch, the generation, and every oid it held under
+ * it, the current one first. guard.ts's heldBy takes it as the entry a
+ * destructive write expects.
+ */
+export type OwnerHeld = { launch: string; generation: number; oids: string[] }
 
 /** How often an owner beats its lease. */
 export const OWNER_BEAT_MS = 10_000
@@ -53,6 +61,8 @@ type Held = {
   name: string
   ref: string
   oid: string
+  /** Every oid this process held under this generation, the current one first: the entry may still name an earlier one. */
+  oids: string[]
   generation: number
   blob: OwnerBlob
   /** A beat found the ref moved: this process stood down. */
@@ -161,13 +171,16 @@ async function pidAlive(p: Ports, pid: string): Promise<boolean | null> {
 const holderText = (blob: OwnerBlob | null, oid: string): string =>
   blob ? `session ${blob.session} on ${blob.host} (generation ${blob.generation})` : `an unreadable blob (${oid})`
 
-function hold(litterDir: string, name: string, oid: string, blob: OwnerBlob): Held {
+function hold(litterDir: string, name: string, oid: string, blob: OwnerBlob, was: readonly string[] = []): Held {
   const prev = held.get(name)
   prev?.timer?.cancel()
-  const h: Held = { litterDir, name, ref: swarmRef(name), oid, generation: blob.generation, blob, lost: false, timer: null, busy: null }
+  const oids = [oid, ...was.filter(x => x !== oid)]
+  const h: Held = { litterDir, name, ref: swarmRef(name), oid, oids, generation: blob.generation, blob, lost: false, timer: null, busy: null }
   held.set(name, h)
   return h
 }
+
+const heldOf = (h: Held): OwnerHeld => ({ launch: h.blob.launch, generation: h.generation, oids: [...h.oids] })
 
 /** Creates the ref, create-only, at a blob `{ swarm, launch, session, generation: 1, host, pid, acquiredAt }`. Rejects when it exists. */
 export async function acquireOwnership(p: Ports, litterDir: string, name: string, launch: string): Promise<Ownership> {
@@ -213,7 +226,8 @@ export async function retakeOwnership(
     // The same blob hashes to the same oid: nothing to swap.
     if (oid !== expect.oid && !(await swapRef(p, repo, name, oid, expect.oid, 'restart'))) return null
     if (oid !== expect.oid) await remove(p, ownerLeasePath(litterDir, name, expect.oid)).catch(() => {})
-    const h = hold(litterDir, name, oid, blob)
+    // The entry may still name the earlier process's oid, this session's too.
+    const h = hold(litterDir, name, oid, blob, [expect.oid])
     return { ref: h.ref, oid, generation: h.generation }
   })
 }
@@ -221,9 +235,22 @@ export async function retakeOwnership(
 // ---------------------------------------------------------------------------
 // The beat
 
-/** The entry's owner is still this process's: a beat or a swap never writes over a new owner's entry (15.4). */
-const stillOurs = (e: SwarmEntry, h: { generation: number; oid: string }): boolean =>
-  e.owner.generation === h.generation && e.owner.oid === h.oid
+/**
+ * The entry the beat keeps in policy.json (Q4): the launch, state, common dir
+ * and node types from the live swarm, the owner from what this process holds.
+ * Null while there's no live swarm of its own to describe (Launch before
+ * swarm.start, a handover before its recovery).
+ */
+function entryOf(h: Held, s: LiveSwarm | null, checkedAt: number): SwarmEntry | null {
+  if (!s || s.readOnly || s.lost || s.launch !== h.blob.launch) return null
+  return {
+    launch: s.launch,
+    state: s.state,
+    commonDir: s.commonDir,
+    owner: { ref: h.ref, oid: h.oid, generation: h.generation, session: h.blob.session, checkedAt },
+    nodeTypes: Object.values(s.types),
+  }
+}
 
 /**
  * The ref names another oid, or none: this process stands down (15.4, "A
@@ -243,7 +270,18 @@ function standDown(p: Ports, h: Held, now: string | null): void {
   p.toast(`litter: swarm ${h.name} was handed to another session; this session no longer acts on it`)
 }
 
-/** One beat: the ref check, the lease, policy.json's `owner.checkedAt` (seconds). Never rejects. */
+/**
+ * One beat: the ref check, the lease, and policy.json's entry with its
+ * `owner.checkedAt` (seconds). Never rejects.
+ *
+ * The whole entry, not a patch of its check time (Q4): policy.json is shared
+ * by every session in the repository, and the serial key only orders this
+ * process's writes, so another session's read-modify-write can lose this
+ * swarm's entry, or bring back an older one. While the ref is its own, the
+ * beat writes the entry it holds, and `active` with it (writeSwarmPolicy),
+ * over anything but a newer owner's (notNewer). That also heals a rebind
+ * whose patch failed (Q3) and an `active` a node removed from Bash.
+ */
 function beat(p: Ports, h: Held): Promise<void> {
   if (h.lost || held.get(h.name) !== h) return Promise.resolve()
   if (h.busy) return h.busy
@@ -257,9 +295,11 @@ function beat(p: Ports, h: Held): Promise<void> {
       const at = await p.now()
       const lease: OwnerLease = { oid: h.oid, swarm: h.name, session: h.blob.session, beatAt: at }
       await atomicWriteJson(p, ownerLeasePath(h.litterDir, h.name, h.oid), lease)
-      const checkedAt = Math.floor(at / 1000)
-      const mine = { generation: h.generation, oid: h.oid }
-      await deps.patchSwarmPolicy(p, h.litterDir, h.name, e => (stillOurs(e, mine) ? { ...e, owner: { ...e.owner, checkedAt } } : null))
+      // Checked, read and handed to the writer's queue in one step, with no await between: a stop of the beat
+      // (End's release, a failed launch) comes before or after it, and a removal after it isn't undone.
+      if (h.timer === null || h.lost || held.get(h.name) !== h) return
+      const entry = entryOf(h, liveSwarm(h.name), Math.floor(at / 1000))
+      if (entry) await deps.writeSwarmPolicy(p, h.litterDir, h.name, entry, notNewer(entry.launch, h.generation))
     } catch (err) {
       p.log(`swarm ${h.name}: the ownership beat failed: ${errText(err)}`)
     }
@@ -298,6 +338,36 @@ export function ownerLost(name: string): boolean {
 export function ownedSwarm(name: string): Ownership | null {
   const h = held.get(name)
   return h && !h.lost ? { ref: h.ref, oid: h.oid, generation: h.generation } : null
+}
+
+/**
+ * Before anything destructive (End's finish and its stopping, Q2): the ref
+ * read again, under the beat's key, since the beat that marks a swarm lost
+ * runs only every 10 s. Answers what this process holds when the ref still
+ * names its oid; 'lost' when it names another, or this process holds nothing
+ * of it (it stands down, as a beat would: nothing is written, recorded or
+ * removed); null when git couldn't tell, so the caller tries again later.
+ */
+export async function confirmOwnership(p: Ports, litterDir: string, name: string): Promise<OwnerHeld | 'lost' | null> {
+  const h = held.get(name)
+  if (!h || h.litterDir !== litterDir) {
+    if (liveSwarm(name) && !liveSwarm(name)!.lost) {
+      p.log(`swarm ${name}: this process holds no ownership of it, so it no longer acts on it`)
+      patchLiveSwarm(name, { lost: true })
+    }
+    return 'lost'
+  }
+  if (h.lost) return 'lost'
+  return serial(ownerKey(litterDir, name), async (): Promise<OwnerHeld | 'lost' | null> => {
+    if (h.lost || held.get(name) !== h) return 'lost'
+    const now = await refOid(p, repoOf(litterDir), name)
+    if (now === undefined) return null
+    if (now !== h.oid) {
+      standDown(p, h, now)
+      return 'lost'
+    }
+    return heldOf(h)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +482,8 @@ export async function handover(p: Ports, litterDir: string, name: string): Promi
       owner: { ref: took.ref, oid: took.oid, generation: took.generation, session, checkedAt: Math.floor((await p.now()) / 1000) },
       nodeTypes: Object.values(start.types),
     }
-    await deps.writeSwarmPolicy(p, litterDir, name, entry)
+    // Over the old generation's entry, never a newer one's.
+    await deps.writeSwarmPolicy(p, litterDir, name, entry, notNewer(entry.launch, took.generation))
     await appendLaunchRecord(p, litterDir, name, old.blob.launch, 'swarm.handover', { from: old.blob.session, to: session, generation: took.generation })
     await remove(p, ownerLeasePath(litterDir, name, old.oid)).catch(() => {})
     // Recovery, in this session now: the old bindings keep their generation, so the card offers them for re-spawn only.
@@ -427,9 +498,25 @@ export async function handover(p: Ports, litterDir: string, name: string): Promi
 // ---------------------------------------------------------------------------
 // The rebind and the release
 
-/** After a /clear (O): each owned swarm's ref swapped to a blob naming `newSession`, keeping the generation. */
+/**
+ * After a /clear (O): each owned swarm's ref swapped to a blob naming
+ * `newSession`, keeping the generation. In this order (Q3): the entry's check
+ * time first, since the beat is stopped for the rebind and a node's call
+ * would otherwise find the check over 10 s old and rev-parse a ref about to
+ * move; then the swap, this process's oid at once, and only then the entry's
+ * oid. A failure of either patch is logged, and the next beat writes the
+ * whole entry from what this process holds (Q4): the owner never stands down
+ * from its own swap.
+ */
 export async function rebindOwnership(p: Ports, litterDir: string, newSession: string): Promise<void> {
   const repo = repoOf(litterDir)
+  const patch = async (h: Held, what: string, change: (e: SwarmEntry) => SwarmEntry) => {
+    try {
+      await deps.patchSwarmPolicy(p, litterDir, h.name, change, heldBy(heldOf(h)))
+    } catch (err) {
+      p.log(`swarm ${h.name}: the rebind's ${what} in policy.json failed (the next beat writes it): ${errText(err)}`)
+    }
+  }
   for (const h of [...held.values()]) {
     if (h.litterDir !== litterDir || h.lost || h.blob.session === newSession) continue
     try {
@@ -439,19 +526,20 @@ export async function rebindOwnership(p: Ports, litterDir: string, newSession: s
           if (now !== undefined) standDown(p, h, now)
           return false
         }
+        const before = Math.floor((await p.now()) / 1000)
+        await patch(h, 'check time', e => ({ ...e, owner: { ...e.owner, checkedAt: before } }))
         const blob: OwnerBlob = { ...h.blob, session: newSession }
         const oid = await writeBlob(p, repo, blob)
         if (!(await swapRef(p, repo, h.name, oid, h.oid, `rebind to ${newSession}`))) return false
-        const was = { generation: h.generation, oid: h.oid }
-        const checkedAt = Math.floor((await p.now()) / 1000)
-        await deps.patchSwarmPolicy(p, litterDir, h.name, e =>
-          stillOurs(e, was) ? { ...e, owner: { ...e.owner, oid, session: newSession, checkedAt } } : null,
-        )
-        await remove(p, ownerLeasePath(litterDir, h.name, h.oid)).catch(() => {})
+        const was = h.oid
         h.oid = oid
+        h.oids = [oid, ...h.oids]
         h.blob = blob
         const s = liveSwarm(h.name)
         if (s && !s.readOnly) patchLiveSwarm(h.name, { owner: { ...s.owner, oid, session: newSession } })
+        await remove(p, ownerLeasePath(litterDir, h.name, was)).catch(() => {})
+        const checkedAt = Math.floor((await p.now()) / 1000)
+        await patch(h, 'oid', e => ({ ...e, owner: { ...e.owner, oid, session: newSession, checkedAt } }))
         return true
       })
       if (done) startOwnerBeat(p, litterDir, h.name)
@@ -462,17 +550,35 @@ export async function rebindOwnership(p: Ports, litterDir: string, newSession: s
   }
 }
 
-/** At End (P): a compare-and-delete of the ref on this session's oid, then the lease file. */
-export async function releaseOwnership(p: Ports, litterDir: string, name: string): Promise<void> {
+/**
+ * At End (P): a compare-and-delete of the ref on this session's oid, then the
+ * lease file. Answers whether it released (Q2): false for a process that
+ * doesn't hold it, for a stale owner (the ref names another oid; it stands
+ * down), and when git failed; a ref already gone counts as released. Either
+ * way this process holds it no longer.
+ */
+export async function releaseOwnership(p: Ports, litterDir: string, name: string): Promise<boolean> {
   stopOwnerBeat(name)
   const h = held.get(name)
   // Only an oid this process holds: a stale owner removes nothing, and another session's oid is never used.
-  if (!h || h.lost || h.litterDir !== litterDir) return
-  await serial(ownerKey(litterDir, name), async () => {
-    const r = await git(p, repoOf(litterDir), ['update-ref', '-m', `litter: swarm ${name}: end`, '-d', h.ref, h.oid])
-    if (r.code !== 0) p.log(`swarm ${name}: ${h.ref} wasn't released (it doesn't name ${h.oid}): ${r.stderr.trim()}`)
+  if (!h || h.lost || h.litterDir !== litterDir) return false
+  return serial(ownerKey(litterDir, name), async () => {
+    const repo = repoOf(litterDir)
+    const r = await git(p, repo, ['update-ref', '-m', `litter: swarm ${name}: end`, '-d', h.ref, h.oid])
+    let released = r.code === 0
+    if (!released) {
+      p.log(`swarm ${name}: ${h.ref} wasn't released (it doesn't name ${h.oid}): ${r.stderr.trim()}`)
+      const now = await refOid(p, repo, name)
+      if (now === null) released = true
+      else if (now !== undefined && now !== h.oid) {
+        standDown(p, h, now)
+        if (held.get(name) === h) held.delete(name)
+        return false
+      }
+    }
     await remove(p, ownerLeasePath(litterDir, name, h.oid)).catch(() => {})
     if (held.get(name) === h) held.delete(name)
+    return released
   })
 }
 

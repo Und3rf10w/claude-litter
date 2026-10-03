@@ -42,7 +42,7 @@ import {
   stop,
   stopped,
 } from './state'
-import { nodePolicyFor, writeNodePolicy, writeSwarmPolicy } from './guard'
+import { nodePolicyFor, notNewer, writeNodePolicy, writeSwarmPolicy } from './guard'
 import { readRevision } from './store'
 import { resumeStopping } from './end'
 import { adoptUnbound } from './admit'
@@ -361,7 +361,8 @@ export async function recoverOwnedLaunch(
     nodeTypes: Object.values(b.types),
   }
   try {
-    await deps.writeSwarmPolicy(p, litterDir, name, entry)
+    // Over this launch's older entry (the earlier process's oid, an older generation), never a newer owner's.
+    await deps.writeSwarmPolicy(p, litterDir, name, entry, notNewer(facts.launch, owner.generation))
   } catch (err) {
     p.log(`swarm ${name}: its policy entry wasn't rewritten: ${errText(err)}`)
   }
