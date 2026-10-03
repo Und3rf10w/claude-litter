@@ -263,12 +263,14 @@ async function beginStopping(p: Ports, litterDir: string, name: string, by: 'bro
  * (L's settling), a SubagentStop, or the list not showing it running. The
  * list's `running` wins over an idle place, since a wake can run a node
  * past litter's hooks (spike 17). With no list read yet, the places alone.
+ * The cleanup asks the same of each agent that worked in a worktree, so a
+ * swarm.end that says `settled: true` never keeps a worktree as in use.
  */
-function turnEnded(b: NodeBinding, listed: Map<string, ListedAgent> | null): boolean {
-  const place = state.status(b.agentId)
-  if (place === 'settling' || state.agentStopped(b.agentId)) return true
+function turnEnded(agentId: string, listed: Map<string, ListedAgent> | null): boolean {
+  const place = state.status(agentId)
+  if (place === 'settling' || state.agentStopped(agentId)) return true
   if (listed === null) return place !== 'running'
-  return listed.get(b.agentId)?.status !== 'running'
+  return listed.get(agentId)?.status !== 'running'
 }
 
 /** What the settle wait still waits on, from the state and the last list read. Changes nothing. */
@@ -276,7 +278,7 @@ function openParts(s: LiveSwarm, list: ListedAgent[] | null): Omit<SettleProgres
   const listed = list ? new Map(list.map(a => [a.id, a])) : null
   const nodes: SettleProgress['nodes'] = []
   for (const b of state.bindings(s.name)) {
-    if (turnEnded(b, listed)) continue
+    if (turnEnded(b.agentId, listed)) continue
     nodes.push({ agentId: b.agentId, node: b.node, n: b.n, status: listed?.get(b.agentId)?.status ?? state.status(b.agentId) })
   }
   // An agent of one of the swarm's types that no binding knows is a node too (an adoption still to come).
@@ -562,11 +564,12 @@ function usersOf(records: readonly StoredRecord[], name: string, list: ListedAge
     if (r.kind === 'swarm.node' && r.by.source === 'mod' && typeof r.body.agentId === 'string' && typeof r.body.cwd === 'string') cwdOf.set(r.body.agentId, r.body.cwd)
   }
   for (const b of state.bindings(name)) cwdOf.set(b.agentId, b.cwd)
-  const running = new Set(list.filter(a => a.status === 'running').map(a => a.id))
+  const listed = new Map(list.map(a => [a.id, a]))
   const out: string[] = []
   for (const [id, cwd] of cwdOf) {
     if (!at(cwd)) continue
-    if (running.has(id)) out.push(`${id} is still running there`)
+    // Ended as the settle wait counts it: a turn.complete or a SubagentStop wins over a list that lags.
+    if (!turnEnded(id, listed)) out.push(`${id} is still running there`)
     if (state.shells().some(sh => sh.agentId === id)) out.push(`a background shell ${id} started isn't confirmed stopped`)
   }
   for (const r of state.reservations(name)) if (r.scope && at(r.scope.dir)) out.push(`a spawn of ${r.node} is reserved there`)
