@@ -81,14 +81,10 @@ export type WaitBudget = { left(): Promise<number> }
 export async function waitBudget(p: Ports, next?: object): Promise<WaitBudget> {
   // `budget` is a getter on the engine's next: each read is the meter now.
   const metered = (): number | undefined => (next as { readonly budget?: { readonly remainingMs: number } } | undefined)?.budget?.remainingMs
+  const first = metered()
+  if (first !== undefined && Number.isFinite(first)) return { left: async () => Math.max(0, (metered() ?? 0) - BUDGET_MARGIN_MS) }
   const start = await p.now()
-  return {
-    async left() {
-      const m = metered()
-      const left = m !== undefined && Number.isFinite(m) ? m : HOOK_BUDGET_MS - ((await p.now()) - start)
-      return Math.max(0, left - BUDGET_MARGIN_MS)
-    },
-  }
+  return { left: async () => Math.max(0, HOOK_BUDGET_MS - ((await p.now()) - start) - BUDGET_MARGIN_MS) }
 }
 
 // ---------------------------------------------------------------------------
