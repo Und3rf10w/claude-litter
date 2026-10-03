@@ -10,8 +10,19 @@
 # which the mod writes at task.bind (section 7, fanout.js step 2). Until then
 # it gets StructuredOutput (and the record tool) alone; after, it writes only
 # its task's files and may stage and commit in its own worktree, with the
-# hooks running. Swarm nodes (litter:sw-*, phase 2b) are refused where
-# guard_node would slot in.
+# hooks running.
+#
+# A swarm node, or a node's child, is bound by agents/<agent_id>.json with
+# `node`, which the mod writes at its binding (plan 15.4, "The guard for
+# nodes"). It gets the node rules (guard_node) against its swarm's entry in
+# policy.json, whatever its agent_type: a child keeps its own type, and a node
+# that lost its type is denied for that. Keyed by agent_id, never by session,
+# so a /clear changes nothing here. An unknown agent waits up to 2 s for a
+# binding while one may be landing ("The guard closes the race").
+#
+# Every call it passes from a node, a child or a run agent is spooled as a
+# `call` start, and every one it denies as a `deny`, which closes the call
+# (15.4, "Ending", step 2). The spool never changes a decision.
 
 set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
@@ -23,40 +34,56 @@ if [ ! -r "$lt_here/lib.sh" ]; then
 fi
 . "$lt_here/lib.sh"
 
-# Who's calling, and the rules for anyone but a litter agent: a litter role
-# spawned outside a workflow, a named swarm node, and the main thread's
-# EnterWorktree and ExitWorktree, which would move every agent the run starts
-# later ("Background sessions"). The one EnterWorktree allowed is the
-# launcher's, into the run's own checkout before the launch (section 9).
-# Prints `who …`, then `next` and the agent_id, or a decision.
+# Who's calling, and the rules for anyone but a litter agent or a swarm node:
+# a litter role spawned outside a workflow, a named swarm node, and the main
+# thread's EnterWorktree and ExitWorktree. Those would move every agent the
+# run starts later ("Background sessions"), and while a swarm is live they
+# would confine every node to the session's worktree (plan 15.4, spike 1).
+# The one EnterWorktree allowed is the launcher's, into the run's own checkout
+# before the launch, with no swarm live (section 9). Prints `who …`, then:
+#   next <agent_id>                      a run agent (litter:<role>)
+#   node <agent_id> wait|nowait          a litter:sw-* agent; wait: its type is a live swarm's
+#   maybe <agent_id> fork|typed <decision…>  any other agent: a node's child if the
+#                                        mod bound it, else the decision after it
+# or a decision.
 GUARD_JQ_HEAD='
+def swarms($p): if ($p | ok1) and ($p.swarm | type) == "object" and ($p.swarm.swarms | type) == "object"
+  then $p.swarm.swarms else {} end;
+def other($in; $id; $tool; $ti; $sub):
+  if $tool == "Agent" and ($sub | startswith("litter:sw-")) then
+    (if ($ti.name | str) != "" then deny($in; "a swarm node takes no name: with one it would become an unchecked teammate. Spawn \($sub) again without name")
+     else "pass" end)
+  elif $tool == "Agent" and ($sub | startswith("litter:")) then
+    deny($in; "litter roles run inside litter workflows; start one with /litter:execute, /litter:design or /litter:fanout instead of spawning \($sub)")
+  elif $id != "" then "pass"
+  elif $tool == "ExitWorktree" or $tool == "EnterWorktree" then
+    readj($pol) as $p
+    | if (swarms($p) | length) > 0 then
+        deny($in; "a litter swarm is live: a session in a worktree confines the Bash, Write and Edit of every agent to that worktree, which would cut off every node pinned elsewhere in the repository (plan 15.4). Stay in this directory until the swarm ends")
+      elif $tool == "ExitWorktree" then
+        deny($in; "a litter run is active, so the session stays in its working directory until the run ends: the run starts its agents there")
+      elif ($p | ok1) and ($p.run | type) == "object" and (($p.run.runIds // []) | length) == 0
+          and $p.run.launching != true and ($ti.path | str) != ""
+          and (($ti.path | str) == ($p.run.checkout | str) or ($ti.path | str) == ($p.run.roots.checkout | str))
+        then "pass"
+      else deny($in; "a litter run is active, so the session stays in its working directory until the run ends; before the launch, only EnterWorktree({ path }) into the run checkout is allowed") end
+  else "pass" end;
 . as $in
 | ($in.agent_id | str) as $id
 | ($in.agent_type | str) as $type
 | ($in.tool_name | str) as $tool
 | ($in.tool_input | if type == "object" then . else {} end) as $ti
 | ($ti.subagent_type | str) as $sub
-| if ($type | startswith("litter:")) then
-    "who litter\n" + (if $id | okid then "next\n" + $id
-      else deny($in; "this call carries no usable agent_id, so litter cannot tell which agent made it; refusing") end)
-  else "who other\n" + (
-    if $tool == "Agent" and ($sub | startswith("litter:sw-")) then
-      (if ($ti.name | str) != "" then deny($in; "a swarm node takes no name: with one it would become an unchecked teammate. Spawn \($sub) again without name")
-       else "pass" end)
-    elif $tool == "Agent" and ($sub | startswith("litter:")) then
-      deny($in; "litter roles run inside litter workflows; start one with /litter:execute, /litter:design or /litter:fanout instead of spawning \($sub)")
-    elif $id != "" then "pass"
-    elif $tool == "ExitWorktree" then
-      deny($in; "a litter run is active, so the session stays in its working directory until the run ends: the run starts its agents there")
-    elif $tool == "EnterWorktree" then
-      readj($pol) as $p
-      | if ($p | ok1) and ($p.run | type) == "object" and (($p.run.runIds // []) | length) == 0
-          and $p.run.launching != true and ($ti.path | str) != ""
-          and (($ti.path | str) == ($p.run.checkout | str) or ($ti.path | str) == ($p.run.roots.checkout | str))
-        then "pass"
-        else deny($in; "a litter run is active, so the session stays in its working directory until the run ends; before the launch, only EnterWorktree({ path }) into the run checkout is allowed") end
-    else "pass" end)
-  end
+| if ($type | startswith("litter:")) and ($id | okid | not) then
+    "who litter\n" + deny($in; "this call carries no usable agent_id, so litter cannot tell which agent made it; refusing")
+  elif ($type | startswith("litter:sw-")) then
+    "who litter\nnode\n" + $id + "\n"
+      + (if any(swarms(readj($pol))[] | (.nodeTypes // []) | if type == "array" then .[] else empty end; . == $type)
+         then "wait" else "nowait" end)
+  elif ($type | startswith("litter:")) then "who litter\nnext\n" + $id
+  elif ($id | okid) then
+    "who other\nmaybe\n" + $id + "\n" + (if $type == "" then "fork" else "typed" end) + "\n" + other($in; $id; $tool; $ti; $sub)
+  else "who other\n" + other($in; $id; $tool; $ti; $sub) end
 '
 
 # Bash, read as a heuristic (section 9, "Bash"): the role tools allowlist and
@@ -322,7 +349,6 @@ def taskof($p; $a):
 | (($in.permission_mode | str) as $m | if $m != "" then $m else ($mode | gsub("[^A-Za-z]"; "")) end) as $mode_now
 | if ($p | ok1 | not) then
     deny($in; "policy.json is unreadable (\(why($pol; $p))), so this call cannot be checked; refusing until the mod rewrites it")
-  elif ($role | startswith("sw-")) then deny($in; "\($type) is a swarm node, and this build has no swarm rules; refusing")
   elif ($p.run | type) != "object" then deny($in; "no litter run is active, so \($type) has nothing to do; end your turn")
   elif ($p.roles | type) != "object" or ($p.roles[$role] | type) != "object" then
     deny($in; "\($type) is not a role of run \($p.run.run | str); refusing")
@@ -348,6 +374,7 @@ def taskof($p; $a):
     (if $tool == "StructuredOutput" or $tool == "mcp__litter__record" then "pass"
      else deny($in; "bind first: call mcp__litter__record with kind task.bind and the bind value from your <task>") end)
   else rules($in; $p; $b; $role; $type; $tool; $ti; fanoutwriter($p; $role)) end
+| if . == "pass" then passcall($in) else . end
 '
 
 # A write, once the script resolved its target ($real, empty when it could
@@ -384,14 +411,216 @@ GUARD_JQ_PATH='
     | if any($own[]; . as $o | if ($o | endswith("/")) then ($rel | startswith($o)) else $rel == $o end) then "pass"
       else deny($in; "task \($task.id | str) owns only \($own | join(", ")), and \($fp) resolves to \($rel) in your worktree; change only those files, or return blocked and name the file you need") end
   else "pass" end
+| if . == "pass" then passcall($in) else . end
+'
+
+# A swarm node's or a node's child's call (plan 15.4, "The guard for nodes";
+# 15.8, "The node policy"), from agents/<agent_id>.json and its swarm's entry
+# in policy.json, in 15.4's order: the swarm's state, the node's own, its
+# type, then the tools. Three checks need the script, and each comes back as
+# a request it answers by running this program again:
+#   owner <commonDir> <ref> <oid>  the last beat's check is over 10 s old: $owner is then `same` or `moved`
+#   path <target>                  a write: $real is then `=` and the resolved path (empty: unresolvable)
+#   head <dir>                     a commit: $head is then `=` and `git symbolic-ref -q HEAD` there
+# `other` sends a caller with no node binding back to the rules for anyone.
+GUARD_JQ_NODE='
+def strs: if type == "array" then map(str | select(. != "")) else [] end;
+def num: if type == "number" then . else null end;
+# At or under $dir: an absolute path, or a relative one with no .. part, since
+# the call runs in $dir. Nothing for cd, which goes home.
+def within($dir): . as $v
+  | $v != "" and (if ($v | startswith("/")) then ($v | rtrimstr("/")) as $c | $c == $dir or ($c | startswith($dir + "/"))
+      else ($v | split("/") | all(.[]; . != "..")) and (($v | startswith("~")) or ($v | startswith("-")) | not) end);
+def commitlike: .sub | oneof(["commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"]);
+def owndir($dir): .loc | all(.[]; .[0] == "-C" and (.[1] == "." or (.[1] | rtrimstr("/")) == $dir));
+# What moves a worktree off its bound branch, or the branch itself (15.4,
+# "Commits stay on the bound branch"). A checkout without -- may name a
+# branch; a reset with one revision and no paths moves the branch to it.
+def switchwhy: .sub as $s | .args as $a | ($a | index(["--"])) as $dd
+  | (if $dd == null then $a else $a[:$dd] end | pos) as $pre
+  | (if $dd == null then [] else $a[$dd + 1:] end) as $post
+  | if $s == "switch" then "git switch"
+    elif $s == "checkout" and (($a | any(.[]; oneof(["-b", "-B", "--detach", "--orphan"]))) or ($a | short("bB"))) then
+      "git checkout -b, -B or --detach"
+    elif $s == "checkout" and $dd == null and ($pre | map(select(. != ".")) | length) > 0 then "git checkout naming a branch"
+    elif $s == "branch" and (($a | short("fmMC")) or ($a | longopt("--force"; 6)) or ($a | longopt("--move"; 5))) then
+      "git branch -f, -m, -M or -C"
+    elif $s == "symbolic-ref" and ((($a | pos | length) >= 2) or ($a | has1("--delete")) or ($a | short("d"))) then "git symbolic-ref"
+    elif $s == "update-ref" then "git update-ref"
+    elif $s == "reset" and ($pre | length) == 1 and (($pre[0] | oneof(["HEAD", "@"])) | not) and ($post | length) == 0 then
+      "git reset <commit>"
+    else empty end;
+def rewritewhy: .sub as $s | .args as $a
+  | if $s == "rebase" then "git rebase"
+    elif $s == "reset" and ($a | longopt("--hard"; 4)) then "git reset --hard"
+    elif $s == "commit" and ($a | longopt("--amend"; 4)) then "git commit --amend"
+    elif ($s | oneof(["filter-branch", "filter-repo"])) then "git \($s)"
+    else empty end;
+def worktreewhy($dir): .sub as $s
+  | if $s == "worktree" and ((.args | first1) != "list") then "git worktree \(.args | first1)"
+    elif any(.loc[]; .[0] == "-C" and ((.[1] | within($dir)) | not)) then "git -C into another folder"
+    else empty end;
+def nodegitwhy($node; $au; $dir; $branch):
+  .sub as $s
+  | (if $s == "push" or $s == "send-pack" then "git push is denied to swarm nodes: report ready-to-push; the lead pushes" else empty end),
+    (if $au.commit == false and (commitlike or indexwrite) then
+       "git \($s) \(if commitlike then "makes a commit" else "writes the index" end), and node \($node) may not commit (authority.commit is false): leave the change in place and report it"
+     else empty end),
+    (if $au.commit == true and (commitlike or indexwrite) and (owndir($dir) | not) then
+       "git \($s) runs only in your directory \($dir): run it there, without -C to another folder, --git-dir or --work-tree"
+     else empty end),
+    (if $au.commit == true then (switchwhy | "\(.) would move you off your bound branch \($branch): your branch is fixed by the swarm; ask your parent. To restore files use git restore <path>, and to unstage git reset -- <path>") else empty end),
+    (if $au.rewriteHistory == false then (rewritewhy | "\(.) rewrites history, and node \($node) may not (authority.rewriteHistory is false); make a new commit instead") else empty end),
+    (if $au.worktreeOps == false then (worktreewhy($dir) | "\(.) works on another worktree, and node \($node) may not (authority.worktreeOps is false); work in \($dir)") else empty end);
+# A commit or index write runs in the node directory as git finds it: no
+# git-redirecting variables, and no cd away from it first.
+def nodecmdwhy($cmd; $dir):
+  [$cmd | segs[]] as $ws
+  | ([$ws[][] | select(test("^GIT_[A-Za-z0-9_]*="))] | .[0]) as $var
+  | if $var != null then "a commit or index write runs with git as your directory sets it up: drop \($var | split("=") | .[0])"
+    elif any($ws[]; (.[0] | base | oneof(["cd", "pushd"])) and (((.[1] // "") | within($dir)) | not)) then
+      "git commit and index writes run only in your directory \($dir): run them there, without cd elsewhere"
+    else empty end;
+# bash.deny: an entry is a command prefix, matched word for word against each
+# simple command, its first word by name, so a path to the same program counts.
+def denyprefix($deny): . as $c
+  | first($deny[] | . as $e | ($e | words) as $ew
+      | select(($ew | length) > 0 and ($c | length) >= ($ew | length)
+          and ($c[0] | base) == ($ew[0] | base) and $c[1:($ew | length)] == $ew[1:]) | $e) // empty;
+def nodebashwhy($n; $cmd; $roots; $dir; $branch):
+  ($n.authority | if type == "object" then . else {} end) as $au
+  | ($n.node | str) as $node
+  | [$cmd | segs[] | cmds] as $cs
+  | [$cs[] | select((.[0] | base) == "git") | .[1:] | gitsub] as $gs
+  | [ ($gs[] | nodegitwhy($node; $au; $dir; $branch)),
+      (if $au.commit == true and any($gs[]; commitlike or indexwrite) then nodecmdwhy($cmd; $dir) else empty end),
+      ($cs[] | pairwhy(deploys; "publishes or deploys, which litter agents never do")),
+      ($cs[] | denyprefix($n.bashDeny | strs) | "\(.) is denied to node \($node) by its spec (bash.deny)"),
+      (if ($cmd | prot($roots)) and (any($cs[]; writes) or ([$cmd | targets[] | select(. != "/dev/null")] | length) > 0) then
+        "Bash may not write under .claude/litter or a litter rule folder (this command names one and writes): records go through mcp__litter__record and rules through /litter:rules, and reading them is fine"
+       else empty end)
+    ] | .[0];
+def nodewrite($in; $n; $tool; $ti; $dir; $roots):
+  ((if $tool == "NotebookEdit" then $ti.notebook_path else $ti.file_path end) | str) as $fp
+  | ($n.node | str) as $node
+  | if $fp == "" then deny($in; "\($tool) needs \(if $tool == "NotebookEdit" then "notebook_path" else "file_path" end)")
+    elif ($fp | test("[\\x00-\\x1f]")) or ($fp | startswith("~")) or ($fp | startswith("//")) then
+      deny($in; "could not resolve \($fp | tojson): give an absolute path")
+    else (if $fp | startswith("/") then $fp else $dir + "/" + $fp end | gsub("/+"; "/")) as $t
+    | if ($t | startswith("/") | not) or ($t | split("/") | .[1:] | any(. == "" or . == "." or . == "..")) then
+        deny($in; "could not resolve \($fp): give an absolute path with no empty, . or .. parts")
+      elif $real == "" then "path\n" + $t
+      else ($real | ltrimstr("=")) as $r | ($r | ascii_downcase) as $l
+      | ($n.paths | if type == "array" then map(str | select(. != "")
+          | if startswith("/") then . else $dir + "/" + . end) else null end) as $paths
+      | if $r == "" then
+          deny($in; "could not resolve \($fp): a folder on the way cannot be entered, a link loops, or a part of it is not a folder")
+        elif (($l + "/") | contains("/.claude/litter/")) then
+          deny($in; "\($fp) is under .claude/litter (it resolves to \($r)); litter records change only through mcp__litter__record")
+        elif (($l + "/") | test("/\\.litter(\\.local)?/|/\\.claude/rules/litter(-local)?/")) then
+          deny($in; "\($fp) is in a litter rule folder (it resolves to \($r)); rules change only through /litter:rules")
+        elif any($roots[]; . as $x | $l == $x or ($l | startswith($x + "/"))) then
+          deny($in; "\($fp) resolves to \($r), inside a folder litter protects (a .claude/litter copy or a rule folder): records change only through mcp__litter__record, and rules only through /litter:rules")
+        elif $paths != null and ($paths | length) == 0 then
+          deny($in; "node \($node) writes no files (its spec gives it no paths); report what you need changed to your parent")
+        elif $paths != null and (any($paths[]; . as $x | if ($x | endswith("/")) then ($r | startswith($x)) else $r == $x end) | not) then
+          deny($in; "node \($node) writes only in \($paths | join(", ")), and \($fp) resolves to \($r); change only those, or report what you need to your parent")
+        else passcall($in) end
+      end
+    end;
+# No parameter is named after a builtin: a $name parameter is also a filter
+# `name` in the body, so a $type would turn every `type` into the agent type.
+def nodetools($in; $n; $tool; $ti):
+  ($n.node | str) as $node
+  | ($n.dir | str | rtrimstr("/")) as $dir
+  | ($n.authority | if type == "object" then . else {} end) as $au
+  | ($n.branch | str) as $branch
+  | ([($n.protect | strs[]), (if $cfg != "" then ($cfg + "/litter"), ($cfg + "/rules/litter") else empty end)]
+      | map(rtrimstr("/") | select(. != "") | ascii_downcase)) as $roots
+  | ($ti.subagent_type | str) as $sub
+  | if $tool == "EnterWorktree" or $tool == "ExitWorktree" then deny($in; "your directory is fixed by the swarm; ask your parent")
+    elif ($n.toolsDeny | strs | index([$tool])) != null then deny($in; "\($tool) is denied to node \($node) by its spec (tools.deny)")
+    elif $tool == "Agent" and ($ti.name | str) != "" then
+      deny($in; "a swarm node spawns no named agent: with a name it would become an unchecked teammate. Spawn it again without name")
+    elif $tool == "Agent" and ($sub | startswith("litter:sw-")) then
+      (if ($n.spawns | strs | index([$sub])) != null then passcall($in)
+       elif ($n.spawns | strs | length) == 0 then deny($in; "node \($node) spawns no swarm workers (its spec lists none), so not \($sub)")
+       else deny($in; "node \($node) may spawn only \($n.spawns | strs | join(", ")), and \($sub) is not one of them") end)
+    elif $tool == "Agent" and ($sub | startswith("litter:")) then
+      deny($in; "litter roles run inside litter workflows, not under a swarm node; do the work yourself, or report what is missing")
+    elif $tool == "Agent" and $n.spawnOther == false then
+      deny($in; "node \($node) may spawn no agent types but its swarm workers (spawnOther is false)")
+    elif $tool == "PowerShell" then deny($in; "PowerShell is not checked for swarm nodes; use Bash")
+    elif $tool == "Write" or $tool == "Edit" or $tool == "NotebookEdit" then nodewrite($in; $n; $tool; $ti; $dir; $roots)
+    elif $tool == "Bash" or ($tool == "Monitor" and ($ti.command | str) != "") then
+      ($ti.command | str) as $cmd
+      | if $cmd == "" then deny($in; "Bash needs a command")
+        else nodebashwhy($n; $cmd; $roots; $dir; $branch) as $why
+        | if $why != null then deny($in; $why)
+          elif $au.commit == true and any([$cmd | segs[] | cmds | select((.[0] | base) == "git") | .[1:] | gitsub][]; commitlike) then
+            (if $branch == "" then deny($in; "node \($node) has no bound branch, so it cannot commit; report blocked to your parent")
+             elif $head == "" then "head\n" + $dir
+             elif ($head | ltrimstr("=")) == $branch then passcall($in)
+             else deny($in; "HEAD in \($dir) is \(($head | ltrimstr("=")) as $h | if $h == "" then "detached" else $h end), not your bound branch \($branch): your branch is fixed by the swarm; ask your parent") end)
+          else passcall($in) end
+        end
+    else passcall($in) end;
+
+. as $in
+| ($in.agent_id | str) as $id
+| ($in.agent_type | str) as $type
+| ($in.tool_name | str) as $tool
+| ($in.tool_input | if type == "object" then . else {} end) as $ti
+| readj($pol) as $p
+| readj($agent) as $a
+| if $agent != "" and ($a | ok1 | not) then
+    deny($in; "agents/\($id).json is unreadable (\(why($agent; $a))), so the swarm rules for this agent cannot be read; refusing until the mod rewrites it")
+  elif ($a | type) != "object" or ($a.node | type) != "object" then
+    if ($type | startswith("litter:sw-")) | not then "other"
+    elif $tool == "mcp__litter__record" then passcall($in)
+    else deny($in; "\($type) is a swarm node that is not bound yet: if your <instance> block names a token, record kind swarm.bind with it; otherwise try again") end
+  elif ($p | ok1 | not) then
+    deny($in; "policy.json is unreadable (\(why($pol; $p))), so this call cannot be checked; refusing until the mod rewrites it")
+  else $a.node as $n
+  | ($n.swarm | str) as $sw
+  | (if ($p.swarm | type) == "object" and ($p.swarm.swarms | type) == "object" then $p.swarm.swarms[$sw] else null end) as $e
+  | (try ($now | tonumber) catch null) as $t
+  | if ($e | type) != "object" then deny($in; "swarm \($sw) is not live, so this node has nothing to do; make no more tool calls and end your turn")
+    elif ($e.owner | type) != "object" or ($n.generation | num) == null or $n.generation != $e.owner.generation then
+      deny($in; "swarm \($sw) was handed to another session; make no more tool calls and end your turn")
+    elif $owner == "" and ($t == null or ($e.owner.checkedAt | num) == null or ($t - $e.owner.checkedAt) > 10) then
+      (if ($e.owner.ref | str) != "refs/litter-swarm/" + $sw or ($sw | test("^[a-z0-9][a-z0-9-]{0,23}$") | not)
+          or ($e.commonDir | str | startswith("/") | not) or ($e.commonDir | str | test("[\\x00-\\x1f]"))
+          or ($e.owner.oid | str | test("^[0-9a-f]{40,64}$") | not) then
+         deny($in; "the ownership check of swarm \($sw) cannot run: its entry in policy.json names no usable ref, oid or common dir; refusing")
+       else ["owner", $e.commonDir, $e.owner.ref, $e.owner.oid] | join("\n") end)
+    elif $owner == "moved" then
+      deny($in; "swarm \($sw) was handed to another session (its ownership ref no longer names this owner); make no more tool calls and end your turn")
+    elif $owner != "" and $owner != "same" then
+      deny($in; "the ownership ref of swarm \($sw) could not be read (git failed), so this call cannot be checked; refusing")
+    elif $e.state == "stopping" and (($tool | oneof(["SendMessage", "SubagentHandback"])) | not) then
+      deny($in; "swarm \($sw) is ending; report and end your turn")
+    elif $n.stopped != null and $tool != "SubagentHandback" then
+      deny($in; "you were stopped from the swarm browser: deliver your report and end your turn")
+    elif $n.bind == true and $tool != "mcp__litter__record" then
+      deny($in; "bind first: record kind swarm.bind with the token from your <instance> block")
+    elif $n.admitted != true then deny($in; "not admitted; end your turn")
+    elif ($n.kind | str) != "child" and $type != ($n.type | str) then deny($in; "this node lost its type; end your turn")
+    else nodetools($in; $n; $tool; $ti) end
+  end
 '
 
 # guard_nojq <reason>: jq is gone, or failed. A litter agent is recognised by
-# its raw agent_type, and the rules for everyone else are kept with plain
-# matches: no litter role spawned, and no worktree moves on the main thread.
+# its raw agent_type, a node's child by the binding the mod wrote for its
+# agent_id, and the rules for everyone else are kept with plain matches: no
+# litter role spawned, and no worktree moves on the main thread.
 guard_nojq() {
   if lt_raw_litter; then
     lt_cant "$1"
+    return 0
+  fi
+  if lt_raw_node; then
+    printf 'who litter\nblock\n%s\n' "$1"
     return 0
   fi
   case $LT_IN in
@@ -405,6 +634,73 @@ guard_nojq() {
       ;;
   esac
   printf 'who other\npass\n'
+}
+
+# guard_node <agent_id> <decision for anyone else>: the node rules
+# (GUARD_JQ_NODE), and the checks they ask the script for. Git runs only with
+# argv built here, from values the program checked: the swarm's own ref under
+# refs/litter-swarm/, its common dir, and the node's directory.
+guard_node() {
+  gn_id=$1
+  gn_other=$2
+  echo 'step reading the node binding and policy.json'
+  lt_file "$LT_DIR/policy.json"
+  gn_pf=$LT_FF gn_pv=$LT_FV
+  lt_file "$LT_DIR/agents/$gn_id.json"
+  gn_af=$LT_FF gn_av=$LT_FV
+  # A clock that can't be read makes the last check stale.
+  gn_now=$(date +%s 2>/dev/null) || gn_now=
+  case $gn_now in *[!0-9]*) gn_now= ;; esac
+  gn_owner= gn_real= gn_head= gn_n=0
+  while :; do
+    gn_n=$((gn_n + 1))
+    [ "$gn_n" -le 4 ] || return 1
+    echo 'step checking the node rules'
+    gn_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" \
+      "$gn_pf" pol "$gn_pv" "$gn_af" agent "$gn_av" \
+      --arg now "$gn_now" --arg owner "$gn_owner" --arg real "$gn_real" --arg head "$gn_head" \
+      "$LT_JQ_DEFS$GUARD_JQ_BASH$GUARD_JQ_NODE") || return 1
+    lt_rest=$gn_d
+    lt_take
+    case $lt_t in
+      owner)
+        [ -z "$gn_owner" ] || return 1
+        lt_take; gn_cd=$lt_t
+        lt_take; gn_ref=$lt_t
+        lt_take; gn_oid=$lt_t
+        echo 'step checking the ownership ref'
+        gn_got=$(git --git-dir="$gn_cd" rev-parse -q --verify "$gn_ref" 2>/dev/null)
+        case $? in
+          0) if [ "$gn_got" = "$gn_oid" ]; then gn_owner=same; else gn_owner=moved; fi ;;
+          1) gn_owner=moved ;; # -q --verify: the ref is gone
+          *) gn_owner=unread ;;
+        esac
+        ;;
+      path)
+        [ -z "$gn_real" ] || return 1
+        echo 'step resolving the path'
+        gn_r=$(lt_realpath "$lt_rest") || gn_r=
+        gn_real="=$gn_r"
+        ;;
+      head)
+        [ -z "$gn_head" ] || return 1
+        echo 'step reading the bound branch'
+        gn_h=
+        case $lt_rest in
+          /*) gn_h=$(git -C "$lt_rest" symbolic-ref -q HEAD 2>/dev/null) || gn_h= ;;
+        esac
+        gn_head="=$gn_h"
+        ;;
+      other)
+        printf '%s\n' "$gn_other"
+        return 0
+        ;;
+      *)
+        printf '%s\n' "$gn_d"
+        return 0
+        ;;
+    esac
+  done
 }
 
 guard_work() {
@@ -425,13 +721,46 @@ guard_work() {
   lt_take
   printf '%s\n' "$lt_t"
   lt_take
-  if [ "$lt_t" != next ]; then
-    printf '%s\n%s\n' "$lt_t" "$lt_rest"
-    return 0
-  fi
-  lt_id=$lt_rest
-
-  # guard_node: swarm nodes (phase 2b) slot in here; GUARD_JQ_CALL refuses them for now.
+  lt_cfg=
+  case ${CLAUDE_CONFIG_DIR:-} in
+    /*) lt_cfg=$(lt_realdir "$CLAUDE_CONFIG_DIR") || lt_cfg=${CLAUDE_CONFIG_DIR%/} ;;
+  esac
+  case $lt_t in
+    next) lt_id=$lt_rest ;;
+    node)
+      lt_take; lt_id=$lt_t
+      lt_take
+      # A litter:sw-* agent: its binding may still be landing, if its type is a live swarm's.
+      if [ "$lt_t" = wait ] && [ ! -f "$LT_DIR/agents/$lt_id.json" ]; then
+        echo 'step waiting for the binding'
+        lt_wait_for "$LT_DIR/agents/$lt_id.json" || :
+      fi
+      guard_node "$lt_id" ''
+      return
+      ;;
+    maybe)
+      lt_take; lt_id=$lt_t
+      lt_take; lt_kind=$lt_t
+      # Bound: a node's child, or a node that lost its type. Unbound: an
+      # agent-summary fork passes at once (15.9, item 18); anyone else waits
+      # for a binding while a spawn is pending.
+      if [ ! -f "$LT_DIR/agents/$lt_id.json" ] && [ "$lt_kind" = typed ] && lt_pending; then
+        echo 'step waiting for a pending binding'
+        lt_wait_for "$LT_DIR/agents/$lt_id.json" || :
+      fi
+      if [ -f "$LT_DIR/agents/$lt_id.json" ]; then
+        echo 'who litter'
+        guard_node "$lt_id" "$lt_rest"
+        return
+      fi
+      printf '%s\n' "$lt_rest"
+      return 0
+      ;;
+    *)
+      printf '%s\n%s\n' "$lt_t" "$lt_rest"
+      return 0
+      ;;
+  esac
 
   echo 'step reading policy.json, the bindings and the mode'
   lt_file "$LT_DIR/policy.json"
@@ -442,10 +771,6 @@ guard_work() {
   lt_af=$LT_FF lt_av=$LT_FV
   lt_file "$LT_DIR/mode"
   lt_mf=$LT_FF lt_mv=$LT_FV
-  lt_cfg=
-  case ${CLAUDE_CONFIG_DIR:-} in
-    /*) lt_cfg=$(lt_realdir "$CLAUDE_CONFIG_DIR") || lt_cfg=${CLAUDE_CONFIG_DIR%/} ;;
-  esac
   lt_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" \
     "$lt_pf" pol "$lt_pv" "$lt_bf" bind "$lt_bv" "$lt_af" agent "$lt_av" "$lt_mf" mode "$lt_mv" \
     "$LT_JQ_DEFS$GUARD_JQ_BASH$GUARD_JQ_CALL") || return 1

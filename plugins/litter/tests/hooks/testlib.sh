@@ -187,12 +187,14 @@ bind() {
 }
 
 # call <agent_type> <tool> <tool_input JSON> [jq filter]: a PreToolUse input,
-# from agent a1 of that type, or from the main thread for `-`.
+# from agent a1 of that type, or from the main thread for `-`. The keys come
+# in the engine's order, the base fields (agent_id among them) before
+# hook_event_name, which lib.sh's lt_raw_agent_id relies on.
 call() {
   jq -cn --arg ty "$1" --arg tool "$2" --argjson ti "$3" --arg cwd "$T_DIR/project" '
-    {session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: $cwd, permission_mode: "auto",
-     hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $ti, tool_use_id: "toolu_1"}
-    + (if $ty == "-" then {} else {agent_id: "a1", agent_type: $ty} end)' | jq -c "${4:-.}"
+    {session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: $cwd, permission_mode: "auto"}
+    + (if $ty == "-" then {} else {agent_id: "a1", agent_type: $ty} end)
+    + {hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $ti, tool_use_id: "toolu_1"}' | jq -c "${4:-.}"
 }
 
 # bash_call <agent_type> <command>: a Bash call's input.
@@ -262,6 +264,76 @@ fanout_policy() {
 wt_in() {
   jq -cn --arg n "$1" --arg cwd "${2:-$T_DIR/project}" \
     '{session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: $cwd, hook_event_name: "WorktreeCreate", name: $n}'
+}
+
+# --- swarms (plan 15.4, "The guard for nodes") -------------------------------
+
+# swarm_policy [jq filter]: policy.json with swarm `s` live and no run, as
+# swarm/guard.ts's writeSwarmPolicy writes it, then `active`. Its owner check
+# is fresh (checkedAt now), so the guard runs no git; the filter edits it
+# last, e.g. '.swarm.swarms.s.state = "stopping"'. A test that sets a stale
+# check uses `swarm_ref` for the ref and oid.
+swarm_policy() {
+  sp_hooks=$(hooks_dir)
+  sp_co=$(real_project)
+  jq -n --arg co "$sp_co" --arg ld "$sp_co/.claude/litter" --argjson roles "$T_ROLES" --argjson now "$(date +%s)" \
+    --arg oid "${SWARM_OID:-0123456789abcdef0123456789abcdef01234567}" '
+    {v: 1, session: "s1", litterDir: $ld, run: null, roles: $roles,
+     swarm: {swarms: {s: {launch: "20261003-120000", state: "live", commonDir: ($co + "/.git"),
+       owner: {ref: "refs/litter-swarm/s", oid: $oid, generation: 1, session: "s1", checkedAt: $now},
+       nodeTypes: ["litter:sw-s-lead", "litter:sw-s-fixer", "litter:sw-s-reviewer"]}}}}' |
+    jq "${1:-.}" >|"$sp_hooks/policy.json" || fail "swarm policy fixture"
+  : >|"$sp_hooks/active"
+}
+
+# swarm_ref: the scratch repository (see `repo`) gets refs/litter-swarm/s at
+# a blob, as Launch takes it; sets SWARM_OID.
+swarm_ref() {
+  SWARM_OID=$(printf '{"swarm":"s"}\n' | git -C "$T_DIR/project" hash-object -w --stdin) || fail "owner blob"
+  git -C "$T_DIR/project" update-ref refs/litter-swarm/s "$SWARM_OID" || fail "owner ref"
+}
+
+# node_policy <agent_id> [jq filter]: agents/<agent_id>.json for an admitted
+# orchestrator `lead` of swarm s, working in the scratch project with no
+# limits set, as nodePolicyFor renders it. The filter edits the node, e.g.
+# '.kind = "worker" | .parent = "a0"'.
+node_policy() {
+  nd_hooks=$(hooks_dir)
+  nd_co=$(real_project)
+  mkdir -p "$nd_hooks/agents"
+  jq -n --arg co "$nd_co" '
+    {swarm: "s", launch: "20261003-120000", node: "lead", n: 1, kind: "orchestrator", of: null,
+     type: "litter:sw-s-lead", parent: null, generation: 1, dir: $co, paths: null,
+     protect: [($co + "/.claude/litter"), ($co + "/.litter"), ($co + "/.litter.local"),
+               ($co + "/.claude/rules/litter"), ($co + "/.claude/rules/litter-local")],
+     branch: null, authority: {}, toolsDeny: [], bashDeny: [], spawns: [], spawnOther: true,
+     admitted: true, stopped: null, bind: false}' | jq "${2:-.}" | jq '{v: 1, node: .}' >|"$nd_hooks/agents/$1.json" ||
+    fail "node fixture"
+}
+
+# A swarm live, with orchestrator a1 bound: swarm_setup [node filter] [policy filter].
+swarm_setup() {
+  project >/dev/null
+  swarm_policy "${2:-.}"
+  node_policy a1 "${1:-.}"
+}
+
+# A PreToolUse input from agent <id> of <agent_type>: as_agent <id> <call…>.
+as_agent() {
+  aa_id=$1
+  shift
+  "$@" | jq -c --arg id "$aa_id" '.agent_id = $id'
+}
+
+# stop_input <id> <agent_type> [jq filter]: a SubagentStop input for that
+# agent. background_tasks lists the agent itself, as the engine's does.
+stop_input() {
+  jq -cn --arg id "$1" --arg ty "$2" '
+    {session_id: "s1", transcript_path: "/p/s1.jsonl", cwd: "/p", permission_mode: "auto", agent_id: $id,
+     agent_type: $ty, hook_event_name: "SubagentStop", stop_hook_active: false,
+     agent_transcript_path: "/p/s1/subagents/a.jsonl", last_assistant_message: "done",
+     background_tasks: [{id: $id, type: "subagent", status: "running", description: "d", agent_type: $ty}],
+     session_crons: []}' | jq -c "${3:-.}"
 }
 
 # A folder holding a fake <tool> that runs <body>, for PATH=…:$PATH.
