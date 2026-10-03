@@ -27,6 +27,7 @@ import { LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
 import { readPolicy } from '../policy'
 import { session } from '../session'
 import {
+  binding,
   bindings,
   dropLiveSwarm,
   isStopped,
@@ -586,8 +587,19 @@ export function recoveryCard(name: string): RecoveryCard | null {
   }
   const nodes = card.nodes.filter(x => !handled.has(x.agentId))
   if (s.state === 'stopping') return { ...card, stopping: true, nodes }
+  // A worker comes back through its orchestrator (15.4, "Recreating a swarm", step 4), so one whose
+  // orchestrator is off the card goes with it, as N's pendingCard has it (view.ts).
+  const onCard = new Set(nodes.map(x => x.agentId))
+  const shown = nodes.filter(x => x.kind !== 'worker' || onCard.has(orchestratorOf(x.agentId) ?? ''))
   // Alive ones are shown with the rest; alone, they need nothing.
-  return nodes.every(x => x.state === 'alive') ? null : { ...card, stopping: false, nodes }
+  return shown.every(x => x.state === 'alive') ? null : { ...card, stopping: false, nodes: shown }
+}
+
+/** The orchestrator a worker reports up to, by its bindings' parents; null when a binding on the way is gone. */
+function orchestratorOf(agentId: string): string | null {
+  let b = binding(agentId)
+  for (let i = 0; b && b.kind !== 'orchestrator' && i < 16; i++) b = b.parent ? binding(b.parent) : null
+  return b && b.kind === 'orchestrator' ? b.agentId : null
 }
 
 /** The authority lines swarm.start recorded, in the spec's order: what Launch put in the prompt box. */

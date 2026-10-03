@@ -239,10 +239,13 @@ describe('resume and re-spawn', () => {
     const authority = Object.values((await startOf(launch)).authority)
     const { q } = await crashRespawn()
     await recoverSwarms(q, w.litterDir)
+    // fixer #1 is on the card while lead-a, its orchestrator, is.
+    expect(recoveryCard('alpha')!.nodes.map(n => n.agentId)).toEqual(['ag-l1', 'ag-f1', 'ag-d1'])
     await requestResume(q, 'alpha', ['lead-a', 'docs'], 'resume')
     expect(q.filled).toEqual([['/litter:swarm resume alpha lead-a docs', ...authority].join('\n')])
-    // The orchestrators are dealt with; the worker their notes name is left on the card.
-    expect(recoveryCard('alpha')!.nodes.map(n => n.agentId)).toEqual(['ag-f1'])
+    // The orchestrators are dealt with, and the worker comes back through lead-a, whose note names it
+    // (15.4, step 4): it goes with its orchestrator, as N's pendingCard has it (FIX-T 10).
+    expect(recoveryCard('alpha')).toBeNull()
 
     const lead = await swarmRead(w, { swarm: 'alpha', node: 'lead-a', for: 'resume' })
     expect(lead).toEqual(expect.objectContaining({ ok: true, swarm: 'alpha', node: 'lead-a', for: 'resume', agentIds: ['ag-l1'] }))
