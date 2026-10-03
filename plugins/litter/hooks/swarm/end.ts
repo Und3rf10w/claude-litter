@@ -188,6 +188,8 @@ type Wait = {
   shellTried: Map<string, number>
   shellFailed: Set<string>
   lastError: string | null
+  /** Each spool file still pending, with when a tick, nothing else open, first saw it (U7). */
+  spool: Map<string, number>
 }
 
 const waits = new Map<string, Wait>()
@@ -208,6 +210,7 @@ function waitFor(p: Ports, litterDir: string, name: string, since: number): Wait
       shellTried: new Map(),
       shellFailed: new Set(),
       lastError: null,
+      spool: new Map(),
     }
     waits.set(name, w)
   }
@@ -330,20 +333,34 @@ function closeStaleCalls(name: string, list: ListedAgent[]): void {
  * Lines the hooks spooled that the drain hasn't handed on yet (a call's end
  * naming a background shell, say), for this session and the swarm's owner
  * session: the wait doesn't settle on a table the spool is about to change.
+ * Answers the files' names (an aside's as policy.ts's drain names it).
  */
-async function spoolPending(p: Ports, litterDir: string, s: LiveSwarm): Promise<boolean> {
+async function spoolPending(p: Ports, litterDir: string, s: LiveSwarm): Promise<string[]> {
   const dir = spoolDir(litterDir)
-  if (!(await p.fs.exists(dir))) return false
+  if (!(await p.fs.exists(dir))) return []
   const sessions = [...new Set([await p.sessionId(), s.owner.session])]
+  const out: string[] = []
   for (const e of await p.fs.list(dir)) {
     if (e.kind !== 'file') continue
     for (const sid of sessions) {
-      if (e.name.startsWith(`${sid}.jsonl.draining-`)) return true
-      if (e.name === `${sid}.jsonl` && ((await p.fs.stat(`${dir}/${e.name}`).catch(() => null))?.size ?? 0) > 0) return true
+      if (e.name.startsWith(`${sid}.jsonl.draining-`) && ASIDE_ID.test(e.name.slice(`${sid}.jsonl.draining-`.length))) out.push(e.name)
+      else if (e.name === `${sid}.jsonl` && ((await p.fs.stat(`${dir}/${e.name}`).catch(() => null))?.size ?? 0) > 0) out.push(e.name)
     }
   }
-  return false
+  return out
 }
+
+/** policy.ts's aside suffix: `<session>.jsonl.draining-<id>`. A name it wouldn't drain isn't waited on. */
+const ASIDE_ID = /^[A-Za-z0-9-]+$/
+
+/**
+ * How long the settle waits on a spool file that stays (FIX-U, U7): the drain
+ * skips a malformed line or one whose blob is missing, but an aside it can't
+ * read or remove, or a live file it can't rename, stays, and only a
+ * session.start drains asides. Past this, with nothing else open, the settle
+ * counts their lines as drained, and swarm.end's reason names the files.
+ */
+export const SPOOL_STUCK_MS = 30_000
 
 /** One tick of the settle wait (15.4, "Settling"), from its own timer: settled, it ends the swarm. */
 async function settleTick(p: Ports, name: string, w: Wait): Promise<void> {
@@ -362,9 +379,18 @@ async function settleTick(p: Ports, name: string, w: Wait): Promise<void> {
     closeStaleCalls(name, w.list)
     const open = openParts(s, w.list)
     const settled = open.nodes.length === 0 && open.calls.length === 0 && open.shells.length === 0 && open.reservations === 0
-    if (settled && !(await spoolPending(p, w.litterDir, s))) {
-      await finish(p, w.litterDir, name, true)
-      return
+    if (!settled) w.spool.clear()
+    else {
+      const pending = await spoolPending(p, w.litterDir, s)
+      const now = await p.now()
+      for (const f of [...w.spool.keys()]) if (!pending.includes(f)) w.spool.delete(f)
+      for (const f of pending) if (!w.spool.has(f)) w.spool.set(f, now)
+      const stuck = pending.filter(f => now - w.spool.get(f)! >= SPOOL_STUCK_MS)
+      if (stuck.length === pending.length) {
+        if (stuck.length > 0) p.log(`swarm ${name}: settled but for ${stuck.join(', ')}, which didn't drain within 30 s; its lines are counted as drained`)
+        await finish(p, w.litterDir, name, true, stuck)
+        return
+      }
     }
     if (!w.reported && (await p.now()) - w.since >= UNSETTLED_MS) {
       w.reported = true
@@ -425,8 +451,9 @@ async function recordKept(p: Ports, litterDir: string, swarm: string, launch: st
  * Each step after swarm.end is logged when it fails, and the rest go on. A
  * launch ledger that's broken (its chain or head check fails) ends the swarm
  * too, with no cleanup and no swarm.end, said in a toast and in summary.md.
+ * `stuckSpool` names the spool files the settle stopped waiting on (U7).
  */
-async function finish(p: Ports, litterDir: string, name: string, settled: boolean): Promise<void> {
+async function finish(p: Ports, litterDir: string, name: string, settled: boolean, stuckSpool: readonly string[] = []): Promise<void> {
   await serial(endKey(litterDir, name), async () => {
     const s = state.liveSwarm(name)
     if (!s || s.readOnly || s.lost || s.state !== 'stopping') return
@@ -449,7 +476,11 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
           const body: SwarmEndBody = {
             status: 'ended',
             settled,
-            ...(settled ? {} : { reason: 'ended with [End, keep everything] before it settled' }),
+            ...(!settled
+              ? { reason: 'ended with [End, keep everything] before it settled' }
+              : stuckSpool.length > 0
+                ? { reason: `${stuckSpool.join(', ')} didn't drain within 30 s, so the settle counted its lines as drained` }
+                : {}),
             nodes: nodesOf(s.spec, records, s.name),
             worktrees,
             branches: await branchesLeft(p, s, records, worktrees),
@@ -985,7 +1016,7 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string,
     ? end.status === 'launch_failed'
       ? `launch failed${end.reason ? ` (${end.reason})` : ''}`
       : end.settled
-        ? 'ended, settled'
+        ? `ended, settled${end.reason ? ` (${flat(end.reason)})` : ''}`
         : 'ended without settling: [End, keep everything] ended it while something still ran, so no worktree was removed'
     : opts.unrecordedEnd
       ? 'ended, but its launch ledger is broken, so it holds no swarm.end, and no worktree was removed'

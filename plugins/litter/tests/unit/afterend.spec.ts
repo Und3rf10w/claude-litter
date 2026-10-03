@@ -10,7 +10,7 @@
 // real files, written and removed by guard.ts.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentPolicy, NodePolicy, Policy, SwarmEntry } from '../../hooks/hookfiles'
 import type { ListedAgent, SessionSendResult, ToolCallResult } from '../../hooks/ports'
@@ -523,6 +523,51 @@ describe("U6: a broken launch ledger doesn't hold the end", () => {
       expect(summary).toContain('- Ledger: tampered at record')
     })
   }
+})
+
+describe('U7: a spool that never drains holds the settle only for a bounded time', () => {
+  /** A spool file of this session: an aside an earlier drain left (only session.start drains those), or the live one. */
+  async function spoolFile(name: string): Promise<string> {
+    const path = join(spoolDir(litterDir), name)
+    await p.fs.write(path, `${JSON.stringify({ ev: 'call', agent_id: 'a-fix1', tool: 'Bash' })}\n`)
+    return path
+  }
+
+  test('an aside no drain here will take: the settle waits 30 s for it, then ends settled and says which file', async () => {
+    await live()
+    await spoolFile('test-session.jsonl.draining-abc123')
+    await endSwarm(p, 'alpha', 'request')
+    await fireEvery(p)
+    expect(state.liveSwarm('alpha')).not.toBeNull()
+    p.clock.now! += 29_000
+    await fireEvery(p)
+    expect(await kinds()).not.toContain('swarm.end')
+    p.clock.now! += 2_000
+    await fireEvery(p)
+    expect(state.liveSwarm('alpha')).toBeNull()
+    const [end] = await bodyOf('swarm.end')
+    expect(end).toEqual(expect.objectContaining({ status: 'ended', settled: true, reason: expect.stringContaining('test-session.jsonl.draining-abc123') }))
+    expect(String((end as { reason: string }).reason)).toContain('30 s')
+    expect(p.logs.some(l => l.includes('test-session.jsonl.draining-abc123'))).toBe(true)
+    const summary = readFileSync(launchSummaryPath(litterDir, 'alpha', launch), 'utf8')
+    expect(summary).toMatch(/- Status: ended, settled \(.*test-session\.jsonl\.draining-abc123/)
+  })
+
+  test("a spool that drains in time holds the settle until it's drained, and the end says nothing of it", async () => {
+    await live()
+    const path = await spoolFile('test-session.jsonl')
+    await endSwarm(p, 'alpha', 'request')
+    await fireEvery(p)
+    p.clock.now! += 10_000
+    await fireEvery(p)
+    expect(state.liveSwarm('alpha')).not.toBeNull()
+    rmSync(path)
+    await fireEvery(p)
+    expect(state.liveSwarm('alpha')).toBeNull()
+    const [end] = await bodyOf('swarm.end')
+    expect(end).toEqual(expect.objectContaining({ settled: true }))
+    expect(end).not.toHaveProperty('reason')
+  })
 })
 
 describe('U3: the cleanup counts a node as ended the way the settle wait does', () => {
