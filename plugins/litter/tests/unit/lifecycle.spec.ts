@@ -292,6 +292,16 @@ describe("the launcher's run.end fallback", () => {
     expect(again).toEqual(expect.objectContaining({ ok: true, recorded: false }))
   })
 
+  test('a launcher that reports the run complete or done without its result ends it failed, never done', async () => {
+    for (const status of ['completed', 'done']) {
+      const w = await world()
+      const r = await launched(w)
+      await recordRunEnd(w.ctx, { kind: 'run.end', run: r.run, taskId: r.taskId, status })
+      expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'failed', source: 'launcher' }))
+      expect((await lastEnd(w, r.ref))?.reason).toContain('unrecognized result')
+    }
+  })
+
   test("killed from the launcher is stopped; a status that isn't one is refused", async () => {
     const w = await world()
     const r = await launched(w)

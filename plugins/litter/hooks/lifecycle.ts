@@ -52,7 +52,7 @@ import {
   SNAPSHOT_EXCLUDES,
 } from './layout'
 import { atomicWrite, randomId, readJson, serial, sha256 } from './fsx'
-import { forgetRunAgents, readPolicy, setActive, writePolicy } from './policy'
+import { forgetRunAgents, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
 import { endVerifies, verifiesInFlight } from './verify'
 import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
@@ -332,10 +332,14 @@ export async function patchRunPolicy(
   patch: (r: NonNullable<Policy['run']>) => NonNullable<Policy['run']>,
   sessionId?: string,
 ): Promise<boolean> {
-  const policy = await readPolicy(p, litterDir)
-  if (!policy?.run || policy.run.run !== run) return false
-  await writePolicy(p, litterDir, { ...policy, ...(sessionId ? { session: sessionId } : {}), run: patch(policy.run) })
-  return true
+  // Under policy.ts's lock: the drain timer, the TaskStop hook and integrate each patch the same file.
+  let wrote = false
+  await updatePolicy(p, litterDir, policy => {
+    if (!policy.run || policy.run.run !== run) return null
+    wrote = true
+    return { ...policy, ...(sessionId ? { session: sessionId } : {}), run: patch(policy.run) }
+  })
+  return wrote
 }
 
 /** The run is no longer active: `active` goes first (unless a swarm is live), then policy.json's run. */
@@ -343,7 +347,7 @@ export async function deactivate(p: Ports, litterDir: string, run: string): Prom
   const policy = await readPolicy(p, litterDir).catch(() => undefined)
   if (policy && policy.run && policy.run.run !== run) return
   if (!policy || policy.swarm === null) await setActive(p, litterDir, false)
-  if (policy?.run) await writePolicy(p, litterDir, { ...policy, run: null })
+  if (policy?.run) await updatePolicy(p, litterDir, pol => (pol.run?.run === run ? { ...pol, run: null } : null))
 }
 
 /** Releases refs/litter-active if its blob names this run. */
@@ -637,15 +641,13 @@ async function unsettled(p: Ports, ref: RunRef, records: readonly StoredRecord[]
   if (verifies > 0) open.push(`${verifies} verify run(s) still ending`)
   const policy = await readPolicy(p, ref.litterDir).catch(() => undefined)
   if (policy?.run?.run === ref.run && policy.run.inflight) open.push(`a ${policy.run.inflight} in flight`)
-  const made = new Set<string>()
-  const intents = new Set<string>()
+  // Each name's latest step: a gone worktree re-added after its create opens a new intent.
+  const latest = new Map<string, string>()
   for (const r of records) {
     const name = typeof r.body.name === 'string' ? r.body.name : null
-    if (!name) continue
-    if (r.kind === 'worktree.intent') intents.add(name)
-    if (r.kind === 'worktree.create' || r.kind === 'worktree.setup_failed') made.add(name)
+    if (name && (r.kind === 'worktree.intent' || r.kind === 'worktree.create' || r.kind === 'worktree.setup_failed')) latest.set(name, r.kind)
   }
-  const pendingWorktrees = [...intents].filter(n => !made.has(n))
+  const pendingWorktrees = [...latest].filter(([, kind]) => kind === 'worktree.intent').map(([name]) => name)
   if (pendingWorktrees.length > 0) open.push(`worktrees still being made: ${pendingWorktrees.join(', ')}`)
   if ((await engineSnapshot(p, ref.litterDir, gen)) === null && (await snapshotExpected(p, ref.litterDir, gen))) {
     open.push("the engine hasn't written the run's snapshot yet")
@@ -2084,7 +2086,8 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
   if (gen.end) return { ok: true, recorded: false, end: gen.end }
   if (gen !== st.open) return fail(`litter: task ${input.taskId} isn't run ${ref.run}'s open generation (task ${st.latest?.taskId})`, 'taskId')
   let decoded: Decoded
-  if (status === 'completed') {
+  if (status === 'completed' || status === 'done') {
+    // Done only from a script return the decoder recognises; a claim alone fails closed (the decoder table's last row).
     let result: unknown = input.result
     if (typeof result === 'string') {
       try {
@@ -2093,7 +2096,10 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
         result = undefined
       }
     }
-    decoded = result === undefined ? { status: 'done', reason: 'reported done by the launcher; the mod saw no result' } : decodeReturn(await workflowOf(p, ref, st), { status: 'completed', result })
+    decoded =
+      result === undefined
+        ? { status: 'failed', reason: 'unrecognized result: the launcher reported the run complete without its result' }
+        : decodeReturn(await workflowOf(p, ref, st), { status: 'completed', result })
   } else {
     decoded = { status: ENGINE_WORDS[status] ?? (status as RunStatus), reason: typeof input.reason === 'string' ? input.reason : null }
   }

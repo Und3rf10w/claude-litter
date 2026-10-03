@@ -63,7 +63,6 @@ export async function setActive(p: Ports, litterDir: string, on: boolean): Promi
 
 const spoolKey = (litterDir: string) => `spool:${litterDir}`
 
-const SPOOL_EVENTS: readonly SpoolEvent[] = ['start', 'stop', 'output', 'mode', 'isolation-lost', 'deny']
 /** A spool file the drain renamed aside: `<session>.jsonl.draining-<id>`. */
 const ASIDE = /^(.+)\.jsonl\.draining-[A-Za-z0-9-]+$/
 const LIVE = /^(.+)\.jsonl$/
@@ -75,7 +74,8 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 /** Why a parsed line isn't a spool line, or null when it is one. */
 function lineProblem(line: Record<string, unknown>): string | null {
   if (line.v !== 1) return `version ${JSON.stringify(line.v)}, not 1`
-  if (typeof line.ev !== 'string' || !(SPOOL_EVENTS as readonly string[]).includes(line.ev)) return `unknown ev ${JSON.stringify(line.ev)}`
+  // REQUIRED is keyed by every SpoolEvent, so a new event can't be left out of this check.
+  if (typeof line.ev !== 'string' || !Object.hasOwn(REQUIRED, line.ev)) return `unknown ev ${JSON.stringify(line.ev)}`
   if (typeof line.session_id !== 'string' || line.session_id === '') return 'no session_id'
   if (typeof line.ts !== 'number' || !Number.isFinite(line.ts)) return 'no ts'
   for (const field of REQUIRED[line.ev as SpoolEvent]) {
