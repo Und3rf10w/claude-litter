@@ -4,7 +4,9 @@
 // the result, and a node's non-swarm children. For a repair swarm (2b-2,
 // package Y), its budget: a worker or child spawn is counted against
 // `repairAgents` in the step that reserves and given back on undo; past the
-// agents or the rounds it's refused (gate.ts).
+// agents or the rounds it's refused (gate.ts). Phase 3 (package AE): the
+// rules block holds the node's accepted rules and its swarm's proposals
+// (16.5, 15.10), selected before the check and reservation.
 //
 // The check applies when `subagentType` is a live swarm's type, or the
 // spawning loop is a bound node or a node's child. Anything else passes to
@@ -39,7 +41,16 @@ import {
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
 import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
 import { budgetCounted, budgetLeft, budgetRefusal, countsAgainstBudget } from './gate'
+import { RULES_CAP, selectForSpawn } from '../rules/select'
+import { proposalsOf } from '../rules/store'
 import * as state from './state'
+
+// Phase 3's rules (AE's selection, AD's proposals), through one table so tier 2 can stand in for them
+// (COMMON, "Another package's module"). The mod never changes it.
+export const deps = {
+  selectForSpawn: (...a: Parameters<typeof selectForSpawn>) => selectForSpawn(...a),
+  proposalsOf: (...a: Parameters<typeof proposalsOf>) => proposalsOf(...a),
+}
 
 type Spawn = Parameters<PortHook<SpawnHook>>[1]
 type Next = Parameters<PortHook<SpawnHook>>[2]
@@ -79,6 +90,19 @@ type Plan = {
 const isolated = (e: Spawn): boolean => {
   const v = (e as unknown as Record<string, unknown>).isolation
   return v !== undefined && v !== null && v !== ''
+}
+
+/**
+ * A node's directory when it isn't `own` (15.3, "`worktree` values"):
+ * `inherit` its parent's (the node's from Launch, or the session's, under
+ * the lead), `none` the session's, else the one Launch set. Null when there's none.
+ */
+function sharedDir(s: LiveSwarm, node: SwarmNode, parentB: NodeBinding | null): string | null {
+  const wt = node.worktree ?? 'inherit'
+  const dirOf = s.dirs[node.id]
+  if (wt === 'inherit') return node.kind === 'worker' ? (parentB?.cwd ?? null) : (dirOf?.dir ?? s.sessionCwd)
+  if (wt === 'none') return dirOf?.dir ?? s.sessionCwd
+  return dirOf?.dir ?? null
 }
 
 /**
@@ -151,10 +175,11 @@ function planNode(e: Spawn, hit: { swarm: string; node: string }, parentB: NodeB
   const dirOf = s.dirs[node.id]
   let dir: string
   if (own) dir = '' // per instance, below, once its number is taken
-  else if (wt === 'inherit') dir = node.kind === 'worker' ? parentB!.cwd : (dirOf?.dir ?? s.sessionCwd)
-  else if (wt === 'none') dir = dirOf?.dir ?? s.sessionCwd
-  else if (dirOf) dir = dirOf.dir
-  else return `swarm ${s.name} has no directory for ${node.id}; end it and launch again`
+  else {
+    const shared = sharedDir(s, node, parentB)
+    if (shared === null) return `swarm ${s.name} has no directory for ${node.id}; end it and launch again`
+    dir = shared
+  }
 
   const commit = node.authority?.commit === true
   let branch: Plan['branch'] = null
@@ -243,13 +268,76 @@ function budgetText(s: LiveSwarm): string | null {
 const parentName = (plan: Plan): string =>
   plan.parent === null ? PARENT_LEAD : plan.parent.kind === 'worker' ? `${plan.parent.node} #${plan.parent.n}` : plan.parent.node
 
+/** 16.5 and 15.10's label on a proposal that reaches a later prompt of the same swarm. */
+export const PROPOSED_LABEL = 'Proposed in this run, not accepted: '
+/** 15.10: at most this many of the swarm's proposals reach a spawn. */
+export const PROPOSALS_MAX = 10
+
+const bytes = (s: string): number => new TextEncoder().encode(s).length
+const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
+
+/**
+ * The `<rules>` block's text for a spawn of a swarm type: the node's rules
+ * (AE's selectForSpawn, 16.5), then its swarm's pending proposals, labelled,
+ * deduplicated by folded text, the PROPOSALS_MAX most recent (15.10), while
+ * the block's 8 KiB lasts. RULES_NONE when nothing applies. Run before the
+ * check and reservation, which await nothing (15.4), from the node and
+ * directory planNode settles on; a spawn planNode refuses, and a child (it
+ * gets no block), take RULES_NONE. A rules failure throws: the spawn is
+ * denied, as a launch whose rules can't be selected is refused. A proposals
+ * failure is logged, since proposals bind nobody.
+ */
+async function rulesBlock(p: Ports, litterDir: string, e: Spawn, parentB: NodeBinding | null, root: string): Promise<string> {
+  const hit = state.swarmOfType(e.subagentType)
+  const s = hit ? state.liveSwarm(hit.swarm) : null
+  const node = s && hit ? nodeOf(s, hit.node) : null
+  if (!s || !node) return RULES_NONE
+  // An own worktree is made after the reservation; any instance's path is that worktree's top, which is all
+  // selection reads from it (the node's paths are relative to the repository there). Instances count from 1.
+  const dir = (node.worktree ?? 'inherit') === 'own' ? `${root}/${swarmOwnWorktreeName(s.name, node.id, 0)}` : sharedDir(s, node, parentB)
+  if (dir === null) return RULES_NONE
+  const entries = await deps.selectForSpawn(p, litterDir, { swarm: s, node, dir })
+  let used = entries.reduce((n, x) => n + bytes(x) + 1, 0)
+  const out = [...entries]
+  for (const x of await swarmProposals(p, litterDir, s.name)) {
+    const n = bytes(x) + 1
+    if (used + n > RULES_CAP) break
+    out.push(x)
+    used += n
+  }
+  return out.length > 0 ? out.join('\n') : RULES_NONE
+}
+
+/** The swarm's pending proposals as entries: newest first to pick the PROPOSALS_MAX, given back oldest first. */
+async function swarmProposals(p: Ports, litterDir: string, swarm: string): Promise<string[]> {
+  let list: Awaited<ReturnType<typeof proposalsOf>>
+  try {
+    list = await deps.proposalsOf(p, litterDir, { swarm, status: ['proposed'] })
+  } catch (err) {
+    p.log(`swarm ${swarm}: its critics' proposals couldn't be read, so this spawn's rules block has none: ${errText(err)}`)
+    return []
+  }
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (let i = list.length - 1; i >= 0 && out.length < PROPOSALS_MAX; i--) {
+    const x = list[i]!
+    if (x.status !== 'proposed') continue
+    const text = oneLine(x.body.doc?.body.rule ?? x.body.rule ?? '')
+    const folded = text.toLowerCase()
+    if (text === '' || seen.has(folded)) continue
+    seen.add(folded)
+    out.push(`${PROPOSED_LABEL}${text}`)
+  }
+  return out.reverse()
+}
+
 /**
  * The prompt a node spawns with: its `<instance>` block, its `<rules>` block,
  * then the task (litter-prompts.md). `nonce` is the instance's own, made now,
  * after the parent wrote the task: the swarm's would be in every node's own
  * blocks, so a parent could close its child's or forge whole new ones.
  */
-function promptFor(plan: Plan, dir: string, branch: string | null, token: string, nonce: string, task: string): string {
+function promptFor(plan: Plan, dir: string, branch: string | null, token: string, nonce: string, task: string, rules: string): string {
   const instance = renderSlots(SWARM_INSTANCE, {
     nonce,
     node: plan.node.id,
@@ -263,8 +351,8 @@ function promptFor(plan: Plan, dir: string, branch: string | null, token: string
     budget: budgetText(plan.s),
     token,
   })
-  const rules = renderSlots(SWARM_RULES, { nonce, rules: RULES_NONE })
-  return `${instance}\n\n${rules}\n\n${task}`
+  const block = renderSlots(SWARM_RULES, { nonce, rules: rules === '' ? RULES_NONE : rules })
+  return `${instance}\n\n${block}\n\n${task}`
 }
 
 /** The branch checked out in `dir`, as a full ref; null on a detached HEAD. */
@@ -321,13 +409,20 @@ export const swarmSpawn: PortHook<SpawnHook> = async (p, e, next) => {
   }
   const root = await litterWorktreeRoot(p, dir)
   const at = await p.now()
+  // The <rules> block awaits the store, so it's selected here, before the check and reservation (15.4).
+  let rules: string
+  try {
+    rules = await rulesBlock(p, dir, e, parentB, root)
+  } catch (err) {
+    return deny(`swarm ${swarm}'s accepted rules couldn't be selected, so it starts nothing: ${errText(err)}. /litter-rules shows them and their problems`)
+  }
 
   const plan = planSpawn(e, root, at)
   if (typeof plan === 'string') return deny(plan)
-  return startPlanned(p, dir, plan, e, next, at)
+  return startPlanned(p, dir, plan, e, next, at, rules)
 }
 
-async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, next: Next, at: number): Promise<SpawnResult> {
+async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, next: Next, at: number, rules: string): Promise<SpawnResult> {
   const { s, key } = plan
   const marker = pendingPath(litterDir, key)
   let made: Made | null = null
@@ -381,7 +476,7 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
     if (plan.kind !== 'child') {
       const body: SwarmInstanceBody = { node: plan.node.id, n: plan.n, parentAgentId: e.parentAgentId ?? null, tool_use_id: key, cwd, branch, token, nonce }
       await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.instance', body)
-      prompt = promptFor(plan, cwd, branch, token, nonce, e.prompt)
+      prompt = promptFor(plan, cwd, branch, token, nonce, e.prompt, rules)
     }
   } catch (err) {
     return undo(`${plan.node.id} couldn't be prepared: ${errText(err)}`)
