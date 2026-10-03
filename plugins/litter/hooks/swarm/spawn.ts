@@ -32,7 +32,7 @@ import {
   SWARM_INSTANCE,
   SWARM_RULES,
 } from '../prompts/swarm-instance'
-import { nodePolicyFor, writeNodePolicy } from './guard'
+import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
 import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal } from './admit'
 import * as state from './state'
 
@@ -194,6 +194,23 @@ function planChild(e: Spawn, parentB: NodeBinding): Plan | string {
   return { s, key: e.tool_use_id, kind: 'child', node, n: 0, parent: parentB, of, dir: of.cwd, own: false, branch: of.branch, scope }
 }
 
+/**
+ * The swarm's and the parent's refusals again, right before dispatch. An
+ * `own` worktree's setup can take minutes after the reservation, and a Stop
+ * of the parent meanwhile can't name an instance that has no binding yet
+ * (end.ts, stopNode, by descendants), nor can the swarm's End.
+ */
+function lateRefusal(plan: Plan): string | null {
+  const off = swarmRefusal(state.liveSwarm(plan.s.name), plan.s.name, plan.kind !== 'child')
+  if (off) return off
+  for (const b of [plan.parent, plan.of]) {
+    if (b === null) continue
+    if (state.binding(b.agentId) === null) return `${labelOf(b)} isn't bound any more, so it starts nothing`
+    if (state.isStopped(b.agentId)) return `${labelOf(b)} was stopped; it starts nothing`
+  }
+  return null
+}
+
 /** `{spawns_left}`: each worker it may start, at its count now, under the swarm's cap; with the hold line for a worker. */
 function spawnsLeft(plan: Plan): string {
   const list = Object.entries(plan.node.spawns ?? {})
@@ -208,10 +225,15 @@ function spawnsLeft(plan: Plan): string {
 const parentName = (plan: Plan): string =>
   plan.parent === null ? PARENT_LEAD : plan.parent.kind === 'worker' ? `${plan.parent.node} #${plan.parent.n}` : plan.parent.node
 
-/** The prompt a node spawns with: its `<instance>` block, its `<rules>` block, then the task (litter-prompts.md). */
-function promptFor(plan: Plan, dir: string, branch: string | null, token: string, task: string): string {
+/**
+ * The prompt a node spawns with: its `<instance>` block, its `<rules>` block,
+ * then the task (litter-prompts.md). `nonce` is the instance's own, made now,
+ * after the parent wrote the task: the swarm's would be in every node's own
+ * blocks, so a parent could close its child's or forge whole new ones.
+ */
+function promptFor(plan: Plan, dir: string, branch: string | null, token: string, nonce: string, task: string): string {
   const instance = renderSlots(SWARM_INSTANCE, {
-    nonce: plan.s.nonce,
+    nonce,
     node: plan.node.id,
     n: String(plan.n),
     swarm: plan.s.name,
@@ -222,7 +244,7 @@ function promptFor(plan: Plan, dir: string, branch: string | null, token: string
     spawns_left: spawnsLeft(plan),
     token,
   })
-  const rules = renderSlots(SWARM_RULES, { nonce: plan.s.nonce, rules: RULES_NONE })
+  const rules = renderSlots(SWARM_RULES, { nonce, rules: RULES_NONE })
   return `${instance}\n\n${rules}\n\n${task}`
 }
 
@@ -293,6 +315,7 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
   let cwd = plan.dir
   let branch: string | null = plan.branch === 'pending' ? null : plan.branch
   const token = crypto.randomUUID().replace(/-/g, '')
+  const nonce = crypto.randomUUID().replace(/-/g, '')
   let prompt = e.prompt
   try {
     const m: PendingMarker = { v: 1, swarm: s.name, node: plan.node.id, parent: e.parentAgentId ?? null, at: Math.floor(at / 1000) }
@@ -327,13 +350,17 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
     }
 
     if (plan.kind !== 'child') {
-      const body: SwarmInstanceBody = { node: plan.node.id, n: plan.n, parentAgentId: e.parentAgentId ?? null, tool_use_id: key, cwd, branch, token }
+      const body: SwarmInstanceBody = { node: plan.node.id, n: plan.n, parentAgentId: e.parentAgentId ?? null, tool_use_id: key, cwd, branch, token, nonce }
       await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.instance', body)
-      prompt = promptFor(plan, cwd, branch, token, e.prompt)
+      prompt = promptFor(plan, cwd, branch, token, nonce, e.prompt)
     }
   } catch (err) {
     return undo(`${plan.node.id} couldn't be prepared: ${errText(err)}`)
   }
+
+  // Judged again with nothing awaited before next(e): a stop or an End during the steps above refuses it here.
+  const late = lateRefusal(plan)
+  if (late) return undo(late)
 
   let r: SpawnResult
   try {
@@ -367,7 +394,14 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
     adopted: false,
   }
   state.putBinding(b)
+  // Its parent stopped while next(e) ran: that stop couldn't name it, so it's stopped with its parent.
+  const parentStop = b.parent === null ? undefined : state.stopped(s.name).find(x => x.agentId === b.parent)
+  if (parentStop && !state.isStopped(agentId)) state.stop(s.name, [agentId], parentStop.reason)
   try {
+    // The binding, then the policy file, then the record: a concurrent spawn's ledger append can't hold up
+    // the file the guard waits on (15.4, "The guard closes the race"); both still land before the hook returns.
+    // The write takes `stopped` from the stopped list under the file's key (guard.ts).
+    await writeNodePolicy(p, litterDir, agentId, nodePolicyFor(b, s, { admitted: true, stopped: null, bind: false }))
     const body: SwarmNodeBody = {
       node: b.node,
       n: b.n,
@@ -382,10 +416,11 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
       generation: b.generation,
     }
     await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.node', body)
-    await writeNodePolicy(p, litterDir, agentId, nodePolicyFor(b, s, { admitted: true, stopped: null, bind: false }))
   } catch (err) {
-    // Started but unbound: the guard would hold it to nothing, so it's stopped. Its worktree stays for the cleanup.
+    // Started but unbound: the guard would hold it to nothing, so it's stopped, and a policy already written admits
+    // nothing more. Its worktree stays for the cleanup.
     state.dropBinding(agentId)
+    await patchNodePolicy(p, litterDir, agentId, { admitted: false }).catch(() => {})
     await remove(p, marker).catch(() => {})
     await p.callTool('TaskStop', { task_id: agentId }).catch(x => p.log(`swarm ${s.name}: ${agentId} wasn't stopped: ${errText(x)}`))
     return deny(`${plan.node.id} started as ${agentId} but couldn't be bound (${errText(err)}), so litter stopped it`)

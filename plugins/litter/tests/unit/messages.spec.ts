@@ -4,17 +4,13 @@
 // node's messages to the lead and while its swarm is ending, and the lead's
 // <swarm> block.
 //
-// M's policy writer (guard.ts) is a stub in this package, so a local one
-// stands in for it; O's summary trigger is recorded instead of run.
+// The policy files are M's real writer's (guard.ts); O's summary trigger is
+// recorded instead of run.
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { join } from 'node:path'
-import * as realGuard from '../../hooks/swarm/guard'
-import type { NodeFlags } from '../../hooks/swarm/guard'
 import * as realSummary from '../../hooks/swarm/summary'
-import type { NodePolicy } from '../../hooks/hookfiles'
-import { agentPolicyPath } from '../../hooks/layout'
-import { atomicWriteJson, readJson } from '../../hooks/fsx'
+import { nodePolicyFor, writeNodePolicy } from '../../hooks/swarm/guard'
 import { newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
@@ -25,27 +21,13 @@ import type { ListedAgent, SessionSendResult } from '../../hooks/ports'
 import { fireEvery, nodePorts, runAfters, scratch, type TestPorts } from './support/node-ports'
 
 // ---------------------------------------------------------------------------
-// M's writer and O's trigger, stood in for (restored after this file)
+// O's trigger, stood in for (restored after this file)
 
-const GUARD = '../../hooks/swarm/guard'
 const SUMMARY = '../../hooks/swarm/summary'
-const realGuardCopy = { ...realGuard }
 const realSummaryCopy = { ...realSummary }
 const triggers: [string, string][] = []
-mock.module(GUARD, () => ({
-  ...realGuardCopy,
-  nodePolicyFor: (b: NodeBinding, _s: LiveSwarm, flags: NodeFlags) => ({ swarm: b.swarm, node: b.node, n: b.n, kind: b.kind, dir: b.cwd, ...flags }) as unknown as NodePolicy,
-  writeNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, node: NodePolicy) =>
-    atomicWriteJson(p, agentPolicyPath(litterDir, agentId), { v: 1, node }),
-  patchNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, patch: Partial<NodePolicy>) => {
-    const path = agentPolicyPath(litterDir, agentId)
-    const cur = await readJson<{ v: 1; node: NodePolicy }>(p, path)
-    if (cur) await atomicWriteJson(p, path, { v: 1, node: { ...cur.node, ...patch } })
-  },
-}))
 mock.module(SUMMARY, () => ({ ...realSummaryCopy, noteSummaryTrigger: (swarm: string, why: string) => void triggers.push([swarm, why]) }))
 afterAll(() => {
-  mock.module(GUARD, () => realGuardCopy)
   mock.module(SUMMARY, () => realSummaryCopy)
 })
 
@@ -125,7 +107,7 @@ function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
 async function put(b: NodeBinding, running: boolean): Promise<void> {
   state.putBinding(b)
   if (running) state.markRunning(b.agentId, null)
-  await atomicWriteJson(p, agentPolicyPath(litterDir, b.agentId), { v: 1, node: { node: b.node, admitted: running } })
+  await writeNodePolicy(p, litterDir, b.agentId, nodePolicyFor(b, state.liveSwarm(b.swarm)!, { admitted: running, stopped: null, bind: false }))
 }
 
 const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo', boundAt: NOW })

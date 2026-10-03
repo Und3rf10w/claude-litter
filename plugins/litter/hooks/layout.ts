@@ -40,6 +40,8 @@ export const pendingPath = (litterDir: LitterDir, key: string) => join(pendingDi
 export const donePath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'done', agentId)
 /** hold.sh's list of the children a worker was already held for. */
 export const holdPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'hold', agentId)
+/** The background tasks a bound agent started (watch.sh), so hold.sh counts only its own. */
+export const shellsPath = (litterDir: LitterDir, agentId: string) => join(hooksDir(litterDir), 'shells', agentId)
 
 // Runs.
 export const runDir = (litterDir: LitterDir, run: string) => join(litterDir, run)

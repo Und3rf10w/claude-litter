@@ -7,14 +7,22 @@
 // Every file is replaced atomically, before the call that changed it is
 // answered, so the agent's next tool call already sees the change. A node's
 // policy is keyed by agentId, never by session, so a /clear leaves it as it is.
+//
+// Every write and patch of one agent's file runs under that file's serial
+// key. A write reads the stopped list inside it, so a Stop (end.ts, stopNode:
+// the list, then the patch under the same key) can't fall between the read
+// and the write. A write or patch that admits the agent removes its `done/`
+// first: an agent that runs again isn't finished, whatever its last stop or
+// hand-back wrote (hold.sh waits on that file).
 
 import type { Ports } from '../ports'
 import type { AgentPolicy, NodePolicy, PendingMarker, Policy, SwarmEntry } from '../hookfiles'
 import type { LiveSwarm, NodeBinding } from './types'
-import { agentPolicyPath, donePath, holdPath, nodeTypeName, pendingDir, policyPath } from '../layout'
+import { agentPolicyPath, donePath, holdPath, nodeTypeName, pendingDir, policyPath, shellsPath } from '../layout'
 import { atomicWriteJson, readJson, remove, serial } from '../fsx'
 import { policyKey, readPolicy, setActive, updatePolicy, writePolicy } from '../policy'
 import { ROLE_POLICIES } from '../roles'
+import * as state from './state'
 
 /** The binding's state flags a policy carries. */
 export type NodeFlags = { admitted: boolean; stopped: string | null; bind: boolean }
@@ -102,14 +110,41 @@ export function nodePolicyFor(binding: NodeBinding, swarm: LiveSwarm, flags: Nod
 /** One key per agent's file: a write and a patch of the same file never interleave. */
 const nodeKey = (litterDir: string, agentId: string) => `node-policy:${litterDir}:${agentId}`
 
-/** Writes `agents/<agentId>.json` as `{ v: 1, node }`, atomically. */
-export async function writeNodePolicy(p: Ports, litterDir: string, agentId: string, node: NodePolicy): Promise<void> {
-  checkId(agentId)
-  const file: AgentPolicy = { v: 1, node }
-  await serial(nodeKey(litterDir, agentId), () => atomicWriteJson(p, agentPolicyPath(litterDir, agentId), file))
+/**
+ * Why the agent, or else the agent that spawned it, is on its swarm's
+ * stopped list now (state.ts); null when neither is. A stop of the parent
+ * that came before this agent had a binding couldn't name it (end.ts,
+ * stopNode, by descendants), so the parent's entry counts too (15.4: a
+ * stopped node starts nothing, and what it started is stopped with it).
+ */
+function stoppedNow(swarm: string, agentId: string, parent: string | null): string | null {
+  const list = state.stopped(swarm)
+  const own = list.find(x => x.agentId === agentId)
+  if (own) return own.reason
+  return parent === null ? null : (list.find(x => x.agentId === parent)?.reason ?? null)
 }
 
-/** Read, change and write under one serial key per file; a missing file stays missing. */
+/** done/<agentId> goes before the file that admits it: hold.sh must never see an admitted agent as finished. */
+async function clearDone(p: Ports, litterDir: string, agentId: string): Promise<void> {
+  const path = donePath(litterDir, agentId)
+  if (await p.fs.exists(path)) await remove(p, path)
+}
+
+/**
+ * Writes `agents/<agentId>.json` as `{ v: 1, node }`, atomically. `stopped`
+ * is the node's own, else what the stopped list says now, read under the
+ * file's key. Admitted, its `done/` is removed first.
+ */
+export async function writeNodePolicy(p: Ports, litterDir: string, agentId: string, node: NodePolicy): Promise<void> {
+  checkId(agentId)
+  await serial(nodeKey(litterDir, agentId), async () => {
+    const file: AgentPolicy = { v: 1, node: { ...node, stopped: node.stopped ?? stoppedNow(node.swarm, agentId, node.parent) } }
+    if (node.admitted) await clearDone(p, litterDir, agentId)
+    await atomicWriteJson(p, agentPolicyPath(litterDir, agentId), file)
+  })
+}
+
+/** Read, change and write under one serial key per file; a missing file stays missing. Admitting, its `done/` goes first. */
 export async function patchNodePolicy(p: Ports, litterDir: string, agentId: string, patch: Partial<NodePolicy>): Promise<void> {
   checkId(agentId)
   await serial(nodeKey(litterDir, agentId), async () => {
@@ -119,6 +154,7 @@ export async function patchNodePolicy(p: Ports, litterDir: string, agentId: stri
     if (file === null || file.v !== 1 || typeof file.node !== 'object' || file.node === null) {
       throw new Error(`litter: ${path} isn't a node's policy; left as it is`)
     }
+    if (patch.admitted === true) await clearDone(p, litterDir, agentId)
     await atomicWriteJson(p, path, { ...file, node: { ...file.node, ...patch } } satisfies AgentPolicy)
   })
 }
@@ -131,13 +167,14 @@ export async function patchNodePolicies(p: Ports, litterDir: string, agentIds: r
   if (failed.length > 0) throw new Error(`litter: ${failed.length} of ${ids.length} node policies not changed (${failed.join('; ')})`)
 }
 
-/** Removes an agent's policy, with its `done/` and `hold/` files. */
+/** Removes an agent's policy, with its `done/`, `hold/` and `shells/` files. */
 export async function removeNodePolicy(p: Ports, litterDir: string, agentId: string): Promise<void> {
   checkId(agentId)
   await serial(nodeKey(litterDir, agentId), async () => {
     await remove(p, agentPolicyPath(litterDir, agentId))
     await remove(p, donePath(litterDir, agentId))
     await remove(p, holdPath(litterDir, agentId))
+    await remove(p, shellsPath(litterDir, agentId))
   })
 }
 
