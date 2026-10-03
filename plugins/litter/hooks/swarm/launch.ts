@@ -2,6 +2,13 @@
 // confirmation, ownership and the `new` worktrees, the node types, the bound
 // branches, swarm.start; and the lead's mcp__litter__swarm_read.
 //
+// Three parts (2b-2, X), so the builder's Launch and a repair swarm's share
+// them: planLaunch (step 1's checks and step 5's branches as you'd confirm
+// them), the confirmation (the builder's ask, or a repair's own), and goLive
+// (steps 3 to 6). The builder's Launch fills the prompt box after (step 7); a
+// repair under `repair: auto` doesn't, since the fanout's confirmation was
+// its own (repair.ts).
+//
 // As in run.start (plan section 9, "The order matters"), every check that can
 // refuse runs before anything is written: a refusal leaves no ref, worktree,
 // type, record, policy entry or `active`. After the ref is taken, a failure
@@ -17,7 +24,7 @@ import type { AgentSpec, Ports } from '../ports'
 import type { PortHook, SwarmReadHook } from '../hooktypes'
 import type { SwarmEntry } from '../hookfiles'
 import type { SwarmReadInstance, SwarmReadLaunch, SwarmReadOrchestrator, SwarmReadReply, SwarmStartBody } from '../records/swarm'
-import type { LiveSwarm, NodeDir, ReportEvent, SwarmNode, SwarmRoots, SwarmSpec, ValidateCtx } from './types'
+import type { LiveSwarm, NodeDir, RepairBudget, ReportEvent, RunLink, SavedSwarm, SwarmNode, SwarmRoots, SwarmSpec, ValidateCtx } from './types'
 import type { WaitBudget } from './admit'
 import { LAUNCH_ID, launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
 import { getOptions, session } from '../session'
@@ -30,6 +37,7 @@ import { renderSlots } from '../prompts/slots'
 import {
   AUTHORITY_COMMIT_NO,
   AUTHORITY_COMMIT_YES,
+  AUTHORITY_LAND_YES,
   AUTHORITY_NONE,
   AUTHORITY_PATHS,
   AUTHORITY_PUSH_ANY,
@@ -39,6 +47,8 @@ import {
   AUTHORITY_PUSH_OWN_BRANCH_FORCE,
   AUTHORITY_REWRITE_NO,
   AUTHORITY_REWRITE_YES,
+  AUTHORITY_VERDICTS_YES,
+  AUTHORITY_VERIFY_YES,
   AUTHORITY_WORKTREE_OPS_NO,
   AUTHORITY_WORKTREE_OPS_YES,
   DELEGATION_NO_OTHER,
@@ -124,6 +134,10 @@ function authoritySlot(n: SwarmNode): string {
   else if (a.push === 'none') lines.push(AUTHORITY_PUSH_NONE)
   if (a.rewriteHistory !== undefined) lines.push(a.rewriteHistory ? AUTHORITY_REWRITE_YES : AUTHORITY_REWRITE_NO)
   if (a.worktreeOps !== undefined) lines.push(a.worktreeOps ? AUTHORITY_WORKTREE_OPS_YES : AUTHORITY_WORKTREE_OPS_NO)
+  // 2b-2's grants (15.10): a line only when given, since unset and false both mean not given.
+  if (a.verify === true) lines.push(AUTHORITY_VERIFY_YES)
+  if (n.verdicts === true) lines.push(AUTHORITY_VERDICTS_YES)
+  if (a.land === true) lines.push(AUTHORITY_LAND_YES)
   if (n.paths && n.paths.length > 0) lines.push(renderSlots(AUTHORITY_PATHS, { paths: n.paths.join(', ') }))
   return lines.length === 0 ? AUTHORITY_NONE : lines.join('\n')
 }
@@ -232,7 +246,13 @@ function authorityLine(name: string, n: SwarmNode, dirs: Readonly<Record<string,
           : `push: the lead may push its work to the branch it names, ${force}`
   const commit = a.commit === true ? `commit yes, on ${branchText(name, n, dirs)}` : `commit ${yes(a.commit)}`
   const paths = n.paths && n.paths.length > 0 ? `files only under ${n.paths.map(oneLine).join(', ')}` : 'files anywhere'
-  return `${n.id}: ${commit}; ${push}; rewrite history ${yes(a.rewriteHistory)}; worktree commands ${yes(a.worktreeOps)}; ${paths}`
+  // 2b-2's grants, only when given (a builder swarm has none: Launch refuses them).
+  const grants = [
+    a.verify === true ? "verify yes (the mod runs the run's verify)" : null,
+    n.verdicts === true ? 'verdicts yes (the veto a land needs)' : null,
+    a.land === true ? 'land yes (the mod lands only a verified, approved tree)' : null,
+  ].filter((x): x is string => x !== null)
+  return `${n.id}: ${commit}; ${push}; rewrite history ${yes(a.rewriteHistory)}; worktree commands ${yes(a.worktreeOps)}; ${paths}${grants.map(g => `; ${g}`).join('')}`
 }
 
 /** What litter leaves unchecked for a node: the classifier, your permission rules and your hooks still apply. */
@@ -250,17 +270,16 @@ function uncheckedOf(n: SwarmNode): string[] {
 
 type NewWorktree = { node: string; path: string; branch: string; from: string }
 
-function confirmText(
-  spec: SwarmSpec,
-  revision: number,
-  dirs: Readonly<Record<string, NodeDir>>,
-  authority: Readonly<Record<string, string>>,
-  made: readonly NewWorktree[],
-  warnings: readonly string[],
-  types: Readonly<Record<string, string>>,
-  setup: readonly string[] | undefined,
-): string {
-  const lines: string[] = [`Launch swarm ${spec.name} (revision ${revision})?`, `Goal: ${oneLine(spec.goal).slice(0, 300)}`, '', 'Each node, where it works, and its authority:']
+/**
+ * Step 2's question: `head` first (the builder's "Launch swarm …?", or a
+ * repair's own with its run and budget), then each node with where it works
+ * and its authority, the worktrees it creates, the warnings, and the new types.
+ */
+export function launchQuestion(plan: LaunchPlan, head: readonly string[]): string {
+  const { dirs, authority, made, warnings, types } = plan
+  const spec = plan.saved.spec
+  const setup = getOptions().setup
+  const lines: string[] = [...head, '', 'Each node, where it works, and its authority:']
   for (const n of spec.nodes) {
     lines.push(`- ${n.id} (${n.kind}), in ${whereText(spec.name, n, dirs)}`)
     lines.push(`  ${authority[n.id]!.slice(n.id.length + 2)}`)
@@ -435,24 +454,96 @@ export async function endFailedLaunch(
 }
 
 /**
- * Launches swarm `name` at its saved revision, or `opts.revision`. Every
- * refusing check runs before anything is written. Reads `session().litterDir`.
+ * Marks a launch of `name` under way in this process: the release, or null
+ * when one is already (a second press, or a repair racing it, is refused
+ * rather than queued behind it). The caller releases it when it's done.
+ */
+export function beginLaunch(name: string): (() => void) | null {
+  if (launching.has(name)) return null
+  launching.add(name)
+  return () => void launching.delete(name)
+}
+
+/**
+ * Launches swarm `name` at its saved revision, or `opts.revision`, from the
+ * builder: the checks, your confirmation, going live, then the prompt box.
+ * Every refusing check runs before anything is written. Reads `session().litterDir`.
  */
 export async function launchSwarm(p: Ports, name: string, opts?: { revision?: number }): Promise<LaunchResult> {
   if (typeof name !== 'string' || !SWARM_NAME.test(name)) return { ok: false, reason: `litter: '${String(name)}' isn't a swarm name` }
-  if (launching.has(name)) return refused(name, ['a launch of it is already waiting for your confirmation'])
-  launching.add(name)
+  const done = beginLaunch(name)
+  if (!done) return refused(name, ['a launch of it is already waiting for your confirmation'])
   try {
     return await launch(p, name, opts ?? {})
   } catch (err) {
     return refused(name, [errText(err)])
   } finally {
-    launching.delete(name)
+    done()
   }
 }
 
 async function launch(p: Ports, name: string, opts: { revision?: number }): Promise<LaunchResult> {
-  // Step 1: the checks.
+  // Step 1. The builder's swarms get no verify or land (2b-2, decision 4).
+  const planned = await planLaunch(p, name, { ...opts, grants: false })
+  if (!planned.ok) return planned
+  const { plan } = planned
+  const spec = plan.saved.spec
+
+  // Step 2: your confirmation. The authority lines are the ones swarm.start records and the prompt box carries.
+  const question = launchQuestion(plan, [`Launch swarm ${spec.name} (revision ${plan.saved.revision})?`, `Goal: ${oneLine(spec.goal).slice(0, 300)}`])
+  // The ask is an AskUserQuestion call (2.1.288), which a permission refusal fails; the health check above refuses dontAsk, the usual one.
+  let askFailed: string | null = null
+  const answer = await p.ask(question, { options: ['Launch', 'Cancel'], header: `Launch ${name}` }).catch((err: unknown) => {
+    askFailed = errText(err)
+    return null
+  })
+  if (askFailed !== null) {
+    const why: string = askFailed
+    return refused(name, [`Launch needs your confirmation, and the ask couldn't be shown: ${why.length > 160 ? `${why.slice(0, 159)}…` : why}`])
+  }
+  if (answer !== 'Launch') return refused(name, ['Launch needs your confirmation'])
+
+  // Steps 3 to 6, then step 7: the start line and the authority in your prompt box, so the launch is your own message.
+  const live = await goLive(p, plan, { confirmedBy: { ask: true } })
+  if (live.ok) await fillStart(p, plan)
+  return live
+}
+
+/**
+ * What Launch's checks found (step 1, and step 5's branches as you'd confirm
+ * them): everything going live needs, with nothing written yet.
+ */
+export type LaunchPlan = {
+  name: string
+  litterDir: string
+  /** The spec and briefs launched, at their revision (a repair's own, in memory, until it's saved). */
+  saved: SavedSwarm
+  types: Record<string, string>
+  dirs: Record<string, NodeDir>
+  made: NewWorktree[]
+  /** The validation's and the health check's warnings, for the ask. */
+  warnings: string[]
+  /** Node id → the authority line you confirm, swarm.start records and the prompt box carries. */
+  authority: Record<string, string>
+  repo: string
+  root: string
+  sessionCwd: string
+  commonDir: string
+}
+
+/**
+ * Step 1, every check that can refuse, and the directories and bound
+ * branches as you'd confirm them: of `opts.saved` when given (a repair's
+ * generated spec, before it's saved), else the saved revision or
+ * `opts.revision`. `grants: false` refuses any `verify` or `land` authority
+ * (the builder's swarms, in 2b-2). Writes nothing.
+ */
+export async function planLaunch(
+  p: Ports,
+  name: string,
+  opts: { revision?: number; saved?: SavedSwarm; grants: boolean },
+): Promise<{ ok: true; plan: LaunchPlan } | Refused> {
+  if (typeof name !== 'string' || !SWARM_NAME.test(name)) return { ok: false, reason: `litter: '${String(name)}' isn't a swarm name` }
   const info = session()
   const litterDir = info.litterDir
   if (!litterDir) {
@@ -481,12 +572,21 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   // An entry of its own name with no ref is a leftover no one owns: this launch's entry replaces it.
   const policy = await readPolicy(p, litterDir).catch(() => undefined)
 
-  const saved = opts.revision !== undefined ? await deps.readRevision(p, litterDir, name, opts.revision) : await deps.readSaved(p, litterDir, name)
+  const saved =
+    opts.saved ?? (opts.revision !== undefined ? await deps.readRevision(p, litterDir, name, opts.revision) : await deps.readSaved(p, litterDir, name))
   if (!saved) return refused(name, [opts.revision !== undefined ? `revision ${opts.revision} doesn't exist` : "it has never been saved; save it in the builder first"])
   const spec = saved.spec
   if (spec.name !== name) return refused(name, [`its spec names swarm '${spec.name}'`])
 
   const problems: string[] = []
+  // 2b-2 (decision 4): a node's verify and land are a repair swarm's alone, bound to the run it repairs.
+  if (!opts.grants) {
+    for (const n of spec.nodes ?? []) {
+      for (const f of ['verify', 'land'] as const) {
+        if (n.authority?.[f] === true) problems.push(`nodes.${n.id}.authority.${f}: only a repair swarm a run starts may verify or land, in this version; unset it`)
+      }
+    }
+  }
   const types = Object.fromEntries(spec.nodes.map(n => [n.id, servedType(name, n.id)]))
   const ours = new Set(Object.values(types))
   const taken = await takenTypes(p, litterDir, name, policy?.swarm?.swarms ?? {}, ours)
@@ -566,25 +666,31 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   if (commonOut.code !== 0 || commonOut.out === '') problems.push(`git can't name the repository's common directory from ${repo}`)
   if (problems.length > 0) return refused(name, problems)
   const commonDir = await realOf(p, commonOut.out)
-
-  // Step 2: your confirmation. The authority lines are the ones swarm.start records and the prompt box carries.
   const authority = Object.fromEntries(spec.nodes.map(n => [n.id, authorityLine(name, n, dirs)]))
+  return { ok: true, plan: { name, litterDir, saved, types, dirs, made, warnings, authority, repo, root, sessionCwd, commonDir } }
+}
+
+/**
+ * What going live records beside the plan. A repair swarm (2b-2, X) carries
+ * its run and budget, and `launch` when its id was taken first (the run's
+ * `run.repair` names it). `confirmedBy` says whose message the authority
+ * comes from: your answer to an ask, or the run's own launch confirmation.
+ */
+export type GoLive = { launch?: string; run?: RunLink; budget?: RepairBudget; confirmedBy: { run: string } | { ask: true } }
+
+/**
+ * Steps 3 to 6 of a plan you confirmed (or a repair's run confirmed):
+ * ownership and the `new` worktrees, every type, the bound branches as
+ * confirmed, swarm.start, the LiveSwarm and the policy entry. A failure after
+ * the ref ends the launch as launch_failed and releases the ref.
+ */
+export async function goLive(p: Ports, plan: LaunchPlan, live: GoLive): Promise<LaunchResult> {
+  const { name, litterDir, saved, types, dirs, made, authority, repo, root, sessionCwd, commonDir } = plan
+  const spec = saved.spec
   const options = getOptions()
-  const question = confirmText(spec, saved.revision, dirs, authority, made, warnings, types, options.setup)
-  // The ask is an AskUserQuestion call (2.1.288), which a permission refusal fails; the health check above refuses dontAsk, the usual one.
-  let askFailed: string | null = null
-  const answer = await p.ask(question, { options: ['Launch', 'Cancel'], header: `Launch ${name}` }).catch((err: unknown) => {
-    askFailed = errText(err)
-    return null
-  })
-  if (askFailed !== null) {
-    const why: string = askFailed
-    return refused(name, [`Launch needs your confirmation, and the ask couldn't be shown: ${why.length > 160 ? `${why.slice(0, 159)}…` : why}`])
-  }
-  if (answer !== 'Launch') return refused(name, ['Launch needs your confirmation'])
 
   // Step 3: ownership, then the `new` worktrees. From here a failure ends the launch as launch_failed.
-  const launchId = await newLaunchId(p, litterDir, name)
+  const launchId = live.launch ?? (await newLaunchId(p, litterDir, name))
   let own: Awaited<ReturnType<typeof acquireOwnership>>
   try {
     own = await acquireOwnership(p, litterDir, name, launchId)
@@ -658,6 +764,9 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
       worktreeRoot: root,
       commonDir,
       roots: await rootsOf(p, litterDir, [sessionCwd, ...Object.values(dirs).map(d => d.dir)]),
+      ...(live.run ? { run: live.run } : {}),
+      ...(live.budget ? { budget: live.budget } : {}),
+      confirmedBy: live.confirmedBy,
     }
     const start = await appendLaunchRecord(p, litterDir, name, launchId, 'swarm.start', body)
     const s: LiveSwarm = {
@@ -680,6 +789,8 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
       lost: false,
       flags: { isolationLost: false },
       startedAt: start.at,
+      ...(live.run ? { run: live.run } : {}),
+      ...(live.budget ? { budget: live.budget } : {}),
     }
     putLiveSwarm(s)
     isLive = true
@@ -691,18 +802,27 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
       nodeTypes: Object.values(types),
     }
     await deps.writeSwarmPolicy(p, litterDir, name, entry)
-
-    // Step 7: the start line and the authority in your prompt box, so the launch is your own message.
-    const text = [`/litter:swarm start ${name}`, ...spec.nodes.map(n => authority[n.id]!)].join('\n')
-    const filled = await p.fillPrompt(text).catch(() => false)
-    if (!filled) {
-      p.log(`swarm ${name}: the prompt box didn't take the start line`)
-      p.toast(`litter: swarm ${name} is live; send /litter:swarm start ${name} to start it`)
-    }
     return { ok: true, launch: launchId }
   } catch (err) {
     return await failed(errText(err))
   }
+}
+
+/**
+ * Step 7: the start line and the confirmed authority, one line per node, in
+ * your prompt box, so the start is your own message. A box that doesn't take
+ * it leaves the swarm live, with a toast saying what to send. Answers whether
+ * it took it.
+ */
+export async function fillStart(p: Ports, plan: Pick<LaunchPlan, 'name' | 'saved' | 'authority'>): Promise<boolean> {
+  const { name, authority } = plan
+  const text = [`/litter:swarm start ${name}`, ...plan.saved.spec.nodes.map(n => authority[n.id]!)].join('\n')
+  const filled = await p.fillPrompt(text).catch(() => false)
+  if (!filled) {
+    p.log(`swarm ${name}: the prompt box didn't take the start line`)
+    p.toast(`litter: swarm ${name} is live; send /litter:swarm start ${name} to start it`)
+  }
+  return filled
 }
 
 // ---------------------------------------------------------------------------

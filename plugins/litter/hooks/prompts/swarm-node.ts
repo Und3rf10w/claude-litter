@@ -66,7 +66,8 @@ If a tool call is refused with "bind first", call mcp__litter__record with kind 
 
 When a task is done, start with the outcome in a sentence or two. Then say what you changed (files, commits and branches), what you ran and its results, and anything you skipped or couldn't verify, with the reason. Your parent passes this on and the user acts on it, so report what happened, including what didn't work.`
 
-// {authority}: one line per field that's set, in this order: commit, push, rewriteHistory, worktreeOps, paths.
+// {authority}: one line per field that's set, in this order: commit, push, rewriteHistory, worktreeOps,
+// then 2b-2's grants when given (verify, verdicts, land), then paths.
 
 export const AUTHORITY_COMMIT_YES = 'Commit: yes, in your directory, on the branch named in <instance>.'
 export const AUTHORITY_COMMIT_NO = 'Commit: no. Leave changes uncommitted and list them in your report.'
@@ -92,6 +93,18 @@ export const AUTHORITY_REWRITE_YES = 'Rewriting history (rebase, reset --hard, a
 export const AUTHORITY_WORKTREE_OPS_NO = 'Worktree commands (git worktree, git -C into another worktree): no.'
 /** Composed. */
 export const AUTHORITY_WORKTREE_OPS_YES = 'Worktree commands (git worktree, git -C into another worktree): yes.'
+/**
+ * Composed (2b-2, plan 15.10): `authority.verify`. Only a repair swarm a run
+ * starts has it; the mod runs the run's own verify command, never one a node names.
+ */
+export const AUTHORITY_VERIFY_YES =
+  "Verify: yes. Call mcp__litter__record with kind verify, and nothing else, and the mod runs the run's own verify command in your directory and records the result. Cite the verify_id it returns; don't run the verify command yourself in its place, since only the mod's record counts."
+/** Composed (2b-2): `verdicts: true`. The critic's veto: a land needs an approving verdict that cites the verify its own agent recorded. */
+export const AUTHORITY_VERDICTS_YES =
+  "Verdicts: yes. Your verdict record is the independent check a land needs. It counts only when it cites a verify you recorded yourself on the tree you judged, and it judges every task of the run once. You never change the tree you judge."
+/** Composed (2b-2): `authority.land`. The mod lands only the committed tip a green verify and an approving verdict cover. */
+export const AUTHORITY_LAND_YES =
+  "Land: yes. Once a verdict approves a green verify of the integration branch's committed tip, call mcp__litter__record with kind land and that verify_id. The mod checks everything again before it lands, and refuses a land of any other tree. Nothing is pushed."
 /** Slot: {paths}, the node's `paths` joined with ", ". */
 export const AUTHORITY_PATHS = 'Change files only under: {paths}.'
 /** When nothing is set. */
