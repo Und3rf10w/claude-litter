@@ -1,0 +1,96 @@
+#!/usr/bin/expect -f
+# Tier 4: drives one interactive claude session through a steps file, for
+# what -p can't show (a pane's buttons, an ask, the prompt box). It answers
+# the workspace trust dialog once. Steps, one per line ('#' starts a comment):
+#   until <sh command>          poll every 2 s until the command exits 0
+#   wait <secs> <sh command>    the same, giving up after <secs>
+#   sleep <seconds>
+#   send <text>                 type the text, then Enter
+#   key <name>...               press keys, a second apart: enter, tab, esc,
+#                               down, up, ctrl-x (ctrl-x then tab focuses a pane;
+#                               esc goes back to the prompt)
+#   exit                        /exit, then ctrl-c twice if it's still up
+# The whole run gives up after H_DRIVE_MAX seconds (default 2400).
+#
+#   expect drive.exp <steps> <transcript.txt> <claude> <args...>
+set steps [lindex $argv 0]
+set tty [lindex $argv 1]
+set cmd [lrange $argv 2 end]
+set stty_init "rows 50 cols 200"
+set env(TERM) xterm-256color
+log_user 0
+log_file -a $tty
+# Not as kitty: its keyboard protocol would change what a key sends. The
+# session stays marked as a child of the one that runs this (its
+# CLAUDE_CODE_* markers are left as they are); a child keeps no transcript
+# unless H_PERSIST=1 passes CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1, the
+# switch the CLI itself names for that.
+set persist {}
+if {[info exists env(H_PERSIST)] && $env(H_PERSIST) eq "1"} { set persist CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 }
+spawn -noecho env -u KITTY_WINDOW_ID -u KITTY_PID -u KITTY_LISTEN_ON -u TERM_PROGRAM \
+  TERM=xterm-256color {*}$persist {*}$cmd
+# The first screen is larger than expect's default 2000-byte buffer.
+match_max 1000000
+set max 2400
+if {[info exists env(H_DRIVE_MAX)]} { set max $env(H_DRIVE_MAX) }
+set deadline [expr {[clock seconds] + $max}]
+set trusted 0
+proc pump {secs} {
+  global trusted deadline spawn_id
+  # Not `expect -timeout $secs {...}`: with a flag first, the block is read as one glob pattern.
+  set timeout $secs
+  expect {
+    -re {safety} {
+      # The dialog's first option is "No, exit": move to "Yes, I trust this folder".
+      if {!$trusted} { sleep 1; send "\x1b\[B"; sleep 1; send "\r"; set trusted 1; puts "drive: answered the trust dialog" }
+    }
+    eof { puts "drive: claude exited"; exit 0 }
+    timeout {}
+  }
+  if {[clock seconds] > $deadline} {
+    puts "drive: timed out"
+    send "\x03"; sleep 1; send "\x03"
+    exit 3
+  }
+}
+array set keys [list enter "\r" tab "\t" esc "\x1b" down "\x1b\[B" up "\x1b\[A" ctrl-x "\x18"]
+set f [open $steps]
+set lines [split [read $f] "\n"]
+close $f
+foreach line $lines {
+  set line [string trim $line]
+  if {$line eq "" || [string index $line 0] eq "#"} continue
+  set sp [string first " " $line]
+  if {$sp < 0} { set op $line; set arg "" } else { set op [string range $line 0 [expr {$sp - 1}]]; set arg [string range $line [expr {$sp + 1}] end] }
+  puts "drive: $op $arg"
+  switch -- $op {
+    until { while {[catch {exec sh -c $arg}]} { pump 2 } }
+    wait {
+      set sp2 [string first " " $arg]
+      set end [expr {[clock seconds] + [string range $arg 0 [expr {$sp2 - 1}]]}]
+      set c [string range $arg [expr {$sp2 + 1}] end]
+      while {[clock seconds] < $end && [catch {exec sh -c $c}]} { pump 2 }
+    }
+    sleep { set end [expr {[clock seconds] + $arg}]; while {[clock seconds] < $end} { pump 1 } }
+    send { send -- $arg; sleep 1; send "\r"; pump 1 }
+    key {
+      foreach k [split $arg " "] {
+        if {![info exists keys($k)]} { puts "drive: unknown key $k"; exit 2 }
+        send -- $keys($k); pump 1
+      }
+    }
+    exit {
+      send "/exit\r"
+      expect -timeout 30 eof { puts "drive: exited after /exit"; exit 0 }
+      send "\x03"; sleep 1; send "\x03"
+      expect -timeout 15 eof
+      puts "drive: exited after ctrl-c"
+      exit 0
+    }
+    default { puts "drive: unknown step $op"; exit 2 }
+  }
+}
+puts "drive: steps done: exiting"
+send "/exit\r"
+expect -timeout 30 eof
+exit 0
