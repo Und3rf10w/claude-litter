@@ -15,6 +15,7 @@
 // the swarm_send and ui.message dispatches, and submits to the lead only from
 // its own timers (decision 2; 15.9, item 19).
 
+import type { AgentPolicy } from '../hookfiles'
 import type { Ports, SessionSendResult } from '../ports'
 import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
@@ -22,6 +23,8 @@ import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply }
 import type { BrowserSend, ClearKill, ClearReason, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
+import { agentPolicyPath, hooksDir } from '../layout'
+import { readJson } from '../fsx'
 import { session } from '../session'
 import { renderSlots } from '../prompts/slots'
 import {
@@ -539,6 +542,57 @@ async function resolveTo(p: Ports, to: string): Promise<NodeBinding | 'ambiguous
   return bound.length === 1 && named.length === 1 ? bound[0]! : 'ambiguous'
 }
 
+/** An id the hooks name a file by (lib.sh's lt_id_ok). */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/**
+ * The swarm of an agent the mod no longer binds whose policy file is still
+ * there, when that swarm isn't live: End keeps a running agent's file, so
+ * the guard denies it, and admission refuses it too, or a later send or a
+ * late child's wake would resume an old node with nothing admitting it.
+ * Null for an agent with no such file, the mod never knew, or of a launch
+ * still live. A file that doesn't read is refused as the guard denies it.
+ * A former node resumed after the sweep removed its file is still denied by
+ * the guard (a `litter:sw-*` type with no binding); a former child resumed
+ * then is a plain subagent.
+ */
+async function endedSwarmOf(p: Ports, agentId: string): Promise<string | null> {
+  const dir = session().litterDir
+  if (!dir || !AGENT_ID.test(agentId)) return null
+  const path = agentPolicyPath(dir, agentId)
+  if (!(await p.fs.exists(path))) return null
+  let node: AgentPolicy['node']
+  try {
+    node = (await readJson<AgentPolicy>(p, path))?.node
+  } catch {
+    return 'an unknown swarm (its policy file is unreadable)'
+  }
+  if (!node || typeof node.swarm !== 'string') return null
+  return state.liveSwarm(node.swarm)?.launch === node.launch ? null : node.swarm
+}
+
+/** A send to an agent of an ended swarm: refused, naming it; null for any other recipient. */
+async function endedRefusal(p: Ports, to: string): Promise<SessionSendResult | null> {
+  const dir = session().litterDir
+  if (isMain(to) || !dir || !(await p.fs.exists(`${hooksDir(dir)}/agents`))) return null
+  const refusal = (swarm: string, id: string): SessionSendResult => ({
+    isDelivered: false,
+    reason: `litter: swarm ${swarm} has ended: ${id} was one of its agents, and takes no more messages`,
+  })
+  const id = to.trim()
+  const direct = await endedSwarmOf(p, id)
+  if (direct !== null) return refusal(direct, id)
+  // By name, or a received `from` address, as resolveTo takes them.
+  const addr = FROM_ADDRESS.exec(id)
+  const name = addr ? addr[1]! : id
+  for (const a of await p.listAgents()) {
+    if (a.id === id || !(a.name === name || (addr !== null && a.id.includes(addr[2]!)))) continue
+    const swarm = await endedSwarmOf(p, a.id)
+    if (swarm !== null) return refusal(swarm, a.id)
+  }
+  return null
+}
+
 /** Who sent, for the event and the wrapper. */
 function senderOf(e: Parameters<PortHook<SessionSendHook>>[1], fromB: NodeBinding | null): { from: string; label: string } {
   if (e.agentId !== undefined) return { from: e.agentId, label: fromB ? labelOf(fromB) : `agent ${e.agentId}` }
@@ -574,14 +628,15 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
 export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
   if (e.origin.kind === 'plugin' && ownSends.has(ownKey(e.to, e.text))) return next(e)
   await state.ready(p)
-  if (state.liveSwarms().length === 0) return next(e)
+  // A send to no node passes, but not to an agent of a swarm that has ended (its file is still there).
+  if (state.liveSwarms().length === 0) return (await endedRefusal(p, e.to)) ?? next(e)
   const sender = e.agentId ?? null
   const fromB = sender !== null ? state.binding(sender) : null
   const toB = await resolveTo(p, e.to)
   if (toB === 'ambiguous') {
     return { isDelivered: false, reason: `litter: '${e.to}' could name more than one agent, a swarm node among them; address it by its agent id` }
   }
-  if (!toB && !fromB) return next(e)
+  if (!toB && !fromB) return (await endedRefusal(p, e.to)) ?? next(e)
   kick(p)
   const toParent = fromB !== null && (fromB.parent === null ? isMain(e.to) : toB?.agentId === fromB.parent)
   const toLead = fromB !== null && !toB && isMain(e.to)
@@ -597,6 +652,8 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
     // A node's SendMessage to `main` (and its hand-back, which never comes through here) is the
     // engine's own message, shown to the lead as the agent's: litter passes its text as it is,
     // and neutralises only the texts it writes itself (`unblock`).
+    const ended = await endedRefusal(p, e.to)
+    if (ended) return ended
     const r = await next(e)
     if (fromB && r.isDelivered) await noteFromNode(p, fromB, toLead, false, e.text)
     return r
@@ -628,13 +685,17 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
   const id = e.agentId
   if (id === undefined) return yield* next(e)
   await state.ready(p)
-  const b = state.binding(id)
-  if (!b) return yield* next(e)
   const refusal = async function* (reason: string) {
     const answer = `litter: not admitted: ${reason}; ending this turn`
     yield { kind: 'text' as const, index: 0, text: answer }
     yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage: null }
     return { turnId: e.turnId, index: e.index, answer, toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  }
+  const b = state.binding(id)
+  if (!b) {
+    // An agent of a swarm that has ended (End kept its file): a later send or a late child's wake resumes nothing.
+    const ended = await endedSwarmOf(p, id)
+    return ended === null ? yield* next(e) : yield* refusal(`swarm ${ended} has ended`)
   }
   if (state.isRefusedTurn(id, e.turnId)) return yield* refusal(NOT_ADMITTED_LATER)
   if (state.status(id) === 'running') return yield* next(e)

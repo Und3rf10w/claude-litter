@@ -331,6 +331,82 @@ describe('U1: End never leaves a running agent unguarded', () => {
 
 const statMtime = (agentId: string): number => Bun.file(agentPolicyPath(litterDir, agentId)).lastModified
 
+describe('U2: after End, admission refuses an agent that still has a policy file', () => {
+  const sendE = (to: string, text: string, agentId?: string) => ({ to, text, origin: { kind: 'model' as const }, ...(agentId !== undefined ? { agentId } : {}) })
+  function sendNext() {
+    const sent: { to: string; text: string }[] = []
+    const next = async (e: { to: string; text: string }): Promise<SessionSendResult> => {
+      sent.push({ to: e.to, text: e.text })
+      return { isDelivered: true }
+    }
+    return { next: next as never, sent }
+  }
+  const send = (e: ReturnType<typeof sendE>, next: never) => admit.admitSend(p, e as never, next) as Promise<SessionSendResult>
+  async function step(agentId: string) {
+    let called = false
+    const next = async function* () {
+      called = true
+      yield { kind: 'text' as const, index: 0, text: 'resumed' }
+      return { turnId: 't1', index: 0, answer: 'resumed', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    }
+    const gen = admit.admitStep(p, { turnId: 't1', index: 0, model: 'm', messageCount: 2, agentId } as never, next as never) as AsyncGenerator<unknown, unknown>
+    const chunks: unknown[] = []
+    let s = await gen.next()
+    while (!s.done) {
+      chunks.push(s.value)
+      s = await gen.next()
+    }
+    return { chunks, result: s.value, called }
+  }
+
+  /** Ended with [End, keep everything] while fixer #1 and its child still ran: their files are kept. */
+  async function endedWithRunners() {
+    await live()
+    const child = bindingOf('c-1', { kind: 'child', n: 0, of: 'a-fix1', parent: 'a-fix1', token: null, type: 'general-purpose' })
+    state.putBinding(child)
+    await writePolicy('c-1', policyFor(child))
+    state.markRunning('a-fix1')
+    p.agents = [listed('a-boss', 'completed', 'litter:sw-alpha-boss'), { ...listed('a-fix1', 'running'), name: 'fixy' }, listed('c-1', 'running', 'general-purpose')]
+    await endSwarm(p, 'alpha', 'keep-everything')
+    expect(['a-fix1', 'c-1'].map(hasPolicy)).toEqual([true, true])
+    expect(state.liveSwarms()).toEqual([])
+  }
+
+  test("a SendMessage to a former node, by id or by name, is refused: its swarm has ended", async () => {
+    await endedWithRunners()
+    const { next, sent } = sendNext()
+    expect(await send(sendE('c-1', 'one more thing', 'a-fix1'), next)).toEqual({ isDelivered: false, reason: expect.stringContaining('swarm alpha has ended') })
+    expect(await send(sendE('a-fix1', 'another fix'), next)).toEqual({ isDelivered: false, reason: expect.stringContaining('swarm alpha has ended') })
+    expect(await send(sendE('fixy', 'another fix'), next)).toEqual({ isDelivered: false, reason: expect.stringContaining('swarm alpha has ended') })
+    expect(sent).toEqual([])
+    // With another swarm live, the same.
+    state.putLiveSwarm(swarmOf({ name: 'beta', launch: 'L-beta', types: {} }))
+    expect(await send(sendE('a-fix1', 'another fix'), next)).toEqual({ isDelivered: false, reason: expect.stringContaining('swarm alpha has ended') })
+    expect(sent).toEqual([])
+  })
+
+  test('a send to an agent the mod never knew still passes, and so does the lead', async () => {
+    await endedWithRunners()
+    const { next, sent } = sendNext()
+    expect(await send(sendE('someone-else', 'hi'), next)).toEqual({ isDelivered: true })
+    expect(await send(sendE('main', 'done', 'a-boss'), next)).toEqual({ isDelivered: true })
+    expect(sent).toEqual([
+      { to: 'someone-else', text: 'hi' },
+      { to: 'main', text: 'done' },
+    ])
+  })
+
+  test("a former node's wake (a late child's report) is refused at its first step", async () => {
+    await endedWithRunners()
+    const r = await step('a-fix1')
+    expect(r.called).toBe(false)
+    expect(r.chunks[0]).toEqual({ kind: 'text', index: 0, text: expect.stringContaining('swarm alpha has ended') })
+    expect(r.result).toEqual(expect.objectContaining({ stopReason: 'end_turn', toolUses: [] }))
+    // One the mod never bound passes straight through.
+    expect((await step('plain-agent')).called).toBe(true)
+  })
+})
+
 describe('U3: the cleanup counts a node as ended the way the settle wait does', () => {
   test("a node whose turn.complete landed, still listed running, doesn't keep its worktree", async () => {
     const wt = await ownWorktree(1)
