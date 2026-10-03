@@ -35,6 +35,7 @@ import { serial } from './fsx'
 import { SNAPSHOT_PATHSPEC } from './snapshot'
 import { addModWorktree, recordedWorktrees, worktreeRootFor } from './worktrees'
 import { writeOut } from './output'
+import { attribution } from './options'
 import { MOD, OID, type RunFacts, agentOf, ledgerFailure, loadRun, message, roleOf, runClosed } from './verify'
 
 // ---------------------------------------------------------------------------
@@ -384,7 +385,11 @@ async function checkTask(
 // ---------------------------------------------------------------------------
 // Merging.
 
-const mergeMessage = (task: string, run: string): string => `litter: merge ${task} of ${run}`
+/** The subject, then the run's attribution lines, if any (decision 4 of phase 3: every commit litter makes carries them). */
+const mergeMessage = (task: string, run: string, json: RunJson): string => {
+  const lines = attribution(json)
+  return `litter: merge ${task} of ${run}${lines.length > 0 ? `\n\n${lines.join('\n')}` : ''}`
+}
 
 /**
  * The mod's merge argv: always a merge commit, no editor, no hooks, no
@@ -512,7 +517,7 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
     const expected = expectedTip(st, base)
     const problem = await notReady(p, where, run, expected)
     if (problem) return stop(problem)
-    const m = await git(p, where, mergeArgv(mergeMessage(task.id, run), checked.commit))
+    const m = await git(p, where, mergeArgv(mergeMessage(task.id, run, json), checked.commit))
     if (m.code === 0) {
       const made = await commitOf(p, where, `refs/heads/${integrationBranch(run)}`)
       const parents = made ? (await git(p, where, ['rev-list', '--parents', '-n', '1', made, '--'])).stdout.trim() : ''

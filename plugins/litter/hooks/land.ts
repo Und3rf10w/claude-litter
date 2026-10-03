@@ -32,7 +32,7 @@ import { appendRecord, readLedger } from './ledgercore'
 import { integrationBranch, runJsonPath } from './layout'
 import { readJson, serial } from './fsx'
 import { snapshot } from './snapshot'
-import { isTrailerLine } from './options'
+import { attribution } from './options'
 import { withInflight } from './inflight'
 import { fanoutTasks, integrationWorktree, wholeResult } from './integrate'
 import { bindings, liveSwarm, spawnsUsed } from './swarm/state'
@@ -113,13 +113,6 @@ function planRef(json: RunJson): string | null {
   if (typeof path !== 'string' || path === '') return null
   const at = path.indexOf('/.claude/litter/')
   return oneLine(at >= 0 ? path.slice(at + 1) : path)
-}
-
-/** Attribution lines the session requires, as run.start stored them (`trailers`, the option's lines), one `Key: value` each. */
-function attribution(json: RunJson): string[] {
-  const t = (json as RunJson & { trailers?: unknown }).trailers
-  if (!Array.isArray(t)) return []
-  return t.filter((x): x is string => typeof x === 'string' && isTrailerLine(x))
 }
 
 /** The subject from the gate's title, then one trailer paragraph: Refs, Litter-Run, attribution. */

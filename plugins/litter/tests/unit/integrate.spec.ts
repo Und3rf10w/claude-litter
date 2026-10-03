@@ -219,6 +219,22 @@ describe('integrate: clean merges', () => {
     expect((await gitIn(integration, 'status', '--porcelain')).trim()).toBe('')
   })
 
+  test("each merge ends with run.json's trailers, and only the trailer lines", async () => {
+    const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
+    const trailers = ['Co-Authored-By: A Person <a@example.com>', 'not a trailer', 'Signed-off-by: B <b@example.com>']
+    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, trailers }))
+    await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
+    await writer('b', 2, { 'pkgB/b.ts': 'b\n' })
+    await writer('c', 3, { 'docs/c.md': 'c2\n' })
+    expect((await integrate()).status).toBe('merged')
+    const tip = await tipOf(IB)
+    const bodies = (await git('log', '--first-parent', '--format=%B%x00', `${base}..${tip}`)).split('\0\n').filter(b => b.trim() !== '')
+    expect(bodies).toHaveLength(3)
+    for (const [i, task] of ['c', 'a', 'b'].entries()) {
+      expect(bodies[i]!.trim()).toBe(`litter: merge ${task} of ${RUN}\n\nCo-Authored-By: A Person <a@example.com>\nSigned-off-by: B <b@example.com>`)
+    }
+  })
+
   test('a second call after merged answers the same and changes nothing', async () => {
     await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
     await writer('b', 2, { 'pkgB/b.ts': 'b\n' })

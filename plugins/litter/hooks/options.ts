@@ -25,9 +25,9 @@ export type LitterOptions = {
   /** The repair budget's agents: the workers and children a repair swarm's nodes spawn. */
   repairAgents: number
   /**
-   * The lines litter adds to every land's commit message (decision 4), one
-   * `Key: value` each, in order; empty by default. run.start copies them into
-   * run.json, where land.ts's attribution reads them.
+   * The lines litter adds to every commit it makes (decision 4), a land's or
+   * a fanout's merge, one `Key: value` each, in order; empty by default.
+   * run.start copies them into run.json, where `attribution` reads them.
    */
   trailers: readonly string[]
   /** The option's lines that weren't `Key: value` lines, dropped; session.start logs them once. */
@@ -41,6 +41,13 @@ export type LitterOptions = {
  */
 export const TRAILER_LINE = /^[A-Za-z][A-Za-z0-9-]*: \S[^\r\n]*$/
 export const isTrailerLine = (line: string): boolean => TRAILER_LINE.test(line) && !/^litter-run:/i.test(line)
+
+/** The attribution lines run.start copied into run.json (`trailers`), checked again; every commit litter makes ends with them. */
+export function attribution(json: object): string[] {
+  const t = (json as { trailers?: unknown }).trailers
+  if (!Array.isArray(t)) return []
+  return t.filter((x): x is string => typeof x === 'string' && isTrailerLine(x))
+}
 
 /** Section 10's defaults and ranges for the repair budget; run.start holds an override to the same ranges. */
 export const REPAIR_ROUNDS = { default: 3, min: 1, max: 10 } as const
