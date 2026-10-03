@@ -177,11 +177,14 @@ case_unknown_litter_type() {
   done
 }
 
+# A node's type with no node binding (node.test.sh has the rest): a run's
+# binding in bind/ doesn't make it one, and no swarm lists the type, so it
+# isn't waited for.
 case_swarm_node_refused() {
   setup_executor
   bind a1 litter:sw-a-lead
   call litter:sw-a-lead Read '{"file_path":"/x"}' | run_hook guard.sh
-  assert_deny 'swarm node'
+  assert_deny 'litter:sw-a-lead is a swarm node that is not bound yet'
 }
 
 case_unbound() {
@@ -500,7 +503,7 @@ t "after a lost isolation context, every call is denied" case_isolation_lost_fla
 t "with no run active, a litter role is denied" case_no_run
 t "a role the policy doesn't list is denied" case_not_a_role
 t "a litter type that isn't a litter role is denied every tool, its result too" case_unknown_litter_type
-t "a swarm node is refused in this build" case_swarm_node_refused
+t "a swarm node's type with no node binding is refused, a run's binding notwithstanding" case_swarm_node_refused
 t "an unbound litter agent is denied every tool" case_unbound
 t "an agent bound as another role is denied" case_bound_to_other_type
 t "an unparsable binding denies" case_bind_unparsable

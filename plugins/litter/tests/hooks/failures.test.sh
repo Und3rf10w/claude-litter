@@ -52,7 +52,8 @@ case_fast_path() {
   project >/dev/null
   inputs
   marker=$(fake_tool jq ": >|$T_DIR/jq-ran; exit 1")
-  for fp in guard.sh:litter guard.sh:enter guard.sh:agent output.sh:so identity.sh:start identity.sh:stop watch.sh:post; do
+  for fp in guard.sh:litter guard.sh:enter guard.sh:agent output.sh:so identity.sh:start identity.sh:stop watch.sh:post \
+    hold.sh:stop guard.sh:other; do
     fp_script=${fp%%:*}
     fp_in=${fp#*:}
     fp_arg=
@@ -174,7 +175,8 @@ case_jq_fails() {
   done
 }
 
-# The hooks never run git, so a broken one changes nothing.
+# A run agent's checks never run git, so a broken one changes nothing (a
+# swarm node's do: node.test.sh).
 case_git_fails() {
   active_run
   broken=$(fake_tool git ": >|$T_DIR/git-ran; exit 1")
@@ -267,8 +269,9 @@ case_no_lib() {
   active_run
   mkdir -p "$T_DIR/copy"
   cp "$LITTER_ROOT/hooks/guard.sh" "$LITTER_ROOT/hooks/output.sh" "$LITTER_ROOT/hooks/identity.sh" \
-    "$LITTER_ROOT/hooks/watch.sh" "$T_DIR/copy/"
-  for nl in guard.sh:litter:2 output.sh:so:2 identity.sh:start:1 watch.sh:post:1; do
+    "$LITTER_ROOT/hooks/watch.sh" "$LITTER_ROOT/hooks/hold.sh" "$T_DIR/copy/"
+  # hold.sh never blocks a stop on its own failure: exit 0, with the note.
+  for nl in guard.sh:litter:2 output.sh:so:2 identity.sh:start:1 watch.sh:post:1 hold.sh:stop:0; do
     nl_script=${nl%%:*}
     nl_rest=${nl#*:}
     nl_in=${nl_rest%%:*}
@@ -281,11 +284,61 @@ case_no_lib() {
     assert_stderr_contains 'loading lib.sh'
   done
   rm "$(hooks_dir)/active"
-  for nl in guard.sh output.sh identity.sh watch.sh; do
+  for nl in guard.sh output.sh identity.sh watch.sh hold.sh; do
     ${SHELL_UNDER_TEST:-sh} "$T_DIR/copy/$nl" start <"$T_DIR/in.litter" >|"$T_DIR/out" 2>|"$T_DIR/err"
     printf '%s\n' "$?" >|"$T_DIR/code"
     assert_code 0
   done
+}
+
+# Swarm s live, with node a1 and its child c1 bound, and their inputs.
+active_swarm() {
+  swarm_setup
+  node_policy c1 '.kind = "child" | .of = "a1" | .parent = "a1" | .n = 0'
+  inputs
+  bash_call litter:sw-s-lead 'ls' >|"$T_DIR/in.node"
+  as_agent c1 bash_call general-purpose 'ls' >|"$T_DIR/in.child"
+  as_agent o1 bash_call general-purpose 'ls' >|"$T_DIR/in.other"
+  stop_input a1 litter:sw-s-lead >|"$T_DIR/in.nodestop"
+}
+
+# Without jq, a node and a child are refused (the child known by its
+# binding alone), the main thread and other agents keep their rules, and
+# hold.sh lets the stop go.
+case_no_jq_swarm() {
+  active_swarm
+  nojq=$(path_without_jq)
+  for nj in node child; do
+    with_path "only:$nojq" guard.sh <"$T_DIR/in.$nj"
+    assert_blocked 'jq not found'
+  done
+  with_path "only:$nojq" guard.sh <"$T_DIR/in.main"
+  assert_pass
+  with_path "only:$nojq" guard.sh <"$T_DIR/in.other"
+  assert_pass
+  with_path "only:$nojq" guard.sh <"$T_DIR/in.enter"
+  assert_blocked 'jq not found'
+  with_path "only:$nojq" hold.sh <"$T_DIR/in.nodestop"
+  assert_code 0
+  assert_stdout_empty
+  assert_stderr_contains 'jq not found; no hold'
+}
+
+# A jq that fails refuses a node and a child, and passes the main thread.
+case_jq_fails_swarm() {
+  active_swarm
+  broken=$(fake_tool jq 'exit 1')
+  for jf in node child; do
+    with_path "$broken" guard.sh <"$T_DIR/in.$jf"
+    assert_blocked 'litter guard failed: reading the hook input; refusing'
+  done
+  with_path "$broken" guard.sh <"$T_DIR/in.main"
+  assert_pass
+  with_path "$broken" guard.sh <"$T_DIR/in.other"
+  assert_pass
+  with_path "$broken" hold.sh <"$T_DIR/in.nodestop"
+  assert_code 0
+  assert_stdout_empty
 }
 
 # The engine closes stdin; a writer that doesn't is cut after LT_READ_SECS,
@@ -337,4 +390,6 @@ t "a bad pointer refuses litter agents only" case_pointer_bad
 t "without lib.sh, a run refuses (guard, output) or reports (identity, watch)" case_no_lib
 t "a read that doesn't end in 3 s refuses the call" case_read_times_out
 t "an input over 8 MiB is cut, and refuses a litter agent" case_input_too_big
+t "without jq, swarm nodes and children are refused, and hold.sh lets the stop go" case_no_jq_swarm
+t "a jq that fails refuses swarm nodes and children, and passes the main thread" case_jq_fails_swarm
 done_testing

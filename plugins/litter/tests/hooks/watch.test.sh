@@ -25,6 +25,10 @@ post_in() {
 
 mode_file() { cat "$(hooks_dir)/mode" 2>/dev/null; }
 
+# The isolation-lost lines alone: every litter agent's result spools its
+# call's end as well (spool.test.sh).
+lost_lines() { spool_lines | jq -c 'select(.ev == "isolation-lost")'; }
+
 case_prompt_without_jq() {
   mkdir -p "$T_DIR/project"
   CLAUDE_PROJECT_DIR=$T_DIR/project
@@ -95,7 +99,8 @@ case_lost_in_error() {
   assert_code 0
   assert_stdout_empty
   assert_eq "isolation-lost s1 a1 litter:prober Bash $T_DIR/elsewhere $T_DIR/wt watch" \
-    "$(spool_lines | jq -r '"\(.ev) \(.session_id) \(.agent_id) \(.agent_type) \(.tool) \(.cwd) \(.expected) \(.source)"')" spool
+    "$(lost_lines | jq -r '"\(.ev) \(.session_id) \(.agent_id) \(.agent_type) \(.tool) \(.cwd) \(.expected) \(.source)"')" spool
+  assert_eq 'call end true' "$(spool_lines | jq -r 'select(.ev == "call") | "\(.ev) \(.phase) \(.failed)"')" "the call's end"
 }
 
 case_lost_in_response() {
@@ -104,7 +109,7 @@ case_lost_in_response() {
   bind a1 litter:executor
   post_in litter:executor PostToolUse ".tool_response = {stdout: \"\", stderr: \"$LOST\"}" | run_hook watch.sh post
   assert_code 0
-  assert_eq 'isolation-lost watch' "$(spool_lines | jq -r '"\(.ev) \(.source)"')" spool
+  assert_eq 'isolation-lost watch' "$(lost_lines | jq -r '"\(.ev) \(.source)"')" spool
 }
 
 # Without a binding the line still goes out, with no expected folder.
@@ -113,7 +118,7 @@ case_lost_unbound() {
   policy
   post_in litter:prober PostToolUseFailure ".error = \"$LOST\"" | run_hook watch.sh post
   assert_code 0
-  assert_eq 'isolation-lost null' "$(spool_lines | jq -r '"\(.ev) \(.expected)"')" spool
+  assert_eq 'isolation-lost null' "$(lost_lines | jq -r '"\(.ev) \(.expected)"')" spool
 }
 
 case_lost_only_in_input() {
@@ -122,7 +127,8 @@ case_lost_only_in_input() {
   bind a1 litter:executor
   post_in litter:executor PostToolUse ".tool_input = {command: \"echo '$LOST'\"}" | run_hook watch.sh post
   assert_code 0
-  assert_eq '' "$(spool_lines)" spool
+  assert_eq '' "$(lost_lines)" spool
+  assert_eq 'call' "$(spool_lines | jq -r .ev)" "only the call's end"
 }
 
 case_lost_other_agent() {

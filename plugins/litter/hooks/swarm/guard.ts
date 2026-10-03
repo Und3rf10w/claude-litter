@@ -1,41 +1,144 @@
-// WP-M: the mod's writer for the files guard.sh and hold.sh read: a node's or
-// child's policy (`agents/<agentId>.json` with `node`), policy.json's `swarm`
-// entry with `active`, and the pending markers left by a crash.
+// The mod's writer for the files guard.sh and hold.sh read (plan 15.4, "The
+// guard for nodes"; 15.8, "The node policy"; section 9, "Mod-to-hook state"):
+// a node's or child's policy (`agents/<agentId>.json` with `node`),
+// policy.json's `swarm` entry with `active`, and the pending markers a crash
+// left. Owner: phase 2b-1, package M.
 //
-// Stub (phase 2b-1, package C): the signatures are the contract; the bodies are M's.
-// Where the brief left a parameter open, the doc comment says what C picked.
+// Every file is replaced atomically, before the call that changed it is
+// answered, so the agent's next tool call already sees the change. A node's
+// policy is keyed by agentId, never by session, so a /clear leaves it as it is.
 
 import type { Ports } from '../ports'
-import type { NodePolicy, SwarmEntry } from '../hookfiles'
+import type { AgentPolicy, NodePolicy, PendingMarker, Policy, SwarmEntry } from '../hookfiles'
 import type { LiveSwarm, NodeBinding } from './types'
-
-const notBuilt = (name: string): Error => new Error(`litter: ${name} is not built yet (WP-M)`)
+import { agentPolicyPath, donePath, holdPath, nodeTypeName, pendingDir, policyPath } from '../layout'
+import { atomicWriteJson, readJson, remove, serial } from '../fsx'
+import { policyKey, readPolicy, setActive, updatePolicy, writePolicy } from '../policy'
+import { ROLE_POLICIES } from '../roles'
 
 /** The binding's state flags a policy carries. */
 export type NodeFlags = { admitted: boolean; stopped: string | null; bind: boolean }
 
-/** A node's or child's NodePolicy, from the spec at `swarm.revision`, the binding and the flags. A child gets its node's scope. */
-export function nodePolicyFor(binding: NodeBinding, swarm: LiveSwarm, flags: NodeFlags): NodePolicy {
-  throw notBuilt('nodePolicyFor')
+/** An id the hooks name a file by (lib.sh's lt_id_ok). */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** The rule folders (plan 16.1), under a node's directory as under the primary checkout. */
+const RULE_DIRS = ['.litter', '.litter.local', '.claude/rules/litter', '.claude/rules/litter-local'] as const
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+const trimSlash = (path: string): string => (path.length > 1 ? path.replace(/\/+$/, '') : path)
+
+function checkId(agentId: string): void {
+  if (!AGENT_ID.test(agentId)) throw new Error(`litter: ${JSON.stringify(agentId)} isn't an agent id the hooks can name a file by`)
 }
+
+/**
+ * A `paths` entry under the node's directory (15.3: relative to it, a
+ * trailing `/` a folder), its `.` and `..` folded; null when it leaves the
+ * directory, so the entry allows nothing rather than something else.
+ */
+function underDir(dir: string, entry: string): string | null {
+  const parts: string[] = []
+  for (const part of (entry.startsWith('/') ? entry : `${dir}/${entry}`).split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (parts.length === 0) return null
+      parts.pop()
+    } else parts.push(part)
+  }
+  const path = `/${parts.join('/')}`
+  if (path === dir) return `${dir}/`
+  if (!path.startsWith(`${dir}/`)) return null
+  return entry === '' || entry.endsWith('/') || /(^|\/)\.{1,2}$/.test(entry) ? `${path}/` : path
+}
+
+const fullRef = (branch: string | null): string | null =>
+  branch === null || branch === '' ? null : branch.startsWith('refs/') ? branch : `refs/heads/${branch}`
+
+/**
+ * A node's or child's NodePolicy, from the spec at `swarm.revision`, the
+ * binding and the flags. A child gets its node's scope: its binding names its
+ * node, and its directory is the one the spawn check pinned it to. Throws for
+ * a node the launched spec doesn't have.
+ */
+export function nodePolicyFor(binding: NodeBinding, swarm: LiveSwarm, flags: NodeFlags): NodePolicy {
+  const spec = swarm.spec.nodes.find(n => n.id === binding.node)
+  if (!spec) throw new Error(`litter: node ${binding.node} isn't in swarm ${swarm.name} at revision ${swarm.revision}`)
+  const dir = trimSlash(binding.cwd)
+  const typeOf = (id: string): string => swarm.types[id] ?? `litter:${nodeTypeName(swarm.name, id)}`
+  const authority = { ...(spec.authority ?? {}) }
+  const protect = [
+    swarm.roots.litterDir,
+    ...swarm.roots.litterCopies,
+    ...swarm.roots.ruleDirs,
+    `${dir}/.claude/litter`,
+    ...RULE_DIRS.map(r => `${dir}/${r}`),
+  ]
+  return {
+    swarm: binding.swarm,
+    launch: binding.launch,
+    node: binding.node,
+    n: binding.kind === 'child' ? 0 : binding.n,
+    kind: binding.kind,
+    of: binding.of,
+    type: binding.type !== '' ? binding.type : typeOf(binding.node),
+    parent: binding.parent,
+    generation: binding.generation,
+    dir,
+    paths: spec.paths === undefined ? null : spec.paths.flatMap(e => underDir(dir, e) ?? []),
+    protect: [...new Set(protect.map(trimSlash).filter(x => x !== ''))],
+    branch: authority.commit === true ? fullRef(binding.branch) : null,
+    authority,
+    toolsDeny: [...(spec.tools?.deny ?? [])],
+    bashDeny: [...(spec.bash?.deny ?? [])],
+    spawns: Object.keys(spec.spawns ?? {}).map(typeOf),
+    spawnOther: spec.spawnOther !== false,
+    admitted: flags.admitted,
+    stopped: flags.stopped,
+    bind: flags.bind,
+  }
+}
+
+/** One key per agent's file: a write and a patch of the same file never interleave. */
+const nodeKey = (litterDir: string, agentId: string) => `node-policy:${litterDir}:${agentId}`
 
 /** Writes `agents/<agentId>.json` as `{ v: 1, node }`, atomically. */
 export async function writeNodePolicy(p: Ports, litterDir: string, agentId: string, node: NodePolicy): Promise<void> {
-  throw notBuilt('writeNodePolicy')
+  checkId(agentId)
+  const file: AgentPolicy = { v: 1, node }
+  await serial(nodeKey(litterDir, agentId), () => atomicWriteJson(p, agentPolicyPath(litterDir, agentId), file))
 }
 
 /** Read, change and write under one serial key per file; a missing file stays missing. */
 export async function patchNodePolicy(p: Ports, litterDir: string, agentId: string, patch: Partial<NodePolicy>): Promise<void> {
-  throw notBuilt('patchNodePolicy')
+  checkId(agentId)
+  await serial(nodeKey(litterDir, agentId), async () => {
+    const path = agentPolicyPath(litterDir, agentId)
+    const file = await readJson<AgentPolicy>(p, path)
+    if (file === undefined) return
+    if (file === null || file.v !== 1 || typeof file.node !== 'object' || file.node === null) {
+      throw new Error(`litter: ${path} isn't a node's policy; left as it is`)
+    }
+    await atomicWriteJson(p, path, { ...file, node: { ...file.node, ...patch } } satisfies AgentPolicy)
+  })
 }
 
+/** patchNodePolicy for each agent; every one is tried, and the failures are reported together. */
 export async function patchNodePolicies(p: Ports, litterDir: string, agentIds: readonly string[], patch: Partial<NodePolicy>): Promise<void> {
-  throw notBuilt('patchNodePolicies')
+  const ids = [...new Set(agentIds)]
+  const results = await Promise.allSettled(ids.map(id => patchNodePolicy(p, litterDir, id, patch)))
+  const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`${ids[i]}: ${errText(r.reason)}`] : []))
+  if (failed.length > 0) throw new Error(`litter: ${failed.length} of ${ids.length} node policies not changed (${failed.join('; ')})`)
 }
 
 /** Removes an agent's policy, with its `done/` and `hold/` files. */
 export async function removeNodePolicy(p: Ports, litterDir: string, agentId: string): Promise<void> {
-  throw notBuilt('removeNodePolicy')
+  checkId(agentId)
+  await serial(nodeKey(litterDir, agentId), async () => {
+    await remove(p, agentPolicyPath(litterDir, agentId))
+    await remove(p, donePath(litterDir, agentId))
+    await remove(p, holdPath(litterDir, agentId))
+  })
 }
 
 /**
@@ -48,13 +151,72 @@ export async function removeNodePolicy(p: Ports, litterDir: string, agentId: str
  * updatePolicy inside it, since a nested serial on the same key waits on itself.
  */
 export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null): Promise<void> {
-  throw notBuilt('writeSwarmPolicy')
+  await serial(policyKey(litterDir), async () => {
+    const path = policyPath(litterDir)
+    // A file that doesn't parse, or of another version, may hold a run's state: it's never written over.
+    const cur = await readJson<Policy>(p, path)
+    if (cur !== undefined && (cur === null || cur.v !== 1)) throw new Error(`litter: ${path} isn't version 1; the swarm entry for ${name} isn't written`)
+    const swarms: Record<string, SwarmEntry> = { ...(cur?.swarm?.swarms ?? {}) }
+    if (entry === null && !Object.hasOwn(swarms, name)) return
+    if (entry === null) delete swarms[name]
+    else swarms[name] = entry
+    const swarm = Object.keys(swarms).length > 0 ? { swarms } : null
+    if (cur === undefined) {
+      // A swarm can be live with no run: the roles are listed as policyFor lists them (lifecycle.ts).
+      await writePolicy(p, litterDir, { v: 1, session: entry!.owner.session, litterDir, run: null, roles: { ...ROLE_POLICIES }, swarm })
+      await setActive(p, litterDir, true)
+      return
+    }
+    // `active` goes before the policy that no longer needs it, and comes after the one that does.
+    if (swarm === null && cur.run === null) await setActive(p, litterDir, false)
+    await writePolicy(p, litterDir, { ...cur, swarm })
+    if (entry !== null) await setActive(p, litterDir, true)
+  })
 }
 
-/** Changes the entry through updatePolicy; `change` returning null, or a missing entry, leaves the file alone. */
+/**
+ * Changes the entry through updatePolicy; `change` returning null, or a
+ * missing entry, leaves the file alone. That's how a stale owner's beat
+ * leaves the entry a new owner wrote.
+ */
 export async function patchSwarmPolicy(p: Ports, litterDir: string, name: string, change: (entry: SwarmEntry) => SwarmEntry | null): Promise<void> {
-  throw notBuilt('patchSwarmPolicy')
+  await updatePolicy(p, litterDir, policy => {
+    const swarms = policy.swarm?.swarms
+    if (!swarms || !Object.hasOwn(swarms, name)) return null
+    const next = change(swarms[name]!)
+    return next === null ? null : { ...policy, swarm: { swarms: { ...swarms, [name]: next } } }
+  })
 }
 
-/** At session.start: removes leftover `hooks/pending/` markers (a crash between reservation and binding). Does nothing until M builds it. */
-export async function clearPending(p: Ports, litterDir: string): Promise<void> {}
+/** A swarm whose owner beat within this long is another live session's: its spawns may be in flight there. */
+const OWNER_LIVE_SEC = 60
+/** No spawn waits this long between its reservation and its binding, setup included. */
+const MARKER_STALE_SEC = 15 * 60
+
+/**
+ * At session.start: removes leftover `hooks/pending/` markers (a crash
+ * between reservation and binding). A reservation lives in module memory, so
+ * no marker is this process's at its start. policy.json is shared by every
+ * session in the repository, though, so a marker of a swarm another session
+ * owns and still beats for is kept, unless it's older than any spawn takes.
+ * A leftover marker would make every unknown agent's tool call wait 2 s.
+ */
+export async function clearPending(p: Ports, litterDir: string): Promise<void> {
+  const dir = pendingDir(litterDir)
+  if (!(await p.fs.exists(dir))) return
+  const [sid, nowMs, policy] = await Promise.all([p.sessionId(), p.now(), readPolicy(p, litterDir).catch(() => undefined)])
+  const now = nowMs / 1000
+  const others = new Set(
+    Object.entries(policy?.swarm?.swarms ?? {})
+      .filter(([, e]) => e.owner?.session !== sid && typeof e.owner?.checkedAt === 'number' && now - e.owner.checkedAt < OWNER_LIVE_SEC)
+      .map(([name]) => name),
+  )
+  for (const e of await p.fs.list(dir)) {
+    const path = `${dir}/${e.name}`
+    if (others.size > 0 && e.kind === 'file') {
+      const marker = await readJson<PendingMarker>(p, path).catch(() => undefined)
+      if (marker?.v === 1 && others.has(marker.swarm) && typeof marker.at === 'number' && now - marker.at < MARKER_STALE_SEC) continue
+    }
+    await remove(p, path).catch(err => p.log(`pending marker ${e.name} not removed: ${errText(err)}`))
+  }
+}

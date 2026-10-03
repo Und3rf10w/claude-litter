@@ -10,6 +10,7 @@
 # "Mod-to-hook state"). Keep the two identical:
 #   <hooks>/active  policy.json  worktree.json  agents/<id>.json  out/<id>.json
 #   <hooks>/bind/<id>  mode  wt/<name>  spool/<session_id>.jsonl  spool/blobs/<name>.json
+#   <hooks>/pending/<key>  done/<id>  hold/<id>   (phase 2b, the swarm markers)
 #   $CLAUDE_PROJECT_DIR/.claude/litter/hooks/pointer
 # and, for worktree.sh, the run's setup log and its writers' branches
 # (lt_wt_marker, lt_setup_log, lt_writer_branch below):
@@ -111,6 +112,67 @@ lt_raw_litter() {
 }
 
 lt_have_jq() { command -v jq >/dev/null 2>&1; }
+
+# The caller's agent_id, without jq. The engine writes the base fields, the
+# caller's agent_id among them, before hook_event_name, and a quote inside a
+# string value is escaped, so the first "agent_id":" ahead of the first
+# "hook_event_name": is the caller's own, never one from a tool's input.
+# One sed, not the shell's ${…%%…}: macOS sh (bash 3.2) takes minutes over
+# that on an input of a few MiB. sed cuts the line at the first
+# "hook_event_name": (a newline marks the cut), swaps the first "agent_id":"
+# before it for a newline, and prints the id between the two newlines; no
+# compact JSON holds a newline of its own.
+lt_raw_agent_id() {
+  lt_x=$(printf '%s\n' "$LT_IN" | sed -n -e 's/"hook_event_name":.*/\
+/' -e 's/"agent_id":"/\
+/' -e 's/^.*\n\([A-Za-z0-9_-]*\)".*\n$/\1/p') || return 1
+  lt_id_ok "$lt_x" || return 1
+  printf '%s\n' "$lt_x"
+}
+
+# A swarm node or a node's child, recognised without jq: the mod wrote
+# agents/<agent_id>.json for the caller (plan 15.4, "The guard for nodes").
+# A fanout writer has one too, but it's a litter agent by its type already.
+lt_raw_node() {
+  [ -n "${LT_DIR:-}" ] || return 1
+  lt_rid=$(lt_raw_agent_id) || return 1
+  [ -f "$LT_DIR/agents/$lt_rid.json" ]
+}
+
+# A spawn the mod reserved and hasn't bound yet: hooks/pending/ holds a marker.
+lt_pending() {
+  for lt_pm in "$LT_DIR"/pending/*; do
+    [ -e "$lt_pm" ] && return 0
+  done
+  return 1
+}
+
+# lt_wait_for <path>: waits about 2 s for <path> to appear (plan 15.4, "The
+# guard closes the race"), checking every 100 ms where sleep takes a
+# fraction (macOS, BusyBox, GNU), else every second.
+lt_wait_for() {
+  lt_n=0
+  while [ ! -e "$1" ]; do
+    if [ -z "${LT_TICK:-}" ]; then
+      if sleep 0.1 2>/dev/null; then LT_TICK=0.1; else LT_TICK=1; fi
+    else
+      sleep "$LT_TICK" 2>/dev/null || return 1
+    fi
+    lt_n=$((lt_n + 1))
+    case $LT_TICK in 0.1) lt_max=20 ;; *) lt_max=3 ;; esac
+    [ "$lt_n" -lt "$lt_max" ] || break
+  done
+  [ -e "$1" ]
+}
+
+# lt_done <agent_id> <via>: done/<agent_id> (hookfiles.ts, DoneMarker), the
+# agent handed back or stopped with nothing of its own still running.
+lt_done() {
+  lt_id_ok "$1" || return 1
+  lt_at=$(date +%s 2>/dev/null) || lt_at=0
+  case $lt_at in '' | *[!0-9]*) lt_at=0 ;; esac
+  lt_mkdir "$LT_DIR/done" && lt_write "$LT_DIR/done/$1" "{\"v\":1,\"at\":$lt_at,\"via\":\"$2\"}"
+}
 
 # An id that's safe as a file name: agent, session and tool_use ids.
 lt_id_ok() {
@@ -262,7 +324,8 @@ lt_take() {
 }
 
 # Acts on a PreToolUse decision from lt_run:
-#   pass                                  exit 0, nothing printed
+#   pass [sid, line]                      the call line spooled when there's one (a failure
+#                                         changes nothing), exit 0, nothing printed
 #   deny|block, reason, sid, spool lines  the lines spooled, then the deny (block: exit 2)
 #   spool, -, sid, line                   the line spooled (else refused), exit 0
 #   fill, hook output, sid, line          the line spooled (else refused), the output printed
@@ -270,7 +333,10 @@ lt_take() {
 # anyone else's passes.
 lt_finish() {
   case $LT_L1 in
-    pass) exit 0 ;;
+    pass)
+      [ -z "$LT_L3" ] || lt_spool "$LT_L2" "$LT_L3" || :
+      exit 0
+      ;;
     deny | block)
       [ -z "$LT_L4" ] || lt_spool "$LT_L3" "$LT_L4" || :
       [ -z "$LT_L5" ] || lt_spool "$LT_L3" "$LT_L5" || :
@@ -332,4 +398,7 @@ def denyline($in; $r): {v: 1, ev: "deny", ts: ts, session_id: ($in.session_id | 
 def out($in; $m; $extra): ($GP + " " + ($m | line)) as $r
   | (["deny", $r, sid($in)] + [$extra[] | tojson] + [denyline($in; $r)]) | join("\n");
 def deny($in; $m): out($in; $m; []);
+def callline($in): {v: 1, ev: "call", ts: ts, session_id: ($in.session_id | str), agent_id: ($in.agent_id | str),
+  agent_type: ($in.agent_type | str), tool: ($in.tool_name | str), tool_use_id: ($in.tool_use_id | str), phase: "start"} | tojson;
+def passcall($in): if sid($in) != "" and ($in.tool_use_id | str) != "" then "pass\n" + sid($in) + "\n" + callline($in) else "pass" end;
 '

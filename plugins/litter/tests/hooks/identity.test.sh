@@ -92,6 +92,18 @@ case_stop_other_agent() {
   assert_eq '' "$(spool_lines)" spool
 }
 
+# A swarm node's stop is spooled as phase 1 has it, and identity.sh writes no
+# done/: that's hold.sh's, the one that knows whether the stop goes ahead.
+case_stop_node_no_done() {
+  project >/dev/null
+  swarm_policy
+  node_policy a1
+  stop_in litter:sw-s-lead '.background_tasks = []' | run_hook identity.sh stop
+  assert_code 0
+  assert_eq 'stop a1 litter:sw-s-lead 0' "$(spool_lines | jq -r '"\(.ev) \(.agent_id) \(.agent_type) \(.background_tasks)"')" stop
+  assert_no_file "$(hooks_dir)/done"
+}
+
 # Neither event is ever refused: a stop that can't spool exits 1, never 2.
 case_stop_never_blocks() {
   setup
@@ -149,6 +161,7 @@ t "start with an unusable agent_id writes nothing and says so" case_start_bad_id
 t "stop spools stop_hook_active and the count of background_tasks" case_stop_spools
 t "stop with no background_tasks counts 0" case_stop_without_tasks
 t "stop leaves other agents alone" case_stop_other_agent
+t "a swarm node's stop is spooled, and identity.sh writes no done/" case_stop_node_no_done
 t "a stop that can't spool exits 1, never 2" case_stop_never_blocks
 t "an unknown argument exits 1" case_bad_argument
 t "lines from 24 scripts appending at once each come out whole" case_concurrent_appends
