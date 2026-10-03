@@ -23,10 +23,12 @@ h_git() { git -c user.name=tier4 -c user.email=tier4@example.invalid -c commit.g
 # h_scratch <case>: a fresh $H_DIR with the repo, its remote and the plugin copy.
 # The checkout is one commit ahead of origin/main, and only that commit has
 # README's PARENT-ONLY line and parent-only.txt. The repo pins the engine's
-# worktree base to origin (worktree.baseRef fresh), so a worktree lacks both,
-# and an answer from the parent's files shows. The tree stays clean, which
-# run.start needs. Phase 2's worktree.sh bases litter's worktrees at HEAD, so
-# the litter agent's checks will need another marker then.
+# worktree base to origin (worktree.baseRef fresh), so the engine's worktrees
+# lack both. litter's are at the run's base, HEAD, so the parent also holds
+# parent-local.txt (PARENT-LOCAL): ignored by git, so no snapshot, base or
+# worktree has it, and un-ignored for ripgrep by the committed .ignore, so
+# Grep finds it in the parent. An answer naming it came from the parent's
+# files. The tree stays clean, which run.start needs.
 h_scratch() {
   H_CASE=$1
   H_DIR=$H_OUT/$1
@@ -39,7 +41,9 @@ h_scratch() {
   mkdir -p "$H_REPO/.claude"
   printf 'hi\n' >|"$H_REPO/README"
   printf '{ "worktree": { "baseRef": "fresh" } }\n' >|"$H_REPO/.claude/settings.json"
-  h_git -C "$H_REPO" add README .claude/settings.json
+  printf 'parent-local.txt\n' >|"$H_REPO/.gitignore"
+  printf '!parent-local.txt\n' >|"$H_REPO/.ignore"
+  h_git -C "$H_REPO" add README .claude/settings.json .gitignore .ignore
   h_git -C "$H_REPO" commit -q -m init || exit 1
   h_git -C "$H_REPO" remote add origin "$H_DIR/origin.git"
   h_git -C "$H_REPO" push -q origin main || exit 1
@@ -47,6 +51,7 @@ h_scratch() {
   printf 'PARENT-ONLY\n' >|"$H_REPO/parent-only.txt"
   h_git -C "$H_REPO" add README parent-only.txt
   h_git -C "$H_REPO" commit -q -m 'the parent only' || exit 1
+  printf 'PARENT-LOCAL\n' >|"$H_REPO/parent-local.txt"
   for e in "$LITTER_ROOT"/.claude-plugin "$LITTER_ROOT"/*; do
     case ${e##*/} in tests | workflows) continue ;; esac
     cp -R "$e" "$H_DIR/litter/" || exit 1

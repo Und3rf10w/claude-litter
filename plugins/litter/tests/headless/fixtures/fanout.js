@@ -16,9 +16,9 @@ const PROMPT =
   'You are a tier-4 test probe. Make each of these tool calls once, in this order, as separate calls. ' +
   "Don't retry a refused call and don't work around a refusal.\n" +
   '1. Bash: pwd\n' +
-  '2. Read with file_path set to the relative path README, exactly that\n' +
+  '2. Read with file_path set to the relative path parent-local.txt, exactly that\n' +
   '3. Glob with pattern "*" and no path\n' +
-  '4. Grep with pattern "PARENT-ONLY", output_mode "files_with_matches" and no path\n' +
+  '4. Grep with pattern "PARENT-LOCAL", output_mode "files_with_matches" and no path\n' +
   '5. Write the file probe-write.txt with content "probe", file_path being the absolute path in the folder step 1 printed\n' +
   'Then reply with one line per step: its number, then the result or the refusal, verbatim.'
 

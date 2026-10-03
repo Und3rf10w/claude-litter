@@ -9,8 +9,11 @@
 # general-purpose Agent-tool agent that runs it too. The prober's live input is
 # replayed through guard.sh as git commit and git push, and the main thread
 # commits and pushes while the run is active. `alone` must pass every check.
-# `broad` must fail the isolation checks, and litter must halt the run naming
-# the likely cause.
+# Before CC 2.1.288, `broad` must fail the isolation checks, and litter must
+# halt the run naming the likely cause: a hooks-worker next() resumed outside
+# the agent's working-directory store. 2.1.288 resumes it in the caller's
+# context (anthropics/claude-code#91870), so from then on `broad` must pass
+# every check `alone` does, with the broad hook seen hopping.
 
 set -u
 . "$(dirname "$0")/lib.sh"
@@ -18,7 +21,7 @@ set -u
 mode=${1:-alone}
 case $mode in alone | broad) ;; *) echo "usage: $0 alone|broad" >&2; exit 2 ;; esac
 
-AGENT_PROMPT='You are a tier-4 test probe. Make each of these tool calls once, in this order, as separate calls. Do not retry a refused call and do not work around a refusal. 1. Bash: pwd 2. Read with file_path set to the relative path README, exactly that 3. Glob with pattern "*" and no path 4. Grep with pattern "PARENT-ONLY", output_mode "files_with_matches" and no path 5. Write the file probe-write.txt with content "probe", file_path being the absolute path in the folder step 1 printed 6. Edit the README in the folder step 1 printed (absolute path), replacing hi with hi-edited. Then reply with one line per step: its number, then the result or the refusal, verbatim.'
+AGENT_PROMPT='You are a tier-4 test probe. Make each of these tool calls once, in this order, as separate calls. Do not retry a refused call and do not work around a refusal. 1. Bash: pwd 2. Read with file_path set to the relative path parent-local.txt, exactly that 3. Glob with pattern "*" and no path 4. Grep with pattern "PARENT-LOCAL", output_mode "files_with_matches" and no path 5. Write the file probe-write.txt with content "probe", file_path being the absolute path in the folder step 1 printed 6. Edit the README in the folder step 1 printed (absolute path), replacing hi with hi-edited. Then reply with one line per step: its number, then the result or the refusal, verbatim.'
 
 PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: {\"kind\": \"run.start\", \"workflow\": \"fanout\", \"authorized\": [\"tier-4 isolation probe\"], \"tasks\": [{\"id\": \"probe\", \"title\": \"Isolation probe\", \"text\": \"Run the isolation probe\", \"writes\": false}]}
@@ -71,10 +74,17 @@ c_pwd() {
   [ -n "$r" ] || { echo "no pwd result"; return 1; }
   case $r in *"$wt"*) ;; *) echo "pwd said $r, not $wt"; return 1 ;; esac
 }
+# Only the parent has parent-local.txt (lib.sh). A Read is judged on the
+# content, since its refusal may name the path it was asked for.
 c_parent_free() {
+  asked=$(h_log "$1" | jq -r --arg tool "$2" 'select(.ev == "PreToolUse" and .tool == $tool) | .input.file_path // .input.pattern // ""' | head -n 1)
+  case $2:$asked in Read:*parent-local.txt | Grep:PARENT-LOCAL | Glob:*) ;;
+    *:) echo "no $2 call"; return 1 ;;
+    *) echo "$2 was asked for '$asked', not the parent's marker, so it tested nothing"; return 1 ;;
+  esac
   r=$(results "$1" "$2")
   [ -n "$r" ] || { echo "no $2 result"; return 1; }
-  case $r in *PARENT-ONLY* | *parent-only.txt*) echo "$2 answered from the parent checkout: $r"; return 1 ;; esac
+  case $2:$r in *PARENT-LOCAL* | Glob:*parent-local.txt* | Grep:*parent-local.txt*) echo "$2 answered from the parent checkout: $r"; return 1 ;; esac
 }
 c_write() {
   wt=$(h_worktree "$1")
@@ -147,8 +157,19 @@ c_halt_message() {
   grep -q "likely another plugin's tool.call hook" "$H_DIR/debug.txt" ||
     { echo "no isolation-lost message naming the cause in the debug log"; return 1; }
 }
+c_broad_hopped() {
+  grep -q 'hooks module broad@inline tool\.call settled .*(worker hop' "$H_DIR/debug.txt" ||
+    { echo "the broad hook never hopped to the worker, so nothing was tested"; return 1; }
+}
 
-if [ "$mode" = alone ]; then
+# Whether this CC resumes a worker hop in the caller's context: 2.1.288 on.
+hop_fixed() {
+  claude --version 2>/dev/null | awk '{ split($1, v, ".")
+    exit !(v[1] > 2 || (v[1] == 2 && (v[2] > 1 || (v[2] == 1 && v[3] >= 288)))) }'
+}
+
+if [ "$mode" = alone ] || hop_fixed; then
+  [ "$mode" = broad ] && h_expect "the broad hook hopped to the worker" c_broad_hopped
   isolated litter:prober "litter agent"
   isolated general-purpose "Agent-tool agent"
   h_expect "Agent-tool agent: an Edit lands in the worktree" c_edit general-purpose
@@ -161,13 +182,19 @@ if [ "$mode" = alone ]; then
   h_expect "debug log: litter hopped only allowlisted tools" c_hops
   h_expect "the run ended done" c_run_status done
 else
-  # Each must fail: the hop is what breaks them.
+  # Each must fail: the hop is what breaks them. Every check's answer is
+  # shown, so a run also shows which ones caught it.
   for t in litter:prober general-purpose; do
-    if c_not_lost "$t" >/dev/null && c_pwd "$t" >/dev/null && c_cwd "$t" >/dev/null &&
-      c_parent_free "$t" Read >/dev/null && c_parent_free "$t" Glob >/dev/null; then
-      h_check fail "$t: the broad hook broke its isolation" "every isolation check passed, so the fixture didn't hop"
-    else
+    broke=
+    for c in c_not_lost c_pwd c_cwd 'c_parent_free Read' 'c_parent_free Glob' 'c_parent_free Grep'; do
+      # A word list on purpose: the check and its argument.
+      # shellcheck disable=SC2086
+      why=$(set -- $c && "$1" "$t" ${2:+"$2"}) || { broke=1; echo "     $t: $c: $why"; }
+    done
+    if [ -n "$broke" ]; then
       h_check ok "$t: the broad hook broke its isolation"
+    else
+      h_check fail "$t: the broad hook broke its isolation" "every isolation check passed, so the fixture didn't hop"
     fi
   done
   h_expect "litter agent: no commit or pushed ref came of it" c_no_ref
