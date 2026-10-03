@@ -11,14 +11,14 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Policy } from '../../hooks/hookfiles'
 import type { ListedAgent } from '../../hooks/ports'
-import type { NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
-import { activePath, agentPolicyPath, launchSummaryPath, policyPath } from '../../hooks/layout'
+import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
+import { activePath, agentPolicyPath, launchSummaryPath, policyPath, revisionPath } from '../../hooks/layout'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { readPolicy, setActive } from '../../hooks/policy'
 import { normalizeOptions } from '../../hooks/options'
 import { deactivate } from '../../hooks/lifecycle'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
-import { liveSwarm } from '../../hooks/swarm/state'
+import { liveSwarm, putLiveSwarm } from '../../hooks/swarm/state'
 import { heldBy, notNewer, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from '../../hooks/swarm/guard'
 import {
   acquireOwnership,
@@ -35,7 +35,7 @@ import { recoverSwarms } from '../../hooks/swarm/recover'
 import { launchSwarm } from '../../hooks/swarm/launch'
 import { endSwarm } from '../../hooks/swarm/end'
 import { addSwarmWorktree } from '../../hooks/swarm/worktrees'
-import { resetClearForTests } from '../../hooks/clear'
+import { noteSessionEnd, others as clearOthers, READ_ONLY_REFRESH_MS, rebindSettled, rebound, resetClearForTests, startSwarmTimers } from '../../hooks/clear'
 import { aSpec, bind, blobAt, deadPid, launched, moveRef, nodePolicyOf, policyText, refOf, saveSwarm, settle, world, type World } from './swarmlaunch-harness'
 import { fireEvery, nodePorts, type TestPorts } from './support/node-ports'
 
@@ -133,6 +133,12 @@ async function neverStarted(branch = 'feature/old'): Promise<string> {
   if (!r.ok) throw new Error(r.reason)
   await settle(w.p)
   return launch
+}
+
+/** Waits for work a timer started without handing back its promise (the swarm tick's refresh). */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !cond(); i++) await new Promise<void>(resolve => setTimeout(resolve, 10))
+  expect(cond()).toBe(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +471,191 @@ describe("the owner's entry: the rebind's order, and the beat that heals it (Q3,
     ahead(w.p, OWNER_BEAT_MS)
     await settle(w.p)
     expect(active()).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Q5
+
+/** Another session's live swarm, as this one shows it. */
+function copyOf(name: string, types: Record<string, string>): LiveSwarm {
+  return {
+    name,
+    launch: '20261001-000000',
+    revision: 1,
+    spec: { name, goal: 'g', nodes: Object.keys(types).map(id => ({ id, kind: 'orchestrator' as const })) },
+    nonce: 'n',
+    types,
+    typesReady: true,
+    dirs: {},
+    sessionCwd: w.dir,
+    worktreeRoot: w.dir,
+    commonDir: w.dir,
+    roots: { litterDir: w.litterDir, litterCopies: [], ruleDirs: [] },
+    tips: {},
+    owner: { ref: `refs/litter-swarm/${name}`, oid: 'b'.repeat(40), generation: 1, session: 'sess-x' },
+    state: 'live',
+    readOnly: true,
+    lost: false,
+    flags: { isolationLost: false },
+    startedAt: 1,
+  }
+}
+
+describe("another session's swarm, read again (Q5)", () => {
+  test('the swarm tick follows its owner, and drops it once the owner ended it', async () => {
+    const launch = await launched(w, solo())
+    const q = await w.restart('sess-b')
+    await recoverSwarms(q, w.litterDir)
+    expect(liveSwarm('alpha')).toEqual(expect.objectContaining({ readOnly: true, owner: expect.objectContaining({ session: 'sess-a', generation: 1 }) }))
+    startSwarmTimers(q)
+
+    // Handed over to sess-c.
+    const oid = await moveRef(w, { ...(await blobAt(w, (await refOf(w))!)), session: 'sess-c', generation: 2 })
+    await fireEvery(q)
+    await until(() => liveSwarm('alpha')?.owner.oid === oid)
+    expect(liveSwarm('alpha')!.owner).toEqual({ ref: 'refs/litter-swarm/alpha', oid, generation: 2, session: 'sess-c' })
+
+    // sess-c ends it.
+    const c = nodePorts({ sessionId: 'sess-c', cwd: w.dir })
+    c.clock.now = q.clock.now
+    await appendLaunchRecord(c, w.litterDir, 'alpha', launch, 'swarm.end', { status: 'ended', settled: true, nodes: {}, worktrees: [], branches: [] })
+    await w.git('update-ref', '-d', 'refs/litter-swarm/alpha')
+    ahead(q, READ_ONLY_REFRESH_MS)
+    await fireEvery(q)
+    await until(() => liveSwarm('alpha') === null)
+  })
+
+  test("Launch reads another session's copy again before it refuses: one its owner has ended doesn't refuse", async () => {
+    const first = await launched(w, solo())
+    const q = await w.restart('sess-b')
+    await recoverSwarms(q, w.litterDir)
+    expect(liveSwarm('alpha')?.readOnly).toBe(true)
+    // sess-a ends it: swarm.end, the release, the entry's removal.
+    const a = nodePorts({ sessionId: 'sess-a', cwd: w.dir })
+    a.clock.now = q.clock.now
+    await appendLaunchRecord(a, w.litterDir, 'alpha', first, 'swarm.end', { status: 'ended', settled: true, nodes: {}, worktrees: [], branches: [] })
+    await w.git('update-ref', '-d', 'refs/litter-swarm/alpha')
+    await writeSwarmPolicy(a, w.litterDir, 'alpha', null)
+    ahead(q, 1_000)
+
+    const next = await launched(w, solo())
+
+    expect(next).not.toBe(first)
+    expect(liveSwarm('alpha')).toEqual(expect.objectContaining({ launch: next, readOnly: false }))
+  })
+
+  test('the collision check counts neither a leftover entry nor a copy whose owner ended it', async () => {
+    // alpha's types: litter:sw-alpha-lead-a and litter:sw-alpha-docs-b.
+    const spec: SwarmSpec = {
+      name: 'alpha',
+      goal: 'g',
+      nodes: [
+        { id: 'lead-a', kind: 'orchestrator', worktree: 'none' },
+        { id: 'docs-b', kind: 'orchestrator', worktree: 'none' },
+      ],
+    }
+    // alpha-lead's node a serves litter:sw-alpha-lead-a: a copy of another session's swarm, whose ref is gone.
+    putLiveSwarm(copyOf('alpha-lead', { a: 'litter:sw-alpha-lead-a' }))
+    // alpha-docs's node b serves litter:sw-alpha-docs-b: an entry a crash left, with no ref.
+    const q = nodePorts({ sessionId: 'sess-x', cwd: w.dir })
+    await writeSwarmPolicy(q, w.litterDir, 'alpha-docs', {
+      launch: '20261001-000000',
+      state: 'live',
+      commonDir: join(w.dir, '.git'),
+      owner: { ref: 'refs/litter-swarm/alpha-docs', oid: 'c'.repeat(40), generation: 1, session: 'sess-x', checkedAt: Math.floor(nowOf(w.p) / 1000) },
+      nodeTypes: ['litter:sw-alpha-docs-b'],
+    })
+
+    await launched(w, spec)
+
+    expect(liveSwarm('alpha')?.readOnly).toBe(false)
+    expect(liveSwarm('alpha-lead')).toBeNull()
+  })
+
+  test("a live swarm's entry still counts", async () => {
+    await launched(w, { name: 'alpha-lead', goal: 'g', nodes: [{ id: 'a', kind: 'orchestrator', worktree: 'none' }] })
+    // Another session, which hasn't read it yet: only the entry says it's live.
+    const q = await w.restart('sess-b')
+    const spec: SwarmSpec = { name: 'alpha', goal: 'g', nodes: [{ id: 'lead-a', kind: 'orchestrator', worktree: 'none' }] }
+    await saveSwarm(w, spec)
+    q.answers.push('Launch')
+    const r = await launchSwarm(q, 'alpha')
+    expect((r as { reason: string }).reason).toContain("its type litter:sw-alpha-lead-a is live swarm alpha-lead's too")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Q7, Q8
+
+describe('the /clear rebind of a swarm this session owns (Q7, Q8)', () => {
+  /** The engine's /clear: session.end `clear`, then the id moves; the first litter hook after it rebinds. */
+  async function cleared(p: TestPorts, from: string, to: string): Promise<void> {
+    clearOthers.registerSwarmCommands = async () => undefined
+    clearOthers.refreshPanes = async () => undefined
+    await noteSessionEnd(p, { sessionId: from, reason: 'clear' } as never)
+    p.sessionId = async () => to
+    await rebound(p)
+    await rebindSettled()
+  }
+
+  /** alpha's process crashed, and the same session took it back: recovery, with what `prepare` changed. */
+  async function recovered(prepare: (q: TestPorts) => Promise<void> | void): Promise<TestPorts> {
+    await launched(w)
+    const q = await crashed('sess-a', 0)
+    await prepare(q)
+    await recoverSwarms(q, w.litterDir)
+    expect(ownedSwarm('alpha')).not.toBeNull()
+    return q
+  }
+
+  const swarmTypes = (q: TestPorts) => q.registeredAgents.map(a => a.name).filter(n => n.startsWith('sw-alpha-'))
+
+  test("doesn't register the types of a swarm whose spec recovery didn't take", async () => {
+    const q = await recovered(q => atomicWriteJson(q, revisionPath(w.litterDir, 'alpha', 1), { ...aSpec(), goal: 'Something else.' }))
+    expect(liveSwarm('alpha')?.typesReady).toBe(false)
+    expect(swarmTypes(q)).toEqual([])
+
+    await cleared(q, 'sess-a', 'sess-c')
+
+    expect(swarmTypes(q)).toEqual([])
+    expect(liveSwarm('alpha')?.typesReady).toBe(false)
+    // The rest of the rebind ran: the ref names the new session.
+    expect((await blobAt(w, (await refOf(w))!)).session).toBe('sess-c')
+  })
+
+  test('registers the types the engine refused at recovery, and the swarm is ready once they are in', async () => {
+    const q = await recovered(q => {
+      q.registerAgentAnswer = spec => {
+        if (spec.name.startsWith('sw-alpha-')) throw new Error('agent.register: refused for the test')
+      }
+    })
+    expect(liveSwarm('alpha')?.typesReady).toBe(false)
+    q.registerAgentAnswer = undefined
+    // The port lists the refused calls too.
+    q.registeredAgents = []
+
+    await cleared(q, 'sess-a', 'sess-c')
+
+    expect(swarmTypes(q).sort()).toEqual(['sw-alpha-docs', 'sw-alpha-fixer', 'sw-alpha-lead-a', 'sw-alpha-scout'])
+    expect(liveSwarm('alpha')?.typesReady).toBe(true)
+  })
+
+  test('a swarm End finished during the rebind gets no more of it: no beat, no session.rebind after its swarm.end', async () => {
+    const launch = await launched(w)
+    const swap = clearOthers.rebindOwnership
+    clearOthers.rebindOwnership = async (p, litterDir, to) => {
+      await endSwarm(w.p, 'alpha', 'keep-everything')
+      return swap(p, litterDir, to)
+    }
+
+    await cleared(w.p, 'sess-a', 'sess-c')
+
+    const ks = await kinds(launch)
+    expect(ks.at(-1)).toBe('swarm.end')
+    expect(ks).not.toContain('session.rebind')
+    expect(liveSwarm('alpha')).toBeNull()
+    expect(w.p.logs.filter(l => l.includes("swarm alpha's beat failed"))).toEqual([])
   })
 })
 

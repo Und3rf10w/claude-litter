@@ -29,9 +29,11 @@ import { readPolicy } from '../policy'
 import { session } from '../session'
 import {
   bindings,
+  dropLiveSwarm,
   isStopped,
   lastReport,
   liveSwarm,
+  liveSwarms,
   loadSwarm,
   markRunning,
   markSettled,
@@ -320,6 +322,9 @@ export async function recoverOwnedLaunch(
   // 1. The types, before anything can resume (spike 3): the gate holds sends and node turns meanwhile.
   let typesReady = false
   const missing = spec.nodes.filter(n => n.brief !== undefined && typeof briefs?.[n.id] !== 'string').map(n => n.id)
+  // Only a spec that matched is registered, here or by a /clear rebind later (typesAccepted, Q7).
+  if (verified && missing.length === 0) unaccepted.delete(launchKey(name, facts.launch))
+  else unaccepted.add(launchKey(name, facts.launch))
   if (!verified) p.log(`swarm ${name}: its spec doesn't match launch ${facts.launch}'s specHash; its types aren't registered`)
   else if (missing.length > 0) p.log(`swarm ${name}: the briefs of ${missing.join(', ')} at revision ${b.revision} are missing; its types aren't registered`)
   else {
@@ -422,6 +427,50 @@ async function recoverReadOnly(
   putLiveSwarm(liveOf(facts, start, spec, mirror, { ref: start.body.owner.ref, ...owner }, { typesReady: false, readOnly: true }))
   for (const rec of facts.nodes.values()) putBinding(bindingOf(facts, start.body, rec))
   cards.delete(name)
+}
+
+/** Launches whose spec recovery didn't take (a specHash mismatch, briefs missing): no type of theirs is registered. */
+const unaccepted = new Set<string>()
+const launchKey = (name: string, launch: string) => `${name}/${launch}`
+
+/**
+ * Whether the swarm's types may be registered from its spec (Q7): a launch
+ * this process made, or one recovery took. A /clear rebind asks before it
+ * registers them again.
+ */
+export const typesAccepted = (s: LiveSwarm): boolean => !unaccepted.has(launchKey(s.name, s.launch))
+
+/**
+ * Another session's swarms, as this one shows them (Q5), read again from the
+ * ref and the ledger: a copy whose ref is gone or names another launch, or
+ * whose ledger has swarm.end, is dropped; otherwise its owner and state
+ * follow the ref and the ledger. Git failing changes nothing. The swarm tick
+ * runs it about every 10 s (clear.ts), and Launch before it refuses a name or
+ * counts a type as taken. `only` limits it to those names.
+ */
+export async function refreshReadOnly(p: Ports, litterDir: string, only?: readonly string[]): Promise<void> {
+  for (const s of liveSwarms()) {
+    if (!s.readOnly || (only && !only.includes(s.name))) continue
+    try {
+      const ref = await readOwnerRef(p, litterDir, s.name)
+      if (ref === undefined) continue
+      const facts = ref?.blob?.launch === s.launch ? await readLaunchFacts(p, litterDir, s.name, s.launch) : null
+      const cur = liveSwarm(s.name)
+      // Changed meanwhile: a handover to this session, or another refresh.
+      if (!cur || !cur.readOnly || cur.launch !== s.launch) continue
+      if (!ref?.blob || !facts?.start || facts.ended) {
+        p.log(`swarm ${s.name}: launch ${s.launch}, which session ${s.owner.session} owns, isn't live any more; it's no longer shown`)
+        dropLiveSwarm(s.name)
+        continue
+      }
+      const owner = { ref: cur.owner.ref, oid: ref.oid, generation: ref.blob.generation, session: ref.blob.session }
+      const state = facts.stopping ? 'stopping' : 'live'
+      const same = cur.owner.oid === owner.oid && cur.owner.generation === owner.generation && cur.owner.session === owner.session && cur.state === state
+      if (!same) patchLiveSwarm(s.name, { owner, state })
+    } catch (err) {
+      p.log(`swarm ${s.name}: its read-only copy wasn't refreshed: ${errText(err)}`)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -674,4 +723,5 @@ export async function continuationText(p: Ports, name: string, node: string, how
 export function resetRecoveryForTests(): void {
   cards.clear()
   handled.clear()
+  unaccepted.clear()
 }

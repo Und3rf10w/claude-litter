@@ -58,6 +58,7 @@ const cleanups: (() => void)[] = []
 beforeEach(() => {
   state.resetForTests()
   resetClearForTests()
+  released.clear()
 })
 
 afterEach(() => {
@@ -220,8 +221,15 @@ function fakes(calls: Call[]): void {
     rebindOwnership: async (_p: Ports, litterDir: string, to: string) => void calls.push({ name: 'rebindOwnership', args: [litterDir, to] }),
     startOwnerBeat: (_p: Ports, litterDir: string, name: string) => void calls.push({ name: 'startOwnerBeat', args: [litterDir, name] }),
     stopOwnerBeat: (name?: string) => void calls.push({ name: 'stopOwnerBeat', args: [name] }),
+    // K's holdings: every owned swarm's ref is this process's, until a spec drops one (`released`).
+    ownedSwarm: (name: string) => (released.has(name) ? null : { ref: `refs/litter-swarm/${name}`, oid: 'a'.repeat(40), generation: 3 }),
+    // K's read-only refresh on the tick (Q5) has its own spec (ownership.spec.ts).
+    refreshReadOnly: async () => undefined,
   })
 }
+
+/** Swarms whose ref this process no longer holds (End released it): ownedSwarm answers null for them. */
+const released = new Set<string>()
 
 /** policy.json with the swarm entries, over whatever run.start wrote (or a fresh one). */
 async function swarmPolicy(w: World, swarms: Record<string, SwarmEntry>): Promise<void> {

@@ -18,7 +18,7 @@ import type { PortHook, SwarmReadHook } from '../hooktypes'
 import type { SwarmEntry } from '../hookfiles'
 import type { SwarmReadInstance, SwarmReadLaunch, SwarmReadOrchestrator, SwarmReadReply, SwarmStartBody } from '../records/swarm'
 import type { LiveSwarm, NodeDir, ReportEvent, SwarmNode, SwarmRoots, SwarmSpec, ValidateCtx } from './types'
-import { launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
+import { LAUNCH_ID, launchDir, NODE_ID, nodeTypeName, SWARM_NAME, swarmNewWorktreeName } from '../layout'
 import { getOptions, session } from '../session'
 import { remove, sha256 } from '../fsx'
 import { primaryOf, repoOf } from '../lifecycle'
@@ -68,7 +68,7 @@ import {
 import { decodeSwarmInput, SWARM_READ } from './tools'
 import { addSwarmWorktree } from './worktrees'
 import { acquireOwnership, readOwnerRef, releaseOwnership, startOwnerBeat, stopOwnerBeat } from './owner'
-import { authorityLines, continuationText, readLaunchFacts, resumeTargets, settleStuck } from './recover'
+import { authorityLines, continuationText, readLaunchFacts, refreshReadOnly, resumeTargets, settleStuck } from './recover'
 import { validateSpec } from './spec'
 import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
@@ -355,6 +355,43 @@ async function rootsOf(p: Ports, litterDir: string, dirs: readonly string[]): Pr
 const launching = new Set<string>()
 
 /**
+ * The types other live swarms serve, type → swarm (Launch refuses a type
+ * another live swarm has). A swarm that would collide is read again first
+ * (Q5): another session's copy from its ref and ledger, and a policy.json
+ * entry counts only while its ref names its launch and that launch hasn't
+ * ended, so a leftover entry, or a copy whose owner ended it, takes nothing.
+ */
+async function takenTypes(
+  p: Ports,
+  litterDir: string,
+  name: string,
+  entries: Readonly<Record<string, SwarmEntry>>,
+  ours: ReadonlySet<string>,
+): Promise<Map<string, string>> {
+  const collides = (ts: readonly string[]) => ts.some(t => ours.has(t))
+  const copies = liveSwarms().filter(s => s.name !== name && s.readOnly && collides(Object.values(s.types)))
+  if (copies.length > 0) await refreshReadOnly(p, litterDir, copies.map(s => s.name))
+  const taken = new Map<string, string>()
+  for (const s of liveSwarms()) if (s.name !== name) for (const t of Object.values(s.types)) taken.set(t, s.name)
+  for (const [other, entry] of Object.entries(entries)) {
+    const ts = Array.isArray(entry?.nodeTypes) ? entry.nodeTypes : []
+    if (other === name || !collides(ts)) continue
+    if (!liveSwarm(other) && !(await entryLive(p, litterDir, other, entry))) continue
+    for (const t of ts) taken.set(t, other)
+  }
+  return taken
+}
+
+/** A policy.json entry's launch is live: its ref names it, with swarm.start and no swarm.end. Git failing counts as live. */
+async function entryLive(p: Ports, litterDir: string, name: string, entry: SwarmEntry): Promise<boolean> {
+  const ref = await readOwnerRef(p, litterDir, name)
+  if (ref === undefined) return true
+  if (!ref?.blob || ref.blob.launch !== entry.launch || !LAUNCH_ID.test(entry.launch)) return false
+  const facts = await readLaunchFacts(p, litterDir, name, entry.launch)
+  return facts.start !== null && !facts.ended
+}
+
+/**
  * A launch that failed after its ref was taken, or whose session ended before
  * `swarm.start` (recover.ts, settleStuck): End's order (end.ts; Q6), so
  * swarm.end and summary.md say what's left. The cleanup of the worktrees it
@@ -422,6 +459,8 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   if (info.toolsRefused) return refused(name, [`litter's tools were refused (${info.toolsRefused}), and a swarm runs unguarded without them`])
   if (info.swarmToolsRefused) return refused(name, [`the swarm tools were refused (${info.swarmToolsRefused})`])
   if (!(await hasJq(p))) return refused(name, ["jq isn't on PATH, and every litter command hook needs it; install jq, then launch again"])
+  // Another session's copy is read again first: one its owner has ended since doesn't refuse (Q5).
+  if (liveSwarm(name)?.readOnly) await refreshReadOnly(p, litterDir, [name])
   const live = liveSwarm(name)
   if (live) {
     return refused(name, [live.readOnly ? `it's live, owned by session ${live.owner.session}` : `it's already live (launch ${live.launch})`])
@@ -448,11 +487,7 @@ async function launch(p: Ports, name: string, opts: { revision?: number }): Prom
   const problems: string[] = []
   const types = Object.fromEntries(spec.nodes.map(n => [n.id, servedType(name, n.id)]))
   const ours = new Set(Object.values(types))
-  const taken = new Map<string, string>()
-  for (const s of liveSwarms()) if (s.name !== name) for (const t of Object.values(s.types)) taken.set(t, s.name)
-  for (const [other, entry] of Object.entries(policy?.swarm?.swarms ?? {})) {
-    if (other !== name) for (const t of entry.nodeTypes ?? []) taken.set(t, other)
-  }
+  const taken = await takenTypes(p, litterDir, name, policy?.swarm?.swarms ?? {}, ours)
   for (const t of ours) if (taken.has(t)) problems.push(`its type ${t} is live swarm ${taken.get(t)}'s too; rename the node, or end ${taken.get(t)} first`)
 
   const repo = repoOf(litterDir)
