@@ -10,6 +10,7 @@ import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { hooksDir, ledgerDir, outPath, runDir } from '../../hooks/layout'
 import { consumeOutput, safeFileName, writeOut } from '../../hooks/output'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
+import { readRuleLedger } from '../../hooks/rules/ledger'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 const RUN = '20261002-output'
@@ -79,6 +80,7 @@ const output = (id: string, type: string, input: Record<string, unknown> | undef
 })
 
 const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records
+const ruleRecords = async () => (await readRuleLedger(p, dir, 'repo')).records
 /** run.json as much as consumeOutput reads of it: the workflow. */
 const runJson = (workflow: string) => p.fs.write(join(runDir(dir, RUN), 'run.json'), JSON.stringify({ v: 1, run: RUN, workflow }))
 
@@ -121,24 +123,28 @@ describe('writeOut', () => {
 })
 
 describe('consumeOutput', () => {
-  test("a gate critic's result becomes its verdict, and each proposed rule a rule.propose", async () => {
+  test("a gate critic's result becomes its verdict, and each proposed rule a rule.propose in the rules ledger", async () => {
     await startAgent('gc', 'litter:gate-critic')
     await consumeOutput(ctx(), output('gc', 'litter:gate-critic', VERDICT))
     const recs = await records()
-    expect(recs.map(r => r.kind)).toEqual(['verdict', 'rule.propose', 'rule.propose'])
+    expect(recs.map(r => r.kind)).toEqual(['verdict'])
     expect(recs[0]!.body).toEqual({ ...VERDICT, tool_use_id: 'tu1' })
     expect(recs[0]!.by).toEqual({ source: 'agent', agentId: 'gc', agentType: 'litter:gate-critic' })
-    expect(recs[1]!.body).toEqual({ rule: VERDICT.proposed_rules[0], source: 'critic', tool_use_id: 'tu1', index: 0 })
-    expect(recs[2]!.body).toEqual(expect.objectContaining({ rule: VERDICT.proposed_rules[2], index: 2 }))
+    // AD's store: the repository's rules ledger, with the run id (decision 17).
+    const rules = await ruleRecords()
+    expect(rules.map(r => r.kind)).toEqual(['rule.propose', 'rule.propose'])
+    expect(rules[0]!.by).toEqual({ source: 'agent', agentId: 'gc', agentType: 'litter:gate-critic' })
+    expect(rules[0]!.body).toEqual({ rule: VERDICT.proposed_rules[0], source: 'critic', run: RUN, tool_use_id: 'tu1', index: 0 })
+    expect(rules[1]!.body).toEqual(expect.objectContaining({ rule: VERDICT.proposed_rules[2], index: 2 }))
   })
 
   test('a line drained twice records nothing new', async () => {
     await startAgent('gc', 'litter:gate-critic')
     await consumeOutput(ctx(), output('gc', 'litter:gate-critic', VERDICT))
     await consumeOutput(ctx(), output('gc', 'litter:gate-critic', VERDICT))
-    expect((await records()).length).toBe(3)
+    expect([(await records()).length, (await ruleRecords()).length]).toEqual([1, 2])
     await consumeOutput(ctx(), output('gc', 'litter:gate-critic', VERDICT, 'tu2'))
-    expect((await records()).length).toBe(6)
+    expect([(await records()).length, (await ruleRecords()).length]).toEqual([2, 4])
   })
 
   test("a verifier's result is its verdict, with no rule proposals", async () => {

@@ -13,6 +13,7 @@ import { appendRecord } from '../../hooks/ledgercore'
 import { snapshot } from '../../hooks/snapshot'
 import { normalizeOptions } from '../../hooks/options'
 import { swarmGateRecord } from '../../hooks/swarm/gate'
+import { readRuleLedger } from '../../hooks/rules/ledger'
 import * as state from '../../hooks/swarm/state'
 import {
   ALL_PASS,
@@ -218,9 +219,12 @@ describe('verdict', () => {
     expect(await since()).toEqual(['verify'])
     const r = await judge(world(), v.verify_id, B_FAILS, 'crit-1', { proposed_rules: ['Call the server through its typed client, never a literal route.'] })
     expect(r).toEqual(expect.objectContaining({ ok: true, proposed_rules: 1 }))
-    const rule = (await runRecords(world())).find(x => x.kind === 'rule.propose')!
-    expect(rule.by).toEqual({ source: 'agent', agentId: 'crit-1', agentType: typeOf('critic') })
-    expect(rule.body).toEqual({ rule: 'Call the server through its typed client, never a literal route.', source: 'critic', verify_id: v.verify_id, round: 1 })
+    // AD's store: the repository's rules ledger, with the run and the swarm (decision 17); none in the run's.
+    expect((await runRecords(world())).some(x => x.kind === 'rule.propose')).toBe(false)
+    const rules = (await readRuleLedger(world().p, world().litterDir, 'repo')).records
+    expect(rules.map(x => x.kind)).toEqual(['rule.propose'])
+    expect(rules[0]!.by).toEqual({ source: 'agent', agentId: 'crit-1', agentType: typeOf('critic') })
+    expect(rules[0]!.body).toEqual({ rule: 'Call the server through its typed client, never a literal route.', source: 'critic', run: RUN, index: 0, swarm: SWARM, verify_id: v.verify_id, round: 1 })
   })
 
   test('from a type without verdicts: true, from a child, or from a node that may write, it is refused', async () => {
