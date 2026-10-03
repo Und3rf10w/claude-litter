@@ -456,6 +456,8 @@ describe('S8: [Hard stop] on the unsettled report reaches an agent no binding kn
     p.toolAnswer = () => ({ result: { message: 'ok' }, text: 'ok' }) as unknown as ToolCallResult
     const saved = { ...endOthers }
     endOthers.patchNodePolicies = async () => {}
+    // K's ref check before the stop's record (FIX-T): there's no real ref here, and this session owns the swarm.
+    Object.assign(endOthers, { confirmOwnership: async () => ({ launch: LAUNCH, generation: 1, oids: ['a'.repeat(40)] }) })
     try {
       setOwnersForTests({
         checkHealth: fake('checkHealth', async () => HEALTHY),

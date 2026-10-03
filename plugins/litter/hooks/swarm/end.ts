@@ -114,6 +114,24 @@ function owned(name: string): LiveSwarm {
 const ownedNames = (): string[] => state.liveSwarms().filter(s => !s.readOnly && !s.lost).map(s => s.name).sort()
 
 /**
+ * Before this process records into a swarm's launch ledger at your request
+ * (End's stopping, a Stop): the ref read again (Q2), since the beat that marks
+ * a swarm lost runs only every 10 s. A stale owner stands down
+ * (confirmOwnership marks it lost) and records nothing into the new owner's
+ * ledger: the request throws, as `owned` does once a swarm is marked lost.
+ * Git that can't tell holds up no stop; End's finish checks again before it
+ * removes anything.
+ */
+async function confirmMine(p: Ports, litterDir: string, name: string): Promise<void> {
+  const mine = await others.confirmOwnership(p, litterDir, name)
+  if (mine === null) p.log(`swarm ${name}: git couldn't read refs/litter-swarm/${name}; this session goes on as its owner`)
+  if (mine !== 'lost') return
+  stopWait(name)
+  waits.delete(name)
+  throw new Error(`litter: this session no longer owns the swarm ${name}: it was handed to another session`)
+}
+
+/**
  * TaskStop through `$.tool.call` (spike 7): `stopped`, `gone` (TaskStop says
  * the task is over, or there's none), or why it failed.
  */
@@ -157,6 +175,8 @@ export async function stopNode(p: Ports, swarm: string, agentId: string, how: 's
   if (b && b.swarm === swarm) who = b.node
   else if (!b && (await unboundRunning(p, s, agentId))) who = 'an agent no binding knows'
   else throw new Error(`litter: ${agentId} isn't a node of the swarm ${swarm}`)
+  // A stale owner stops no one, patches nothing and records no swarm.stop (FIX-T, from Q2).
+  await confirmMine(p, litterDir, swarm)
   let failed: string | null = null
   if (how === 'hard') {
     const r = await taskStop(p, agentId)
@@ -284,6 +304,8 @@ async function beginStopping(p: Ports, litterDir: string, name: string, by: 'bro
     const s = owned(name)
     let since = waits.get(name)?.since ?? null
     if (s.state !== 'stopping') {
+      // A stale owner's End records nothing into the new owner's ledger (FIX-T, from Q2).
+      await confirmMine(p, litterDir, name)
       since = (await appendLaunchRecord(p, litterDir, name, s.launch, 'swarm.stopping', { by })).at
       state.patchLiveSwarm(name, { state: 'stopping' })
     }
@@ -775,7 +797,12 @@ export const recordSwarmEnd: RecordHandler = async (ctx, input) => {
   if (!s) return fail(`litter: there's no live swarm named ${name}`, 'swarm', live)
   if (s.readOnly) return fail(`litter: another session owns the swarm ${name}; it can only be ended there`, 'swarm', live)
   if (s.lost) return fail(`litter: this session no longer owns the swarm ${name}: it was handed to another session`, 'swarm', live)
-  await beginStopping(ctx.p, ctx.litterDir, name, 'lead')
+  try {
+    await beginStopping(ctx.p, ctx.litterDir, name, 'lead')
+  } catch (err) {
+    // The ref moved since this session last looked (Q2), or the ledger didn't take the record.
+    return fail(errText(err).startsWith('litter: ') ? errText(err) : `litter: ${errText(err)}`, 'swarm', ownedNames())
+  }
   return { ok: true, status: 'stopping' }
 }
 

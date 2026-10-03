@@ -18,7 +18,7 @@ import { readPolicy, setActive } from '../../hooks/policy'
 import { normalizeOptions } from '../../hooks/options'
 import { deactivate } from '../../hooks/lifecycle'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
-import { liveSwarm, putLiveSwarm } from '../../hooks/swarm/state'
+import { liveSwarm, putLiveSwarm, stopped } from '../../hooks/swarm/state'
 import { heldBy, notNewer, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from '../../hooks/swarm/guard'
 import {
   acquireOwnership,
@@ -33,7 +33,7 @@ import {
 } from '../../hooks/swarm/owner'
 import { recoverSwarms } from '../../hooks/swarm/recover'
 import { launchSwarm } from '../../hooks/swarm/launch'
-import { endSwarm } from '../../hooks/swarm/end'
+import { endSwarm, recordSwarmEnd, stopNode } from '../../hooks/swarm/end'
 import { addSwarmWorktree } from '../../hooks/swarm/worktrees'
 import { noteSessionEnd, others as clearOthers, READ_ONLY_REFRESH_MS, rebindSettled, rebound, resetClearForTests, startSwarmTimers } from '../../hooks/clear'
 import { aSpec, bind, blobAt, deadPid, launched, moveRef, nodePolicyOf, policyText, refOf, saveSwarm, settle, world, type World } from './swarmlaunch-harness'
@@ -386,16 +386,50 @@ describe('a stale owner stands down before anything destructive (Q2)', () => {
     await expectStoodDown(s)
   })
 
-  test("End's stopping, after a handover, leaves the new owner's entry as it is, and stands down", async () => {
-    await launched(w)
+  test("End's stopping, after a handover, records nothing, leaves the new owner's entry as it is, and stands down", async () => {
+    const launch = await launched(w)
     const h = await handedOver()
-    await endSwarm(w.p, 'alpha', 'request')
+    const before = await kinds(launch)
+    await expect(endSwarm(w.p, 'alpha', 'request')).rejects.toThrow('this session no longer owns the swarm alpha')
+    // The launch ledger is the new owner's now: no swarm.stopping from this process.
+    expect(await kinds(launch)).toEqual(before)
+    expect(liveSwarm('alpha')?.state).toBe('live')
     expect(await policyText(w)).toBe(h.text)
     expect((await entryOf())?.state).toBe('live')
     expect(liveSwarm('alpha')?.lost).toBe(true)
-    // Its settle wait went with it.
+    // No settle wait was started.
     await fireEvery(w.p)
     expect(await policyText(w)).toBe(h.text)
+    expect(await kinds(launch)).toEqual(before)
+  })
+
+  test("the lead's swarm.end, after a handover, is refused, and records nothing", async () => {
+    const launch = await launched(w)
+    await handedOver()
+    const before = await kinds(launch)
+    const ctx = { p: w.p, caller: { agentId: null, agentType: null }, litterDir: w.litterDir, options: normalizeOptions(undefined) }
+    expect(await recordSwarmEnd(ctx, { kind: 'swarm.end', swarm: 'alpha' })).toEqual({
+      ok: false,
+      error: 'litter: this session no longer owns the swarm alpha: it was handed to another session',
+      field: 'swarm',
+      allowed: [],
+    })
+    expect(await kinds(launch)).toEqual(before)
+  })
+
+  test('a Stop, after a handover, records nothing, stops no one and patches no policy', async () => {
+    const launch = await launched(w)
+    await bind(w, launch, { agentId: 'ag-l1', node: 'lead-a', n: 1, kind: 'orchestrator', cwd: wtPath(), branch: 'refs/heads/feature/alpha' })
+    await nodeFile(await bind(w, launch, { agentId: 'ag-d1', node: 'docs', n: 1, kind: 'orchestrator', cwd: w.dir }))
+    await handedOver()
+    const before = await kinds(launch)
+    const file = readFileSync(agentFile('ag-d1'), 'utf8')
+    await expect(stopNode(w.p, 'alpha', 'ag-d1', 'soft')).rejects.toThrow('this session no longer owns the swarm alpha')
+    expect(await kinds(launch)).toEqual(before)
+    expect(stopped('alpha')).toEqual([])
+    expect(readFileSync(agentFile('ag-d1'), 'utf8')).toBe(file)
+    expect(w.p.toolCalls).toEqual([])
+    expect(liveSwarm('alpha')?.lost).toBe(true)
   })
 
   test("releaseOwnership answers false for a stale owner, and the policy writers leave an entry another owner holds", async () => {
