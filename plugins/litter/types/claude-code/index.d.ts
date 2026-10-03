@@ -1,4 +1,4 @@
-// Written by Claude Code 2.1.287.
+// Written by Claude Code 2.1.288.
 // Claude Code function hooks: the plugin API's TypeScript declarations.
 //
 // EARLY ACCESS: this surface may change between releases without notice.
@@ -619,7 +619,8 @@ declare module 'claude-code' {
       mime?: undefined;
   } | {
       /**
-       * The clip's URL; the engine fetches it (never the plugin).
+       * The clip's URL; the engine fetches it (never the plugin), or refuses
+       * it as `$.http.fetch` would refuse the same URL.
        */
       url: string;
       asset?: undefined;
@@ -1455,7 +1456,7 @@ declare module 'claude-code' {
        * unified-diff hunks.
        *
        * At most 10000 characters; tab and newline are the only control
-       * characters it may hold.
+       * characters it may hold. A diff cut to fit mid-hunk no longer parses.
        */
       source: string;
       /**
@@ -1484,9 +1485,9 @@ declare module 'claude-code' {
        * `'source'` (the default) draws `source` as code; `'diff'` reads it as
        * unified-diff hunks and draws gutters, markers, add and remove colouring.
        *
-       * A hunk is `@@ -a,b +c,d @@` then lines starting ` `, `+` or `-`; a
-       * leading `---`/`+++` pair and `\ No newline at end of file` are read
-       * past. A source that does not parse as hunks is refused.
+       * A hunk is `@@ -a,b +c,d @@` then ` `, `+` or `-` lines; a `---`/`+++`
+       * pair and `\ No newline at end of file` are read past. A source that
+       * parses as no hunks is drawn as plain code, unnumbered; the log says so.
        */
       format?: 'source' | 'diff';
       /**
@@ -2164,10 +2165,12 @@ declare module 'claude-code' {
            * Re-runs an event whose results the engine caches: `ui.render` draws the
            * instances this plugin may draw again; the others drop the cached answers.
            *
-           * A render hook whose state changed (a countdown) calls it for a redraw, at
-           * most ten a second, thirty for the shown pane and the band (calls sooner
-           * fold); a prompt section, context or attachment hook: dropped next turn.
+           * A render hook whose state changed (a countdown) calls it to redraw: ten a
+           * second at most, thirty in the terminal for its shown pane, expanded band
+           * and prompt hint (sooner calls fold); a cached answer: dropped next turn.
            *
+           * @remarks For `ui.render`, the instances this plugin's matchers on it may
+           *   select: one naming no `requestId`, every instance of its component.
            * @param event `ui.render`, or a cached-answer event: `prompt.section`,
            *   `prompt.context`, `prompt.attachment`, `tool/command/config.describe`
            */
@@ -2363,6 +2366,20 @@ declare module 'claude-code' {
            * onPress: press => $.ui.copy({ text: url, surface: press.surface })
            */
           copy: (args: UiCopyArgs) => Promise<UiCopyResult>;
+          /**
+           * Returns what the person last selected with the mouse: the text as a
+           * copy would take it, and the transcript row it lies in.
+           *
+           * A key or a click takes the highlight down before a command or a press
+           * runs, so the answer stays what the person last selected, until they
+           * select again, dismiss it, or their next prompt or command has run.
+           *
+           * @returns the selection; `undefined` with nothing selected, and where
+           *          the engine sees none: fullscreen off, -p, a remote surface
+           * @example
+           * const selected = await $.ui.selection()
+           */
+          selection: () => Promise<UiSelection | undefined>;
       };
       /**
        * Completions through the session's own client and credentials.
@@ -3246,9 +3263,9 @@ declare module 'claude-code' {
            * Fetches `url` through the host (never the plugin's own network) and
            * resolves `{ status, ok, headers, text }` once the body is read.
            *
-           * http or https, to whatever the host process can reach, unless the
-           * administrator's policy switches refuse it; an `auth` handle from
-           * `$.session.authorize()` rides https only, to a first-party host.
+           * http or https, to whatever the host reaches, unless the organization's
+           * web-fetch policy refuses it. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+           * refuses a built-in's request, and any plugin's that carries `auth`.
            *
            * @param url the URL (http or https)
            * @param init `{ method, headers, body, auth, socketPath }` (body a
@@ -3741,6 +3758,9 @@ declare module 'claude-code' {
        * A repaint reuses the answer; a clock invalidates. `next(e)` resolves to the
        * drawing: return it, wrap it, draw your own, or rewrite `props`. A tree that
        * does not validate draws the engine's own; `--plugin-dir` is told why.
+       *
+       * @remarks Also on a write of `$.state` it read while drawn, at the redraw
+       *   rate; an invalidate is any plugin's whose matcher may select it.
        */
       'ui.render': RenderInput;
       /**
@@ -4891,6 +4911,9 @@ declare module 'claude-code' {
       /**
        * The handle `$.session.authorize()` answered: the engine sets the
        * session's credential header itself, only for a first-party host.
+       *
+       * It rides https only. While `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+       * is set, a request that carries it is refused, whichever plugin asks.
        */
       auth?: string;
       /**
@@ -6563,6 +6586,10 @@ declare module 'claude-code' {
        */
       'ui.panes': NoArgs;
       /**
+       * The argument of `$.ui.selection()`.
+       */
+      'ui.selection': NoArgs;
+      /**
        * The argument of `$.ui.copy({ text, surface })`, `surface` filled with
        * the session's first when left out; rewritable, deniable, answerable.
        */
@@ -6777,6 +6804,10 @@ declare module 'claude-code' {
        * The calling plugin's open panes, placed then unplaced, in open order.
        */
       'ui.panes': readonly UiPane[];
+      /**
+       * What the person last selected; `undefined` when there is nothing.
+       */
+      'ui.selection': UiSelection | undefined;
       'ui.copy': UiCopyResult;
       'ui.blit': UiBlitResult;
       /**
@@ -10135,7 +10166,7 @@ declare module 'claude-code' {
    * threshold or on a prompt too long (`auto`), a plugin, or a `precompute`.
    *
    * `precompute` is the one dispatch that installs nothing: its result is kept
-   * for the compaction that comes, if the conversation it ran over still leads.
+   * for the next compaction, if the conversation still holds what it ran over.
    */
   export type SessionCompactTrigger = 'manual' | 'auto' | 'plugin' | 'precompute';
 
@@ -12073,6 +12104,8 @@ declare module 'claude-code' {
       /**
        * As the model names it (`Bash`, `mcp__server__tool`); the key a matcher
        * narrows on.
+       *
+       * A matcher on any name the host declares for the tool admits it.
        */
       tool: string;
       /**
@@ -13466,6 +13499,30 @@ declare module 'claude-code' {
        * beneath and the element's own handler.
        */
       value: string;
+  };
+
+  /**
+   * What the person has selected on screen, as `$.ui.selection()` answers it:
+   * the text, and the transcript row it lies in when it lies in one.
+   *
+   * @example
+   * const selected = await $.ui.selection()
+   */
+  type UiSelection = {
+      /**
+       * The selected text as the person sees it: what a copy would put on the
+       * clipboard, wrapped rows joined back into their lines.
+       */
+      text: string;
+      /**
+       * The transcript row the selection lies in, by the id its `ui.render`
+       * hook reads as `e.requestId` and `$.ui.scroll` takes.
+       *
+       * A tool call's row by its `tool_use_id`. Absent when the selection spans
+       * several rows, lies outside the transcript (the prompt, a pane), or has
+       * scrolled out of the rows the transcript keeps drawn.
+       */
+      requestId?: string;
   };
 
   /**
@@ -14928,6 +14985,8 @@ declare module 'claude-code' {
       subagent_type?: string
       /** Optional model override for this agent. Takes precedence over the agent definition's model frontmatter and the configured default subagent model. If omitted, uses the agent definition's model, else the default (inherits from the parent unless a default subagent model is configured). Ignored for subagent_type: "fork" — forks always inherit the parent model. */
       model?: "sonnet" | "opus" | "haiku" | "fable"
+      /** Agents run in the background by default; you will be notified when one completes. Set to false only when your very next action depends on this agent's result and nothing else could usefully happen while it runs — otherwise leave it in the background so the user can hand you other work. */
+      run_in_background?: boolean
       /** Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running. */
       name?: string
       /** Deprecated; ignored. The session has a single implicit team. */
@@ -15234,6 +15293,44 @@ declare module 'claude-code' {
       /** The taskId from the result that moved the command to the background */
       taskId: string
     }
+    Glob: {
+      /** The glob pattern to match files against */
+      pattern: string
+      /** The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided. */
+      path?: string
+    }
+    Grep: {
+      /** The regular expression pattern to search for in file contents */
+      pattern: string
+      /** File or directory to search in (rg PATH). Defaults to current working directory. */
+      path?: string
+      /** Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob */
+      glob?: string
+      /** Output mode: "content" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), "files_with_matches" shows file paths (supports head_limit), "count" shows match counts (supports head_limit). Defaults to "files_with_matches". */
+      output_mode?: "content" | "files_with_matches" | "count"
+      /** Number of lines to show before each match (rg -B). Requires output_mode: "content", ignored otherwise. */
+      "-B"?: number
+      /** Number of lines to show after each match (rg -A). Requires output_mode: "content", ignored otherwise. */
+      "-A"?: number
+      /** Alias for context. */
+      "-C"?: number
+      /** Number of lines to show before and after each match (rg -C). Requires output_mode: "content", ignored otherwise. */
+      context?: number
+      /** Show line numbers in output (rg -n). Requires output_mode: "content", ignored otherwise. Defaults to true. */
+      "-n"?: boolean
+      /** Case insensitive search (rg -i) */
+      "-i"?: boolean
+      /** Print only the matched (non-empty) parts of each matching line, one match per output line (rg -o / --only-matching). Requires output_mode: "content", ignored otherwise. Defaults to false. */
+      "-o"?: boolean
+      /** File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types. */
+      type?: string
+      /** Limit output to first N lines/entries, equivalent to "| head -N". Works across all output modes: content (limits output lines), files_with_matches (limits file paths), count (limits count entries). Defaults to 250 when unspecified. Pass 0 for unlimited (use sparingly — large result sets waste context). */
+      head_limit?: number
+      /** Skip first N lines/entries before applying head_limit, equivalent to "| tail -n +N | head -N". Works across all output modes. Defaults to 0. */
+      offset?: number
+      /** Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false. */
+      multiline?: boolean
+    }
     ListAgents: {
       /** Not available in this build; leave unset. */
       channel?: string
@@ -15295,7 +15392,7 @@ declare module 'claude-code' {
     Monitor: {
       /** Short human-readable description of what you are monitoring (shown in notifications). */
       description: string
-      /** Kill the monitor after this deadline. Default 300000ms. Deadlines above 1800000ms are capped to 1800000ms. You are notified at expiry and can re-arm. */
+      /** Kill the monitor after this deadline. Default 300000ms. Deadlines above 600000ms are capped to 600000ms. You are notified at expiry and can re-arm. */
       timeout_ms: number
       /** Shell command or script. Each stdout line is an event; exit ends the watch. */
       command?: string
@@ -16266,6 +16363,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
       } | {
         op: "batch"
         committed: boolean
@@ -16281,6 +16383,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
         fallback?: "sequential"
       }
     } | {
@@ -17028,6 +17135,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
       } | {
         op: "batch"
         committed: boolean
@@ -17043,6 +17155,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
         fallback?: "sequential"
       }
     } | {
@@ -17790,6 +17907,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
       } | {
         op: "batch"
         committed: boolean
@@ -17805,6 +17927,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
         fallback?: "sequential"
       }
     } | {
@@ -18552,6 +18679,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
       } | {
         op: "batch"
         committed: boolean
@@ -18567,6 +18699,11 @@ declare module 'claude-code' {
           documents: number
           max_documents: number
         }
+        embedded?: {
+          strings: number
+          kb: number
+        }
+        warnings?: string[]
         fallback?: "sequential"
       }
     } | {
@@ -19158,6 +19295,32 @@ declare module 'claude-code' {
       createdAt: string
       lastUpdatedAt: string
       status: "cancelled"
+    }
+    Glob: {
+      /** Time taken to execute the search in milliseconds */
+      durationMs: number
+      /** Number of file paths returned (after any truncation) */
+      numFiles: number
+      /** Array of file paths that match the pattern */
+      filenames: string[]
+      /** Whether results were truncated (limited to 100 files) */
+      truncated: boolean
+      /** Total number of matching files before truncation. A lower bound when countIsComplete is false. Absent on results persisted by CLI versions predating this field. */
+      totalMatches?: number
+      /** Whether totalMatches is the exact total (true) or a floor because the underlying search truncated its own output (false). Absent on results persisted by CLI versions predating this field. */
+      countIsComplete?: boolean
+    }
+    Grep: {
+      mode?: "content" | "files_with_matches" | "count"
+      numFiles: number
+      filenames: string[]
+      content?: string
+      numLines?: number
+      numMatches?: number
+      totalFiles?: number
+      totalLines?: number
+      appliedLimit?: number
+      appliedOffset?: number
     }
     ListAgents: {
       /** Formatted list of reachable agents */
@@ -19831,7 +19994,6 @@ declare module 'claude-code' {
       needsAuth: string[]
       disabled: string[]
       unconfigured?: string[]
-      replRouted?: boolean
       unknown: string[]
     }
     WebFetch: {
