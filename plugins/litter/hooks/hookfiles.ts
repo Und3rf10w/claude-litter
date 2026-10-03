@@ -12,12 +12,13 @@
 //            pending/<tool_use_id> (phase 2b: written and removed by the spawn check, L)
 //   hooks -> bind/<id>, mode, wt/<name>, spool/<session>.jsonl, spool/blobs/*,
 //            done/<agent_id> (phase 2b: watch.sh at a hand-back, hold.sh at a stop it lets go),
-//            hold/<agent_id> (phase 2b: hold.sh)
+//            hold/<agent_id> (phase 2b: hold.sh), shells/<agent_id> (phase 2b: watch.sh)
 // worktree.sh also writes setup logs under the run's verify/setup-<name>/.
 // The mod replaces its files atomically (temp file + mv, fsx.atomicWrite).
 // The hooks write bind/ and mode through a temp file + mv too, and append
-// spool lines with one `>>` each. The mod removes an agent's done/ and hold/
-// files with its policy (swarm/guard.ts, removeNodePolicy).
+// spool lines and shells/ ids with one `>>` each. The mod removes an agent's
+// done/, hold/ and shells/ files with its policy (swarm/guard.ts,
+// removeNodePolicy), and its done/ whenever it admits the agent again.
 
 import type { Ports } from './ports'
 import type { Authority } from './swarm/types'
@@ -126,11 +127,23 @@ export type NodePolicy = {
 /** hooks/pending/<tool_use_id>: a reserved spawn not yet bound (L). `at` in seconds. */
 export type PendingMarker = { v: 1; swarm: string; node: string; parent: string | null; at: number }
 
-/** hooks/done/<agent_id>: the agent handed back (watch.sh) or stopped with no background tasks (hold.sh). `at` in seconds. */
+/**
+ * hooks/done/<agent_id>: the agent handed back (watch.sh) or stopped with none of its own background
+ * tasks running (hold.sh). `at` in seconds. Removed whenever the mod admits the agent again.
+ */
 export type DoneMarker = { v: 1; at: number; via: 'handback' | 'stop' }
 
 /** hooks/hold/<agent_id>: the children hold.sh already waited for, so a worker is held once per child. */
 export type HoldMarker = { v: 1; children: string[] }
+
+/**
+ * hooks/shells/<agent_id>: the background tasks a bound agent started, one id per line, appended by
+ * watch.sh with one `>>` at each call end that names one (a Bash result's `backgroundTaskId`, a
+ * Monitor's `taskId`: the `id` SubagentStop's `background_tasks` lists, 2.1.288). SubagentStop's
+ * list is the whole session's, with no owner, so hold.sh counts only the entries named here. No `v`:
+ * plain lines, like `mode`; a line that isn't an id is skipped.
+ */
+export type ShellsFile = string
 
 export type RunPolicy = {
   run: string
@@ -315,7 +328,10 @@ export type SpoolLine =
     }>
   /** Phase 2b. watch.sh, for a node's SubagentHandback: its message (a blob when long), before `done/<agent_id>`. */
   | SpoolBase<'handback', { agent_id: string; agent_type: string; tool_use_id: string; message?: string; file?: string }>
-  /** Phase 2b. hold.sh: a worker held for `children`, released once they're done, or let go at its cap (`timeout`). */
+  /**
+   * Phase 2b. hold.sh: a worker held for `children`, released once they're done, or let go at its
+   * cap (`timeout`). A `timeout` names no children when the bindings couldn't be listed until the cap.
+   */
   | SpoolBase<'hold', { agent_id: string; phase: 'held' | 'released' | 'timeout'; children: string[] }>
 
 type SpoolBase<E extends string, P> = { v: 1; ev: E; ts: number; session_id: string } & P

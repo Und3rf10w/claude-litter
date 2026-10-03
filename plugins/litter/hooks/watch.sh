@@ -13,7 +13,9 @@
 #    `call` end of every call guard.sh spooled a start for, with `failed` on
 #    PostToolUseFailure and the background task's id in `shell` (a Bash
 #    result's backgroundTaskId, a Monitor's taskId), so the mod can tell what
-#    is still in flight (plan 15.4, "Ending", step 2). A bound agent's
+#    is still in flight (plan 15.4, "Ending", step 2). A bound agent's id is
+#    also appended to shells/<agent_id>, the tasks hold.sh counts as its own
+#    at its stop (background_tasks is the session's). A bound agent's
 #    SubagentHandback that was delivered spools its message as `handback`,
 #    then writes done/<agent_id>, which hold.sh waits on ("A worker that ends
 #    its turn while its children run").
@@ -32,8 +34,9 @@ fi
 LT_REFUSAL='isolation context for this agent was lost'
 
 # A litter agent's or a bound agent's result: `spool` (or `handback`), the
-# session id, the agent id, the call end, and the isolation-lost or handback
-# line, or nothing. The isolation-lost line is a litter agent's, and only
+# session id, the agent id, the call end, the isolation-lost or handback line
+# (or nothing), and for a bound agent the id of a background task the call
+# started (or nothing). The isolation-lost line is a litter agent's, and only
 # when the refusal is in the call's result, not its input.
 WATCH_JQ_POST='
 . as $in
@@ -68,6 +71,7 @@ WATCH_JQ_POST='
             tool_use_id: ($in.tool_use_id | str),
             message: ($in.tool_input | if type == "object" then .message else null end | str)} | tojson
          else "" end)
+      + "\n" + (if $bound and ($shell | okid) then $shell else "" end)
   end
 '
 
@@ -101,7 +105,8 @@ watch_mode() {
   [ "$lt_old" != "$lt_mode" ] || return 0
   lt_write "$LT_DIR/mode" "$lt_mode" || return 1
   [ -f "$LT_DIR/active" ] || return 0
-  lt_spool "$lt_sid" "{\"v\":1,\"ev\":\"mode\",\"ts\":$(date +%s),\"session_id\":\"$lt_sid\",\"agent_id\":null,\"mode\":\"$lt_mode\"}"
+  lt_now
+  lt_spool "$lt_sid" "{\"v\":1,\"ev\":\"mode\",\"ts\":$LT_NOW,\"session_id\":\"$lt_sid\",\"agent_id\":null,\"mode\":\"$lt_mode\"}"
 }
 
 watch_prompt() {
@@ -154,6 +159,13 @@ watch_post() {
     pass) ;;
     fail) lt_note "watch.sh post: $LT_L2" ;;
     spool | handback)
+      # A background task of a bound agent's own, for hold.sh's count at its
+      # stop: background_tasks lists the session's, with no owner. One short
+      # line, so one >> writes it whole.
+      if [ -n "$LT_L6" ] && lt_id_ok "$LT_L3" && lt_id_ok "$LT_L6"; then
+        { lt_mkdir "$LT_DIR/shells" && printf '%s\n' "$LT_L6" >>"$LT_DIR/shells/$LT_L3"; } 2>/dev/null ||
+          lt_err="couldn't note background task $LT_L6 in shells/$LT_L3"
+      fi
       lt_spool "$LT_L2" "$LT_L4" || lt_err="couldn't spool the end of a call"
       if [ -n "$LT_L5" ] && ! lt_spool "$LT_L2" "$LT_L5"; then
         if [ "$LT_L1" = handback ]; then lt_err="couldn't spool a hand-back"; else lt_err="couldn't spool a lost isolation context"; fi

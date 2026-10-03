@@ -146,6 +146,21 @@ case_no_command() {
   assert_deny 'Bash needs a command'
 }
 
+# R6: past the hook's 30 s timeout the call would run unchecked; a run agent
+# gets the same size limits and the same linear parse as a node.
+case_too_long() {
+  setup executor
+  tl_words=$(awk 'BEGIN { for (i = 0; i < 4001; i++) printf "a " }')
+  denied executor 'this command is too long for the guard to check; split it' "echo $tl_words" "env $tl_words; git push"
+  tl_at=$(awk 'BEGIN { for (i = 0; i < 1300; i++) printf "npm git rm " }')
+  tl_t0=$(date +%s)
+  bash_call litter:executor "env $tl_at" | run_hook guard.sh
+  tl_t1=$(date +%s)
+  assert_deny 'too many words that may start a command'
+  [ $((tl_t1 - tl_t0)) -le 10 ] || fail "a command at the limit took $((tl_t1 - tl_t0)) s"
+  passes executor "echo $(awk 'BEGIN { for (i = 0; i < 3990; i++) printf "a " }')"
+}
+
 t "commits, pushes and history rewrites are denied" case_commits_and_history
 t "git commands that write the real index are denied" case_index_writes
 t "checkout, switch and bisect are denied" case_checkout_moves
@@ -159,4 +174,5 @@ t "a read-only role loses write-ish commands" case_readonly_writers
 t "Bash writes into .claude/litter and the rule folders are denied, reads pass" case_litter_folders
 t "while a critique is in flight, the executor's Bash is read-only" case_inflight
 t "a Bash call without a command is denied" case_no_command
+t "a command too long to check is denied, and one at the limit is checked in time" case_too_long
 done_testing

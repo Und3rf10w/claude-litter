@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import type { AgentPolicy, NodePolicy, Policy, SwarmEntry } from '../../hooks/hookfiles'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
-import { activePath, agentPolicyPath, donePath, holdPath, pendingDir, pendingPath, policyPath } from '../../hooks/layout'
+import { activePath, agentPolicyPath, donePath, holdPath, pendingDir, pendingPath, policyPath, shellsPath } from '../../hooks/layout'
+import * as state from '../../hooks/swarm/state'
 import {
   clearPending,
   nodePolicyFor,
@@ -32,13 +33,17 @@ let cleanup: () => void
 let litterDir: string
 
 beforeEach(() => {
+  state.resetForTests()
   p = nodePorts()
   p.clock.now = NOW
   ;({ dir, cleanup } = scratch())
   litterDir = `${dir}/.claude/litter`
   mkdirSync(`${litterDir}/hooks`, { recursive: true })
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  state.resetForTests()
+  cleanup()
+})
 
 function swarm(over: Partial<LiveSwarm> = {}): LiveSwarm {
   return {
@@ -256,13 +261,79 @@ describe('the node policy files', () => {
     expect(readAgent('a1').node?.admitted).toBe(false)
   })
 
-  test('removeNodePolicy removes the policy with its done/ and hold/ files', async () => {
+  test('removeNodePolicy removes the policy with its done/, hold/ and shells/ files', async () => {
     await writeNodePolicy(p, litterDir, 'a1', node())
     await p.fs.write(donePath(litterDir, 'a1'), '{"v":1,"at":1,"via":"stop"}\n')
     await p.fs.write(holdPath(litterDir, 'a1'), '{"v":1,"children":["c1"]}\n')
+    await p.fs.write(shellsPath(litterDir, 'a1'), 'b1\n')
     await removeNodePolicy(p, litterDir, 'a1')
-    expect([agentPolicyPath(litterDir, 'a1'), donePath(litterDir, 'a1'), holdPath(litterDir, 'a1')].map(existsSync)).toEqual([false, false, false])
+    const paths = [agentPolicyPath(litterDir, 'a1'), donePath(litterDir, 'a1'), holdPath(litterDir, 'a1'), shellsPath(litterDir, 'a1')]
+    expect(paths.map(existsSync)).toEqual([false, false, false, false])
     await removeNodePolicy(p, litterDir, 'a1')
+  })
+
+  // R2: a node that runs again isn't finished, whatever its last stop wrote.
+  test('a write or patch that admits the agent removes its done/; one that admits nothing leaves it', async () => {
+    const done = donePath(litterDir, 'a1')
+    const mark = () => p.fs.write(done, '{"v":1,"at":1,"via":"stop"}\n')
+    await mark()
+    await writeNodePolicy(p, litterDir, 'a1', { ...node(), admitted: false })
+    expect(existsSync(done)).toBe(true)
+    await patchNodePolicy(p, litterDir, 'a1', { stopped: 'browser' })
+    await patchNodePolicy(p, litterDir, 'a1', { admitted: false })
+    expect(existsSync(done)).toBe(true)
+    await patchNodePolicy(p, litterDir, 'a1', { admitted: true })
+    expect(existsSync(done)).toBe(false)
+    await mark()
+    await writeNodePolicy(p, litterDir, 'a1', node())
+    expect(existsSync(done)).toBe(false)
+    // A patch of a missing file admits nothing.
+    await p.fs.write(donePath(litterDir, 'gone'), '{"v":1,"at":1,"via":"stop"}\n')
+    await patchNodePolicy(p, litterDir, 'gone', { admitted: true })
+    expect(existsSync(donePath(litterDir, 'gone'))).toBe(true)
+  })
+
+  // R1: a stop the patch couldn't reach (no file yet), or one of the agent's parent, is in the file it writes.
+  test("writeNodePolicy takes stopped from the stopped list: the agent's own entry, else its parent's", async () => {
+    const worker = (id: string, parent: string) => nodePolicyFor(binding(id, { node: 'fixer', kind: 'worker', parent, n: 1 }), swarm(), ADMITTED)
+    state.stop('stack', ['w1'], 'own stop')
+    await writeNodePolicy(p, litterDir, 'w1', worker('w1', 'a1'))
+    expect(readAgent('w1').node?.stopped).toBe('own stop')
+    state.stop('stack', ['a1'], 'parent stop')
+    await writeNodePolicy(p, litterDir, 'w2', worker('w2', 'a1'))
+    expect(readAgent('w2').node?.stopped).toBe('parent stop')
+    // Its own entry first; a stopped value it was given is kept.
+    await writeNodePolicy(p, litterDir, 'w1', worker('w1', 'a1'))
+    expect(readAgent('w1').node?.stopped).toBe('own stop')
+    await writeNodePolicy(p, litterDir, 'w3', { ...worker('w3', 'a1'), stopped: 'from the ledger' })
+    expect(readAgent('w3').node?.stopped).toBe('from the ledger')
+    // Another swarm's entry for the same id doesn't count.
+    state.stop('other', ['w4'], 'elsewhere')
+    await writeNodePolicy(p, litterDir, 'w4', worker('w4', 'x9'))
+    expect(readAgent('w4').node?.stopped).toBeNull()
+  })
+
+  test('a stop between the write starting and its file landing is patched in after it', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    const write = p.fs.write.bind(p.fs)
+    let held = false
+    p.fs.write = (async (path: string, text: string) => {
+      // The write's temp file: hold it until the stop has been made.
+      if (!held && path.includes('/agents/w1.json')) {
+        held = true
+        await gate
+      }
+      return write(path, text)
+    }) as typeof p.fs.write
+    const writing = writeNodePolicy(p, litterDir, 'w1', nodePolicyFor(binding('w1', { node: 'fixer', kind: 'worker', parent: 'a1' }), swarm(), ADMITTED))
+    await new Promise(r => setTimeout(r, 20))
+    // stopNode: the list, then the patch, which waits on the file's key.
+    state.stop('stack', ['w1'], 'browser')
+    const patching = patchNodePolicies(p, litterDir, ['w1'], { stopped: 'browser' })
+    release()
+    await Promise.all([writing, patching])
+    expect(readAgent('w1').node?.stopped).toBe('browser')
   })
 })
 

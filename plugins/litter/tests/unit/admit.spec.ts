@@ -4,17 +4,15 @@
 // is stopping; the reply route; settling; the engine's own wakes at
 // turn.step; and swarm.bind with adoption after a reload.
 //
-// M's policy writer (guard.ts) is a stub in this package, so a local one
-// stands in for it, writing `agents/<id>.json` as `{ v: 1, node }`.
+// The policy files are M's real writer's (guard.ts), so these specs read what
+// the guard will read.
 
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import * as realGuard from '../../hooks/swarm/guard'
-import type { NodeFlags } from '../../hooks/swarm/guard'
 import type { NodePolicy } from '../../hooks/hookfiles'
-import { agentPolicyPath } from '../../hooks/layout'
-import { atomicWriteJson, readJson } from '../../hooks/fsx'
+import { agentPolicyPath, donePath } from '../../hooks/layout'
+import { nodePolicyFor, writeNodePolicy } from '../../hooks/swarm/guard'
 import { normalizeOptions } from '../../hooks/options'
 import type { RecordCtx } from '../../hooks/records/core'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
@@ -25,47 +23,6 @@ import { SWARM_SEND } from '../../hooks/swarm/tools'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
 import type { ListedAgent, SessionSendResult } from '../../hooks/ports'
 import { fireEvery, nodePorts, scratch, type TestPorts } from './support/node-ports'
-
-// ---------------------------------------------------------------------------
-// M's writer, stood in for (restored after this file)
-
-const GUARD = '../../hooks/swarm/guard'
-const realGuardCopy = { ...realGuard }
-const localGuard = {
-  nodePolicyFor: (b: NodeBinding, s: LiveSwarm, flags: NodeFlags): NodePolicy => {
-    const node = s.spec.nodes.find(n => n.id === b.node)
-    return {
-      swarm: b.swarm,
-      launch: b.launch,
-      node: b.node,
-      n: b.n,
-      kind: b.kind,
-      of: b.of,
-      type: b.type,
-      parent: b.parent,
-      generation: b.generation,
-      dir: b.cwd,
-      paths: null,
-      protect: [],
-      branch: b.branch,
-      authority: node?.authority ?? {},
-      toolsDeny: node?.tools?.deny ?? [],
-      bashDeny: [],
-      spawns: Object.keys(node?.spawns ?? {}).map(w => s.types[w] ?? w),
-      spawnOther: node?.spawnOther !== false,
-      ...flags,
-    }
-  },
-  writeNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, node: NodePolicy) =>
-    atomicWriteJson(p, agentPolicyPath(litterDir, agentId), { v: 1, node }),
-  patchNodePolicy: async (p: TestPorts, litterDir: string, agentId: string, patch: Partial<NodePolicy>) => {
-    const path = agentPolicyPath(litterDir, agentId)
-    const cur = await readJson<{ v: 1; node: NodePolicy }>(p, path)
-    if (cur) await atomicWriteJson(p, path, { v: 1, node: { ...cur.node, ...patch } })
-  },
-}
-mock.module(GUARD, () => ({ ...realGuardCopy, ...localGuard }))
-afterAll(() => mock.module(GUARD, () => realGuardCopy))
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -145,7 +102,7 @@ function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
 async function put(b: NodeBinding, running: boolean): Promise<void> {
   state.putBinding(b)
   if (running) state.markRunning(b.agentId, null)
-  await localGuard.writeNodePolicy(p, litterDir, b.agentId, localGuard.nodePolicyFor(b, state.liveSwarm('alpha')!, { admitted: running, stopped: null, bind: false }))
+  await writeNodePolicy(p, litterDir, b.agentId, nodePolicyFor(b, state.liveSwarm('alpha')!, { admitted: running, stopped: null, bind: false }))
 }
 
 const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo' })
@@ -250,6 +207,27 @@ describe('resume admission', () => {
     expect(state.status('w1')).toBe('running')
     expect(state.reservations()).toEqual([])
     expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', agentId: 'w1', from: 'o1', to: 'w1', route: 'direct', delivery: 'interject' }))
+  })
+
+  // R2: hold.sh reads done/ as "finished"; a worker its parent resumes runs again, so a parent ending
+  // its turn meanwhile must be held for it.
+  test("a resumed worker's done/ from its last stop is gone before it's sent to, and a wake's too", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    const mark = () => p.fs.write(donePath(litterDir, 'w1'), '{"v":1,"at":1,"via":"stop"}\n')
+    await mark()
+    let doneAtSend: boolean | undefined
+    const next = (async () => {
+      doneAtSend = existsSync(donePath(litterDir, 'w1'))
+      return { isDelivered: true }
+    }) as never
+    expect(await send(sendE('w1', 'one more fix', 'o1'), next)).toEqual({ isDelivered: true })
+    expect(doneAtSend).toBe(false)
+    // It settles, stops again (done/), and the engine wakes it at turn.step.
+    state.markSettled('w1')
+    await mark()
+    expect((await step(stepE('w1', 't-2', 0))).called).toBe(true)
+    expect(existsSync(donePath(litterDir, 'w1'))).toBe(false)
   })
 
   const conditions: [string, () => Promise<void>, string][] = [

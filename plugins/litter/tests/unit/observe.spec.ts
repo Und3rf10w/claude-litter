@@ -230,14 +230,40 @@ describe('consumeSwarm', () => {
     expect(p.afters).toEqual([])
   })
 
+  /** Children c1 and c2 of a-fix1, bound and running. */
+  const children = () => {
+    for (const id of ['c1', 'c2']) {
+      state.putBinding(bindingOf(id, { kind: 'child', of: 'a-fix1', parent: 'a-fix1', n: 0, type: 'general-purpose' }))
+      state.markRunning(id)
+    }
+  }
+
   test('a hold timeout records `worker-ended-early`, a release `held`', async () => {
     await live()
+    children()
     await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'held', children: ['c1'] })
     await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'timeout', children: ['c1', 'c2'] })
     await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'released', children: ['c1'] })
     expect((await events()).map(e => [e.kind, e.node, e.children])).toEqual([
       ['worker-ended-early', 'fixer', ['c1', 'c2']],
       ['held', 'fixer', ['c1']],
+    ])
+  })
+
+  // R3, R11: a timeout is a worker ending its turn while children run, so only children still
+  // running count; a listing that failed to the cap names none, and the worker's own stand in.
+  test("a hold timeout names only children still running, and without names the worker's own", async () => {
+    await live()
+    children()
+    state.noteAgentStopped('c2')
+    await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'timeout', children: ['c1', 'c2', 'gone'] })
+    await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'timeout', children: [] })
+    state.noteAgentStopped('c1')
+    await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'timeout', children: [] })
+    await feed({ ev: 'hold', agent_id: 'a-fix1', phase: 'timeout', children: ['c1', 'c2'] })
+    expect((await events()).map(e => [e.kind, e.children])).toEqual([
+      ['worker-ended-early', ['c1']],
+      ['worker-ended-early', ['c1']],
     ])
   })
 

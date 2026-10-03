@@ -107,6 +107,51 @@ case_call_end() {
   assert_eq 's1 toolu_2 Explore' "$(lines call 'select(.agent_id == "c1") | "\(.session_id) \(.tool_use_id) \(.agent_type)"')" fields
 }
 
+# R3: a bound agent's background shells and monitors go to its own
+# shells/<agent_id>, one id per line, which hold.sh counts at its stop.
+case_shells_file() {
+  swarm_setup
+  node_policy c1 '.kind = "child" | .of = "a1" | .parent = "a1" | .n = 0'
+  sh_dir=$(hooks_dir)/shells
+  post c1 Explore PostToolUse Bash '.tool_response.backgroundTaskId = "bash_7"' | run_hook watch.sh post
+  post a1 "$LEAD" PostToolUse Monitor '.tool_response = {taskId: "mon_3", status: "started"}' | run_hook watch.sh post
+  post a1 "$LEAD" PostToolUse Bash '.tool_response.backgroundTaskId = "bash_8"' | run_hook watch.sh post
+  # A foreground call, and an id no file name can hold, add nothing.
+  post a1 "$LEAD" PostToolUse Bash | run_hook watch.sh post
+  post a1 "$LEAD" PostToolUse Bash '.tool_response.backgroundTaskId = "../x y"' | run_hook watch.sh post
+  assert_code 0
+  assert_eq 'bash_7' "$(cat "$sh_dir/c1")" shells/c1
+  assert_eq 'mon_3|bash_8' "$(paste -sd '|' - <"$sh_dir/a1")" shells/a1
+  # A run agent's are no node's.
+  rm -rf "$(hooks_dir)"
+  project >/dev/null
+  policy
+  bind a1 litter:executor
+  post a1 litter:executor PostToolUse Bash '.tool_response.backgroundTaskId = "bash_9"' | run_hook watch.sh post
+  assert_code 0
+  assert_no_file "$(hooks_dir)/shells"
+  assert_eq 'bash_9' "$(lines call .shell)" "the run agent's call end"
+}
+
+# R10: with date failing, a blob still gets a name the mod takes, and the mode line a number.
+case_date_fails() {
+  swarm_setup
+  df_old=$PATH
+  PATH=$(fake_tool date 'exit 1'):$PATH
+  handback_in "$(jq -rn '[range(0; 500)] | map("line \(.)") | join("\n")')" | run_hook watch.sh post
+  df_code=$(cat "$T_DIR/code")
+  jq -cn '{session_id: "s1", transcript_path: "/t", cwd: "/p", permission_mode: "plan",
+    hook_event_name: "UserPromptSubmit", prompt: "hi"}' | run_hook watch.sh prompt
+  df_prompt=$(cat "$T_DIR/code")
+  PATH=$df_old
+  assert_eq 0 "$df_code" "watch.sh post's exit"
+  assert_eq 0 "$df_prompt" "watch.sh prompt's exit"
+  df_file=$(lines handback .file)
+  printf '%s\n' "$df_file" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$' || fail "the blob name the mod rejects: $df_file"
+  assert_file "$(hooks_dir)/spool/blobs/$df_file"
+  assert_eq 'plan 0' "$(lines mode '"\(.mode) \(.ts)"')" "the mode line"
+}
+
 case_handback() {
   swarm_setup
   handback_in 'all three threads resolved; see the commits' | run_hook watch.sh post
@@ -195,6 +240,8 @@ t "guard.sh spools a call start for a run agent's call it passes" case_call_star
 t "a denial spools a deny line and no start" case_deny_line
 t "no call lines for the main thread, an unrelated agent or a fork" case_no_lines_for_others
 t "watch.sh spools a call end, failed and shell from Bash and Monitor" case_call_end
+t "a bound agent's background shells go to its own shells file, a run agent's nowhere" case_shells_file
+t "with date failing, a blob name and the mode line are still valid" case_date_fails
 t "a delivered hand-back spools its message, then done/" case_handback
 t "a refused or failed hand-back, or a run agent's, spools none and marks nothing" case_handback_refused
 t "a long hand-back goes to a blob" case_handback_blob

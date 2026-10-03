@@ -167,6 +167,13 @@ export type SwarmInstanceBody = {
   /** Full ref, or null. */
   branch: string | null
   token: string
+  /**
+   * The nonce of this instance's `<instance>` and `<rules>` blocks, made at
+   * its spawn, after its parent's task was fixed. Its own, never the
+   * launch's: every node sees its own blocks, so a nonce it knows would let
+   * it forge whole blocks for a child. Absent in older ledgers.
+   */
+  nonce?: string
 }
 
 /** swarm.node (L at binding, `adopted` after a reload; K re-spawns record a new one): agentId → instance. */
