@@ -52,6 +52,7 @@ import { resumeStopping, sweepLeftPolicies } from './end'
 import { adoptUnbound } from './admit'
 import { OWNER_STALE_MS, ownedSwarm, ownerGone, readOwnerRef, releaseStuckRef, retakeOwnership, startOwnerBeat } from './owner'
 import { endFailedLaunch, nodeTypeSpec, specHash } from './launch'
+import { restoreRepairStarts } from '../repair'
 
 /**
  * The other packages' functions this module calls, through one table so tier
@@ -67,6 +68,7 @@ export const deps = {
   resumeStopping: (...a: Parameters<typeof resumeStopping>) => resumeStopping(...a),
   sweepLeftPolicies: (...a: Parameters<typeof sweepLeftPolicies>) => sweepLeftPolicies(...a),
   adoptUnbound: (...a: Parameters<typeof adoptUnbound>) => adoptUnbound(...a),
+  restoreRepairStarts: (...a: Parameters<typeof restoreRepairStarts>) => restoreRepairStarts(...a),
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -186,6 +188,13 @@ function liveOf(
   over: Pick<LiveSwarm, 'typesReady' | 'readOnly'>,
 ): LiveSwarm {
   const b = start.body
+  // A repair swarm's budget (2b-2): the latest `budget` event's, as it stood after your answer, else the launch's.
+  const raised = facts.events
+    .filter(r => r.by.source === 'mod')
+    .map(r => r.body)
+    .filter((x): x is Extract<SwarmEventBody, { kind: 'budget' }> => x.kind === 'budget')
+    .at(-1)
+  const budget = raised?.budget ?? b.budget
   return {
     name: facts.name,
     launch: facts.launch,
@@ -206,6 +215,8 @@ function liveOf(
     lost: false,
     flags: mirror?.flags ?? { isolationLost: false },
     startedAt: start.at,
+    ...(b.run ? { run: b.run } : {}),
+    ...(budget ? { budget } : {}),
   }
 }
 
@@ -248,6 +259,12 @@ export async function recoverSwarms(p: Ports, litterDir: string): Promise<void> 
     } catch (err) {
       p.log(`swarm recovery: adoption failed: ${errText(err)}`)
     }
+  }
+  // A repair swarm's start that never ran (2b-2, X): back from $.store, for the next turn.complete.
+  try {
+    await deps.restoreRepairStarts(p, litterDir)
+  } catch (err) {
+    p.log(`swarm recovery: the pending repair starts weren't restored: ${errText(err)}`)
   }
 }
 
