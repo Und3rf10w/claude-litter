@@ -410,12 +410,15 @@ function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly Propos
     const after = briefOf(prop, lp, id)
     if (before === after) continue
     const yours = briefOf(draft, ld, id)
+    const conflict = yours !== before && yours !== after
     briefs.push({
       node: id,
       kind: before === undefined ? 'added' : after === undefined ? 'removed' : 'changed',
       lines: lineDiff(before ?? '', after ?? ''),
       reason: reasonFor(reasons, [`brief:${id}`, `briefs.${id}`, `nodes.${id}.brief`, `nodes.${id}`]),
-      conflict: yours !== before && yours !== after,
+      conflict,
+      // A conflict is two diffs over the same base: the lead's, and yours.
+      ...(conflict ? { yoursLines: lineDiff(before ?? '', yours ?? '') } : {}),
     })
   }
   return { changes, briefs }
@@ -669,7 +672,22 @@ export async function acceptProposal(p: Ports, litterDir: string, name: string, 
   })
 }
 
-/** Records only the decision, `accepted: 'none'`; nothing reaches briefs/. Rejects when there's no such proposal, or it was decided. */
+/**
+ * The staged proposals with no `swarm.proposal.decided`, oldest first: what
+ * the builder offers after a reload, since the pane's own list is module memory.
+ */
+export async function undecidedProposals(p: Ports, litterDir: string, name: string): Promise<number[]> {
+  if (!SWARM_NAME.test(name)) return []
+  const l = await specLedger(p, litterDir, name)
+  return [...l.proposals.keys()].filter(n => !l.decided.has(n)).sort((a, b) => a - b)
+}
+
+/**
+ * Records only the decision, `accepted: 'none'`; nothing reaches briefs/.
+ * Rejects when there's no such proposal, or it was decided. It reads only the
+ * ledger, never the staged files, so a proposal readProposal can't read (a
+ * staged brief changed, its base revision gone) can still be rejected.
+ */
 export async function rejectProposal(p: Ports, litterDir: string, name: string, n: number): Promise<void> {
   return serial(lockKey(litterDir, name), async () => {
     if (!SWARM_NAME.test(name)) throw new Error(`litter: ${badName(name).error}`)

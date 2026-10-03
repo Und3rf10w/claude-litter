@@ -399,7 +399,21 @@ describe('ackBranchMoved', () => {
     await ackBranchMoved(p, 'alpha', moved.seq)
     await ackBranchMoved(p, 'alpha', moved.seq)
     expect((await events()).filter(e => e.kind === 'branch-moved-ack').map(e => e.seq)).toEqual([moved.seq])
-    await expect(ackBranchMoved(p, 'alpha', other.seq)).rejects.toThrow("isn't a branch-moved event")
+    await expect(ackBranchMoved(p, 'alpha', other.seq)).rejects.toThrow("isn't a branch-moved or rule-commit event")
     await expect(ackBranchMoved(p, 'beta', moved.seq)).rejects.toThrow("isn't a live swarm this session owns")
+  })
+
+  test('a rule-commit flag takes the same ack, by its seq (FIX-S, S4)', async () => {
+    await live()
+    const rule = await appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.event', {
+      kind: 'rule-commit',
+      node: 'fixer',
+      agentId: 'a-fix1',
+      from: 'a'.repeat(40),
+      to: 'b'.repeat(40),
+      files: ['.claude/rules/x.md'],
+    })
+    await ackBranchMoved(p, 'alpha', rule.seq)
+    expect((await events()).filter(e => e.kind === 'branch-moved-ack').map(e => e.seq)).toEqual([rule.seq])
   })
 })

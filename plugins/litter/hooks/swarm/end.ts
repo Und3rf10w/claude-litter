@@ -135,22 +135,36 @@ async function taskStop(p: Ports, taskId: string): Promise<'stopped' | 'gone' | 
  * leaves a node `killed`, which a message would resume, so a hard stop goes
  * on the list too (spike 7). A hard stop whose TaskStop failed still stops
  * them on the list, then throws with why.
+ *
+ * An agent of one of the swarm's types that the list shows running with no
+ * binding (an adoption still to come, as the settle wait lists it) is stopped
+ * the same way, alone: no binding names its descendants or its policy.
  */
 export async function stopNode(p: Ports, swarm: string, agentId: string, how: 'soft' | 'hard'): Promise<void> {
   const litterDir = needLitterDir()
   const s = owned(swarm)
   const b = state.binding(agentId)
-  if (!b || b.swarm !== swarm) throw new Error(`litter: ${agentId} isn't a node of the swarm ${swarm}`)
+  let who: string
+  if (b && b.swarm === swarm) who = b.node
+  else if (!b && (await unboundRunning(p, s, agentId))) who = 'an agent no binding knows'
+  else throw new Error(`litter: ${agentId} isn't a node of the swarm ${swarm}`)
   let failed: string | null = null
   if (how === 'hard') {
     const r = await taskStop(p, agentId)
     if (typeof r === 'object') failed = r.failed
   }
-  const ids = [agentId, ...state.descendantsOf(agentId).map(d => d.agentId)]
+  const ids = b ? [agentId, ...state.descendantsOf(agentId).map(d => d.agentId)] : [agentId]
   state.stop(swarm, ids, STOPPED_REASON)
   await others.patchNodePolicies(p, litterDir, ids, { stopped: STOPPED_REASON })
   await appendLaunchRecord(p, litterDir, swarm, s.launch, 'swarm.stop', { nodes: ids, how })
-  if (failed !== null) throw new Error(`litter: ${b.node} (${agentId}) is on the stopped list, but it may still be running: ${failed}`)
+  if (failed !== null) throw new Error(`litter: ${who} (${agentId}) is on the stopped list, but it may still be running: ${failed}`)
+}
+
+/** The list shows the agent running, with one of the swarm's types (openParts' unbound node). */
+async function unboundRunning(p: Ports, s: LiveSwarm, agentId: string): Promise<boolean> {
+  const types = new Set(Object.values(s.types))
+  const list = await p.listAgents().catch(() => [] as ListedAgent[])
+  return list.some(a => a.id === agentId && a.status === 'running' && types.has(a.type))
 }
 
 // ---------------------------------------------------------------------------

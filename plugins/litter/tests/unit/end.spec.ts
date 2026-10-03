@@ -249,6 +249,21 @@ describe('stopNode', () => {
     expect(p.toolCalls).toEqual([])
     expect(state.stopped('alpha')).toEqual([])
   })
+
+  test('an agent of a swarm type the list shows running, with no binding, is stopped alone (FIX-S, S8)', async () => {
+    live()
+    p.agents.push(listed('ag-x', 'running', 'litter:sw-alpha-boss'))
+    await stopNode(p, 'alpha', 'ag-x', 'hard')
+    expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'ag-x' } }])
+    expect(state.isStopped('ag-x')).toBe(true)
+    expect(calls).toEqual([['patchNodePolicies', ['ag-x'], { stopped: STOPPED_REASON }]])
+    expect(await bodyOf('swarm.stop')).toEqual([{ nodes: ['ag-x'], how: 'hard' }])
+    // One the list doesn't show running, or of another type, is still no node.
+    p.agents.push(listed('ag-y', 'completed', 'litter:sw-alpha-boss'), listed('ag-z', 'running', 'general-purpose'))
+    await expect(stopNode(p, 'alpha', 'ag-y', 'hard')).rejects.toThrow("isn't a node of the swarm alpha")
+    await expect(stopNode(p, 'alpha', 'ag-z', 'hard')).rejects.toThrow("isn't a node of the swarm alpha")
+    expect(p.toolCalls.length).toBe(1)
+  })
 })
 
 describe('End swarm', () => {

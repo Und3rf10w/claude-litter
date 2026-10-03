@@ -405,6 +405,12 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Pa
       {header(el, view.title, view.notice)}
       {view.proposals.length > 0 &&
         buttons(el, view.proposals.map(n => ({ key: `swarm:builder:proposal:${s}/${n}`, label: `Lead's proposal ${n}`, primary: true })))}
+      {view.unreadable.map(u => (
+        <Box flexDirection="row" columnGap={1}>
+          <Text color="error" wrap="wrap">{`✕ the lead's proposal ${u.n} can't be read: ${u.error}`}</Text>
+          {button(el, { key: `swarm:builder:reject:${s}/${u.n}`, label: 'Reject' })}
+        </Box>
+      ))}
       {wide ? (
         <Box flexDirection="row" columnGap={2} marginTop={1}>
           {left}
@@ -484,6 +490,9 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Pan
               {x.suggestions.length > 0 && <Text dimColor wrap="wrap">{`    e.g. ${x.suggestions.slice(0, 8).join(', ')}`}</Text>}
             </Box>
           ))}
+          {t.errors.map(x => (
+            <Text color="error" wrap="wrap">{`✕ ${x}`}</Text>
+          ))}
           {buttons(el, [
             { key: 'swarm:start:use-template', label: 'Use template', primary: true },
             { key: 'swarm:start:cancel-template', label: 'Cancel' },
@@ -548,20 +557,36 @@ export function renderProposal(view: SwarmProposalView, resolved: PaneElements, 
       {view.briefs.map(b => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            {open && button(el, { key: k('pick-brief', b.node), label: b.picked ? '[x]' : '[ ]' })}
+            {open && !b.withNode && !b.conflict && button(el, { key: k('pick-brief', b.node), label: b.picked ? '[x]' : '[ ]' })}
             <Text color={b.color}>{`${b.glyph} brief`}</Text>
             <Text>{b.node}</Text>
+            {b.withNode && <Text dimColor>with its node</Text>}
             {b.conflict && <Text color="warning">! you edited it too</Text>}
             {button(el, { key: k('diff', b.node), label: b.open ? 'Hide diff' : 'Diff' })}
           </Box>
           {b.reason !== null && <Text dimColor wrap="wrap">{`    lead: ${b.reason}`}</Text>}
+          {b.conflict &&
+            open &&
+            !b.withNode &&
+            buttons(el, [
+              { key: k('keep-brief', b.node), label: b.picked ? 'Keep yours' : '✓ Keeping yours' },
+              { key: k('take-brief', b.node), label: b.picked ? "✓ Taking the lead's" : "Take the lead's" },
+            ])}
           {b.open && (
             <Box flexDirection="column" paddingLeft={2}>
+              {b.conflict && <Text dimColor>{"the lead's"}</Text>}
               {b.lines.map(l => (
                 <Text color={l.color} dimColor={l.dim} wrap="truncate-end">
                   {l.text}
                 </Text>
               ))}
+              {b.conflict && <Text dimColor>yours</Text>}
+              {b.conflict &&
+                b.yoursLines.map(l => (
+                  <Text color={l.color} dimColor={l.dim} wrap="truncate-end">
+                    {l.text}
+                  </Text>
+                ))}
             </Box>
           )}
         </Box>

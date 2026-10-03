@@ -430,14 +430,25 @@ export function templateOffers(spec: SwarmSpec): TemplateOffer[] {
     { field: 'name', value: spec.name, param: 'name' },
     { field: 'goal', value: spec.goal, param: 'goal' },
   ]
+  // `<node>_<what>` within PARAM_NAME's 32 characters, and unique: two long ids can share their start.
+  const taken = new Set(['name', 'goal'])
+  const param = (id: string, what: string): string => {
+    for (let i = 1; ; i++) {
+      const tail = i === 1 ? `_${what}` : `_${what}${i}`
+      const name = `${paramName(id).slice(0, 32 - tail.length).replace(/_+$/, '') || 'value'}${tail}`
+      if (!taken.has(name)) {
+        taken.add(name)
+        return name
+      }
+    }
+  }
   for (const n of spec.nodes) {
-    const base = paramName(n.id)
-    if (n.kind === 'orchestrator' && n.task !== undefined) out.push({ field: `nodes.${n.id}.task`, value: n.task, param: `${base}_task` })
+    if (n.kind === 'orchestrator' && n.task !== undefined) out.push({ field: `nodes.${n.id}.task`, value: n.task, param: param(n.id, 'task') })
     const wt = n.worktree
-    if (typeof wt === 'object' && 'existing' in wt) out.push({ field: `nodes.${n.id}.worktree.existing`, value: wt.existing, param: `${base}_worktree` })
+    if (typeof wt === 'object' && 'existing' in wt) out.push({ field: `nodes.${n.id}.worktree.existing`, value: wt.existing, param: param(n.id, 'worktree') })
     if (typeof wt === 'object' && 'new' in wt) {
-      out.push({ field: `nodes.${n.id}.worktree.new.from`, value: wt.new.from, param: `${base}_from` })
-      out.push({ field: `nodes.${n.id}.worktree.new.branch`, value: wt.new.branch, param: `${base}_branch` })
+      out.push({ field: `nodes.${n.id}.worktree.new.from`, value: wt.new.from, param: param(n.id, 'from') })
+      out.push({ field: `nodes.${n.id}.worktree.new.branch`, value: wt.new.branch, param: param(n.id, 'branch') })
     }
   }
   return out

@@ -17,15 +17,20 @@ import type { Draft, SwarmNode, SwarmSpec, Template } from './types'
 import type { SwarmNav } from './view'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
-import { binding, liveSwarm, takeProposals, version } from './state'
+import { liveSwarm, takeProposals, version } from './state'
+import { parameterize } from './templates'
 import {
   LEAD_ROW,
   NODE_FIELDS,
+  SUMMARY_TEST_ROW,
   UNSETTLED_AFTER_MS,
+  acceptPick,
   blankNav,
   briefOf,
   cardKey,
   clean,
+  composerRoute,
+  composerTarget,
   defaultLiveSwarm,
   dismissCard,
   doctorNavigation,
@@ -37,8 +42,10 @@ import {
   ledgerStamp,
   loadDraft,
   markStripDue,
+  namesTheSwarm,
   nav,
   navRev,
+  nodeChanges,
   noteProposal,
   oneLine,
   openFlags,
@@ -46,15 +53,18 @@ import {
   pendingCard,
   pendingProposals,
   prefsOf,
+  proposalsSeeded,
   putDraftCache,
   putInput,
   putStrip,
+  recoveryChoices,
   resolveRow,
   restoreNav,
   runCheck,
   runningOf,
-  saveAsCandidates,
+  saveAsOffers,
   saveNav,
+  seedProposals,
   setDoctorNav,
   setFromTemplate,
   setInvalid,
@@ -64,7 +74,6 @@ import {
   spawnKey,
   stripOf,
   swarmView,
-  templateId,
   templateOf,
 } from './view'
 
@@ -111,6 +120,9 @@ async function openSwarmPane(p: Ports, arg: string): Promise<string> {
     return `litter: "${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`
   }
   let n: SwarmNav
+  // The swarm's undecided proposals, from J's spec ledger: module memory is empty after a reload.
+  const opened = name !== '' ? name : defaultLiveSwarm()
+  if (opened) await seedProposals(p, opened)
   if (name === '') {
     const live = defaultLiveSwarm()
     n = live ? liveNav(live) : blankNav('start', null)
@@ -152,7 +164,7 @@ async function openDoctorPane(p: Ports, swarm?: string | null): Promise<string> 
   await restoreNav(p)
   const n = nav()
   const which = swarm !== undefined ? swarm : n && (n.view === 'builder' || n.view === 'proposal') ? n.swarm : null
-  setDoctorNav({ swarm: which, test: false, notice: null })
+  setDoctorNav({ swarm: which, notice: null, tested: null })
   const view = await drawDoctor(p)
   const placed = await p.openPane(DOCTOR_PANE, 'litter doctor')
   const body = view?.body
@@ -174,11 +186,21 @@ async function stampOf(p: Ports): Promise<string> {
   return `${version()}|${navRev()}|${await ledgerStamp(p)}|${bucket}`
 }
 
-/** Builds the swarm pane's view and writes it; the navigation follows the view a fallback drew. */
+/**
+ * Builds the swarm pane's view and writes it. The navigation follows what was
+ * drawn: the view a fallback drew, and the browser's selection, which a
+ * default may have filled (the composer's To), so [Send] and ⏎ act on what
+ * the pane shows.
+ */
 async function drawSwarm(p: Ports): Promise<void> {
   const view = await swarmView(p)
   const n = nav()
-  if (view && n && view.view !== n.view) setNav({ ...n, view: view.view })
+  if (view && n) {
+    const patch: Partial<SwarmNav> = {}
+    if (view.view !== n.view) patch.view = view.view
+    if (view.view === 'browser' && view.selected !== n.selected) patch.selected = view.selected
+    if (Object.keys(patch).length > 0) setNav({ ...n, ...patch })
+  }
   await p.setView('swarm', view)
   lastStamp = await stampOf(p)
   if (savedRev !== navRev()) {
@@ -190,8 +212,8 @@ async function drawSwarm(p: Ports): Promise<void> {
 /** The doctor view last drawn: [Copy] and [Ask lead] act on what you saw. */
 let lastDoctor: Awaited<ReturnType<typeof doctorView>> = null
 
-async function drawDoctor(p: Ports) {
-  const view = await doctorView(p)
+async function drawDoctor(p: Ports, test = false) {
+  const view = await doctorView(p, { test })
   lastDoctor = view
   await p.setView('doctor', view)
   await saveNav(p)
@@ -236,6 +258,11 @@ export async function paneTick(p: Ports): Promise<void> {
   if (!n) return
   const now = await p.now()
   let force = false
+  // A pane a reload brought back from $.store: its swarm's proposals, from the ledger, once.
+  if (n.swarm && !proposalsSeeded(n.swarm)) {
+    await seedProposals(p, n.swarm)
+    force = true
+  }
   if (n.view === 'builder' && n.swarm) {
     const strip = stripOf(n.swarm)
     if ((strip === null || strip.due) && now - (strip?.editedAt ?? 0) >= STRIP_DEBOUNCE_MS) {
@@ -275,7 +302,11 @@ async function proposalArrived(p: Ports, name: string, num: number): Promise<voi
   p.toast(`litter: the lead proposed changes to ${name}: /litter-swarm ${name} shows them`)
 }
 
-/** The proposal view's navigation, with every change and brief picked but the conflicts. */
+/**
+ * The proposal view's navigation, with every change and brief picked but the
+ * conflicts. A new or removed node's brief has no pick of its own: it goes
+ * with its node's change (15.5).
+ */
 async function proposalNav(p: Ports, name: string, num: number): Promise<SwarmNav> {
   const n: SwarmNav = { ...blankNav('proposal', name), proposal: num }
   const litterDir = session().litterDir
@@ -283,10 +314,11 @@ async function proposalNav(p: Ports, name: string, num: number): Promise<SwarmNa
   try {
     const pv = await owners().readProposal(p, litterDir, name, num)
     if (!pv) return n
+    const withNode = nodeChanges(pv)
     return {
       ...n,
       picked: pv.changes.flatMap((c, i) => (c.conflict ? [] : [i])),
-      pickedBriefs: pv.briefs.filter(b => !b.conflict).map(b => b.node),
+      pickedBriefs: pv.briefs.filter(b => !b.conflict && !withNode.has(b.node)).map(b => b.node),
     }
   } catch (err) {
     p.log(`swarm pane: readProposal ${name} ${num}: ${errText(err)}`)
@@ -485,15 +517,20 @@ async function startAction(p: Ports, k: PaneKey, input: Input): Promise<boolean>
       const key = k.action === 'param' ? `swarm:start:param:${k.arg}` : k.action === 'name' ? START_NAME : START_ASK
       putInput(key, input.value ?? '')
       if (k.action === 'ask' && input.kind === 'submit') return askNew(p)
+      // A template's errors stay until you change its parameters (the Name fills its `name`): then they go, drawn once.
+      if (k.action !== 'ask' && n.templateErrors.length > 0) {
+        setNav({ ...nav()!, templateErrors: [] })
+        return true
+      }
       return false
     }
     case 'ask-send':
       return askNew(p)
     case 'template':
-      setNav({ ...n, template: input.value ? input.value : null })
+      setNav({ ...n, template: input.value ? input.value : null, templateErrors: [] })
       return true
     case 'cancel-template':
-      setNav({ ...n, template: null })
+      setNav({ ...n, template: null, templateErrors: [] })
       return true
     case 'use-template':
       return useTemplate(p)
@@ -510,6 +547,7 @@ async function startAction(p: Ports, k: PaneKey, input: Input): Promise<boolean>
     case 'open': {
       const name = k.arg
       if (!SWARM_NAME.test(name)) return true
+      await seedProposals(p, name)
       if (liveSwarm(name)) setNav(liveNav(name))
       else go('builder', name)
       return true
@@ -559,48 +597,38 @@ async function askNew(p: Ports): Promise<boolean> {
   return true
 }
 
-/** A user or project template, read from its file; a built-in from J's table. */
-async function readTemplate(p: Ports, id: string): Promise<Template | string> {
-  const litterDir = litterDirOr()
-  if (!litterDir) return 'no litter directory'
-  const o = owners()
-  const listed = await call(p, 'listTemplates', () => o.listTemplates(p, litterDir))
-  if (!listed.ok) return listed.error
-  const listing = listed.value.find(t => templateId(t) === id)
-  if (!listing) return 'that template is gone'
-  if (listing.scope === 'builtin' || listing.path === null) {
-    return o.builtinTemplates().find(t => t.name === listing.name) ?? 'that built-in is gone'
-  }
-  try {
-    const raw = JSON.parse(await p.fs.read(listing.path)) as Partial<Template>
-    if (!raw || typeof raw !== 'object' || !raw.spec || !Array.isArray(raw.spec.nodes)) return `${listing.path} isn't a template`
-    return {
-      name: listing.name,
-      description: listing.description,
-      scope: listing.scope,
-      params: listing.params,
-      ...(raw.repeat ? { repeat: raw.repeat } : {}),
-      spec: raw.spec,
-      briefs: raw.briefs && typeof raw.briefs === 'object' ? raw.briefs : {},
-    }
-  } catch (err) {
-    return `${listing.path} can't be read: ${errText(err)}`
-  }
+/** A template by its id (`<scope>:<name>`), whole, through J's loadTemplate. */
+async function readTemplate(p: Ports, litterDir: string, id: string): Promise<Template | string> {
+  const at = id.indexOf(':')
+  const scope = id.slice(0, at)
+  if (at < 0 || (scope !== 'builtin' && scope !== 'user' && scope !== 'project')) return 'that template is gone'
+  const r = await call(p, `loadTemplate ${id}`, () => owners().loadTemplate(p, litterDir, scope, id.slice(at + 1)))
+  if (!r.ok) return r.error
+  return r.value ?? 'that template is gone'
 }
 
+/**
+ * [Use template]: J's instantiate with the parameters typed, the Name filling
+ * a `name` parameter. A check that fails makes no draft: its errors stay on
+ * the start screen until a parameter changes.
+ */
 async function useTemplate(p: Ports): Promise<boolean> {
   const n = nav()!
   const litterDir = litterDirOr()
   if (!n.template || !litterDir) return true
   const name = await newName(p)
   if (!name) return true
-  const template = await readTemplate(p, n.template)
+  const template = await readTemplate(p, litterDir, n.template)
   if (typeof template === 'string') {
     notice('error', `the template can't be used: ${template}`)
     return true
   }
   const values: Record<string, string | string[]> = {}
   for (const param of template.params) {
+    if (namesTheSwarm(param)) {
+      values[param.name] = name
+      continue
+    }
     const dflt = Array.isArray(param.default) ? param.default.join(', ') : (param.default ?? '')
     const text = n.inputs[`swarm:start:param:${param.name}`] ?? dflt
     values[param.name] =
@@ -616,11 +644,17 @@ async function useTemplate(p: Ports): Promise<boolean> {
     failed(p, 'the template', r.error)
     return true
   }
+  const check = r.value.check
+  if (!check.ok) {
+    const errors = check.errors.map(e => `${e.field}: ${e.error}`)
+    setNav({ ...nav()!, templateErrors: errors })
+    notice('error', `no draft made: ${errors.length} error${errors.length === 1 ? '' : 's'} with these parameters; change them and [Use template] again`)
+    return true
+  }
   const at = await p.now()
   const spec: SwarmSpec = { ...r.value.spec, name }
   const draft: Draft = { base: 0, edits: [{ path: 'nodes', at }], spec, briefs: { ...r.value.briefs }, updatedAt: at }
   if (!(await keepDraft(p, litterDir, name, draft))) return true
-  putStrip(name, r.value.check, at)
   setFromTemplate(name, template.name)
   go('builder', name, { notice: { level: 'info', text: `${name}, from the ${template.name} template: nothing is saved until [Save]` } })
   return true
@@ -939,6 +973,21 @@ async function builderAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       if (Number.isSafeInteger(num) && pendingProposals(name).includes(num)) setNav(await proposalNav(p, name, num))
       return true
     }
+    case 'reject': {
+      // A proposal J can't read: rejecting it needs only its record.
+      const num = Number(row)
+      if (!litterDir || !Number.isSafeInteger(num)) return true
+      const r = await call(p, `rejectProposal ${name} ${num}`, () => o.rejectProposal(p, litterDir, name, num))
+      if (!r.ok) {
+        failed(p, 'rejecting', r.error)
+        // Decided elsewhere, say: the ledger's list stands.
+        await seedProposals(p, name)
+      } else {
+        dropProposal(name, num)
+        notice('info', `rejected the lead's proposal ${num}`)
+      }
+      return true
+    }
     case 'back':
       go('start', null)
       return true
@@ -1123,7 +1172,11 @@ async function launch(p: Ports, name: string): Promise<boolean> {
   return true
 }
 
-/** [Save as template]: the draft with the values you picked made parameters, J's saveTemplate. */
+/**
+ * [Save as template]: J's parameterize over the draft, each offer you picked
+ * (J's templateOffers, by field) a parameter with today's value as its
+ * default, then J's saveTemplate.
+ */
 async function saveAsTemplate(p: Ports, name: string): Promise<boolean> {
   const n = nav()!
   const litterDir = litterDirOr()
@@ -1134,26 +1187,14 @@ async function saveAsTemplate(p: Ports, name: string): Promise<boolean> {
     return true
   }
   const draft = await loadDraft(p, litterDir, name)
-  let spec: SwarmSpec = { ...draft.spec, name: tname }
-  const params: Template['params'] = []
-  for (const c of saveAsCandidates(draft.spec)) {
-    if (!n.saveAs.params.includes(c.id)) continue
-    spec = c.apply(spec, c.id)
-    params.push({ name: c.id, type: 'string', description: c.label, default: c.value })
-  }
+  const picked = saveAsOffers(draft.spec).filter(o => n.saveAs!.params.includes(o.field))
   const briefs: Record<string, string> = {}
   for (const node of draft.spec.nodes) {
     const text = await briefOf(p, litterDir, name, draft, node.id)
     if (text !== null) briefs[node.id] = text
   }
-  const template: Template = {
-    name: tname,
-    description: clean(n.inputs[SAVEAS_DESCRIPTION(name)] ?? '', 400).trim() || `from the ${name} swarm`,
-    scope: n.saveAs.scope,
-    params,
-    spec,
-    briefs,
-  }
+  const description = clean(n.inputs[SAVEAS_DESCRIPTION(name)] ?? '', 400).trim() || `from the ${name} swarm`
+  const template: Template = parameterize({ name: tname, description, scope: n.saveAs.scope }, draft.spec, briefs, picked)
   const r = await call(p, `saveTemplate ${n.saveAs.scope}:${tname}`, () => owners().saveTemplate(p, litterDir, template))
   if (!r.ok) {
     failed(p, 'saving the template', r.error)
@@ -1185,9 +1226,12 @@ async function proposalAction(p: Ports, k: PaneKey): Promise<boolean> {
       setNav({ ...n, picked: want ? [...new Set([...n.picked, index])] : n.picked.filter(x => x !== index) })
       return true
     }
-    case 'pick-brief': {
+    case 'pick-brief':
+    case 'keep-brief':
+    case 'take-brief': {
       const has = n.pickedBriefs.includes(arg)
-      setNav({ ...n, pickedBriefs: has ? n.pickedBriefs.filter(x => x !== arg) : [...n.pickedBriefs, arg] })
+      const want = k.action === 'pick-brief' ? !has : k.action === 'take-brief'
+      setNav({ ...n, pickedBriefs: want ? [...new Set([...n.pickedBriefs, arg])] : n.pickedBriefs.filter(x => x !== arg) })
       return true
     }
     case 'diff':
@@ -1196,22 +1240,16 @@ async function proposalAction(p: Ports, k: PaneKey): Promise<boolean> {
     case 'accept-all':
     case 'accept-selected': {
       if (!litterDir) return true
-      let pick: 'all' | string[] = 'all'
-      if (k.action === 'accept-selected') {
-        const pv = await call(p, `readProposal ${name} ${num}`, () => o.readProposal(p, litterDir, name, num))
-        if (!pv.ok || !pv.value) {
-          failed(p, 'reading the proposal', pv.ok ? 'it is gone' : pv.error)
-          return true
-        }
-        const changes = pv.value.changes
-        pick = [
-          ...[...n.picked].sort((a, b) => a - b).flatMap(i => (changes[i] ? [changes[i]!.path] : [])),
-          ...pv.value.briefs.filter(b => n.pickedBriefs.includes(b.node)).map(b => `brief:${b.node}`),
-        ]
-        if (pick.length === 0) {
-          notice('warning', 'nothing is picked: pick the changes to accept, or [Reject]')
-          return true
-        }
+      const pv = await call(p, `readProposal ${name} ${num}`, () => o.readProposal(p, litterDir, name, num))
+      if (!pv.ok || !pv.value) {
+        failed(p, 'reading the proposal', pv.ok ? 'it is gone' : pv.error)
+        return true
+      }
+      // [Accept all] is J's 'all' unless a conflict was taken; a new or removed node's brief goes with its node.
+      const pick = acceptPick(pv.value, n.picked, n.pickedBriefs, k.action === 'accept-all')
+      if (pick !== 'all' && pick.length === 0) {
+        notice('warning', 'nothing is picked: pick the changes to accept, or [Reject]')
+        return true
       }
       const what = pick === 'all' ? 'all' : `${pick.length} change${pick.length === 1 ? '' : 's'}`
       const r = await call(p, `acceptProposal ${name} ${num} ${pick === 'all' ? 'all' : pick.join(',')}`, () => o.acceptProposal(p, litterDir, name, num, pick))
@@ -1370,7 +1408,9 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
 /**
  * [Send] (or ⏎ in the field): L's sendFromBrowser, to the instance the
  * composer showed as `<node>#<n>` ([Send]'s key carries it; ⏎ takes the
- * selected node's). L refuses an address that's gone.
+ * selection's), by the Route it showed. The To and the Route are view.ts's
+ * composerTarget and composerRoute, which the drawing uses too. L refuses an
+ * address that's gone.
  */
 async function send(p: Ports, name: string, when: 'queue' | null, shown: string): Promise<boolean> {
   const n = nav()!
@@ -1381,8 +1421,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string)
     notice('warning', 'type the message first')
     return true
   }
-  const b = n.selected ? binding(n.selected) : null
-  const selected = b && b.swarm === name && b.kind !== 'child' ? b : null
+  const selected = composerTarget(name, n.selected)
   if (selected && shown !== '' && instanceAddress(selected) !== shown) {
     p.toast('litter: the To changed since that was drawn, so it was ignored')
     return true
@@ -1393,7 +1432,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string)
     return true
   }
   const prefs = await prefsOf(p, litterDir, name)
-  const route = prefs.route === 'parent' && selected !== null && selected.kind !== 'worker' ? 'direct' : prefs.route
+  const route = composerRoute(prefs.route, selected)
   const r = await call(p, `sendFromBrowser ${name} ${address} ${when ?? prefs.when} ${route}`, () =>
     owners().sendFromBrowser(p, { swarm: name, node: address, text, when: when ?? prefs.when, route }),
   )
@@ -1443,37 +1482,51 @@ async function recoveryAction(p: Ports, k: PaneKey): Promise<boolean> {
     dismissCard(cardKey(card))
     go('browser', name, { notice: { level: 'ok', text } })
   }
-  const nodesOf = (agentIds: readonly string[]) => [...new Set(card.nodes.filter(x => agentIds.includes(x.agentId)).map(x => x.node))]
-  const resume = async (agentIds: readonly string[], how: 'resume' | 'respawn'): Promise<boolean> => {
-    const nodes = nodesOf(agentIds)
+  // Orchestrators only, and none still running: K re-spawns no worker, and resumes a node only through an instance
+  // resumeTargets names (a stopped one, or one bound under an older owner, has none). A worker comes back through its orchestrator.
+  const choices = recoveryChoices(name, card).filter(c => !c.alive)
+  const picked = choices.filter(c => n.recoveryPicked.includes(c.node))
+  const resume = async (nodes: readonly string[], how: 'resume' | 'respawn'): Promise<boolean> => {
     if (nodes.length === 0) {
-      notice('warning', how === 'resume' ? 'nothing to resume: pick a node that this session can resume' : 'pick the nodes to re-spawn')
+      notice('warning', how === 'resume' ? 'nothing to resume: no orchestrator here has an instance this session can resume; re-spawn it' : 'pick the orchestrators to re-spawn')
       return true
     }
     const r = await call(p, `requestResume ${name} ${nodes.join(',')} ${how}`, () => o.requestResume(p, name, nodes, how))
-    if (!r.ok) failed(p, how === 'resume' ? 'Resume' : 'Re-spawn', r.error)
-    else done(`the prompt box has the ${how === 'resume' ? 'resume' : 're-spawn'} request: send it to go on`)
+    if (!r.ok) {
+      failed(p, how === 'resume' ? 'Resume' : 'Re-spawn', r.error)
+      return true
+    }
+    const text = `the prompt box has the ${how === 'resume' ? 'resume' : 're-spawn'} request: send it to go on`
+    // The card stays while anything on it is left, showing only that (K marks what was asked for handled).
+    if (pendingCard(name)) setNav({ ...nav()!, recoveryPicked: [], notice: { level: 'ok', text } })
+    else go('browser', name, { notice: { level: 'ok', text } })
     return true
   }
   switch (k.action) {
     case 'pick': {
       const id = k.rest
+      if (!choices.some(c => c.node === id)) return true
       setNav({ ...n, recoveryPicked: n.recoveryPicked.includes(id) ? n.recoveryPicked.filter(x => x !== id) : [...n.recoveryPicked, id] })
       return true
     }
     case 'resume-all':
       return resume(
-        card.nodes.filter(x => !x.respawnOnly && x.state !== 'gone').map(x => x.agentId),
+        choices.filter(c => c.resumable).map(c => c.node),
         'resume',
       )
     case 'resume-selected':
+      if (picked.length === 0) {
+        notice('warning', 'pick the orchestrators to resume')
+        return true
+      }
       return resume(
-        card.nodes.filter(x => n.recoveryPicked.includes(x.agentId) && !x.respawnOnly).map(x => x.agentId),
+        picked.filter(c => c.resumable).map(c => c.node),
         'resume',
       )
     case 'respawn':
+      // Unpicked: the orchestrators a resume can't reach, or whose instances are all gone.
       return resume(
-        n.recoveryPicked.length > 0 ? n.recoveryPicked : card.nodes.filter(x => x.respawnOnly || x.state === 'gone').map(x => x.agentId),
+        (picked.length > 0 ? picked : choices.filter(c => !c.resumable || c.gone)).map(c => c.node),
         'respawn',
       )
     case 'leave':
@@ -1524,7 +1577,7 @@ async function unsettledAction(p: Ports, k: PaneKey): Promise<boolean> {
 
 async function doctorAction(p: Ports, k: PaneKey): Promise<void> {
   const d = doctorNavigation()!
-  const set = (notice: SwarmNotice | null, test = d.test) => setDoctorNav({ ...d, test, notice })
+  const set = (notice: SwarmNotice | null, tested = d.tested) => setDoctorNav({ ...d, tested, notice })
   switch (k.action) {
     case 'copy':
     case 'ask-lead': {
@@ -1546,12 +1599,18 @@ async function doctorAction(p: Ports, k: PaneKey): Promise<void> {
       break
     }
     case 'recheck':
-      set(null, false)
+      set(null, null)
       break
-    case 'test':
+    case 'test': {
+      // One summaryModel call per press: later redraws (the tick, Recheck aside) show the row it gave.
       p.log('swarm pane: checkHealth with the summaryModel test')
-      set(null, true)
-      break
+      set(null)
+      const view = await drawDoctor(p, true)
+      const row = view?.body?.rows.find(r => r.id === SUMMARY_TEST_ROW) ?? null
+      setDoctorNav({ ...doctorNavigation()!, tested: row })
+      await saveNav(p)
+      return
+    }
     default:
       break
   }

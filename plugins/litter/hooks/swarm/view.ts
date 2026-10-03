@@ -36,6 +36,8 @@ import type {
   SwarmNotice,
   SwarmOption,
   SwarmProposalView,
+  SwarmRecoveryInstance,
+  SwarmRecoveryRow,
   SwarmRecoveryView,
   SwarmSaveAsCandidate,
   SwarmSpan,
@@ -57,17 +59,16 @@ import type {
   SpecCheck,
   SwarmNode,
   SwarmSpec,
-  Template,
   TemplateListing,
   WorktreeSpec,
 } from './types'
 import { session } from '../session'
 import { headKey } from '../ledgercore'
 import { launchDir, swarmBriefPath, swarmDir, swarmProposalDir } from '../layout'
-import { readPolicy } from '../policy'
 import { repoOf } from '../lifecycle'
 import { readLaunchLedger } from '../records/swarm'
 import {
+  binding,
   bindings,
   inflight,
   isStopped,
@@ -80,7 +81,7 @@ import {
   status as admissionStatus,
   tokens,
 } from './state'
-import { validateSpec } from './spec'
+import { validateSaved } from './spec'
 import { checkHealth } from './doctor'
 import {
   acceptProposal,
@@ -91,16 +92,17 @@ import {
   readSaved,
   rejectProposal,
   saveRevision,
+  undecidedProposals,
   writeDraft,
 } from './store'
-import { BUILTIN_TEMPLATES, instantiate, listTemplates, saveTemplate } from './templates'
+import { instantiate, listTemplates, loadTemplate, saveTemplate, templateOffers } from './templates'
 import { launchSwarm } from './launch'
 import { handover, readOwner } from './owner'
-import { recoveryCard, requestResume } from './recover'
+import { recoveryCard, requestResume, resumeTargets } from './recover'
 import { cancelQueued, sendFromBrowser } from './admit'
 import { endSwarm, settleProgress, stopNode } from './end'
 import { ackBranchMoved } from './observe'
-import { summaryOf } from './summary'
+import { parseSummary, plainText, summaryOf } from './summary'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -110,7 +112,7 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 // some of these modules import each other.
 
 export type Owners = {
-  validateSpec: typeof validateSpec
+  validateSaved: typeof validateSaved
   checkHealth: typeof checkHealth
   listSwarms: typeof listSwarms
   readSaved: typeof readSaved
@@ -121,8 +123,9 @@ export type Owners = {
   readProposal: typeof readProposal
   acceptProposal: typeof acceptProposal
   rejectProposal: typeof rejectProposal
+  undecidedProposals: typeof undecidedProposals
   listTemplates: typeof listTemplates
-  builtinTemplates: () => readonly Template[]
+  loadTemplate: typeof loadTemplate
   instantiate: typeof instantiate
   saveTemplate: typeof saveTemplate
   launchSwarm: typeof launchSwarm
@@ -130,6 +133,7 @@ export type Owners = {
   handover: typeof handover
   recoveryCard: typeof recoveryCard
   requestResume: typeof requestResume
+  resumeTargets: typeof resumeTargets
   sendFromBrowser: typeof sendFromBrowser
   cancelQueued: typeof cancelQueued
   stopNode: typeof stopNode
@@ -143,7 +147,7 @@ let fakeOwners: Partial<Owners> = {}
 
 export function owners(): Owners {
   return {
-    validateSpec,
+    validateSaved,
     checkHealth,
     listSwarms,
     readSaved,
@@ -154,8 +158,9 @@ export function owners(): Owners {
     readProposal,
     acceptProposal,
     rejectProposal,
+    undecidedProposals,
     listTemplates,
-    builtinTemplates: () => BUILTIN_TEMPLATES,
+    loadTemplate,
     instantiate,
     saveTemplate,
     launchSwarm,
@@ -163,6 +168,7 @@ export function owners(): Owners {
     handover,
     recoveryCard,
     requestResume,
+    resumeTargets,
     sendFromBrowser,
     cancelQueued,
     stopNode,
@@ -202,9 +208,11 @@ export type SwarmNav = {
   inputs: Record<string, string>
   /** Start: the template picked (`<scope>:<name>`). */
   template: string | null
-  /** Builder: the [Save as template] form, when open. */
+  /** Start: why [Use template] made no draft, until a parameter changes. */
+  templateErrors: string[]
+  /** Builder: the [Save as template] form, when open; `params` are the picked offers' fields (J's templateOffers). */
   saveAs: { scope: 'user' | 'project'; params: string[] } | null
-  /** Recovery: the agentIds picked. */
+  /** Recovery: the orchestrators picked, by node id. */
   recoveryPicked: string[]
   /** Browser: the last send was refused and can be queued instead. */
   offerQueue: boolean
@@ -213,8 +221,12 @@ export type SwarmNav = {
   notice: SwarmNotice | null
 }
 
-/** The doctor pane: the swarm it checks (the builder's), and whether [Test] ran. */
-export type DoctorNav = { swarm: string | null; test: boolean; notice: SwarmNotice | null }
+/**
+ * The doctor pane: the swarm it checks (the builder's), and the row the last
+ * [Test] gave. [Test] runs its summaryModel call once per press (15.7, "on
+ * its [Test] button only"); the row is drawn again until [Recheck].
+ */
+export type DoctorNav = { swarm: string | null; notice: SwarmNotice | null; tested: DoctorRowView | null }
 
 /** The $.store key the navigation is mirrored under: one key, last writer wins, read back only by the same session. */
 export const PANE_STORE_KEY = 'litter.swarm.pane'
@@ -236,6 +248,7 @@ export const blankNav = (view: SwarmViewName, swarm: string | null): SwarmNav =>
   transcript: null,
   inputs: {},
   template: null,
+  templateErrors: [],
   saveAs: null,
   recoveryPicked: [],
   offerQueue: false,
@@ -285,7 +298,7 @@ export async function restoreNav(p: Ports): Promise<void> {
     const raw = (await p.store.get(PANE_STORE_KEY)) as Partial<PaneStore> | undefined
     if (!raw || raw.v !== 1 || raw.session !== (await p.sessionId())) return
     if (swarmNav === null && raw.swarm) swarmNav = { ...blankNav(raw.swarm.view, raw.swarm.swarm), ...raw.swarm }
-    if (doctorNav === null && raw.doctor) doctorNav = { swarm: raw.doctor.swarm ?? null, test: raw.doctor.test === true, notice: raw.doctor.notice ?? null }
+    if (doctorNav === null && raw.doctor) doctorNav = { swarm: raw.doctor.swarm ?? null, notice: raw.doctor.notice ?? null, tested: raw.doctor.tested ?? null }
   } catch (err) {
     p.log(`swarm pane: the navigation wasn't read back: ${errText(err)}`)
   }
@@ -319,8 +332,12 @@ export type StripCheck = {
 }
 const strips = new Map<string, StripCheck>()
 
-/** Staged proposals not yet decided, by swarm: state.ts hands each over once (takeProposals). */
+/** Staged proposals not yet decided, by swarm: state.ts hands each over once (takeProposals), and J's spec ledger seeds them (seedProposals). */
 const proposals = new Map<string, number[]>()
+/** The swarms whose list came from the spec ledger in this module's life. */
+const seeded = new Set<string>()
+/** Proposals J couldn't read, with why, by `<swarm>/<n>`: the builder offers [Reject] for each. */
+const unreadable = new Map<string, string>()
 
 /** The template a never-saved draft came from, for its first revision's note. */
 const fromTemplate = new Map<string, string>()
@@ -374,10 +391,39 @@ export function dropProposal(name: string, n: number): void {
   const list = (proposals.get(name) ?? []).filter(x => x !== n)
   if (list.length === 0) proposals.delete(name)
   else proposals.set(name, list)
+  unreadable.delete(`${name}/${n}`)
 }
 
 /** The swarm's staged proposals this session has been told of and not decided. */
 export const pendingProposals = (name: string): number[] => proposals.get(name) ?? []
+
+/**
+ * The swarm's undecided proposals from J's spec ledger, in place of what
+ * module memory holds: after a reload, or a decision in another session. A
+ * failed read leaves the list as it was.
+ */
+export async function seedProposals(p: Ports, name: string): Promise<void> {
+  const litterDir = session().litterDir
+  if (!litterDir) return
+  seeded.add(name)
+  try {
+    const list = await owners().undecidedProposals(p, litterDir, name)
+    if (list.length === 0) proposals.delete(name)
+    else proposals.set(name, [...list])
+    for (const key of [...unreadable.keys()]) if (key.startsWith(`${name}/`) && !list.includes(Number(key.slice(name.length + 1)))) unreadable.delete(key)
+  } catch (err) {
+    p.log(`swarm pane: the proposals of ${name} weren't read from its ledger: ${errText(err)}`)
+  }
+}
+
+/** Whether this module's list for the swarm came from the ledger yet. */
+export const proposalsSeeded = (name: string): boolean => seeded.has(name)
+
+/** A proposal J's readProposal threw on (null once it reads again). */
+export function noteUnreadable(name: string, n: number, error: string | null): void {
+  if (error === null) unreadable.delete(`${name}/${n}`)
+  else unreadable.set(`${name}/${n}`, error)
+}
 
 export function setFromTemplate(name: string, template: string | null): void {
   if (template === null) fromTemplate.delete(name)
@@ -409,6 +455,8 @@ export function resetViewForTests(): void {
   composerPrefs.clear()
   dismissedCards.clear()
   proposals.clear()
+  seeded.clear()
+  unreadable.clear()
   fromTemplate.clear()
   viewSeq = 0
   rev = 0
@@ -421,15 +469,16 @@ export function resetViewForTests(): void {
 /** U+2028 and U+2029, which end a line in JavaScript source, so they're built here, not written. */
 const LINE_SEPARATORS = new RegExp(`[${String.fromCharCode(0x2028, 0x2029)}]`, 'g')
 
-/** Text from outside (a report, a brief, a spec value) made safe to draw: no control character but newline, tabs as spaces, cut to `max`. */
+/**
+ * Text from outside (a report, a brief, a spec value, an id or a model from a
+ * project template) made safe to draw, cut to `max`. One cleaner for the
+ * panes and O's summary, summary.ts's plainText: no terminal sequence, no
+ * control character but newline, no zero-width or bidi override (a report
+ * could otherwise reorder what a row says); tabs as spaces.
+ */
 export function clean(text: unknown, max = 2000): string {
   const s = typeof text === 'string' ? text : text === undefined || text === null ? '' : String(text)
-  const out = s
-    .replace(/\r\n?/g, '\n')
-    .replace(LINE_SEPARATORS, '\n')
-    .replace(/\t/g, '  ')
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '')
-  return cut(out, max)
+  return cut(plainText(s.replace(LINE_SEPARATORS, '\n')), max)
 }
 
 const cut = (s: string, max: number): string => (s.length > max ? `${s.slice(0, Math.max(0, max - 1))}…` : s)
@@ -744,7 +793,9 @@ export const NODE_FIELDS: readonly FieldDef[] = [
     unset: "the parent's model",
     options: (n, ctx) => {
       const opts: SwarmOption[] = [NOT_SET, { value: 'inherit', label: 'inherit' }, ...ctx.models.map(m => ({ value: m, label: m }))]
-      if (typeof n.model === 'string' && n.model !== '' && !opts.some(o => o.value === n.model)) opts.push({ value: n.model, label: n.model })
+      // The value as the field shows it (inspectorFor cleans it), so the Select finds it among its options.
+      const model = typeof n.model === 'string' ? clean(n.model, 2000) : ''
+      if (model !== '' && !opts.some(o => o.value === model)) opts.push({ value: model, label: clean(model, 80) })
       return opts
     },
     get: n => (typeof n.model === 'string' ? n.model : ''),
@@ -992,7 +1043,7 @@ function spawnFields(swarm: string, spec: SwarmSpec, node: SwarmNode, inputs: Re
     label: Object.keys(spawns).length === 0 ? 'Spawns' : '',
     kind: 'select',
     value: '',
-    options: [{ value: '', label: 'add a worker' }, ...others.map(w => ({ value: w, label: w })), { value: '+new', label: 'a new worker' }],
+    options: [{ value: '', label: 'add a worker' }, ...others.map(w => ({ value: w, label: clean(w, 40) })), { value: '+new', label: 'a new worker' }],
     placeholder: '',
     badge: 'litter',
     note: Object.keys(spawns).length === 0 ? 'not set: it may spawn no swarm types' : null,
@@ -1039,7 +1090,12 @@ export async function briefOf(p: Ports, litterDir: string, name: string, draft: 
   return readTextOrNull(p, swarmBriefPath(litterDir, name, node))
 }
 
-/** J's validation and health check over the draft, into the strip (the pane's tick, after an edit, or [Validate]). */
+/**
+ * J's validation and health check over the draft, into the strip (the pane's
+ * tick, after an edit, or [Validate]). Validation is J's validateSaved over
+ * the draft's spec and briefs, what [Save] hands saveRevision, so the strip
+ * and [Save] agree (a brief only on disk passes neither).
+ */
 export async function runCheck(p: Ports, name: string): Promise<StripCheck> {
   const litterDir = sessionDir()
   const at = await p.now()
@@ -1059,14 +1115,7 @@ export async function runCheck(p: Ports, name: string): Promise<StripCheck> {
     const draft = await loadDraft(p, litterDir, name)
     const o = owners()
     try {
-      const policy = await readPolicy(p, litterDir).catch(() => undefined)
-      check = await o.validateSpec(p, draft.spec, {
-        repo: repoOf(litterDir),
-        litterDir,
-        limits: await p.limits(),
-        briefText: node => briefOf(p, litterDir, name, draft, node),
-        activeRunCheckout: policy?.run?.checkout ?? null,
-      })
+      check = await o.validateSaved(p, litterDir, name, { spec: draft.spec, briefs: draft.briefs })
     } catch (err) {
       errors.push(`validation didn't run: ${errText(err)}`)
     }
@@ -1143,6 +1192,9 @@ function title(...parts: SwarmSpan[]): SwarmSpan[] {
 
 export const templateId = (t: { scope: string; name: string }) => `${t.scope}:${t.name}`
 
+/** A template's `name` parameter, the swarm's name (every built-in has one): the start screen's Name fills it. */
+export const namesTheSwarm = (param: { name: string; type: string }): boolean => param.name === 'name' && param.type === 'string'
+
 /** The branches and worktrees offered for a list parameter (15.5, "Parameters"). */
 async function suggestions(p: Ports, litterDir: string): Promise<string[]> {
   const repo = repoOf(litterDir)
@@ -1196,7 +1248,8 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
       id: templateId(picked),
       name: clean(picked.name, 60),
       description: oneLine(picked.description, 200),
-      params: picked.params.map(x => {
+      // The Name above fills a `name` parameter (useTemplate), so it has no field of its own.
+      params: picked.params.filter(x => !namesTheSwarm(x)).map(x => {
         const key = `swarm:start:param:${x.name}`
         const dflt = Array.isArray(x.default) ? x.default.join(', ') : (x.default ?? '')
         return {
@@ -1207,6 +1260,7 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
           suggestions: x.type === 'list' ? sugg : [],
         }
       }),
+      errors: n.templateErrors.slice(0, 12).map(e => oneLine(e, 200)),
     }
   }
   const notice = n.notice ?? (problems.length > 0 ? { text: oneLine(problems.join('; '), 300), level: 'warning' as const } : null)
@@ -1246,6 +1300,7 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     askLead: '',
     saveAs: null,
     proposals: [],
+    unreadable: [],
   })
   if (!litterDir) return blocked(`no litter directory: ${session().litterDirError ?? 'session.start found none'}`)
   let draft: Draft
@@ -1279,14 +1334,19 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     unsaved,
     live: live !== null && !live.readOnly,
     blocked: null,
-    tree: { swarm: name, rows, selected, editable: true, workers: workerIds(spec) },
+    // The Client draws each worker id as a menu label: cleaned, as every label is.
+    tree: { swarm: name, rows, selected, editable: true, workers: workerIds(spec).map(w => clean(w, 40)) },
     inspector: inspectorFor(name, spec, target, n.inputs, { models }),
     brief: target.kind === 'node' ? await briefPanel(p, litterDir, name, draft, target.node) : null,
     strip: stripRows(strip),
     checking: strip === null || strip.due,
     askLead: clean(n.inputs[`swarm:builder:ask:${name}`] ?? '', 2000),
     saveAs: n.saveAs ? saveAsForm(name, spec, n) : null,
-    proposals: pendingProposals(name),
+    proposals: pendingProposals(name).filter(x => !unreadable.has(`${name}/${x}`)),
+    unreadable: pendingProposals(name).flatMap(x => {
+      const error = unreadable.get(`${name}/${x}`)
+      return error === undefined ? [] : [{ n: x, error: oneLine(error, 300) }]
+    }),
   }
 }
 
@@ -1301,6 +1361,77 @@ async function availableModels(p: Ports): Promise<string[]> {
 
 const BRIEF_LINES = 8
 
+// A brief's links, drawn as text (15.5's briefs can come from a project
+// template, which is repository content): placeholders hold what's made, so
+// a later step never reads its own output. clean() has removed every control
+// character, so these two can't be in the text.
+const HOLD_OPEN = String.fromCharCode(1)
+const HOLD_CLOSE = String.fromCharCode(2)
+const HELD = new RegExp(`${HOLD_OPEN}(\\d+)${HOLD_CLOSE}`, 'g')
+const LINK = /!?\[((?:[^[\]]|\[[^[\]]*\])*)\]\(\s*<?([^)\s>]*)>?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g
+const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g
+const BARE_URL = new RegExp(`\\b(?:(?:https?|file|ftp):\\/\\/|www\\.)[^\\s<>${HOLD_OPEN}${HOLD_CLOSE}]+`, 'gi')
+const DEFINITION = /^ {0,3}\[((?:[^[\]]|\\.)+)\]:(\s*)(\S+)(.*)$/
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+const CODE_SPAN = /(`+)[^`](?:[\s\S]*?[^`])?\1(?!`)/g
+
+/** A target as text no renderer links: a code span (a backtick in it would end the span). */
+const asCode = (target: string): string => `\`${target.replace(/`/g, '%60')}\``
+
+function unlinkText(text: string): string {
+  const held: string[] = []
+  const hold = (s: string): string => `${HOLD_OPEN}${held.push(s) - 1}${HOLD_CLOSE}`
+  // A link's label can hold another (an image in a link): again, a few times.
+  let out = text
+  for (let i = 0, prev = ''; i < 4 && out !== prev; i++) {
+    prev = out
+    out = out.replace(LINK, (_m, label: string, target: string) => `${label}${target === '' ? '' : ` (${hold(asCode(target))})`}`)
+  }
+  out = out
+    .replace(AUTOLINK, (_m, target: string) => hold(asCode(target)))
+    .replace(BARE_URL, url => {
+      // As GFM does, trailing punctuation isn't part of the address.
+      const tail = /[.,:;!?'")\]*_~]+$/.exec(url)?.[0] ?? ''
+      return `${hold(asCode(url.slice(0, url.length - tail.length)))}${tail}`
+    })
+  return out.replace(HELD, (_m, i: string) => held[Number(i)] ?? '')
+}
+
+/**
+ * A brief's Markdown with no link the pane would make clickable: a link or an
+ * image is its text with its target after it as code, an autolink and a bare
+ * address are code, and a reference definition is text, so `[x][ref]` stays
+ * text too. Code spans and fenced blocks are left as written: nothing in them
+ * is a link.
+ */
+export function unlinked(markdown: string): string {
+  let fence: string | null = null
+  return markdown
+    .split('\n')
+    .map(line => {
+      const f = FENCE.exec(line)?.[1] ?? null
+      if (fence !== null) {
+        if (f !== null && f[0] === fence[0] && f.length >= fence.length) fence = null
+        return line
+      }
+      if (f !== null) {
+        fence = f
+        return line
+      }
+      const def = DEFINITION.exec(line)
+      if (def) return `\\[${def[1]}\\]:${def[2]}${asCode(def[3]!)}${unlinkText(def[4]!)}`
+      // Only the text between code spans.
+      let out = ''
+      let at = 0
+      for (const m of line.matchAll(CODE_SPAN)) {
+        out += unlinkText(line.slice(at, m.index)) + m[0]
+        at = m.index + m[0].length
+      }
+      return out + unlinkText(line.slice(at))
+    })
+    .join('\n')
+}
+
 async function briefPanel(p: Ports, litterDir: string, name: string, draft: Draft, node: SwarmNode): Promise<SwarmBriefPanel> {
   const path = swarmBriefPath(litterDir, name, node.id)
   const saved = await readTextOrNull(p, path)
@@ -1308,7 +1439,7 @@ async function briefPanel(p: Ports, litterDir: string, name: string, draft: Draf
   const lines = clean(text ?? '', 8000).split('\n')
   return {
     node: node.id,
-    markdown: text === null ? '' : clean(lines.slice(0, BRIEF_LINES).join('\n'), 1500),
+    markdown: text === null ? '' : unlinked(clean(lines.slice(0, BRIEF_LINES).join('\n'), 1500)),
     more: lines.length > BRIEF_LINES,
     // A Markdown link target: parentheses would end it early.
     href: saved === null ? null : `file://${encodeURI(path).replace(/\(/g, '%28').replace(/\)/g, '%29')}`,
@@ -1316,34 +1447,33 @@ async function briefPanel(p: Ports, litterDir: string, name: string, draft: Draf
   }
 }
 
-/** The values tied to this repository or this job, offered as template parameters (15.5, "Parameters"). */
-export function saveAsCandidates(spec: SwarmSpec): { id: string; label: string; value: string; apply: (s: SwarmSpec, param: string) => SwarmSpec }[] {
-  const out: ReturnType<typeof saveAsCandidates> = []
-  if (spec.goal) out.push({ id: 'goal', label: 'the goal', value: spec.goal, apply: (s, p) => ({ ...s, goal: `{${p}}` }) })
-  const nodeEdit = (id: string, edit: (n: SwarmNode, p: string) => SwarmNode) => (s: SwarmSpec, p: string) => ({
-    ...s,
-    nodes: s.nodes.map(n => (n.id === id ? edit(n, p) : n)),
-  })
-  for (const node of Array.isArray(spec.nodes) ? spec.nodes : []) {
-    if (typeof node.task === 'string' && node.task !== '') {
-      out.push({ id: `${node.id}-task`, label: `${node.id}'s task`, value: node.task, apply: nodeEdit(node.id, (n, p) => ({ ...n, task: `{${p}}` })) })
-    }
-    const wt = node.worktree
-    if (isObj(wt) && 'existing' in wt && wt.existing) {
-      out.push({ id: `${node.id}-worktree`, label: `${node.id}'s worktree`, value: wt.existing, apply: nodeEdit(node.id, (n, p) => ({ ...n, worktree: { existing: `{${p}}` } })) })
-    }
-    if (isObj(wt) && 'new' in wt) {
-      const { from, branch } = wt.new
-      if (from) out.push({ id: `${node.id}-from`, label: `${node.id}'s worktree base`, value: from, apply: nodeEdit(node.id, (n, p) => (isObj(n.worktree) && 'new' in n.worktree ? { ...n, worktree: { new: { ...n.worktree.new, from: `{${p}}` } } } : n)) })
-      if (branch) out.push({ id: `${node.id}-branch`, label: `${node.id}'s branch`, value: branch, apply: nodeEdit(node.id, (n, p) => (isObj(n.worktree) && 'new' in n.worktree ? { ...n, worktree: { new: { ...n.worktree.new, branch: `{${p}}` } } } : n)) })
-    }
+/** What an offer's field is, in words: `nodes.<id>.task` is "<id>'s task". */
+function offerLabel(field: string): string {
+  if (field === 'name') return "the swarm's name"
+  if (field === 'goal') return 'the goal'
+  const m = /^nodes\.([^.]+)\.(.+)$/.exec(field)
+  if (!m) return field
+  const what: Record<string, string> = { task: 'task', 'worktree.existing': 'worktree', 'worktree.new.from': 'worktree base', 'worktree.new.branch': 'branch' }
+  return `${m[1]}'s ${what[m[2]!] ?? m[2]}`
+}
+
+/**
+ * The values tied to this repository or this job that saving offers as
+ * parameters (15.5, "Parameters"): J's templateOffers, each picked by its
+ * field. An offer with no value has nothing to make a parameter of.
+ */
+export function saveAsOffers(spec: SwarmSpec): ReturnType<typeof templateOffers> {
+  try {
+    return templateOffers(spec).filter(o => typeof o.value === 'string' && o.value !== '')
+  } catch {
+    // A draft too broken to walk offers nothing; validation says why.
+    return []
   }
-  return out
 }
 
 function saveAsForm(name: string, spec: SwarmSpec, n: SwarmNav): SwarmBuilderView['saveAs'] {
   const params = new Set(n.saveAs?.params ?? [])
-  const candidates: SwarmSaveAsCandidate[] = saveAsCandidates(spec).map(c => ({ id: c.id, label: clean(c.label, 60), value: oneLine(c.value, 80), param: params.has(c.id) }))
+  const candidates: SwarmSaveAsCandidate[] = saveAsOffers(spec).map(o => ({ id: o.field, label: clean(offerLabel(o.field), 60), value: oneLine(o.value, 80), param: params.has(o.field) }))
   return {
     name: clean(n.inputs[`swarm:builder:saveas-name:${name}`] ?? name, 24),
     description: clean(n.inputs[`swarm:builder:saveas-description:${name}`] ?? '', 400),
@@ -1373,14 +1503,24 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
   if (!litterDir || n.proposal === null) return back('no proposal to show')
   const o = owners()
   let pv
-  let draft: Draft
   try {
     pv = await o.readProposal(p, litterDir, name, n.proposal)
-    draft = await loadDraft(p, litterDir, name)
   } catch (err) {
+    // J can't read it (a staged brief changed, its base revision gone): the builder says why, with [Reject].
+    noteUnreadable(name, n.proposal, errText(err))
     return back(`proposal ${n.proposal} can't be read: ${errText(err)}`)
   }
-  if (!pv) return back(`there's no proposal ${n.proposal} for ${name}`)
+  noteUnreadable(name, n.proposal, null)
+  let draft: Draft
+  try {
+    draft = await loadDraft(p, litterDir, name)
+  } catch (err) {
+    return back(`the draft of ${name} can't be read: ${errText(err)}`)
+  }
+  if (!pv) {
+    dropProposal(name, n.proposal)
+    return back(`there's no proposal ${n.proposal} for ${name}`)
+  }
   const spec = (await proposedSpec(p, litterDir, name, pv.n)) ?? draft.spec
   const changed = new Map<string, 'added' | 'removed' | 'changed' | 'conflict'>()
   for (const c of pv.changes) {
@@ -1420,22 +1560,29 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
       picked: picked.has(index),
     }
   })
-  const briefs = pv.briefs.map(b => ({
-    node: clean(b.node, 40),
-    glyph: b.kind === 'added' ? '+' : b.kind === 'removed' ? '−' : '~',
-    color: b.kind === 'added' ? COLOR.added : b.kind === 'removed' ? COLOR.removed : COLOR.changed,
-    reason: b.reason === null ? null : oneLine(b.reason, 200),
-    conflict: b.conflict,
-    open: n.diff === b.node,
-    lines:
-      n.diff === b.node
-        ? b.lines.slice(0, 120).map(l => ({
-            text: `${l.op === ' ' ? ' ' : l.op === '+' ? '+' : '−'} ${clean(l.text, 300)}`,
-            ...(l.op === '+' ? { color: COLOR.added } : l.op === '-' ? { color: COLOR.removed } : { dim: true }),
-          }))
-        : [],
-    picked: n.pickedBriefs.includes(b.node),
-  }))
+  const diffLines = (lines: readonly { op: ' ' | '+' | '-'; text: string }[]): SwarmSpan[] =>
+    lines.slice(0, 120).map(l => ({
+      text: `${l.op === ' ' ? ' ' : l.op === '+' ? '+' : '−'} ${clean(l.text, 300)}`,
+      ...(l.op === '+' ? { color: COLOR.added } : l.op === '-' ? { color: COLOR.removed } : { dim: true }),
+    }))
+  const withNode = nodeChanges(pv)
+  const briefs = pv.briefs.map(b => {
+    // A new or removed node's brief is accepted or rejected with its node (15.5): its node's pick is its own.
+    const nodeAt = withNode.get(b.node)
+    const open = n.diff === b.node
+    return {
+      node: clean(b.node, 40),
+      glyph: b.kind === 'added' ? '+' : b.kind === 'removed' ? '−' : '~',
+      color: b.kind === 'added' ? COLOR.added : b.kind === 'removed' ? COLOR.removed : COLOR.changed,
+      reason: b.reason === null ? null : oneLine(b.reason, 200),
+      conflict: b.conflict,
+      withNode: nodeAt !== undefined,
+      open,
+      lines: open ? diffLines(b.lines) : [],
+      yoursLines: open && b.conflict ? diffLines(b.yoursLines ?? []) : [],
+      picked: nodeAt !== undefined ? picked.has(nodeAt) : n.pickedBriefs.includes(b.node),
+    }
+  })
   const c = pv.counts
   const counts = [
     `${c.added} added`,
@@ -1468,8 +1615,47 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
     briefs,
     counts,
     decided: pv.decided === null ? null : pv.decided === 'all' ? 'accepted all' : pv.decided === 'some' ? 'accepted some' : 'rejected',
-    picked: changes.filter(x => x.picked).length + briefs.filter(x => x.picked).length,
+    picked: changes.filter(x => x.picked).length + briefs.filter(x => x.picked && !x.withNode).length,
   }
+}
+
+/** The proposal's node-level changes (`nodes.<id>`, a node added or removed), by node: each one's change index. */
+export function nodeChanges(pv: { changes: readonly { path: string; node?: string }[] }): Map<string, number> {
+  const out = new Map<string, number>()
+  pv.changes.forEach((c, i) => {
+    if (c.node !== undefined && c.path === `nodes.${c.node}`) out.set(c.node, i)
+  })
+  return out
+}
+
+/**
+ * What [Accept selected] or [Accept all] hands J's acceptProposal, from what's
+ * picked (C's contract: `'all'`, or change paths). A brief of a new or removed
+ * node is never named: it goes with its node's path. [Accept all] is `'all'`,
+ * which takes every change that doesn't conflict, unless you took the lead's
+ * side of a conflict: then it's every non-conflicting change and brief, and
+ * the conflicts taken.
+ */
+export function acceptPick(
+  pv: { changes: readonly { path: string; node?: string; conflict: boolean }[]; briefs: readonly { node: string; conflict: boolean }[] },
+  picked: readonly number[],
+  pickedBriefs: readonly string[],
+  all: boolean,
+): 'all' | string[] {
+  const withNode = nodeChanges(pv)
+  const own = pv.briefs.filter(b => !withNode.has(b.node))
+  if (all) {
+    const taken = pv.changes.some((c, i) => c.conflict && picked.includes(i)) || own.some(b => b.conflict && pickedBriefs.includes(b.node))
+    if (!taken) return 'all'
+    return [
+      ...pv.changes.flatMap((c, i) => (!c.conflict || picked.includes(i) ? [c.path] : [])),
+      ...own.filter(b => !b.conflict || pickedBriefs.includes(b.node)).map(b => `brief:${b.node}`),
+    ]
+  }
+  return [
+    ...[...new Set(picked)].sort((a, b) => a - b).flatMap(i => (pv.changes[i] ? [pv.changes[i]!.path] : [])),
+    ...own.filter(b => pickedBriefs.includes(b.node)).map(b => `brief:${b.node}`),
+  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1755,7 +1941,8 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   const o = owners()
   let summary: SwarmBrowserView['summary'] = null
   try {
-    const sum = o.summaryOf(name)
+    // O's, when this session summarised or loaded the swarm; else the last one recorded (a read-only swarm's, say).
+    const sum = o.summaryOf(name) ?? recordedSummary(ledger.records)
     if (sum) {
       summary = {
         goal: oneLine(sum.goalNow, 300),
@@ -1789,7 +1976,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     }
   }
   const total = tokens(name)
-  const selected = n.selected && all.some(b => b.agentId === n.selected) ? n.selected : (all.find(b => b.kind === 'orchestrator')?.agentId ?? null)
+  const selected = browserSelection(name, n.selected)
   const composer = s.readOnly || s.lost ? null : await composerFor(p, litterDir, name, n, selected, all, listed)
   const tr = n.transcript && all.some(b => b.agentId === n.transcript) ? n.transcript : null
   const trName = tr ? (rows.find(r => r.agentId === tr)?.name ?? tr) : ''
@@ -1821,6 +2008,54 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     selected,
   }
 }
+
+/**
+ * The last `swarm.summary` in the launch ledger, as O's summary reads: the
+ * browser's summary when this session holds none (another session's swarm,
+ * or one not summarised since a reload). Stale once a newer event exists.
+ */
+export function recordedSummary(records: readonly StoredRecord[]): ReturnType<Owners['summaryOf']> {
+  let at = -1
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (records[i]!.kind === 'swarm.summary') {
+      at = i
+      break
+    }
+  }
+  if (at < 0) return null
+  const r = records[at]!
+  const body = r.body as Partial<SwarmSummaryBody>
+  const parsed = typeof body.text === 'string' ? parseSummary(body.text) : null
+  const goal = parsed?.goalNow ?? (typeof body.goal === 'string' ? body.goal : '')
+  if (goal === '') return null
+  return {
+    goalNow: goal,
+    progress: parsed?.progress ?? [],
+    waitingOnYou: parsed?.waitingOnYou ?? [],
+    at: r.at,
+    stale: records.slice(at + 1).some(x => x.kind === 'swarm.event'),
+  }
+}
+
+/**
+ * The browser's selection: the agent picked, while it's bound in the swarm,
+ * else the first orchestrator. The view draws it, the navigation keeps it
+ * (panes.ts's drawSwarm), and [Send] reads it, so To is one thing.
+ */
+export function browserSelection(name: string, selected: string | null): string | null {
+  const all = bindings(name)
+  return selected && all.some(b => b.agentId === selected) ? selected : (all.find(b => b.kind === 'orchestrator')?.agentId ?? null)
+}
+
+/** The composer's To for a selection: a node instance, never a child. */
+export function composerTarget(name: string, selected: string | null): NodeBinding | null {
+  const id = browserSelection(name, selected)
+  return bindings(name).find(b => b.agentId === id && b.kind !== 'child') ?? null
+}
+
+/** The Route the composer shows and [Send] sends: Via parent only to a worker, else Direct. */
+export const composerRoute = (route: ComposerPrefs['route'], target: NodeBinding | null): ComposerPrefs['route'] =>
+  route === 'parent' && target?.kind !== 'worker' ? 'direct' : route
 
 const isRunningAgent = (agentId: string, listed: Map<string, ListedAgent>): boolean => {
   const adm = admissionStatus(agentId)
@@ -1863,7 +2098,7 @@ async function composerFor(
 ): Promise<SwarmComposer> {
   const prefs = await prefsOf(p, litterDir, name)
   const targets: SwarmOption[] = all.filter(b => b.kind !== 'child').map(b => ({ value: b.agentId, label: clean(instanceName(b, all, listed.get(b.agentId)), 40) }))
-  const target = all.find(b => b.agentId === selected && b.kind !== 'child') ?? null
+  const target = composerTarget(name, selected)
   const worker = target?.kind === 'worker'
   const idleWorker = worker && target !== null && !isRunningAgent(target.agentId, listed)
   const routes: SwarmOption[] = [
@@ -1871,7 +2106,7 @@ async function composerFor(
     { value: 'lead', label: 'Via lead' },
     ...(worker ? [{ value: 'parent', label: 'Via parent' }] : []),
   ]
-  const route = prefs.route === 'parent' && !worker ? 'direct' : prefs.route
+  const route = composerRoute(prefs.route, target)
   return {
     to: target?.agentId ?? null,
     address: target ? instanceAddress(target) : null,
@@ -1913,14 +2148,65 @@ async function buildHistory(p: Ports, n: SwarmNav): Promise<SwarmHistoryView | S
   }
 }
 
-/** K's recovery card for the swarm, unless you've acted on or left it. */
+/** The orchestrator instance a bound worker (or a worker's worker) works under, by its bindings' parents. */
+function orchestratorOf(agentId: string): NodeBinding | null {
+  let b = binding(agentId)
+  for (let i = 0; b && b.kind !== 'orchestrator' && i < 16; i++) b = b.parent ? binding(b.parent) : null
+  return b && b.kind === 'orchestrator' ? b : null
+}
+
+/**
+ * K's recovery card for the swarm, unless you've acted on or left it: the
+ * card stays while anything on it is left to deal with, and shows only that.
+ * K drops what a resume or re-spawn dealt with; a worker comes back through
+ * its orchestrator (15.4, "Recreating a swarm", step 4), so a worker whose
+ * orchestrator is off the card goes with it. Alive ones alone need nothing.
+ */
 export function pendingCard(name: string): ReturnType<Owners['recoveryCard']> {
   try {
     const card = owners().recoveryCard(name)
-    return card && !dismissedCards.has(cardKey(card)) ? card : null
+    if (!card || dismissedCards.has(cardKey(card))) return null
+    if (card.stopping) return card
+    const onCard = new Set(card.nodes.map(x => x.agentId))
+    const nodes = card.nodes.filter(x => {
+      if (x.kind !== 'worker') return true
+      const o = orchestratorOf(x.agentId)
+      return o !== null && onCard.has(o.agentId)
+    })
+    return nodes.length === 0 || nodes.every(x => x.state === 'alive') ? null : { ...card, nodes }
   } catch {
     return null
   }
+}
+
+/** One orchestrator on the recovery card, as its buttons weigh it. */
+export type RecoveryChoice = {
+  node: string
+  /** K's resumeTargets has an instance: a resume reaches it. */
+  resumable: boolean
+  /** Every instance on the card still runs: nothing to resume. */
+  alive: boolean
+  /** No instance on the card is in the agent list. */
+  gone: boolean
+}
+
+/** The card's orchestrators, in its order: the only nodes [Resume …] and [Re-spawn …] name (a worker comes back through its orchestrator). */
+export function recoveryChoices(name: string, card: NonNullable<ReturnType<Owners['recoveryCard']>>): RecoveryChoice[] {
+  const s = liveSwarm(name)
+  const o = owners()
+  const out: RecoveryChoice[] = []
+  for (const x of card.nodes) {
+    if (x.kind !== 'orchestrator' || out.some(c => c.node === x.node)) continue
+    const mine = card.nodes.filter(y => y.node === x.node && y.kind === 'orchestrator')
+    let resumable = false
+    try {
+      resumable = s !== null && o.resumeTargets(s, x.node).length > 0
+    } catch {
+      // Not resumable, then: a re-spawn still is.
+    }
+    out.push({ node: x.node, resumable, alive: mine.every(y => y.state === 'alive'), gone: mine.every(y => y.state === 'gone') })
+  }
+  return out
 }
 
 async function buildRecovery(p: Ports, n: SwarmNav): Promise<SwarmRecoveryView | SwarmBrowserView | SwarmBuilderView> {
@@ -1933,6 +2219,44 @@ async function buildRecovery(p: Ports, n: SwarmNav): Promise<SwarmRecoveryView |
     settled: { glyph: '✓', color: COLOR.done },
     gone: { glyph: '−', color: COLOR.idle },
   } as const
+  const instance = (x: (typeof card.nodes)[number]): SwarmRecoveryInstance => ({
+    agentId: x.agentId,
+    name: clean(`${x.node} #${x.n}`, 40),
+    state: x.state,
+    ...glyphs[x.state],
+    report: x.lastReport ? firstLine(x.lastReport, 120) : '',
+    respawnOnly: x.respawnOnly,
+  })
+  const choices = card.stopping ? [] : recoveryChoices(name, card)
+  const rows: SwarmRecoveryRow[] = []
+  for (const kind of ['orchestrator', 'worker'] as const) {
+    for (const x of card.nodes) {
+      if (x.kind !== kind || rows.some(r => r.node === x.node && r.kind === kind)) continue
+      const mine = card.nodes.filter(y => y.node === x.node && y.kind === kind)
+      const choice = choices.find(c => c.node === x.node)
+      const under = [...new Set(mine.map(y => orchestratorOf(y.agentId)?.node).filter((v): v is string => v !== undefined))]
+      const note =
+        kind === 'worker'
+          ? `comes back through ${under.length > 0 ? under.map(u => clean(u, 32)).join(', ') : 'its orchestrator'}`
+          : card.stopping
+            ? ''
+            : !choice?.resumable
+              ? 're-spawn only'
+              : choice.alive
+                ? 'still running'
+                : ''
+      rows.push({
+        node: clean(x.node, 40),
+        kind,
+        // One still running needs neither button.
+        pickable: kind === 'orchestrator' && !card.stopping && choice !== undefined && !choice.alive,
+        resumable: choice?.resumable ?? false,
+        picked: kind === 'orchestrator' && choice !== undefined && !choice.alive && picked.has(x.node),
+        note,
+        instances: mine.map(instance),
+      })
+    }
+  }
   return {
     view: 'recovery',
     v: nextV(),
@@ -1941,17 +2265,7 @@ async function buildRecovery(p: Ports, n: SwarmNav): Promise<SwarmRecoveryView |
     swarm: name,
     launch: card.launch,
     stopping: card.stopping,
-    rows: card.nodes.map(x => ({
-      agentId: x.agentId,
-      node: x.node,
-      name: clean(`${x.node} #${x.n}`, 40),
-      kind: x.kind,
-      state: x.state,
-      ...glyphs[x.state],
-      report: x.lastReport ? firstLine(x.lastReport, 120) : '',
-      respawnOnly: x.respawnOnly,
-      picked: picked.has(x.agentId),
-    })),
+    rows,
   }
 }
 
@@ -2024,8 +2338,15 @@ function doctorRow(r: HealthReport['rows'][number]): DoctorRowView {
   return { id: oneLine(r.id, 40), ...SEVERITY[r.severity], title: oneLine(r.title, 120), detail: clean(r.detail, 600), values }
 }
 
-/** The doctor pane's current view, or null when it isn't open. It runs J's health check each time it's built. */
-export async function doctorView(p: Ports): Promise<DoctorPaneView | null> {
+/** [Test]'s row in J's report. */
+export const SUMMARY_TEST_ROW = 'summary-model'
+
+/**
+ * The doctor pane's current view, or null when it isn't open. It runs J's
+ * health check each time it's built; the summaryModel call only with `test`
+ * ([Test]'s press), and otherwise the row that press gave is drawn again.
+ */
+export async function doctorView(p: Ports, opts: { test?: boolean } = {}): Promise<DoctorPaneView | null> {
   await restoreNav(p)
   const d = doctorNav
   if (!d) return null
@@ -2045,15 +2366,21 @@ export async function doctorView(p: Ports): Promise<DoctorPaneView | null> {
     warnings: 0,
     snippet: null,
     settingsPath: clean(settingsPath, 400),
-    tested: d.test,
+    tested: opts.test === true || d.tested !== null,
   }
   try {
     let spec: SwarmSpec | null = null
     if (d.swarm && litterDir) spec = (await loadDraft(p, litterDir, d.swarm)).spec
-    const report = await owners().checkHealth(p, { spec, litterDir, ...(d.test ? { testSummaryModel: true } : {}) })
+    const report = await owners().checkHealth(p, { spec, litterDir, ...(opts.test ? { testSummaryModel: true } : {}) })
     body.rows = report.rows.map(doctorRow)
     body.errors = report.errors
     body.warnings = report.warnings
+    const kept = d.tested
+    if (!opts.test && kept && !body.rows.some(r => r.id === kept.id)) {
+      body.rows.push(kept)
+      if (kept.glyph === SEVERITY.error.glyph) body.errors++
+      else if (kept.glyph === SEVERITY.warning.glyph) body.warnings++
+    }
     body.snippet = report.snippet ? clean(JSON.stringify(report.snippet, null, 2), 4000) : null
   } catch (err) {
     body.notice = { text: oneLine(`the health check didn't run: ${errText(err)}`, 300), level: 'error' }

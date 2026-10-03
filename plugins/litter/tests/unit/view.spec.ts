@@ -107,8 +107,10 @@ function owners(over: Partial<Owners> = {}): void {
         path: null,
       },
     ]),
-    validateSpec: fake('validateSpec', async () => ({ ok: true, errors: [], warnings: [] })),
+    validateSaved: fake('validateSaved', async () => ({ ok: true, errors: [], warnings: [] })),
     checkHealth: fake('checkHealth', async () => HEALTHY),
+    undecidedProposals: fake('undecidedProposals', async () => []),
+    resumeTargets: fake('resumeTargets', () => []),
     saveRevision: fake('saveRevision', async () => ({ ok: true, revision: 2 })),
     launchSwarm: fake('launchSwarm', async () => ({ ok: true, launch: LAUNCH })),
     recoveryCard: fake('recoveryCard', () => null),
@@ -293,7 +295,7 @@ describe('the builder', () => {
 
   test("the strip: J's errors on their nodes' rows, its health rows by severity", async () => {
     owners({
-      validateSpec: fake('validateSpec', async () => ({ ok: false, errors: [{ field: 'nodes.fixer.maxTurns', node: 'fixer', error: 'too many' }], warnings: [] })),
+      validateSaved: fake('validateSaved', async () => ({ ok: false, errors: [{ field: 'nodes.fixer.maxTurns', node: 'fixer', error: 'too many' }], warnings: [] })),
       checkHealth: fake('checkHealth', async () => ({
         rows: [{ id: 'cap', severity: 'warning', title: 'the session cap is low', detail: 'needs 6' }],
         errors: 0,
@@ -308,8 +310,8 @@ describe('the builder', () => {
     expect(v.strip[0]?.text).toContain('nodes.fixer.maxTurns: too many')
     expect(v.tree.rows.find(r => r.id === 'part-a/fixer')?.mark).toBe('✕')
     expect(v.checking).toBe(false)
-    const ctx = called('validateSpec')[0]?.[1] as { litterDir: string; activeRunCheckout: unknown }
-    expect(ctx.litterDir).toBe(litterDir)
+    const [dir, name, saved] = called('validateSaved')[0] as [string, string, { spec: SwarmSpec; briefs: Record<string, string> }]
+    expect([dir, name, saved.spec.name]).toEqual([litterDir, SWARM, SWARM])
   })
 
   test('a field edit goes to writeDraft with its path; a value that does not parse shows why and writes nothing', async () => {
@@ -432,6 +434,8 @@ describe('a proposal', () => {
       readProposal: fake('readProposal', async () => PROPOSAL),
       acceptProposal: fake('acceptProposal', async () => ({ ok: true, revision: 2 })),
       rejectProposal: fake('rejectProposal', async () => {}),
+      // The spec ledger has it undecided too: the pane seeds its list from there.
+      undecidedProposals: fake('undecidedProposals', async () => [1]),
     })
     const dir = swarmProposalDir(litterDir, SWARM, 1)
     mkdirSync(dir, { recursive: true })
@@ -635,26 +639,43 @@ describe('the recovery card and the unsettled report', () => {
     stopping: false,
     at: NOW - 1_000,
     nodes: [
-      { node: 'part-a', n: 1, agentId: 'o1', kind: 'orchestrator', state: 'alive', lastReport: null, respawnOnly: false },
+      { node: 'part-a', n: 1, agentId: 'o1', kind: 'orchestrator', state: 'settled', lastReport: null, respawnOnly: false },
+      { node: 'part-b', n: 1, agentId: 'o2', kind: 'orchestrator', state: 'alive', lastReport: null, respawnOnly: false },
       { node: 'fixer', n: 1, agentId: 'w1', kind: 'worker', state: 'settled', lastReport: 'half done', respawnOnly: false },
       { node: 'fixer', n: 2, agentId: 'w2', kind: 'worker', state: 'gone', lastReport: null, respawnOnly: true },
     ],
   }
 
-  test("K's card replaces the browser on the next tick; [Resume all] asks K for the nodes it can resume, then the card is gone", async () => {
+  test("K's card replaces the browser on the next tick, a row per node; [Resume all] asks K for the orchestrators it can resume that aren't running, then the card is gone", async () => {
     goLive()
-    owners({ recoveryCard: fake('recoveryCard', () => CARD), requestResume: fake('requestResume', async () => {}) })
+    state.putBinding(bind('w2', { n: 2 }))
+    let resumed = false
+    owners({
+      recoveryCard: fake('recoveryCard', () => (resumed ? null : CARD)),
+      resumeTargets: fake('resumeTargets', (_s: LiveSwarm, node: string) => (node === 'fixer' ? [] : [bind('o1', { node, kind: 'orchestrator', parent: null })])),
+      requestResume: fake('requestResume', async () => {
+        resumed = true
+      }),
+    })
     setNav(blankNav('browser', SWARM))
     await paneTick(p)
     const v = p.views.swarm as SwarmRecoveryView
     expect(v.view).toBe('recovery')
-    expect(v.rows.map(r => [r.name, r.state, r.glyph, r.respawnOnly])).toEqual([
-      ['part-a #1', 'alive', '', false],
-      ['fixer #1', 'settled', '✓', false],
-      ['fixer #2', 'gone', '−', true],
+    expect(v.rows.map(r => [r.node, r.kind, r.pickable, r.resumable, r.note])).toEqual([
+      ['part-a', 'orchestrator', true, true, ''],
+      ['part-b', 'orchestrator', false, true, 'still running'],
+      ['fixer', 'worker', false, false, 'comes back through part-a'],
     ])
+    expect(v.rows[2]?.instances.map(x => [x.name, x.state, x.glyph, x.report, x.respawnOnly])).toEqual([
+      ['fixer #1', 'settled', '✓', 'half done', false],
+      ['fixer #2', 'gone', '−', '', true],
+    ])
+    // A worker, or an orchestrator still running, isn't picked.
+    await handle(p, 'swarm:recovery:pick:demo/fixer', {})
+    await handle(p, 'swarm:recovery:pick:demo/part-b', {})
+    expect(nav()?.recoveryPicked).toEqual([])
     await handle(p, 'swarm:recovery:resume-all:demo', {})
-    expect(called('requestResume')).toEqual([[SWARM, ['part-a', 'fixer'], 'resume']])
+    expect(called('requestResume')).toEqual([[SWARM, ['part-a'], 'resume']])
     expect(nav()?.view).toBe('browser')
     await paneTick(p)
     expect(nav()?.view).toBe('browser')
