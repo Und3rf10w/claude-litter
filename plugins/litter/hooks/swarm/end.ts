@@ -46,7 +46,7 @@ import { inspectWorktree } from './worktrees'
 import * as state from './state'
 import { patchNodePolicies, patchSwarmPolicy, removeNodePolicy, writeSwarmPolicy } from './guard'
 import { releaseOwnership, stopOwnerBeat } from './owner'
-import { noteSummaryTrigger } from './summary'
+import { noteSummaryTrigger, plainText } from './summary'
 
 /**
  * The other packages' functions this module and observe.ts call (M's policy
@@ -763,6 +763,8 @@ function nodesOf(spec: SwarmSpec | null, records: readonly StoredRecord[], name:
 }
 
 const quoted = (text: string): string[] => text.split(/\r\n?|\n/).map(l => (l === '' ? '>' : `> ${l}`))
+/** A value from git or a record, kept on one line of summary.md: no controls, no line breaks. */
+const flat = (v: unknown): string => plainText(String(v)).replace(/\s+/g, ' ').trim()
 const count = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n))
 
 /**
@@ -839,15 +841,19 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string)
 
   const goals = records.filter(r => r.kind === 'swarm.summary' && typeof r.body.goal === 'string')
   if (goals.length > 0) {
-    lines.push('', '## Goal history', '')
-    for (const g of goals) lines.push(`- ${iso(g.at)}: ${(g.body as SwarmSummaryBody).goal}`)
+    // The summary model wrote these from the nodes' reports, and the end's hand-off tells the lead
+    // to read this file, so they're quoted as the reports are: material, never litter's own lines
+    // (15.6: the generated summary is display-only; its goal history goes into this file).
+    lines.push('', '## Goal history', '', "The summary model's goal line as it changed, quoted:", '')
+    for (const g of goals) lines.push(...quoted(`${iso(g.at)}: ${(g.body as SwarmSummaryBody).goal}`), '')
+    lines.pop()
   }
 
   if (worktrees.length > 0) {
     lines.push('', '## Worktrees', '')
     for (const w of worktrees) {
-      const at = `${w.path}${w.branch ? ` (branch ${w.branch})` : ''}, ${w.node}`
-      lines.push(w.removed ? `- Removed: ${at}${w.reason ? `: ${w.reason}` : ''}` : `- Kept: ${at}: ${w.reason ?? 'kept'}`)
+      const at = `${flat(w.path)}${w.branch ? ` (branch ${flat(w.branch)})` : ''}, ${flat(w.node)}`
+      lines.push(w.removed ? `- Removed: ${at}${w.reason ? `: ${flat(w.reason)}` : ''}` : `- Kept: ${at}: ${w.reason ? flat(w.reason) : 'kept'}`)
     }
   }
   if (end) lines.push('', '## Branches left', '', ...(branches.length > 0 ? branches.map(b => `- ${b}`) : ['- none']))
@@ -860,11 +866,12 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string)
     for (const r of flags) {
       const b = r.body
       const who = typeof b.node === 'string' ? ` (${b.node})` : ''
+      // Refs and file names are the repository's: each stays on its line.
       if (b.kind === 'branch-moved') {
-        lines.push(`- ${iso(r.at)} branch-moved: ${short(String(b.ref))} ${String(b.from ?? 'new')} -> ${String(b.to ?? 'deleted')}${acked.has(r.seq) ? ', acknowledged' : ''}`)
+        lines.push(`- ${iso(r.at)} branch-moved: ${flat(short(String(b.ref)))} ${flat(b.from ?? 'new')} -> ${flat(b.to ?? 'deleted')}${acked.has(r.seq) ? ', acknowledged' : ''}`)
       } else if (b.kind === 'rule-commit') {
-        lines.push(`- ${iso(r.at)} rule-commit${who}: ${(Array.isArray(b.files) ? b.files : []).slice(0, 10).join(', ')}; not your acceptance`)
-      } else lines.push(`- ${iso(r.at)} ${String(b.kind)}${who}`)
+        lines.push(`- ${iso(r.at)} rule-commit${who}: ${(Array.isArray(b.files) ? b.files : []).slice(0, 10).map(flat).join(', ')}; not your acceptance`)
+      } else lines.push(`- ${iso(r.at)} ${flat(b.kind)}${who}`)
     }
     const denials = events.filter(r => r.body.kind === 'denied').length
     if (denials > 0) lines.push(`- ${plural(denials, 'guard denial')} in all`)
