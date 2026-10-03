@@ -4,15 +4,16 @@
 // ui.render input. It never sees `$` or the ports.
 //
 // This file draws the live views (15.6's mockup): the browser and its
-// read-only form, the goal history, the recovery card and the unsettled
-// report; builder.tsx draws the start screen, the builder and a proposal.
+// read-only form (with a repair swarm's budget row, 2b-2), the goal history,
+// the recovery card and the unsettled report; builder.tsx draws the start
+// screen, the builder and a proposal.
 //
 // Contract owner: phase 2b-1, package N.
 
 import type { RenderElement } from 'claude-code'
 import type { PaneElements, PaneRender } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
-import type { SwarmBrowserView, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
+import type { SwarmBrowserView, SwarmBudgetRow, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
 import { button, buttons, header, input, line, renderBuilder, renderProposal, renderStart, section, select, tableFor } from './builder'
 
 /** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-swarm' }` calls it with the swarmPane atom. */
@@ -124,6 +125,26 @@ function composer(el: PaneElements, view: SwarmBrowserView): RenderElement | nul
   )
 }
 
+/** A repair swarm's budget row (2b-2): rounds and agents used of what you approved, a used-up part with `!` and its words. */
+function budgetRow(el: PaneElements, b: SwarmBudgetRow): RenderElement {
+  const { Box, Text } = el
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+        <Text bold>Repair budget</Text>
+        {[b.rounds, b.agents].map(x => (
+          <Text color={x.color ?? undefined}>{`${x.glyph ? `${x.glyph} ` : ''}${x.text}`}</Text>
+        ))}
+      </Box>
+      {b.note !== null && (
+        <Text color="warning" wrap="wrap">
+          {`! ${b.note}`}
+        </Text>
+      )}
+    </Box>
+  )
+}
+
 function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender): RenderElement {
   const { Box, Text } = el
   const s = view.swarm
@@ -142,6 +163,7 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender):
           {view.owner.canTakeOver && buttons(el, [{ key: `swarm:browser:takeover:${s}`, label: 'Take over', primary: true }])}
         </Box>
       )}
+      {view.budget && budgetRow(el, view.budget)}
       {section(el, 'Summary', sum ? { text: `generated ${sum.age}${sum.stale ? ', older than the latest event' : ''}`, color: sum.stale ? 'warning' : 'subtle' } : undefined)}
       {sum ? (
         <Box flexDirection="column">

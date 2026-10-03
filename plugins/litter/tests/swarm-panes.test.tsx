@@ -173,6 +173,7 @@ const BROWSER: SwarmBrowserView = {
   readOnly: false,
   lost: false,
   owner: null,
+  budget: null,
   summary: { goal: 'parser first', progress: ['tokenizer done'], waiting: ['which branch'], age: '1m ago', stale: true },
   rows: [
     { key: 'lead', agentId: null, depth: 0, name: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', tool: '', turns: null, tokens: '', report: '', queued: [], question: null, flagged: false },
@@ -200,6 +201,28 @@ const BROWSER: SwarmBrowserView = {
   },
   transcript: { agentId: 'w1', name: 'fixer', readable: true, lines: [{ text: '◆ looking at the tokenizer' }, { text: '  ↳ Read', color: 'subtle' }] },
   selected: 'w1',
+}
+
+/** A repair swarm (2b-2): its run in the header, its budget row with a part used up, and its gate and budget events. */
+const REPAIR: SwarmBrowserView = {
+  ...BROWSER,
+  title: [...TITLE('swarm repair-0a1b2c'), { text: ' · live 2m', color: 'background' }, { text: ' · 3 agents · 4k tokens' }, { text: ' · repairs run 20261003-api' }],
+  swarm: 'repair-0a1b2c',
+  budget: {
+    run: '20261003-api',
+    generation: 2,
+    rounds: { used: 3, of: 3, text: 'rounds 3 of 3, all used', glyph: '!', color: 'warning' },
+    agents: { used: 2, of: 6, text: 'agents 2 of 6', glyph: '', color: null },
+    note: 'no verdict past its last round is taken, until you grant more when the lead asks (repair.budget)',
+  },
+  events: [
+    { at: '09:31', who: 'fixer', text: 'verify v-1: ✕ red', color: 'error' },
+    { at: '09:32', who: 'critic', text: 'verdict, round 1, on v-2: ✕ rejected', color: 'error' },
+    { at: '09:33', who: 'lead', text: 'asked for more budget (rounds 2): ✓ granted, now 5 rounds, 6 agents', color: 'success' },
+    { at: '09:34', who: 'repair', text: 'land of v-3: ✓ landed', color: 'success' },
+  ],
+  composer: null,
+  flags: [],
 }
 
 const READ_ONLY: SwarmBrowserView = {
@@ -422,6 +445,29 @@ describe('the swarm panes draw every view', () => {
       mock.store(on)
       const ui = await mountSwarm($, surface)
       expect(await ui.find({ type: 'Text', text: '/litter-swarm opens' })).toBeDefined()
+    })
+
+    // 2b-2 (WP-Z): a repair swarm's budget row and its gate and budget events.
+    test(`a repair swarm's budget row and gate events, on the ${surface}`, async ($, on) => {
+      mock.store(on)
+      views(on, REPAIR)
+      const ui = await mountSwarm($, surface)
+      expect(await ui.find({ type: 'Text', text: 'repairs run 20261003-api' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Repair budget' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '! rounds 3 of 3, all used' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^agents 2 of 6$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '! no verdict past its last round is taken' })).toBeDefined()
+      for (const text of ['verify v-1: ✕ red', 'verdict, round 1, on v-2: ✕ rejected', 'asked for more budget (rounds 2): ✓ granted', 'land of v-3: ✓ landed']) {
+        expect(await ui.find({ type: 'Text', text })).toBeDefined()
+      }
+      expect(await ui.find({ type: 'Button', key: 'swarm:browser:end:repair-0a1b2c' })).toBeDefined()
+    })
+
+    test(`a plain swarm has no budget row, on the ${surface}`, async ($, on) => {
+      mock.store(on)
+      views(on, BROWSER)
+      const ui = await mountSwarm($, surface)
+      expect(await ui.find({ type: 'Text', text: 'Repair budget' })).toBeUndefined()
     })
   }
 
