@@ -1,8 +1,11 @@
 // Tier 2: a fanout's land against real git in scratch repos (plan section 7,
-// fanout.js step 5; section 9, "verify and land records"; section 12, "a
+// fanout.js steps 5 and 6; section 9, "verify and land records"; section 12, "a
 // fanout land is refused when the destination checkout or its index changed
-// after launch"). The run is integrated through the integrate record itself,
-// from writers' worktrees made here with their records appended directly.
+// after launch"), and what a run that doesn't land keeps through its end and
+// cleanup (plan 15.11). The run is integrated through the integrate record
+// itself, from writers' worktrees made here with their records appended
+// directly. The litter folder is in the repository, as in a real run, so
+// cleanup works on its worktrees.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
@@ -10,13 +13,14 @@ import { join } from 'node:path'
 import { recordLand } from '../../hooks/land'
 import { recordVerify } from '../../hooks/verify'
 import { recordIntegrate } from '../../hooks/integrate'
+import { endRun } from '../../hooks/lifecycle'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { normalizeOptions } from '../../hooks/options'
-import { outPath } from '../../hooks/layout'
+import { outPath, summaryPath } from '../../hooks/layout'
 import type { Caller, RecordCtx, RecordError } from '../../hooks/records/core'
 import type { RunJson } from '../../hooks/records/run'
-import type { IntegrateReply, WorktreeCreateBody } from '../../hooks/records/fanout'
-import type { LandBody, LandIntentBody, LandReply, VerifyReply } from '../../hooks/records/execute'
+import type { IntegrateConflictBody, IntegrateReply, WorktreeCreateBody, WorktreeKeptBody } from '../../hooks/records/fanout'
+import type { LandBody, LandIntentBody, LandReply, VerifyBody, VerifyReply } from '../../hooks/records/execute'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 const RUN = '20261002-fanland'
@@ -51,15 +55,15 @@ let cleanups: (() => void)[]
 beforeEach(async () => {
   p = nodePorts()
   const repo = scratch()
-  const out = scratch()
-  dir = repo.dir
-  cleanups = [repo.cleanup, out.cleanup]
+  // Resolved, as git lists worktrees and cleanup compares them (macOS's tmpdir is behind a link).
+  dir = realpathSync(repo.dir)
+  cleanups = [repo.cleanup]
   ;({ git } = await scratchRepo(p, dir))
   base = (await git('rev-parse', 'HEAD')).trim()
   await git('switch', '-q', '-c', BRANCH)
-  litterDir = join(out.dir, '.claude', 'litter')
+  litterDir = join(dir, '.claude', 'litter')
   runDir = join(litterDir, RUN)
-  root = join(realpathSync(out.dir), '.claude', 'worktrees')
+  root = join(dir, '.claude', 'worktrees')
   await writeRun()
   integration = await addWorktree(`litter-${RUN}-integration`, IB)
 })
@@ -185,7 +189,8 @@ const refused = async (verifyId: string, why: RegExp, retry = false): Promise<vo
 const records = async () => (await readLedger(p, runDir, RUN)).records
 const kinds = async () => (await records()).map(r => r.kind)
 const tipOf = async (ref = REF) => (await git('rev-parse', ref)).trim()
-const status = async () => (await git('status', '--porcelain')).trimEnd()
+/** The checkout's status, litter's own folders left out as the skill's preflight leaves them out. */
+const status = async () => (await git('status', '--porcelain', '--', '.', ':(exclude).claude/litter', ':(exclude).claude/worktrees')).trimEnd()
 
 describe('fanout land', () => {
   test('lands the integration tip: the ref fast-forwards to it, and the checkout is clean there', async () => {
@@ -378,5 +383,132 @@ describe('fanout land: the destination checkout', () => {
     expect(readFileSync(join(dir, 'README.md'), 'utf8')).toBe('scratch\n')
     expect(existsSync(join(dir, 'pkgA/a.ts'))).toBe(false)
     expect((await kinds()).slice(-2)).toEqual(['land.intent', 'land.abandoned'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A run that doesn't land: nothing is thrown away (plan 15.11; section 7,
+// fanout.js steps 5 and 6). Its end runs the real cleanup before summary.md.
+
+describe('a fanout that ends without landing keeps everything', () => {
+  /** run.start and run.launch, as /litter:fanout and the Workflow hook leave them, so the run can end. */
+  async function launched(): Promise<void> {
+    await appendRecord(p, runDir, { run: RUN, kind: 'run.start', by: { source: 'launcher' }, body: { workflow: 'fanout', base, ref: REF, checkout: dir } })
+    await appendRecord(p, runDir, {
+      run: RUN,
+      kind: 'run.launch',
+      by: MOD,
+      body: { taskId: `task-${RUN}`, runId: WF, scriptPath: null, generation: 1, session: 'test-session', oid: '' },
+    })
+  }
+  const end = (reason: string) =>
+    endRun(p, { run: RUN, runDir, litterDir }, { taskId: `task-${RUN}`, generation: 1, status: 'halted', reason, source: 'notification' })
+  const writerBranch = (n: number) => `litter/${RUN}-w${n}`
+  const kept = async () => (await records()).filter(r => r.kind === 'worktree.kept').map(r => r.body as unknown as WorktreeKeptBody)
+
+  test('branches that merge cleanly but fail verify together: unlanded, every branch, the integration worktree at its tip, the verify and the verdict kept, cleanup included', async () => {
+    await launched()
+    // Task a changes an API, task b consumes it to another reading of it. Each passes alone; together they don't.
+    await writeRun({ verify: ['sh', '-c', 'test ! -f pkgA/api.txt || test ! -f pkgB/client.txt || test "$(cat pkgA/api.txt)" = "$(cat pkgB/client.txt)"'] })
+    const wa = await writer('a', 1, { 'pkgA/api.txt': 'v2\n' })
+    const wb = await writer('b', 2, { 'pkgB/client.txt': 'v1\n' })
+    const r = (await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })) as unknown as IntegrateReply
+    expect(r).toMatchObject({ status: 'merged', merged: ['a', 'b'], skipped: [] })
+    const v = await verifyIntegration()
+    expect(v).toMatchObject({ green: false, exit_code: 1, tree: r.tree })
+    const evidence = 'pkgB/client.txt:1 reads the API as v1, but pkgA/api.txt:1 makes it v2'
+    await appendRecord(p, runDir, {
+      run: RUN,
+      kind: 'verdict',
+      by: { source: 'agent', agentId: VERIFIER.agentId!, agentType: VERIFIER.agentType },
+      body: {
+        verify_id: v.verify_id,
+        tasks: [
+          { id: 'a', pass: true, evidence: 'pkgA/api.txt:1 is v2, as asked', gaps: [] },
+          { id: 'b', pass: false, evidence, gaps: ['read the API version a sets'] },
+          { id: 'r', pass: true, evidence: 'cited lines say what the report claims', gaps: [] },
+        ],
+        combined: 'a and b disagree on the API version',
+        tool_use_id: 'tu-v-seam',
+      },
+    })
+    // The script stops before a land; the mod would refuse one anyway.
+    await refused(v.verify_id, /isn't green \(exit 1\)/)
+    const tips = [await tipOf(`refs/heads/${writerBranch(1)}`), await tipOf(`refs/heads/${writerBranch(2)}`)]
+    await end(`nothing landed: b failed the verifier: ${evidence}`)
+
+    // Nothing landed, and nothing was thrown away.
+    expect(await tipOf()).toBe(base)
+    expect(await kinds()).not.toContain('land')
+    expect(await kinds()).not.toContain('worktree.removed')
+    // Every task branch, at its commit, in its worktree.
+    expect([await tipOf(`refs/heads/${writerBranch(1)}`), await tipOf(`refs/heads/${writerBranch(2)}`)]).toEqual(tips)
+    for (const path of [wa, wb, integration]) expect(existsSync(path)).toBe(true)
+    // The integration worktree at its merged tip, clean.
+    expect((await gitIn(integration, 'symbolic-ref', 'HEAD')).trim()).toBe(`refs/heads/${IB}`)
+    expect((await gitIn(integration, 'rev-parse', 'HEAD')).trim()).toBe(r.tip!)
+    expect(await tipOf(`refs/heads/${IB}`)).toBe(r.tip!)
+    expect((await gitIn(integration, 'status', '--porcelain')).trim()).toBe('')
+    // The verify record and its output, and the verifier's per-task result.
+    const recs = await records()
+    const verify = recs.find(x => x.kind === 'verify' && x.body.verify_id === v.verify_id)!.body as unknown as VerifyBody
+    expect(verify).toMatchObject({ gate: 'integration', green: false, exit_code: 1, tree_before: r.tree })
+    expect(existsSync(v.log)).toBe(true)
+    const verdict = recs.find(x => x.kind === 'verdict' && x.body.verify_id === v.verify_id)!
+    expect((verdict.body.tasks as { id: string; pass: boolean; gaps: string[] }[]).find(t => t.id === 'b')).toMatchObject({ pass: false, gaps: ['read the API version a sets'] })
+    // Cleanup kept each worktree, and said why.
+    const why = new Map((await kept()).map(k => [k.path, k.reason]))
+    expect(why.get(integration)).toBe(`the run ended halted without landing, and it holds 4 commits past base on ${IB}`)
+    expect(why.get(wa)).toMatch(/^task a didn't land \(the run ended halted\), and it holds 1 commit past base on /)
+    expect(why.get(wb)).toMatch(/^task b didn't land \(the run ended halted\)/)
+    // summary.md gives the evidence and where everything is.
+    const summary = readFileSync(summaryPath(runDir), 'utf8')
+    expect(summary).toContain('| b | writer | done | merged | fail: read the API version a sets |')
+    expect(summary).toContain(`- the integration verify ${v.verify_id} isn't green (exit 1); its full log is in verify/${v.verify_id}/ beside this summary`)
+    expect(summary).toContain(`- the verifier failed task b: ${evidence}`)
+    for (const path of [wa, wb, integration]) expect(summary).toContain(`- Kept: ${path} (branch `)
+    expect(summary).toContain('- Removed: 0')
+  })
+
+  test('a merge that stopped at a conflict (a hand-written run.json): the integration worktree is kept mid-merge, and the branches too', async () => {
+    await launched()
+    // Both tasks own README.md: run.start refuses that, so only a run.json written by hand gets here.
+    await writeRun({
+      args: {
+        run: RUN,
+        tasks: [
+          { id: 'a', title: 'A', text: 'do A', writes: true, files: ['pkgA/', 'README.md'], rules: [] },
+          { id: 'b', title: 'B', text: 'do B', writes: true, files: ['pkgB/', 'README.md'], rules: [] },
+        ],
+        contract: '',
+        mergeOrder: ['a', 'b'],
+      },
+    })
+    const wa = await writer('a', 1, { 'README.md': 'from a\n' })
+    const wb = await writer('b', 2, { 'README.md': 'from b\n' })
+    const r = (await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })) as unknown as IntegrateReply
+    expect(r).toMatchObject({ status: 'conflict', merged: ['a'], conflict: { task: 'b', branch: writerBranch(2), files: ['README.md'] } })
+    // The script halts on it, with no verify: the run ends.
+    const bTip = await tipOf(`refs/heads/${writerBranch(2)}`)
+    await end('the merge of b stopped at a conflict in README.md; merged so far: a')
+
+    expect(await tipOf()).toBe(base)
+    expect(await kinds()).not.toContain('worktree.removed')
+    for (const path of [wa, wb, integration]) expect(existsSync(path)).toBe(true)
+    // Mid-merge, as the merge left it: the evidence, after cleanup.
+    expect((await gitIn(integration, 'rev-parse', 'MERGE_HEAD')).trim()).toBe(bTip)
+    expect((await gitIn(integration, 'diff', '--name-only', '--diff-filter=U')).trim()).toBe('README.md')
+    expect((await records()).filter(x => x.kind === 'integrate.conflict').map(x => x.body as unknown as IntegrateConflictBody)).toEqual([
+      { task: 'b', branch: writerBranch(2), files: ['README.md'] },
+    ])
+    const why = new Map((await kept()).map(k => [k.path, k.reason]))
+    expect(why.get(integration)).toBe(`the run ended halted without landing, and it holds 2 commits past base on ${IB} and uncommitted changes (README.md)`)
+    expect(why.get(wa)).toMatch(/^task a didn't land \(the run ended halted\)/)
+    expect(why.get(wb)).toMatch(/^task b didn't land \(the run ended halted\)/)
+    const summary = readFileSync(summaryPath(runDir), 'utf8')
+    expect(summary).toContain('| b | writer | done | conflict in README.md | - |')
+    expect(summary).toContain(
+      `- the merge of task b (branch ${writerBranch(2)}) stopped at a conflict in README.md, after a (${writerBranch(1)}); the integration worktree is left mid-merge`,
+    )
   })
 })
