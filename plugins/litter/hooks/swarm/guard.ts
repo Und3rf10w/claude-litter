@@ -11,7 +11,7 @@
 import type { Ports } from '../ports'
 import type { AgentPolicy, NodePolicy, PendingMarker, Policy, SwarmEntry } from '../hookfiles'
 import type { LiveSwarm, NodeBinding } from './types'
-import { agentPolicyPath, donePath, holdPath, nodeTypeName, pendingDir, policyPath } from '../layout'
+import { agentPolicyPath, donePath, holdPath, hooksDir, nodeTypeName, pendingDir, policyPath } from '../layout'
 import { atomicWriteJson, readJson, remove, serial } from '../fsx'
 import { policyKey, readPolicy, setActive, updatePolicy, writePolicy } from '../policy'
 import { ROLE_POLICIES } from '../roles'
@@ -142,13 +142,73 @@ export async function removeNodePolicy(p: Ports, litterDir: string, agentId: str
 }
 
 /**
+ * Whether `agents/` still holds a node's or child's binding file. One that
+ * doesn't parse counts: it may be a node's, and the guard denies on it. A
+ * fanout writer's (`run`, no `node`) doesn't: a run's leftovers would keep
+ * `active` for good.
+ */
+export async function nodeBindingsLeft(p: Ports, litterDir: string): Promise<boolean> {
+  const dir = `${hooksDir(litterDir)}/agents`
+  if (!(await p.fs.exists(dir))) return false
+  for (const e of await p.fs.list(dir)) {
+    if (e.kind !== 'file' || !e.name.endsWith('.json')) continue
+    try {
+      const file = await readJson<AgentPolicy>(p, `${dir}/${e.name}`)
+      // Gone since the list.
+      if (file === undefined) continue
+      const runOnly = file !== null && typeof file === 'object' && file.node === undefined && typeof file.run === 'string'
+      if (!runOnly) return true
+    } catch {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Removes `active` unless a node's binding file is left (Q10): the guard
+ * denies a running node whose swarm has ended only while `active` exists,
+ * since every script passes on the fast path without it (lib.sh, lt_begin).
+ * Unserialised: call it under `policyKey`, once policy.json names nothing live.
+ */
+export async function removeActiveIfUnbound(p: Ports, litterDir: string): Promise<void> {
+  if (!(await nodeBindingsLeft(p, litterDir))) await setActive(p, litterDir, false)
+}
+
+/**
+ * `active` goes when nothing needs it: policy.json names no run and no swarm,
+ * and `agents/` holds no node's binding (Q10). U's sweep calls it once it has
+ * removed the last kept file. A policy.json that doesn't parse, or of another
+ * version, leaves `active`: the guard denies on it ("policy unreadable").
+ */
+export async function releaseActive(p: Ports, litterDir: string): Promise<void> {
+  await serial(policyKey(litterDir), async () => {
+    const path = policyPath(litterDir)
+    let cur: Policy | null | undefined
+    try {
+      cur = await readJson<Policy>(p, path)
+    } catch (err) {
+      p.log(`${path} doesn't parse, so hooks/active is left: ${errText(err)}`)
+      return
+    }
+    if (cur !== undefined && (cur === null || typeof cur !== 'object' || cur.v !== 1)) {
+      p.log(`${path} isn't version 1, so hooks/active is left`)
+      return
+    }
+    if (cur && (cur.run != null || cur.swarm != null)) return
+    await removeActiveIfUnbound(p, litterDir)
+  })
+}
+
+/**
  * Sets (or with null removes) policy.json's `swarm.swarms[name]`, creating
  * policy.json when there's none, and `active` when the first swarm goes live
- * (removed when the last goes and no run is active). It can't use
- * updatePolicy, which writes nothing when there's no policy.json, so it reads,
- * changes and writes under `serial(policyKey(litterDir))` directly (policy.ts),
- * the key activate, deactivate and updatePolicy share; never calling
- * updatePolicy inside it, since a nested serial on the same key waits on itself.
+ * (removed when the last goes, no run is active and no node's binding file is
+ * left). It can't use updatePolicy, which writes nothing when there's no
+ * policy.json, so it reads, changes and writes under
+ * `serial(policyKey(litterDir))` directly (policy.ts), the key activate,
+ * deactivate and updatePolicy share; never calling updatePolicy inside it,
+ * since a nested serial on the same key waits on itself.
  */
 export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string, entry: SwarmEntry | null): Promise<void> {
   await serial(policyKey(litterDir), async () => {
@@ -168,7 +228,7 @@ export async function writeSwarmPolicy(p: Ports, litterDir: string, name: string
       return
     }
     // `active` goes before the policy that no longer needs it, and comes after the one that does.
-    if (swarm === null && cur.run === null) await setActive(p, litterDir, false)
+    if (swarm === null && cur.run === null) await removeActiveIfUnbound(p, litterDir)
     await writePolicy(p, litterDir, { ...cur, swarm })
     if (entry !== null) await setActive(p, litterDir, true)
   })
