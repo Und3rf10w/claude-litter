@@ -29,8 +29,9 @@ import {
   settleProgress,
   STOPPED_REASON,
   stopNode,
+  writeSwarmSummary,
 } from '../../hooks/swarm/end'
-import { resetObserveForTests } from '../../hooks/swarm/observe'
+import { ackBranchMoved, resetObserveForTests } from '../../hooks/swarm/observe'
 import * as state from '../../hooks/swarm/state'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
 import { addSwarmWorktree } from '../../hooks/swarm/worktrees'
@@ -536,6 +537,26 @@ describe('resumeStopping', () => {
     await resumeStopping(p, 'alpha')
     expect(state.liveSwarm('alpha')!.state).toBe('live')
     expect(calls).toEqual([])
+  })
+})
+
+describe("summary.md's flags", () => {
+  // FIX-T 7: [That was me] records branch-moved-ack for a rule-commit too (S4), and summary.md says so.
+  test('a flag you acknowledged says so, a rule-commit as a branch-moved, and a rule-commit is still not your acceptance', async () => {
+    live()
+    const ev = (body: Record<string, unknown>) => appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.event', body as never)
+    const moved = await ev({ kind: 'branch-moved', ref: 'refs/heads/main', from: 'a'.repeat(40), to: 'b'.repeat(40), running: [] })
+    const rule = await ev({ kind: 'rule-commit', node: 'fixer', agentId: 'a-fix1', from: 'c'.repeat(40), to: 'd'.repeat(40), files: ['.litter/x.md'] })
+    await ev({ kind: 'rule-commit', node: 'boss', agentId: 'a-boss', from: 'c'.repeat(40), to: 'e'.repeat(40), files: ['.litter/y.md'] })
+    await ackBranchMoved(p, 'alpha', moved.seq)
+    await ackBranchMoved(p, 'alpha', rule.seq)
+    const lines = readFileSync(await writeSwarmSummary(p, 'alpha', launch), 'utf8').split('\n')
+    const flags = lines.slice(lines.indexOf('## Flags') + 2).filter(l => l.startsWith('- '))
+    expect(flags.slice(0, 3).map(l => l.replace(/^- \S+ /, ''))).toEqual([
+      `branch-moved: main ${'a'.repeat(40)} -> ${'b'.repeat(40)}, acknowledged`,
+      'rule-commit (fixer): .litter/x.md, acknowledged; not your acceptance',
+      'rule-commit (boss): .litter/y.md; not your acceptance',
+    ])
   })
 })
 

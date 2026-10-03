@@ -1180,7 +1180,9 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string,
       if (b.kind === 'branch-moved') {
         lines.push(`- ${iso(r.at)} branch-moved: ${flat(short(String(b.ref)))} ${flat(b.from ?? 'new')} -> ${flat(b.to ?? 'deleted')}${acked.has(r.seq) ? ', acknowledged' : ''}`)
       } else if (b.kind === 'rule-commit') {
-        lines.push(`- ${iso(r.at)} rule-commit${who}: ${(Array.isArray(b.files) ? b.files : []).slice(0, 10).map(flat).join(', ')}; not your acceptance`)
+        // [That was me] acknowledges a rule-commit by the same record (observe.ts, ackBranchMoved); it's never your acceptance (16.4).
+        const files = (Array.isArray(b.files) ? b.files : []).slice(0, 10).map(flat).join(', ')
+        lines.push(`- ${iso(r.at)} rule-commit${who}: ${files}${acked.has(r.seq) ? ', acknowledged' : ''}; not your acceptance`)
       } else lines.push(`- ${iso(r.at)} ${flat(b.kind)}${who}`)
     }
     const denials = events.filter(r => r.body.kind === 'denied').length
