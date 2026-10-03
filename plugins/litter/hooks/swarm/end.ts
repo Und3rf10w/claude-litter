@@ -14,21 +14,24 @@
 // cleanup first, so that swarm.end's `worktrees` (records/swarm.ts) and
 // summary.md say what was removed and what's left, then swarm.end, the
 // summary, the ownership ref, the policy entry, the node policies, the live
-// state, and the lead's hand-off from a timer.
+// state, a repair swarm's run generation (2b-2: W's endRepairGeneration, in
+// any End mode), and the lead's hand-off from a timer.
 
 import type { AgentPolicy, NodePolicy } from '../hookfiles'
 import type { ListedAgent, Ports, ToolCallResult } from '../ports'
 import type { RecordHandler, StoredRecord } from '../records/core'
 import type {
   SwarmEndBody,
+  SwarmEventBody,
   SwarmStartBody,
   SwarmSummaryBody,
   SwarmWorktreeBody,
   SwarmWorktreeLeft,
   SwarmWorktreeRemovedBody,
 } from '../records/swarm'
-import type { LiveSwarm, SettleProgress, SwarmSpec, TokenCount } from './types'
-import { LedgerTampered } from '../ledgercore'
+import type { RepairOutcome } from '../lifecycle'
+import type { LiveSwarm, RepairBudget, RunLink, SettleProgress, SwarmSpec, TokenCount } from './types'
+import { LedgerTampered, readLedger } from '../ledgercore'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import {
@@ -38,6 +41,7 @@ import {
   policyPath,
   revisionPath,
   spoolDir,
+  summaryPath as runSummaryPath,
   SWARM_NAME,
   swarmNewWorktreeName,
   swarmOwnBranch,
@@ -46,7 +50,7 @@ import {
 import { atomicWrite, readJson, serial } from '../fsx'
 import { session } from '../session'
 import { readPolicy } from '../policy'
-import { repoOf, UNSETTLED_MS } from '../lifecycle'
+import { endRepairGeneration, repoOf, UNSETTLED_MS } from '../lifecycle'
 import { BRANCH, cleanAbsolute, errText, firstLine, git, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
 import { inspectWorktree } from './worktrees'
 import * as state from './state'
@@ -56,7 +60,8 @@ import { noteSummaryTrigger, noteSwarmEnding, plainText } from './summary'
 
 /**
  * The other packages' functions this module and observe.ts call (M's policy
- * writers, K's ownership, O's summary trigger), through one object, so a
+ * writers, K's ownership, O's summary trigger, W's end of a repair
+ * generation), through one object, so a
  * tier-2 spec can stand in for bodies that are built in parallel (COMMON,
  * "Another package's module"). Each looks its function up when called, so an
  * import cycle can never catch one half-made. Nothing else replaces them.
@@ -72,6 +77,8 @@ export const others = {
   noteSummaryTrigger: (...a: Parameters<typeof noteSummaryTrigger>) => noteSummaryTrigger(...a),
   /** Removes `active` once policy.json holds no swarm and no run and agents/ holds no binding file; a no-op otherwise. */
   releaseActive: (...a: Parameters<typeof releaseActive>) => releaseActive(...a),
+  /** A repair swarm's End closes its run's generation (2b-2, W): run.end, the run's cleanup and summary, the lock. */
+  endRepairGeneration: (...a: Parameters<typeof endRepairGeneration>) => endRepairGeneration(...a),
 }
 
 /** What a stopped node's policy carries, and the guard's denial names (15.4, "Ending"). */
@@ -571,12 +578,131 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
     await step('removing the node policies', () => removeEndedPolicies(p, litterDir, name, s.launch))
     state.dropLiveSwarm(name)
     waits.delete(name)
-    if (summary !== null) handOff(p, name, summary)
+    // After swarm.end and the policy removal; a crash before it is W's reconcile's to finish.
+    if (s.run) await endGeneration(p, litterDir, s, settled)
+    if (summary !== null) handOff(p, name, summary, s.run ?? null)
   })
 }
 
+/**
+ * A repair swarm's End closes its run's generation (COMMON 2b-2, step 7):
+ * W's endRepairGeneration, `done` when a land was recorded in it, else
+ * `halted` with why. A generation reconcile ended first answers `recorded:
+ * false`, which is fine here. A failure leaves the run's lock held, so it's
+ * said in a toast as well as the log; the next session.start reconciles it.
+ */
+async function endGeneration(p: Ports, litterDir: string, s: LiveSwarm, settled: boolean): Promise<void> {
+  const link = s.run!
+  const gen = `run ${link.run}'s generation ${link.generation}`
+  try {
+    const landed = await landedIn(p, litterDir, s.name, s.launch, link)
+    const outcome: RepairOutcome = landed
+      ? { status: 'done', reason: null }
+      : {
+          status: 'halted',
+          reason: `the repair swarm ${s.name} ended with no land${settled ? '' : ', with [End, keep everything] before it settled'}`,
+        }
+    const out = await others.endRepairGeneration(p, link.runDir, outcome)
+    if (!out.recorded) p.log(`swarm ${s.name}: ${gen} had ended already (${out.end.status})`)
+  } catch (err) {
+    p.log(`swarm ${s.name}: at its end, closing ${gen} failed: ${errText(err)}`)
+    p.toast(`litter: repair swarm ${s.name} has ended, but ${gen} wasn't closed (${errText(err)}); its lock stays until the next session start reconciles it`)
+  }
+}
+
+/**
+ * Whether a land was recorded in the swarm's run generation: the launch
+ * ledger's `gate` mirror says so, or the run's ledger holds a mod `land`
+ * after that generation's `run.repair` and before its `run.end` (decision 1).
+ */
+async function landedIn(p: Ports, litterDir: string, name: string, launch: string, link: RunLink): Promise<boolean> {
+  const { records } = await readLaunchLedger(p, litterDir, name, launch)
+  if (gateEvents(records).some(g => g.body.record === 'land' && g.body.result === 'landed' && g.body.run === link.run)) return true
+  const run = await readLedger(p, link.runDir, link.run)
+  let open = false
+  for (const r of run.records) {
+    if (r.by.source !== 'mod') continue
+    if (r.kind === 'run.repair') open = r.body.generation === link.generation
+    else if (r.kind === 'run.end' && r.body.generation === link.generation) open = false
+    else if (open && r.kind === 'land') return true
+  }
+  return false
+}
+
+type GateEvent = Extract<SwarmEventBody, { kind: 'gate' }>
+type BudgetEvent = Extract<SwarmEventBody, { kind: 'budget' }>
+
+/** The mod's `gate` events in a launch ledger, in order (2b-2, Y's mirror of the run-ledger records). */
+const gateEvents = (records: readonly StoredRecord[]): { at: number; body: GateEvent }[] =>
+  records
+    .filter(r => r.kind === 'swarm.event' && r.by.source === 'mod' && r.body.kind === 'gate')
+    .map(r => ({ at: r.at, body: r.body as unknown as GateEvent }))
+
+/** The mod's `budget` events (2b-2, X's): each `repair.budget` ask and your answer, with the budget after. */
+const budgetEvents = (records: readonly StoredRecord[]): { at: number; body: BudgetEvent }[] =>
+  records
+    .filter(r => r.kind === 'swarm.event' && r.by.source === 'mod' && r.body.kind === 'budget')
+    .map(r => ({ at: r.at, body: r.body as unknown as BudgetEvent }))
+
+/** A repair swarm's part of its launch, as summary.md shows it: the run, the budget, what it used, and its gate records. */
+export type RepairPart = {
+  link: RunLink
+  /** As it stands: the live swarm's, else the last `budget` event's, else `swarm.start`'s; null when none is recorded. */
+  budget: RepairBudget | null
+  /** Verdicts on distinct verifies (decision 6). */
+  rounds: number
+  /** Workers and children spawned, adoptions not counted (decision 7). */
+  agents: number
+  gates: { at: number; body: GateEvent }[]
+  raises: { at: number; body: BudgetEvent }[]
+}
+
+/** The repair part of a launch from its ledger (null for a swarm with no run): what summary.md and the hand-off show. */
+export function repairPart(records: readonly StoredRecord[], live: LiveSwarm | null): RepairPart | null {
+  const start = records.find(r => r.kind === 'swarm.start')?.body as SwarmStartBody | undefined
+  const link = live?.run ?? start?.run
+  if (!link) return null
+  const gates = gateEvents(records)
+  const raises = budgetEvents(records)
+  const budget = live?.budget ?? raises.at(-1)?.body.budget ?? start?.budget ?? null
+  const rounds = new Set(gates.filter(g => g.body.record === 'verdict').map(g => g.body.verify_id)).size
+  const spawned = new Set<string>()
+  for (const r of records) {
+    const b = r.body
+    if (r.kind === 'swarm.node' && r.by.source === 'mod' && (b.kind === 'worker' || b.kind === 'child') && b.adopted !== true && typeof b.agentId === 'string') spawned.add(b.agentId)
+  }
+  return { link, budget, rounds, agents: spawned.size, gates, raises }
+}
+
+/** "2 of 3 rounds used, 1 left". */
+const usedOf = (used: number, of: number | undefined, what: string): string =>
+  of === undefined ? `${plural(used, what)} used` : `${used} of ${plural(of, what)} used, ${Math.max(0, of - used)} left`
+
+/** One gate record as summary.md lists it: who, what, the round, the result, and where it is in the run's ledger. */
+function gateLine(g: { at: number; body: GateEvent }): string {
+  const b = g.body
+  const who = typeof b.node === 'string' ? ` by ${flat(b.node)}` : ''
+  const round = b.record === 'verdict' && typeof b.round === 'number' ? `round ${b.round}, ` : ''
+  const cites = b.record === 'verify' ? `verify ${flat(b.verify_id)}, gate ${flat(b.gate)}` : `on verify ${flat(b.verify_id)}`
+  return `- ${iso(g.at)} ${flat(b.record)}${who}: ${round}${flat(b.result)} (${cites}, run record #${flat(b.seq)})`
+}
+
+/** One `repair.budget` ask as summary.md lists it. */
+function raiseLine(r: { at: number; body: BudgetEvent }): string {
+  const req = r.body.requested ?? {}
+  const asked = [req.rounds !== undefined && `rounds ${flat(req.rounds)}`, req.agents !== undefined && `agents ${flat(req.agents)}`]
+    .filter((x): x is string => typeof x === 'string')
+    .join(', ')
+  const after = `${flat(r.body.budget?.rounds)} rounds and ${flat(r.body.budget?.agents)} agents`
+  return `- ${iso(r.at)} ${asked || 'nothing named'}: ${r.body.granted === true ? `granted; now ${after}` : `not granted; still ${after}`}`
+}
+
 /** The lead's hand-off (the skill's section 6): the summary's path and its opening lines, the mod's own facts. */
-function handOff(p: Ports, name: string, path: string): void {
+function handOff(p: Ports, name: string, path: string, link: RunLink | null): void {
+  // A repair swarm's run says how the repair ended (2b-2): its own summary.md, which W's end of the generation rewrote.
+  const run = link
+    ? `\n\nIt was the repair swarm of run ${link.run}, generation ${link.generation}. The run's own summary is ${runSummaryPath(link.runDir)}: read its Repair section too, and report how the run ended.`
+    : ''
   // Submitted from a timer, never from a hook, and never awaited (15.9, item 19).
   p.after(0, () =>
     (async () => {
@@ -584,7 +710,7 @@ function handOff(p: Ports, name: string, path: string): void {
       const head = headOf(text)
       await p.submitPrompt(
         `litter: the swarm ${name} has ended. Its summary is ${path}, which opens:\n\n${head}\n\n` +
-          'Read it, and report it to the user as the litter swarm skill says for the end of a swarm (its section 6).',
+          `Read it, and report it to the user as the litter swarm skill says for the end of a swarm (its section 6).${run}`,
       )
     })().catch(err => p.log(`swarm ${name}: the lead wasn't handed the summary: ${errText(err)}`)),
   )
@@ -1078,7 +1204,9 @@ const count = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n 
  * Writes `summary.md` in the launch folder (15.8), from the launch ledger and,
  * while the swarm is live, its state: the status, each node with its
  * instances, tokens and last report, the goal history from `swarm.summary`,
- * the worktrees and branches left, and the flags. Its opening lines, up to
+ * the worktrees and branches left, and the flags; for a repair swarm (2b-2),
+ * the run it repairs, its budget used and left, and its gate records from the
+ * `gate` events. Its opening lines, up to
  * the first section, are the mod's own facts, never a node's text: that part
  * is what the lead is handed. Answers the file's path. `unrecordedEnd` is
  * End's, for a launch it ended whose broken ledger couldn't take swarm.end.
@@ -1132,8 +1260,28 @@ export async function writeSwarmSummary(p: Ports, swarm: string, launch: string,
   lines.push(`- Agents: ${agents} across ${plural(Object.keys(nodes).length, 'node')}; ${count(total.input + total.output)} tokens in and out over ${plural(total.turns, 'turn')}`)
   lines.push(`- Worktrees: ${worktrees.length === 0 ? 'none made' : `${removed} removed, ${kept} kept`}`)
   if (end) lines.push(`- Branches left: ${branches.length > 0 ? branches.join(', ') : 'none'}`)
+  // A repair swarm (2b-2): which run it repairs and where that run's summary is, in the part the lead is handed.
+  const repair = repairPart(records, s)
+  const landed = repair?.gates.filter(g => g.body.record === 'land' && g.body.result === 'landed').at(-1) ?? null
+  if (repair) {
+    lines.push(`- Repairs: run ${flat(repair.link.run)}, generation ${flat(repair.link.generation)}; the run's summary is ${flat(runSummaryPath(repair.link.runDir))}`)
+    lines.push(`- Repair budget: ${usedOf(repair.rounds, repair.budget?.rounds, 'round')}; ${usedOf(repair.agents, repair.budget?.agents, 'agent')}`)
+    lines.push(`- Land: ${landed ? `landed on verify ${flat(landed.body.verify_id)}` : end || opts.unrecordedEnd ? 'none, so the run generation ends halted' : 'none yet'}`)
+  }
 
   if (spec?.goal) lines.push('', '## Goal', '', spec.goal)
+
+  if (repair) {
+    // The mod's own records (Y's mirror of the run's ledger, X's budget asks): ids, kinds and counts, never a node's text.
+    lines.push('', '## Repair', '', "Its verify, verdict and land records, as the run's ledger holds them:", '')
+    if (repair.gates.length === 0) lines.push('- none yet')
+    for (const g of repair.gates) lines.push(gateLine(g))
+    if (!repair.budget) lines.push('', 'Its launch recorded no budget.')
+    if (repair.raises.length > 0) {
+      lines.push('', 'More budget the lead asked you for:', '')
+      for (const r of repair.raises) lines.push(raiseLine(r))
+    }
+  }
 
   lines.push('', '## Nodes')
   const instance = new Map<string, number>()

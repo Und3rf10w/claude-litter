@@ -24,6 +24,7 @@ import type {
   SwarmBadge,
   SwarmBriefPanel,
   SwarmBrowserView,
+  SwarmBudgetPart,
   SwarmBuilderView,
   SwarmChangeRow,
   SwarmComposer,
@@ -55,6 +56,7 @@ import type {
   BindingKind,
   Draft,
   HealthReport,
+  LiveSwarm,
   NodeBinding,
   SpecCheck,
   SwarmNode,
@@ -78,6 +80,8 @@ import {
   liveSwarms,
   openQuestions,
   queued,
+  roundsUsed,
+  spawnsUsed,
   status as admissionStatus,
   tokens,
 } from './state'
@@ -765,6 +769,9 @@ const listField = (path: string, label: string, badge: SwarmBadge, unset: string
 })
 
 const AUTHORITY_UNSET = 'not checked by litter; the classifier, your permission rules and your hooks still apply'
+/** 2b-2's grants (15.10): unset is not given, and the builder's Launch refuses them set (decision 4). */
+const GRANT_UNSET = 'not given; in this version only a repair swarm a failed run starts may verify or land'
+const GRANT_PATHS: readonly string[] = ['authority.verify', 'authority.land']
 const REPORT_EVENTS = ['ready-to-push', 'belongs-elsewhere', 'blocked', 'done']
 const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions', 'auto']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -898,6 +905,9 @@ export const NODE_FIELDS: readonly FieldDef[] = [
   boolField('authority.forcePush', 'Force-push', AUTHORITY_UNSET),
   boolField('authority.rewriteHistory', 'Rewrite history', AUTHORITY_UNSET),
   boolField('authority.worktreeOps', 'Worktree ops', AUTHORITY_UNSET),
+  boolField('authority.verify', 'Verify', GRANT_UNSET, 'given', 'not given'),
+  boolField('authority.land', 'Land', GRANT_UNSET, 'given', 'not given'),
+  boolField('verdicts', 'Verdicts', "its verdicts aren't the critic's veto a land needs; one that is writes nothing"),
   listField('tools.allow', 'Tools allow', 'engine', "whatever tools the parent's spawn would give", 'Read, Grep, Bash'),
   listField('tools.deny', 'Tools deny', 'engine', "whatever tools the parent's spawn would give", 'Edit, Write, NotebookEdit'),
   listField('bash.deny', 'Bash deny', 'litter', 'nothing extra', 'git reset --hard; rm -rf', ';'),
@@ -1002,7 +1012,8 @@ function inspectorFor(swarm: string, spec: SwarmSpec, target: RowTarget, inputs:
     const current = f.get(node)
     const value = f.kind === 'input' ? (inputs[key] ?? current) : current
     const unset = current === ''
-    const badge: SwarmBadge = f.path.startsWith('authority.') && unset ? '—' : f.badge
+    // `—` is an unset field nothing checks; an unset grant is checked: it's not given.
+    const badge: SwarmBadge = f.path.startsWith('authority.') && !GRANT_PATHS.includes(f.path) && unset ? '—' : f.badge
     fields.push({
       key,
       label: f.label,
@@ -1854,8 +1865,63 @@ function swarmEventRow(at: string, e: SwarmEventBody, all: readonly NodeBinding[
       return { at, who: 'lead', text: `pushed ${shortSha(e.commit)} to ${oneLine(e.branch, 40)}`, color: COLOR.done }
     case 'clear-killed':
       return { at, who, text: `/clear cut short ${oneLine(e.tool, 20)} (${oneLine(e.detail, 60)})`, color: COLOR.waiting }
+    case 'gate':
+      return gateRow(at, who, e)
+    case 'budget':
+      return budgetRow(at, e)
     default:
       return null
+  }
+}
+
+/** A repair swarm's verify, verdict or land (2b-2, Y's mirror of the run's ledger): its round, its result with a glyph. */
+function gateRow(at: string, who: string, e: Extract<SwarmEventBody, { kind: 'gate' }>): SwarmEventRow {
+  const ok = e.result === 'green' || e.result === 'approved' || e.result === 'landed'
+  const id = oneLine(e.verify_id, 24)
+  const what =
+    e.record === 'verify'
+      ? `verify ${id}`
+      : e.record === 'verdict'
+        ? `verdict${typeof e.round === 'number' ? `, round ${e.round},` : ''} on ${id}`
+        : `land of ${id}`
+  return { at, who: who || 'litter', text: `${what}: ${ok ? '✓' : '✕'} ${oneLine(String(e.result).replace('-', ' '), 16)}`, color: ok ? COLOR.done : COLOR.failed }
+}
+
+/** The lead's `repair.budget` ask and your answer (2b-2, X's), with the budget as it stands after. */
+function budgetRow(at: string, e: Extract<SwarmEventBody, { kind: 'budget' }>): SwarmEventRow {
+  const req: Record<string, unknown> = isObj(e.requested) ? e.requested : {}
+  const asked = [typeof req.rounds === 'number' && `rounds ${req.rounds}`, typeof req.agents === 'number' && `agents ${req.agents}`]
+    .filter((x): x is string => typeof x === 'string')
+    .join(', ')
+  const b: Record<string, unknown> = isObj(e.budget) ? e.budget : {}
+  const now = `${typeof b.rounds === 'number' ? b.rounds : '?'} rounds, ${typeof b.agents === 'number' ? b.agents : '?'} agents`
+  return {
+    at,
+    who: 'lead',
+    text: `asked for more budget (${asked || 'nothing named'}): ${e.granted === true ? `✓ granted, now ${now}` : `✕ not granted, still ${now}`}`,
+    color: e.granted === true ? COLOR.done : COLOR.idle,
+  }
+}
+
+/** A part of a repair swarm's budget: `rounds 1 of 3`, or `! rounds 3 of 3, all used` in warning. */
+function budgetPart(what: string, used: number, of: number): SwarmBudgetPart {
+  return used >= of
+    ? { used, of, text: `${what} ${used} of ${of}, all used`, glyph: '!', color: COLOR.waiting }
+    : { used, of, text: `${what} ${used} of ${of}`, glyph: '', color: null }
+}
+
+/** The browser's budget row for a repair swarm (15.11): the state's counters, which the spawn check and the gates keep. */
+export function budgetOf(s: LiveSwarm): SwarmBrowserView['budget'] {
+  if (!s.run || !s.budget) return null
+  const rounds = budgetPart('rounds', roundsUsed(s.name), s.budget.rounds)
+  const agents = budgetPart('agents', spawnsUsed(s.name), s.budget.agents)
+  const spent = [rounds.glyph && 'no verdict past its last round is taken', agents.glyph && 'it spawns no more agents'].filter((x): x is string => typeof x === 'string' && x !== '')
+  return {
+    run: oneLine(s.run.run, 40),
+    generation: s.run.generation,
+    rounds,
+    agents,
+    note: spent.length > 0 ? `${spent.join(', and ')}, until you grant more when the lead asks (repair.budget)` : null,
   }
 }
 
@@ -1989,6 +2055,8 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
       { text: clean(name, 24), bold: true },
       { text: ` · ${s.state === 'stopping' ? 'stopping' : 'live'} ${span(now - s.startedAt)}`, color: s.state === 'stopping' ? COLOR.waiting : COLOR.running },
       { text: ` · ${all.length} agent${all.length === 1 ? '' : 's'} · ${fmtTokens(sumTokens(total))} tokens` },
+      // A repair swarm says which run it repairs (2b-2).
+      ...(s.run ? [{ text: ` · repairs run ${oneLine(s.run.run, 40)}` }] : []),
       ...(s.readOnly ? [{ text: ' · read-only', color: COLOR.idle }] : []),
       ...(s.lost ? [{ text: ' · lost to another session', color: COLOR.failed }] : []),
     ),
@@ -1999,6 +2067,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     readOnly: s.readOnly,
     lost: s.lost,
     owner,
+    budget: budgetOf(s),
     summary,
     rows,
     flags,

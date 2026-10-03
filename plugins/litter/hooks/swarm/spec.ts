@@ -662,6 +662,7 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
   const sharing = section()
   const perInstance = section()
   const authority = section()
+  const gates = section()
   const existing = section()
   const branches = section()
   const names = section()
@@ -798,21 +799,60 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
     }
   }
 
-  // A worker never has more authority than a parent that spawns it, field by field.
+  // A worker never has more authority than a parent that spawns it, field by field (verify and land too: 15.10).
   for (const w of s.nodes) {
     if (w.kind !== 'worker') continue
     for (const pid of g.listedBy.get(w.id) ?? []) {
       const par = g.byId.get(pid)!
       for (const f of AUTHORITY_FIELDS) {
         if (rankOf(w.authority, f) > rankOf(par.authority, f)) {
+          const fix = isGrant(f) ? 'leave it unset, or set it to false' : `set it to ${shown(par.authority, f)} or less`
           authority.add(
             `nodes.${w.id}.authority.${f}`,
             w.id,
-            `${f} is ${shown(w.authority, f)}, more than its parent ${pid}'s ${shown(par.authority, f)}: a worker never gets more authority than a parent that spawns it; set it to ${shown(par.authority, f)} or less`,
+            `${f} is ${shown(w.authority, f)}, more than its parent ${pid}'s ${shown(par.authority, f)}: a worker never gets more authority than a parent that spawns it; ${fix}`,
           )
         }
       }
     }
+  }
+
+  // The critic's veto and the land it guards (15.10, "The guarantees a swarm gets"): a node
+  // whose verdicts a land needs writes nothing, so it's never the agent that changed the tree it judges.
+  for (const n of s.nodes) {
+    if (n.verdicts !== true) continue
+    if (n.authority?.commit !== false) {
+      gates.add(
+        `nodes.${n.id}.authority.commit`,
+        n.id,
+        `a verdicts: true node writes nothing, but commit is ${shown(n.authority, 'commit')}; set authority.commit to false, or take verdicts off`,
+      )
+    }
+    const deny = n.tools?.deny ?? []
+    const open = WRITE_TOOLS.filter(t => !deny.includes(t))
+    if (open.length > 0) {
+      gates.add(
+        `nodes.${n.id}.tools.deny`,
+        n.id,
+        `a verdicts: true node writes nothing, but tools.deny leaves ${open.join(', ')}; deny Edit, Write and NotebookEdit, or take verdicts off`,
+      )
+    }
+    if (n.authority?.verify !== true) {
+      warnings.add(
+        `nodes.${n.id}.authority.verify`,
+        n.id,
+        "a verdict cites a verify its own agent recorded, and this node can't record one, so its verdicts are refused; set authority.verify to true",
+      )
+    }
+  }
+  const critics = s.nodes.filter(n => n.verdicts === true && n.authority?.verify === true && g.reach.has(n.id)).map(n => n.id)
+  for (const n of s.nodes) {
+    if (n.authority?.land !== true || critics.length > 0) continue
+    gates.add(
+      `nodes.${n.id}.authority.land`,
+      n.id,
+      'a land needs an approving verdict from a verdicts: true node with authority.verify, and nothing in this tree is one; add such a node to a spawns, or take land off',
+    )
   }
 
   // `existing` worktrees: this repository's, and never the active run's checkout.
@@ -919,7 +959,7 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
     }
   }
 
-  const errors = [tree, limits, kinds, sharing, perInstance, authority, existing, branches, names, paths, briefs].flatMap(x => x.list)
+  const errors = [tree, limits, kinds, sharing, perInstance, authority, gates, existing, branches, names, paths, briefs].flatMap(x => x.list)
   return { errors, warnings: warnings.list }
 }
 

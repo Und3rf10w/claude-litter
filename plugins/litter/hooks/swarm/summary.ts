@@ -21,7 +21,7 @@ import { SUMMARY_LABELS, SWARM_SUMMARY } from '../prompts/swarm-summary'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { sha256 } from '../fsx'
 import { getOptions, session } from '../session'
-import { agentStopped, binding, bindings, lastReport, liveSwarms, status, stopped } from './state'
+import { agentStopped, binding, bindings, lastReport, liveSwarms, roundsUsed, spawnsUsed, status, stopped } from './state'
 
 /**
  * Why a summary is due: the lead's turn ended, a node messaged the lead (L);
@@ -280,6 +280,10 @@ function nodeRows(s: LiveSwarm): string[] {
       rows.push(`${node.id} #${b.n} (${where}): ${statusWord(s.name, b.agentId)}`)
     }
   }
+  // A repair swarm's budget (2b-2, 15.11): what it used of what you approved.
+  if (s.run && s.budget) {
+    rows.push(`repair budget for run ${s.run.run}: ${roundsUsed(s.name)} of ${s.budget.rounds} rounds used, ${spawnsUsed(s.name)} of ${s.budget.agents} agents used`)
+  }
   return rows
 }
 
@@ -290,6 +294,15 @@ function eventLine(r: StoredRecord): string {
   if (r.kind === 'swarm.node') return `#${r.seq} spawned ${String(b.node)} #${String(b.n)} (${String(b.kind)})`
   if (r.kind === 'swarm.stop') return `#${r.seq} stopped ${Array.isArray(b.nodes) ? b.nodes.length : 0} agents (${String(b.how)})`
   if (r.kind === 'swarm.stopping') return `#${r.seq} the swarm is stopping (asked by ${String(b.by)})`
+  // A repair swarm's gates and budget asks (2b-2), in words: the round and the result, not the fields.
+  if (b.kind === 'gate') {
+    const round = b.record === 'verdict' && typeof b.round === 'number' ? `, round ${b.round}` : ''
+    return `#${r.seq} ${String(b.record)}${typeof b.node === 'string' ? ` by ${b.node}` : ''}${round}: ${String(b.result)} (verify ${String(b.verify_id)})`
+  }
+  if (b.kind === 'budget') {
+    const after = b.budget as { rounds?: unknown; agents?: unknown } | undefined
+    return `#${r.seq} the lead asked for more repair budget: ${b.granted === true ? 'granted' : 'not granted'}; now ${String(after?.rounds)} rounds, ${String(after?.agents)} agents`
+  }
   const { kind, node, agentId: _agentId, ...rest } = b
   const fields = Object.keys(rest).length > 0 ? `: ${JSON.stringify(rest)}` : ''
   return `#${r.seq} ${String(kind)}${typeof node === 'string' ? ` ${node}` : ''}${fields}`

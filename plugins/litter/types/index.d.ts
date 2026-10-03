@@ -273,6 +273,24 @@ export type SwarmTranscript = { agentId: string; name: string; readable: boolean
 /** Who owns a read-only swarm, and whether [Take over] can be offered. */
 export type SwarmOwnerPanel = { text: string; canTakeOver: boolean; why: string | null }
 
+/** One part of a repair swarm's budget: used of granted, with its word and glyph (`! … all used`, in `warning`). */
+export type SwarmBudgetPart = { used: number; of: number; text: string; glyph: string; color: string | null }
+
+/**
+ * A repair swarm's budget row (2b-2; plan 15.11, "The repair budget"): the
+ * rounds (verdicts on distinct verifies) and the agents (workers and children
+ * spawned) it used of what you approved.
+ */
+export type SwarmBudgetRow = {
+  /** The run it repairs, and the run's generation it works in. */
+  run: string
+  generation: number
+  rounds: SwarmBudgetPart
+  agents: SwarmBudgetPart
+  /** What a used-up budget means for it, or null while there's room. */
+  note: string | null
+}
+
 export type SwarmBrowserView = SwarmViewCommon & {
   view: 'browser'
   swarm: string
@@ -283,6 +301,8 @@ export type SwarmBrowserView = SwarmViewCommon & {
   /** This session lost it to a handover. */
   lost: boolean
   owner: SwarmOwnerPanel | null
+  /** A repair swarm's budget (2b-2); null for any other swarm. */
+  budget: SwarmBudgetRow | null
   summary: SwarmSummaryPanel | null
   rows: SwarmNodeRow[]
   flags: SwarmFlagRow[]
