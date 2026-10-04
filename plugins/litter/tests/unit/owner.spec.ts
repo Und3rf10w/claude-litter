@@ -262,7 +262,9 @@ describe('the rebind and the release', () => {
     expect(existsSync(ownerLeasePath(w.litterDir, 'alpha', old))).toBe(false)
     // The node policies hold the generation, not the oid: unchanged.
     expect(await w.p.fs.read(agentPolicyPath(w.litterDir, bound[0]!.agentId))).toBe(node)
-    // The beat carries on, at the new oid.
+    // The beat carries on, at the new oid. The rebind's own first beat finishes first (settle awaits it, the
+    // clock still at NOW + 5 s): a tick while it runs would join it, and the lease would show its time.
+    await settle(w.p)
     await tick()
     expect(lease(now)).toEqual({ oid: now, swarm: 'alpha', session: 'sess-c', beatAt: NOW + 15_000 })
   })
