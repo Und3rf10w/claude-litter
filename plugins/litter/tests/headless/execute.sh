@@ -47,8 +47,8 @@
 # through drive.exp, at medium effort (T4-RESULTS.md, S0 run 3), in auto mode,
 # for at most 3 hours each (H_DRIVE_MAX, default 10800):
 # - litter: /litter:execute plan.md, its interview answered by the steps
-#   marked KEYS (placeholders, as rules.sh's), with verify sh test.sh and
-#   repair: off, so the comparison is of execute alone;
+#   marked KEYS, with verify sh test.sh and repair: auto (main's call: the
+#   bridge is part of what litter's execute does), the plan run as written;
 # - deepwork: S0's command with --guardrail, and agent teams on; it ends with
 #   its state archived and execute-done.sentinel written, or on a question
 #   no one answers.
@@ -99,6 +99,8 @@ compare_side() {
     h_git -C "$H_REPO" add .litter
     h_git -C "$H_REPO" commit -q -m 'the vendor ban, an accepted project rule' || exit 1
     cld=$H_REPO/.claude/litter
+    # The interview's labels to pick (answer.sh: jq, case-insensitive).
+    ANSWERS='as written|anyway|as[- ]is|^launch|^(repair )?auto\b'
     # The steps' waits (as the bridge case's): each also ends on a question
     # waiting with no one to answer it, as deepwork's side ends; ask-mark
     # moves past one the steps declined.
@@ -130,16 +132,16 @@ EOF
 sleep 8
 $(h_tool_steps "$H_DIR/debug.txt")
 send /litter:execute plan.md
-# KEYS: the interview, rules.sh's step 4 (the same skill on a plan with no
-# rules to import): each question's recommended option (verify sh test.sh
-# and repair auto come from the settings, max attempts 3, no adversary), then
-# Launch. The skill puts its recommended option first, and Enter picks the
-# highlighted one, the first, so Enter every 5 s until run.start has made
-# run.json, however many questions it asks; then a Launch asked in plain
-# text rather than as a question is typed.
-press 600 5 enter ls $cld/2*/run.json
+# KEYS: the interview, answered by label (answer.sh) until run.start has
+# made run.json: Launch, repair auto, and the plan run as written, deepwork's
+# side running it so. The skill reads the gates' code, and may ask about
+# G5's contradiction and G2's report.sh before Launch, recommending a fix
+# first (T4-1 attempt 2). Every other question takes its first option, the
+# skill's recommended one: verify sh test.sh, max attempts 3, no adversary.
+# Then a Launch asked in plain text rather than as a question is typed.
+keysh 600 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 sendsh ls $cld/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl || echo Launch
-press 300 5 enter ls $cld/2*/run.json
+keysh 300 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 # Generation 1, to its run.end or the cap (H_DRIVE_MAX).
 wait 10800 sh $H_DIR/until.sh ended1
 # The skill's closing question: one esc declines it, so its turn ends, and a

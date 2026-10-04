@@ -22,6 +22,13 @@
 #                               an empty prompt sends nothing; in a multiSelect
 #                               question it only toggles the option). With
 #                               <secs> equal to <every>, it presses once at most
+#   keysh <secs> <every> <sh command>
+#                               run the command every <every> seconds, giving
+#                               up after <secs>; while it exits 0, press the
+#                               keys its first line names, if any (key's
+#                               names, space-separated), and stop once it
+#                               exits non-zero. answer.sh prints the keys that
+#                               answer a waiting AskUserQuestion by label
 #   abortif <sh command>        run the command once; if it exits 0, end the
 #                               session and exit 4 (the case reads that as
 #                               INCONCLUSIVE: the session couldn't run it)
@@ -119,6 +126,27 @@ foreach line $lines {
         set held [expr {![catch {exec sh -c $c}]}]
       }
       puts "drive: press $k: $n presses, [expr {$held ? {the command holds} : {gave up}}]"
+    }
+    keysh {
+      if {![regexp {^([0-9]+) ([1-9][0-9]*) (.+)$} $arg -> secs every c]} { puts "drive: keysh needs <secs> <every, 1 or more> <sh command>"; exit 2 }
+      set end [expr {[clock seconds] + $secs}]
+      set n 0
+      set stopped 0
+      while {[clock seconds] < $end} {
+        if {[catch {exec sh -c $c} out]} { set stopped 1; break }
+        set ks [string trim [lindex [split $out "\n"] 0]]
+        if {$ks ne ""} {
+          puts "drive: keysh: $ks"
+          foreach k [split $ks " "] {
+            if {![info exists keys($k)]} { puts "drive: unknown key $k"; exit 2 }
+            send -- $keys($k); pump 1
+          }
+          incr n
+        }
+        set next [expr {[clock seconds] + $every}]
+        while {[clock seconds] < $next} { pump 1 }
+      }
+      puts "drive: keysh: $n answered, [expr {$stopped ? {the command stopped} : {gave up}}]"
     }
     abortif {
       if {![catch {exec sh -c $arg}]} {
