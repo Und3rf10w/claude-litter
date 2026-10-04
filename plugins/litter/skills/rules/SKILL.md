@@ -35,7 +35,7 @@ Record `{ kind: 'rule.find', status: ['accepted', 'proposed'] }`. Show two group
 
 1. The rule is the user's words after `add`. Read the code it's about, then draft a rule file:
    - its type: rule, or ban for something agents must never do;
-   - where it applies: paths, workflows, and when, in one sentence;
+   - where it applies: paths (for a ban, what it protects), workflows, and when, in one sentence;
    - the rule, its exceptions, and why;
    - optionally, one to three How to check lines a critic could run or read.
 
@@ -57,7 +57,7 @@ Show the rule and the runs that used it, then record `{ kind: 'rule.open', id }`
 
 ## import
 
-Record `{ kind: 'rule.import', from: 'deepwork' }`. The mod reads deepwork's guardrails and proposes each one once, as a ban. The ones the user set in a live instance are preselected; the ones agents or incidents added, and everything from an archived instance, aren't. Tell the user how many came from live and from archived instances (the reply's `live` and `archived`), that the archived ones start unselected, that none has paths yet, so each would apply to every gate, and that they review them in the pane, grouped by instance, where they can narrow each one's paths before accepting.
+Record `{ kind: 'rule.import', from: 'deepwork' }`. The mod reads deepwork's guardrails and proposes each one once, as a ban. The ones the user set in a live instance are preselected; the ones agents or incidents added, and everything from an archived instance, aren't. Tell the user how many came from live and from archived instances (the reply's `live` and `archived`), that the archived ones start unselected, that each is a ban, which reaches every gate whatever its paths, and that they review them in the pane, grouped by instance, where they can set the paths each one protects before accepting.
 
 ## Rules proposed by a run
 

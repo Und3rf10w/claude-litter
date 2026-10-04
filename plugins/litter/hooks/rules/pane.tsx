@@ -310,7 +310,7 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
       {r.when !== '' && <Text wrap="wrap">{`  when: ${r.when}`}</Text>}
       <Text wrap="wrap">{`  ${r.rule}`}</Text>
       {r.paths.length > 0 ? (
-        <Text color="blue" wrap="wrap">{`  paths: ${r.paths.join(', ')}`}</Text>
+        <Text color="blue" wrap="wrap">{`  ${r.type === 'ban' ? 'protects' : 'paths'}: ${r.paths.join(', ')}`}</Text>
       ) : (
         <Text color="warning">{`  ${r.kind === 'accepted' ? 'no paths: applies everywhere' : NO_PATHS}`}</Text>
       )}
@@ -328,7 +328,14 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
       {askScope && scopePart(el, r, pending?.kind === 'scope')}
       {editing && (
         <Box flexDirection="column">
-          {input(el, { key: `rules:paths:${r.key}`, label: 'Paths', value: editing.paths, placeholder: 'globs, comma-separated; empty for every gate', submitLabel: 'Set' })}
+          {/* A ban reaches every gate whatever its paths (16.5), so its paths are what it protects. */}
+          {input(el, {
+            key: `rules:paths:${r.key}`,
+            label: 'Paths',
+            value: editing.paths,
+            placeholder: editing.type === 'ban' ? 'globs, comma-separated: what it protects' : 'globs, comma-separated; empty for every gate',
+            submitLabel: 'Set',
+          })}
           {editing.error && <Text color="error" wrap="wrap">{`  ✕ ${editing.error}`}</Text>}
           {select(el, { key: `rules:type:${r.key}`, label: 'Type', value: editing.type, options: TYPES.map(t => ({ value: t, label: t })) })}
           {buttons(el, [{ key: `rules:edit-done:${r.key}`, label: 'Done' }])}

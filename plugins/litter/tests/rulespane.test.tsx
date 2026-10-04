@@ -75,7 +75,7 @@ const SHOWN = {
     actions: ['edit', 'retire'],
   },
   'repo:10': shown('repo:10', { source: 'import', scope: 'project', type: 'ban', batch: 9 }),
-  'repo:11': shown('repo:11', { source: 'import', scope: 'project', type: 'ban', batch: 9 }),
+  'repo:11': shown('repo:11', { source: 'import', scope: 'project', type: 'ban', paths: ['.github/**'], batch: 9 }),
   'repo:12': shown('repo:12', { source: 'import', scope: 'project', type: 'ban', batch: 9 }),
 }
 
@@ -117,7 +117,7 @@ const VIEW: RulesPaneView = {
     counts: { proposed: 6, inForce: 1 },
     rows: [
       importRow('repo:10', 'auth-fix', true),
-      importRow('repo:11', 'auth-fix', false),
+      { ...importRow('repo:11', 'auth-fix', false), paths: ['.github/**'] },
       importRow('repo:12', 'old-plan', true),
       proposalRow('repo:3', { scope: 'user' }),
       proposalRow('repo:4', { scope: 'project', paths: ['src/parser/**'] }),
@@ -303,6 +303,9 @@ describe('the rules pane draws both tabs', () => {
       expect(await ui.find({ type: 'Button', key: 'rules:accept-selected:9' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'no paths: applies to every gate' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'paths: src/parser/**' })).toBeDefined()
+      // A ban's paths are what it protects.
+      expect(await ui.find({ type: 'Text', text: 'protects: .github/**' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'paths: .github/**' })).toBeUndefined()
       // An import's scope is project, and can be changed before [Accept].
       expect(await ui.find({ type: 'Select', key: 'rules:scope:repo:10' })).toBeDefined()
       // An edit proposal shows as a diff against the version in force.

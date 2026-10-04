@@ -192,6 +192,8 @@ export const STATUS: Record<'proposed' | 'unverified' | 'accepted' | 'accepted (
 
 export const NO_PATHS = 'no paths: applies to every gate'
 export const MATCHES_NO_FILE = 'matches no file'
+/** A ban's paths say what must not change, so matching nothing yet isn't a warning: it reaches every gate anyway (16.5). */
+export const BAN_MATCHES_NO_FILE = 'its paths match no file yet; a ban still reaches every gate'
 
 /** A batch row's first note, which the pane groups the batch by. */
 export const instanceNote = (instance: string): string => `from deepwork instance ${oneLine(instance, 80)}`
@@ -424,7 +426,9 @@ export async function rulesView(
       for (const o of overrides(loaded, r)) notes.push(o)
       if (r.standing === 'unverified') notes.push('the file has an edit you haven\'t accepted: see the Proposed tab')
       else if (r.why) notes.push(oneLine(r.why, 300))
-      if (doc.applies.paths.length > 0 && files !== null && matchesNothing(p, doc.applies.paths, files)) notes.push(MATCHES_NO_FILE)
+      if (doc.applies.paths.length > 0 && files !== null && matchesNothing(p, doc.applies.paths, files)) {
+        notes.push(doc.type === 'ban' ? BAN_MATCHES_NO_FILE : MATCHES_NO_FILE)
+      }
       const actions = ['edit', 'retire']
       shown[key] = { kind: 'accepted', ref: null, file: r.path, id: doc.id, version: doc.version, scope: r.scope, type: doc.type, paths: doc.applies.paths, source: null, batch: null, actions }
       inForceRows.push({

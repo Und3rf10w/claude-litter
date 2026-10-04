@@ -1,8 +1,9 @@
 // Tier 2: the rules pane (WP-AF; plan 16.3, 16.6, 16.8, 12:1566). Its view
 // (hooks/rules/paneview.ts) on both tabs: proposals with where they came
 // from, an edit's diff, an import batch grouped by instance with its
-// preselection, unverified files, overrides, a rule that matches no file. And
-// its handlers (hooks/rules/pane.tsx) end to end, with AD's store and AE's
+// preselection, unverified files, overrides, a rule that matches no file and
+// a ban's own note for it (WP-AH). And its handlers (hooks/rules/pane.tsx)
+// end to end, with AD's store and AE's
 // matcher stood in for through `deps` (each a stub before the merge): each
 // acting call is made once, by a press, with what the pane showed; a field,
 // a pick, a message, a tick and an open never make one. Last, a scan of the
@@ -20,7 +21,7 @@ import type { RulesPaneView, RulesRow } from '../../types/index'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
-import { MATCHES_NO_FILE, blankRulesNav, deps as viewDeps, resetRulesViewForTests, rulesNavOf, rulesView } from '../../hooks/rules/paneview'
+import { BAN_MATCHES_NO_FILE, MATCHES_NO_FILE, blankRulesNav, deps as viewDeps, resetRulesViewForTests, rulesNavOf, rulesView } from '../../hooks/rules/paneview'
 import { deps as paneDeps, onRulesUi, openRulesPane, pressRules, refreshRulesPane, resetRulesPaneForTests, rulesCommand, rulesTick } from '../../hooks/rules/pane'
 import { boardTick, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests } from '../../hooks/board/view'
@@ -307,6 +308,23 @@ describe('the In force tab', () => {
     expect(row(v, 'P-hand').notes).toEqual(["the file has an edit you haven't accepted: see the Proposed tab"])
     expect(row(v, 'P-nowhere').notes).toEqual([MATCHES_NO_FILE])
     expect(v.body!.problems).toEqual(['P-dup is in two scopes: project and local'])
+  })
+
+  test("a ban whose paths match no file gets its own note, not the flag: it still reaches every gate", async () => {
+    loaded = [
+      rule('P-nowhere', 'project', { d: doc('P-nowhere', 1, { paths: ['nowhere/**'] }) }),
+      rule('P-ban-nowhere', 'project', { d: doc('P-ban-nowhere', 1, { type: 'ban', paths: ['nowhere/**'] }) }),
+      rule('P-ban-src', 'project', { d: doc('P-ban-src', 1, { type: 'ban', paths: ['src/**'] }) }),
+      rule('P-ban-all', 'project', { d: doc('P-ban-all', 1, { type: 'ban' }) }),
+    ]
+    const { view: v } = await rulesView(p, litterDir, blankRulesNav('in-force'))
+    expect(rowsOf(v).map(r => [r.key, r.notes])).toEqual([
+      ['P-nowhere', [MATCHES_NO_FILE]],
+      ['P-ban-nowhere', ['its paths match no file yet; a ban still reaches every gate']],
+      ['P-ban-src', []],
+      ['P-ban-all', []],
+    ])
+    expect(BAN_MATCHES_NO_FILE).toBe('its paths match no file yet; a ban still reaches every gate')
   })
 
   test("a matcher that throws, or git that can't list the files, flags nothing", async () => {
