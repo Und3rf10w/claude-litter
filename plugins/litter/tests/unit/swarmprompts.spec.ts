@@ -127,6 +127,33 @@ describe('the instance and rules blocks', () => {
     ]
     expect(items.join(', ')).toBe('fixer 1 of 2, reviewer 3 of 3')
   })
+
+  test("the repair budget line: a plan-template swarm's takes the same slots and counts only rejections as rounds (WP-AG)", () => {
+    const slots = (t: string) => [...t.matchAll(/\{([a-z_]+)\}/g)].map(m => m[1]).sort()
+    expect(slots(instance.REPAIR_BUDGET_LEFT_PLAN)).toEqual(slots(instance.REPAIR_BUDGET_LEFT))
+    const left = { rounds_left: 2, rounds: 3, agents_left: 4, agents: 6 }
+    const tail = "4 of 6 agents (the workers and agents the swarm's nodes start). Past either, litter refuses the next spawn or land: report blocked to your parent, saying what you need."
+    expect(renderSlots(instance.REPAIR_BUDGET_LEFT, left)).toBe(`2 of 3 rounds (a round is the critic's verdict on a new verify), ${tail}`)
+    expect(renderSlots(instance.REPAIR_BUDGET_LEFT_PLAN, left)).toBe(`2 of 3 rounds (a round is a verdict that rejects an attempt; an approval uses none), ${tail}`)
+  })
+})
+
+describe("the repair grants' authority lines (2b-2; phase 3, WP-AG)", () => {
+  test("hold for a fanout's repair swarm and a plan-template swarm alike", () => {
+    expect(node.AUTHORITY_VERIFY_YES).toBe(
+      "Verify: yes. Call mcp__litter__record with kind verify (in a plan-template swarm, with its gate), and the mod runs the run's own verify command in your directory and records the result. Cite the verify_id it returns; don't run the verify command yourself in its place, since only the mod's record counts.",
+    )
+    expect(node.AUTHORITY_VERDICTS_YES).toBe(
+      'Verdicts: yes. Your verdict record is the independent check a land needs. It counts only when it cites a verify you recorded yourself on the tree you judged, and it judges every task of a fanout once, or the one plan gate it names. You never change the tree you judge.',
+    )
+    expect(node.AUTHORITY_LAND_YES).toBe(
+      'Land: yes. Once a verdict approves a green verify, call mcp__litter__record with kind land and that verify_id, and in a plan-template swarm with its gate. The mod checks everything again before it lands, and refuses a land of any tree but the one that verify ran on. Nothing is pushed.',
+    )
+    // Nothing in them is true of one kind only.
+    for (const text of [node.AUTHORITY_VERIFY_YES, node.AUTHORITY_VERDICTS_YES, node.AUTHORITY_LAND_YES]) {
+      expect({ text, fanoutOnly: /nothing else|integration branch|committed tip|every task of the run/.test(text) }).toEqual({ text, fanoutOnly: false })
+    }
+  })
 })
 
 describe("the lead's <swarm> block lines", () => {

@@ -31,6 +31,7 @@ import {
   PARENT_ROUTE_ORCHESTRATOR,
   PARENT_ROUTE_WORKER,
   REPAIR_BUDGET_LEFT,
+  REPAIR_BUDGET_LEFT_PLAN,
   RULES_NONE,
   SPAWNS_LEFT_ITEM,
   SPAWNS_LEFT_NONE,
@@ -41,6 +42,7 @@ import {
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
 import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
 import { budgetCounted, budgetLeft, budgetRefusal, countsAgainstBudget } from './gate'
+import { readRunFacts } from '../verify'
 import { RULES_CAP, selectForSpawn } from '../rules/select'
 import { proposalsOf } from '../rules/store'
 import * as state from './state'
@@ -257,11 +259,24 @@ function spawnsLeft(plan: Plan): string {
   return plan.kind === 'worker' ? `${items}. ${SPAWNS_LEFT_WORKER_HOLD}` : items
 }
 
-/** `{budget}`: what a repair swarm has left, this spawn counted; null (the line goes) for any other swarm. */
-function budgetText(s: LiveSwarm): string | null {
-  const left = budgetLeft(s)
-  if (!left) return null
-  return renderSlots(REPAIR_BUDGET_LEFT, { rounds_left: String(left.roundsLeft), rounds: String(left.rounds), agents_left: String(left.agentsLeft), agents: String(left.agents) })
+/**
+ * `{budget}`: what a repair swarm has left, this spawn counted; null (the line
+ * goes) for any other swarm. Its run's workflow picks the line, as gate.ts
+ * tells the two apart: an execute run's is its plan-template swarm, whose
+ * round is a rejecting verdict (phase 3, decision 1). A run.json that can't
+ * be read throws, so the spawn is denied: the gates would refuse every record
+ * of that run too.
+ */
+async function budgetText(p: Ports, s: LiveSwarm): Promise<string | null> {
+  if (!budgetLeft(s)) return null
+  let line = REPAIR_BUDGET_LEFT
+  if (s.run) {
+    const f = await readRunFacts(p, s.run.runDir, s.run.run)
+    if ('ok' in f) throw new Error(f.error.replace(/^litter: /, ''))
+    if (f.json.workflow === 'execute') line = REPAIR_BUDGET_LEFT_PLAN
+  }
+  const left = budgetLeft(s)!
+  return renderSlots(line, { rounds_left: String(left.roundsLeft), rounds: String(left.rounds), agents_left: String(left.agentsLeft), agents: String(left.agents) })
 }
 
 /** The parent as the block names it. */
@@ -337,7 +352,7 @@ async function swarmProposals(p: Ports, litterDir: string, swarm: string): Promi
  * after the parent wrote the task: the swarm's would be in every node's own
  * blocks, so a parent could close its child's or forge whole new ones.
  */
-function promptFor(plan: Plan, dir: string, branch: string | null, token: string, nonce: string, task: string, rules: string): string {
+function promptFor(plan: Plan, dir: string, branch: string | null, token: string, nonce: string, task: string, rules: string, budget: string | null): string {
   const instance = renderSlots(SWARM_INSTANCE, {
     nonce,
     node: plan.node.id,
@@ -348,7 +363,7 @@ function promptFor(plan: Plan, dir: string, branch: string | null, token: string
     cwd: dir,
     branch: branch === null ? null : branch.replace(/^refs\/heads\//, ''),
     spawns_left: spawnsLeft(plan),
-    budget: budgetText(plan.s),
+    budget,
     token,
   })
   const block = renderSlots(SWARM_RULES, { nonce, rules: rules === '' ? RULES_NONE : rules })
@@ -474,9 +489,11 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
     }
 
     if (plan.kind !== 'child') {
+      // The budget line before the instance record, so a run.json it can't read records nothing.
+      const budget = await budgetText(p, s)
       const body: SwarmInstanceBody = { node: plan.node.id, n: plan.n, parentAgentId: e.parentAgentId ?? null, tool_use_id: key, cwd, branch, token, nonce }
       await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.instance', body)
-      prompt = promptFor(plan, cwd, branch, token, nonce, e.prompt, rules)
+      prompt = promptFor(plan, cwd, branch, token, nonce, e.prompt, rules, budget)
     }
   } catch (err) {
     return undo(`${plan.node.id} couldn't be prepared: ${errText(err)}`)
