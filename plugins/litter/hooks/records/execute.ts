@@ -149,6 +149,13 @@ export type GateVerdictBody = {
   rules: VerdictDimension
   /** '' unless the gate can't pass without an amendment. */
   plan_gap: string
+  /**
+   * '' unless two rules clash for the change, the plan's lines can't be met
+   * without breaking one, or an accepted rule looks wrong: the ids and why.
+   * Only you settle it, so it never bridges (WP-AH). Absent from verdicts
+   * recorded before it, which read as ''.
+   */
+  rule_clash?: string
   /** Proposals only (section 16.4): each becomes a `rule.propose` in the rules ledger. */
   proposed_rules: string[]
   /** Absent for a swarm node's, which records its verdict through the tool. */
@@ -159,7 +166,7 @@ export type GateVerdictBody = {
  * A plan-template swarm's verdict (AC's swarm/gate.ts; decisions 1, 14 and
  * 15), in the run's ledger: execute's VERDICT plus the gate it judges, the
  * attempt of the verify it cites, and what the mod derives. `approved`: all
- * four dimensions pass and `plan_gap` is empty. `round` is set only on a
+ * four dimensions pass and `plan_gap` and `rule_clash` are empty. `round` is set only on a
  * rejection (decision 1); an approval's is null, so the rounds count skips it.
  */
 export type SwarmGateVerdictBody = GateVerdictBody & { gate: string; attempt: number; approved: boolean; round: number | null }

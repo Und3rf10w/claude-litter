@@ -25,6 +25,7 @@ import {
   failDim,
   G1,
   G2,
+  gapWrite,
   GOAL_CHECK,
   happy,
   instructionOf,
@@ -223,11 +224,66 @@ describe('a gate that does not land', () => {
     expect(commits(r)).toEqual([['G1', C1]])
   })
 
+  test("an executor's block naming a plan gap halts as a plan gap, before any critic, keeping earlier lands", async () => {
+    const gap = 'plan.md:12 says greet prints "Hello, World", and the preamble says every string follows tests/expected.txt, which holds "Hello, world"'
+    const r = await run(executeArgs(), happy({ 'write:G2#1': gapWrite(gap, 'Stopped: the two lines disagree.') }))
+    expect(labels(r).at(-1)).toBe('write:G2#1')
+    expect(halted(r)).toBe(`G2 plan gap: ${gap}`)
+    expect(commits(r)).toEqual([['G1', C1]])
+    expect(decoded(r).status).toBe('halted')
+  })
+
+  test('a plan gap on a later attempt halts at that attempt, after the earlier rejection', async () => {
+    const no = verdict('G1-x', { fail: { plan_adherence: failDim('src/header.ts:4 skips the version', ['the version field']) } })
+    const r = await run(executeArgs(), happy({ 'critic:G1#1': no, 'write:G1#2': gapWrite('the gaps ask for a version field plan.md:4 never names') }))
+    expect(labels(r)).toEqual(['baseline', 'write:G1#1', 'critic:G1#1', 'write:G1#2'])
+    expect(halted(r)).toBe('G1 plan gap: the gaps ask for a version field plan.md:4 never names')
+  })
+
+  test('a blank plan_gap on a block is a plain block; a done result never halts on its plan_gap', async () => {
+    const blank = await run(executeArgs(), happy({ 'write:G2#1': written('a denied tool: git stash', { status: 'blocked', files: [], checks: [], plan_gap: ' \n ' }) }))
+    expect(halted(blank)).toBe('G2 blocked: a denied tool: git stash')
+    const done = await run(executeArgs(), happy({ 'write:G1#1': written('Changed the file the gate names.', { plan_gap: 'a stray note' }) }))
+    expect(halted(done)).toBeNull()
+    expect(commits(done)).toEqual([['G1', C1], ['G2', C2]])
+  })
+
+  test("an executor result without plan_gap fails its schema, as the engine would, and the workflow fails", async () => {
+    const { plan_gap: _, ...old } = written()
+    const r = await run(executeArgs(), happy({ 'write:G1#1': old }))
+    expect(r.result).toBeUndefined()
+    const msg = String((r.error as Error).message)
+    expect(msg).toStartWith('agent({schema}): StructuredOutput retry cap (5) exceeded')
+    expect(msg).toContain("missing required 'plan_gap'")
+  })
+
   test('a plan gap halts at once, with the gap, and nothing lands', async () => {
     const r = await run(executeArgs(), happy({ 'critic:G1#1': verdict('G1-1-bb', { plan_gap: 'the header has two formats; the plan names one' }) }))
     expect(labels(r)).toEqual(['baseline', 'write:G1#1', 'critic:G1#1'])
     expect(halted(r)).toBe('G1 plan gap: the header has two formats; the plan names one')
     expect(r.result!.results).toEqual([])
+    // A blank one names none, as land.ts and the bridge read it: the gate lands (WP-AH).
+    const blank = await run(executeArgs(), happy({ 'critic:G1#1': verdict('G1-1-bb', { plan_gap: ' \n' }) }))
+    expect(halted(blank)).toBeNull()
+  })
+
+  test("a critic's rule clash halts at once as a rule clash, ahead of a plan gap it also names, and nothing lands (WP-AH)", async () => {
+    const clash = 'R1@2 bans network calls in src/, and plan.md:4 asks for a fetch of the schema'
+    const r = await run(executeArgs(), happy({ 'critic:G1#1': verdict('G1-1-bb', { rule_clash: clash, plan_gap: 'also unclear' }) }))
+    expect(labels(r)).toEqual(['baseline', 'write:G1#1', 'critic:G1#1'])
+    expect(halted(r)).toBe(`G1 rule clash: ${clash}`)
+    expect(r.result!.results).toEqual([])
+    // A blank one is no clash: the gate lands.
+    const blank = await run(executeArgs(), happy({ 'critic:G1#1': verdict('G1-1-bb', { rule_clash: '  ' }) }))
+    expect(halted(blank)).toBeNull()
+  })
+
+  test('a critic result without rule_clash fails its schema, as the engine would, and the workflow fails', async () => {
+    const v = verdict('G1-1-bb')
+    delete v.rule_clash
+    const r = await run(executeArgs(), happy({ 'critic:G1#1': v }))
+    expect(r.result).toBeUndefined()
+    expect(String((r.error as Error).message)).toContain("missing required 'rule_clash'")
   })
 
   test('three rejected attempts halt, and the gate is in the results with no commit', async () => {
@@ -527,9 +583,11 @@ describe('the script', () => {
     expect(props(byLabel(r, 'goal').opts.schema)).toEqual(Object.keys(VERIFIED_FIELDS).sort())
     expect(props(byLabel(r, 'land:G1').opts.schema)).toEqual(Object.keys(LANDED_FIELDS).sort())
     const v = byLabel(r, 'critic:G1#1').opts.schema as { required: string[] }
-    expect(props(v)).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'proposed_rules'].sort())
-    expect(v.required).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'proposed_rules'])
-    expect(props(byLabel(r, 'write:G1#1').opts.schema)).toEqual(['checks', 'files', 'notes', 'plan_lines', 'status'])
+    expect(props(v)).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules'].sort())
+    expect(v.required).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules'])
+    const w = byLabel(r, 'write:G1#1').opts.schema as { required: string[] }
+    expect(props(w)).toEqual(['checks', 'files', 'notes', 'plan_gap', 'plan_lines', 'status'])
+    expect(w.required).toEqual(['status', 'plan_lines', 'files', 'checks', 'notes', 'plan_gap'])
     expect(props(byLabel(r, 'adversary:G1#1').opts.schema)).toEqual(['breaks', 'not_tested', 'suspicious_tests'])
   })
 

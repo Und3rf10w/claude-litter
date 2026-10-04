@@ -9,7 +9,7 @@
 
 import type { Ports } from './ports'
 import type { OutFile, SpoolConsumer } from './hookfiles'
-import type { Author } from './records/core'
+import type { Author, StoredRecord } from './records/core'
 import type { RunJson } from './records/run'
 import type { TaskResultBody } from './records/fanout'
 import type { CriticProposal } from './records/rules'
@@ -17,6 +17,7 @@ import { appendRecord, readLedger } from './ledgercore'
 import { outPath, runDir, runJsonPath } from './layout'
 import { atomicWriteJson, readJson, serial } from './fsx'
 import { agentInfo } from './policy'
+import { planGates, verifyBody } from './verify'
 import { writeVerdictFile } from './verdicts'
 import { proposeFromCritic } from './rules/store'
 
@@ -63,15 +64,44 @@ export async function writeOut(p: Ports, litterDir: string, out: OutFile): Promi
 const VERDICT_ROLES: readonly string[] = ['gate-critic', 'verifier']
 
 /**
+ * `task.result` for an execute gate's executor (WP-AH): fanout's body with no
+ * task, and the gate and attempt the mod placed the result at. The bridge
+ * (repair.ts) and summary.md (execsummary.ts) read its `result.plan_gap`,
+ * since a block writes no verdict.
+ */
+export type GateResultBody = TaskResultBody & { task: null; gate: string; attempt: number }
+
+/**
+ * Where an execute executor's result belongs: the first of the run's gates
+ * with no land, and one past the highest attempt its verifies name.
+ * execute.js runs one executor at a time, in the gates' order, numbering a
+ * gate's attempts from 1 as its critic's verifies do, and that critic's
+ * verify of this attempt comes from a record call that drains this line
+ * first. Null when every gate has landed.
+ */
+function gateResultAt(json: RunJson, records: readonly StoredRecord[]): { gate: string; attempt: number } | null {
+  const landed = new Set(records.filter(r => r.kind === 'land' && typeof r.body.gate === 'string').map(r => r.body.gate as string))
+  const gate = (planGates(json) ?? []).find(g => !landed.has(g.id))?.id
+  if (gate === undefined) return null
+  let last = 0
+  for (const r of records) {
+    const v = verifyBody(r)
+    if (v && v.gate === gate && Number.isSafeInteger(v.attempt) && v.attempt > last) last = v.attempt
+  }
+  return { gate, attempt: last + 1 }
+}
+
+/**
  * Spool consumer: a run agent's spooled result becomes its `verdict` record,
  * the body being the result as returned with its `tool_use_id` (a gate
  * critic's also its verdict file, AB's), and each of a gate critic's
  * `proposed_rules` a proposal through AD's proposeFromCritic (section 16.4).
  * A fanout writer's becomes its `task.result`, with the task from its latest
  * `task.bind` (null when unbound): integration reads it (fanout.js step 3).
- * Recorded once per tool_use_id, so a line drained twice changes nothing. A
- * result from an agent the map doesn't know, or that contradicts it, is logged
- * and skipped.
+ * An execute gate's executor's becomes its `task.result` too, at its gate
+ * and attempt (gateResultAt). Recorded once per tool_use_id, so a line
+ * drained twice changes nothing. A result from an agent the map doesn't
+ * know, or that contradicts it, is logged and skipped.
  */
 export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   if (line.ev !== 'output') return
@@ -89,8 +119,9 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   const writer = info.role === 'executor'
   if (!writer && !VERDICT_ROLES.includes(info.role)) return
   const dir = runDir(ctx.litterDir, run)
-  // An execute gate's executor has no result to record; only a fanout writer does.
-  if (writer && (await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined))?.workflow !== 'fanout') return
+  // A writer's result is a fanout task's or an execute gate's; no other workflow runs one.
+  const json = writer ? await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined) : undefined
+  if (writer && json?.workflow !== 'fanout' && json?.workflow !== 'execute') return
   const input = line.input
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     ctx.p.log(`output from ${info.role} ${line.agent_id} (${line.tool_use_id}) carries no result; not recorded`)
@@ -106,6 +137,16 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
     }
     if (writer) {
       if (records.some(r => r.kind === 'task.result' && r.body.tool_use_id === line.tool_use_id)) return
+      if (json!.workflow === 'execute') {
+        const at = gateResultAt(json!, records)
+        if (!at) {
+          ctx.p.log(`output ${line.tool_use_id}: run ${run}'s executor returned after every gate landed; not recorded`)
+          return
+        }
+        const result: GateResultBody = { task: null, role: 'executor', tool_use_id: line.tool_use_id, result: input, ...at }
+        await appendRecord(ctx.p, dir, { run, kind: 'task.result', by, body: result })
+        return
+      }
       const bound = records.filter(r => r.kind === 'task.bind' && r.by.source === 'agent' && r.by.agentId === info.agentId).at(-1)
       const task = typeof bound?.body.task === 'string' ? bound.body.task : null
       const result: TaskResultBody = { task, role: 'executor', tool_use_id: line.tool_use_id, result: input }

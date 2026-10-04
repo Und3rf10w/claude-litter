@@ -224,9 +224,12 @@ function gatesPart(el: PaneElements, gates: BoardGatesProps): RenderElement {
 
 function detailPart(el: PaneElements, d: BoardGateDetail): RenderElement {
   const { Box, Text } = el
+  // The dimensions are of the attempt the verdict judged, which an executor's later stop isn't (WP-AH).
+  const judged = d.dimensions.length === 0 ? 'no verdict yet' : d.verdictAttempt !== null ? `the last verdict, on attempt ${d.verdictAttempt}` : 'the last verdict'
+  const gapBy = d.gapBy?.who === 'executor' ? ` (the executor stopped${d.gapBy.attempt !== null ? ` on attempt ${d.gapBy.attempt}` : ''})` : ''
   return (
     <Box flexDirection="column">
-      {section(el, d.gate, { text: d.dimensions.length > 0 ? 'the last verdict' : 'no verdict yet', dim: true })}
+      {section(el, d.gate, { text: judged, dim: true })}
       {d.dimensions.map(x => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
@@ -245,7 +248,8 @@ function detailPart(el: PaneElements, d: BoardGateDetail): RenderElement {
           <Text color="blue" wrap="truncate-end">{`  log ${d.verify.log}`}</Text>
         </Box>
       )}
-      {d.planGap !== '' && <Text color="warning" wrap="wrap">{`⚑ plan gap: ${d.planGap}`}</Text>}
+      {d.planGap !== '' && <Text color="warning" wrap="wrap">{`⚑ plan gap${gapBy}: ${d.planGap}`}</Text>}
+      {d.ruleClash !== '' && <Text color="warning" wrap="wrap">{`⚑ rule clash: ${d.ruleClash}`}</Text>}
     </Box>
   )
 }

@@ -459,10 +459,20 @@ export type BoardGateDetail = {
   gate: string
   /** The last verdict's dimensions, in VERDICT's order; empty before a verdict. */
   dimensions: { name: string; pass: boolean; evidence: string; gaps: string[] }[]
+  /** The attempt the last verdict judged (the verify it cites); null before a verdict, or when the ledger doesn't say. */
+  verdictAttempt: number | null
   /** The last verify: its id, how it ended (howEnded's words), and its log folder, absolute. */
   verify: { id: string; ended: string; log: string } | null
-  /** The last verdict's `plan_gap`, or ''. */
+  /** The last verdict's `plan_gap`, or the executor's when it stopped on one after that verdict (WP-AH); else ''. */
   planGap: string
+  /**
+   * Whose plan gap it is, and on which attempt: the critic's, on the attempt
+   * its verdict judged, or the executor's, on the attempt it stopped on before
+   * it was judged. Null when planGap is ''; attempt null when the ledger doesn't say.
+   */
+  gapBy: { who: 'critic' | 'executor'; attempt: number | null } | null
+  /** The last verdict's `rule_clash`, or '' when it names none (or predates it), or the executor stopped after it. */
+  ruleClash: string
 }
 
 /** A rule version the run delivered (`run.json.rules`), with its standing now (AD's loadRules). */

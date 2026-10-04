@@ -14,6 +14,8 @@ const SESSION = 'tier1-session'
 const LITTER = '/repo/.claude/litter'
 const EXEC = '20261003-api'
 const FAN = '20261003-fan'
+const STOP = '20261001-stop'
+const STOP_GAP = 'the plan never says which header wins when both are sent'
 const NOW = 1_800_000_000_000
 const BASE = 'a'.repeat(40)
 const LANDED = 'b'.repeat(40)
@@ -142,7 +144,12 @@ const PLAN = [
   '',
 ].join('\n')
 
-/** The execute run: G1 landed, G2 halted on a plan gap at its second attempt; and the fanout, done. */
+/**
+ * The execute run: G1 landed (its verdict from before rule_clash), G2 halted
+ * on a plan gap and a rule clash at its second attempt; the fanout, done; and
+ * an older execute run whose executor stopped on a plan gap at G1's second
+ * attempt, after the critic rejected its first.
+ */
 async function recordRuns(files: Map<string, string>): Promise<void> {
   const json = (run: string, workflow: string, args: Record<string, unknown>, rules: { id: string; version: number }[] = []) =>
     `${JSON.stringify({
@@ -204,6 +211,7 @@ async function recordRuns(files: Map<string, string>): Promise<void> {
         no_regressions: dim(true, 'none'),
         rules: dim(true, 'none apply'),
         plan_gap: 'the plan never says how long to wait between tries',
+        rule_clash: 'P-tests-first and L-no-sleeps clash: the retry test needs a wait',
         proposed_rules: [],
       },
     },
@@ -217,6 +225,37 @@ async function recordRuns(files: Map<string, string>): Promise<void> {
     { kind: 'verify', body: verify('v-int', 'integration', 1, true) },
     { kind: 'verdict', body: { verify_id: 'v-int', tasks: [{ id: 'a', pass: true, evidence: 'done', gaps: [] }], combined: 'ok' } },
     { kind: 'run.end', body: { taskId: 't1', generation: 1, status: 'done', reason: null, source: 'notification' } },
+  ])
+  files.set(`${LITTER}/${STOP}/run.json`, json(STOP, 'execute', { gates: [{ id: 'G1', title: 'Parse the header' }], maxAttempts: 3 }))
+  await ledger(files, STOP, [
+    { kind: 'run.start', body: start('execute', STOP) },
+    { kind: 'run.launch', body: launch },
+    { kind: 'verify', body: verify('v-s1', 'G1', 1, false) },
+    {
+      kind: 'verdict',
+      body: {
+        verify_id: 'v-s1',
+        plan_adherence: dim(false, 'the header has no version', ['version missing']),
+        tests_green: dim(false, 'verify v-s1 exit 1'),
+        no_regressions: dim(true, 'none'),
+        rules: dim(true, 'none apply'),
+        plan_gap: '',
+        rule_clash: 'P-tests-first and L-no-fixtures clash',
+        proposed_rules: [],
+      },
+    },
+    {
+      kind: 'task.result',
+      body: {
+        task: null,
+        role: 'executor',
+        tool_use_id: 'tu-s2',
+        result: { status: 'blocked', plan_lines: ['plan.md:3-8'], files: [], checks: [], notes: 'stopped before changing anything', plan_gap: STOP_GAP },
+        gate: 'G1',
+        attempt: 2,
+      },
+    },
+    { kind: 'run.end', body: { taskId: 't1', generation: 1, status: 'halted', reason: `G1 plan gap: ${STOP_GAP}`, source: 'notification' } },
   ])
 }
 
@@ -252,12 +291,14 @@ describe('the board, from a recorded ledger', () => {
       expect(await ui.find({ type: 'Text', text: '2/3', in: 'board-gates' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'bbbbbbb', in: 'board-gates' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '✕ PA TG', in: 'board-gates' })).toBeDefined()
-      // The halted gate is selected by default: its verdict's dimensions, its verify and its plan gap.
+      // The halted gate is selected by default: its verdict's dimensions, its verify, its plan gap and its rule clash.
+      expect(await ui.find({ type: 'Text', text: 'the last verdict, on attempt 2' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'the retry has no backoff' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '− backoff missing' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'verify v-g2b: exit 1' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: `log ${LITTER}/${EXEC}/verify/v-g2b` })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '⚑ plan gap: the plan never says how long to wait between tries' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '⚑ rule clash: P-tests-first and L-no-sleeps clash: the retry test needs a wait' })).toBeDefined()
       // The rule versions it launched with, and its critic's proposal, not accepted.
       expect(await ui.find({ type: 'Text', text: 'P-tests-first@2' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '"Every retry waits with backoff"' })).toBeDefined()
@@ -266,6 +307,19 @@ describe('the board, from a recorded ledger', () => {
       expect(await ui.find({ type: 'Button', key: 'board:rules' })).toBeDefined()
       // [Diff] only for a landed gate.
       expect(await ui.find({ key: 'board:diff:G2' })).toBeUndefined()
+    })
+
+    test(`a gate whose executor stopped on a plan gap after a verdict: halted, the gap the executor's, the dimensions the verdict's attempt's, on the ${surface}`, async ($, on) => {
+      await start($, on)
+      expect((await run($, 'litter-board', STOP)).text).toBe(`litter: the board shows run ${STOP} (execute, halted)`)
+      const ui = await mountBoard($, surface)
+      expect(await ui.find({ type: 'Text', text: '⚑ halted', in: 'board-gates' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '2/3', in: 'board-gates' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'the last verdict, on attempt 1' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '− version missing' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: `⚑ plan gap (the executor stopped on attempt 2): ${STOP_GAP}` })).toBeDefined()
+      // The earlier verdict's clash isn't why the run stopped.
+      expect(await ui.find({ type: 'Text', text: '⚑ rule clash' })).toBeUndefined()
     })
 
     test(`a fanout gets its header and its last records, on the ${surface}`, async ($, on) => {
@@ -305,6 +359,8 @@ describe('the board, from a recorded ledger', () => {
     await ui.pointer({ type: 'down', x: 4, y: 1, button: 'left', in: 'board-gates' })
     await w.clock.settle()
     expect(await ui.find({ type: 'Text', text: 'G1 as planned' })).toBeDefined()
+    // G1's verdict predates rule_clash, so its detail has no clash line.
+    expect(await ui.find({ type: 'Text', text: '⚑ rule clash' })).toBeUndefined()
     await ui.press({ key: 'board:diff:G1' })
     await w.clock.settle()
     const diff = w.argv.find(a => a[0] === 'git' && a.includes('diff'))

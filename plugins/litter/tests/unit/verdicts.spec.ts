@@ -51,7 +51,8 @@ const CRITIC = { source: 'agent' as const, agentId: 'gc1', agentType: 'litter:ga
 
 const verify = (body: VerifyBody) => appendRecord(p, rd, { run: RUN, kind: 'verify', by: CRITIC, body: body as unknown as Record<string, unknown> })
 
-function verdictBody(verifyId: string, o: { failing?: string[]; plan_gap?: string; proposed?: string[] } = {}): Record<string, unknown> {
+/** A verdict body; with no `rule_clash` unless given, as one recorded before it (WP-AH). */
+function verdictBody(verifyId: string, o: { failing?: string[]; plan_gap?: string; rule_clash?: string; proposed?: string[] } = {}): Record<string, unknown> {
   const dim = (name: string) =>
     o.failing?.includes(name)
       ? { pass: false, evidence: `${name} failed at src/a.ts:3`, gaps: [`${name}: src/a.ts:3`, `${name}: src/a.ts:9`] }
@@ -63,6 +64,7 @@ function verdictBody(verifyId: string, o: { failing?: string[]; plan_gap?: strin
     no_regressions: dim('no_regressions'),
     rules: dim('rules'),
     plan_gap: o.plan_gap ?? '',
+    ...(o.rule_clash !== undefined ? { rule_clash: o.rule_clash } : {}),
     proposed_rules: o.proposed ?? [],
     tool_use_id: 'toolu_1',
   }
@@ -138,6 +140,28 @@ describe('writeVerdictFile', () => {
     const goal = readFileSync(verdictFile(rd, 'goal', 1), 'utf8')
     expect(goal).toContain('- Verdict: approved')
     expect(goal).toContain('## Rules the critic proposed\n\nnone\n')
+  })
+
+  test('a rule clash rejects and shows after the plan gap; an empty one reads as none (WP-AH)', async () => {
+    await verify(verifyBody('G1-1-aa', 'G1', 1))
+    const clash = 'P-tests-first and L-no-fixtures clash: the test the plan names needs a fixture'
+    const rec = await verdict(verdictBody('G1-1-aa', { failing: ['plan_adherence'], plan_gap: 'the plan names no fixture', rule_clash: clash }))
+    await writeVerdictFile(p, rd, rec)
+    const text = readFileSync(verdictFile(rd, 'G1', 1), 'utf8')
+    expect(text).toContain('- Verdict: rejected, failing plan_adherence, with a plan gap, with a rule clash\n')
+    expect(text).toContain(`## Plan gap\n\nthe plan names no fixture\n\n## Rule clash\n\n${clash}\n\n## Rules the critic proposed\n`)
+
+    await verify(verifyBody('G2-1-bb', 'G2', 1))
+    const only = await verdict(verdictBody('G2-1-bb', { rule_clash: clash }))
+    await writeVerdictFile(p, rd, only)
+    expect(readFileSync(verdictFile(rd, 'G2', 1), 'utf8')).toContain('- Verdict: rejected, with a rule clash\n')
+
+    await verify(verifyBody('G3-1-cc', 'G3', 1))
+    const none = await verdict(verdictBody('G3-1-cc', { rule_clash: ' ' }))
+    await writeVerdictFile(p, rd, none)
+    const approved = readFileSync(verdictFile(rd, 'G3', 1), 'utf8')
+    expect(approved).toContain('- Verdict: approved\n')
+    expect(approved).not.toContain('## Rule clash')
   })
 
   test('the latest verdict for a gate and attempt wins, whatever order the files are written in', async () => {

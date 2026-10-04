@@ -34,7 +34,8 @@ function ledger() {
     launch: () => add('run.launch', { taskId: 't1', runId: 'wf_1', session: 's1', oid: 'o' }),
     verify: (gate: string, attempt: number, green = true) =>
       add('verify', { verify_id: `${gate}-${attempt}-v`, gate, attempt, exit_code: green ? 0 : 1, signal: null, timed_out: false, spawn_error: null, green }),
-    verdict: (gate: string, attempt: number, o: { failing?: Record<string, string[]>; plan_gap?: string } = {}) =>
+    /** A critic's verdict; `rule_clash` only when given, as before WP-AH. */
+    verdict: (gate: string, attempt: number, o: { failing?: Record<string, string[]>; plan_gap?: string; rule_clash?: string } = {}) =>
       add('verdict', {
         verify_id: `${gate}-${attempt}-v`,
         ...Object.fromEntries(
@@ -44,9 +45,20 @@ function ledger() {
           ]),
         ),
         plan_gap: o.plan_gap ?? '',
+        ...(o.rule_clash !== undefined ? { rule_clash: o.rule_clash } : {}),
         proposed_rules: [],
       }),
     land: (gate: string, commit: string) => add('land', { gate, verify_id: `${gate}-1-v`, commit }),
+    /** An executor's result, as output.ts records it (GateResultBody): blocked when `gap` or `notes` is given. */
+    wrote: (gate: string, attempt: number, o: { gap?: string; notes?: string } = {}) =>
+      add('task.result', {
+        task: null,
+        role: 'executor',
+        tool_use_id: `tu-w-${gate}-${attempt}`,
+        result: { status: o.gap !== undefined || o.notes !== undefined ? 'blocked' : 'done', plan_lines: [], files: [], checks: [], notes: o.notes ?? '', plan_gap: o.gap ?? '' },
+        gate,
+        attempt,
+      }),
     end: (status: string, reason: string | null, generation = 1) => add('run.end', { taskId: 't1', generation, status, reason, source: 'notification' }),
     repair: () => add('run.repair', { swarm: 'sw1', launch: 'l1' }),
   }
@@ -150,6 +162,77 @@ describe('a halted run', () => {
     const lines = await summary(json(), l.records)
     expect(section(lines, '## Attempts')).toContain('- G2 (Second): no attempt')
     expect(section(lines, '## Where it stopped').slice(2)).toEqual(['halted: G2 blocked: b.txt is generated', '', "The gate that didn't land: G2 (Second).", 'No verdict was recorded for it.', ''])
+  })
+
+  test("an executor's plan-gap stop (WP-AH): the gate that stopped shows the executor's gap, with no verdict", async () => {
+    const gap = 'plan.md:12 says "Hello, World"; the contract at plan.md:3 says tests/expected.txt decides'
+    const l = ledger()
+    l.start(), l.launch(), l.wrote('G1', 1), l.verify('G1', 1), l.verdict('G1', 1), l.land('G1', C1)
+    l.wrote('G2', 1, { gap })
+    l.end('halted', `G2 plan gap: ${gap}`)
+    deps.proposalsOf = async () => []
+    const lines = await summary(json(), l.records)
+    // The stop is an attempt, though nothing judged it.
+    expect(section(lines, '## Attempts')).toContain('- G2 (Second): 1 attempt; no verdict recorded')
+    expect(section(lines, '## Where it stopped').slice(2)).toEqual([
+      `halted: G2 plan gap: ${gap}`,
+      '',
+      "The gate that didn't land: G2 (Second).",
+      'Its executor stopped on attempt 1 before the attempt was judged, naming a plan gap:',
+      `- plan_gap: ${gap}`,
+      'No verdict was recorded for it.',
+      '',
+    ])
+  })
+
+  test("an executor's plan-gap stop after a rejected attempt shows the gap, then that attempt's verdict", async () => {
+    const l = ledger()
+    l.start(), l.launch(), l.wrote('G1', 1), l.verify('G1', 1), l.verdict('G1', 1, { failing: { plan_adherence: ['the version field'] } })
+    l.wrote('G1', 2, { gap: 'the gaps ask for a version field plan.md:4 never names' })
+    l.end('halted', 'G1 plan gap: the gaps ask for a version field plan.md:4 never names')
+    deps.proposalsOf = async () => []
+    const lines = await summary(json(), l.records)
+    expect(section(lines, '## Attempts')).toContain(`- G1 (First): 2 attempts; the last verdict (attempt 1) failed plan_adherence: ${file('G1', 1)}`)
+    const where = section(lines, '## Where it stopped')
+    expect(where.slice(4, 8)).toEqual([
+      "The gate that didn't land: G1 (First).",
+      'Its executor stopped on attempt 2 before the attempt was judged, naming a plan gap:',
+      '- plan_gap: the gaps ask for a version field plan.md:4 never names',
+      `Its last verdict, attempt 1 (${file('G1', 1)}):`,
+    ])
+  })
+
+  test("an executor's block with no plan gap, and a gap the critic judged after, add no executor line", async () => {
+    const l = ledger()
+    l.start(), l.launch(), l.verify('G1', 1), l.verdict('G1', 1), l.land('G1', C1)
+    l.wrote('G2', 1, { notes: 'plan.md:8 conflicts with P-no-net@1' })
+    l.end('halted', 'G2 blocked: plan.md:8 conflicts with P-no-net@1')
+    deps.proposalsOf = async () => []
+    expect(section(await summary(json(), l.records), '## Where it stopped').join('\n')).not.toContain('Its executor stopped')
+    const m = ledger()
+    m.start(), m.launch(), m.wrote('G1', 1, { gap: 'old' }), m.verify('G1', 1), m.verdict('G1', 1, { plan_gap: 'new' }), m.end('halted', 'G1 plan gap: new')
+    const where = section(await summary(json(), m.records), '## Where it stopped')
+    expect(where.join('\n')).not.toContain('Its executor stopped')
+    expect(where).toContain('- plan_gap: new')
+  })
+
+  test("a critic's rule clash (WP-AH) fails its verdict and is quoted where it stopped; a blank one fails nothing", async () => {
+    const clash = 'P-no-net@1 bans the network, and plan.md:8 asks for curl'
+    const l = ledger()
+    l.start(), l.launch(), l.verify('G1', 1), l.verdict('G1', 1, { rule_clash: '  ' }), l.land('G1', C1)
+    l.verify('G2', 1), l.verdict('G2', 1, { rule_clash: clash })
+    l.end('halted', `G2 rule clash: ${clash}`)
+    deps.proposalsOf = async () => []
+    const lines = await summary(json(), l.records)
+    expect(section(lines, '## Attempts').slice(2)).toEqual([
+      `- G1 (First): 1 attempt; the last verdict (attempt 1) passed every dimension: ${file('G1', 1)}`,
+      `- G2 (Second): 1 attempt; the last verdict (attempt 1) failed rule_clash: ${file('G2', 1)}`,
+      '',
+    ])
+    const where = section(lines, '## Where it stopped')
+    expect(where).toContain(`Its last verdict, attempt 1 (${file('G2', 1)}):`)
+    expect(where).toContain(`- rule_clash: ${clash}`)
+    expect(where.join('\n')).not.toContain('- plan_gap:')
   })
 
   test('an approved gate that did not land (a land refused) says its verdict passed', async () => {

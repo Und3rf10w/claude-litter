@@ -1,8 +1,8 @@
 // Tier 2: the board's view (hooks/board/view.ts; WP-AF, decision 21) from
 // ledgers the real ledgercore writes in a scratch repository, and the pane's
 // handlers (hooks/board/pane.tsx) that move its navigation. Each gate state
-// (landed, halted on a plan gap, out of attempts, repairing, in progress,
-// waiting), a continuation's earlier lands, the record list of the other
+// (landed, halted on a plan gap, the critic's or the executor's, out of
+// attempts, repairing, in progress, waiting), a continuation's earlier lands, the record list of the other
 // workflows, a tampered ledger, the rule versions and proposals, the [Diff]
 // and [Plan] sections with real git, and the rebuild check. AD's store is a
 // stub before the merge: its two reads are stood in for through `deps`.
@@ -305,9 +305,94 @@ describe('the execute gate table', () => {
     expect(d.dimensions[0]!.gaps).toEqual(['backoff missing'])
     expect(d.verify).toEqual({ id: 'v-g2b', ended: 'exit 1', log: verifyLogDir(runDir(litterDir, EXEC), 'v-g2b') })
     expect(d.planGap).toBe('the plan never says how long to wait between tries')
+    // The critic's gap, on the attempt its verdict judged.
+    expect(d.verdictAttempt).toBe(2)
+    expect(d.gapBy).toEqual({ who: 'critic', attempt: 2 })
+    // A verdict recorded before rule_clash names none.
+    expect(d.ruleClash).toBe('')
     // An execute run lists no records: the table is its view.
     expect(view.body!.records).toEqual([])
     expect(view.body!.buttons.map(b => b.key)).toEqual(['board:plan', 'board:rules'])
+  })
+
+  test("the detail names the last verdict's rule clash, cleaned; a blank one names none (WP-AH)", async () => {
+    const run = '20261003-clash'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+    await record(run, [
+      verify('v-g1', 'G1', 1, true),
+      verdict('v-g1', { rule_clash: '  ' }),
+      land('G1', 'v-g1', landed, base),
+      verify('v-g2', 'G2', 1, true),
+      verdict('v-g2', { rule_clash: 'P-tests-first and L-no-fixtures clash:\u001b[2J the test G2 names needs a fixture' }),
+      end(1, 'halted', 'G2: a rule clash'),
+    ])
+    const view = await buildBoard(p, litterDir, run)
+    expect(view.body!.gates!.selected).toBe('G2')
+    expect(view.body!.detail!.ruleClash).toBe('P-tests-first and L-no-fixtures clash: the test G2 names needs a fixture')
+    expect(view.body!.detail!.planGap).toBe('')
+    expect(view.body!.detail!.gapBy).toBeNull()
+    setBoardNav({ ...blankBoardNav(run), run, selected: 'G1' })
+    expect((await buildBoard(p, litterDir, run)).body!.detail!.ruleClash).toBe('')
+  })
+
+  describe("an executor's stop on a plan gap (WP-AH)", () => {
+    const GAP = 'the plan never says which header wins when both are sent'
+    /** The executor's task.result as output.ts records it (GateResultBody). */
+    const result = (gate: string, attempt: number, status: string, planGap: string): Rec => ({
+      kind: 'task.result',
+      body: {
+        task: null,
+        role: 'executor',
+        tool_use_id: `tu-${gate}-${attempt}`,
+        result: { status, plan_lines: ['plan.md:10-14'], files: [], checks: [], notes: 'stopped before changing anything', plan_gap: planGap },
+        gate,
+        attempt,
+      },
+    })
+    async function board(run: string, recs: readonly Rec[]): Promise<BoardView> {
+      await record(run, [start('execute', run), launch()])
+      writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+      await record(run, [verify('v-g1', 'G1', 1, true), verdict('v-g1'), land('G1', 'v-g1', landed, base), ...recs])
+      return buildBoard(p, litterDir, run)
+    }
+
+    test('before any verify: the gate is halted on its attempt, the gap in its detail', async () => {
+      const view = await board('20261003-stop', [result('G2', 1, 'blocked', GAP), end(1, 'halted', `G2 plan gap: ${GAP}`)])
+      expect(rowOf(view, 'G2')).toEqual(expect.objectContaining({ state: 'halted', color: 'warning', glyph: '⚑', attempt: 1, failing: [], verdictFile: null }))
+      expect(view.body!.gates!.selected).toBe('G2')
+      expect(view.body!.detail).toEqual({ gate: 'G2', dimensions: [], verdictAttempt: null, verify: null, planGap: GAP, gapBy: { who: 'executor', attempt: 1 }, ruleClash: '' })
+    })
+
+    test("after the gate's last verdict it wins for the gap, and the verdict's clash; before it, the verdict's stand", async () => {
+      const judged = verdict('v-g2', { plan_adherence: dim(false, 'no fallback'), plan_gap: 'the critic gap', rule_clash: 'P-a and P-b clash' })
+      const after = await board('20261003-after', [verify('v-g2', 'G2', 1, false), judged, result('G2', 2, 'blocked', GAP), end(1, 'halted', `G2 plan gap: ${GAP}`)])
+      expect(rowOf(after, 'G2')).toEqual(expect.objectContaining({ state: 'halted', attempt: 2, failing: ['plan_adherence'] }))
+      // The dimensions stay, as the verdict on attempt 1's; the gap is the executor's, on attempt 2.
+      expect(after.body!.detail).toEqual(
+        expect.objectContaining({ verdictAttempt: 1, planGap: GAP, gapBy: { who: 'executor', attempt: 2 }, ruleClash: '' }),
+      )
+      expect(after.body!.detail!.dimensions).toHaveLength(4)
+
+      const before = await board('20261003-before', [result('G2', 1, 'blocked', GAP), verify('v-g2', 'G2', 1, false), judged, end(1, 'halted', 'G2: a plan gap')])
+      expect(rowOf(before, 'G2')).toEqual(expect.objectContaining({ state: 'halted', attempt: 1 }))
+      expect(before.body!.detail).toEqual(
+        expect.objectContaining({ verdictAttempt: 1, planGap: 'the critic gap', gapBy: { who: 'critic', attempt: 1 }, ruleClash: 'P-a and P-b clash' }),
+      )
+    })
+
+    test('a done result, or a block with a blank plan_gap, changes nothing', async () => {
+      const done = await board('20261003-done', [result('G2', 1, 'done', ''), end(1, 'halted', 'G2')])
+      expect(rowOf(done, 'G2')).toEqual(expect.objectContaining({ state: 'waiting', attempt: 0 }))
+      expect(done.body!.detail!.planGap).toBe('')
+      expect(done.body!.detail!.gapBy).toBeNull()
+      const blank = await board('20261003-blank', [result('G2', 1, 'blocked', '  '), end(1, 'halted', 'G2')])
+      expect(rowOf(blank, 'G2')).toEqual(expect.objectContaining({ state: 'waiting', attempt: 0 }))
+      expect(blank.body!.detail!.planGap).toBe('')
+      // A later done result after a block: the latest result is the one read.
+      const redone = await board('20261003-redone', [result('G2', 1, 'blocked', GAP), result('G2', 1, 'done', ''), end(1, 'halted', 'G2')])
+      expect(redone.body!.detail!.planGap).toBe('')
+    })
   })
 
   test('a verdict file is named once it is there', async () => {

@@ -121,8 +121,8 @@ async function verify(agentId: string, g: string, extra: Record<string, unknown>
 
 const dim = (pass: boolean, gap = 'the defaults are merged over the settings') => ({ pass, evidence: 'plan.md:7-9 against git diff HEAD', gaps: pass ? [] : [gap] })
 
-/** A critic's verdict fields: every dimension passing unless `reject`, no plan gap unless `gap`. */
-const verdict = (verifyId: string, o: { gate?: string; reject?: boolean; gap?: string; rules?: string[] } = {}): Record<string, unknown> => ({
+/** A critic's verdict fields: every dimension passing unless `reject`, no plan gap unless `gap`, no rule clash unless `clash`. */
+const verdict = (verifyId: string, o: { gate?: string; reject?: boolean; gap?: string; clash?: string; rules?: string[] } = {}): Record<string, unknown> => ({
   gate: o.gate ?? 'G2',
   verify_id: verifyId,
   plan_adherence: dim(!o.reject),
@@ -130,6 +130,7 @@ const verdict = (verifyId: string, o: { gate?: string; reject?: boolean; gap?: s
   no_regressions: dim(true),
   rules: { pass: true, evidence: 'none apply', gaps: [] },
   plan_gap: o.gap ?? '',
+  rule_clash: o.clash ?? '',
   ...(o.rules ? { proposed_rules: o.rules } : {}),
 })
 
@@ -229,6 +230,8 @@ describe('verdict', () => {
       ['no evidence', 'cr-1', { ...base, rules: { pass: true, evidence: ' ', gaps: [] } }, 'rules.evidence', "litter: 'rules.evidence' is required"],
       ['gaps not a list', 'cr-1', { ...base, plan_adherence: { pass: false, evidence: 'e', gaps: 'all of it' } }, 'plan_adherence.gaps', "litter: 'plan_adherence.gaps' must be a list of strings"],
       ['no plan_gap', 'cr-1', { ...base, plan_gap: undefined }, 'plan_gap', "litter: 'plan_gap' is required"],
+      ['no rule_clash', 'cr-1', { ...base, rule_clash: undefined }, 'rule_clash', "litter: 'rule_clash' is required: the rule clash in words, naming the rules' ids"],
+      ['a rule_clash that is not a string', 'cr-1', { ...base, rule_clash: ['P-a', 'P-b'] }, 'rule_clash', "litter: 'rule_clash' is required"],
       ['proposed_rules not a list', 'cr-1', { ...base, proposed_rules: 'run uv sync' }, 'proposed_rules', "litter: 'proposed_rules' must be a list"],
       ['an empty proposed rule', 'cr-1', { ...base, proposed_rules: ['ok', ' '] }, 'proposed_rules[1]', "litter: 'proposed_rules[1]' must be a rule's text"],
     ]
@@ -291,7 +294,9 @@ describe('verdict', () => {
     )
     const rec = (await verdictsNow()).at(-1)!
     const body = rec.body as unknown as SwarmGateVerdictBody
-    expect(body).toEqual(expect.objectContaining({ verify_id: v.verify_id, gate: 'G2', attempt: 2, approved: true, round: null, tests_green, plan_gap: '', proposed_rules: ['run uv sync before the tests'] }))
+    expect(body).toEqual(
+      expect.objectContaining({ verify_id: v.verify_id, gate: 'G2', attempt: 2, approved: true, round: null, tests_green, plan_gap: '', rule_clash: '', proposed_rules: ['run uv sync before the tests'] }),
+    )
     expect(rec.by).toEqual({ source: 'agent', agentId: 'cr-1', agentType: liveSwarm(x.name)!.types.critic! })
     expect(files.map(f => f.seq)).toEqual([rec.seq])
     expect(proposals).toEqual([expect.objectContaining({ run: RUN, rule: 'run uv sync before the tests', source: 'critic', index: 0, gate: 'G2', swarm: x.name, verify_id: v.verify_id, round: null })])
@@ -311,6 +316,27 @@ describe('verdict', () => {
     const v = await verify('cr-1', 'G2')
     const r = (await judge('cr-1', v.verify_id, { gap: 'the plan never says where the defaults live' })) as Record<string, unknown>
     expect(r).toEqual(expect.objectContaining({ ok: true, approved: false, round: 1 }))
+  })
+
+  test("a rule clash rejects as a plan gap does, with its round, and its land is refused as the user's to settle (WP-AH)", async () => {
+    await started()
+    const tip = await tipOf()
+    const clash = 'P-tests-first and L-no-fixtures clash: the test G2 names needs a fixture'
+    write(w.dir, 'g2.txt', 'G2 in the swarm\n')
+    const v = await verify('cr-1', 'G2')
+    const r = (await judge('cr-1', v.verify_id, { clash })) as Record<string, unknown>
+    expect(r).toEqual(expect.objectContaining({ ok: true, approved: false, round: 1, rejected_attempts_left: 2, gate_attempts_left: 2 }))
+    expect(roundsUsed(x.name)).toBe(1)
+    const body = (await verdictsNow()).at(-1)!.body as unknown as SwarmGateVerdictBody
+    expect(body).toEqual(expect.objectContaining({ verify_id: v.verify_id, gate: 'G2', approved: false, round: 1, plan_gap: '', rule_clash: clash }))
+    expect(await gate('land', 'run-1', { gate: 'G2', verify_id: v.verify_id })).toEqual({
+      ok: true,
+      landed: false,
+      retry: false,
+      reason: `the latest verdict on gate G2 (on verify ${v.verify_id}) names a rule clash, which only the user can settle; report it to your parent as a rule clash`,
+    })
+    expect(await tipOf()).toBe(tip)
+    expect(await kindsAfterRepair()).not.toContain('land')
   })
 
   test('a round only on a rejection: an approval is round null and uses none; past repairRounds a rejection is refused with the ask', async () => {

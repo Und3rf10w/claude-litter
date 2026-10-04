@@ -23,11 +23,13 @@ const VERDICT = { type: 'object', properties: {
   no_regressions: DIM,
   rules: DIM,                     // the accepted rules in this gate's <rules> (section 16.5); "none apply" passes
   plan_gap: str,                  // '' unless the gate can't pass without an amendment
+  rule_clash: str,                // '' unless rules clash, the plan can't be met without breaking one, or an accepted rule looks wrong: yours to settle
   proposed_rules: strs },         // proposals only: run-local notes now, reviewed by you after the run
-  required: ['verify_id', 'plan_adherence', 'tests_green', 'no_regressions', 'rules', 'plan_gap', 'proposed_rules'] }
+  required: ['verify_id', 'plan_adherence', 'tests_green', 'no_regressions', 'rules', 'plan_gap', 'rule_clash', 'proposed_rules'] }
 const WRITTEN = { type: 'object', properties: {
-  status: { enum: ['done', 'blocked'] }, plan_lines: strs, files: strs, checks: strs, notes: str },
-  required: ['status', 'plan_lines', 'files', 'checks', 'notes'] }
+  status: { enum: ['done', 'blocked'] }, plan_lines: strs, files: strs, checks: strs, notes: str,
+  plan_gap: str },                // '' unless it stopped because the gate's plan lines don't settle the work
+  required: ['status', 'plan_lines', 'files', 'checks', 'notes', 'plan_gap'] }
 const BREAKS = { type: 'object', properties: {
   breaks: { type: 'array', items: { type: 'object', properties: { scenario: str, command: str, expected: str, observed: str },
     required: ['scenario', 'command', 'expected', 'observed'] } },
@@ -112,7 +114,10 @@ for (const gate of gates) {
         `Implement gate ${gate.id}, attempt ${tries} of ${MAX_ATTEMPTS}. Don't commit.`,
         { label: `write:${gate.id}#${tries}`, phase: 'Write', agentType: 'litter:executor', schema: WRITTEN })
       if (wrote === null) return halt(results, `executor for ${gate.id} returned nothing`)
-      if (wrote.status === 'blocked') return halt(results, `${gate.id} blocked: ${wrote.notes}`)
+      // A plan-gap stop halts as a critic's gap does, so the bridge can take it (WP-AH); any other block is the user's.
+      if (wrote.status === 'blocked') {
+        return halt(results, String(wrote.plan_gap ?? '').trim() !== '' ? `${gate.id} plan gap: ${wrote.plan_gap}` : `${gate.id} blocked: ${wrote.notes}`)
+      }
     }
     const wantBreaks = Boolean(gate.adversary || args.adversary) && !recritique
     const breaks = wantBreaks
@@ -128,7 +133,10 @@ for (const gate of gates) {
     for (const p of verdict.proposed_rules) {          // all are recorded as rule.propose; only ten reach prompts
       if (proposed.size < PROPOSED_CAP) proposed.add(p)
     }
-    if (verdict.plan_gap) return halt(results, `${gate.id} plan gap: ${verdict.plan_gap}`)
+    // A rule clash is the user's to settle, never a swarm's, so it halts ahead of a plan gap and the bridge declines it.
+    if (String(verdict.rule_clash ?? '').trim() !== '') return halt(results, `${gate.id} rule clash: ${verdict.rule_clash}`)
+    // A blank gap names none, as the mod reads it (land.ts, repair.ts).
+    if (String(verdict.plan_gap ?? '').trim() !== '') return halt(results, `${gate.id} plan gap: ${verdict.plan_gap}`)
     recritique = false
     if (!passed(verdict)) {
       feedback = feedbackFrom(verdict, wrote, tries)

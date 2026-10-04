@@ -99,7 +99,20 @@ const verifyBody = (verifyId: string, gate: string, attempt: number, tree: strin
 const pass = (evidence: string) => ({ pass: true, evidence, gaps: [] })
 const failed = (gap: string) => ({ pass: false, evidence: 'read the diff against the plan lines', gaps: [gap] })
 
-type Opts = { mode: 'auto' | 'off'; rounds?: number; agents?: number }
+/**
+ * `executorGap`: G2 halted on its executor's plan-gap stop (WP-AH), before
+ * any verdict on G2: no G2 verify or verdict is seeded, and the executor's
+ * StructuredOutput waits in the session's spool, as output.sh leaves it.
+ */
+type Opts = { mode: 'auto' | 'off'; rounds?: number; agents?: number; executorGap?: boolean }
+
+/** G2's executor, in the agent map as its SubagentStart left it. */
+const EXECUTOR = { agentId: 'ex-G2', agentType: 'litter:executor', role: 'executor', run: RUN, cwd: '/repo', started: 1, stopped: null, sessionId: SESSION, transcriptPath: '/t' }
+/** Its StructuredOutput: blocked, the gap in plan_gap (execute.js's WRITTEN). */
+const STOP = { status: 'blocked', plan_lines: ['plan.md:7-9'], files: [], checks: [], notes: 'stopped before changing anything', plan_gap: GAP }
+const EXECUTOR_HALT = `G2 plan gap: ${GAP}`
+/** The line output.sh appends to the session's spool for that StructuredOutput. */
+const STOP_LINE = { v: 1, ev: 'output', ts: 2, session_id: SESSION, agent_id: EXECUTOR.agentId, agent_type: EXECUTOR.agentType, tool_use_id: 'toolu_w2', input: STOP }
 
 /**
  * The execute run as generation 1 leaves it, still open: plan.md, run.json
@@ -175,6 +188,8 @@ async function seedRun(files: Map<string, string>, o: Opts): Promise<void> {
   await add('verdict', { verify_id: 'G1-1-a1b2c3d4e5', ...dims, plan_gap: '', proposed_rules: [], tool_use_id: 'tu-g1' }, g1)
   await add('land.intent', { gate: 'G1', verify_id: 'G1-1-a1b2c3d4e5', tree: TIP_TREE, old: BASE, ref: REF, mode: 'index' })
   await add('land', { gate: 'G1', verify_id: 'G1-1-a1b2c3d4e5', commit: TIP, tree: TIP_TREE, old: BASE, ref: REF })
+  // The executor's spool line is the test's to write, after session.start, so prompt.submit's drain records it.
+  if (o.executorGap) return
   const g2 = agent('critic-G2', 'litter:gate-critic')
   await add('verify', verifyBody('G2-1-f6a7b8c9d0', 'G2', 1, ATTEMPT_TREE), g2)
   await add('verdict', { verify_id: 'G2-1-f6a7b8c9d0', ...dims, plan_gap: GAP, proposed_rules: [], tool_use_id: 'tu-g2' }, g2)
@@ -308,7 +323,10 @@ type World = {
 
 /** session.start in the world above, interactive, as tier1-session: the run is open, its task generation 1's. */
 async function started($: Engine, on: On, o: Opts): Promise<World> {
-  mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
+  mock.store(on, {
+    [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER },
+    ...(o.executorGap ? { [`litter.agent.${EXECUTOR.agentId}`]: EXECUTOR } : {}),
+  })
   const clock = mock.clock(on, { now: 1_791_028_800_000 })
   // Every variable unset: the launch reads none from the machine running the test.
   mock.env(on, {})
@@ -345,15 +363,16 @@ async function started($: Engine, on: On, o: Opts): Promise<World> {
   return { files, git, clock, seen, logs, types, spawned }
 }
 
-const NOTICE =
+const noticeOf = (halt: string) =>
   `<task-notification>\n<task-id>${TASK}</task-id>\n<status>completed</status>\n` +
   '<summary>Dynamic workflow "litter:execute" completed</summary>\n' +
-  `<result>${JSON.stringify({ halted: HALT })}</result>\n` +
+  `<result>${JSON.stringify({ halted: halt })}</result>\n` +
   '</task-notification>'
+const NOTICE = noticeOf(HALT)
 
-/** Generation 1's notification, on prompt.submit: run.end, summary.md, then the bridge. */
-async function halted($: Engine, w: World): Promise<void> {
-  await $.prompt.submit({ text: NOTICE, origin: { kind: 'task-notification' }, wait: false })
+/** Generation 1's notification, on prompt.submit: the spool drained, run.end, summary.md, then the bridge. */
+async function halted($: Engine, w: World, text = NOTICE): Promise<void> {
+  await $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
   expect(w.git.unknown).toEqual([])
 }
 
@@ -396,7 +415,7 @@ async function judged(w: World, n: number, by: Author, o: { approved: boolean; r
   const id = `G2-${n}-${String(n).repeat(10)}`
   await append(w.files, RUN_DIR, RUN, 'verify', by, verifyBody(id, 'G2', n, ATTEMPT_TREE))
   const dims = { plan_adherence: o.approved ? pass('plan.md:7-9 against the diff') : failed('the defaults are merged over the settings'), tests_green: pass(`verify ${id} exit 0`), no_regressions: pass('searched the callers'), rules: pass('none apply') }
-  await append(w.files, RUN_DIR, RUN, 'verdict', by, { verify_id: id, ...dims, plan_gap: '', proposed_rules: [], gate: 'G2', attempt: n, approved: o.approved, round: o.round })
+  await append(w.files, RUN_DIR, RUN, 'verdict', by, { verify_id: id, ...dims, plan_gap: '', rule_clash: '', proposed_rules: [], gate: 'G2', attempt: n, approved: o.approved, round: o.round })
   return id
 }
 
@@ -473,6 +492,35 @@ describe('the execute bridge', () => {
     expect(w.seen).toHaveLength(2)
     expect(w.seen[1]!.text).toContain(`run the litter swarm skill with start ${s.name}`)
     expect(w.logs.filter(l => l.includes('repair') && l.includes('failed'))).toEqual([])
+  })
+
+  test("under auto, an executor's plan-gap stop (WP-AH): its spooled result is recorded at G2, attempt 1, and the swarm starts with the executor's words", async ($, on) => {
+    const w = await started($, on, { mode: 'auto', executorGap: true })
+    // Spooled after session.start, so the notification's prompt.submit drains it ahead of run.end.
+    w.files.set(`${LITTER}/hooks/spool/${SESSION}.jsonl`, `${JSON.stringify(STOP_LINE)}\n`)
+    await halted($, w, noticeOf(EXECUTOR_HALT))
+    // After the 6 seeded records (G1 landed).
+    const after = kindsAfter(w.files, 6)
+    expect(after.map(r => r.kind)).toEqual(['task.result', 'run.end', 'run.repair'])
+    expect(after[0]!.body).toEqual({ task: null, role: 'executor', tool_use_id: 'toolu_w2', result: STOP, gate: 'G2', attempt: 1 })
+    expect(after[1]!.body).toEqual(expect.objectContaining({ status: 'halted', reason: EXECUTOR_HALT }))
+    const s = launched(w.files)
+    expect(after[2]!.body).toEqual(expect.objectContaining({ generation: 2, swarm: s.name }))
+    const spec = JSON.parse(w.files.get(`${LITTER}/swarms/${s.name}/revisions/1.json`)!) as { nodes: { id: string; task?: string }[] }
+    expect(spec.nodes.map(n => n.id)).toEqual(['runner', 'executor', 'critic'])
+    const task = spec.nodes[0]!.task ?? ''
+    expect(task).toContain(`Continue execute run ${RUN}, which halted at gate G2: the executor stopped on attempt 1 with a plan gap, before the attempt was judged.`)
+    expect(task).toContain(`The plan gap, as the executor stated it when it stopped on G2, before its attempt was judged: "${GAP}"`)
+    expect(task).toContain("Gates to land, in the plan's order: G2 and G3\n")
+    const summary = w.files.get(`${RUN_DIR}/summary.md`) ?? ''
+    expect(summary).toContain(`Plan-template swarm ${s.name} (launch `)
+    expect(summary).toContain(`Its executor stopped on attempt 1 before the attempt was judged, naming a plan gap:\n- plan_gap: ${GAP}`)
+    // The executor brief at the revision says to report such a stop as a plan gap.
+    const brief = w.files.get(`${LITTER}/swarms/${s.name}/revisions/1/briefs/executor.md`) ?? ''
+    expect(brief).toContain('Stop and report a plan gap to your parent if the plan lines are ambiguous')
+    await $.turn.complete({ turnId: 'turn-1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' })
+    await w.clock.settle()
+    expect(w.seen.at(-1)!.text).toContain(`run the litter swarm skill with start ${s.name}`)
   })
 })
 

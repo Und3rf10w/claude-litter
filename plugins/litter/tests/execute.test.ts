@@ -154,6 +154,7 @@ describe("a gate critic's StructuredOutput", () => {
     no_regressions: dim(true, 'nothing else changed'),
     rules: dim(true, 'none apply'),
     plan_gap: '',
+    rule_clash: '',
     proposed_rules: [],
   }
 

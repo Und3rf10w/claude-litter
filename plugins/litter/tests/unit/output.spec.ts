@@ -202,14 +202,65 @@ describe('consumeOutput', () => {
     expect(r.body).toEqual({ task: null, role: 'executor', tool_use_id: 'tu1', result: BLOCKED, unbound: true, bind_refusal: BLOCKED.bind_refusal })
   })
 
-  test("a researcher's result, and an execute run's executor, record nothing", async () => {
-    await runJson('execute')
+  test("a researcher's result, and a plan or design run's executor, record nothing", async () => {
     await startAgent('ex', 'litter:executor')
     await startAgent('rs', 'litter:researcher')
-    await consumeOutput(ctx(), output('ex', 'litter:executor', { status: 'done' }))
+    for (const wf of ['plan', 'design']) {
+      await runJson(wf)
+      await consumeOutput(ctx(), output('ex', 'litter:executor', { status: 'done' }, `tu-${wf}`))
+    }
     await runJson('fanout')
     await consumeOutput(ctx(), output('rs', 'litter:researcher', { answer: 'x' }))
     expect(await records()).toEqual([])
+  })
+
+  describe("an execute gate's executor (WP-AH)", () => {
+    /** run.json as much as consumeOutput reads of an execute run: its workflow and gates. */
+    const executeJson = () =>
+      p.fs.write(join(runDir(dir, RUN), 'run.json'), JSON.stringify({ v: 1, run: RUN, workflow: 'execute', args: { gates: [{ id: 'G1' }, { id: 'G2' }] } }))
+    const critic = { source: 'agent' as const, agentId: 'gc', agentType: 'litter:gate-critic' }
+    const verify = (gate: string, attempt: number) =>
+      appendRecord(p, runDir(dir, RUN), { run: RUN, kind: 'verify', by: critic, body: { verify_id: `${gate}-${attempt}-aa`, gate, attempt, tree_after: 't' } })
+    const WROTE = { status: 'done', plan_lines: ['plan.md:3-5'], files: ['lib/a.sh'], checks: ['sh test.sh: pass'], notes: '', plan_gap: '' }
+    const GAP = 'plan.md:12 says "Hello, World"; the contract at plan.md:3 says every string follows tests/expected.txt'
+    const STOP = { ...WROTE, status: 'blocked', files: [], checks: [], notes: 'stopped before changing anything', plan_gap: GAP }
+
+    test("its result is a task.result at the first gate with no land and its next attempt, recorded once", async () => {
+      await executeJson()
+      await startAgent('ex', 'litter:executor')
+      await consumeOutput(ctx(), output('ex', 'litter:executor', WROTE, 'tu-w1'))
+      await consumeOutput(ctx(), output('ex', 'litter:executor', WROTE, 'tu-w1'))
+      const results = (await records()).filter(r => r.kind === 'task.result')
+      expect(results).toHaveLength(1)
+      expect(results[0]!.body).toEqual({ task: null, role: 'executor', tool_use_id: 'tu-w1', result: WROTE, gate: 'G1', attempt: 1 })
+      expect(results[0]!.by).toEqual({ source: 'agent', agentId: 'ex', agentType: 'litter:executor' })
+      expect((await records()).map(r => r.kind)).toEqual(['task.result'])
+    })
+
+    test("a plan-gap stop carries its plan_gap, at its gate and attempt: one past the gate's verifies, a re-critique's included", async () => {
+      await executeJson()
+      await startAgent('ex', 'litter:executor')
+      const rd = runDir(dir, RUN)
+      await verify('G1', 1)
+      await appendRecord(p, rd, { run: RUN, kind: 'land', by: { source: 'mod' }, body: { gate: 'G1', verify_id: 'G1-1-aa', commit: 'c'.repeat(40) } })
+      await verify('G2', 1)
+      await verify('G2', 2)
+      await verify('G2', 2)
+      await consumeOutput(ctx(), output('ex', 'litter:executor', STOP, 'tu-w3'))
+      const r = (await records()).find(x => x.kind === 'task.result')!
+      expect(r.body).toEqual({ task: null, role: 'executor', tool_use_id: 'tu-w3', result: STOP, gate: 'G2', attempt: 3 })
+      expect((r.body.result as { plan_gap: string }).plan_gap).toBe(GAP)
+    })
+
+    test('after every gate landed, it is logged and not recorded', async () => {
+      await executeJson()
+      await startAgent('ex', 'litter:executor')
+      const rd = runDir(dir, RUN)
+      for (const gate of ['G1', 'G2']) await appendRecord(p, rd, { run: RUN, kind: 'land', by: { source: 'mod' }, body: { gate, verify_id: `${gate}-1-aa`, commit: 'c'.repeat(40) } })
+      await consumeOutput(ctx(), output('ex', 'litter:executor', WROTE))
+      expect((await records()).map(r => r.kind)).toEqual(['land', 'land'])
+      expect(p.logs.join('\n')).toContain('returned after every gate landed; not recorded')
+    })
   })
 
   test('writeOut takes an integrate_id', async () => {

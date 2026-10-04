@@ -20,17 +20,20 @@
 # preamble holds the contract "every output string follows
 # tests/expected.txt", and G2's Done when says greet prints "Hello, World": a
 # gap the plan's own contract settles. G1 and G3 are plain, and run.start sets
-# maxAttempts: 1, so generation 1 should halt at G2, on a plan gap or on its
-# one attempt. Under auto the bridge opens generation 2 with no ask, and the
-# plan-template swarm starts on the lead's next turn and lands G2 and G3;
-# once G3 has landed the session ends the swarm (if the lead hasn't). Under
-# off nothing starts, the attempt stays in the tree, and summary.md offers
-# the routes. Interactive through drive.exp, as repair.sh, since the swarm
-# starts on the lead's next turn.
+# maxAttempts: 1, so generation 1 should halt at G2: most often on the
+# executor's plan gap (its blocked result's plan_gap, recorded as a
+# task.result at G2: it spots the contradiction before writing anything),
+# else on the critic's plan gap or on its one attempt. Under auto the bridge
+# opens generation 2 with no ask, and the plan-template swarm starts on the
+# lead's next turn and lands G2 and G3; once G3 has landed the session ends
+# the swarm (if the lead hasn't). Under off nothing starts, the attempt stays
+# in the tree, and summary.md offers the routes. Interactive through
+# drive.exp, as repair.sh, since the swarm starts on the lead's next turn.
 #
 # The bridge case is valid only if generation 1 halts at G2 that way. If G2
-# landed in generation 1, or generation 1 halted at G2 before any verdict on
-# it (the executor blocked, or returned nothing: a halt the bridge declines by
+# landed in generation 1, or generation 1 halted at G2 before its last
+# attempt was judged and not on the executor's plan gap (a block with no
+# plan_gap, or an agent that returned nothing: a halt the bridge declines by
 # design), it prints INCONCLUSIVE and exits 3: run it again, and count it as
 # neither a pass nor a fail.
 #
@@ -90,7 +93,7 @@ compare_side() {
   h_git -C "$H_REPO" commit -q -m 'the compare fixture: lib/, vendor/, tests/, test.sh and plan.md' || exit 1
   if [ "$1" = litter ]; then
     cp "$LITTER_ROOT/workflows/execute.js" "$H_DIR/litter/workflows/execute.js" || exit 1
-    # Committed at HEAD, so loadRules delivers it as accepted (committed); no paths, so every gate gets it in args.rules.
+    # Committed at HEAD, so loadRules delivers it as accepted (committed); a ban, so every gate gets it in args.rules whatever its paths (vendor/**).
     mkdir -p "$H_REPO/.litter/rules"
     cp "$BAN" "$H_REPO/.litter/rules/${BAN##*/}" || exit 1
     h_git -C "$H_REPO" add .litter
@@ -352,9 +355,12 @@ fi
 
 # Generation 1's ending at G2, from the run's records (slurped), the way
 # repair.ts's classifyExecute reads it: a verdict's gate is its own `gate`
-# (a plan-template one's) or its cited verify's (an execute critic's).
+# (a plan-template one's) or its cited verify's (an execute critic's), and an
+# executor's result is its task.result at its `gate` (output.ts, WP-AH).
 #   landed     G2 landed in generation 1: INCONCLUSIVE
-#   noverdict  it halted at G2 with no verdict on G2 (blocked, or nothing returned): INCONCLUSIVE
+#   noverdict  it halted at G2 before its last attempt was judged, and not on
+#              the executor's plan gap (a block with no plan_gap, or nothing returned): INCONCLUSIVE
+#   exgap      G2's executor stopped on a plan gap after G2's last verdict, if any: the expected path
 #   gap        G2's latest verdict names a plan gap
 #   attempts   G2 has $max verdicts and no land
 #   none, status, nog1, other: not the halt the case needs
@@ -368,7 +374,10 @@ sort_by(.seq) as $r
     elif $e1.body.status != "halted" then "status"
     elif (any($g1[]; .kind == "land" and .body.gate == "G1") | not) then "nog1"
     else [$g1[] | select(.kind == "verdict" and ((.body.gate // $vg[.body.verify_id // ""]) == "G2"))] as $v
-    | if ($v | length) == 0 then "noverdict"
+    | ([$g1[] | select(.kind == "task.result" and .body.role == "executor" and .body.gate == "G2")] | last) as $w
+    | if $w != null and (($v | length) == 0 or $w.seq > ($v | last | .seq)) then
+        (if $w.body.result.status == "blocked" and (($w.body.result.plan_gap // "") | test("\\S")) then "exgap" else "noverdict" end)
+      elif ($v | length) == 0 then "noverdict"
       elif (($v | last | .body.plan_gap // "") | test("\\S")) then "gap"
       elif ($v | length) >= $max then "attempts"
       else "other" end
@@ -393,7 +402,7 @@ rd=${rd%/}
 records() { cat "$rd"/ledger/*.json 2>/dev/null | jq -s 'sort_by(.seq)'; }
 over() {
   w=$(records | jq -r --argjson max 1 -f "$GEN1") || return 1
-  case $w in gap | attempts) ;; none) return 1 ;; *) return 0 ;; esac
+  case $w in gap | exgap | attempts) ;; none) return 1 ;; *) return 0 ;; esac
   ls "$rd"/ledger/*-repair.declined.json >/dev/null 2>&1 && return 0
   records | jq -e '[.[] | select(.kind == "run.end")] | length >= 2' >/dev/null
 }
@@ -476,7 +485,7 @@ landed)
   exit 3
   ;;
 noverdict)
-  echo "INCONCLUSIVE: generation 1 halted at G2 with no verdict on it ($(end1))"
+  echo "INCONCLUSIVE: generation 1 halted at G2 before its last attempt was judged, and not on the executor's plan gap ($(end1))"
   echo "$H_CASE: a halt the bridge declines by design; run it again (files in $H_DIR)"
   exit 3
   ;;
@@ -489,7 +498,7 @@ c_setting() {
 }
 c_gen1() {
   case $gen1 in
-  gap | attempts) return 0 ;;
+  gap | exgap | attempts) return 0 ;;
   none) echo "the run never ended" ;;
   status) echo "generation 1 ended $(end1), not halted" ;;
   nog1) echo "G1 didn't land in generation 1 ($(end1))" ;;
@@ -610,6 +619,24 @@ c_routes() {
     case $part in *"$w"*) ;; *) echo "the Repair part doesn't offer '$w'"; return 1 ;; esac
   done
 }
+# repair.ts's whyOf and PLAN_TASK's {gap_by}: the halt names whose plan gap it was. Under auto, in the gate-runner's task
+# (the swarm's revision 1); under off, in summary.md's Repair part.
+c_gap_source() {
+  case $gen1 in
+  exgap) why='the executor stopped on attempt 1 with a plan gap, before the attempt was judged' by='the executor stated it when it stopped on G2, before its attempt was judged' ;;
+  *) why="the critic's verdict on attempt 1 names a plan gap" by="the critic's last verdict on G2 states it" ;;
+  esac
+  if [ "$repair" = auto ]; then
+    f=$(swarm_dir)/revisions/1.json
+    [ -f "$f" ] || { echo "no $f"; return 1; }
+    text=$(jq -r '.nodes[] | select(.id == "runner") | .task // empty' "$f") || { echo "$f doesn't parse"; return 1; }
+    case $text in *"The plan gap, as $by: "*) ;; *) echo "the runner's task doesn't say 'The plan gap, as $by'"; return 1 ;; esac
+  else
+    [ -f "$RD/summary.md" ] || { echo "no summary.md"; return 1; }
+    text=$(awk '/^## Repair$/ { on = 1; next } /^## / { on = 0 } on' "$RD/summary.md")
+  fi
+  case $text in *"$why"*) ;; *) echo "the halt isn't named as '$why'"; return 1 ;; esac
+}
 c_not_landed() {
   l=$(records | jq -r 'map(select(.kind == "land") | .body.gate) | join(" ")') || { echo "the run's ledger doesn't parse"; return 1; }
   [ "$l" = G1 ] || { echo "the lands are for '$l', not G1 alone"; return 1; }
@@ -619,7 +646,8 @@ c_not_landed() {
 
 h_expect "run.start and the launch made a run" c_run
 h_expect "run.json holds repair: $repair and maxAttempts: 1" c_setting
-h_expect "generation 1 landed G1 and halted at G2, on a plan gap or its one attempt" c_gen1
+h_expect "generation 1 landed G1 and halted at G2, on the executor's or the critic's plan gap, or its one attempt" c_gen1
+case $gen1 in gap | exgap) h_expect "the halt names whose plan gap it was ($gen1)" c_gap_source ;; esac
 if [ "$repair" = auto ]; then
   h_expect "run.repair opened generation 2, and the swarm, confirmed by the run, bound its gate-runner in the run's checkout" c_repair_opened
   h_expect "no ask after the launch" c_no_ask
@@ -629,7 +657,12 @@ if [ "$repair" = auto ]; then
   h_expect "within repairRounds rejections and repairAgents spawns" c_budget
 else
   h_expect "nothing started: no run.repair, no repair swarm, no swarm ref" c_nothing_started
-  h_expect "the halted attempt is still in the tree" c_attempt_kept
+  # An executor's plan-gap stop comes before any verify of G2, so there's no verified tree to compare.
+  if [ "$gen1" = exgap ]; then
+    echo "$H_CASE: G2's executor stopped on a plan gap before any verify of G2; no verified attempt to look for in the tree"
+  else
+    h_expect "the halted attempt is still in the tree" c_attempt_kept
+  fi
   h_expect "summary.md's Repair part offers the swarm, an amend, or stopping" c_routes
   h_expect "only G1 landed" c_not_landed
 fi

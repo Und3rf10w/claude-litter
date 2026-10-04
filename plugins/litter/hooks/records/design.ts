@@ -22,7 +22,7 @@ export const KNOWN_KINDS = [
   'finding', 'coverage', 'mechanism', 'probe', 'reframe', 'proposal', 'verdict', 'design.feedback',
   // execute
   'verify', 'land.intent', 'land', 'land.abandoned', 'land.blocked', 'rule.propose',
-  // fanout (bodies in records/fanout.ts)
+  // fanout (bodies in records/fanout.ts; task.result is also an execute gate executor's, output.ts's GateResultBody)
   'task.bind', 'task.result', 'integrate', 'integrate.merge', 'integrate.conflict', 'integrate.skip', 'integrate.done',
   // the run lock
   'lock.recovered', 'lock.forced',

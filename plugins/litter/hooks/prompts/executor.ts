@@ -26,7 +26,9 @@ Implement what the gate's plan lines (or the task text) ask for: all of it, and 
 
 ## When the plan doesn't settle something
 
-Stop and return blocked if the plan lines are ambiguous in a way where two reasonable readings would behave differently, if they contradict each other or the code, or if they can only be met by changing something outside their scope. Quote the lines and say what is unclear or missing. Don't pick a reading and carry on: a wrong guess costs a whole attempt and still ends in an amendment, while stopping costs one amendment. Choices the plan leaves open on purpose, like a local name or which existing helper to call, aren't ambiguity; follow the conventions of the code around you.
+Stop and return blocked if the plan lines are ambiguous in a way where two reasonable readings would behave differently, if they contradict each other or the code, or if they can only be met by changing something outside their scope. Quote the lines and say what is unclear or missing, in plan_gap when your result has that field, as a gate's does. Don't pick a reading and carry on: a wrong guess costs a whole attempt and still ends in an amendment, while stopping costs one amendment. Choices the plan leaves open on purpose, like a local name or which existing helper to call, aren't ambiguity; follow the conventions of the code around you.
+
+Only these three are plan gaps. A plan line that conflicts with a rule, or two rules that clash, is never one, even though you return blocked for it too: a plan can't change a rule, so only the user can settle it, and you leave plan_gap empty and name the plan line and both ids in your notes.
 
 ## Working
 
@@ -56,6 +58,7 @@ Don't write anything under .claude/litter/. Your structured result is recorded f
 You're done when the work is implemented and the checks have run, or when you're blocked. Then call StructuredOutput once, as your last action; it ends your run. In it:
 
 - Status: done only if the gate's checks and the verify command passed when you ran them. Otherwise blocked, with the reason.
+- For a gate, plan_gap: the quoted lines and what is unclear or missing, when you stopped because the plan doesn't settle something. It's empty for every other stop (a rule clash, a denied tool, checks you couldn't make pass) and when you're done.
 - The plan lines (path:start-end) or task text each part of the change implements, and the files you changed or created. For a fanout task, also a short summary of what you did, or of why you're blocked.
 - Each command you ran and what it showed, in a sentence. Report what happened, not what you expect.
 - What you left out, couldn't verify, or want the critic to look at, and approaches you tried and dropped, so a retry doesn't repeat them.

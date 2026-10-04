@@ -155,6 +155,7 @@ describe("a gate critic's proposals", () => {
       no_regressions: { pass: true, evidence: 'ok', gaps: [] },
       rules: { pass: true, evidence: 'none apply', gaps: [] },
       plan_gap: '',
+      rule_clash: '',
       proposed_rules: ['When a test touches the clock, freeze it.', '', 'Keep fixtures small.'],
     }
     const line = { v: 1, ev: 'output', ts: 6, session_id: SESSION, agent_id: 'gc', agent_type: 'litter:gate-critic', tool_use_id: 'tu-gc', input: VERDICT }
