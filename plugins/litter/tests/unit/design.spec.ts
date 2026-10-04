@@ -239,7 +239,8 @@ describe("the launchers' kinds", () => {
     expect(asError(await call({ kind: 'plan.write', run: RUN, gates: [{ id: 'gate1', title: 't' }] })).field).toBe('gates[0].id')
     expect(asError(await call({ kind: 'plan.write', run: RUN, gates: [{ id: 'G1', title: 't' }, { id: 'G1', title: 'u' }] })).field).toBe('gates[1].id')
     expect(asError(await call({ kind: 'plan.write', run: RUN, gates: [{ id: 'G1' }] })).field).toBe('gates[0].title')
-    expect((await call({ kind: 'plan.write', run: RUN, gates: [{ id: 'G1', title: 'Parse' }, { id: 'G2', title: 'Wire' }] })).ok).toBe(true)
+    // A gate needs its Files, Checks and Done when, and plan.write a plan run: plan.spec.ts writes one.
+    expect(asError(await call({ kind: 'plan.write', run: RUN, gates: [{ id: 'G1', title: 'Parse' }, { id: 'G2', title: 'Wire' }] })).field).toBe('gates[0].files')
   })
 
   test('gate.amend needs the gate, the new text and why', async () => {
@@ -247,7 +248,8 @@ describe("the launchers' kinds", () => {
     expect(asError(await call({ kind: 'gate.amend', run: RUN, gate: 'G2', reason: 'r' })).field).toBe('after')
     expect(asError(await call({ kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a' })).field).toBe('reason')
     expect(asError(await call({ kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a', reason: 'r', before: 3 })).field).toBe('before')
-    expect((await call({ kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a', reason: 'r' })).ok).toBe(true)
+    // 'after' must be the gate's section, of an execute run's plan: plan.spec.ts amends one.
+    expect(asError(await call({ kind: 'gate.amend', run: RUN, gate: 'G2', after: 'a', reason: 'r' })).field).toBe('after')
   })
 
   test('design.feedback needs the feedback', async () => {
