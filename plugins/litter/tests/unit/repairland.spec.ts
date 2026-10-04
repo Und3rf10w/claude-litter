@@ -3,16 +3,22 @@
 // committed integration tip lands on the run's ref with landFanout's own steps
 // once the critic's approving verdict cites a green verify of it; each check
 // before the intent refuses on its own and moves nothing; a crash after the
-// intent is reconciled at the next land. The world is repair-harness.ts's.
+// intent is reconciled at the next land; after a reload, the spawns are
+// counted from the launch's ledger before the land (WP-AG). The world is
+// repair-harness.ts's.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordReply } from '../../hooks/records/core'
 import type { LandBody, LandIntentBody, LandReply, SwarmVerdictBody } from '../../hooks/records/execute'
+import type { SwarmNodeBody } from '../../hooks/records/swarm'
 import { appendRecord } from '../../hooks/ledgercore'
 import { wholeResult } from '../../hooks/integrate'
 import { reconcileLands } from '../../hooks/land'
+import { launchDir } from '../../hooks/layout'
+import { appendLaunchRecord } from '../../hooks/records/swarm'
+import { resetGateForTests } from '../../hooks/swarm/gate'
 import { readRunFacts, type RunFacts } from '../../hooks/verify'
 import * as state from '../../hooks/swarm/state'
 import {
@@ -42,6 +48,8 @@ import {
 } from './repair-harness'
 
 setDefaultTimeout(120_000)
+
+const ASK = 'report blocked to your parent, saying what more you need and for what; the lead can ask the user for it with repair.budget'
 
 let w: World | null = null
 beforeEach(async () => {
@@ -266,6 +274,62 @@ describe('refused before the intent, moving nothing', () => {
     const { verifyId } = await approved(world())
     state.patchLiveSwarm(SWARM, { budget: undefined })
     await refused(await land(verifyId), `repair swarm ${SWARM} has no repair budget, so nothing it made lands`)
+  })
+})
+
+describe("the budget's recount after a reload (WP-AG)", () => {
+  /** The workers' swarm.node records, as spawn.ts writes them at each spawn. */
+  const spawned = async (): Promise<void> => {
+    for (const [node, agentId] of [
+      ['fixer', 'fix-1'],
+      ['critic', 'crit-1'],
+    ] as const) {
+      await appendLaunchRecord(world().p, world().litterDir, SWARM, world().launch, 'swarm.node', {
+        node,
+        n: 1,
+        agentId,
+        parentAgentId: 'orch-1',
+        kind: 'worker',
+        cwd: world().integration,
+        branch: null,
+        model: null,
+        revision: 1,
+        generation: 1,
+      } satisfies SwarmNodeBody)
+    }
+  }
+
+  test("a land before any spawn of a fresh module counts the launch's spawns first, so past the agents budget it's refused", async () => {
+    const { verifyId } = await approved(world())
+    state.patchLiveSwarm(SWARM, { budget: { rounds: 3, agents: 1 } })
+    await spawned()
+    // A reload: a fresh gate module, and a state that never noted those spawns.
+    resetGateForTests()
+    expect(state.spawnsUsed(SWARM)).toBe(0)
+    await refused(await land(verifyId), `repair swarm ${SWARM} started 2 agents, past its budget of 1; ${ASK}`)
+    expect(state.spawnsUsed(SWARM)).toBe(2)
+  })
+
+  test("a launch ledger that can't be counted lands nothing, the next land counts again, and a land already made answers as it did", async () => {
+    const { verifyId, tip } = await approved(world())
+    await spawned()
+    const ledger = join(launchDir(world().litterDir, SWARM, world().launch), 'ledger')
+    // The fixer's swarm.node record, the first of the two: the critic's after it no longer chains to it.
+    const name = readdirSync(ledger).sort().find(f => f.endsWith('-swarm.node.json'))!
+    const good = readFileSync(join(ledger, name), 'utf8')
+    expect(good).toContain('"fix-1"')
+    writeFileSync(join(ledger, name), good.replace('"fix-1"', '"fix-9"'))
+    resetGateForTests()
+    await refused(
+      await land(verifyId),
+      new RegExp(`^swarm ${SWARM}'s repair budget couldn't be counted, so nothing lands: launch ${world().launch}'s ledger is tampered at record `),
+    )
+    writeFileSync(join(ledger, name), good)
+    expect(await land(verifyId)).toEqual({ ok: true, landed: true, commit: tip, retry: false })
+    // Sent again once it landed, with the ledger broken again in a fresh module: the land's own answer, not the count's.
+    writeFileSync(join(ledger, name), good.replace('"fix-1"', '"fix-9"'))
+    resetGateForTests()
+    expect(await land(verifyId)).toEqual({ ok: true, landed: true, commit: tip, retry: false })
   })
 })
 
