@@ -128,6 +128,7 @@ EOF
     cat >|"$H_DIR/steps.txt" <<EOF
 # The prompt box is up once drive.exp has answered the trust dialog.
 sleep 8
+$(h_tool_steps "$H_DIR/debug.txt")
 send /litter:execute plan.md
 # KEYS: the interview, rules.sh's step 4 (the same skill on a plan with no
 # rules to import): each question's recommended option (verify sh test.sh
@@ -215,6 +216,8 @@ EOF
   cs_rc=$?
   date +%s >|"$H_DIR/end"
   printf '%s: drive exited %s\n' "$H_CASE" "$cs_rc"
+  # Before deepwork's side spends its hours: a litter side whose tool never connected makes the comparison INCONCLUSIVE.
+  [ "$1" = litter ] && h_tool_down "$cs_rc"
   # The session's transcripts and its worktrees' (lib.sh's h_transcripts names the project folder so), kept with the side.
   cs_proj=$(printf '%s' "$H_REPO" | sed 's#[^A-Za-z0-9]#-#g')
   mkdir -p "$H_DIR/transcripts"
@@ -466,6 +469,7 @@ EOF
   end_cmd="[ -d $LD/swarms ] && ! ls $LD/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1 && for d in $LD/swarms/repair-*; do echo \"/litter:swarm end \${d##*/}\"; done"
   if [ "$repair" = auto ]; then
     cat >|"$H_DIR/steps.txt" <<EOF
+$(h_tool_steps "$H_DIR/debug.txt")
 # The first prompt starts the run. Generation 1 halts at G2: a plan gap, or its one attempt rejected.
 wait 2400 sh $H_DIR/until.sh ended1
 # The bridge opens generation 2, and the plan-template swarm runs on the lead's next turns until G3 lands.
@@ -479,6 +483,7 @@ exit
 EOF
   else
     cat >|"$H_DIR/steps.txt" <<EOF
+$(h_tool_steps "$H_DIR/debug.txt")
 wait 2400 sh $H_DIR/until.sh ended1
 # Long enough for a bridge that wrongly started anything to have made its swarm.
 sleep 90
@@ -507,7 +512,9 @@ After that, if litter starts a repair swarm, follow the litter swarm skill for i
       mcp__litter__swarm_propose mcp__litter__swarm_send 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' \
       --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" --debug-file "$H_DIR/debug.txt" "$FIRST" >|"$H_DIR/drive.txt" 2>&1
   )
-  printf '%s: drive exited %s\n' "$H_CASE" "$?"
+  rc=$?
+  printf '%s: drive exited %s\n' "$H_CASE" "$rc"
+  h_tool_down "$rc"
 fi
 
 RUN=$(runs)

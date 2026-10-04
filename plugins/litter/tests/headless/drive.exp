@@ -22,6 +22,9 @@
 #                               an empty prompt sends nothing; in a multiSelect
 #                               question it only toggles the option). With
 #                               <secs> equal to <every>, it presses once at most
+#   abortif <sh command>        run the command once; if it exits 0, end the
+#                               session and exit 4 (the case reads that as
+#                               INCONCLUSIVE: the session couldn't run it)
 #   exit                        /exit, then ctrl-c twice if it's still up
 # A sh command fails when it exits non-zero or writes to stderr (Tcl's exec),
 # so send a check's own errors to /dev/null. Keep it POSIX sh: it runs under
@@ -116,6 +119,14 @@ foreach line $lines {
         set held [expr {![catch {exec sh -c $c}]}]
       }
       puts "drive: press $k: $n presses, [expr {$held ? {the command holds} : {gave up}}]"
+    }
+    abortif {
+      if {![catch {exec sh -c $arg}]} {
+        puts "drive: abortif holds: ending the session, exit 4"
+        send "\x03"; sleep 1; send "\x03"
+        expect -timeout 15 eof
+        exit 4
+      }
     }
     exit {
       send "/exit\r"

@@ -76,6 +76,24 @@ h_claude() {
   printf '%s: claude exited %s\n' "$H_CASE" "$?"
 }
 
+# h_tool_steps <debug file>: drive.exp steps that end the session if litter's
+# tool server hasn't connected within 90 s. Under heavy load, CC 2.1.289
+# can't read the keychain within its 2 s timeout, and the mod's tool server
+# never connects (McpCredentialStoreUnavailableError; T4-RESULTS.md, T4-2).
+# The drive then exits 4, which h_tool_down reads.
+h_tool_steps() {
+  printf '%s\n' "# litter's tool server is up, or the session can't run the case." \
+    "wait 90 grep -q 'MCP server \"litter\": Successfully connected' $1" \
+    "abortif ! grep -q 'MCP server \"litter\": Successfully connected' $1"
+}
+
+# h_tool_down <drive exit code>: INCONCLUSIVE (exit 3) when the drive ended on h_tool_steps' abort.
+h_tool_down() {
+  [ "$1" = 4 ] || return 0
+  echo "INCONCLUSIVE: litter's tool server never connected (debug.txt: McpCredentialStoreUnavailableError, the keychain read timing out under load); run it again on a quieter machine"
+  exit 3
+}
+
 h_check() {
   if [ "$1" = ok ]; then
     H_PASS=$((H_PASS + 1))

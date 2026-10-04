@@ -74,6 +74,7 @@ if [ -z "${H_CHECKS:-}" ]; then
   cat >|"$H_DIR/steps.txt" <<EOF
 # The first prompt records the session's mode (watch.sh).
 until [ -f $LD/hooks/mode ]
+$(h_tool_steps "$H_DIR/debug.txt")
 sleep 5
 # Step 1: the import. The rules pane opens on the batch: live1 live and old1
 # archived, live1's user and flag guardrails checked, every entry "no paths:
@@ -180,7 +181,9 @@ if [ -z "${H_CHECKS:-}" ]; then
       --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" --debug-file "$H_DIR/debug.txt" \
       'Reply with the single word ready, and nothing else.' >|"$H_DIR/drive.txt" 2>&1
   )
-  printf '%s: drive exited %s\n' "$H_CASE" "$?"
+  rc=$?
+  printf '%s: drive exited %s\n' "$H_CASE" "$rc"
+  h_tool_down "$rc"
 fi
 
 RUN=$(ls "$LD" 2>/dev/null | grep -E '^[0-9]{8}-' | head -n 1)
