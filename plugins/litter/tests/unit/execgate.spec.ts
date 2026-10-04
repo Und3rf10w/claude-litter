@@ -8,11 +8,14 @@
 // mod; a round only on a rejection, refused past repairRounds; the per-gate
 // cap; the land, through execute's own landGate, and each refusal before it;
 // and the generation's end, done and halted, with and without a goal check.
+// WP-AG: the generation's part of summary.md (rounds, approvals and lands)
+// and the budget line a spawn's instance block reads.
 // The verify is Y's stand-in (it snapshots and runs the argv for real).
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { AgentSpawnInput, AgentSpawnResult } from 'claude-code'
 import type { RecordError, RecordReply, StoredRecord } from '../../hooks/records/core'
 import type { CriticProposal } from '../../hooks/records/rules'
 import type { LandReply, SwarmGateVerdictBody, VerifyReply } from '../../hooks/records/execute'
@@ -25,6 +28,7 @@ import { appendLaunchRecord, readLaunchLedger } from '../../hooks/records/swarm'
 import { endRepairGeneration } from '../../hooks/lifecycle'
 import { budgetCounted, budgetRefusal, deps as gateDeps, resetGateForTests, swarmGateRecord, type SwarmGateKind } from '../../hooks/swarm/gate'
 import { binding, liveSwarm, noteRound, noteSpawned, putBinding, roundsUsed, setInteractive } from '../../hooks/swarm/state'
+import { swarmSpawn } from '../../hooks/swarm/spawn'
 import { continueAsRepair, resetRepairForTests } from '../../hooks/repair'
 import { standInVerify, verifyCalls } from './repair-harness'
 import { NOW, world, type World } from './swarmlaunch-harness'
@@ -617,5 +621,106 @@ describe("the repair generation's end (decision 12)", () => {
     expect(r.end).toEqual(expect.objectContaining({ generation: 2, status: 'done', reason: null }))
     // Ended: the gates record nothing more.
     expect(asError(await gate('verify', 'cr-1', { gate: 'goal' })).error).toContain(`run ${RUN} has ended its repair generation`)
+  })
+})
+
+describe("summary.md's repair generation part (lifecycle.ts, repairPart; WP-AG)", () => {
+  test('its rounds are the rejections, an approval is listed with its gate and no index, and every gate it landed is listed', async () => {
+    await started()
+    const launch = liveSwarm(x.name)!.launch
+    const rejected = await verify('cr-1', 'G2')
+    expect(await judge('cr-1', rejected.verify_id, { reject: true })).toEqual(expect.objectContaining({ ok: true, round: 1 }))
+    const land = async (g: string, file: string): Promise<{ verifyId: string; commit: string }> => {
+      const verifyId = await approved(g, file)
+      const r = (await gate('land', 'run-1', { gate: g, verify_id: verifyId })) as LandReply
+      if (!r.ok || !r.landed) throw new Error(`${g}'s land was refused: ${JSON.stringify(r)}`)
+      return { verifyId, commit: r.commit }
+    }
+    const g2 = await land('G2', 'g2.txt')
+    const g3 = await land('G3', 'g3.txt')
+    await endRepairGeneration(w.p, x.runDir, { status: 'done', reason: null })
+    const lines = readFileSync(summaryPath(x.runDir), 'utf8').split('\n')
+    const from = lines.indexOf('## Repair generation 2')
+    expect(from).toBeGreaterThan(0)
+    expect(lines.slice(from, lines.indexOf('- Ended: done', from) + 1)).toEqual([
+      '## Repair generation 2',
+      '',
+      `- Swarm: ${x.name}, launch ${launch}`,
+      '- Budget: 3 rounds and 6 agents',
+      '- Verifies: 3 (3 green)',
+      '- Rounds: 1 of 3',
+      `  1. verify ${rejected.verify_id} (gate G2): rejected`,
+      `  - verify ${g2.verifyId} (gate G2): approved`,
+      `  - verify ${g3.verifyId} (gate G3): approved`,
+      `- Landed: 2 gates on ${BRANCH}`,
+      `  - G2: ${g2.commit}, verify ${g2.verifyId}`,
+      `  - G3: ${g3.commit}, verify ${g3.verifyId}`,
+      '- Ended: done',
+    ])
+  })
+
+  test("with nothing landed it says no, and an approval that didn't land is no round either", async () => {
+    await started()
+    const v = await verify('cr-1', 'G2')
+    await judge('cr-1', v.verify_id, { reject: true })
+    const a = await approved('G2', 'g2.txt')
+    await endRepairGeneration(w.p, x.runDir, { status: 'halted', reason: 'the runner reported blocked' })
+    const text = readFileSync(summaryPath(x.runDir), 'utf8')
+    expect(text).toContain(
+      `- Rounds: 1 of 3\n  1. verify ${v.verify_id} (gate G2): rejected\n  - verify ${a} (gate G2): approved\n- Landed: no\n- Ended: halted (the runner reported blocked)`,
+    )
+  })
+})
+
+describe("the spawn's budget line (spawn.ts; WP-AG)", () => {
+  /** The bridge's swarm with only its runner bound, and the runner's spawn of the executor through the spawn check. */
+  async function spawnExecutor(): Promise<{ r: AgentSpawnResult; prompts: string[] }> {
+    const s = liveSwarm(x.name)!
+    const prompts: string[] = []
+    const next = async (e: AgentSpawnInput): Promise<AgentSpawnResult> => {
+      prompts.push(e.prompt)
+      return { model: 'inherit', agentId: 'ex-1' }
+    }
+    const e: AgentSpawnInput = {
+      tool_use_id: 'toolu_ex1',
+      prompt: 'Gate G2 of the plan',
+      description: 'G2',
+      subagentType: s.types.executor!,
+      provider: { plugin: 'engine', tier: 'core' },
+      parentModel: 'opus',
+      background: false,
+      fork: false,
+      parentAgentId: 'run-1',
+    }
+    return { r: (await swarmSpawn(w.p, e as never, next as never)) as AgentSpawnResult, prompts }
+  }
+  async function bridged(): Promise<void> {
+    x = await executeRun(w)
+    await continueAsRepair(w.p, x.runDir)
+    if (!liveSwarm(x.name)) throw new Error(`the bridge didn't start the swarm: ${await declinedReason(x)}`)
+    bind('run-1', 'runner', { kind: 'orchestrator', parent: null })
+  }
+
+  test("a plan-template swarm's instance block says a round is a rejecting verdict, chosen by its run's workflow", async () => {
+    await bridged()
+    const { r, prompts } = await spawnExecutor()
+    expect(r.deny).toBeUndefined()
+    expect(r.agentId).toBe('ex-1')
+    expect(prompts[0]).toContain(
+      "\nRepair budget left: 3 of 3 rounds (a round is a verdict that rejects an attempt; an approval uses none), 5 of 6 agents (the workers and agents the swarm's nodes start). Past either, litter refuses the next spawn or land: report blocked to your parent, saying what you need.\n",
+    )
+    expect(prompts[0]).not.toContain("a round is the critic's verdict on a new verify")
+  })
+
+  test("a run.json the gates can't read denies the spawn, recording no instance and starting nothing", async () => {
+    await bridged()
+    const s = liveSwarm(x.name)!
+    const json = JSON.parse(readFileSync(join(x.runDir, 'run.json'), 'utf8')) as Record<string, unknown>
+    await w.p.fs.write(join(x.runDir, 'run.json'), JSON.stringify({ ...json, base: 'not-a-commit' }))
+    const { r, prompts } = await spawnExecutor()
+    expect(r.deny).toBe(`litter: executor couldn't be prepared: run ${RUN}'s run.json has no valid base commit; it's written by run.start, and no record call can fix it`)
+    expect(prompts).toEqual([])
+    const launch = await readLaunchLedger(w.p, w.litterDir, s.name, s.launch)
+    expect(launch.records.filter(rec => rec.kind === 'swarm.instance')).toEqual([])
   })
 })
