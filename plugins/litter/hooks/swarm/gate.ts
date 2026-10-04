@@ -44,7 +44,7 @@ import { nodeOf, swarmRefusal, writesFiles } from './admit'
 import { proposeFromCritic } from '../rules/store'
 import { writeVerdictFile } from '../verdicts'
 import { realOf } from '../worktrees'
-import { parseWidened, widenOf } from '../widen'
+import { ADDED_NOTE, addedAfterLaunch, parseWidened, widenOf } from '../widen'
 import * as state from './state'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -687,7 +687,15 @@ async function planVerify(p: Ports, call: SwarmGateCall, g: Gated): Promise<Reco
     attempt,
   }
   // Who may add files to the gate (WP-AO), for the critic that cites this verify.
-  if (gate !== 'goal') reply.widen = widenOf(json)
+  if (gate !== 'goal') {
+    reply.widen = widenOf(json)
+    // And the files you added to it after the run launched (WP-AP); the plan.md the nodes read has them too.
+    const added = addedAfterLaunch(g.records, gate)
+    if (added.length > 0) {
+      reply.added = added
+      reply.added_note = ADDED_NOTE
+    }
+  }
   return reply
 }
 
