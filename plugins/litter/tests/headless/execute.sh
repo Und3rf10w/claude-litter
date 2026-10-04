@@ -1,10 +1,11 @@
 #!/bin/sh
-# Tier 4: phase 3's execute runs (WP-T4's T4-4 and T4-3), on the real
+# Tier 4: phase 3's execute runs (WP-T4's T4-4, T4-3 and T4-1), on the real
 # workflows/execute.js.
 #
 #   sh tests/headless/execute.sh basic         # a two-gate plan lands gate by gate, headless; /litter-board then shows both landed
 #   sh tests/headless/execute.sh bridge auto   # G2 halts on a gap the plan's contract settles; a plan-template swarm lands G2 and G3
 #   sh tests/headless/execute.sh bridge off    # the same halt under repair: off stops, keeps the attempt and offers the routes
+#   sh tests/headless/execute.sh compare [both|litter|deepwork]   # T4-1, by hand only: one plan run beside deepwork EXECUTE
 #
 # basic: lib.sh's repo (HEAD ahead of origin/main) plus fixtures/execute-basic:
 # lib/math.sh with add and sub, test.sh running every tests/test_*.sh, and a
@@ -33,23 +34,171 @@
 # design), it prints INCONCLUSIVE and exits 3: run it again, and count it as
 # neither a pass nor a fail.
 #
+# compare: fixtures/compare/repo, a five-gate plan with one trap a gate (WP-T4's
+# T4-1 table), in two scratch repos, one per side: $H_OUT/compare-<time>/litter
+# and .../deepwork. Each side's repo is lib.sh's with its remote and its
+# worktree pin taken out, as S0's repo had neither (an engine worktree then
+# starts from the checkout's HEAD), then the fixture. litter's alone also
+# commits the vendor ban as an accepted project rule (.litter/rules/), and
+# deepwork gets the same sentence through --guardrail. Both run interactive
+# through drive.exp, at medium effort (T4-RESULTS.md, S0 run 3), in auto mode,
+# for at most 3 hours each (H_DRIVE_MAX, default 10800):
+# - litter: /litter:execute plan.md, its interview answered by the steps
+#   marked KEYS (placeholders, as rules.sh's), with verify sh test.sh and
+#   repair: off, so the comparison is of execute alone;
+# - deepwork: S0's command with --guardrail, and agent teams on; it ends with
+#   its state archived and execute-done.sentinel written, or on a question
+#   no one answers.
+# Each side keeps its tty.txt, debug.txt, tool-log.jsonl, the session's
+# transcripts (transcripts/, H_PERSIST=1) and its wall time (start, end).
+# Then compare.sh prints the table into the case folder's table.txt and
+# exits as it does: 0 pass, 1 fail, 3 a hand judgment missing (hand.txt).
+# The sides run one after the other; `compare litter` and then
+# `H_COMPARE=<the case folder's name> ... compare deepwork` run them in two
+# terminals at once. WP-T4 runs each side twice: two case folders.
+#
 # H_DRY=1 stops once the repo and the steps are made, with no session.
 # H_CHECKS=<case folder> skips the repo and the session and runs the checks
-# on a folder an earlier run left in $H_OUT. Needs expect. EXECUTE_MODEL sets
-# the sessions' model (--model).
+# (compare: the table) on a folder an earlier run left in $H_OUT. Needs
+# expect. EXECUTE_MODEL sets the sessions' model (--model).
 
 set -u
 . "$(dirname "$0")/lib.sh"
 
-usage() { echo "usage: $0 basic | bridge auto|off" >&2; exit 2; }
+usage() { echo "usage: $0 basic | bridge auto|off | compare [both|litter|deepwork]" >&2; exit 2; }
 mode=${1:-basic}
 repair=${2:-}
 case $mode in
 basic) [ -z "$repair" ] || usage ;;
 bridge) case $repair in auto | off) ;; *) usage ;; esac ;;
+compare) case $repair in '' | both | litter | deepwork) ;; *) usage ;; esac ;;
 *) usage ;;
 esac
 [ -n "${H_CHECKS:-}" ] || command -v expect >/dev/null || { echo "$0: needs expect" >&2; exit 2; }
+
+# ---------------------------------------------------------------------------
+# compare (T4-1): by hand only, never from run.sh
+
+# compare_side litter|deepwork: one side's repo and steps in $CD/<side>, then (unless H_DRY) its session.
+compare_side() {
+  h_scratch "$C/$1"
+  h_git -C "$H_REPO" remote remove origin || exit 1
+  h_git -C "$H_REPO" rm -q .claude/settings.json || exit 1
+  h_git -C "$H_REPO" commit -q -m 'no remote and no worktree pin, as S0 ran' || exit 1
+  cp -R "$H_FIX/compare/repo/." "$H_REPO/" || exit 1
+  h_git -C "$H_REPO" add -A
+  h_git -C "$H_REPO" commit -q -m 'the compare fixture: lib/, vendor/, tests/, test.sh and plan.md' || exit 1
+  if [ "$1" = litter ]; then
+    cp "$LITTER_ROOT/workflows/execute.js" "$H_DIR/litter/workflows/execute.js" || exit 1
+    # Committed at HEAD, so loadRules delivers it as accepted (committed); no paths, so every gate gets it in args.rules.
+    mkdir -p "$H_REPO/.litter/rules"
+    cp "$BAN" "$H_REPO/.litter/rules/${BAN##*/}" || exit 1
+    h_git -C "$H_REPO" add .litter
+    h_git -C "$H_REPO" commit -q -m 'the vendor ban, an accepted project rule' || exit 1
+    cld=$H_REPO/.claude/litter
+    cat >|"$H_DIR/steps.txt" <<EOF
+# The prompt box is up once drive.exp has answered the trust dialog.
+sleep 8
+send /litter:execute plan.md
+# KEYS: the interview, rules.sh's step 4 (the same skill on a plan with no
+# rules to import): each question's recommended option (verify sh test.sh
+# and repair off come from the settings, max attempts 3, no adversary), then
+# Launch. A placeholder until main fills it in from rules.sh's manual run;
+# until then the waits below time out and this side has no run.
+wait 900 ls $cld/2*/run.json
+# The run, to its run.end or the cap (H_DRIVE_MAX).
+wait 10800 ls $cld/2*/ledger/*-run.end.json
+sleep 60
+exit
+EOF
+  else
+    cp -R "$LITTER_ROOT/../deepwork" "$H_DIR/deepwork-plugin" || exit 1
+    cat >|"$H_DIR/until.sh" <<EOF
+#!/bin/sh
+# deepwork's end (T4-RESULTS.md, S0 run 3): execute-done.sentinel, or its
+# state archived; or a question waiting with no one to answer it (the tool
+# log's AskUserQuestion with no PostToolUse after it).
+R=$H_REPO
+LOG=$H_DIR/tool-log.jsonl
+EOF
+    cat >>"$H_DIR/until.sh" <<'EOF'
+ls "$R"/.claude/deepwork/*/execute-done.sentinel >/dev/null 2>&1 && exit 0
+ls "$R"/.claude/deepwork/*/state.archived.json >/dev/null 2>&1 && exit 0
+[ -f "$LOG" ] || exit 1
+jq -nRe '[inputs | fromjson? | select(.tool == "AskUserQuestion") | .ev]
+  | (map(select(. == "PreToolUse")) | length) > (map(select(. == "PostToolUse")) | length)' "$LOG" >/dev/null 2>&1
+EOF
+    cat >|"$H_DIR/steps.txt" <<EOF
+sleep 8
+# S0's command (it asked nothing there), with the ban as a guardrail.
+send /deepwork Implement the approved plan in plan.md --mode execute --plan-ref plan.md --guardrail '$BAN_TEXT'
+wait 10800 sh $H_DIR/until.sh
+# Time to archive its state; then esc closes a question no one will answer.
+sleep 60
+key esc
+sleep 3
+exit
+EOF
+  fi
+  [ "${H_DRY:-}" = 1 ] && return 0
+  echo "$H_CASE: driving the session in $H_REPO"
+  date +%s >|"$H_DIR/start"
+  if [ "$1" = litter ]; then
+    (
+      cd "$H_REPO" || exit 1
+      # shellcheck disable=SC2086
+      CLAUDE_CODE_EFFORT_LEVEL=medium H_PERSIST=1 H_DRIVE_MAX=${H_DRIVE_MAX:-10800} expect "$H_HERE/drive.exp" "$H_DIR/steps.txt" "$H_DIR/tty.txt" \
+        claude ${EXECUTE_MODEL:+--model "$EXECUTE_MODEL"} --effort medium --permission-mode auto --settings "$CSETTINGS" \
+        --allowedTools ToolSearch Workflow Read Glob Grep Write Edit mcp__litter__record 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' \
+        --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" --debug-file "$H_DIR/debug.txt" >|"$H_DIR/drive.txt" 2>&1
+    )
+  else
+    (
+      cd "$H_REPO" || exit 1
+      # shellcheck disable=SC2086
+      CLAUDE_CODE_EFFORT_LEVEL=medium CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 H_PERSIST=1 H_DRIVE_MAX=${H_DRIVE_MAX:-10800} \
+        expect "$H_HERE/drive.exp" "$H_DIR/steps.txt" "$H_DIR/tty.txt" \
+        claude ${EXECUTE_MODEL:+--model "$EXECUTE_MODEL"} --effort medium --permission-mode auto \
+        --plugin-dir "$H_DIR/deepwork-plugin" --plugin-dir "$H_DIR/toollog" --debug-file "$H_DIR/debug.txt" >|"$H_DIR/drive.txt" 2>&1
+    )
+  fi
+  cs_rc=$?
+  date +%s >|"$H_DIR/end"
+  printf '%s: drive exited %s\n' "$H_CASE" "$cs_rc"
+  # The session's transcripts and its worktrees' (lib.sh's h_transcripts names the project folder so), kept with the side.
+  cs_proj=$(printf '%s' "$H_REPO" | sed 's#[^A-Za-z0-9]#-#g')
+  mkdir -p "$H_DIR/transcripts"
+  for d in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$cs_proj"*; do
+    [ -d "$d" ] && cp -R "$d" "$H_DIR/transcripts/"
+  done
+  return 0
+}
+
+if [ "$mode" = compare ]; then
+  BAN=$H_FIX/compare/P-vendor-as-shipped.md
+  BAN_TEXT=$(sed -n '/^## Rule$/{n;p;}' "$BAN")
+  case $BAN_TEXT in '' | *"'"*) echo "$0: $BAN's rule is empty or holds a quote" >&2; exit 2 ;; esac
+  CSETTINGS=$(jq -cn '{pluginConfigs: {litter: {options: {verify: ["sh", "test.sh"], repair: "off"}}}}') || exit 1
+  if [ -n "${H_CHECKS:-}" ]; then
+    CD=$(cd -P "$H_CHECKS" && pwd -P) || exit 2
+  else
+    # A fresh path each run, as the others ($.store); H_COMPARE names an earlier run's folder to add a side to.
+    C=${H_COMPARE:-compare-$(date +%Y%m%d-%H%M%S)}
+    C=${C##*/}
+    case ${repair:-both} in both) set -- litter deepwork ;; *) set -- "$repair" ;; esac
+    for side in "$@"; do compare_side "$side"; done
+    CD=$(cd -P "$H_OUT/$C" && pwd -P) || exit 2
+    [ "${H_DRY:-}" = 1 ] && { echo "$C: dry run, files in $CD"; exit 0; }
+  fi
+  if [ ! -d "$CD/litter/repo" ] || [ ! -d "$CD/deepwork/repo" ]; then
+    echo "${CD##*/}: one side so far, in $CD; run the other with H_COMPARE=${CD##*/}"
+    exit 0
+  fi
+  sh "$H_HERE/compare.sh" "$CD" >|"$CD/table.txt"
+  rc=$?
+  cat "$CD/table.txt"
+  exit $rc
+fi
 
 if [ -n "${H_CHECKS:-}" ]; then
   H_DIR=$(cd -P "$H_CHECKS" && pwd -P) || exit 2
