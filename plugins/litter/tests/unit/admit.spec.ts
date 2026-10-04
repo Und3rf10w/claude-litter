@@ -644,6 +644,17 @@ describe('parked nodes', () => {
     expect(state.status('w2')).toBe('idle')
   })
 
+  test("a spawn past its parent's max names it too, as a resume's refusal does", async () => {
+    await parkedW1(3)
+    const spawned = (await swarmSpawn(
+      p,
+      { tool_use_id: 'toolu_f', prompt: 'fix the docs', description: 'a fixer', subagentType: T('fixer'), parentAgentId: 'o1', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'opus', background: true, fork: false } as never,
+      (async () => ({ model: 'opus', agentId: 'w9' })) as never,
+    )) as { deny?: string }
+    expect(spawned.deny).toBe(`litter: part-a (o1) already runs 1 of its max 1 fixer at once, and ${PARKED_W1}`)
+    expect(state.reservations()).toEqual([])
+  })
+
   test('a refusal names only the parked: one with nothing parked reads as before', async () => {
     state.putLiveSwarm(live({ spec: spec({ limits: { maxAgentsAtOnce: 2 } }) }))
     await put(o1(), true)
@@ -916,6 +927,51 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(state.status('x1')).toBe('running')
     expect(state.isParked('x1')).toBe(false)
     expect(policyOf('x1')?.admitted).toBe(true)
+  })
+
+  // Once that node has ended, or its wake is refused, no admitted mark is left for a turn that skips turn.step's
+  // admission (spike 17).
+  async function adoptedParked(): Promise<void> {
+    await put(o1(), true)
+    await instance(1, TOK1)
+    p.agents = [agent('x1', T('fixer'), 'waiting', 'o1')]
+    await admit.adoptUnbound(p)
+    expect(state.isParked('x1')).toBe(true)
+    expect(policyOf('x1')?.admitted).toBe(true)
+  }
+
+  test('adopted parked, admitted: once the list shows it ended, its place frees and its policy is no longer admitted', async () => {
+    await adoptedParked()
+    p.agents = [agent('x1', T('fixer'), 'completed', 'o1')]
+    await fireEvery(p)
+    expect(state.isParked('x1')).toBe(false)
+    expect(state.countFor('alpha', 'o1', 'fixer')).toBe(0)
+    expect(policyOf('x1')?.admitted).toBe(false)
+  })
+
+  test('adopted parked, admitted: a refused wake clears the mark before the refusal returns; its parent can still resume it', async () => {
+    await adoptedParked()
+    state.putLiveSwarm(live({ revision: 2, spec: spec({ nodes: spec().nodes.filter(n => n.id !== 'fixer') }) }))
+    const r = await step(stepE('x1', 'T1', 0))
+    expect(r.called).toBe(false)
+    expect(r.result).toEqual(expect.objectContaining({ answer: "litter: not admitted: fixer isn't in swarm alpha's revision 2; ending this turn" }))
+    expect(policyOf('x1')?.admitted).toBe(false)
+    expect(state.isParked('x1')).toBe(true)
+    // Back in the revision, its parent's resume admits it again, written after the refusal's clear.
+    state.putLiveSwarm(live())
+    expect(await send(sendE('x1', 'and the docs', 'o1'), sendNext().next)).toEqual({ isDelivered: true })
+    expect(state.status('x1')).toBe('running')
+    expect(policyOf('x1')?.admitted).toBe(true)
+  })
+
+  test("a refused wake in another session's swarm, read-only here, leaves its policy as it is", async () => {
+    state.putLiveSwarm(live({ readOnly: true }))
+    await put(o1(), false)
+    await put(w1(), true)
+    state.markParked('w1')
+    const r = await step(stepE('w1', 'T1', 0))
+    expect(r.called).toBe(false)
+    expect(policyOf('w1')?.admitted).toBe(true)
   })
 })
 

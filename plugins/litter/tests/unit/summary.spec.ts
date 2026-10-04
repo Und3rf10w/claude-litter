@@ -249,6 +249,15 @@ describe('the inputs', () => {
     expect(prompt).not.toContain('old reply')
   })
 
+  test("a parked node (WP-AJ) reads as between turns on its own work, not idle", async () => {
+    state.putBinding(bind('fix-2', { node: 'fixer', kind: 'worker', n: 2, parent: 'orch-a', type: 'litter:sw-alpha-fixer' }))
+    state.markParked('fix-2')
+    const prompt = await summaryInputs(p, litterDir, state.liveSwarm('alpha')!)
+    expect(prompt).toContain('fixer #2 (worker under part-a #1): between turns, waiting on its own agents or background work')
+    state.markSettled('fix-2')
+    expect(await summaryInputs(p, litterDir, state.liveSwarm('alpha')!)).toContain('fixer #2 (worker under part-a #1): idle')
+  })
+
   test('capped at 24 KiB in all, each report at 1.5 KiB, each lead reply at 3 KiB, and the last 30 events', async () => {
     const nodes = Array.from({ length: 20 }, (_, i) => ({ id: `part-${i}`, kind: 'orchestrator' as const }))
     state.putLiveSwarm(swarm('alpha', { spec: { name: 'alpha', goal: 'g'.repeat(10_000), nodes } }))

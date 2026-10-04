@@ -40,7 +40,7 @@ import {
   SWARM_RULES,
 } from '../prompts/swarm-instance'
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
-import { capRefusal, delegatorsOf, labelOf, nodeOf, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
+import { capRefusal, delegatorsOf, labelOf, nodeOf, parentCountRefusal, scopeConflict, scopeOf, spawnsText, swarmRefusal, waitBudget } from './admit'
 import { budgetCounted, budgetLeft, budgetRefusal, countsAgainstBudget } from './gate'
 import { readRunFacts } from '../verify'
 import { RULES_CAP, selectForSpawn } from '../rules/select'
@@ -169,8 +169,8 @@ function planNode(e: Spawn, hit: { swarm: string; node: string }, parentB: NodeB
     const pn = nodeOf(s, parentB.node)
     const max = pn?.spawns?.[node.id]
     if (!pn || max === undefined) return `${parentB.node} may spawn ${pn ? spawnsText(pn) : 'nothing in this revision'}, not ${node.id}`
-    const k = state.countFor(s.name, parentB.agentId, node.id)
-    if (k >= max) return `${labelOf(parentB)} already runs ${k} of its max ${max} ${node.id} at once; wait for one to finish`
+    const full = parentCountRefusal(s, parentB.agentId, node.id, max)
+    if (full) return full
   }
   const cap = capRefusal(s)
   if (cap) return cap
