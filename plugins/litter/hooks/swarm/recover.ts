@@ -31,11 +31,13 @@ import {
   binding,
   bindings,
   dropLiveSwarm,
+  isParked,
   isStopped,
   lastReport,
   liveSwarm,
   liveSwarms,
   loadSwarm,
+  markParked,
   markRunning,
   markSettled,
   noteInstance,
@@ -328,8 +330,8 @@ export async function recoverOwnedLaunch(
   if (!start) throw new Error(`litter: launch ${facts.launch} of ${name} has no swarm.start`)
   const b = start.body
   const mirror = await loadSwarm(p, litterDir, name)
-  // Who held a place at the crash, before the table is rebuilt.
-  const wasRunning = new Set(mirror ? bindings(name).filter(x => status(x.agentId) !== 'idle').map(x => x.agentId) : [])
+  // Who held a place at the crash, before the table is rebuilt: a parked node too, its work unfinished.
+  const wasRunning = new Set(mirror ? bindings(name).filter(x => status(x.agentId) !== 'idle' || isParked(x.agentId)).map(x => x.agentId) : [])
   const { spec, verified, briefs } = await specAt(p, litterDir, b, mirror)
   if (!spec) {
     p.log(`swarm ${name}: neither $.store nor revision ${b.revision} has its spec; it isn't recovered`)
@@ -366,19 +368,22 @@ export async function recoverOwnedLaunch(
     }
   }
   const list = await listed(p)
-  // Alive keeps its place, `waiting` too: a node mid-turn on a foreground child would otherwise lose
-  // it, and its next step's wake could be refused for a cap filled meanwhile.
+  // Alive keeps its place. `waiting` is parked, as the settle poll parks it (WP-AJ): it keeps its place, and
+  // its next step is admitted on it, so a cap filled meanwhile can't refuse it. That step is its wake, or,
+  // for a node mid-turn on a foreground child, the step after the child returns.
   const alive = (id: string): boolean => {
     const st = list.get(id)
     return st !== undefined && agentLive(st)
   }
   for (const x of bindings(name)) {
-    if (alive(x.agentId)) markRunning(x.agentId)
+    if (list.get(x.agentId) === 'waiting') markParked(x.agentId)
+    else if (alive(x.agentId)) markRunning(x.agentId)
     else markSettled(x.agentId)
   }
 
   // 4. Each bound node's policy, so the guard covers a resumed node from its first call, admitted as step 3
-  // placed it (litter's admission status, not the list's). Never from a spec that didn't match swarm.start:
+  // placed it (litter's admission status, not the list's; a parked node's isn't, as at its park, until its
+  // next step is admitted). Never from a spec that didn't match swarm.start:
   // with no types, nothing resumes, and the policies stay as L wrote them.
   for (const x of verified ? bindings(name) : []) {
     const why = stopped(name).find(e => e.agentId === x.agentId)?.reason ?? null
@@ -697,7 +702,7 @@ export async function continuationText(p: Ports, name: string, node: string, how
   if (!litterDir) throw new Error("litter: this session has no litter directory")
   const facts = await readLaunchFacts(p, litterDir, name, s.launch)
   const card = cards.get(name)
-  const wasRunning = (id: string) => (card ? card.nodes.some(x => x.agentId === id) : status(id) !== 'idle')
+  const wasRunning = (id: string) => (card ? card.nodes.some(x => x.agentId === id) : status(id) !== 'idle' || isParked(id))
   const mine = bindings(name).filter(b => b.node === node && b.kind !== 'child')
 
   if (how === 'resume') {

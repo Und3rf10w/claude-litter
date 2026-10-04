@@ -7,6 +7,12 @@
 // the engine as they came. A node's refusals (its turn.step stream and
 // result, a send's `{ isDelivered: false }`, a spawn's `{ deny }` and the
 // rewrite) are tier 2 (tests/unit/admit.spec.ts, spawn.spec.ts).
+//
+// One world puts a live swarm there through recovery (WP-AJ): a swarm this
+// session owns, taken back whole at session.start from its ledger, its
+// ownership ref and the $.store mirror, with a node the agent list shows
+// `waiting`, so it's parked at a full cap. The parked cases in detail are
+// tier 2 (tests/unit/admit.spec.ts).
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
@@ -23,12 +29,126 @@ const SPAWN = {
 
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as Record<string, unknown>
 
+const LAUNCH = '20261003-120000'
+const OID = 'a'.repeat(40)
+const REF = 'refs/litter-swarm/alpha'
+const LITTER = '/repo/.claude/litter'
+const LEDGER = `${LITTER}/swarms/alpha/launches/${LAUNCH}/ledger`
+/** Two read-only nodes, so no write scope applies: the lead may run one fixer, and the swarm two agents at once. */
+const SPEC = {
+  name: 'alpha',
+  goal: 'Tidy the docs.',
+  nodes: [
+    { id: 'lead', kind: 'orchestrator', worktree: 'none', tools: { deny: ['Edit', 'Write', 'NotebookEdit'] }, spawns: { fixer: 1 } },
+    { id: 'fixer', kind: 'worker', worktree: 'none', tools: { deny: ['Edit', 'Write', 'NotebookEdit'] } },
+  ],
+  limits: { maxAgentsAtOnce: 2 },
+}
+const TYPES = { lead: 'litter:sw-alpha-lead', fixer: 'litter:sw-alpha-fixer' }
+const DIRS = { lead: { dir: '/repo', branch: null, created: false }, fixer: { dir: '/repo', branch: null, created: false } }
+const ROOTS = { litterDir: LITTER, litterCopies: [LITTER], ruleDirs: [] }
+/**
+ * The ownership ref's blob, naming this session (tier1-session). Its host and pid are what this process reads
+ * for itself here (neither uname nor sh answers), so recovery's retake writes the same blob, at the same oid.
+ */
+const BLOB = JSON.stringify({ swarm: 'alpha', launch: LAUNCH, session: 'tier1-session', generation: 1, host: 'unknown', pid: '', acquiredAt: 1 })
+
+const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
+const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
+
+/**
+ * The launch ledger: swarm.start, with the spec's hash as launch.ts's specHash takes it, then lead #1's and
+ * fixer #1's swarm.node, chained as ledgercore.ts writes them.
+ */
+async function ownedLedger(): Promise<Map<string, string>> {
+  const run = `swarm:alpha/${LAUNCH}`
+  const unchecked = (node: string) => `${node}: commit unchecked; push unchecked; rewrite history unchecked; worktree commands unchecked; files anywhere`
+  const node = (body: Record<string, unknown>) => ({ kind: 'swarm.node', body: { cwd: '/repo', branch: null, model: null, revision: 1, generation: 1, ...body } })
+  const records = [
+    {
+      kind: 'swarm.start',
+      body: {
+        swarm: 'alpha',
+        launch: LAUNCH,
+        revision: 1,
+        specHash: await sha256(JSON.stringify(SPEC)),
+        nonce: 'b'.repeat(32),
+        types: TYPES,
+        nodes: DIRS,
+        authority: { lead: unchecked('lead'), fixer: unchecked('fixer') },
+        tips: {},
+        owner: { ref: REF, oid: OID, generation: 1 },
+        sessionCwd: '/repo',
+        worktreeRoot: '/repo/.claude/worktrees',
+        commonDir: '/repo/.git',
+        roots: ROOTS,
+      },
+    },
+    node({ node: 'lead', n: 1, agentId: 'ag-1', parentAgentId: null, kind: 'orchestrator' }),
+    node({ node: 'fixer', n: 1, agentId: 'ag-f1', parentAgentId: 'ag-1', kind: 'worker' }),
+  ]
+  const files = new Map<string, string>()
+  let prev: string | null = null
+  for (const [i, r] of records.entries()) {
+    const seq = i + 1
+    const text = `${JSON.stringify({ v: 1, seq, kind: r.kind, run, at: seq, by: { source: 'mod' }, prev, body: r.body })}\n`
+    files.set(`${LEDGER}/${String(seq).padStart(6, '0')}-${r.kind}.json`, text)
+    prev = await sha256(text)
+  }
+  return files
+}
+
+/** This session's mirror of the swarm in $.store (state.ts's part): the spec recovery checks against specHash. */
+const PART = {
+  [`litter.swarm.state.${LITTER}.alpha`]: {
+    v: 1,
+    swarm: {
+      name: 'alpha',
+      launch: LAUNCH,
+      revision: 1,
+      spec: SPEC,
+      nonce: 'b'.repeat(32),
+      types: TYPES,
+      typesReady: true,
+      dirs: DIRS,
+      sessionCwd: '/repo',
+      worktreeRoot: '/repo/.claude/worktrees',
+      commonDir: '/repo/.git',
+      roots: ROOTS,
+      tips: {},
+      owner: { ref: REF, oid: OID, generation: 1, session: 'tier1-session' },
+      state: 'live',
+      readOnly: false,
+      lost: false,
+      flags: { isolationLost: false },
+      startedAt: 1,
+    },
+    bindings: [],
+    admission: [
+      { agentId: 'ag-1', status: 'running', scope: null, swarm: 'alpha', node: 'lead', parent: null, kind: 'orchestrator' },
+      { agentId: 'ag-f1', status: 'running', scope: null, swarm: 'alpha', node: 'fixer', parent: 'ag-1', kind: 'worker' },
+    ],
+    stopped: [],
+    queue: [],
+    instances: { lead: 1, fixer: 1 },
+    calls: [],
+    shells: [],
+    agentStopped: [],
+    reports: {},
+    tokens: {},
+    questions: [],
+    direct: [],
+    refused: {},
+  },
+}
+
 /**
  * session.start's litter directory at /repo/.claude/litter: a plain checkout, files in memory (as wiring.test.ts's world).
- * `sid` is read at each session.id; `register` runs before each agent.register answers.
+ * `sid` is read at each session.id; `register` runs before each agent.register answers. `files` starts the
+ * map; with `owner`, git answers swarm alpha's ownership ref at OID with that blob, and hashes it to OID again.
  */
-function world(on: On, opts: { sid?: { value: string }; register?: () => Promise<void> } = {}): void {
-  const files = new Map<string, string>()
+function world(on: On, opts: { sid?: { value: string }; register?: () => Promise<void>; files?: Map<string, string>; owner?: string } = {}): void {
+  const files = opts.files ?? new Map<string, string>()
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
   const run = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('fs.exists', async (_$, e) => ({ value: files.has(e.path) || isDir(e.path) }))
@@ -63,6 +183,12 @@ function world(on: On, opts: { sid?: { value: string }; register?: () => Promise
       const path = argv[argv.length - 1]!
       for (const k of [...files.keys()]) if (k === path || k.startsWith(`${path}/`)) files.delete(k)
       return run(0)
+    }
+    if (argv[0] === 'git' && opts.owner !== undefined) {
+      // owner.ts's readOwnerRef, then retakeOwnership's writeBlob: the same blob hashes to the same oid, so no swap.
+      if (argv.includes('rev-parse') && argv.includes(REF)) return run(0, `${OID}\n`)
+      if (argv.includes('cat-file') && argv.includes(OID)) return run(0, opts.owner)
+      if (argv.includes('hash-object') && e.init?.stdin === opts.owner) return run(0, `${OID}\n`)
     }
     if (argv[0] === 'git' && argv.includes('rev-parse')) {
       if (argv.includes('--show-toplevel') && !argv.includes('--git-dir')) return run(0, '/repo\n')
@@ -243,5 +369,70 @@ describe('with nothing live, every other loop passes to the engine as it came', 
     expect(await $.turn.complete({ turnId: 'turn-3', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' })).toEqual(
       expect.objectContaining({ text: 'done' }),
     )
+  })
+})
+
+describe('a parked node keeps its place (WP-AJ)', () => {
+  // session.start recovers a swarm a crash left: a recovery under load takes longer than the default 5 s.
+  test("recovered `waiting` at a full cap: a spawn under it is denied naming it, and its wake reaches the engine's step", { timeoutMs: 20_000 }, async ($, on) => {
+    mock.store(on, PART)
+    mock.clock(on, { now: 5_000 })
+    const files = await ownedLedger()
+    world(on, { files, owner: BLOB })
+    // The lead runs; its fixer ended its turn and waits on its own work: 2 of the cap's 2 places.
+    on('agent.list', async () => ({
+      value: [
+        { id: 'ag-1', description: 'the lead node', type: TYPES.lead, status: 'running' as const },
+        { id: 'ag-f1', description: 'a fixer', type: TYPES.fixer, parentId: 'ag-1', status: 'waiting' as const },
+      ],
+    }))
+    const spawned: string[] = []
+    on('agent.spawn', async (_$, e) => {
+      spawned.push(e.tool_use_id)
+      return { model: 'test-model', agentId: 'agent-new' }
+    })
+    on('turn.step', async function* (_$, e) {
+      yield { kind: 'text', index: 0, text: `engine ${e.agentId ?? 'main'} ${e.index}` }
+      yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+      return { turnId: e.turnId, index: e.index, answer: `engine ${e.agentId ?? 'main'} ${e.index}`, toolUses: [], stopReason: 'end_turn', usage: null }
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    const admitted = (agentId: string) =>
+      (JSON.parse(files.get(`${LITTER}/hooks/agents/${agentId}.json`) ?? '{}') as { node?: { admitted?: boolean } }).node?.admitted
+    // Recovery took the swarm back as this session's: the lead admitted, the parked fixer not until its next step.
+    expect(admitted('ag-1')).toBe(true)
+    expect(admitted('ag-f1')).toBe(false)
+
+    // A child of the lead's would be a third agent: the cap refuses it, naming the parked one.
+    const denied = await $.agent.spawn({ ...SPAWN, tool_use_id: 'tu-parked', subagentType: 'Explore', parentAgentId: 'ag-1' })
+    expect(denied).toEqual({
+      deny:
+        'litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce), and 1 of them is parked: fixer #1 (ag-f1), ' +
+        'which ended its turn while its own agents or background work run, and keeps its place until it ends; wait for one to finish, or go on without this agent',
+    })
+
+    // Its wake at the full cap: counted already, so no count or cap refuses it; the step reaches the engine as it came.
+    const s = $.turn.step({ turnId: 'turn-wake', index: 0, model: 'test-model', messageCount: 1, agentId: 'ag-f1' })
+    const chunks: unknown[] = []
+    let result: unknown
+    for (;;) {
+      const r = await s.next()
+      if (r.done) {
+        result = r.value
+        break
+      }
+      chunks.push(r.value)
+    }
+    expect(chunks).toEqual([
+      { kind: 'text', index: 0, text: 'engine ag-f1 0' },
+      { kind: 'stop', stopReason: 'end_turn', usage: null },
+    ])
+    expect(result).toEqual({ turnId: 'turn-wake', index: 0, answer: 'engine ag-f1 0', toolUses: [], stopReason: 'end_turn', usage: null })
+    expect(admitted('ag-f1')).toBe(true)
+
+    // Running now, it holds the same place: the cap still refuses, and names no one parked.
+    const again = await $.agent.spawn({ ...SPAWN, tool_use_id: 'tu-running', subagentType: 'Explore', parentAgentId: 'ag-1' })
+    expect(again).toEqual({ deny: 'litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce); wait for one to finish' })
+    expect(spawned).toEqual([])
   })
 })

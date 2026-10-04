@@ -14,7 +14,10 @@ import { agentPolicyPath, ownerLeasePath, revisionPath } from '../../hooks/layou
 import { appendLaunchRecord, readLaunchLedger } from '../../hooks/records/swarm'
 import {
   binding,
+  countFor,
+  isParked,
   liveSwarm,
+  markParked,
   markRunning,
   noteQuestion,
   noteReport,
@@ -157,7 +160,8 @@ describe('recoverSwarms, a swarm this session owns', () => {
     expect(w.calls.adopted).toBe(1)
   })
 
-  test('a node the list shows `waiting` (2.1.289: mid-turn on a foreground child) or `pending` keeps its place, admitted and alive on the card; a completed one settles', async () => {
+  // WP-AJ: `waiting` is parked, as the settle poll parks it, so the two paths agree.
+  test('a node the list shows `waiting` (2.1.289) is parked: its place held, its policy not admitted until its next step, alive on the card; `pending` runs; a completed one settles', async () => {
     await liveInSessionA()
     const { q } = await crashRespawn()
     q.agents = [
@@ -167,16 +171,34 @@ describe('recoverSwarms, a swarm this session owns', () => {
     ]
     await recoverSwarms(q, w.litterDir)
     // Its place held, so its next step's wake can't be refused for a cap filled meanwhile.
-    expect(status('ag-l1')).toBe('running')
+    expect(isParked('ag-l1')).toBe(true)
+    expect(status('ag-l1')).toBe('idle')
+    expect(countFor('alpha', null, 'lead-a')).toBe(1)
     expect(status('ag-d1')).toBe('running')
     expect(status('ag-f1')).toBe('idle')
-    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(true)
+    expect(isParked('ag-f1')).toBe(false)
+    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(false)
     expect((await readNodePolicy(w, 'ag-d1'))!.node.admitted).toBe(true)
     expect((await readNodePolicy(w, 'ag-f1'))!.node.admitted).toBe(false)
     expect(recoveryCard('alpha')!.nodes.map(n => [n.agentId, n.state])).toEqual([
       ['ag-l1', 'alive'],
       ['ag-f1', 'settled'],
       ['ag-d1', 'alive'],
+    ])
+  })
+
+  test('a node parked at the crash held a place there, so it is on the card with the ones that ran', async () => {
+    await liveInSessionA()
+    // lead-a parked on its fixers, fixer #1 running: the store's copy has both.
+    markParked('ag-l1')
+    await settle(w.p)
+    const { q } = await crashRespawn()
+    q.agents = []
+    await recoverSwarms(q, w.litterDir)
+    expect(recoveryCard('alpha')!.nodes.map(n => [n.agentId, n.state])).toEqual([
+      ['ag-l1', 'gone'],
+      ['ag-f1', 'gone'],
+      ['ag-d1', 'gone'],
     ])
   })
 

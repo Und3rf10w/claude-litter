@@ -2,7 +2,8 @@
 // SendMessage, the browser and a queued delivery, each refused when its
 // parent is at its count, it was stopped, a revision removed it, or the swarm
 // is stopping; the reply route; settling; the engine's own wakes at
-// turn.step; and swarm.bind with adoption after a reload.
+// turn.step; parked nodes, which keep their places (WP-AJ); and swarm.bind
+// with adoption after a reload.
 //
 // The policy files are M's real writer's (guard.ts), so these specs read what
 // the guard will read.
@@ -19,6 +20,7 @@ import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/r
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
+import { swarmSpawn } from '../../hooks/swarm/spawn'
 import { SWARM_SEND } from '../../hooks/swarm/tools'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
 import type { AgentStatus, ListedAgent, SessionSendResult } from '../../hooks/ports'
@@ -473,8 +475,9 @@ describe('settling', () => {
   })
 
   // Only `running` (2.1.289: finalizing too) holds a settle. A `waiting` node that ended its turn is parked
-  // on children or background work, completed to the engine, so a message resumes it through admission.
-  test('the poll settles a node whose row is `waiting` (parked), as a completed one; a `running` one (finalizing) stays settling', async () => {
+  // on children or background work, completed to the engine, so a message resumes it through admission;
+  // it keeps its place meanwhile (WP-AJ).
+  test('the poll parks a node whose row is `waiting`: between turns, its policy not admitted, its place kept; a `running` one (finalizing) stays settling', async () => {
     await put(o1(), true)
     await put(w1(), true)
     await put(w2(), true)
@@ -484,7 +487,11 @@ describe('settling', () => {
     expect(state.status('w1')).toBe('settling')
     expect(policyOf('w1')?.admitted).toBe(true)
     expect(state.status('w2')).toBe('idle')
+    expect(state.isParked('w2')).toBe(true)
     expect(policyOf('w2')?.admitted).toBe(false)
+    expect(state.countFor('alpha', 'o1', 'fixer')).toBe(2)
+    // The poll keeps running while it's parked.
+    expect(p.timers.size).toBe(1)
   })
 
   test("a send to a settling node whose row turns `waiting` goes through admission as soon as the send's own check sees it", async () => {
@@ -568,6 +575,198 @@ describe('engine wakes (turn.step)', () => {
   })
 })
 
+// WP-AJ: a node that ends its turn while the list shows it `waiting` is parked. It's alive, so it keeps its
+// place in the swarm's count and its parent's, and its wake is admitted on that place.
+describe('parked nodes', () => {
+  const ended = (id: string) => admit.settleNode(p, { agentId: id, turnId: `t-${id}`, answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+
+  /** o1 running, w1 ended its turn and parked on work that will wake it; the swarm at `cap` agents at once. */
+  async function parkedW1(cap = 2): Promise<void> {
+    state.putLiveSwarm(live({ spec: spec({ limits: { maxAgentsAtOnce: cap } }) }))
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('o1', T('part-a'), 'running'), agent('w1', T('fixer'), 'waiting', 'o1')]
+    await ended('w1')
+    await fireEvery(p)
+    expect(state.isParked('w1')).toBe(true)
+  }
+
+  const PARKED_W1 =
+    '1 of them is parked: fixer #1 (w1), which ended its turn while its own agents or background work run, and keeps its place until it ends; wait for one to finish, or go on without this agent'
+
+  test('its wake is admitted at a full cap and at its parent\'s max, on its own place: the count never passes the cap', async () => {
+    await parkedW1()
+    expect(state.countSwarm('alpha')).toBe(2)
+    expect(state.countFor('alpha', 'o1', 'fixer')).toBe(1)
+    const woke = await step(stepE('w1', 'T1', 0))
+    expect(woke.called).toBe(true)
+    expect(state.status('w1')).toBe('running')
+    expect(state.isParked('w1')).toBe(false)
+    expect(policyOf('w1')?.admitted).toBe(true)
+    expect(state.countSwarm('alpha')).toBe(2)
+    expect((await events()).filter(e => e.kind === 'wake-refused')).toEqual([])
+    // Its later steps run, and its next turn.complete settles it as before.
+    expect((await step(stepE('w1', 'T1', 1))).called).toBe(true)
+    p.agents = [agent('o1', T('part-a'), 'running'), agent('w1', T('fixer'), 'completed', 'o1')]
+    await ended('w1')
+    await fireEvery(p)
+    expect(state.status('w1')).toBe('idle')
+    expect(state.isParked('w1')).toBe(false)
+    expect(state.countSwarm('alpha')).toBe(1)
+  })
+
+  test('while it holds its place, a spawn at the cap is refused naming it, and so is a resume past its parent\'s max', async () => {
+    await parkedW1()
+    const { next, calls } = sendNext()
+    // A child o1 starts counts toward the cap, which w1 fills with o1.
+    const spawned = (await swarmSpawn(
+      p,
+      { tool_use_id: 'toolu_c', prompt: 'look around', description: 'a helper', subagentType: 'Explore', parentAgentId: 'o1', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'opus', background: false, fork: false } as never,
+      (async () => ({ model: 'opus', agentId: 'c1' })) as never,
+    )) as { deny?: string }
+    expect(spawned.deny).toBe(`litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce), and ${PARKED_W1}`)
+    expect(state.reservations()).toEqual([])
+    // A finished fixer #2 its parent resumes: o1 runs w1 already, of its max 1.
+    await put(w2(), false)
+    expect(await send(sendE('w2', 'and the docs', 'o1'), next)).toEqual({
+      isDelivered: false,
+      reason: `litter: part-a (o1) already runs 1 of its max 1 fixer at once, and ${PARKED_W1}`,
+    })
+    expect(calls).toEqual([])
+    expect(state.status('w2')).toBe('idle')
+  })
+
+  test('a refusal names only the parked: one with nothing parked reads as before', async () => {
+    state.putLiveSwarm(live({ spec: spec({ limits: { maxAgentsAtOnce: 2 } }) }))
+    await put(o1(), true)
+    await put(w1(), true)
+    expect(admit.capRefusal(state.liveSwarm('alpha')!)).toBe('swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce); wait for one to finish')
+    expect(admit.parentCountRefusal(state.liveSwarm('alpha')!, 'o1', 'fixer', 1)).toBe('part-a (o1) already runs 1 of its max 1 fixer at once; wait for one to finish')
+    expect(admit.parentCountRefusal(state.liveSwarm('alpha')!, 'o1', 'fixer', 2)).toBeNull()
+  })
+
+  for (const [how, row] of [
+    ['completed', 'completed'],
+    ['failed', 'failed'],
+    ['killed', 'killed'],
+    ['gone from the list', null],
+  ] as const) {
+    test(`once the list shows it ${how}, it's settled: its place frees and its policy stays not admitted`, async () => {
+      await parkedW1()
+      p.agents = row === null ? [agent('o1', T('part-a'), 'running')] : [agent('o1', T('part-a'), 'running'), agent('w1', T('fixer'), row, 'o1')]
+      await fireEvery(p)
+      expect(state.isParked('w1')).toBe(false)
+      expect(state.status('w1')).toBe('idle')
+      expect(state.countSwarm('alpha')).toBe(1)
+      expect(policyOf('w1')?.admitted).toBe(false)
+      // Nothing settles or is parked: the poll stops.
+      await fireEvery(p)
+      expect(p.timers.size).toBe(0)
+    })
+  }
+
+  test('still alive in the list (`waiting`, `pending`, or `running` on a wake its step has yet to admit), it stays parked', async () => {
+    await parkedW1()
+    for (const st of ['waiting', 'pending', 'running'] as const) {
+      p.agents = [agent('o1', T('part-a'), 'running'), agent('w1', T('fixer'), st, 'o1')]
+      await fireEvery(p)
+      expect(state.isParked('w1')).toBe(true)
+      expect(state.countSwarm('alpha')).toBe(2)
+    }
+  })
+
+  test('a message to it goes as to a finished node, never queued: its parent resumes it on its own place, anyone else is readdressed', async () => {
+    await parkedW1()
+    wireOwnSends()
+    // The browser's sends: it isn't running or settling, so nothing waits for it; it's idle, so they go via its
+    // parent, an interject at once, a queued one on the running parent's queue, never on its own.
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'the docs too', when: 'interject', route: 'direct' })
+    expect(out).toEqual(expect.objectContaining({ kind: 'readdressed', to: 'o1' }))
+    const later = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'when you can: the docs', when: 'queue', route: 'direct' })
+    expect(later).toEqual(expect.objectContaining({ kind: 'queued' }))
+    expect(state.queued('alpha', 'w1')).toEqual([])
+    expect(state.queued('alpha', 'o1').length).toBe(1)
+    // Its parent's SendMessage resumes it at the full cap: admitted before the send, then running.
+    let admittedAtSend: boolean | undefined
+    const next = (async () => {
+      admittedAtSend = policyOf('w1')?.admitted
+      return { isDelivered: true }
+    }) as never
+    expect(await send(sendE('w1', 'and the docs', 'o1'), next)).toEqual({ isDelivered: true })
+    expect(admittedAtSend).toBe(true)
+    expect(state.status('w1')).toBe('running')
+    expect(state.isParked('w1')).toBe(false)
+    expect(state.reservations()).toEqual([])
+    expect(state.countSwarm('alpha')).toBe(2)
+  })
+
+  test('a parked orchestrator is resumed on its own place too, not refused as another instance of itself', async () => {
+    state.putLiveSwarm(live({ spec: spec({ limits: { maxAgentsAtOnce: 1 } }) }))
+    wireOwnSends()
+    await put(o1(), true)
+    p.agents = [agent('o1', T('part-a'), 'waiting')]
+    await ended('o1')
+    await fireEvery(p)
+    expect(state.isParked('o1')).toBe(true)
+    expect(await tool({ node: 'part-a', text: 'status?' })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
+    expect(state.status('o1')).toBe('running')
+  })
+
+  describe('its scope', () => {
+    // A fixer that writes, sharing its parent's directory.
+    const WRITER = spec({
+      limits: { maxAgentsAtOnce: 4 },
+      nodes: [
+        { id: 'part-a', kind: 'orchestrator', tools: RO, spawns: { fixer: 2 } },
+        { id: 'part-b', kind: 'orchestrator', tools: RO, spawns: { fixer: 1 } },
+        { id: 'fixer', kind: 'worker' },
+      ],
+    })
+    const scope = { dir: '/repo', paths: null, commit: false }
+
+    async function parkedWriter(): Promise<void> {
+      state.putLiveSwarm(live({ spec: WRITER }))
+      await put(o1(), true)
+      await put(bind('w1', { cwd: '/repo' }), false)
+      state.markRunning('w1', scope)
+      p.agents = [agent('w1', T('fixer'), 'waiting', 'o1')]
+      await ended('w1')
+      await fireEvery(p)
+      expect(state.isParked('w1')).toBe(true)
+      expect(state.activeScopes('alpha').map(x => x.agentId)).toEqual(['w1'])
+    }
+
+    test('another writer in its scope refuses its wake, and it stays parked; its own held scope does not', async () => {
+      await parkedWriter()
+      // Another writer got in (after a reload that lost w1's scope, say): fixer #2 under part-b, in /repo.
+      await put(o2(), true)
+      state.putBinding(bind('w2', { n: 2, parent: 'o2', cwd: '/repo' }))
+      state.markRunning('w2', scope)
+      const first = stepE('w1', 'T1', 0)
+      const r = await step(first)
+      expect(r.called).toBe(false)
+      expect(r.result).toEqual(expect.objectContaining({ answer: 'litter: not admitted: another fixer is writing in /repo; wait for it, or use own worktrees; ending this turn' }))
+      expect(state.isParked('w1')).toBe(true)
+      expect(policyOf('w1')?.admitted).toBe(false)
+      // Gone, it no longer refuses: the next wake is admitted.
+      state.markSettled('w2')
+      expect((await step(stepE('w1', 'T2', 0))).called).toBe(true)
+      expect(state.status('w1')).toBe('running')
+    })
+
+    test('the agents working under it, in its scope, never refuse its wake', async () => {
+      await parkedWriter()
+      // fixer #2 under w1 (workers may spawn, decision C), and a child w1 started, both writing in /repo.
+      state.putBinding(bind('w2', { n: 2, parent: 'w1', cwd: '/repo' }))
+      state.markRunning('w2', scope)
+      state.putBinding(bind('c1', { node: 'fixer', kind: 'child', n: 0, of: 'w1', parent: 'w1', cwd: '/repo' }))
+      state.markRunning('c1', scope)
+      expect((await step(stepE('w1', 'T1', 0))).called).toBe(true)
+      expect(state.status('w1')).toBe('running')
+    })
+  })
+})
+
 describe('swarm.bind and adoption after a reload', () => {
   const TOK1 = '1'.repeat(32)
   const TOK2 = '2'.repeat(32)
@@ -642,14 +841,21 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(rs.at(-1)!.body).toEqual(expect.objectContaining({ agentId: 'x1', adopted: true }))
   })
 
-  test('one the list shows `waiting` (2.1.289) is adopted alive: it holds a place, its policy admitted', async () => {
+  // WP-AJ: as recovery marks a `waiting` node, so its next step is admitted on the place it holds.
+  test('one the list shows `waiting` (2.1.289) is adopted parked: it holds its place, its policy admitted from its next step', async () => {
     await put(o1(), true)
     await instance(1, TOK1)
     p.agents = [agent('x1', T('fixer'), 'waiting', 'o1')]
     await admit.adoptUnbound(p)
     expect(state.binding('x1')).toEqual(expect.objectContaining({ node: 'fixer', n: 1, adopted: true }))
+    expect(state.isParked('x1')).toBe(true)
+    expect(state.countFor('alpha', 'o1', 'fixer')).toBe(1)
+    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: false }))
+    // Its parent is at its max of 1 fixer, x1 counted: the step is admitted on x1's own place.
+    expect((await step(stepE('x1', 'T1', 0))).called).toBe(true)
     expect(state.status('x1')).toBe('running')
-    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: true }))
+    expect(state.isParked('x1')).toBe(false)
+    expect(policyOf('x1')?.admitted).toBe(true)
   })
 })
 

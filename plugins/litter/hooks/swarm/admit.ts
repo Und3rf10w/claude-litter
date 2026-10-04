@@ -16,7 +16,7 @@
 // its own timers (decision 2; 15.9, item 19).
 
 import type { AgentPolicy } from '../hookfiles'
-import type { Ports, SessionSendResult } from '../ports'
+import type { AgentStatus, Ports, SessionSendResult } from '../ports'
 import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
 import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply } from '../records/swarm'
@@ -186,12 +186,57 @@ export function swarmRefusal(s: LiveSwarm | null, name: string, starting: boolea
   return null
 }
 
-/** The swarm's own cap (15.3, `limits.maxAgentsAtOnce`), as a refusal; null with room. */
+/** A refusal names at most this many parked agents. */
+const PARKED_NAMED = 5
+
+/**
+ * The parked among the agents a refusal counts, in words, or null when none
+ * is (WP-AJ). A parked agent ended its turn while its own agents or
+ * background work run, and keeps its place until it ends, so the one refused
+ * knows to wait for it, or to go on without the agent it asked for.
+ */
+function parkedClause(ids: readonly string[]): string | null {
+  if (ids.length === 0) return null
+  const names = ids.slice(0, PARKED_NAMED).map(id => {
+    const b = state.binding(id)
+    return b ? labelOf(b) : id
+  })
+  const more = ids.length > PARKED_NAMED ? ` and ${ids.length - PARKED_NAMED} more` : ''
+  return ids.length === 1
+    ? `1 of them is parked: ${names[0]}, which ended its turn while its own agents or background work run, and keeps its place until it ends`
+    : `${ids.length} of them are parked: ${names.join(', ')}${more}, which ended their turns while their own agents or background work run, and keep their places until they end`
+}
+
+/** A count's refusal: `at`, then the parked it counts when there are any. */
+const countRefusal = (at: string, parked: string | null): string =>
+  parked ? `${at}, and ${parked}; wait for one to finish, or go on without this agent` : `${at}; wait for one to finish`
+
+/** The swarm's own cap (15.3, `limits.maxAgentsAtOnce`), as a refusal naming its parked agents; null with room. */
 export function capRefusal(s: LiveSwarm): string | null {
   const cap = s.spec.limits?.maxAgentsAtOnce
   if (cap === undefined) return null
   const k = state.countSwarm(s.name)
-  return k >= cap ? `swarm ${s.name} is at its limit of ${cap} agents at once (limits.maxAgentsAtOnce); wait for one to finish` : null
+  if (k < cap) return null
+  const parked = parkedClause(state.parkedIn(s.name).map(x => x.agentId))
+  return countRefusal(`swarm ${s.name} is at its limit of ${cap} agents at once (limits.maxAgentsAtOnce)`, parked)
+}
+
+/**
+ * A parent at its max of `node` at once (its `spawns`), as a refusal naming
+ * the parked instances it counts; null with room. `parentId` is the parent's
+ * agentId. The spawn check's count can word itself the same way.
+ */
+export function parentCountRefusal(s: LiveSwarm, parentId: string, node: string, max: number): string | null {
+  const k = state.countFor(s.name, parentId, node)
+  if (k < max) return null
+  const parent = state.binding(parentId)
+  const parked = parkedClause(
+    state
+      .parkedIn(s.name)
+      .filter(x => x.kind !== 'child' && x.parent === parentId && x.node === node)
+      .map(x => x.agentId),
+  )
+  return countRefusal(`${parent ? labelOf(parent) : parentId} already runs ${k} of its max ${max} ${node} at once`, parked)
 }
 
 /** What `parentNode` may spawn, in words, for a refusal. */
@@ -276,21 +321,30 @@ function resumeRefusal(s: LiveSwarm, b: NodeBinding): { reason: string; canQueue
   return null
 }
 
-/** The room a resume takes: its parent's count, the swarm's cap, and its write scope. Null with room. */
+/**
+ * The room a resume takes: its parent's count, the swarm's cap, and its write
+ * scope. Null with room. A parked node holds its place already, counted in
+ * both, so only its scope is judged (WP-AJ), leaving out its own place and
+ * those of the agents under it, which work in its scope as its delegates.
+ */
 function placeRefusal(s: LiveSwarm, b: NodeBinding, scope: WriteScope | null): string | null {
-  if (b.kind === 'orchestrator' && state.countFor(s.name, null, b.node) > 0) {
-    return `another instance of ${b.node} is running; send to it instead`
+  const parked = state.isParked(b.agentId)
+  if (!parked) {
+    if (b.kind === 'orchestrator' && state.countFor(s.name, null, b.node) > 0) {
+      return `another instance of ${b.node} is running; send to it instead`
+    }
+    if (b.kind === 'worker' && b.parent !== null) {
+      const parent = state.binding(b.parent)
+      const full = parentCountRefusal(s, b.parent, b.node, parent ? (nodeOf(s, parent.node)?.spawns?.[b.node] ?? 0) : 0)
+      if (full) return full
+    }
+    const cap = capRefusal(s)
+    if (cap) return cap
   }
-  if (b.kind === 'worker' && b.parent !== null) {
-    const parent = state.binding(b.parent)
-    const max = parent ? (nodeOf(s, parent.node)?.spawns?.[b.node] ?? 0) : 0
-    const k = state.countFor(s.name, b.parent, b.node)
-    if (k >= max) return `${parent ? labelOf(parent) : b.parent} already runs ${k} of its max ${max} ${b.node} at once; wait for one to finish`
-  }
-  const cap = capRefusal(s)
-  if (cap) return cap
   if (scope) {
-    const hit = scopeConflict(s.name, scope, delegatorsOf(b.parent))
+    const above = parked ? delegatorsOf(b.agentId) : delegatorsOf(b.parent)
+    if (parked) for (const d of state.descendantsOf(b.agentId)) above.add(d.agentId)
+    const hit = scopeConflict(s.name, scope, above)
     if (hit) return `another ${hit.node} is writing in ${hit.dir}; wait for it, or use own worktrees`
   }
   return null
@@ -358,6 +412,9 @@ function admitWake(b: NodeBinding): Wake {
     state.markRunning(b.agentId)
     return { ok: true, patch: true }
   }
+  // Parked (WP-AJ): its children's results or its background work woke it. It's counted already, so no count
+  // or cap can refuse it, nor take its place meanwhile; placeRefusal judges its scope alone, and markRunning
+  // clears the mark.
   const scope = instanceScope(s, b)
   const room = placeRefusal(s, b, scope)
   if (room) return { ok: false, reason: room }
@@ -418,17 +475,25 @@ function messageEvent(req: SendReq, to: NodeBinding, route: Route, text: string)
 }
 
 /**
- * The node is done when the list no longer shows it running: settle it now
- * (the hook's own check). Only `running`, not agentLive: settling covers the
- * engine still finalizing the task after turn.complete (2.1.289's `running`),
- * when a message would be resumed with no admission (15.4, "A node that's
- * settling is neither"). A `waiting` node is parked on children or background
- * work, completed to the engine, so a message resumes it through admission,
- * as in 2.1.288; holding it settling would queue every message to it.
+ * The node's turn is over when the list no longer shows it running: settle
+ * or park it now (the hook's own check). Only `running`, not agentLive:
+ * settling covers the engine still finalizing the task after turn.complete
+ * (2.1.289's `running`), when a message would be resumed with no admission
+ * (15.4, "A node that's settling is neither"). A `waiting` node is parked on
+ * children or background work, completed to the engine, so a message resumes
+ * it through admission, as in 2.1.288; holding it settling would queue every
+ * message to it. Parked, it keeps its place until it ends (WP-AJ).
  */
 async function settleIfDone(p: Ports, b: NodeBinding): Promise<void> {
   const row = (await p.listAgents()).find(a => a.id === b.agentId)
-  if (row?.status !== 'running' && state.status(b.agentId) === 'settling') await finishSettle(p, b)
+  await letGo(p, b, row?.status)
+}
+
+/** A settling node, by its row's status: running, it stays settling; `waiting`, it's parked; anything else, settled. */
+async function letGo(p: Ports, b: NodeBinding, listed: AgentStatus | undefined): Promise<void> {
+  if (listed === 'running' || state.status(b.agentId) !== 'settling') return
+  if (listed === 'waiting') await park(p, b)
+  else await finishSettle(p, b)
 }
 
 async function queueFor(p: Ports, s: LiveSwarm, req: SendReq, at: number): Promise<Routed> {
@@ -807,14 +872,26 @@ async function finishSettle(p: Ports, b: NodeBinding): Promise<void> {
   if (dir) await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted after it settled: ${errText(err)}`))
 }
 
-/** A queued message the lead can deliver now: its node idle, not handed already, not waiting for room. */
+/**
+ * Parked (WP-AJ): its turn is over, as a settle's, so its policy is no
+ * longer admitted, but it keeps its place until the list shows it ended, and
+ * its wake is admitted on that place. No place frees, so the messages
+ * waiting for room stay waiting.
+ */
+async function park(p: Ports, b: NodeBinding): Promise<void> {
+  state.markParked(b.agentId)
+  const dir = session().litterDir
+  if (dir) await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted after it parked: ${errText(err)}`))
+}
+
+/** A queued message the lead can deliver now: its node idle (parked too), not handed already, not waiting for room. */
 const deliverable = (q: QueuedMessage): boolean => !handed.has(q.id) && !waitingRoom.has(q.id) && state.status(q.agentId) === 'idle'
 
 function hasWork(): boolean {
-  return state.bindings().some(b => state.status(b.agentId) === 'settling') || state.queued().some(deliverable)
+  return state.bindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId)) || state.queued().some(deliverable)
 }
 
-/** Starts the settle poll when something settles or waits to be handed to the lead. */
+/** Starts the settle poll when something settles, is parked, or waits to be handed to the lead. */
 function kick(p: Ports): void {
   if (poll || !hasWork()) return
   poll = p.every(SETTLE_POLL_MS, () => settleTick(p))
@@ -825,12 +902,15 @@ async function settleTick(p: Ports): Promise<void> {
   ticking = true
   try {
     const settling = state.bindings().filter(b => state.status(b.agentId) === 'settling')
-    if (settling.length > 0) {
+    const parked = state.bindings().filter(b => state.isParked(b.agentId))
+    if (settling.length > 0 || parked.length > 0) {
       const listed = await p.listAgents()
-      for (const b of settling) {
+      // Only `running` holds a settle, not `waiting`, which parks it (settleIfDone says why).
+      for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
+      // A parked node goes once the list shows it ended (completed, failed or killed) or gone; alive, it stays.
+      for (const b of parked) {
         const row = listed.find(a => a.id === b.agentId)
-        // Only `running` holds a settle, not `waiting` (settleIfDone says why).
-        if (row?.status !== 'running' && state.status(b.agentId) === 'settling') await finishSettle(p, b)
+        if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId)) await finishSettle(p, b)
       }
     }
     handOff(p)
@@ -888,7 +968,7 @@ const NODE_REF = /^([a-z0-9][a-z0-9-]{0,31})(?:#([1-9][0-9]{0,5}))?$/
 const latest = (list: readonly NodeBinding[]): NodeBinding | null =>
   list.reduce<NodeBinding | null>((a, b) => (a === null || b.boundAt >= a.boundAt ? b : a), null)
 
-const statusWord = (b: NodeBinding): string => (state.isStopped(b.agentId) ? 'stopped' : state.status(b.agentId))
+const statusWord = (b: NodeBinding): string => (state.isStopped(b.agentId) ? 'stopped' : state.isParked(b.agentId) ? 'parked' : state.status(b.agentId))
 
 /**
  * The instance `ref` names (`node`, or `node#n` for one instance) in the
@@ -929,7 +1009,8 @@ function findInstance(swarmName: unknown, ref: unknown): { b: NodeBinding; s: Li
   }
   if (all[0]!.kind === 'orchestrator') return { b: latest(all)!, s }
   const open = all.filter(b => !state.isStopped(b.agentId))
-  const active = open.filter(b => state.status(b.agentId) !== 'idle')
+  // A parked instance is mid-task, waiting on its own agents: active, though between turns.
+  const active = open.filter(b => state.status(b.agentId) !== 'idle' || state.isParked(b.agentId))
   const pick = active.length > 0 ? active : open
   if (pick.length === 1) return { b: pick[0]!, s }
   return { error: `${id} has ${all.length} instances: ${list(all)}; name one as ${id}#<n>`, field: 'node' }
@@ -1279,8 +1360,12 @@ async function ledgerInstances(p: Ports, dir: string, s: LiveSwarm): Promise<{ i
   return { instances, bound }
 }
 
-/** Binds an agent to its recorded instance: `swarm.node { adopted: true }`, the binding, the policy. */
-async function adopt(p: Ports, dir: string, s: LiveSwarm, inst: SwarmInstanceBody, agentId: string, running: boolean): Promise<NodeBinding> {
+/**
+ * Binds an agent to its recorded instance: `swarm.node { adopted: true }`,
+ * the binding, its place (`as`: running, parked or none), the policy,
+ * admitted only when it runs.
+ */
+async function adopt(p: Ports, dir: string, s: LiveSwarm, inst: SwarmInstanceBody, agentId: string, as: 'running' | 'parked' | 'idle'): Promise<NodeBinding> {
   const node = nodeOf(s, inst.node)
   const kind = node?.kind ?? 'worker'
   const b: NodeBinding = {
@@ -1316,8 +1401,10 @@ async function adopt(p: Ports, dir: string, s: LiveSwarm, inst: SwarmInstanceBod
   }
   await appendLaunchRecord(p, dir, s.name, s.launch, 'swarm.node', body)
   state.putBinding(b)
-  if (running) state.markRunning(agentId, node ? scopeOf(node, inst.cwd) : null)
-  await writeNodePolicy(p, dir, agentId, nodePolicyFor(b, s, { admitted: running, stopped: null, bind: false }))
+  const scope = node ? scopeOf(node, inst.cwd) : null
+  if (as === 'running') state.markRunning(agentId, scope)
+  else if (as === 'parked') state.markParked(agentId, scope)
+  await writeNodePolicy(p, dir, agentId, nodePolicyFor(b, s, { admitted: as === 'running', stopped: null, bind: false }))
   return b
 }
 
@@ -1372,8 +1459,10 @@ export async function adoptUnbound(p: Ports): Promise<void> {
       const fits = open.filter(i => i.node === node && i.parentAgentId === parent)
       const rivals = unbound.filter(x => x.type === a.type && (x.parentId ?? null) === parent)
       try {
-        // Alive holds a place, `waiting` too (mid-turn on a foreground child, or parked on work that wakes it).
-        if (fits.length === 1 && rivals.length === 1) await adopt(p, dir, s, fits[0]!, a.id, agentLive(a.status))
+        // Alive holds a place. `waiting` is parked, as recovery marks it (WP-AJ): its next step is admitted on
+        // that place, whether it's a wake or, mid-turn on a foreground child, the step after the child returns.
+        const as = a.status === 'waiting' ? 'parked' : agentLive(a.status) ? 'running' : 'idle'
+        if (fits.length === 1 && rivals.length === 1) await adopt(p, dir, s, fits[0]!, a.id, as)
         else await holdToBind(p, dir, s, a.id, node, parent)
       } catch (err) {
         p.log(`swarm ${s.name}: agent ${a.id} of ${a.type} wasn't adopted: ${errText(err)}`)
@@ -1419,7 +1508,7 @@ export const recordSwarmBind: RecordHandler = async (ctx, input) => {
     if (bound.has(`${inst.node}#${inst.n}`) || state.bindingByToken(s.name, token)) return notYours
     await appendLaunchRecord(p, dir, s.name, s.launch, 'swarm.bind', { token, agentId, node: inst.node, n: inst.n }, { source: 'agent', agentId, agentType: row.type })
     // It's calling a tool, so it runs: it holds a place from now.
-    await adopt(p, dir, s, inst, agentId, true)
+    await adopt(p, dir, s, inst, agentId, 'running')
     return { ok: true, node: inst.node, n: inst.n, cwd: inst.cwd, branch: inst.branch }
   } finally {
     claiming.delete(token)

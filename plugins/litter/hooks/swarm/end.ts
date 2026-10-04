@@ -331,12 +331,15 @@ async function beginStopping(p: Ports, litterDir: string, name: string, by: 'bro
  * them: the node is mid-turn on a foreground child, or parked after its turn
  * on a child, a shell, a monitor or a workflow that wakes it, so it goes on
  * and keeps its worktree and policy file. With no list read yet, the places
- * alone. The cleanup asks the same of each agent that worked in a worktree,
- * so a swarm.end that says `settled: true` never keeps a worktree as in use.
+ * alone, where a parked node (WP-AJ: the list last showed it `waiting`)
+ * holds its place until admission sees the list show it ended. The cleanup
+ * asks the same of each agent that worked in a worktree, so a swarm.end that
+ * says `settled: true` never keeps a worktree as in use.
  */
 function turnEnded(agentId: string, listed: Map<string, ListedAgent> | null): boolean {
   const row = listed?.get(agentId)
   if (row?.status === 'waiting') return false
+  if (listed === null && state.isParked(agentId)) return false
   const place = state.status(agentId)
   if (place === 'settling' || state.agentStopped(agentId)) return true
   if (listed === null) return place !== 'running'
@@ -357,7 +360,9 @@ function openParts(s: LiveSwarm, list: ListedAgent[] | null): Omit<SettleProgres
   for (const b of state.bindings(s.name)) {
     if (turnEnded(b.agentId, listed)) continue
     const row = listed?.get(b.agentId)
-    nodes.push({ agentId: b.agentId, node: b.node, n: b.n, status: row ? listedWord(row.status) : state.status(b.agentId) })
+    // With no row, a parked node reads as the list last showed it: held.
+    const place = state.isParked(b.agentId) ? listedWord('waiting') : state.status(b.agentId)
+    nodes.push({ agentId: b.agentId, node: b.node, n: b.n, status: row ? listedWord(row.status) : place })
   }
   // An agent of one of the swarm's types that no binding knows is a node too (an adoption still to come).
   const types = new Map(Object.entries(s.types).map(([node, t]) => [t, node]))
