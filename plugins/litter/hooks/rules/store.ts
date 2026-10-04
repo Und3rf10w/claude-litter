@@ -594,14 +594,11 @@ export type AcceptWhat = { proposal: ProposalRef } | { file: string }
  */
 export type AcceptOpts = { scope?: RuleScope; paths?: string[]; type?: RuleType }
 
-/** A user-scope accept of the repository's proposal names the repository, since your ledger is every repository's. */
-type AcceptRecord = RuleAcceptBody & { litterDir?: string }
-
 type Plan = {
   path: string
   text: string
   store: RuleLedgerStore
-  accept: AcceptRecord
+  accept: RuleAcceptBody
   /** An edit's old version, moved to `.history` first. */
   history: { from: string; to: string } | null
   /** The primary checkout, when this write makes `.litter.local/` for the first time. */
@@ -744,7 +741,8 @@ async function planAccept(p: Ports, litterDir: string, what: AcceptWhat, opts: A
   if (!back.ok) return no(`the rule file wouldn't read back (${back.error}); edit the proposal`)
 
   const path = `${folder.dir}/${doc.id}.md`
-  const accept: AcceptRecord = { ...(proposal ? { proposal } : {}), id: doc.id, version: doc.version, scope: folder.scope, path, sha256: await sha256(text), via: 'ui' }
+  const accept: RuleAcceptBody = { ...(proposal ? { proposal } : {}), id: doc.id, version: doc.version, scope: folder.scope, path, sha256: await sha256(text), via: 'ui' }
+  // A user-scope accept of the repository's proposal names the repository, since your ledger is every repository's.
   if (proposal?.store === 'repo' && folder.scope === 'user') accept.litterDir = litterDir
   const excludeIn = folder.scope === 'local' && ctx.primary && !(await p.fs.exists(`${ctx.primary}/.litter.local`)) ? ctx.primary : null
   return { ok: true, plan: { path, text, store: storeOf(folder.scope), accept, history, excludeIn } }
