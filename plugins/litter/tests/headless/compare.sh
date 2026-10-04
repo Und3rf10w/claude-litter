@@ -7,8 +7,10 @@
 #   sh tests/headless/compare.sh <case folder>                   # its litter/ and deepwork/
 #   sh tests/headless/compare.sh <litter side> <deepwork side>   # any run's sides, paired
 #
-# Per gate and per side: landed or halted (or asked, deepwork's question
-# nobody answered; or none, no outcome by the end or the cap), the attempts,
+# Per gate and per side: landed or halted (or asked: deepwork's question
+# nobody answered, or a gate neither landed nor halted that a question of
+# either side's names by id, its questions answered by the steps with their
+# recommended option; or none, no outcome by the end or the cap), the attempts,
 # the gate's ground check on the side's final tree, and whether that's the
 # right outcome expect.json gives. litter's side is read from its run's
 # ledger (land, verify, verdict and run.end: what summary.md and verdicts/
@@ -111,6 +113,15 @@ wall() {
 # run.end's: generation 2's when the bridge continued it, else generation 1's.
 
 LD=$L/repo/.claude/litter
+# The session's questions (only the main thread asks: the skill's interview and the swarm lead's), as deepwork's are read.
+# A gate with no land and no halt was asked about when a question's subject,
+# the first gate id it names, is that gate: its outcome is "asked", with
+# those questions as its text. Not any gate it names: Launch's lists them all.
+SUBJECT='def subject: (first(capture("(^|[^A-Za-z0-9])(?<g>G[0-9]+)") | .g) // null);'
+lq='[]'
+if [ -f "$L/tool-log.jsonl" ]; then
+  lq=$(jq -nRc '[inputs | fromjson? | select(.tool == "AskUserQuestion" and .ev == "PreToolUse") | .input.questions[]? | .question // empty]' "$L/tool-log.jsonl") || exit 2
+fi
 RUN=$(ls "$LD" 2>/dev/null | grep -E '^[0-9]{8}-' | head -n 1)
 if [ -n "$RUN" ] && [ -f "$LD/$RUN/run.json" ]; then
   RD=$LD/$RUN
@@ -119,7 +130,7 @@ if [ -n "$RUN" ] && [ -f "$LD/$RUN/run.json" ]; then
   ltip=$(git -C "$L/repo" rev-parse -q --verify "refs/heads/litter/$RUN") || ltip=$base
   # The gate of a verdict is its own (a plan-template one's) or its cited verify's (an execute critic's: verdicts.ts verdictTarget).
   # A plan-template verdict says `approved`; an execute critic's passes when every dimension does.
-  lf=$(cat "$RD"/ledger/*.json | jq -s -c --argjson gates "$GJ" --arg run "$RUN ($rmode)" --arg tip "$ltip" '
+  lf=$(cat "$RD"/ledger/*.json | jq -s -c --argjson gates "$GJ" --argjson lq "$lq" --arg run "$RUN ($rmode)" --arg tip "$ltip" "$SUBJECT"'
     sort_by(.seq) as $r
     | ([$r[] | select(.kind == "verify") | {key: .body.verify_id, value: .body}] | from_entries) as $v
     | [$r[] | select(.kind == "run.end")] as $ends
@@ -137,10 +148,15 @@ if [ -n "$RUN" ] && [ -f "$LD/$RUN/run.json" ]; then
     | {ran: true, name: "run \($run)", tip: $tip,
        ended: (if $end == null then "never ended"
          else "ended \($end.body.status) after \($ends | length) generation(s): \($end.body.reason // "no reason")" end),
-       gates: [range(0; $rows | length) as $i | $rows[$i] | . + {
-         outcome: (if .landed then "landed" elif $end != null and $end.body.status != "done" and $i == $stop then "halted" else "none" end),
-         text: (if $end != null and $i == $stop then [($end.body.reason // empty), (.verdicts[].gap | select(. != ""))]
-           | reduce .[] as $t ([]; if any(.[]; contains($t)) then . else . + [$t] end) | join(" | ") else "" end),
+       gates: [range(0; $rows | length) as $i | $rows[$i] | .id as $g
+         | [$lq[] | select(subject == $g)] as $asked
+         | (if .landed then "landed" elif $end != null and $end.body.status != "done" and $i == $stop then "halted"
+             elif ($asked | length) > 0 then "asked" else "none" end) as $o
+         | . + {
+         outcome: $o,
+         text: (if $o == "halted" then [($end.body.reason // empty), (.verdicts[].gap | select(. != ""))]
+           | reduce .[] as $t ([]; if any(.[]; contains($t)) then . else . + [$t] end) | join(" | ")
+           elif $o == "asked" then $asked | join(" | ") else "" end),
          rejected: [.verdicts[] | select((.ok | not) and .gap == "") | {tree, green}]}]}') || { echo "$0: litter's ledger doesn't parse" >&2; exit 2; }
 else
   ltip=$(git -C "$L/repo" rev-parse -q --verify HEAD) || exit 2
@@ -166,7 +182,7 @@ fi
 dtip=$(git -C "$D/repo" rev-parse -q --verify refs/heads/main) || exit 2
 if [ -n "$state" ]; then
   # change_log[].plan_section names the gate as "G1", "plan.md#G1" or "G-exec-1" (S0's runs).
-  df=$(jq -c --argjson gates "$GJ" --argjson asks "$asks" --arg tip "$dtip" --arg file "${state##*/}" '
+  df=$(jq -c --argjson gates "$GJ" --argjson asks "$asks" --arg tip "$dtip" --arg file "${state##*/}" "$SUBJECT"'
     .execute as $x
     | def of($n): (. // "") | test("(^|[^A-Za-z0-9])[Gg](-?exec-?)?" + $n + "([^0-9]|$)");
     [$gates[] as $g | ($g | ltrimstr("G")) as $n | [($x.change_log // [])[] | select(.plan_section | of($n))] as $c
@@ -178,10 +194,14 @@ if [ -n "$state" ]; then
     | (.halt_reason // {}) as $h
     | {ran: true, name: "instance \(.instance_id // "?") (\($file))", tip: $tip,
        ended: "phase \($x.phase // "none")\(if $h.summary then ": \($h.summary)" else "" end)",
-       gates: [range(0; $rows | length) as $i | $rows[$i] | . + {
-         outcome: (if .landed then "landed" elif $how != null and $i == $stop then $how else "none" end),
+       gates: [range(0; $rows | length) as $i | $rows[$i] | .id as $g
+         | [$asks.questions[] | select(subject == $g)] as $asked
+         | (if .landed then "landed" elif $how != null and $i == $stop then $how elif ($asked | length) > 0 then "asked" else "none" end) as $o
+         | . + {
+         outcome: $o,
          text: (if $i == $stop then [($h.summary // empty), (($h.blockers // [])[] | tostring), $asks.questions[], .notes[],
-           (($x.discoveries // [])[] | select(.proposed_outcome != "continue") | "discovery \(.id // ""): \(.context // "")")] | join(" | ") else "" end)}]}' "$state") ||
+           (($x.discoveries // [])[] | select(.proposed_outcome != "continue") | "discovery \(.id // ""): \(.context // "")")] | join(" | ")
+           elif $o == "asked" then $asked | join(" | ") else "" end)}]}' "$state") ||
     { echo "$0: $state doesn't parse" >&2; exit 2; }
 else
   df=$(jq -nc --argjson gates "$GJ" --argjson asks "$asks" --arg tip "$dtip" '{ran: false, name: "no execute instance", tip: $tip, ended: "no state",

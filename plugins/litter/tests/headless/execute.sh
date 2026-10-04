@@ -108,10 +108,26 @@ compare_side() {
 #!/bin/sh
 # The waits of this side's steps: sh until.sh <what> exits 0 once it holds.
 LD=$cld
+LOG=$H_DIR/tool-log.jsonl
+MARK=$H_DIR/ask-mark
 ASK="sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl $H_DIR/ask-mark"
 EOF
     cat >>"$H_DIR/until.sh" <<'EOF'
-$ASK && exit 0
+# A swarm node has started; the lead asks only once one has.
+nodes() { ls "$LD"/swarms/repair-*/launches/*/ledger/*-swarm.node.json >/dev/null 2>&1; }
+# decline: esc, for the skill's closing question if it waits (one asked, no
+# node yet), with the mark moved past it, since a declined one logs nothing
+# more. The lead's questions come later and are answered (T4-1 attempt 3:
+# an esc meant for the closing question declined the lead's).
+if [ "$1" = decline ]; then
+  if $ASK && ! nodes; then
+    wc -l <"$LOG" >|"$MARK"
+    echo esc
+  fi
+  exit 0
+fi
+# NOASK=1: the wait's own condition, for a keysh that answers questions meanwhile.
+[ -n "${NOASK:-}" ] || { $ASK && exit 0; }
 records() { cat "$LD"/2*/ledger/*.json 2>/dev/null | jq -s 'sort_by(.seq)'; }
 # Generation 2 ended, or generation 1 did with nothing to continue it: it didn't halt, or the bridge declined.
 over() { records | jq -e '(map(select(.kind == "run.end")) | length >= 2) or any(.[]; (.kind == "run.end" and .body.status != "halted") or .kind == "repair.declined")' >/dev/null 2>&1; }
@@ -144,16 +160,19 @@ sendsh ls $cld/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-l
 keysh 300 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 # Generation 1, to its run.end or the cap (H_DRIVE_MAX).
 wait 10800 sh $H_DIR/until.sh ended1
-# The skill's closing question: one esc declines it, so its turn ends, and a
-# swarm the bridge started (repair: auto) starts at that turn's end. A
-# declined question logs nothing more, so the mark moves past it.
+# The skill's closing question, if it asks one: one esc declines it, so its
+# turn ends, and a swarm the bridge started (repair: auto) starts at that
+# turn's end. Under repair: auto it usually asks none, and the wait ends on
+# its 240 s or the lead's first question, which isn't declined.
 wait 240 sh $H_DIR/until.sh asking
-press 6 6 esc ! sh $H_DIR/until.sh asking
-until wc -l 2>/dev/null <$H_DIR/tool-log.jsonl >|$H_DIR/ask-mark || : >|$H_DIR/ask-mark
-# A plan-template swarm, until every gate has landed. The lead ends it on the
-# gate-runner's report; if it hasn't, the session says to. Then generation
-# 2's run.end. With nothing to continue the run, each of these holds at once.
-wait 10800 sh $H_DIR/until.sh landed
+keysh 6 6 sh $H_DIR/until.sh decline
+# A plan-template swarm, until every gate has landed. The lead's questions
+# take their recommended option, else the first, as the interview's do: a
+# user who takes the recommendations, deepwork's side answered the same.
+# The lead ends the swarm on the gate-runner's report; if it hasn't, the
+# session says to. Then generation 2's run.end. With nothing to continue
+# the run, each of these holds at once.
+keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh landed && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl recommended $H_DIR/answer-mark $H_DIR/ask-mark
 wait 600 sh $H_DIR/until.sh swarm_ended
 sendsh $end_cmd
 wait 900 sh $H_DIR/until.sh over
@@ -168,13 +187,15 @@ EOF
 #!/bin/sh
 # deepwork's end (T4-RESULTS.md, S0 run 3): execute-done.sentinel, or its
 # state archived; or a question waiting with no one to answer it (the tool
-# log's AskUserQuestion with no PostToolUse after it).
+# log's AskUserQuestion with no PostToolUse after it). NOASK=1: the end
+# alone, for the keysh that answers its questions.
 R=$H_REPO
 LOG=$H_DIR/tool-log.jsonl
 EOF
     cat >>"$H_DIR/until.sh" <<'EOF'
 ls "$R"/.claude/deepwork/*/execute-done.sentinel >/dev/null 2>&1 && exit 0
 ls "$R"/.claude/deepwork/*/state.archived.json >/dev/null 2>&1 && exit 0
+[ -z "${NOASK:-}" ] || exit 1
 [ -f "$LOG" ] || exit 1
 jq -nRe '[inputs | fromjson? | select(.tool == "AskUserQuestion") | .ev]
   | (map(select(. == "PreToolUse")) | length) > (map(select(. == "PostToolUse")) | length)' "$LOG" >/dev/null 2>&1
@@ -183,8 +204,10 @@ EOF
 sleep 8
 # S0's command (it asked nothing there), with the ban as a guardrail.
 send /deepwork Implement the approved plan in plan.md --mode execute --plan-ref plan.md --guardrail '$BAN_TEXT'
-wait 10800 sh $H_DIR/until.sh
-# Time to archive its state; then esc closes a question no one will answer.
+# To its end, its questions taking their recommended option, else the
+# first, as litter's side's do.
+keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl recommended $H_DIR/answer-mark
+# Time to archive its state; then esc closes a question still open.
 sleep 60
 key esc
 sleep 3

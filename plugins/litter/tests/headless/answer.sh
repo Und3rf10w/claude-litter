@@ -8,7 +8,10 @@
 # ask waits, or this round isn't the one to answer it; exits 1 only on a
 # missing argument.
 #
-#   sh tests/headless/answer.sh <tool-log.jsonl> <regex> <mark>
+#   sh tests/headless/answer.sh <tool-log.jsonl> <regex> <mark> [<ask mark>]
+#
+# <ask mark> is asking.sh's: a question the steps declined with esc, before
+# it, isn't waiting.
 #
 # Keys, as CC 2.1.289 reads them:
 # - a single-select question: Down to the option, then Enter, which picks it
@@ -22,7 +25,7 @@ mark=${3:-}
 [ -n "$log" ] && [ -n "$mark" ] || exit 1
 # No log yet: the session hasn't called a tool, so nothing is asked.
 [ -f "$log" ] || exit 0
-sh "$(dirname "$0")/asking.sh" "$log" || exit 0
+sh "$(dirname "$0")/asking.sh" "$log" ${4:+"$4"} || exit 0
 n=$(jq -nRr 'inputs | (fromjson? // {}) | select(.tool == "AskUserQuestion" and .ev == "PreToolUse") | input_line_number' "$log" 2>/dev/null | tail -n 1)
 [ -n "$n" ] || exit 0
 case $(cat "$mark" 2>/dev/null) in
