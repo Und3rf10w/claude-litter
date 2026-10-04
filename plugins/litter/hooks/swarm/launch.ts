@@ -20,7 +20,7 @@
 // passed J's validation, and comes after `--end-of-options` or as a ref this
 // module spelled out.
 
-import type { AgentSpec, Ports } from '../ports'
+import type { AgentSpec, AgentStatus, Ports } from '../ports'
 import type { PortHook, SwarmReadHook } from '../hooktypes'
 import type { SwarmEntry } from '../hookfiles'
 import type { SwarmReadInstance, SwarmReadLaunch, SwarmReadOrchestrator, SwarmReadReply, SwarmStartBody } from '../records/swarm'
@@ -851,6 +851,12 @@ async function readDraftOf(p: Ports, litterDir: string, name: string): Promise<S
   return no(`swarm ${name} has no draft and was never saved; propose it with mcp__litter__swarm_propose at baseRevision 0`)
 }
 
+/**
+ * The list's words that would read as litter's own (admission's, `stopped`, the read-only `idle`, `gone`), as the
+ * browser words them: 2.1.289's `waiting` is mid-turn on child agents alone, or ended but holding work that wakes it.
+ */
+const ENGINE_WORDS: Partial<Record<AgentStatus, string>> = { waiting: 'held', idle: 'between turns', pending: 'starting' }
+
 async function launchRead(p: Ports, litterDir: string, s: LiveSwarm): Promise<SwarmReadLaunch> {
   const facts = await readLaunchFacts(p, litterDir, s.name, s.launch)
   // Another session's agents aren't in this one's list: its read shows the owner's last state.
@@ -859,7 +865,9 @@ async function launchRead(p: Ports, litterDir: string, s: LiveSwarm): Promise<Sw
     if (isStopped(agentId)) return 'stopped'
     const st = status(agentId)
     if (st !== 'idle') return st
-    return list ? (list.get(agentId) ?? 'gone') : 'idle'
+    if (!list) return 'idle'
+    const listed = list.get(agentId)
+    return listed === undefined ? 'gone' : (ENGINE_WORDS[listed] ?? listed)
   }
   const instanceOf = (agentId: string, n: number): SwarmReadInstance => ({
     n,

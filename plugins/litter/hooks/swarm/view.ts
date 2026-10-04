@@ -64,6 +64,7 @@ import type {
   TemplateListing,
   WorktreeSpec,
 } from './types'
+import { agentLive } from '../ports'
 import { session } from '../session'
 import { headKey } from '../ledgercore'
 import { launchDir, swarmBriefPath, swarmDir, swarmProposalDir } from '../layout'
@@ -1674,19 +1675,30 @@ export function acceptPick(
 
 type Statusish = { word: string; glyph: string; color: string; running: boolean }
 
-/** A node's status, from the stopped list, the admission table and `$.agent.list()` (15.6, "Facts come from what the mod observes"). */
+/**
+ * A node's status, from the stopped list, the admission table and `$.agent.list()` (15.6, "Facts come from what the mod observes").
+ * `running` is whether it's alive (agentLive), so a held or starting node can still be flagged and stopped.
+ */
 export function statusOf(agentId: string, listed: ListedAgent | undefined, question: boolean): Statusish {
   const adm = admissionStatus(agentId)
-  if (isStopped(agentId)) return { word: 'stopped', glyph: '−', color: COLOR.idle, running: listed?.status === 'running' }
+  const alive = listed !== undefined && agentLive(listed.status)
+  if (isStopped(agentId)) return { word: 'stopped', glyph: '−', color: COLOR.idle, running: alive }
+  // The engine's `waiting` (2.1.289) isn't litter's ⚑ waiting, a question: the node is mid-turn on child agents alone, or
+  // its turn ended but a shell, monitor, child or workflow it holds will wake it. Shown over settling, since it says why.
+  if (listed?.status === 'waiting' && !question) return { word: 'held', glyph: '‖', color: COLOR.running, running: true }
   if (adm === 'settling') return { word: 'settling', glyph: '~', color: COLOR.running, running: true }
-  if (listed?.status === 'running' || adm === 'running') {
-    return question ? { word: 'waiting', glyph: '⚑', color: COLOR.waiting, running: true } : { word: 'running', glyph: '', color: COLOR.running, running: true }
+  if (alive || adm === 'running') {
+    if (question) return { word: 'waiting', glyph: '⚑', color: COLOR.waiting, running: true }
+    if (listed?.status === 'pending') return { word: 'starting', glyph: '', color: COLOR.running, running: true }
+    return { word: 'running', glyph: '', color: COLOR.running, running: true }
   }
   if (question) return { word: 'waiting', glyph: '⚑', color: COLOR.waiting, running: false }
   if (!listed) return { word: 'gone', glyph: '−', color: COLOR.idle, running: false }
   if (listed.status === 'completed') return { word: 'done', glyph: '✓', color: COLOR.done, running: false }
   if (listed.status === 'failed') return { word: 'failed', glyph: '✕', color: COLOR.failed, running: false }
   if (listed.status === 'killed') return { word: 'killed', glyph: '✕', color: COLOR.failed, running: false }
+  // A teammate's, or an ended named agent's; a litter node is never named, so this is rare.
+  if (listed.status === 'idle') return { word: 'between turns', glyph: '', color: COLOR.idle, running: false }
   return { word: oneLine(listed.status, 16), glyph: '', color: COLOR.idle, running: false }
 }
 
@@ -2126,7 +2138,19 @@ export function composerTarget(name: string, selected: string | null): NodeBindi
 export const composerRoute = (route: ComposerPrefs['route'], target: NodeBinding | null): ComposerPrefs['route'] =>
   route === 'parent' && target?.kind !== 'worker' ? 'direct' : route
 
+/** Admitted, or alive in the list (agentLive): a held or starting node isn't idle, and [Stop them] can stop it. */
 const isRunningAgent = (agentId: string, listed: Map<string, ListedAgent>): boolean => {
+  const adm = admissionStatus(agentId)
+  const row = listed.get(agentId)
+  return adm === 'running' || adm === 'settling' || (row !== undefined && agentLive(row.status))
+}
+
+/**
+ * Whether a send now reaches the node itself, for the composer's Direct label: running right now, not
+ * agentLive. A worker parked after its turn (the list's `waiting`) is completed to the engine, so a send
+ * resumes it, and admission readdresses that resume to its parent (admit.ts, judge).
+ */
+const takesDirect = (agentId: string, listed: Map<string, ListedAgent>): boolean => {
   const adm = admissionStatus(agentId)
   return adm === 'running' || adm === 'settling' || listed.get(agentId)?.status === 'running'
 }
@@ -2169,7 +2193,7 @@ async function composerFor(
   const targets: SwarmOption[] = all.filter(b => b.kind !== 'child').map(b => ({ value: b.agentId, label: clean(instanceName(b, all, listed.get(b.agentId)), 40) }))
   const target = composerTarget(name, selected)
   const worker = target?.kind === 'worker'
-  const idleWorker = worker && target !== null && !isRunningAgent(target.agentId, listed)
+  const idleWorker = worker && target !== null && !takesDirect(target.agentId, listed)
   const routes: SwarmOption[] = [
     { value: 'direct', label: idleWorker ? "via parent (it's idle)" : 'Direct' },
     { value: 'lead', label: 'Via lead' },
@@ -2467,7 +2491,7 @@ export function defaultLiveSwarm(): string | null {
   return owned[0]?.name ?? live.sort((a, b) => b.startedAt - a.startedAt)[0]?.name ?? null
 }
 
-/** The bound agents running now of the given node ids ([Stop them]). */
+/** The bound agents of the given node ids still running, held or starting ([Stop them]). */
 export function runningOf(swarm: string, nodes: readonly string[], listed: readonly ListedAgent[]): string[] {
   const byId = new Map(listed.map(a => [a.id, a]))
   return bindings(swarm)

@@ -17,7 +17,7 @@ import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
 import { SWARM_SEND } from '../../hooks/swarm/tools'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
-import type { ListedAgent, SessionSendResult } from '../../hooks/ports'
+import type { AgentStatus, ListedAgent, SessionSendResult } from '../../hooks/ports'
 import { fireEvery, nodePorts, runAfters, scratch, type TestPorts } from './support/node-ports'
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null
 const o2 = () => bind('o2', { node: 'part-b', kind: 'orchestrator', parent: null, cwd: '/repo/b', boundAt: NOW })
 const w = (n: number, over: Partial<NodeBinding> = {}) => bind(`w${n}`, { n, ...over })
 
-const agent = (id: string, type: string, status: string, parentId?: string): ListedAgent => ({
+const agent = (id: string, type: string, status: AgentStatus, parentId?: string): ListedAgent => ({
   id,
   description: 'a node',
   type,

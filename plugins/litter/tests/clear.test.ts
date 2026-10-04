@@ -148,6 +148,24 @@ describe('/clear, held while a run agent is running', () => {
     expect(asked).toContain('Clear anyway')
   })
 
+  test('a role the list shows `waiting` (2.1.289: on a child or background work) holds it too, worded as held', async ($, on) => {
+    const sid = { value: 'tier1-a' }
+    const files = setup(on, sid)
+    on('agent.list', async () => ({ value: [{ id: 'exec-1', type: 'litter:executor', status: 'waiting', description: 'executor' }] }))
+    let asked = ''
+    on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
+      asked = JSON.stringify(e)
+      throw new Error('no one to ask')
+    })
+    const engine = engineClear(on)
+    await start($)
+    files.set(POLICY, runPolicy('tier1-a'))
+    expect(await $.command.run(CLEAR)).toEqual(expect.objectContaining({ text: HELD }))
+    expect(engine.ran).toBe(0)
+    expect(asked).toContain(`executor in run ${RUN}: held: waiting on a child or background work`)
+    expect(asked).not.toContain('between commands')
+  })
+
   test('with nothing live, the clear passes straight on', async ($, on) => {
     const sid = { value: 'tier1-a' }
     setup(on, sid)

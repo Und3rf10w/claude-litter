@@ -17,7 +17,7 @@ import { newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
-import { swarmSpawn } from '../../hooks/swarm/spawn'
+import { outsideTeammate, swarmSpawn } from '../../hooks/swarm/spawn'
 import type { LiveSwarm, SwarmSpec } from '../../hooks/swarm/types'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
@@ -223,6 +223,84 @@ describe('what the check applies to', () => {
     expect(again.agentId).toBe('agent-2')
     expect(state.binding('agent-2')?.n).toBe(2)
     expect(state.binding(a)?.n).toBe(1)
+  })
+})
+
+// 2.1.289 runs agent.spawn for a teammate too (isTeammate, background, no cwd), and puts back a rewrite's cwd and background.
+describe('teammates', () => {
+  const NEVER_TEAMMATE =
+    "litter: swarm agents are never teammates: with name set, this call starts a teammate, which runs in the session's directory and ignores the cwd and background litter gives a swarm agent. Leave name unset"
+  const CHILD_NEVER_TEAMMATE =
+    "litter: an agent a node starts is never a teammate: with name set, this call starts a teammate, which runs in the session's directory and ignores the cwd (its node's directory) and background litter gives it. Leave name unset"
+  const NEVER_NAMED = 'litter: swarm agents are never named: leave name unset (litter addresses nodes by node name, through mcp__litter__swarm_send)'
+  const mate = (subagentType: string, parentAgentId?: string, name = 'mate') =>
+    spawnE(subagentType, parentAgentId, { name, isTeammate: true, background: true })
+
+  test('outsideTeammate: a teammate from the main thread of no litter type, prefixed or bare', () => {
+    expect(outsideTeammate(mate('general-purpose'))).toBe(true)
+    expect(outsideTeammate(mate('deepwork:critic'))).toBe(true)
+    expect(outsideTeammate(mate('teammate'))).toBe(true)
+    // Spawned by a loop: maybe a node or a node's child, which only the state can tell.
+    expect(outsideTeammate(mate('general-purpose', 'agent-x'))).toBe(false)
+    // A litter role, a swarm type, and a swarm type as swarmOfType also reads it, bare.
+    expect(outsideTeammate(mate('litter:executor'))).toBe(false)
+    expect(outsideTeammate(mate(T('part-a')))).toBe(false)
+    expect(outsideTeammate(mate('sw-alpha-part-a'))).toBe(false)
+    // Not a teammate: a named subagent, or none.
+    expect(outsideTeammate(spawnE('general-purpose', undefined, { name: 'bob' }))).toBe(false)
+    expect(outsideTeammate(spawnE('general-purpose'))).toBe(false)
+  })
+
+  test('an outside teammate passes to the engine as it came, with no wait while the gate is closed', async () => {
+    state.closeGate()
+    try {
+      const { next, calls } = engine({ answer: () => ({ model: 'opus', agentId: 'mate-1', teammateId: 'mate@team' }) })
+      const e = mate('deepwork:critic')
+      expect(await run(e, next)).toEqual({ model: 'opus', agentId: 'mate-1', teammateId: 'mate@team' })
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toBe(e)
+      expect(p.sleeps).toEqual([])
+      expect(state.bindings()).toEqual([])
+      expect(state.reservations()).toEqual([])
+    } finally {
+      state.openGate()
+    }
+  })
+
+  test("a teammate from a loop still waits on the closed gate, as any spawn the state decides", async () => {
+    state.closeGate()
+    const { next, calls } = engine()
+    const start = p.clock.now!
+    Object.defineProperty(next, 'budget', { get: () => Object.freeze({ ms: 10_000, remainingMs: Math.max(0, 1_000 - (p.clock.now! - start)) }) })
+    try {
+      await expect(run(mate('general-purpose', 'agent-x'), next)).rejects.toThrow("litter: the swarm state isn't ready")
+      expect(p.sleeps.length).toBeGreaterThan(0)
+      expect(calls).toEqual([])
+    } finally {
+      state.openGate()
+    }
+  })
+
+  test('a teammate of a swarm type from the lead, and one from a node, are refused: it would run outside its directory', async () => {
+    const a = await orchestrator()
+    const { next, calls } = engine()
+    expect((await run(mate(T('part-b')), next)).deny).toBe(NEVER_TEAMMATE)
+    expect((await run(mate(T('scout'), a), next)).deny).toBe(NEVER_TEAMMATE)
+    expect(calls).toEqual([])
+    expect(state.reservations()).toEqual([])
+  })
+
+  test("a teammate a node or its child starts is refused with the child's words; a named subagent with NEVER_NAMED", async () => {
+    const a = await orchestrator()
+    const child = (await run(spawnE('general-purpose', a), engine().next)).agentId!
+    expect(state.binding(child)?.kind).toBe('child')
+    const { next, calls } = engine()
+    expect((await run(mate('general-purpose', a), next)).deny).toBe(CHILD_NEVER_TEAMMATE)
+    expect((await run(mate('deepwork:critic', child), next)).deny).toBe(CHILD_NEVER_TEAMMATE)
+    expect((await run(spawnE('general-purpose', a, { name: 'helper' }), next)).deny).toBe(NEVER_NAMED)
+    expect((await run(spawnE(T('scout'), a, { name: 'helper' }), next)).deny).toBe(NEVER_NAMED)
+    expect(calls).toEqual([])
+    expect(state.reservations()).toEqual([])
   })
 })
 

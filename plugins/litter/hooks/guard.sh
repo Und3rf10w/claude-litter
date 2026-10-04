@@ -55,7 +55,7 @@ def swarms($p): if ($p | ok1) and ($p.swarm | type) == "object" and ($p.swarm.sw
   then $p.swarm.swarms else {} end;
 def other($in; $id; $tool; $ti; $sub):
   if $tool == "Agent" and ($sub | startswith("litter:sw-")) then
-    (if ($ti.name | str) != "" then deny($in; "a swarm node takes no name: with one it would become an unchecked teammate. Spawn \($sub) again without name")
+    (if ($ti.name | str) != "" then deny($in; "a swarm node takes no name: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn \($sub) again without name")
      else "pass" end)
   elif $tool == "Agent" and ($sub | startswith("litter:")) then
     deny($in; "litter roles run inside litter workflows; start one with /litter:execute, /litter:design or /litter:fanout instead of spawning \($sub)")
@@ -629,7 +629,7 @@ def nodetools($in; $n; $tool; $ti):
   | if $tool == "EnterWorktree" or $tool == "ExitWorktree" then deny($in; "your directory is fixed by the swarm; ask your parent")
     elif ($n.toolsDeny | strs | index([$tool])) != null then deny($in; "\($tool) is denied to node \($node) by its spec (tools.deny)")
     elif $tool == "Agent" and ($ti.name | str) != "" then
-      deny($in; "a swarm node spawns no named agent: with a name it would become an unchecked teammate. Spawn it again without name")
+      deny($in; "a swarm node spawns no named agent: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn it again without name")
     elif $tool == "Agent" and ($sub | startswith("litter:sw-")) then
       (if ($n.spawns | strs | index([$sub])) != null then passcall($in)
        elif ($n.spawns | strs | length) == 0 then deny($in; "node \($node) spawns no swarm workers (its spec lists none), so not \($sub)")

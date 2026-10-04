@@ -21,7 +21,7 @@ import type { SwarmInstanceBody, SwarmNodeBody } from '../records/swarm'
 import type { BindingKind, LiveSwarm, NodeBinding, SwarmNode, WriteScope } from './types'
 import { appendLaunchRecord } from '../records/swarm'
 import { getOptions, session } from '../session'
-import { pendingPath, swarmOwnBranch, swarmOwnWorktreeName } from '../layout'
+import { pendingPath, SWARM_TYPE_PREFIX, swarmOwnBranch, swarmOwnWorktreeName } from '../layout'
 import { atomicWriteJson, remove } from '../fsx'
 import { git, litterWorktreeRoot, revParse } from '../worktrees'
 import { addSwarmWorktree, inspectWorktree } from './worktrees'
@@ -65,6 +65,12 @@ const deny = (reason: string): SpawnResult => ({ deny: reason.startsWith('litter
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 const NEVER_NAMED = 'swarm agents are never named: leave name unset (litter addresses nodes by node name, through mcp__litter__swarm_send)'
+// With agent teams on, a named call starts a teammate (2.1.289): the engine puts back a rewrite's cwd and
+// background, so it would run in the session's directory, outside the swarm's.
+const NEVER_TEAMMATE =
+  "swarm agents are never teammates: with name set, this call starts a teammate, which runs in the session's directory and ignores the cwd and background litter gives a swarm agent. Leave name unset"
+const CHILD_NEVER_TEAMMATE =
+  "an agent a node starts is never a teammate: with name set, this call starts a teammate, which runs in the session's directory and ignores the cwd (its node's directory) and background litter gives it. Leave name unset"
 const NO_ISOLATION = "swarm agents never take isolation: the swarm sets each one's directory"
 
 /** What the synchronous step decided and reserved. */
@@ -88,7 +94,7 @@ type Plan = {
   scope: WriteScope | null
 }
 
-/** `isolation` is absent from the d.ts (2.1.288), but refused if a call carries it. */
+/** `isolation` isn't in agent.spawn's input (the 2.1.289 d.ts and engine), but refused if a call carries it. */
 const isolated = (e: Spawn): boolean => {
   const v = (e as unknown as Record<string, unknown>).isolation
   return v !== undefined && v !== null && v !== ''
@@ -144,6 +150,7 @@ function planNode(e: Spawn, hit: { swarm: string; node: string }, parentB: NodeB
   if (off || !s) return off ?? `swarm ${hit.swarm} isn't live`
   const node = nodeOf(s, hit.node)
   if (!node) return `${hit.node} isn't in swarm ${s.name}'s revision ${s.revision}`
+  if (e.isTeammate === true) return NEVER_TEAMMATE
   if (e.name !== undefined && e.name !== '') return NEVER_NAMED
   if (isolated(e)) return NO_ISOLATION
   const listedBy = s.spec.nodes.filter(x => x.spawns?.[node.id] !== undefined).map(x => x.id)
@@ -218,6 +225,7 @@ function planChild(e: Spawn, parentB: NodeBinding): Plan | string {
   const node = nodeOf(s, of.node)
   if (!node) return `${of.node} isn't in swarm ${s.name}'s revision ${s.revision}`
   if (node.spawnOther === false) return `${of.node} starts no other agents (spawnOther is false); it may spawn ${spawnsText(node)}`
+  if (e.isTeammate === true) return CHILD_NEVER_TEAMMATE
   if (e.name !== undefined && e.name !== '') return NEVER_NAMED
   if (isolated(e)) return NO_ISOLATION
   const cap = capRefusal(s)
@@ -403,11 +411,27 @@ async function removeFresh(p: Ports, dir: string, s: LiveSwarm, made: Made): Pro
 }
 
 /**
+ * A teammate litter has no stake in (2.1.289 runs agent.spawn for teammates
+ * too): from the main thread, so no node or node's child spawned it, and of
+ * no litter type. Safe to pass before rebound and the gate: the role check
+ * refuses only a litter type, and the spawn check takes only a swarm type or
+ * a node's spawn, so whatever the state holds, both answer next(e) for it.
+ * Waiting would hold an outside team's spawn (deepwork's, say) for as long as
+ * the gate stays closed.
+ */
+export function outsideTeammate(e: Pick<Spawn, 'isTeammate' | 'parentAgentId' | 'subagentType'>): boolean {
+  const t = e.subagentType
+  // swarmOfType (state.ts) reads a swarm type with or without its `litter:`, so a bare one is litter's too.
+  return e.isTeammate === true && e.parentAgentId === undefined && !t.startsWith('litter:') && !`litter:${t}`.startsWith(SWARM_TYPE_PREFIX)
+}
+
+/**
  * agent.spawn (15.4): the check and reservation, then the marker, an `own`
  * worktree, `swarm.instance`, the rewritten call, and the binding, all before
  * it returns, so before the parent sees the Agent result.
  */
 export const swarmSpawn: PortHook<SpawnHook> = async (p, e, next) => {
+  if (outsideTeammate(e)) return next(e)
   // A closed gate is waited on only for what the hook has left (admit.ts, waitBudget; FIX-U, U5).
   await state.ready(p, await (await waitBudget(p, next)).left())
   const hit = state.swarmOfType(e.subagentType)

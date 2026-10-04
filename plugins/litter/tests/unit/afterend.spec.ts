@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentPolicy, NodePolicy, Policy, SwarmEntry } from '../../hooks/hookfiles'
-import type { ListedAgent, SessionSendResult, ToolCallResult } from '../../hooks/ports'
+import type { AgentStatus, ListedAgent, SessionSendResult, ToolCallResult } from '../../hooks/ports'
 import { agentPolicyPath, launchSummaryPath, policyPath, spoolDir, swarmOwnBranch, swarmOwnWorktreeName } from '../../hooks/layout'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { normalizeOptions } from '../../hooks/options'
@@ -140,7 +140,7 @@ const bindingOf = (agentId: string, over: Partial<NodeBinding> = {}): NodeBindin
   ...over,
 })
 
-const listed = (id: string, status: string, type = 'litter:sw-alpha-fixer'): ListedAgent => ({ id, description: id, type, status })
+const listed = (id: string, status: AgentStatus, type = 'litter:sw-alpha-fixer'): ListedAgent => ({ id, description: id, type, status })
 
 /** A node's policy file as nodePolicyFor writes it, for the swarm's launch unless given. */
 function policyFor(b: NodeBinding, over: Partial<NodePolicy> = {}): NodePolicy {

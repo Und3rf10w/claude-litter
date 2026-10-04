@@ -18,7 +18,7 @@
 // any End mode), and the lead's hand-off from a timer.
 
 import type { AgentPolicy, NodePolicy } from '../hookfiles'
-import type { ListedAgent, Ports, ToolCallResult } from '../ports'
+import type { AgentStatus, ListedAgent, Ports, ToolCallResult } from '../ports'
 import type { RecordHandler, StoredRecord } from '../records/core'
 import type {
   SwarmEndBody,
@@ -32,6 +32,7 @@ import type {
 import type { RepairOutcome } from '../lifecycle'
 import type { LiveSwarm, RepairBudget, RunLink, SettleProgress, SwarmSpec, TokenCount } from './types'
 import { LedgerTampered, readLedger } from '../ledgercore'
+import { agentLive } from '../ports'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import {
@@ -170,7 +171,7 @@ async function taskStop(p: Ports, taskId: string): Promise<'stopped' | 'gone' | 
  * on the list too (spike 7). A hard stop whose TaskStop failed still stops
  * them on the list, then throws with why.
  *
- * An agent of one of the swarm's types that the list shows running with no
+ * An agent of one of the swarm's types that the list shows alive with no
  * binding (an adoption still to come, as the settle wait lists it) is stopped
  * the same way, alone: no binding names its descendants or its policy.
  */
@@ -180,7 +181,7 @@ export async function stopNode(p: Ports, swarm: string, agentId: string, how: 's
   const b = state.binding(agentId)
   let who: string
   if (b && b.swarm === swarm) who = b.node
-  else if (!b && (await unboundRunning(p, s, agentId))) who = 'an agent no binding knows'
+  else if (!b && (await unboundLive(p, s, agentId))) who = 'an agent no binding knows'
   else throw new Error(`litter: ${agentId} isn't a node of the swarm ${swarm}`)
   // A stale owner stops no one, patches nothing and records no swarm.stop (FIX-T, from Q2).
   await confirmMine(p, litterDir, swarm)
@@ -196,11 +197,11 @@ export async function stopNode(p: Ports, swarm: string, agentId: string, how: 's
   if (failed !== null) throw new Error(`litter: ${who} (${agentId}) is on the stopped list, but it may still be running: ${failed}`)
 }
 
-/** The list shows the agent running, with one of the swarm's types (openParts' unbound node). */
-async function unboundRunning(p: Ports, s: LiveSwarm, agentId: string): Promise<boolean> {
+/** The list shows the agent alive, with one of the swarm's types (openParts' unbound node). */
+async function unboundLive(p: Ports, s: LiveSwarm, agentId: string): Promise<boolean> {
   const types = new Set(Object.values(s.types))
   const list = await p.listAgents().catch(() => [] as ListedAgent[])
-  return list.some(a => a.id === agentId && a.status === 'running' && types.has(a.type))
+  return list.some(a => a.id === agentId && agentLive(a.status) && types.has(a.type))
 }
 
 // ---------------------------------------------------------------------------
@@ -324,18 +325,30 @@ async function beginStopping(p: Ports, litterDir: string, name: string, by: 'bro
 
 /**
  * Whether the node's last turn has ended (15.4, "Settling"): a turn.complete
- * (L's settling), a SubagentStop, or the list not showing it running. The
+ * (L's settling), a SubagentStop, or the list not showing it alive. The
  * list's `running` wins over an idle place, since a wake can run a node
- * past litter's hooks (spike 17). With no list read yet, the places alone.
- * The cleanup asks the same of each agent that worked in a worktree, so a
- * swarm.end that says `settled: true` never keeps a worktree as in use.
+ * past litter's hooks (spike 17). Its `waiting` (2.1.289) wins over all of
+ * them: the node is mid-turn on a foreground child, or parked after its turn
+ * on a child, a shell, a monitor or a workflow that wakes it, so it goes on
+ * and keeps its worktree and policy file. With no list read yet, the places
+ * alone. The cleanup asks the same of each agent that worked in a worktree,
+ * so a swarm.end that says `settled: true` never keeps a worktree as in use.
  */
 function turnEnded(agentId: string, listed: Map<string, ListedAgent> | null): boolean {
+  const row = listed?.get(agentId)
+  if (row?.status === 'waiting') return false
   const place = state.status(agentId)
   if (place === 'settling' || state.agentStopped(agentId)) return true
   if (listed === null) return place !== 'running'
-  return listed.get(agentId)?.status !== 'running'
+  return row === undefined || !agentLive(row.status)
 }
+
+/**
+ * A listed status as the unsettled report shows it, in the browser's words
+ * (view.ts): the engine's `waiting` is held, never litter's own question
+ * state, and `pending` is starting.
+ */
+const listedWord = (status: AgentStatus): string => (status === 'waiting' ? 'held' : status === 'pending' ? 'starting' : status)
 
 /** What the settle wait still waits on, from the state and the last list read. Changes nothing. */
 function openParts(s: LiveSwarm, list: ListedAgent[] | null): Omit<SettleProgress, 'swarm' | 'since'> {
@@ -343,13 +356,14 @@ function openParts(s: LiveSwarm, list: ListedAgent[] | null): Omit<SettleProgres
   const nodes: SettleProgress['nodes'] = []
   for (const b of state.bindings(s.name)) {
     if (turnEnded(b.agentId, listed)) continue
-    nodes.push({ agentId: b.agentId, node: b.node, n: b.n, status: listed?.get(b.agentId)?.status ?? state.status(b.agentId) })
+    const row = listed?.get(b.agentId)
+    nodes.push({ agentId: b.agentId, node: b.node, n: b.n, status: row ? listedWord(row.status) : state.status(b.agentId) })
   }
   // An agent of one of the swarm's types that no binding knows is a node too (an adoption still to come).
   const types = new Map(Object.entries(s.types).map(([node, t]) => [t, node]))
   for (const a of list ?? []) {
     const node = types.get(a.type)
-    if (node !== undefined && a.status === 'running' && state.binding(a.id) === null) nodes.push({ agentId: a.id, node, n: 0, status: 'running, not bound' })
+    if (node !== undefined && agentLive(a.status) && state.binding(a.id) === null) nodes.push({ agentId: a.id, node, n: 0, status: `${listedWord(a.status)}, not bound` })
   }
   const nodeOf = (id: string) => state.binding(id)?.node ?? 'unknown'
   return {
@@ -364,13 +378,14 @@ function openParts(s: LiveSwarm, list: ListedAgent[] | null): Omit<SettleProgres
 }
 
 /**
- * Calls of agents the list doesn't show running can't be in flight: an
+ * Calls of agents the list doesn't show alive can't be in flight: an
  * interrupted call gets no end, and a non-litter child has no SubagentStop
- * spooled to close it (15.9, item 13). They're closed here.
+ * spooled to close it (15.9, item 13). They're closed here. A `waiting`
+ * node's Agent calls are in flight on its foreground children.
  */
 function closeStaleCalls(name: string, list: ListedAgent[]): void {
-  const running = new Set(list.filter(a => a.status === 'running').map(a => a.id))
-  const stale = new Set(state.inflight().filter(c => c.swarm === name && !running.has(c.agentId)).map(c => c.agentId))
+  const live = new Set(list.filter(a => agentLive(a.status)).map(a => a.id))
+  const stale = new Set(state.inflight().filter(c => c.swarm === name && !live.has(c.agentId)).map(c => c.agentId))
   for (const id of stale) state.closeCalls(id)
 }
 
@@ -789,10 +804,14 @@ export function keptSwarmOf(agentId: string): string | null {
 /** Whether a kept file is of an agent of this session's: a name or address a catch can't resolve could be its. */
 export const keepsOwn = (): boolean => [...kept.values()].some(k => k.own && state.liveSwarm(k.swarm)?.launch !== k.launch)
 
-/** The ids the list shows running; null when it can't be read, which keeps every file. */
-async function runningIds(p: Ports): Promise<Set<string> | null> {
+/**
+ * The ids the list shows alive (running, or `waiting` on a child or
+ * background work that wakes it, which "running" means below); null when it
+ * can't be read, which keeps every file.
+ */
+async function liveIds(p: Ports): Promise<Set<string> | null> {
   const list = await p.listAgents().catch(() => null)
-  return list ? new Set(list.filter(a => a.status === 'running').map(a => a.id)) : null
+  return list ? new Set(list.filter(a => agentLive(a.status)).map(a => a.id)) : null
 }
 
 /**
@@ -801,7 +820,7 @@ async function runningIds(p: Ports): Promise<Set<string> | null> {
  * its agent isn't running, and kept, for the sweep, when it is.
  */
 async function removeEndedPolicies(p: Ports, litterDir: string, name: string, launch: string): Promise<void> {
-  const running = await runningIds(p)
+  const running = await liveIds(p)
   const ids = new Set(state.bindings(name).map(b => b.agentId))
   for (const f of await nodePolicyFiles(p, litterDir)) if (f.node.swarm === name && f.node.launch === launch) ids.add(f.agentId)
   for (const id of ids) {
@@ -826,7 +845,7 @@ async function sweepKept(p: Ports, litterDir: string): Promise<void> {
   if (sweeping) return
   sweeping = true
   try {
-    const running = await runningIds(p)
+    const running = await liveIds(p)
     if (running === null) return
     const now = await p.now()
     const beat = now - lastBeat >= KEPT_BEAT_MS
@@ -873,7 +892,7 @@ async function sweepKept(p: Ports, litterDir: string): Promise<void> {
 export async function sweepLeftPolicies(p: Ports, litterDir: string, pick: (node: NodePolicy) => boolean, holderGone: boolean): Promise<void> {
   const left = (await nodePolicyFiles(p, litterDir)).filter(f => pick(f.node) && (holderGone || !kept.has(f.agentId)))
   // The list is read only when there's a leftover to judge.
-  const running = left.length > 0 ? await runningIds(p) : null
+  const running = left.length > 0 ? await liveIds(p) : null
   for (const f of left) kept.set(f.agentId, { swarm: f.node.swarm, launch: f.node.launch, own: holderGone || running === null || running.has(f.agentId) })
   if (kept.size === 0) return
   startSweep(p, litterDir)
@@ -1002,8 +1021,11 @@ function usersOf(records: readonly StoredRecord[], name: string, list: ListedAge
   const out: string[] = []
   for (const [id, cwd] of cwdOf) {
     if (!at(cwd)) continue
-    // Ended as the settle wait counts it: a turn.complete or a SubagentStop wins over a list that lags.
-    if (!turnEnded(id, listed)) out.push(`${id} is still running there`)
+    // Ended as the settle wait counts it: a turn.complete or a SubagentStop wins over a list that lags,
+    // and a `waiting` node, which goes on, wins over both.
+    if (!turnEnded(id, listed)) {
+      out.push(listed.get(id)?.status === 'waiting' ? `${id} is held there, waiting on a child or background work` : `${id} is still running there`)
+    }
     if (state.shells().some(sh => sh.agentId === id)) out.push(`a background shell ${id} started isn't confirmed stopped`)
   }
   for (const r of state.reservations(name)) if (r.scope && at(r.scope.dir)) out.push(`a spawn of ${r.node} is reserved there`)

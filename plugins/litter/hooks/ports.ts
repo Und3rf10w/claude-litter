@@ -13,6 +13,7 @@
 
 import type {
   AgentInfo,
+  AgentStatus,
   CommandSpec,
   EngineInterface,
   ModelCompleteRequest,
@@ -29,7 +30,17 @@ export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
 
 /** One row of `$.agent.list()` (the d.ts's AgentInfo; policy.ts has an AgentInfo of its own). */
 export type ListedAgent = AgentInfo
-export type { CommandSpec, ModelCompleteRequest, ModelCompleteResult, SessionMessage, SessionSendResult, ToolCallResult }
+export type { AgentStatus, CommandSpec, ModelCompleteRequest, ModelCompleteResult, SessionMessage, SessionSendResult, ToolCallResult }
+
+/**
+ * Whether a listed agent is still alive, so its place, its policy file and
+ * its worktree stay: `running` a turn (or finalizing one), `waiting` (2.1.289:
+ * mid-turn on foreground Agent calls alone, or ended but still holding a
+ * background shell, monitor, child agent or workflow, which wakes it), or
+ * `pending`, not started yet. `idle` is between turns (a teammate, or an ended
+ * named agent; a litter node is never named), and the rest have ended.
+ */
+export const agentLive = (status: AgentStatus): boolean => status === 'running' || status === 'waiting' || status === 'pending'
 
 /** The four subagent limits the health check reads (plan 15.7), each read with its name as a literal. */
 export const SUBAGENT_LIMIT_NAMES = [
@@ -146,7 +157,7 @@ export interface Ports {
 
   // Phase 2b, for swarms (plan 15.4; WP-C's port table).
 
-  /** `$.agent.list()`: the session's subagents so far, the model's and the plugins' alike. */
+  /** `$.agent.list()`: the session's agents so far, subagents and teammates, the model's and the plugins' alike. Liveness is `agentLive`. */
   listAgents(): Promise<ListedAgent[]>
   /**
    * `$.session.send({ to, text })`: `to` as SendMessage spells it (an agent id,

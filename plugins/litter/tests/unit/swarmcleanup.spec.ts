@@ -236,6 +236,40 @@ describe('cleanupLaunch', () => {
     expect((await bodies('swarm.worktree.kept'))[1]!.reason).toContain("couldn't list the session's agents")
   })
 
+  test('one a node the list shows `waiting` (2.1.289) works in is kept, parked after its turn too, until it completes', async () => {
+    const wt = await make(own(1))
+    state.putBinding({
+      agentId: 'a-fix1',
+      swarm: 'alpha',
+      launch,
+      node: 'fixer',
+      n: 1,
+      kind: 'worker',
+      of: null,
+      parent: null,
+      type: 'litter:sw-alpha-fixer',
+      cwd: realpathSync(wt),
+      branch: 'refs/heads/sw/alpha/fixer-1',
+      token: 't',
+      revision: 1,
+      generation: 1,
+      boundAt: 0,
+      adopted: false,
+    })
+    // Its turn ended (turn.complete, SubagentStop) on a child or background work that will wake it.
+    state.markSettling('a-fix1')
+    state.noteAgentStopped('a-fix1')
+    p.agents = [{ id: 'a-fix1', description: '', type: 'litter:sw-alpha-fixer', status: 'waiting' } satisfies ListedAgent]
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(true)
+    expect((await bodies('swarm.worktree.kept'))[0]!.reason).toBe("it's still in use: a-fix1 is held there, waiting on a child or background work")
+
+    p.agents[0]!.status = 'completed'
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(false)
+    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true }])
+  })
+
   test("a `new` worktree you named is removed when unchanged, but its branch is yours and kept", async () => {
     const path = join(root, swarmNewWorktreeName('alpha', 'part-a'))
     const wt = await make({ ...own(1), n: undefined, node: 'part-a', path, branch: 'feature/part-a', from: 'main' })

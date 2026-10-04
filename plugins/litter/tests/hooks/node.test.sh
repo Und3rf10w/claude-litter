@@ -107,9 +107,9 @@ case_node_tools_deny() {
 case_node_agent_name() {
   swarm_setup '.spawns = ["litter:sw-s-fixer"]'
   lead Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-s-fixer","name":"f"}' | run_hook guard.sh
-  assert_deny 'a swarm node spawns no named agent'
+  assert_deny 'a swarm node spawns no named agent: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn it again without name'
   lead Agent '{"description":"d","prompt":"p","subagent_type":"general-purpose","name":"g"}' | run_hook guard.sh
-  assert_deny 'spawns no named agent'
+  assert_deny 'a swarm node spawns no named agent: where agent teams are on, a named agent starts as a teammate'
 }
 
 case_node_agent_spawns() {

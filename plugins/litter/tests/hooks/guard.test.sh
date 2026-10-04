@@ -83,7 +83,7 @@ case_subagent_spawns_role() {
 case_named_node() {
   setup_executor
   call - Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-a-lead","name":"lead"}' | run_hook guard.sh
-  assert_deny 'takes no name'
+  assert_deny 'a swarm node takes no name: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn litter:sw-a-lead again without name'
 }
 
 case_unnamed_node() {

@@ -157,6 +157,29 @@ describe('recoverSwarms, a swarm this session owns', () => {
     expect(w.calls.adopted).toBe(1)
   })
 
+  test('a node the list shows `waiting` (2.1.289: mid-turn on a foreground child) or `pending` keeps its place, admitted and alive on the card; a completed one settles', async () => {
+    await liveInSessionA()
+    const { q } = await crashRespawn()
+    q.agents = [
+      { id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' },
+      { id: 'ag-f1', description: 'fixer', type: 'litter:sw-alpha-fixer', status: 'completed' },
+      { id: 'ag-d1', description: 'docs', type: 'litter:sw-alpha-docs', status: 'pending' },
+    ]
+    await recoverSwarms(q, w.litterDir)
+    // Its place held, so its next step's wake can't be refused for a cap filled meanwhile.
+    expect(status('ag-l1')).toBe('running')
+    expect(status('ag-d1')).toBe('running')
+    expect(status('ag-f1')).toBe('idle')
+    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(true)
+    expect((await readNodePolicy(w, 'ag-d1'))!.node.admitted).toBe(true)
+    expect((await readNodePolicy(w, 'ag-f1'))!.node.admitted).toBe(false)
+    expect(recoveryCard('alpha')!.nodes.map(n => [n.agentId, n.state])).toEqual([
+      ['ag-l1', 'alive'],
+      ['ag-f1', 'settled'],
+      ['ag-d1', 'alive'],
+    ])
+  })
+
   test("a spec that doesn't match swarm.start's hash registers no type", async () => {
     await liveInSessionA()
     const { q } = await crashRespawn()

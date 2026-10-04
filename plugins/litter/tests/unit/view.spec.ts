@@ -3,8 +3,9 @@
 // staged proposal with a conflict, a live swarm in state.ts with bindings,
 // an in-flight call, a queued message and ledger events, a recovery card, an
 // unsettled report, a read-only swarm), the composer's idle-worker case, the
-// stale-press check, and each handler reaching its owner through the fakes
-// setOwnersForTests puts in (no other package's body runs here).
+// list's 2.1.289 words (held, between turns, starting) and [Stop them]'s
+// count, the stale-press check, and each handler reaching its owner through
+// the fakes setOwnersForTests puts in (no other package's body runs here).
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -12,6 +13,7 @@ import { join } from 'node:path'
 import { updateSession } from '../../hooks/session'
 import { swarmProposalDir } from '../../hooks/layout'
 import { appendLaunchRecord } from '../../hooks/records/swarm'
+import type { ListedAgent } from '../../hooks/ports'
 import * as state from '../../hooks/swarm/state'
 import type { Draft, HealthReport, LiveSwarm, NodeBinding, ProposalView, RecoveryCard, SettleProgress, SwarmSpec } from '../../hooks/swarm/types'
 import type { Owners } from '../../hooks/swarm/view'
@@ -22,8 +24,10 @@ import {
   nav,
   putDraftCache,
   resetViewForTests,
+  runningOf,
   setNav,
   setOwnersForTests,
+  statusOf,
   swarmView,
   treeRows,
 } from '../../hooks/swarm/view'
@@ -629,6 +633,80 @@ describe('the browser', () => {
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.summary', { text: 't', goal: 'second goal', inputsHash: 'h2', usage: null })
     const v = await view<{ view: string; entries: { goal: string }[] }>('history')
     expect(v.entries.map(e => e.goal)).toEqual(['second goal', 'first goal'])
+  })
+})
+
+// 2.1.289's $.agent.list() also says waiting, idle and pending: none of them may read as litter's own words.
+describe("the list's waiting, idle and pending", () => {
+  const listed = (id: string, status: string) => ({ id, description: id, type: 'litter:sw-demo-fixer', status }) as ListedAgent
+
+  test("waiting is held, alive, and not ⚑; with an open question litter's ⚑ waiting still wins", () => {
+    goLive()
+    // w1's admission is idle: its turn ended, and it holds a shell that will wake it.
+    const held = statusOf('w1', listed('w1', 'waiting'), false)
+    expect(held).toEqual({ word: 'held', glyph: '‖', color: 'background', running: true })
+    expect(held.glyph).not.toBe('⚑')
+    expect(held.color).not.toBe('warning')
+    expect(statusOf('w1', listed('w1', 'waiting'), true)).toEqual({ word: 'waiting', glyph: '⚑', color: 'warning', running: true })
+    // o1 is admitted, and mid-turn on its children alone.
+    expect(statusOf('o1', listed('o1', 'waiting'), false).word).toBe('held')
+    expect(statusOf('o1', listed('o1', 'waiting'), true)).toEqual({ word: 'waiting', glyph: '⚑', color: 'warning', running: true })
+  })
+
+  test('held shows over settling; idle is between turns, pending is starting, and an unknown word is shown as it is', () => {
+    goLive()
+    state.markSettling('o1')
+    expect(statusOf('o1', listed('o1', 'waiting'), false).word).toBe('held')
+    expect(statusOf('o1', listed('o1', 'running'), false).word).toBe('settling')
+    expect(statusOf('w1', listed('w1', 'idle'), false)).toEqual({ word: 'between turns', glyph: '', color: 'inactive', running: false })
+    expect(statusOf('w1', listed('w1', 'pending'), false)).toEqual({ word: 'starting', glyph: '', color: 'background', running: true })
+    expect(statusOf('w1', listed('w1', 'pending'), true)).toEqual({ word: 'waiting', glyph: '⚑', color: 'warning', running: true })
+    expect(statusOf('w1', listed('w1', 'paused'), false)).toEqual({ word: 'paused', glyph: '', color: 'inactive', running: false })
+  })
+
+  test('a stopped node the list shows waiting is stopped, and still alive', () => {
+    goLive()
+    state.stop(SWARM, ['w1'], 'stopped (soft)')
+    expect(statusOf('w1', listed('w1', 'waiting'), false)).toEqual({ word: 'stopped', glyph: '−', color: 'inactive', running: true })
+    expect(statusOf('w1', listed('w1', 'completed'), false).running).toBe(false)
+  })
+
+  test('the browser: a held worker is drawn held and flagged while its flag is open; Direct names its parent while it is parked, not mid-turn', async () => {
+    goLive()
+    p.agents = p.agents.map(a => (a.id === 'w1' ? { ...a, status: 'waiting' } : a))
+    await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'branch-moved', ref: 'refs/heads/main', from: null, to: 'b'.repeat(40), running: ['fixer'] })
+    const v = await view<SwarmBrowserView>('browser', { selected: 'w1' })
+    const w1 = v.rows.find(r => r.agentId === 'w1')
+    expect([w1?.status, w1?.statusGlyph, w1?.statusColor, w1?.flagged]).toEqual(['held', '‖', 'background', true])
+    // Parked after its turn (admission idle): a send resumes it, and admission readdresses that to its parent.
+    expect(v.composer?.routes[0]).toEqual({ value: 'direct', label: "via parent (it's idle)" })
+    // Mid-turn on its children alone (admitted): a send reaches it.
+    state.markRunning('w1')
+    const mid = await view<SwarmBrowserView>('browser', { selected: 'w1' })
+    expect(mid.rows.find(r => r.agentId === 'w1')?.status).toBe('held')
+    expect(mid.composer?.routes[0]).toEqual({ value: 'direct', label: 'Direct' })
+  })
+
+  test('[Stop them] stops a held node, never a completed one; runningOf counts a starting one', async () => {
+    goLive()
+    state.putBinding(bind('w2', { n: 2 }))
+    p.agents = [listed('o1', 'running'), listed('w1', 'waiting'), listed('w2', 'completed')] as never
+    const flag = await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', {
+      kind: 'branch-moved',
+      ref: 'refs/heads/main',
+      from: null,
+      to: 'b'.repeat(40),
+      running: ['fixer'],
+    })
+    setNav(blankNav('browser', SWARM))
+    await handle(p, 'swarm:browser:stop-them:demo/' + flag.seq, {})
+    expect(called('stopNode')).toEqual([[SWARM, 'w1', 'soft']])
+    expect(nav()?.notice?.text).toBe('stopping 1 agent')
+    p.agents = [listed('o1', 'running'), listed('w1', 'completed'), listed('w2', 'completed')] as never
+    await handle(p, 'swarm:browser:stop-them:demo/' + flag.seq, {})
+    expect(called('stopNode')).toHaveLength(1)
+    expect(nav()?.notice?.text).toBe('none of them is running now')
+    expect(runningOf(SWARM, ['fixer'], [listed('w1', 'pending'), listed('w2', 'idle')])).toEqual(['w1'])
   })
 })
 
