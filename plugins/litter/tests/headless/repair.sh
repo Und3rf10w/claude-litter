@@ -54,7 +54,7 @@ TASKS=$(jq -cn --arg s "$TS" --arg c "$TC" '[
 START=$(jq -cn --argjson t "$TASKS" --arg m "$mode" '{kind: "run.start", workflow: "fanout", authorized: ["tier-4 repair probe"], tasks: $t, contract: "", repair: $m}')
 FIRST="You are running a scripted test. Do exactly these steps, in order.
 1. Call mcp__litter__record with exactly this input: $START
-2. Call the Workflow tool with name \"litter:fanout\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:fanout-run\" and args set to the args object step 1 returned, unchanged.
 3. Wait for the workflow task notification, then reply with each step result and the workflow result, verbatim.
 After that, if litter starts a repair swarm, follow the litter swarm skill for it, and don't push anything."
 

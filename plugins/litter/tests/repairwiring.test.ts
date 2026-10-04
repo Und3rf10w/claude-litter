@@ -92,7 +92,7 @@ function seedFanout(files: Map<string, string>): void {
 
 const HALTED_NOTICE =
   `<task-notification>\n<task-id>${TASK}</task-id>\n<status>completed</status>\n` +
-  '<summary>Dynamic workflow "litter:fanout" completed</summary>\n' +
+  '<summary>Dynamic workflow "litter:fanout-run" completed</summary>\n' +
   '<result>{"halted":"not verified: client failed the verifier"}</result>\n' +
   '</task-notification>'
 

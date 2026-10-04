@@ -18,7 +18,7 @@ import type {
 import type { Ports } from './ports'
 import type { Workflow } from './records/run'
 import type { RunRef } from './lifecycle'
-import { RESUMABLE, WORKFLOWS } from './records/run'
+import { RESUMABLE, WORKFLOWS, workflowName, workflowOfName } from './records/run'
 import { session } from './session'
 import { sha256 } from './fsx'
 import { readLock, releaseLock, removeLease, stillHeld, stopLease } from './lock'
@@ -114,7 +114,8 @@ export const workflowCheck: PortHook<WorkflowHook> = async (p, e, next) => {
   }
 
   // Is it litter's? By name, by the script's content wherever the file is, or by the run it resumes.
-  const named = name.startsWith('litter:') ? name.slice('litter:'.length) : null
+  const litterName = name.startsWith('litter:')
+  const named = litterName ? workflowOfName(name) : null
   const byContent = scriptPath ? ((await shippedScripts(p)).get(await sha256(await scriptText(p, scriptPath))) ?? null) : null
   const litterDir = session().litterDir
   let resumeOf: RunRef | null = null
@@ -130,17 +131,17 @@ export const workflowCheck: PortHook<WorkflowHook> = async (p, e, next) => {
       resumeOf = await runOfWorkflowId(p, litterDir, resume)
     }
   }
-  if (named === null && byContent === null && resumeOf === null) return next(e)
+  if (!litterName && byContent === null && resumeOf === null) return next(e)
 
-  if (named !== null && !(WORKFLOWS as readonly string[]).includes(named)) {
-    return deny(`litter: there's no litter workflow '${name}'; litter's are ${WORKFLOWS.map(w => `litter:${w}`).join(', ')}`)
+  if (litterName && named === null) {
+    return deny(`litter: there's no litter workflow '${name}'; litter's are ${WORKFLOWS.map(workflowName).join(', ')}`)
   }
   if (named !== null && scriptPath !== null && byContent === null) {
     return deny(`litter: '${name}' with a scriptPath runs that file instead of litter's script; launch it by name alone`)
   }
   const workflow = (byContent ?? named) as Workflow | null
   if (named !== null && byContent !== null && named !== byContent) {
-    return deny(`litter: the scriptPath holds litter:${byContent}, not ${name}`)
+    return deny(`litter: the scriptPath holds ${workflowName(byContent)}, not ${name}`)
   }
 
   const refused = session().toolsRefused
@@ -181,7 +182,7 @@ async function freshLaunch(p: Ports, e: E, next: Next, litterDir: string, workfl
     return deny(`litter: run ${args.run} has no pending run.start in this session; record run.start first, then launch with the args it returns`)
   }
   if (pending.workflow !== workflow) {
-    return deny(`litter: run ${pending.run} was started for litter:${pending.workflow}, not litter:${workflow}`)
+    return deny(`litter: run ${pending.run} was started for ${workflowName(pending.workflow)}, not ${workflowName(workflow)}`)
   }
   const ref: RunRef = { run: pending.run, runDir: pending.runDir, litterDir }
   const repo = repoOf(litterDir)
@@ -229,9 +230,9 @@ async function resumeRun(p: Ports, e: E, next: Next, litterDir: string, workflow
   if (!loaded.ok) return deny(`litter: ${loaded.reason}; it can't be resumed`)
   const { json, st } = loaded
   if (workflow === null) {
-    return deny(`litter: run ${ref.run} resumes only with litter's own script: Workflow({ name: 'litter:${json.workflow}', resumeFromRunId })`)
+    return deny(`litter: run ${ref.run} resumes only with litter's own script: Workflow({ name: '${workflowName(json.workflow)}', resumeFromRunId })`)
   }
-  if (workflow !== json.workflow) return deny(`litter: run ${ref.run} is a litter:${json.workflow} run, not litter:${workflow}`)
+  if (workflow !== json.workflow) return deny(`litter: run ${ref.run} is a ${workflowName(json.workflow)} run, not ${workflowName(workflow)}`)
   const given = argsOf(e.args)
   if (given && given.run !== undefined && given.run !== ref.run) {
     return deny(`litter: resumeFromRunId belongs to run ${ref.run}, but the args name run ${String(given.run)}; a resume takes its own run's args`)

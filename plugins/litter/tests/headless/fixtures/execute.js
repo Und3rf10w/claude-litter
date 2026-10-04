@@ -1,10 +1,10 @@
-// Tier 4's stand-in for litter:execute (phase 1 ships no workflows), for the
+// Tier 4's stand-in for litter:execute-run (phase 1 ships no workflows), for the
 // land check: the executor writes gate G1's file, the gate critic records a
 // verify and returns its verdict, a pause gives land.sh the time to edit the
 // checkout out of band, and the relay records the land. lib.sh copies it into
 // the scratch plugin as workflows/execute.js.
 export const meta = {
-  name: 'execute',
+  name: 'execute-run',
   description: 'litter tier-4 probe: verify, a verdict, a pause, then land',
   phases: [{ title: 'Probe' }],
 }

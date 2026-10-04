@@ -128,10 +128,10 @@ describe("execute.js and plan.js are litter's by their content", () => {
     // No litter directory in this session: a call litter recognizes stops there, anyone else's goes on.
     const exec = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w1', scriptPath: '/elsewhere/copy-of-execute.js', args: { run: '20261003-execute-x' } })
     expect(exec.deny).toContain('no litter directory')
-    const plan = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w2', scriptPath: '/elsewhere/copy-of-plan.js', name: 'litter:plan', args: { run: 'x' } })
+    const plan = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w2', scriptPath: '/elsewhere/copy-of-plan.js', name: 'litter:plan-run', args: { run: 'x' } })
     expect(plan.deny).toContain('no litter directory')
-    const wrong = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w3', scriptPath: '/elsewhere/copy-of-plan.js', name: 'litter:execute' })
-    expect(wrong.deny).toBe('litter: the scriptPath holds litter:plan, not litter:execute')
+    const wrong = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w3', scriptPath: '/elsewhere/copy-of-plan.js', name: 'litter:execute-run' })
+    expect(wrong.deny).toBe('litter: the scriptPath holds litter:plan-run, not litter:execute-run')
     expect(reached).toBe(0)
     expect((await $.tool.call({ tool: 'Workflow', tool_use_id: 'w4', scriptPath: '/elsewhere/mine.js' })).result).toBe('engine')
     expect(reached).toBe(1)
@@ -192,7 +192,7 @@ describe("plan.js's return", () => {
   const TASK = 'task-p1'
   const notice = (result: string) =>
     `<task-notification>\n<task-id>${TASK}</task-id>\n<status>completed</status>\n` +
-    '<summary>Dynamic workflow "litter:plan" completed</summary>\n' +
+    '<summary>Dynamic workflow "litter:plan-run" completed</summary>\n' +
     `<result>${result}</result>\n</task-notification>`
 
   test('questions and no gates settle the plan run as done', async ($, on) => {

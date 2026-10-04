@@ -1,11 +1,11 @@
-// Tier 4's stand-in for litter:fanout (phase 1 ships no workflows). lib.sh
+// Tier 4's stand-in for litter:fanout-run (phase 1 ships no workflows). lib.sh
 // copies it into a scratch copy of the plugin as workflows/fanout.js, so a
 // launch goes through run.start, the launch check and run.launch like a real
 // one. One isolated prober runs the isolation probe. It isn't asked to commit
 // or push: its role forbids that, and it declines (tier 4, live). The toollog
 // fixture replays its live input through guard.sh instead.
 export const meta = {
-  name: 'fanout',
+  name: 'fanout-run',
   description: 'litter tier-4 probe: an isolated litter agent runs the isolation probe',
   phases: [{ title: 'Probe' }],
 }

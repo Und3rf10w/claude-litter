@@ -3,11 +3,12 @@
 // run.launch and run.resume, and each refusal.
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
-import type { RunEndBody, RunJson, RunStartReply } from '../../hooks/records/run'
+import type { RunEndBody, RunJson, RunStartReply, Workflow } from '../../hooks/records/run'
+import { workflowName, workflowOfName } from '../../hooks/records/run'
 import type { RunRef } from '../../hooks/lifecycle'
 import { endRun, getPending, recordRunStart, runState, taskKey, wfKey } from '../../hooks/lifecycle'
 import {
@@ -31,7 +32,7 @@ setDefaultTimeout(120_000)
 
 // One plugin root for the file: the shipped scripts are read once per module instance.
 const PLUGIN_ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'litter-root-')))
-const EXECUTE_JS = 'export const meta = { name: "execute" }\n// litter execute\n'
+const EXECUTE_JS = 'export const meta = { name: "execute-run" }\n// litter execute\n'
 mkdirSync(join(PLUGIN_ROOT, 'workflows'), { recursive: true })
 writeFileSync(join(PLUGIN_ROOT, 'workflows', 'execute.js'), EXECUTE_JS)
 
@@ -102,12 +103,12 @@ describe('the launch: the args swap and run.launch', () => {
     const r = await started(w)
     const oid = (await getPending(w.p, w.litterDir))!.oid
     const { calls, next } = engine()
-    const out = await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run, gates: [], authorized: 'everything' } }), next)
+    const out = await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run, gates: [], authorized: 'everything' } }), next)
     expect((out as { result: unknown }).result).toEqual(expect.objectContaining({ taskId: 'task-1' }))
     const stored = (JSON.parse(await w.p.fs.read(runJsonPath(r.runDir))) as RunJson).args
     expect(calls).toHaveLength(1)
     expect(calls[0]!.args).toEqual(stored)
-    expect(calls[0]!.name).toBe('litter:execute')
+    expect(calls[0]!.name).toBe('litter:execute-run')
 
     const ledger = await ledgerOf(w, r.ref)
     expect(ledger.map(x => x.kind)).toEqual(['run.start', 'run.launch'])
@@ -124,7 +125,7 @@ describe('the launch: the args swap and run.launch', () => {
     const w = await world()
     const r = await started(w)
     const { calls, next } = engine()
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: JSON.stringify({ run: r.run }) }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: JSON.stringify({ run: r.run }) }), next)
     expect(calls).toHaveLength(1)
   })
 
@@ -132,7 +133,7 @@ describe('the launch: the args swap and run.launch', () => {
     const w = await world()
     const r = await started(w)
     const { next } = engine(() => ({ isError: true, text: 'Workflow tool is disabled' }))
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next)
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ generation: 0, status: 'launch_failed', reason: 'Workflow tool is disabled' }))
     expect(await readLock(w.p, w.dir)).toBeNull()
   })
@@ -141,7 +142,7 @@ describe('the launch: the args swap and run.launch', () => {
     const w = await world()
     const r = await started(w)
     const { next } = engine({ status: 'remote_launched', taskId: 't9' })
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next)
     expect((await lastEnd(w, r.ref))?.reason).toContain("can't track")
   })
 })
@@ -152,25 +153,25 @@ describe('the launch: refusals', () => {
     const r = await started(w)
     await w.p.fs.write(modePath(w.litterDir), 'bypassPermissions\n')
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next))).toContain('bypassPermissions mode')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toContain('bypassPermissions mode')
     expect(calls).toHaveLength(0)
   })
 
   test('no pending run.start, one for another run, one from another session, one for another workflow', async () => {
     const w = await world()
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: '20261002-execute-nosuch' } }), next))).toContain(
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: '20261002-execute-nosuch' } }), next))).toContain(
       'no pending run.start',
     )
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute' }), next))).toContain("pass the 'args'")
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run' }), next))).toContain("pass the 'args'")
     const r = await started(w)
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: '20261002-execute-other' } }), next))).toContain(
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: '20261002-execute-other' } }), next))).toContain(
       'no pending run.start',
     )
     w.sid.value = 'session-b'
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next))).toContain('no pending run.start')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toContain('no pending run.start')
     w.sid.value = 'session-a'
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:design', args: { run: r.run } }), next))).toContain('started for litter:execute')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:design-run', args: { run: r.run } }), next))).toContain('started for litter:execute-run, not litter:design-run')
     expect(calls).toHaveLength(0)
     expect(await getPending(w.p, w.litterDir)).not.toBeNull()
   })
@@ -182,7 +183,7 @@ describe('the launch: refusals', () => {
     await releaseLock(w.p, w.dir, oid)
     await acquireLock(w.p, w.dir, { run: '20261002-execute-thief0', session: 'other', acquiredAt: 1 })
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next))).toContain('lock was lost')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toContain('lock was lost')
     expect(calls).toHaveLength(0)
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'launch_failed', reason: 'lock lost' }))
     expect((await readLock(w.p, w.dir))?.blob?.run).toBe('20261002-execute-thief0')
@@ -194,7 +195,7 @@ describe('the launch: refusals', () => {
     const path = runJsonPath(r.runDir)
     await w.p.fs.write(path, (await w.p.fs.read(path)).replace('"verify"', '"verify" ').replace('"true"', '"rm"'))
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next))).toContain('changed since run.start')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toContain('changed since run.start')
     expect(calls).toHaveLength(0)
   })
 
@@ -212,7 +213,11 @@ describe('the launch: refusals', () => {
     writeFileSync(other, 'export const meta = {}\n')
     const { calls, next } = engine()
     expect(denied(await workflowCheck(w.p, wf({ name: 'litter:nope' }), next))).toContain("no litter workflow 'litter:nope'")
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', scriptPath: other }), next))).toContain('runs that file instead')
+    // A skill's name isn't its workflow's: the engine would take /litter:execute for a workflow so named.
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: 'x' } }), next))).toContain(
+      "no litter workflow 'litter:execute'; litter's are litter:execute-run, litter:fanout-run, litter:design-run, litter:plan-run",
+    )
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', scriptPath: other }), next))).toContain('runs that file instead')
     expect(calls).toHaveLength(0)
   })
 
@@ -224,7 +229,7 @@ describe('the launch: refusals', () => {
     expect(denied(await workflowCheck(w.p, wf({ scriptPath: copy, args: { run: '20261002-execute-x' } }), next))).toContain('no pending run.start')
     // Relative to the session's directory.
     expect(denied(await workflowCheck(w.p, wf({ scriptPath: 'copy.js', args: {} }), next))).toContain("pass the 'args'")
-    expect(denied(await workflowCheck(w.p, wf({ scriptPath: copy, name: 'litter:design' }), next))).toContain('holds litter:execute')
+    expect(denied(await workflowCheck(w.p, wf({ scriptPath: copy, name: 'litter:design-run' }), next))).toContain('holds litter:execute-run, not litter:design-run')
     expect(calls).toHaveLength(0)
     // Anything else by path is someone else's.
     const mine = join(w.dir, 'mine.js')
@@ -239,11 +244,11 @@ describe('the launch: refusals', () => {
     const w = await world()
     const { calls, next } = engine()
     updateSession({ toolsRefused: 'blocked by policy' })
-    const d = denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: 'x' } }), next))
+    const d = denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: 'x' } }), next))
     expect(d).toContain('blocked by policy')
     expect(d).toContain('allowedMcpServers')
     updateSession({ toolsRefused: null, litterDir: null })
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: 'x' } }), next))).toContain('no litter directory')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: 'x' } }), next))).toContain('no litter directory')
     await workflowCheck(w.p, wf({ name: 'deepwork:run' }), next)
     expect(calls).toHaveLength(1)
   })
@@ -253,7 +258,7 @@ describe('resume', () => {
   async function stoppedRun(w: World) {
     const r = await started(w)
     const { next } = engine()
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next)
     await endRun(w.p, r.ref, { taskId: 'task-1', generation: 1, status: 'stopped', reason: 'stopped', source: 'taskstop', settled: true })
     expect(await readLock(w.p, w.dir)).toBeNull()
     return r
@@ -263,7 +268,7 @@ describe('resume', () => {
     const w = await world()
     const r = await stoppedRun(w)
     const { calls, next } = engine({ status: 'async_launched', taskId: 'task-2', runId: 'wf_def456' })
-    await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123', args: { run: r.run, extra: 1 } }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123', args: { run: r.run, extra: 1 } }), next)
     const stored = (JSON.parse(await w.p.fs.read(runJsonPath(r.runDir))) as RunJson).args
     expect(calls[0]!.args).toEqual(stored)
     const st = runState(await ledgerOf(w, r.ref))
@@ -280,12 +285,12 @@ describe('resume', () => {
     const w = await world()
     const r = await stoppedRun(w)
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123', args: { run: '20261002-execute-other' } }), next))).toContain(
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123', args: { run: '20261002-execute-other' } }), next))).toContain(
       `belongs to run ${r.run}`,
     )
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:design', resumeFromRunId: 'wf_abc123' }), next))).toContain('is a litter:execute run')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:design-run', resumeFromRunId: 'wf_abc123' }), next))).toContain('is a litter:execute-run run, not litter:design-run')
     expect(denied(await workflowCheck(w.p, wf({ resumeFromRunId: 'wf_abc123', script: 'x' }), next))).toContain("only with litter's own script")
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_unknown1' }), next))).toContain(
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_unknown1' }), next))).toContain(
       "isn't a run litter launched",
     )
     // The store is global: another repository's run is litter's, and not this session's to resume.
@@ -300,15 +305,15 @@ describe('resume', () => {
     const w = await world()
     const r = await started(w)
     const { next } = engine()
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next)
     // Stopped, with an agent of it still live: stopping, not settled.
     await w.p.store.set(`litter.agents.${r.runDir}`, { started: ['agent-1'], stopped: [] })
     await taskStop(w.p, { tool: 'TaskStop', tool_use_id: 'ts', task_id: 'task-1' } as never, (async () => ({ result: 'ok' })) as never)
     expect(runState(await ledgerOf(w, r.ref)).open?.stopping).not.toBeNull()
     const again = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), again.next))).toContain('still stopping')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123' }), again.next))).toContain('still stopping')
     await endRun(w.p, r.ref, { taskId: 'task-1', generation: 1, status: 'done', reason: null, source: 'notification' })
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), again.next))).toContain('ended done')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123' }), again.next))).toContain('ended done')
     expect(again.calls).toHaveLength(0)
   })
 
@@ -318,7 +323,7 @@ describe('resume', () => {
     const body = { generation: 2, swarm: 'repair-abc123', launch: '20261003-120000-abcd', budget: { rounds: 3, agents: 6 } }
     await appendRecord(w.p, r.runDir, { run: r.run, kind: 'run.repair', by: { source: 'mod' }, body })
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), next))).toContain('being repaired by swarm repair-abc123')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123' }), next))).toContain('being repaired by swarm repair-abc123')
     expect(calls).toHaveLength(0)
     expect(runState(await ledgerOf(w, r.ref)).open?.repair?.swarm).toBe('repair-abc123')
   })
@@ -327,7 +332,7 @@ describe('resume', () => {
     const w = await world()
     const r = await stoppedRun(w)
     const { next } = engine(() => ({ isError: true, text: 'no such run' }))
-    await workflowCheck(w.p, wf({ name: 'litter:execute', resumeFromRunId: 'wf_abc123' }), next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', resumeFromRunId: 'wf_abc123' }), next)
     expect(await readLock(w.p, w.dir)).toBeNull()
     expect(runState(await ledgerOf(w, r.ref)).generations).toHaveLength(1)
     expect((await readPolicy(w.p, w.litterDir))?.run ?? null).toBeNull()
@@ -345,7 +350,7 @@ describe('TaskStop', () => {
   test('a stop that went through records run.stopping and settles; a refused one records nothing', async () => {
     const w = await world()
     const r = await started(w)
-    await workflowCheck(w.p, wf({ name: 'litter:execute', args: { run: r.run } }), engine().next)
+    await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), engine().next)
     const refusedNext = (async () => ({ deny: 'no' })) as never
     await taskStop(w.p, { tool: 'TaskStop', tool_use_id: 'ts', task_id: 'task-1' } as never, refusedNext)
     expect((await ledgerOf(w, r.ref)).map(x => x.kind)).toEqual(['run.start', 'run.launch'])
@@ -392,11 +397,36 @@ describe("the Workflow hook's catch", () => {
   test("refuses a litter name, any scriptPath, script with name, and a wf_ resume; passes the rest", async () => {
     const pass = (async () => ({ result: 'engine' })) as never
     const c = (fields: Call) => workflowCheckFailed({} as never, wf(fields), pass)
-    for (const f of [{ name: 'litter:execute' }, { scriptPath: '/x.js' }, { script: 's', name: 'n' }, { resumeFromRunId: 'wf_abc123' }]) {
+    for (const f of [{ name: 'litter:execute-run' }, { scriptPath: '/x.js' }, { script: 's', name: 'n' }, { resumeFromRunId: 'wf_abc123' }]) {
       expect(denied(await c(f))).toContain('litter guard failed: Workflow')
     }
     expect(await c({ script: 's' })).toEqual({ result: 'engine' })
     expect(await c({ name: 'deepwork:run' })).toEqual({ result: 'engine' })
     expect(await c({ resumeFromRunId: 'r-123' })).toEqual({ result: 'engine' })
   })
+})
+
+describe("the workflows' names", () => {
+  const PLUGIN = join(import.meta.dir, '..', '..')
+  const skills = readdirSync(join(PLUGIN, 'skills'))
+
+  test('a Workflow name is litter:<workflow>-run, and nothing else names one', () => {
+    expect(workflowOfName('litter:execute-run')).toBe('execute')
+    expect(workflowOfName('litter:plan-run')).toBe('plan')
+    for (const n of ['litter:execute', 'litter:nope-run', 'litter:-run', 'execute-run', 'deepwork:execute-run']) expect(workflowOfName(n)).toBeNull()
+  })
+
+  // The engine lists workflows ahead of plugin skills and dispatches a name to
+  // the first it finds, so a workflow named like a skill takes its slash command.
+  for (const dir of ['workflows', 'tests/headless/fixtures']) {
+    test(`each script in ${dir} is named workflowName(<its file>), which no skill is`, () => {
+      const files = readdirSync(join(PLUGIN, dir)).filter(f => f.endsWith('.js'))
+      expect(files.length).toBeGreaterThan(0)
+      for (const f of files) {
+        const name = /^ {2}name: '([^']+)',$/m.exec(readFileSync(join(PLUGIN, dir, f), 'utf8'))?.[1]
+        expect(`litter:${name}`).toBe(workflowName(f.slice(0, -'.js'.length) as Workflow))
+        expect(skills).not.toContain(name)
+      }
+    })
+  }
 })

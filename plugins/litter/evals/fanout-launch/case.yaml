@@ -38,7 +38,7 @@ graders:
   - type: tool_used
     name: launched-litter-fanout
     tool: Workflow
-    input_match: "litter:fanout"
+    input_match: "litter:fanout-run"
     min: 1
     max: 1
   - type: tool_used
@@ -50,7 +50,7 @@ graders:
   - type: tool_order
     name: run-start-before-launch
     before: { tool: mcp__litter__record, input_match: "run\\.start" }
-    after: { tool: Workflow, input_match: "litter:fanout" }
+    after: { tool: Workflow, input_match: "litter:fanout-run" }
   - type: tool_used
     name: read-the-summary
     tool: Read

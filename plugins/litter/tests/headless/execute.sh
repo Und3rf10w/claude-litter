@@ -10,7 +10,7 @@
 # basic: lib.sh's repo (HEAD ahead of origin/main) plus fixtures/execute-basic:
 # lib/math.sh with add and sub, test.sh running every tests/test_*.sh, and a
 # two-gate plan.md, each gate adding one function and its test. One headless
-# session records run.start (repair: off) and launches litter:execute with
+# session records run.start (repair: off) and launches litter:execute-run with
 # its args, as land.sh does, with the verify and trailers options set. Then
 # an interactive session types /litter-board <run>, and its screen must show
 # both gates landed.
@@ -296,7 +296,7 @@ if [ "$mode" = basic ]; then
     START=$(jq -cn '{kind: "run.start", workflow: "execute", authorized: ["tier-4 execute probe"], planPath: "plan.md", repair: "off"}') || exit 1
     PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: $START
-2. Call the Workflow tool with name \"litter:execute\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:execute-run\" and args set to the args object step 1 returned, unchanged.
 3. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.
 If a step is refused, note the refusal verbatim and stop."
     # shellcheck disable=SC2086
@@ -499,7 +499,7 @@ if [ -z "${H_CHECKS:-}" ]; then
   START=$(jq -cn --arg m "$repair" '{kind: "run.start", workflow: "execute", authorized: ["tier-4 bridge probe"], planPath: "plan.md", maxAttempts: 1, repair: $m}') || exit 1
   FIRST="You are running a scripted test. Do exactly these steps, in order.
 1. Call mcp__litter__record with exactly this input: $START
-2. Call the Workflow tool with name \"litter:execute\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:execute-run\" and args set to the args object step 1 returned, unchanged.
 3. Wait for the workflow task notification, then reply with each step result and the workflow result, verbatim.
 After that, if litter starts a repair swarm, follow the litter swarm skill for it, and don't push anything."
   echo "$H_CASE: driving the session in $R"

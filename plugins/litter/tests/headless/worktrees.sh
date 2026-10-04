@@ -106,11 +106,11 @@ TASKS=$(jq -cn --arg a "$(slow a)" --arg b "$(slow b)" '[
 START=$(jq -cn --argjson t "$TASKS" '{kind: "run.start", workflow: "fanout", authorized: ["tier-4 worktree probe"], tasks: $t, contract: ""}')
 PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: $START
-2. Call the Workflow tool with name \"litter:fanout\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:fanout-run\" and args set to the args object step 1 returned, unchanged.
 3. Run with Bash: sleep 60
 4. Call TaskStop with the task ID the Workflow tool returned in step 2.
 5. Run with Bash: sleep 20
-6. Call the Workflow tool again with name \"litter:fanout\", resumeFromRunId set to the Run ID step 2 returned (it starts with wf_), and args set to the same args object as in step 2.
+6. Call the Workflow tool again with name \"litter:fanout-run\", resumeFromRunId set to the Run ID step 2 returned (it starts with wf_), and args set to the same args object as in step 2.
 7. Wait for the workflow task notification. Then reply with each step's result and the workflow result, verbatim.
 If a step is refused, note the refusal verbatim and stop."
 

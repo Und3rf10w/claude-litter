@@ -96,8 +96,8 @@ describe('parseNotifications', () => {
   test('reads each notification, unescaping its text and noting a cut result', () => {
     const text =
       'before\n<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n<output-file>/tmp/out.json</output-file>\n' +
-      '<summary>Dynamic workflow "litter:execute" completed</summary>\n<result>{"halted":"a &lt;b&gt; &amp; c"}</result>\n</task-notification>\n' +
-      '<task-notification><task-id>t2</task-id><status>failed</status><summary>Dynamic workflow "litter:design" failed: x &amp; y</summary></task-notification>\n' +
+      '<summary>Dynamic workflow "litter:execute-run" completed</summary>\n<result>{"halted":"a &lt;b&gt; &amp; c"}</result>\n</task-notification>\n' +
+      '<task-notification><task-id>t2</task-id><status>failed</status><summary>Dynamic workflow "litter:design-run" failed: x &amp; y</summary></task-notification>\n' +
       '<task-notification><task-id>t3</task-id><status>completed</status><result>{"halted":\n... (truncated 9000 chars, full result in /tmp/o.json)</result></task-notification>' +
       '<task-notification><status>completed</status></task-notification>'
     const ns = parseNotifications(text)
@@ -106,11 +106,11 @@ describe('parseNotifications', () => {
       taskId: 't1',
       status: 'completed',
       outputFile: '/tmp/out.json',
-      summary: 'Dynamic workflow "litter:execute" completed',
+      summary: 'Dynamic workflow "litter:execute-run" completed',
       result: '{"halted":"a <b> & c"}',
       truncated: false,
     })
-    expect(ns[1]).toEqual(expect.objectContaining({ status: 'failed', summary: 'Dynamic workflow "litter:design" failed: x & y', result: null }))
+    expect(ns[1]).toEqual(expect.objectContaining({ status: 'failed', summary: 'Dynamic workflow "litter:design-run" failed: x & y', result: null }))
     expect(ns[2]).toEqual(expect.objectContaining({ truncated: true, result: '{"halted":' }))
   })
 })

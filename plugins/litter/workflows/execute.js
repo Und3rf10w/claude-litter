@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'execute',
+  name: 'execute-run',
   description: 'Implement an approved plan gate by gate; the critic vetoes, the mod verifies and lands',
   whenToUse: 'Only through /litter:execute or /litter:amend, which record run.start and pass its args; never called directly',
   phases: [{ title: 'Baseline' }, { title: 'Write' }, { title: 'Critique' }, { title: 'Land' }],

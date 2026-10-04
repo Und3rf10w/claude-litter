@@ -365,7 +365,7 @@ async function started($: Engine, on: On, o: Opts): Promise<World> {
 
 const noticeOf = (halt: string) =>
   `<task-notification>\n<task-id>${TASK}</task-id>\n<status>completed</status>\n` +
-  '<summary>Dynamic workflow "litter:execute" completed</summary>\n' +
+  '<summary>Dynamic workflow "litter:execute-run" completed</summary>\n' +
   `<result>${JSON.stringify({ halted: halt })}</result>\n` +
   '</task-notification>'
 const NOTICE = noticeOf(HALT)

@@ -62,7 +62,7 @@ An amend runs on the original run's branch, and the mod refuses it unless that b
 
 1. Record `{ kind: 'gate.amend', run: <original run>, gate, before, after, reason }`. The mod writes the amended plan and keeps the previous one.
 2. Record `{ kind: 'run.start', workflow: 'execute', amendOf: { run, gate }, carryOver, verify, authorized, maxAttempts, adversary }`, with `carryOver` true when the halted attempt was kept. The mod stays on the original run's branch, builds the one-gate `args`, and returns `{ run, runDir, args }`. If it refuses either record, pass the reason on and stop.
-3. Call Workflow with `name: 'litter:execute'` and the returned `args` as a JSON object. If it returns an error, show it; the mod records the failed launch.
+3. Call Workflow with `name: 'litter:execute-run'` and the returned `args` as a JSON object. If it returns an error, show it; the mod records the failed launch.
 
 ## 8. While it runs
 

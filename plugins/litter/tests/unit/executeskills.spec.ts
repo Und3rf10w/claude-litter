@@ -67,8 +67,8 @@ for (const [name, text] of [['execute', EXECUTE], ['amend', AMEND]] as const) {
       for (const part of shellParts(text)) expect(part).not.toContain('${user_config.')
     })
 
-    test('launches litter:execute by name with the args run.start returned, and never commits or pushes itself', () => {
-      expect(text).toContain("`name: 'litter:execute'`")
+    test('launches litter:execute-run by name with the args run.start returned, and never commits or pushes itself', () => {
+      expect(text).toContain("`name: 'litter:execute-run'`")
       expect(text).toContain("Don't commit, push or open a pull request yourself")
       expect(text).toContain('Never start another run on your own.')
     })
@@ -100,10 +100,10 @@ describe('skills/execute/SKILL.md', () => {
     expect(settings.indexOf('**Rules.**')).toBeLessThan(settings.indexOf('ask for an explicit "Launch"'))
   })
 
-  test('goal mode plans in litter:plan, then writes the approved gates with plan.write', () => {
+  test('goal mode plans in litter:plan-run, then writes the approved gates with plan.write', () => {
     const goal = section(EXECUTE, '## 6. Goal mode', '## 7. When the run finishes')
     expect(goal).toContain("workflow: 'plan'")
-    expect(goal).toContain('`litter:plan`')
+    expect(goal).toContain('`litter:plan-run`')
     expect(goal).toContain("{ kind: 'plan.write', run, gates }")
   })
 

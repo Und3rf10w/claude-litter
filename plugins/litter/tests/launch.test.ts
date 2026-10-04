@@ -42,7 +42,7 @@ describe('the Workflow launch check', () => {
   test('a litter workflow with no litter directory is refused', async ($, on) => {
     mock.store(on)
     on('tool.call', { tool: 'Workflow' }, async () => ({ result: 'engine' }))
-    const r = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w5', name: 'litter:execute', args: { run: '20261002-execute-abcdef' } })
+    const r = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w5', name: 'litter:execute-run', args: { run: '20261002-execute-abcdef' } })
     expect(r.deny).toContain('no litter directory')
   })
 
@@ -59,7 +59,7 @@ describe('the Workflow launch check', () => {
     on('session.start', async (_$, e) => ({ cwd: e.cwd }))
     on('tool.call', { tool: 'Workflow' }, async () => ({ result: 'engine' }))
     await $.session.start({ cwd: '/nonexistent/litter-test', surface: null, isInteractive: false })
-    const r = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w7', name: 'litter:design', args: { run: 'x' } })
+    const r = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w7', name: 'litter:design-run', args: { run: 'x' } })
     expect(r.deny).toContain("the mod's tools were refused")
     expect(r.deny).toContain('allowedMcpServers')
     // Not anyone else's.
@@ -69,7 +69,7 @@ describe('the Workflow launch check', () => {
   test('when the hook throws, the catch refuses a wf_ resume and a scriptPath, and passes another resume', async ($, on) => {
     // No mock.store and no file to read: the store read and the script read throw.
     on('tool.call', { tool: 'Workflow' }, async () => ({ result: 'engine' }))
-    const resume = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w9', name: 'litter:execute', resumeFromRunId: 'wf_abc123' })
+    const resume = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w9', name: 'litter:execute-run', resumeFromRunId: 'wf_abc123' })
     expect(resume.deny).toContain('litter guard failed: Workflow')
     const plainWf = await $.tool.call({ tool: 'Workflow', tool_use_id: 'w10', resumeFromRunId: 'wf_abc123' })
     expect(plainWf.deny).toContain('litter guard failed: Workflow')

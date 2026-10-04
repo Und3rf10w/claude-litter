@@ -89,7 +89,7 @@ async function openRun(workflow: 'fanout' | 'execute', run = RUN, taskId = TASK)
 
 const notice = (status: string, result?: string, taskId = TASK) =>
   `<task-notification>\n<task-id>${taskId}</task-id>\n<status>${status}</status>\n` +
-  `<summary>Dynamic workflow "litter:fanout" ${status}</summary>\n` +
+  `<summary>Dynamic workflow "litter:fanout-run" ${status}</summary>\n` +
   (result !== undefined ? `<result>${result}</result>\n` : '') +
   '</task-notification>'
 
