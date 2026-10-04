@@ -297,7 +297,9 @@ describe("the launcher's run.end fallback", () => {
     const reply = await recordRunEnd(w.ctx, { kind: 'run.end', run: r.run, taskId: r.taskId, status: 'completed', result: '{"halted":"G1"}' })
     expect(reply).toEqual(expect.objectContaining({ ok: true, recorded: true, summary: summaryPath(r.ref.runDir) }))
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'halted', reason: 'G1', source: 'launcher' }))
-    expect((await ledgerOf(w, r.ref)).at(-1)!.by).toEqual({ source: 'launcher' })
+    // Phase 3 (AC): a halted execute goes to the bridge, so its repair.declined (the mod's) follows the launcher's run.end.
+    const kinds = (await ledgerOf(w, r.ref)).map(x => `${x.kind} ${x.by.source}`)
+    expect(kinds.slice(-2)).toEqual(['run.end launcher', 'repair.declined mod'])
     await released(w, r)
     const again = await recordRunEnd(w.ctx, { kind: 'run.end', run: r.run, taskId: r.taskId, status: 'killed' })
     expect(again).toEqual(expect.objectContaining({ ok: true, recorded: false }))

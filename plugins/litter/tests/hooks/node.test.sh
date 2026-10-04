@@ -240,6 +240,30 @@ case_node_commit_false() {
   pass_each 'git status' 'git diff' 'git log --oneline' 'git show HEAD'
 }
 
+# Phase 3 (decision 10): a plan-template swarm's executor, a worker with
+# commit false and no paths, in the active execute run's own checkout while
+# its repair generation is open, so policy.json has both the run and the
+# swarm. Its writes pass; it may not commit, since the mod lands the tree.
+case_node_run_checkout_executor() {
+  repo
+  rc_co=$(real_project)
+  policy ".run.runIds = [] | .swarm = {swarms: {s: {launch: \"20261003-120000\", state: \"live\", commonDir: \"$rc_co/.git\",
+    owner: {ref: \"refs/litter-swarm/s\", oid: \"0123456789abcdef0123456789abcdef01234567\", generation: 1, session: \"s1\", checkedAt: $(date +%s)},
+    nodeTypes: [\"litter:sw-s-runner\", \"litter:sw-s-executor\", \"litter:sw-s-critic\"]}}}"
+  node_policy a1 '.node = "executor" | .kind = "worker" | .type = "litter:sw-s-executor" | .parent = "a0"
+    | .authority = {commit: false, push: "none", rewriteHistory: false, worktreeOps: false, verify: true}'
+  write_call litter:sw-s-executor "$rc_co/src/x.py" Edit | run_hook guard.sh
+  assert_pass
+  write_call litter:sw-s-executor "g2.txt" | run_hook guard.sh
+  assert_pass
+  bash_call litter:sw-s-executor 'git commit -am G2' | run_hook guard.sh
+  assert_deny 'node executor may not commit (authority.commit is false)'
+  bash_call litter:sw-s-executor 'git add g2.txt' | run_hook guard.sh
+  assert_deny 'git add writes the index'
+  bash_call litter:sw-s-executor 'git diff HEAD' | run_hook guard.sh
+  assert_pass
+}
+
 case_node_commit_true() {
   committer
   ct_co=$(real_project)
@@ -815,6 +839,7 @@ t "a write path that can't be resolved is denied" case_node_write_unresolvable
 t "git push is denied whatever the authority" case_node_push
 t "with commit unset there's no commit rule, and no git runs" case_node_commit_unset
 t "commit false denies commits and index writes" case_node_commit_false
+t "a plan-template executor in the active run's checkout writes, and may not commit" case_node_run_checkout_executor
 t "commit true allows commits in dir only, without -C, git dirs, GIT_* or cd elsewhere" case_node_commit_true
 t "commit true denies every way off the bound branch, and allows restores" case_node_bound_branch
 t "a commit is denied while HEAD names another branch or none" case_node_head_moved

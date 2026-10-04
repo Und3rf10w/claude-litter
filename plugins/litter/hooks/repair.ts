@@ -2,20 +2,25 @@
 // 6): whether a halted fanout continues as a repair swarm, its baseline, the
 // spec generated from run facts, the launch with no ask under `repair: auto`
 // (and with one on `repair.start` under `off`), the start on the lead's next
-// turn, and more budget.
+// turn, and more budget. Phase 3 (AC; COMMON steps 4 and 5) adds the execute
+// bridge beside it: a halted execute run whose first unlanded gate halted on
+// a plan gap or ran out of attempts continues as a plan-template swarm, in
+// the run's own checkout, through the same reopen, launch and start.
 //
-// Owner: phase 2b-2, package X. Package V's stubs: every export below is the
-// contract. W's lifecycle.ts calls continueAsRepair after a halted fanout's
-// endRun, and writeSummary takes repairSummary's section; register.tsx calls
-// repairNote at prompt.submit and repairTurnComplete at turn.complete; the
-// registry routes repair.start and repair.budget here; recover.ts calls
+// Owner: phase 2b-2, package X; the execute parts phase 3, package AC.
+// Package V's stubs: every export below is the contract. W's lifecycle.ts
+// calls continueAsRepair after a halted fanout's or execute run's endRun, and
+// writeSummary takes repairSummary's section; register.tsx calls repairNote
+// at prompt.submit and repairTurnComplete at turn.complete; the registry
+// routes repair.start and repair.budget here; recover.ts calls
 // restoreRepairStarts once the swarms are back.
 //
 // The order (COMMON step 3): every check that can decline runs before
 // anything of the repair is written, the baseline last, since it runs the
-// suite. A decline records `repair.declined { reason }` and nothing else (the
-// baseline's own verify record stays, as history). From the reopen on, a
-// failure ends the repair generation halted, with the reason.
+// suite (a fanout's; an execute run's finds a green verify in its chain, and
+// runs nothing). A decline records `repair.declined { reason }` and nothing
+// else (the baseline's own verify record stays, as history). From the reopen
+// on, a failure ends the repair generation halted, with the reason.
 
 import type { Ports } from './ports'
 import type { RecordCtx, RecordHandler, RecordReply, StoredRecord } from './records/core'
@@ -29,15 +34,28 @@ import type { LaunchPlan } from './swarm/launch'
 import type { RunRef, RunState } from './lifecycle'
 import { fail } from './records/core'
 import { appendRecord, readLedger } from './ledgercore'
-import { RUN_ID, SWARM_NAME, launchDir, ledgerDir, ledgerFileName, runDir as runDirOf, runJsonPath, summaryPath, swarmDir, verifyLogDir } from './layout'
+import {
+  RUN_ID,
+  SWARM_NAME,
+  launchDir,
+  ledgerDir,
+  ledgerFileName,
+  planPath as runPlanPath,
+  runDir as runDirOf,
+  runJsonPath,
+  summaryPath,
+  swarmDir,
+  verdictsDir,
+  verifyLogDir,
+} from './layout'
 import { remove, serial, sha256 } from './fsx'
 import { getOptions, session } from './session'
 import { readLock } from './lock'
 import { snapshot } from './snapshot'
 import { REPAIR_AGENTS, REPAIR_ROUNDS } from './options'
-import { MOD, howEnded, notGreen, runVerify, verifyBody } from './verify'
+import { MOD, howEnded, isGreen, notGreen, planGates, runVerify, verifyBody } from './verify'
 import { fanoutTasks, integrationWorktree } from './integrate'
-import { endRepairGeneration, loadLaunchable, reopenForRepair, repoOf, runState, writeSummary } from './lifecycle'
+import { endRepairGeneration, greenBaseline, loadLaunchable, reopenForRepair, repoOf, resolveChain, runState, writeSummary } from './lifecycle'
 import { appendLaunchRecord, newLaunchId } from './records/swarm'
 import { saveRevision } from './swarm/store'
 import { beginLaunch, fillStart, goLive, launchQuestion, planLaunch } from './swarm/launch'
@@ -62,6 +80,19 @@ import {
   REPAIR_START,
   REPAIR_TASK,
 } from './prompts/swarm-repair'
+import {
+  CONFIRM_AUTO,
+  PLAN_ADVERSARY_BRIEF,
+  PLAN_CRITIC_BRIEF,
+  PLAN_EVIDENCE_VERIFY,
+  PLAN_EXECUTOR_BRIEF,
+  PLAN_GOAL,
+  PLAN_GOAL_LINE,
+  PLAN_RUNNER_BRIEF,
+  PLAN_TASK,
+  PLAN_WHY_ATTEMPTS,
+  PLAN_WHY_GAP,
+} from './prompts/swarm-plan'
 
 // ---------------------------------------------------------------------------
 // The other packages' functions, through one table so tier 2 can stand in for
@@ -90,10 +121,14 @@ function words(xs: readonly string[], max = 12): string {
 }
 
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit']
-/** The repair swarm's node ids (COMMON step 4). */
+/** The repair swarm's node ids (COMMON 2b-2, step 4). */
 const ORCHESTRATOR = 'repair'
 const FIXER = 'fixer'
 const CRITIC = 'critic'
+/** The plan template's (phase 3, COMMON step 5): its critic is `critic` too. */
+const RUNNER = 'runner'
+const EXECUTOR = 'executor'
+const ADVERSARY = 'adversary'
 
 // ---------------------------------------------------------------------------
 // The run's facts
@@ -123,13 +158,25 @@ const budgetOf = (json: RunJson): RepairBudget => ({ rounds: json.repair!.rounds
 // Which ending it is (15.11: only three failures repair)
 
 type VerifyRef = { rec: StoredRecord; v: VerifyBody }
+/** An execute run's two (phase 3, decision 6): the first unlanded gate's plan gap, or its attempts out. */
+type PlanFailure =
+  | { kind: 'plan_gap'; gate: string; gap: string; attempt: number | null; verify: VerifyRef | null }
+  | { kind: 'attempts'; gate: string; count: number; max: number; verify: VerifyRef | null }
 type Failure =
   | { kind: 'verify'; verify: VerifyRef }
   | { kind: 'verdict'; verdict: StoredRecord; failed: string[]; verify: VerifyRef | null }
   | { kind: 'conflict'; conflict: IntegrateConflictBody }
-type Ending = { ok: true; failure: Failure } | { ok: false; why: string; advice: string }
+  | PlanFailure
+/** `alone`: the why is the whole reason, with no "only these failures" after it (an amend's, decision 13). */
+type Ending = { ok: true; failure: Failure } | { ok: false; why: string; advice: string; alone?: boolean }
 
 const THE_THREE = 'a repair swarm takes on only a red integration verify, a task the verifier rejected, or a merge that stopped at a conflict'
+const THE_TWO = 'a plan-template swarm takes on only a gate that halted on a plan gap or ran out of attempts'
+/** Decision 13's words: an amend run never continues as a swarm. */
+const AMEND_HALT = "an amend's halt comes back to you; /litter:design is the recommended next step"
+
+/** The decline's reason for an ending that isn't one the bridge takes on. */
+const notTaken = (json: RunJson, e: { why: string; alone?: boolean }): string => (e.alone ? e.why : `${e.why}, and ${json.workflow === 'execute' ? THE_TWO : THE_THREE}`)
 
 /** The fanout's ending from its records, as fanoutSummary reads them: one of the three failures, or why not. */
 function classify(json: RunJson, records: readonly StoredRecord[]): Ending {
@@ -179,8 +226,114 @@ function classify(json: RunJson, records: readonly StoredRecord[]): Ending {
 function failureText(f: Failure): string {
   if (f.kind === 'verify') return renderSlots(FAILURE_VERIFY, { verify_id: f.verify.v.verify_id, how: notGreen(f.verify.v) })
   if (f.kind === 'verdict') return renderSlots(FAILURE_VERDICT, { failed: `${f.failed.length === 1 ? 'task' : 'tasks'} ${words(f.failed)}` })
-  return renderSlots(FAILURE_CONFLICT, { task: f.conflict.task, branch: f.conflict.branch })
+  if (f.kind === 'conflict') return renderSlots(FAILURE_CONFLICT, { task: f.conflict.task, branch: f.conflict.branch })
+  return `gate ${f.gate} halted: ${whyOf(f)}`
 }
+
+/** A plan failure's {why} (PLAN_TASK). */
+function whyOf(f: PlanFailure): string {
+  if (f.kind === 'plan_gap') return f.attempt === null ? "the critic's last verdict names a plan gap" : renderSlots(PLAN_WHY_GAP, { attempt: f.attempt })
+  return renderSlots(PLAN_WHY_ATTEMPTS, { count: f.count, max: f.max })
+}
+
+// ---------------------------------------------------------------------------
+// An execute run's ending (phase 3, COMMON step 4; decision 6), from its ledger
+
+/** The run's maxAttempts as execute.js reads it (`args.maxAttempts ?? 3`). */
+const maxAttemptsOf = (json: RunJson): number => {
+  const m = json.args.maxAttempts
+  return typeof m === 'number' && Number.isSafeInteger(m) && m > 0 ? m : 3
+}
+
+/** The run's own lands, gate → commit, in ledger order. */
+function landsOf(records: readonly StoredRecord[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const r of records) {
+    if (r.kind === 'land' && typeof r.body.gate === 'string' && typeof r.body.commit === 'string' && !out.has(r.body.gate)) out.set(r.body.gate, r.body.commit)
+  }
+  return out
+}
+
+/** Where the run's ledger left its branch: the last land's commit, or base. */
+function tipOfLedger(json: RunJson, records: readonly StoredRecord[]): string {
+  const last = records.filter(r => r.kind === 'land' && typeof r.body.commit === 'string').at(-1)
+  return last ? String(last.body.commit) : json.base
+}
+
+/** Each verify of the run by its id. */
+function verifiesById(records: readonly StoredRecord[]): Map<string, VerifyRef> {
+  const out = new Map<string, VerifyRef>()
+  for (const r of records) {
+    const v = verifyBody(r)
+    if (v) out.set(v.verify_id, { rec: r, v })
+  }
+  return out
+}
+
+/** A verdict's gate: the one it names (a plan-template swarm's), else its cited verify's (an execute critic's). */
+function gateOfVerdict(r: StoredRecord, verifies: Map<string, VerifyRef>): string | null {
+  if (typeof r.body.gate === 'string') return r.body.gate
+  return typeof r.body.verify_id === 'string' ? (verifies.get(r.body.verify_id)?.v.gate ?? null) : null
+}
+
+/**
+ * The execute run's ending from its ledger (decision 6), never the script's
+ * reason: the first gate of `args.gates` with no land, then its latest
+ * verdict's plan gap, or `maxAttempts` verdicts on it with none landed (a
+ * re-critique's verdict counts), in the workflow's generations. A land the
+ * mod refused after its latest verdict (land.abandoned or land.blocked: a
+ * retry: false refusal it recorded) declines, as does every other halt; a
+ * moved branch or ref declines at the baseline.
+ */
+function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Ending {
+  if (json.amendOf) return { ok: false, why: AMEND_HALT, advice: 'run /litter:design for the gate, then a new plan', alone: true }
+  const gates = planGates(json)
+  if (!gates || gates.length === 0) return { ok: false, why: "its run.json names no plan gates", advice: 'run it again from its plan' }
+  const landed = landsOf(records)
+  const verifies = verifiesById(records)
+  const first = gates.find(g => !landed.has(g.id))
+  const end = records.filter(r => r.kind === 'run.end').at(-1)
+  const endReason = end && typeof end.body.reason === 'string' && end.body.reason !== '' ? oneLine(end.body.reason, 500) : null
+  if (!first) {
+    const goal = records.filter(r => verifyBody(r)?.gate === 'goal').at(-1)
+    const gv = goal ? verifyBody(goal)! : null
+    if (json.args.goalCheck === true && gv && !isGreen(gv)) {
+      return {
+        ok: false,
+        why: `every gate landed, but the goal check ${gv.verify_id} wasn't green (${notGreen(gv)})`,
+        advice: 'the goal needs more than the plan holds: plan the rest with /litter:design, or adjust the goal check',
+      }
+    }
+    return { ok: false, why: `every gate landed${endReason ? `, and the run halted after them (${endReason})` : ''}`, advice: 'read the summary for what stopped it' }
+  }
+  const repairAt = records.find(r => r.kind === 'run.repair')?.seq ?? Number.POSITIVE_INFINITY
+  const verdicts = records.filter(r => r.seq < repairAt && r.kind === 'verdict' && gateOfVerdict(r, verifies) === first.id)
+  const latest = verdicts.at(-1)
+  const cited = latest && typeof latest.body.verify_id === 'string' ? (verifies.get(latest.body.verify_id) ?? null) : null
+  if (latest && typeof latest.body.plan_gap === 'string' && latest.body.plan_gap.trim() !== '') {
+    return { ok: true, failure: { kind: 'plan_gap', gate: first.id, gap: latest.body.plan_gap, attempt: cited?.v.attempt ?? null, verify: cited } }
+  }
+  const max = maxAttemptsOf(json)
+  if (latest && verdicts.length >= max) {
+    const refused = records.filter(r => r.seq > latest.seq && (r.kind === 'land.abandoned' || r.kind === 'land.blocked') && r.body.gate === first.id).at(-1)
+    if (refused) {
+      return {
+        ok: false,
+        why: `gate ${first.id} was approved, but the mod refused its land (${oneLine(String(refused.body.reason ?? 'no reason recorded'))})`,
+        advice: 'fix what the land names, then continue the run',
+      }
+    }
+    return { ok: true, failure: { kind: 'attempts', gate: first.id, count: verdicts.length, max, verify: cited } }
+  }
+  return {
+    ok: false,
+    why: `the run halted at gate ${first.id}${endReason ? ` (${endReason})` : ''}`,
+    advice: `read the summary for why; amend the gate (/litter:amend ${first.id}), or continue the run once it's fixed`,
+  }
+}
+
+/** The ending by workflow. */
+const endingOf = (json: RunJson, records: readonly StoredRecord[]): Ending => (json.workflow === 'execute' ? classifyExecute(json, records) : classify(json, records))
 
 // ---------------------------------------------------------------------------
 // The spec (COMMON step 4), from run facts only
@@ -295,22 +448,127 @@ async function specOf(p: Ports, f: Facts, failure: Failure, name: string): Promi
   return { ok: true, spec, briefs }
 }
 
-/** The spec under a name free now, for a fanout ending in one of the three failures. */
-async function makeSpec(p: Ports, f: Facts): Promise<RepairSpecResult & { failure?: Failure }> {
-  if (f.json.workflow !== 'fanout') return { ok: false, reason: `run ${f.ref.run} is a ${f.json.workflow} run, not a fanout` }
-  const ending = classify(f.json, f.records)
-  if (!ending.ok) return { ok: false, reason: `${ending.why}, and ${THE_THREE}` }
-  const name = await freeName(p, f.ref.litterDir, f.ref.runDir)
-  if (!name) return { ok: false, reason: 'every repair swarm name for this run is taken' }
-  const made = await specOf(p, f, ending.failure, name)
-  return made.ok ? { ...made, failure: ending.failure } : made
+/** The raw `args.gates` entry for a gate id (its `adversary` flag; planGates keeps only id, title and lines). */
+function argsGate(json: RunJson, id: string): Record<string, unknown> | null {
+  const gates = Array.isArray(json.args.gates) ? (json.args.gates as unknown[]) : []
+  const g = gates.find(x => x !== null && typeof x === 'object' && (x as { id?: unknown }).id === id)
+  return (g as Record<string, unknown> | undefined) ?? null
 }
 
 /**
- * The repair swarm's spec (COMMON step 4), from the run's facts only: the
- * tasks' owned paths, the kept integration worktree and branch, the failure
- * kind and the evidence paths, never task or verifier text. It must pass
- * validateSpec.
+ * The plan template's spec (phase 3, COMMON step 5; WP-AC step 4), from run
+ * facts only: the gates with no land, the run's checkout and branch, the
+ * halted gate and why (the gap quoted from the critic's verdict, which the
+ * runner needs), the budget and the evidence paths. Nodes never commit;
+ * landing is the mod's.
+ */
+async function planSpecOf(p: Ports, f: Facts, failure: PlanFailure, name: string): Promise<RepairSpecResult> {
+  const { ref, json, records } = f
+  const run = ref.run
+  const landed = landsOf(records)
+  const remaining = (planGates(json) ?? []).filter(g => !landed.has(g.id)).map(g => g.id)
+  if (remaining.length === 0) return { ok: false, reason: `every gate of run ${run} has landed, so a plan-template swarm would have nothing to land` }
+  if (!(await p.fs.exists(json.checkout))) return { ok: false, reason: `run ${run}'s checkout ${json.checkout} is gone` }
+  const earlier = Array.isArray(json.args.landed)
+    ? (json.args.landed as unknown[]).flatMap(x => {
+        const l = x as { id?: unknown; commit?: unknown } | null
+        return l && typeof l.id === 'string' && typeof l.commit === 'string' ? [`${l.id} (${l.commit.slice(0, 12)}, by an earlier run of the chain)`] : []
+      })
+    : []
+  const here = [...landed].map(([id, commit]) => `${id} (${commit.slice(0, 12)})`)
+  const plan = typeof json.args.planPath === 'string' && json.args.planPath.startsWith('/') ? json.args.planPath : runPlanPath(ref.runDir)
+  const v = failure.verify
+  const task = renderSlots(PLAN_TASK, {
+    run,
+    gate: failure.gate,
+    why: whyOf(failure),
+    gap: failure.kind === 'plan_gap' ? `"${oneLine(failure.gap, 2000)}"` : null,
+    remaining: words(remaining, 100),
+    landed: earlier.length + here.length > 0 ? words([...earlier, ...here], 100) : null,
+    plan,
+    checkout: json.checkout,
+    branch: short(json.ref),
+    tip: tipOfLedger(json, records),
+    rounds: json.repair?.rounds ?? null,
+    attempts: maxAttemptsOf(json),
+    agents: json.repair?.agents ?? null,
+    goal_line: json.args.goalCheck === true ? PLAN_GOAL_LINE : null,
+    summary: summaryPath(ref.runDir),
+    verdicts: verdictsDir(ref.runDir),
+    verify_line: v ? renderSlots(PLAN_EVIDENCE_VERIFY, { dir: verifyLogDir(ref.runDir, v.v.verify_id), verify_id: v.v.verify_id, how: howEnded(v.v) }) : null,
+  })
+  const adversary = json.args.adversary === true || remaining.some(id => argsGate(json, id)?.adversary === true)
+  const shared = { push: 'none' as const, rewriteHistory: false, worktreeOps: false }
+  const nodes: SwarmNode[] = [
+    {
+      id: RUNNER,
+      kind: 'orchestrator',
+      brief: `briefs/${RUNNER}.md`,
+      task,
+      worktree: { existing: json.checkout },
+      // It writes nothing: commit stays unset, for 2b-2's reason (a false would rank under its workers').
+      tools: { deny: [...WRITE_TOOLS] },
+      bash: { deny: ['git commit'] },
+      spawns: { [EXECUTOR]: 1, [CRITIC]: 1, ...(adversary ? { [ADVERSARY]: 1 } : {}) },
+      authority: { ...shared, verify: true, land: true },
+      report: ['blocked', 'done'],
+    },
+    {
+      id: EXECUTOR,
+      kind: 'worker',
+      brief: `briefs/${EXECUTOR}.md`,
+      worktree: 'inherit',
+      // One writer at a time in the run's checkout (decision 10); no paths: a gate's Files are expected, not owned.
+      serial: true,
+      authority: { commit: false, ...shared, verify: true },
+    },
+    {
+      id: CRITIC,
+      kind: 'worker',
+      brief: `briefs/${CRITIC}.md`,
+      worktree: 'inherit',
+      verdicts: true,
+      spawnOther: false,
+      tools: { deny: [...WRITE_TOOLS] },
+      authority: { commit: false, ...shared, verify: true },
+    },
+  ]
+  if (adversary) {
+    nodes.push({
+      id: ADVERSARY,
+      kind: 'worker',
+      brief: `briefs/${ADVERSARY}.md`,
+      worktree: 'inherit',
+      tools: { deny: [...WRITE_TOOLS] },
+      bash: { deny: ['git commit'] },
+      authority: { commit: false, ...shared },
+    })
+  }
+  const spec: SwarmSpec = { name, goal: renderSlots(PLAN_GOAL, { run, branch: short(json.ref) }), nodes, limits: { maxAgentsAtOnce: 3 } }
+  const briefs: Record<string, string> = { [RUNNER]: PLAN_RUNNER_BRIEF, [EXECUTOR]: PLAN_EXECUTOR_BRIEF, [CRITIC]: PLAN_CRITIC_BRIEF }
+  if (adversary) briefs[ADVERSARY] = PLAN_ADVERSARY_BRIEF
+  return { ok: true, spec, briefs }
+}
+
+/** The spec under a name free now, for a fanout ending in one of the three failures, or an execute run in one of the two. */
+async function makeSpec(p: Ports, f: Facts): Promise<RepairSpecResult & { failure?: Failure }> {
+  const wf = f.json.workflow
+  if (wf !== 'fanout' && wf !== 'execute') return { ok: false, reason: `run ${f.ref.run} is a ${wf} run, not a fanout or an execute run` }
+  const ending = endingOf(f.json, f.records)
+  if (!ending.ok) return { ok: false, reason: notTaken(f.json, ending) }
+  const name = await freeName(p, f.ref.litterDir, f.ref.runDir)
+  if (!name) return { ok: false, reason: 'every repair swarm name for this run is taken' }
+  const failure = ending.failure
+  const made = failure.kind === 'plan_gap' || failure.kind === 'attempts' ? await planSpecOf(p, f, failure, name) : await specOf(p, f, failure, name)
+  return made.ok ? { ...made, failure } : made
+}
+
+/**
+ * The repair swarm's spec (COMMON 2b-2, step 4; phase 3's plan template for
+ * an execute run), from the run's facts only: for a fanout, the tasks' owned
+ * paths, the kept integration worktree and branch, the failure kind and the
+ * evidence paths, never task or verifier text; for an execute run, as
+ * planSpecOf. It must pass validateSpec.
  */
 export async function repairSpec(p: Ports, runDir: string): Promise<RepairSpecResult> {
   const loaded = await loadFacts(p, runDir)
@@ -370,6 +628,38 @@ async function baseline(p: Ports, f: Facts, timeoutMs: number): Promise<Baseline
   return { ok: true, verifyId: ran.body.verify_id }
 }
 
+/**
+ * An execute run's baseline (decision 9): the checkout on the run's branch,
+ * the branch tip where the ledger left it (the last land's commit, or base),
+ * and a green verify of that tip's tree with the run's verify argv anywhere in
+ * the run's chain (lifecycle's greenBaseline, as amend's carry-over finds
+ * it). Unlike a fanout's, the halted attempt stays in the tree, and no verify
+ * runs.
+ */
+async function executeBaseline(p: Ports, f: Facts): Promise<Baseline> {
+  const { json, ref, records } = f
+  const co = json.checkout
+  const branch = short(json.ref)
+  if (!(await p.fs.exists(co))) return { ok: false, reason: `the run's checkout ${co} is gone` }
+  const head = await gitOut(p, co, ['symbolic-ref', '-q', 'HEAD'])
+  if (head.code !== 0 || head.out !== json.ref) {
+    return { ok: false, reason: `the checkout changed: ${co} is on ${head.code === 0 && head.out !== '' ? short(head.out) : 'a detached HEAD'}, not the run's branch ${branch}` }
+  }
+  const left = tipOfLedger(json, records)
+  const at = await gitOut(p, co, ['rev-parse', '-q', '--verify', '--end-of-options', `${json.ref}^{commit}`])
+  if (at.code !== 0 || at.out !== left) return { ok: false, reason: `the run's branch moved: ${branch} is at ${at.out || 'nothing'}, not ${left} where the run left it` }
+  const tree = await gitOut(p, co, ['rev-parse', '-q', '--verify', '--end-of-options', `${left}^{tree}`])
+  if (tree.code !== 0 || tree.out === '') return { ok: false, reason: `git can't read the tree of ${branch}'s tip ${left}` }
+  const chain = await resolveChain(p, ref.litterDir, ref.run)
+  if (!chain.ok) return { ok: false, reason: `the run's chain can't be read: ${noLitter(chain.error)}` }
+  const found = json.verify ? greenBaseline(chain.members, tree.out, json.verify) : null
+  if (!found || typeof found.verify_id !== 'string') return { ok: false, reason: "no green verify of the branch's tip; the suite may have been red before the halted gate" }
+  return { ok: true, verifyId: found.verify_id }
+}
+
+/** The baseline by workflow: a fanout's runs the suite on its base, an execute run's finds the chain's green verify of its tip. */
+const baselineOf = (p: Ports, f: Facts, timeoutMs: number): Promise<Baseline> => (f.json.workflow === 'execute' ? executeBaseline(p, f) : baseline(p, f, timeoutMs))
+
 /** The run lock, in words, when someone holds it. */
 async function lockHeld(p: Ports, litterDir: string): Promise<string | null> {
   const lock = await readLock(p, repoOf(litterDir)).catch(() => null)
@@ -422,7 +712,8 @@ async function startRepair(
       changes: [`generated for run ${ref.run}: ${failureText(made.failure)}`],
     })
     if (!saved.ok) return await halt(`the repair swarm's spec didn't save: ${saved.errors.map(e => `${e.field}: ${e.error}`).join('; ')}`)
-    const planned = await planLaunch(p, name, { revision: saved.revision, grants: true })
+    // The run's own repair swarm may work in its checkout (decision 10): the reopen made this run the active one.
+    const planned = await planLaunch(p, name, { revision: saved.revision, grants: true, forRun: ref.run })
     if (!planned.ok) return await halt(noLitter(planned.reason))
     const live = await goLive(p, planned.plan, { launch, run: open.link, budget, confirmedBy })
     if (!live.ok) return await halt(noLitter(live.reason))
@@ -441,13 +732,20 @@ async function rewriteSummary(p: Ports, ref: RunRef): Promise<void> {
 // ---------------------------------------------------------------------------
 // The bridge, under `repair: auto`
 
+/** The declines that say only that nothing started it, not that it couldn't start: the summary still recommends the swarm. */
+const NOT_AUTO = 'repair is off for this run'
+const AT_RECONCILE = "the run's end was found at session start, after the fact, and a repair never starts on its own from there"
+const NOT_INTERACTIVE = "no one to watch it: this session isn't interactive"
+
 /**
- * After a halted fanout's endRun returned, outside the run's serial key
- * (`run:<runDir>`): starts the repair swarm when COMMON step 3's conditions
- * all hold, else records `repair.declined { reason }` and rewrites summary.md.
- * A no-op for any other run, or one a repair was already started or declined
- * for. lifecycle.ts awaits it (so the notification turn's `<swarm>` block sees
- * the swarm it started) and logs a rejection: the run's end stands either way.
+ * After a halted fanout's or execute run's endRun returned, outside the run's
+ * serial key (`run:<runDir>`): starts the repair swarm (an execute run's
+ * plan-template swarm) when COMMON step 3's conditions all hold (phase 3's
+ * decision 7 for execute, in the same order), else records `repair.declined
+ * { reason }` and rewrites summary.md. A no-op for any other run, or one a
+ * repair was already started or declined for. lifecycle.ts awaits it (so the
+ * notification turn's `<swarm>` block sees the swarm it started) and logs a
+ * rejection: the run's end stands either way.
  */
 export async function continueAsRepair(p: Ports, runDir: string): Promise<void> {
   await serial(`repair:${runDir}`, () => bridge(p, runDir))
@@ -459,7 +757,7 @@ async function bridge(p: Ports, runDir: string): Promise<void> {
   const f = loaded.facts
   const { ref, json, records, st } = f
   // A run.json from before 2b-2 states no repair, so none starts for it.
-  if (json.workflow !== 'fanout' || !json.repair) return
+  if ((json.workflow !== 'fanout' && json.workflow !== 'execute') || !json.repair) return
   const end = latestEnd(st)
   if (!end || end.status !== 'halted' || st.open) return
   if (records.some(r => r.kind === 'run.repair' || r.kind === 'repair.declined')) return
@@ -468,19 +766,19 @@ async function bridge(p: Ports, runDir: string): Promise<void> {
     await appendRecord<RepairDeclinedBody>(p, runDir, { run: ref.run, kind: 'repair.declined', by: MOD, body: { reason } })
     await rewriteSummary(p, ref)
   }
-  // COMMON step 3's order.
-  if (json.repair.mode !== 'auto') return decline('repair is off for this run')
-  if (end.source === 'reconcile') return decline('the run\'s end was found at session start, after the fact, and a repair never starts on its own from there')
-  const ending = classify(json, records)
-  if (!ending.ok) return decline(`${ending.why}, and ${THE_THREE}`)
-  if (interactive() !== true) return decline("no one to watch it: this session isn't interactive")
+  // COMMON step 3's order (phase 3's decision 7).
+  if (json.repair.mode !== 'auto') return decline(NOT_AUTO)
+  if (end.source === 'reconcile') return decline(AT_RECONCILE)
+  const ending = endingOf(json, records)
+  if (!ending.ok) return decline(notTaken(json, ending))
+  if (interactive() !== true) return decline(NOT_INTERACTIVE)
   const made = await makeSpec(p, f)
   if (!made.ok || !made.failure) return decline(made.ok ? 'the repair spec has no failure' : made.reason)
-  const planned = await planLaunch(p, made.spec.name, { saved: { spec: made.spec, revision: 0, briefs: made.briefs }, grants: true })
+  const planned = await planLaunch(p, made.spec.name, { saved: { spec: made.spec, revision: 0, briefs: made.briefs }, grants: true, forRun: ref.run })
   if (!planned.ok) return decline(noLitter(planned.reason))
   const held = await lockHeld(p, ref.litterDir)
   if (held) return decline(held)
-  const base = await baseline(p, f, getOptions().verifyTimeoutMs)
+  const base = await baselineOf(p, f, getOptions().verifyTimeoutMs)
   if (!base.ok) return decline(base.reason)
 
   const started = await startRepair(p, f, { spec: made.spec, briefs: made.briefs, failure: made.failure }, budgetOf(json), { run: ref.run })
@@ -506,6 +804,44 @@ export const recordRepairStart: RecordHandler = async (ctx, input) => {
   return serial(`repair:${runDir}`, () => startByAsk(ctx, runDir))
 }
 
+/** A fanout's repair ask, as 2b-2 wrote it. */
+function fanoutAsk(f: Facts, name: string, failure: Failure, budget: RepairBudget, verifyId: string): string[] {
+  const { json, records, ref } = f
+  const wt = integrationWorktree(records, ref.run)!
+  return [
+    `Start repair swarm ${name} for fanout run ${ref.run}?`,
+    `Failure: ${failureText(failure)}`,
+    `It takes over the integration worktree ${wt.path} and commits fixes on ${wt.branch}. The mod lands the result on ${short(json.ref)} only once it's verified and an independent check approves it. Nothing is pushed.`,
+    `Budget: up to ${budget.rounds} rounds and ${budget.agents} agents; only your answer to litter's own ask raises it.`,
+    `Baseline: verify ${verifyId} is green on the run's base ${json.base.slice(0, 12)}.`,
+  ]
+}
+
+/** The gates of an execute run with no land, in the plan's order. */
+const remainingOf = (json: RunJson, records: readonly StoredRecord[]): string[] => {
+  const landed = landsOf(records)
+  return (planGates(json) ?? []).filter(g => !landed.has(g.id)).map(g => g.id)
+}
+
+/** The budget in CONFIRM_AUTO's terms. */
+const planBudgetText = (json: RunJson, budget: RepairBudget): string =>
+  `up to ${budget.rounds} rejected attempts in all, ${maxAttemptsOf(json)} per gate, and ${budget.agents} agents`
+
+/** An execute run's ask (WP-AC step 3): the run and the halted gate, why, the gates left, where it works and who lands, the budget, the baseline. */
+function planAsk(f: Facts, name: string, failure: PlanFailure, budget: RepairBudget, verifyId: string): string[] {
+  const { json, records, ref } = f
+  const branch = short(json.ref)
+  return [
+    `Start plan-template swarm ${name} for execute run ${ref.run}?`,
+    `Halted: gate ${failure.gate}, because ${whyOf(failure)}.`,
+    ...(failure.kind === 'plan_gap' ? [`The plan gap: "${oneLine(failure.gap, 300)}"`] : []),
+    `Gates left: ${words(remainingOf(json, records), 50)}.`,
+    `It works in the run's checkout ${json.checkout}, on ${branch}, starting from the halted attempt still in its tree. The mod lands each gate on ${branch} only once it's verified and an independent critic approves it. Nothing is pushed.`,
+    `Budget: ${planBudgetText(json, budget)}; only your answer to litter's own ask raises it.`,
+    `Baseline: verify ${verifyId} is green on ${branch}'s tip ${tipOfLedger(json, records).slice(0, 12)}.`,
+  ]
+}
+
 async function startByAsk(ctx: RecordCtx, runDir: string): Promise<RecordReply> {
   const { p } = ctx
   const loaded = await loadFacts(p, runDir)
@@ -513,36 +849,32 @@ async function startByAsk(ctx: RecordCtx, runDir: string): Promise<RecordReply> 
   const f = loaded.facts
   const { ref, json, records, st } = f
   const run = ref.run
-  if (json.workflow !== 'fanout') return fail(`litter: run ${run} is a ${json.workflow} run; only a fanout's combined result is repaired`, 'run')
+  const execute = json.workflow === 'execute'
+  if (json.workflow !== 'fanout' && !execute) {
+    return fail(`litter: run ${run} is a ${json.workflow} run; only a fanout's combined result, or a halted execute run's gates, continue as a swarm`, 'run')
+  }
   if (!json.repair) {
-    return fail(`litter: run ${run} started before litter repaired fanouts, so its launch confirmation stated no repair, and none starts for it`, 'run')
+    return fail(`litter: run ${run} started before litter repaired ${execute ? 'execute runs' : 'fanouts'}, so its launch confirmation stated no repair, and none starts for it`, 'run')
   }
   const already = repairOf(records)
   if (already) return fail(`litter: run ${run} has a repair already: swarm ${already.body.swarm}, launch ${already.body.launch}`, 'run')
   const end = latestEnd(st)
   if (st.open || !end) return fail(`litter: run ${run} hasn't ended; a repair starts only once it halted`, 'run')
   if (end.status !== 'halted') return fail(`litter: run ${run} ended ${end.status}, not halted, so there's nothing to repair`, 'run')
-  const ending = classify(json, records)
-  if (!ending.ok) return fail(`litter: run ${run} can't be repaired as a swarm: ${ending.why}, and ${THE_THREE}; ${ending.advice}`, 'run')
+  const ending = endingOf(json, records)
+  if (!ending.ok) return fail(`litter: run ${run} can't ${execute ? 'continue' : 'be repaired'} as a swarm: ${notTaken(json, ending)}; ${ending.advice}`, 'run')
   const held = await lockHeld(p, ref.litterDir)
   if (held) return fail(`litter: ${held}; start the repair once it's free`)
   const made = await makeSpec(p, f)
   if (!made.ok || !made.failure) return fail(`litter: no repair swarm for run ${run}: ${made.ok ? 'it has no failure' : made.reason}`)
-  const planned = await planLaunch(p, made.spec.name, { saved: { spec: made.spec, revision: 0, briefs: made.briefs }, grants: true })
+  const planned = await planLaunch(p, made.spec.name, { saved: { spec: made.spec, revision: 0, briefs: made.briefs }, grants: true, forRun: run })
   if (!planned.ok) return fail(planned.reason)
-  const base = await baseline(p, f, ctx.options.verifyTimeoutMs)
+  const base = await baselineOf(p, f, ctx.options.verifyTimeoutMs)
   if (!base.ok) return fail(`litter: no repair of run ${run}: ${base.reason}`)
 
   // The builder's confirmation (COMMON step 3, "Under off"): the authority and the budget, in the mod's own ask.
   const budget = budgetOf(json)
-  const wt = integrationWorktree(records, run)!
-  const question = launchQuestion(planned.plan, [
-    `Start repair swarm ${made.spec.name} for fanout run ${run}?`,
-    `Failure: ${failureText(made.failure)}`,
-    `It takes over the integration worktree ${wt.path} and commits fixes on ${wt.branch}. The mod lands the result on ${short(json.ref)} only once it's verified and an independent check approves it. Nothing is pushed.`,
-    `Budget: up to ${budget.rounds} rounds and ${budget.agents} agents; only your answer to litter's own ask raises it.`,
-    `Baseline: verify ${base.verifyId} is green on the run's base ${json.base.slice(0, 12)}.`,
-  ])
+  const question = launchQuestion(planned.plan, execute ? planAsk(f, made.spec.name, made.failure as PlanFailure, budget, base.verifyId) : fanoutAsk(f, made.spec.name, made.failure, budget, base.verifyId))
   let answer: string
   try {
     answer = await p.ask(question, { options: ['Launch', 'Cancel'], header: 'Repair' })
@@ -559,6 +891,7 @@ async function startByAsk(ctx: RecordCtx, runDir: string): Promise<RecordReply> 
   // Your Enter on the start line starts it, as the builder's Launch does.
   const filled = await fillStart(p, started.plan)
   await rewriteSummary(p, ref)
+  const what = execute ? 'Plan-template swarm' : 'Repair swarm'
   return {
     ok: true,
     run,
@@ -567,8 +900,8 @@ async function startByAsk(ctx: RecordCtx, runDir: string): Promise<RecordReply> 
     generation: started.link.generation,
     budget,
     next: filled
-      ? `Repair swarm ${started.name} is live. Its start line is in the user's prompt box: say so in a line and end your turn; their Enter starts it. Don't start it yourself.`
-      : `Repair swarm ${started.name} is live, but the prompt box didn't take its start line: tell the user to send /litter:swarm start ${started.name}.`,
+      ? `${what} ${started.name} is live. Its start line is in the user's prompt box: say so in a line and end your turn; their Enter starts it. Don't start it yourself.`
+      : `${what} ${started.name} is live, but the prompt box didn't take its start line: tell the user to send /litter:swarm start ${started.name}.`,
   }
 }
 
@@ -610,14 +943,21 @@ async function raiseBudget(ctx: RecordCtx, litterDir: string, name: string, more
   if (refusal) return fail(`litter: ${refusal}`, 'swarm')
   const s = liveSwarm(name)!
   const was = s.budget!
+  // The plan template's rounds are rejected attempts (decision 1); its orchestrator is the runner.
+  const plan = s.spec.nodes.some(n => n.kind === 'orchestrator' && n.id === RUNNER)
+  const unit = plan ? 'rejected attempt' : 'round'
   const asked = [
-    more.rounds !== undefined ? `${more.rounds} more ${more.rounds === 1 ? 'round' : 'rounds'}` : null,
+    more.rounds !== undefined ? `${more.rounds} more ${more.rounds === 1 ? unit : `${unit}s`}` : null,
     more.agents !== undefined ? `${more.agents} more ${more.agents === 1 ? 'agent' : 'agents'}` : null,
   ].filter((x): x is string => x !== null)
   const question = [
-    `Give repair swarm ${name} ${asked.join(' and ')}?`,
-    `It repairs fanout run ${s.run!.run}. It has used ${roundsUsed(name)} of ${was.rounds} rounds and ${spawnsUsed(name)} of ${was.agents} agents.`,
-    `With this, its budget is ${was.rounds + (more.rounds ?? 0)} rounds and ${was.agents + (more.agents ?? 0)} agents. Each round is a verdict on a new verify; the agents are the workers and other agents its nodes spawn.`,
+    `Give ${plan ? 'plan-template' : 'repair'} swarm ${name} ${asked.join(' and ')}?`,
+    plan
+      ? `It lands the remaining gates of execute run ${s.run!.run}. It has used ${roundsUsed(name)} of ${was.rounds} rejected attempts and ${spawnsUsed(name)} of ${was.agents} agents.`
+      : `It repairs fanout run ${s.run!.run}. It has used ${roundsUsed(name)} of ${was.rounds} rounds and ${spawnsUsed(name)} of ${was.agents} agents.`,
+    plan
+      ? `With this, its budget is ${was.rounds + (more.rounds ?? 0)} rejected attempts and ${was.agents + (more.agents ?? 0)} agents. A rejected attempt is a verdict the critic didn't approve; an approval uses none, and each gate still gets at most its run's attempts. The agents are the workers and other agents its nodes spawn.`
+      : `With this, its budget is ${was.rounds + (more.rounds ?? 0)} rounds and ${was.agents + (more.agents ?? 0)} agents. Each round is a verdict on a new verify; the agents are the workers and other agents its nodes spawn.`,
   ].join('\n')
   let answer: string | null
   try {
@@ -644,7 +984,9 @@ async function raiseBudget(ctx: RecordCtx, litterDir: string, name: string, more
         swarm: name,
         granted: true,
         budget,
-        next: `Tell the repair swarm's orchestrator with mcp__litter__swarm_send (node ${ORCHESTRATOR}) that its budget is now ${budget.rounds} rounds and ${budget.agents} agents.`,
+        next: plan
+          ? `Tell the plan-template swarm's runner with mcp__litter__swarm_send (node ${RUNNER}) that its budget is now ${budget.rounds} rejected attempts and ${budget.agents} agents.`
+          : `Tell the repair swarm's orchestrator with mcp__litter__swarm_send (node ${ORCHESTRATOR}) that its budget is now ${budget.rounds} rounds and ${budget.agents} agents.`,
       }
     : {
         ok: true,
@@ -799,14 +1141,16 @@ export function resetRepairForTests(): void {
 /**
  * The "Repair" section of the run's summary.md, as markdown with its own
  * heading: what started (the swarm, its budget, how to watch it), or why not
- * and the recommendation, or the recommendation under `repair: off`. Empty
- * for a run with nothing to say (not a fanout, or done). W's writeSummary
- * appends it, and keeps the rest of the summary when it rejects.
+ * and the recommendation, or the recommendation under `repair: off`; an
+ * execute run's is planSummary's. Empty for a run with nothing to say (not a
+ * fanout or an execute run, or done). W's writeSummary appends it, and keeps
+ * the rest of the summary when it rejects.
  */
 export async function repairSummary(p: Ports, runDir: string): Promise<string> {
   const read = await loadFacts(p, runDir)
   if (!read.ok) return ''
   const { ref, json, records, st } = read.facts
+  if (json.workflow === 'execute' && json.repair) return planSummary(read.facts)
   if (json.workflow !== 'fanout' || !json.repair) return ''
   const lines = ['## Repair', '']
   const branch = short(json.ref)
@@ -846,6 +1190,70 @@ export async function repairSummary(p: Ports, runDir: string): Promise<string> {
       `Recommended: repair it as a swarm. The failure: ${failureText(ending.failure)}. A repair swarm takes over the integration worktree${wt ? ` ${wt.path}` : ''}, commits fixes on ${wt ? wt.branch : 'the integration branch'}, and the mod lands the result on ${branch} only if it's verified and an independent check approves it: up to ${b.rounds} rounds and ${b.agents} agents; nothing is pushed.`,
       '',
       `To start one, ask for /litter:swarm repair ${ref.run}; litter asks you to confirm its authority and budget first. The other ways on: rerun the failed tasks, merge the passing branches yourself, or stop here. Everything the run made is kept.`,
+    )
+  }
+  lines.push('')
+  return lines.join('\n')
+}
+
+const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
+
+/**
+ * An execute run's Repair section (WP-AC step 3): what started (the swarm,
+ * the gates it took over, the budget, how to watch it) and how it ended; or
+ * why nothing started, and, when the halt is one the plan template takes on,
+ * decision 5's routes: continue as that swarm, amend the gate, or stop.
+ */
+function planSummary(f: Facts): string {
+  const { ref, json, records, st } = f
+  const lines = ['## Repair', '']
+  const branch = short(json.ref)
+
+  const open = repairOf(records)
+  if (open) {
+    const b = open.body
+    const taken = remainingOf(json, records.filter(r => r.seq < open.seq))
+    lines.push(
+      `Plan-template swarm ${b.swarm} (launch ${b.launch}) took over in generation ${b.generation}, to land ${taken.length === 1 ? 'gate' : 'gates'} ${words(taken, 50)}, with a budget of ${planBudgetText(json, b.budget)}. It works in the run's checkout ${json.checkout}, starting from the halted attempt, and the mod lands each gate on ${branch} only once it's verified and an independent critic approves it; nothing is pushed.`,
+    )
+    const end = records.filter(r => r.kind === 'run.end' && r.seq > open.seq && r.body.generation === b.generation).at(-1)
+    const status = end ? body<RunEndBody>(end) : null
+    const lands = records
+      .filter(r => r.kind === 'land' && r.seq > open.seq && typeof r.body.gate === 'string')
+      .map(r => `${String(r.body.gate)} (${String(r.body.commit ?? '').slice(0, 12)})`)
+    if (!status) lines.push('', `Watch it with /litter-swarm ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
+    else if (status.status === 'done') lines.push('', `It landed ${words(lands, 50)} on ${branch}: generation ${b.generation} ended done.`)
+    else {
+      const left = remainingOf(json, records)
+      lines.push(
+        '',
+        `It ended ${status.status}${status.reason ? ` (${oneLine(status.reason, 500)})` : ''}. ${lands.length > 0 ? `It landed ${words(lands, 50)} on ${branch}` : 'It landed nothing'}${left.length > 0 ? `, and ${words(left, 50)} ${left.length === 1 ? "hasn't" : "haven't"} landed` : ''}. Its lands stay on ${branch}, and whatever it left uncommitted stays in the checkout.`,
+      )
+    }
+    lines.push('')
+    return lines.join('\n')
+  }
+
+  const end = latestEnd(st)
+  if (!end || end.status !== 'halted') return ''
+  const declined = records.filter(r => r.kind === 'repair.declined').at(-1)
+  const reason = declined ? oneLine(String(body<RepairDeclinedBody>(declined).reason ?? ''), 1000) : null
+  const why = reason ?? (json.repair!.mode === 'off' ? NOT_AUTO : null)
+  lines.push(why ? `No plan-template swarm started: ${why}.` : 'No plan-template swarm has started for this run.')
+  const ending = classifyExecute(json, records)
+  if (!ending.ok) {
+    if (ending.why !== why) lines.push('', ending.alone ? `${capital(ending.why)}.` : `A plan-template swarm can't take this on: ${ending.why}. Instead, ${ending.advice}.`)
+  } else {
+    const fl = ending.failure as PlanFailure
+    const b = budgetOf(json)
+    // Recommended only when nothing but the setting, or the moment, kept it from starting.
+    const recommend = reason === null || reason === NOT_AUTO || reason === AT_RECONCILE || reason === NOT_INTERACTIVE
+    const auto = renderSlots(CONFIRM_AUTO, { rounds: b.rounds, attempts: maxAttemptsOf(json), agents: b.agents })
+    lines.push(
+      '',
+      `${recommend ? 'Recommended: continue as a plan-template swarm. ' : ''}${capital(failureText(fl))}. ${fl.kind === 'plan_gap' ? `The plan gap: "${oneLine(fl.gap, 500)}". ` : ''}Under repair: auto, ${auto}. It would land ${words(remainingOf(json, records), 50)}, starting from the halted attempt in the tree, and its gate-runner asks you before a gap changes the plan's scope or requirements.`,
+      '',
+      `The ways on: continue as a plan-template swarm (/litter:swarm repair ${ref.run}), amend the gate (/litter:amend ${fl.gate} …), or stop; the halted attempt is still in the tree. Continuing asks you to confirm its authority and budget first.`,
     )
   }
   lines.push('')

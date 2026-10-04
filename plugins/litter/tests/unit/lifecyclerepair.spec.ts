@@ -266,21 +266,21 @@ describe('run.start: the repair setting (COMMON 2b-2, step 1)', () => {
     expect(existsSync(w.litterDir) ? (await w.p.fs.list(w.litterDir)).filter(e => /^[0-9]{8}-/.test(e.name)) : []).toEqual([])
   })
 
-  test('another workflow refuses the fields: in this version only a failed fanout repairs', async () => {
+  // Phase 3 (AC): an execute run takes the fields as a fanout does; a design or plan run still refuses them.
+  test('an execute run stores the setting as a fanout does, and a plan run refuses the fields', async () => {
     const w = await world()
     await w.p.fs.write(join(w.dir, 'plan.md'), '### G1: One\nFiles: a.txt\nChecks: true\nDone when: a.txt\n')
     await w.git('add', 'plan.md')
     await w.git('commit', '-q', '-m', 'plan')
-    const r = (await recordRunStart(w.ctx(), { kind: 'run.start', workflow: 'execute', planPath: 'plan.md', authorized: ['x'], repairRounds: 2 } as RecordInput)) as {
+    const r = (await recordRunStart(w.ctx(), { kind: 'run.start', workflow: 'plan', authorized: ['x'], goal: 'add a retry', repairRounds: 2 } as RecordInput)) as {
       ok: false
       field?: string
       error: string
     }
     expect(r).toEqual(expect.objectContaining({ ok: false, field: 'repairRounds' }))
-    expect(r.error).toContain('only a failed fanout continues as a repair swarm')
-    // Without the fields an execute run.json has no repair at all.
-    const ok = okReply(await recordRunStart(w.ctx(), { kind: 'run.start', workflow: 'execute', planPath: 'plan.md', authorized: ['x'] } as RecordInput))
-    expect((await runJson(w, { run: ok.run, runDir: ok.runDir, litterDir: w.litterDir })).repair).toBeUndefined()
+    expect(r.error).toContain("'repairRounds' is for fanout and execute runs, not plan")
+    const ok = okReply(await recordRunStart(w.ctx(), { kind: 'run.start', workflow: 'execute', planPath: 'plan.md', authorized: ['x'], repairRounds: 2 } as RecordInput))
+    expect((await runJson(w, { run: ok.run, runDir: ok.runDir, litterDir: w.litterDir })).repair).toEqual({ mode: 'auto', rounds: 2, agents: 6 })
   })
 })
 
@@ -406,7 +406,7 @@ describe('reopenForRepair', () => {
     expect(await readLock(w.p, w.dir)).toBeNull()
   })
 
-  test("refuses a run launched before repairs (no repair in run.json), a run that isn't a fanout, one that never launched or ended done, and a folder that is no run", async () => {
+  test("refuses a run launched before repairs (no repair in run.json), a run that isn't a fanout or an execute run, one that never launched or ended done, and a folder that is no run", async () => {
     const w = await world()
     // Run folders as their run.start left them: run.json, and a ledger whose run.start holds its sha.
     const folder = async (run: string, json: Record<string, unknown>, ends: ('launch' | 'halted' | 'done')[]): Promise<string> => {
@@ -425,8 +425,9 @@ describe('reopenForRepair', () => {
     expect(await why(await folder('20270115-fanout-before', {}, ['launch', 'halted']))).toContain(
       'its run.json has no repair setting (it was launched before repairs), so its launch confirmation never stated one',
     )
-    expect(await why(await folder('20270115-execute-plan01', { workflow: 'execute', repair }, ['launch', 'halted']))).toContain(
-      'its workflow is execute, and in this version only a fanout continues as a repair swarm',
+    // Phase 3 (AC): an execute run reopens as a fanout does; a design run doesn't.
+    expect(await why(await folder('20270115-execute-plan01', { workflow: 'design', repair }, ['launch', 'halted']))).toContain(
+      'its workflow is design, and only a fanout or an execute run continues as a repair swarm',
     )
     expect(await why(await folder('20270115-fanout-never1', { repair }, []))).toContain('it never launched')
     expect(await why(await folder('20270115-fanout-landed', { repair }, ['launch', 'done']))).toContain('it ended done, so there is nothing to repair')

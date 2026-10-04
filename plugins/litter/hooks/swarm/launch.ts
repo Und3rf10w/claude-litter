@@ -80,7 +80,7 @@ import { decodeSwarmInput, SWARM_READ } from './tools'
 import { addSwarmWorktree } from './worktrees'
 import { acquireOwnership, readOwnerRef, releaseOwnership, startOwnerBeat, stopOwnerBeat } from './owner'
 import { authorityLines, continuationText, readLaunchFacts, refreshReadOnly, resumeTargets, settleStuck } from './recover'
-import { validateSpec } from './spec'
+import { activeRunsRepair, validateSpec } from './spec'
 import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
 import { heldBy, writeSwarmPolicy } from './guard'
@@ -536,12 +536,15 @@ export type LaunchPlan = {
  * branches as you'd confirm them: of `opts.saved` when given (a repair's
  * generated spec, before it's saved), else the saved revision or
  * `opts.revision`. `grants: false` refuses any `verify` or `land` authority
- * (the builder's swarms, in 2b-2). Writes nothing.
+ * (the builder's swarms, in 2b-2). `forRun` (phase 3, decision 10) is the run
+ * a repair bridge launches for: its own repair swarm may work in the active
+ * run's checkout when that run is `forRun` and its open generation's
+ * run.repair names this swarm. Writes nothing.
  */
 export async function planLaunch(
   p: Ports,
   name: string,
-  opts: { revision?: number; saved?: SavedSwarm; grants: boolean },
+  opts: { revision?: number; saved?: SavedSwarm; grants: boolean; forRun?: string },
 ): Promise<{ ok: true; plan: LaunchPlan } | Refused> {
   if (typeof name !== 'string' || !SWARM_NAME.test(name)) return { ok: false, reason: `litter: '${String(name)}' isn't a swarm name` }
   const info = session()
@@ -655,8 +658,14 @@ export async function planLaunch(
     if (ref) d.branch = ref
     else problems.push(`nodes.${id}: ${d.dir} is on a detached HEAD, so ${who.join(' and ')} can't commit there; check out a branch first`)
   }
-  // 15.4, "Coexisting with runs": no node works in the active run's checkout.
-  if (runCheckout) {
+  // 15.4, "Coexisting with runs": no node works in the active run's checkout, but the run's own repair swarm (decision 10).
+  const ownRepair =
+    runCheckout !== null &&
+    opts.grants &&
+    opts.forRun !== undefined &&
+    policy?.run?.run === opts.forRun &&
+    (await activeRunsRepair(p, litterDir, runCheckout, name))
+  if (runCheckout && !ownRepair) {
     const co = await realOf(p, runCheckout)
     for (const [id, d] of Object.entries(dirs)) {
       if (!d.created && (await toplevel(p, d.dir)) === co) problems.push(`nodes.${id}: it would work in ${co}, the active litter run's checkout; give it a worktree of its own, or wait for the run to end`)

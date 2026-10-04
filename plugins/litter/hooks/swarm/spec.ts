@@ -13,10 +13,11 @@
 
 import type { Ports } from '../ports'
 import type { Authority, InstancePlan, PlannedDir, SpecCheck, SpecError, SwarmNode, SwarmSpec, TreeShape, ValidateCtx, WorktreeSpec } from './types'
-import { NODE_ID, SWARM_NAME, swarmNewWorktreeName, swarmOwnBranch, swarmOwnWorktreeName } from '../layout'
+import { NODE_ID, RUN_ID, SWARM_NAME, runDir as runDirOf, swarmNewWorktreeName, swarmOwnBranch, swarmOwnWorktreeName } from '../layout'
 import { BRANCH, git, listWorktrees, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
 import { repoOf } from '../lifecycle'
 import { readPolicy } from '../policy'
+import { readLedger } from '../ledgercore'
 
 /** A brief becomes part of a registered type's prompt (15.3): at most this many UTF-8 bytes. */
 export const BRIEF_MAX_BYTES = 16 * 1024
@@ -855,8 +856,10 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
     )
   }
 
-  // `existing` worktrees: this repository's, and never the active run's checkout.
+  // `existing` worktrees: this repository's, and never the active run's checkout, but for the run's own repair swarm (decision 10).
   const checkout = ctx.activeRunCheckout ? await realOf(p, ctx.activeRunCheckout) : null
+  let ownRepair: boolean | null = null
+  const runsOwn = async (): Promise<boolean> => (ownRepair ??= await activeRunsRepair(p, ctx.litterDir, ctx.activeRunCheckout, s.name))
   for (const n of s.nodes) {
     const wt = n.worktree
     if (typeof wt !== 'object' || !('existing' in wt)) continue
@@ -867,7 +870,7 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
     else if (!(await p.fs.exists(abs))) existing.add(field, n.id, `${wt.existing} doesn't exist (${abs})`)
     else if (!list.some(w => w.real === real)) {
       existing.add(field, n.id, `${wt.existing} isn't a worktree of this repository: git worktree list doesn't show it; name one it shows, or use { new: { from, branch } }`)
-    } else if (checkout !== null && real === checkout) {
+    } else if (checkout !== null && real === checkout && !(await runsOwn())) {
       existing.add(field, n.id, `${wt.existing} is the active litter run's checkout; a node can't work there while the run is active`)
     }
   }
@@ -974,6 +977,28 @@ export async function validateSpec(p: Ports, spec: unknown, ctx: ValidateCtx): P
     warnings.push(...r.warnings)
   }
   return { ok: errors.length === 0, errors, warnings }
+}
+
+/**
+ * Decision 10 (phase 3, AC): whether swarm `name` is the active run's own
+ * repair swarm, the one swarm excepted from "no node in the active run's
+ * checkout". The active run is policy.json's, its checkout the one the
+ * caller's ctx names, and its ledger's open generation the `run.repair` that
+ * names this swarm (the reopen wrote it before the swarm's save and launch).
+ * Read from the mod's files only, never from the spec. Exported for
+ * launch.ts, which also requires its caller's `forRun`.
+ */
+export async function activeRunsRepair(p: Ports, litterDir: string, checkout: string | null, name: string): Promise<boolean> {
+  const run = (await readPolicy(p, litterDir).catch(() => undefined))?.run
+  if (!run || checkout === null || run.checkout !== checkout || !RUN_ID.test(run.run) || run.runDir !== runDirOf(litterDir, run.run)) return false
+  const ledger = await readLedger(p, run.runDir, run.run).catch(() => null)
+  if (!ledger || ledger.tampered) return false
+  for (let i = ledger.records.length - 1; i >= 0; i--) {
+    const r = ledger.records[i]!
+    if (r.kind === 'run.repair') return r.body.swarm === name
+    if (r.kind === 'run.end' || r.kind === 'run.stopping' || r.kind === 'run.launch' || r.kind === 'run.resume') return false
+  }
+  return false
 }
 
 /**

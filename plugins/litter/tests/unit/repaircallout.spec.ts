@@ -126,12 +126,13 @@ describe('from the task notification', () => {
     expect((await readLedger(ports, ref.runDir, RUN)).records.map(r => r.kind)).toEqual(['run.launch', 'run.end', 'repair.declined'])
   })
 
-  test('nothing else goes to it: a done fanout, a stopped one, a failed one, a halted execute', async () => {
+  test('nothing else goes to it: a done fanout, a stopped one, a failed one, a done or stopped execute', async () => {
     const cases: [string, 'fanout' | 'execute', string, string | undefined][] = [
       ['20261003-done', 'fanout', 'completed', '{"halted":null}'],
       ['20261003-stop', 'fanout', 'killed', undefined],
       ['20261003-fail', 'fanout', 'failed', undefined],
-      ['20261003-exec', 'execute', 'completed', HALTED],
+      ['20261003-exdone', 'execute', 'completed', '{"halted":null}'],
+      ['20261003-exstop', 'execute', 'killed', undefined],
     ]
     for (const [run, workflow, status, result] of cases) {
       const taskId = `task-${run}`
@@ -140,6 +141,13 @@ describe('from the task notification', () => {
       expect({ run, ended: (await ends(ref)).length }).toEqual({ run, ended: 1 })
     }
     expect(bridged).toEqual([])
+  })
+
+  // Phase 3 (AC): a halted execute run goes to the bridge as a fanout does; the bridge decides whether it continues.
+  test('a halted execute goes to the bridge too, once its run.end and summary.md are written', async () => {
+    const ref = await openRun('execute', '20261003-exec', 'task-exec')
+    await settleNotices(ports, submitted(notice('completed', HALTED, 'task-exec')))
+    expect(bridged).toEqual([{ runDir: ref.runDir, ended: true, summary: true }])
   })
 
   test('a second notice for an ended generation records nothing, so nothing goes to the bridge again', async () => {
