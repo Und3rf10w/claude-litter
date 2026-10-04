@@ -30,7 +30,7 @@ import { recordFailed, recordTool, registerRecordTool } from './ledger'
 import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from './policy'
 import { activePath } from './layout'
 import { registerRoles } from './roles'
-import { resolveLitterDir } from './litterdir'
+import { resolveLitterDir, writeGitignore } from './litterdir'
 import { onSessionEnd, onTurnComplete, reconcileRuns, settleNotices } from './lifecycle'
 import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
@@ -284,6 +284,7 @@ export const register: Register = (on, options) => {
       openGateNow()
       if (litterDir) {
         await step(p, 'worktree.json', () => startWorktreePolicy(p, litterDir))
+        await step(p, '.gitignore', () => writeGitignore(p, litterDir))
         await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
         await step(p, 'reconcile', () => reconcileRuns(p, litterDir))
         await step(p, 'leftover worktrees', () => cleanupLeftovers(p, litterDir))

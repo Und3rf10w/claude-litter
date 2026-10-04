@@ -283,6 +283,8 @@ describe("register.tsx's order and its renders", () => {
       'swarms',
       'the gate opens',
       'worktree.json',
+      // WP-AQ: litterDir's .gitignore, once worktree.json has made the folder.
+      '.gitignore',
       'drain',
       'reconcile',
       'leftover worktrees',
