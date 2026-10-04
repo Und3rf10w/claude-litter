@@ -1,9 +1,8 @@
 // Tier 1: the accepted rules' selection as the engine runs it (plan 16.5,
 // WP-AE). rule.find { applicable } from the main thread answers what a launch
-// would deliver and writes nothing: no file, and no mv or rm. Until AD's
-// handler is merged, rule.find answers that it isn't built yet, and this
-// takes that reply too; after the merge, only the selection's shape is the
-// answer. The run.start case (run.json.rules with the versions, and the rules
+// would deliver and writes nothing: no file, and no mv or rm. AD's handler
+// routes it to AE's findApplicable, so the selection's shape is the answer.
+// The run.start case (run.json.rules with the versions, and the rules
 // in each gate's args, through a fake store) is at tier 2, in
 // tests/unit/rulesselect.spec.ts: a fake store can't reach the mod's module
 // state from here, and run.start's snapshot needs a real repository.
@@ -76,9 +75,6 @@ type Reply = { ok: boolean; error?: string; field?: string; workflow?: string; r
 
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as Reply
 
-/** AD's stub reply, before its rule.find is merged. */
-const NOT_YET = "litter: the 'rule.find' record isn't built yet (phase 3)"
-
 describe('rule.find { applicable }', () => {
   test('from the main thread, answers what an execute launch would deliver and writes nothing', async ($, on) => {
     mock.store(on)
@@ -99,21 +95,17 @@ describe('rule.find { applicable }', () => {
     // As the model passes it: an object, or the object as a JSON string (ledger.ts decodes it).
     for (const [n, value] of [applicable, JSON.stringify(applicable)].entries()) {
       const r = parse(await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: `t-find-${n}`, kind: 'rule.find', applicable: value }))
-      if (r.ok) {
-        // No rule is accepted here. Your run rules count against the cap, but run.start renders them itself, so `run` is the accepted rules' only.
-        expect(r).toEqual(
-          expect.objectContaining({
-            ok: true,
-            workflow: 'execute',
-            run: [],
-            gates: { G1: [] },
-            versions: [],
-          }),
-        )
-        expect(Array.isArray(r.problems)).toBe(true)
-      } else {
-        expect(r).toEqual(expect.objectContaining({ ok: false, error: NOT_YET, field: 'kind' }))
-      }
+      // No rule is accepted here. Your run rules count against the cap, but run.start renders them itself, so `run` is the accepted rules' only.
+      expect(r).toEqual(
+        expect.objectContaining({
+          ok: true,
+          workflow: 'execute',
+          run: [],
+          gates: { G1: [] },
+          versions: [],
+        }),
+      )
+      expect(Array.isArray(r.problems)).toBe(true)
     }
     expect(changed).toEqual([])
     expect(files).toEqual(before)
