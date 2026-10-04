@@ -34,7 +34,7 @@ The mod also refuses to launch in bypass-permissions or accept-edits mode, where
 
 ## 3. Settings
 
-Draft these, then confirm them in one AskUserQuestion call (up to four questions, with your recommended option first and labelled "(Recommended)"):
+Draft these, then confirm them in one AskUserQuestion call (up to four single-select questions, with your recommended option first and labelled "(Recommended)"):
 
 - **Verify command.** This command, not anyone's claim, decides whether a gate is done. It has to pass today: the mod runs it before the first gate and stops if it fails. The configured default is `${user_config.verify}`. If that's empty or shows as a literal placeholder, propose one from CLAUDE.md, package.json, a Makefile or similar, as a list of arguments, and say where you found it. Before running anything other than the configured default, the mod shows the user the exact command and asks them to approve it.
 - **Goal check** (goal mode only). The command that shows the goal is met. It may fail today, and it has to pass after the last gate.
@@ -46,7 +46,7 @@ Draft these, then confirm them in one AskUserQuestion call (up to four questions
   - `auto`: "if a gate halts on a plan gap or runs out of attempts, a plan-template swarm continues the gates that haven't landed, in this checkout, and the mod lands each gate only if it's verified and an independent critic approves it: up to N rejected attempts in all, M per gate, and A agents; nothing is pushed".
   - `off`: "if a gate halts, the run stops and keeps everything, and you choose what's next".
 
-Then show the gate list and the settings together, and ask for an explicit "Launch". This confirmation is the user's opt-in to the run and the record of what they authorized, so ask for it even if the user didn't type the command.
+Then show the gate list and the settings together, and ask for an explicit "Launch" in one single-select AskUserQuestion whose first option is Launch. This confirmation is the user's opt-in to the run and the record of what they authorized, so ask for it even if the user didn't type the command.
 
 ## 4. Launch
 

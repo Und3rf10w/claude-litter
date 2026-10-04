@@ -106,7 +106,9 @@ wall() {
 }
 
 # ---------------------------------------------------------------------------
-# litter's side: the run's ledger, generation 1 only (repair: off).
+# litter's side: the run's ledger, every generation (repair: auto). Lands,
+# attempts and verdicts count across them, and the run's outcome is its last
+# run.end's: generation 2's when the bridge continued it, else generation 1's.
 
 LD=$L/repo/.claude/litter
 RUN=$(ls "$LD" 2>/dev/null | grep -E '^[0-9]{8}-' | head -n 1)
@@ -116,20 +118,25 @@ if [ -n "$RUN" ] && [ -f "$LD/$RUN/run.json" ]; then
   rmode=$(jq -r '"repair \(.repair.mode // "unset"), max attempts \(.args.maxAttempts // "unset")"' "$RD/run.json") || exit 2
   ltip=$(git -C "$L/repo" rev-parse -q --verify "refs/heads/litter/$RUN") || ltip=$base
   # The gate of a verdict is its own (a plan-template one's) or its cited verify's (an execute critic's: verdicts.ts verdictTarget).
+  # A plan-template verdict says `approved`; an execute critic's passes when every dimension does.
   lf=$(cat "$RD"/ledger/*.json | jq -s -c --argjson gates "$GJ" --arg run "$RUN ($rmode)" --arg tip "$ltip" '
     sort_by(.seq) as $r
     | ([$r[] | select(.kind == "verify") | {key: .body.verify_id, value: .body}] | from_entries) as $v
-    | ([$r[] | select(.kind == "run.end")] | first) as $end
+    | [$r[] | select(.kind == "run.end")] as $ends
+    | ($ends | last) as $end
     | [$gates[] as $g | {id: $g,
         landed: any($r[]; .kind == "land" and .body.gate == $g),
         attempts: ([$r[] | select(.kind == "verify" and .body.gate == $g) | .body.attempt] | unique | length),
         verdicts: [$r[] | select(.kind == "verdict") | .body as $b | ($v[$b.verify_id // ""] // {}) as $vv
           | select(($b.gate // $vv.gate) == $g)
-          | {ok: ([$b.plan_adherence, $b.tests_green, $b.no_regressions, $b.rules] | all(.pass? == true)),
-             gap: ($b.plan_gap // ""), tree: ($vv.tree_before // null), green: ($vv.green // false)}]}] as $rows
+          | {ok: (if $b.approved != null then $b.approved == true
+                  else [$b.plan_adherence, $b.tests_green, $b.no_regressions, $b.rules] | all(.pass? == true) end),
+             gap: ([$b.plan_gap // "", $b.rule_clash // ""] | map(select(. != "")) | join(" | ")),
+             tree: ($vv.tree_before // null), green: ($vv.green // false)}]}] as $rows
     | ([range(0; $rows | length) | select($rows[.].landed | not)] | first) as $stop
     | {ran: true, name: "run \($run)", tip: $tip,
-       ended: (if $end == null then "never ended" else "ended \($end.body.status): \($end.body.reason // "no reason")" end),
+       ended: (if $end == null then "never ended"
+         else "ended \($end.body.status) after \($ends | length) generation(s): \($end.body.reason // "no reason")" end),
        gates: [range(0; $rows | length) as $i | $rows[$i] | . + {
          outcome: (if .landed then "landed" elif $end != null and $end.body.status != "done" and $i == $stop then "halted" else "none" end),
          text: (if $end != null and $i == $stop then [($end.body.reason // empty), (.verdicts[].gap | select(. != ""))]
