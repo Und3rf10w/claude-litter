@@ -13,8 +13,10 @@ T_PASS=0
 T_FAIL=0
 T_ONLY=${T_ONLY:-}
 # The real date, found before any case puts one of its own on PATH (t_clock):
-# a path, as a shell whose date is a builtin answers with the bare name.
-T_DATE=$(command -v date)
+# as `command -v` answers (run_hook compares that), and as a path, since a
+# shell whose date is a builtin answers with the bare name.
+T_DATE_FOUND=$(command -v date)
+T_DATE=$T_DATE_FOUND
 case $T_DATE in /*) ;; *) T_DATE=/bin/date ;; esac
 
 t() {
@@ -61,7 +63,7 @@ run_hook() {
   rh_script=$1
   shift
   rh_path=$PATH
-  if [ "$rh_script" = guard.sh ] && [ -x "$T_DIR/clock/date" ] && [ "$(command -v date)" = "$T_DATE" ]; then
+  if [ "$rh_script" = guard.sh ] && [ -x "$T_DIR/clock/date" ] && [ "$(command -v date)" = "$T_DATE_FOUND" ]; then
     rh_path=$T_DIR/clock:$PATH
   fi
   # A word list on purpose ("busybox sh").
