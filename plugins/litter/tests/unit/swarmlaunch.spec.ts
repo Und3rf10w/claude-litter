@@ -552,6 +552,27 @@ describe('mcp__litter__swarm_read', () => {
     expect(byNode.docs).toEqual([])
   })
 
+  // 2.1.289's list says waiting, idle and pending, each of which would read as one of litter's own words.
+  test("the list's waiting reads held, its idle between turns and its pending starting; an admitted node keeps litter's word", async () => {
+    const launch = await launched()
+    await bind(w, launch, { agentId: 'ag-l1', node: 'lead-a', n: 1, kind: 'orchestrator', cwd: wtPath(), branch: 'refs/heads/feature/alpha' })
+    await bind(w, launch, { agentId: 'ag-f1', node: 'fixer', n: 1, kind: 'worker', cwd: wtPath(), parent: 'ag-l1' })
+    await bind(w, launch, { agentId: 'ag-f2', node: 'fixer', n: 2, kind: 'worker', cwd: wtPath(), parent: 'ag-l1' })
+    await bind(w, launch, { agentId: 'ag-s1', node: 'scout', n: 1, kind: 'worker', cwd: wtPath(), parent: 'ag-l1' })
+    markRunning('ag-l1')
+    const row = (id: string, status: string) => ({ id, description: id, type: 'litter:sw-alpha-fixer', status })
+    w.p.agents = [row('ag-l1', 'waiting'), row('ag-f1', 'waiting'), row('ag-f2', 'idle'), row('ag-s1', 'pending')] as never
+    const r = await read({ swarm: 'alpha' })
+    const status = Object.fromEntries(
+      r.nodes.flatMap((n: { instances: { agentId: string; status: string }[] }) => n.instances.map(i => [i.agentId, i.status])),
+    )
+    // lead-a is mid-turn on its children: admitted, so running. fixer #1's turn ended, but it holds work that wakes it.
+    expect(status).toEqual({ 'ag-l1': 'running', 'ag-f1': 'held', 'ag-f2': 'between turns', 'ag-s1': 'starting' })
+    // None reads as litter's own: the read-only idle, or the <swarm> block's waiting (a node with nothing to do).
+    expect(Object.values(status)).not.toContain('idle')
+    expect(Object.values(status)).not.toContain('waiting')
+  })
+
   test("a session that doesn't own it reads it read-only, with nothing to spawn", async () => {
     const launch = await launched()
     await bind(w, launch, { agentId: 'ag-l1', node: 'lead-a', n: 1, kind: 'orchestrator', cwd: wtPath(), branch: 'refs/heads/feature/alpha' })
