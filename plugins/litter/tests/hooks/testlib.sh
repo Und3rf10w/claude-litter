@@ -12,6 +12,8 @@ LITTER_ROOT=${LITTER_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 T_PASS=0
 T_FAIL=0
 T_ONLY=${T_ONLY:-}
+# The real date, found before any case puts one of its own on PATH (t_clock).
+T_DATE=$(command -v date)
 
 t() {
   t_name=$1
@@ -51,14 +53,33 @@ project() {
 # run_hook <script> [args...] < input
 # Runs hooks/<script> as the engine does (exec form), under the shell being
 # tested, with CLAUDE_PLUGIN_ROOT set. Leaves stdout, stderr and the exit code
-# in $T_DIR/out, err and code.
+# in $T_DIR/out, err and code. guard.sh runs on the case's stopped clock, when
+# it has one (t_clock) and hasn't put a date of its own first on PATH.
 run_hook() {
   rh_script=$1
   shift
+  rh_path=$PATH
+  if [ "$rh_script" = guard.sh ] && [ -x "$T_DIR/clock/date" ] && [ "$(command -v date)" = "$T_DATE" ]; then
+    rh_path=$T_DIR/clock:$PATH
+  fi
   # A word list on purpose ("busybox sh").
   # shellcheck disable=SC2086
-  CLAUDE_PLUGIN_ROOT=$LITTER_ROOT ${SHELL_UNDER_TEST:-sh} "$LITTER_ROOT/hooks/$rh_script" "$@" >|"$T_DIR/out" 2>|"$T_DIR/err"
+  PATH=$rh_path CLAUDE_PLUGIN_ROOT=$LITTER_ROOT ${SHELL_UNDER_TEST:-sh} "$LITTER_ROOT/hooks/$rh_script" "$@" >|"$T_DIR/out" 2>|"$T_DIR/err"
   printf '%s\n' "$?" >|"$T_DIR/code"
+}
+
+# t_clock <epoch>: stops the guard's clock at <epoch> for the rest of the case
+# (run_hook): its `date +%s` prints <epoch>, any other date is the real one.
+# guard.sh ages a swarm's owner.checkedAt against that clock (over 10 s old,
+# it runs git to check the ownership ref). In a session the mod's 10 s beat
+# keeps the check fresh; a case has no beat, and on a loaded machine a case
+# can run past 10 s, so a check its fixture wrote fresh would go stale midway
+# (the scratch project has no such ref, and the guard then denies).
+t_clock() {
+  mkdir -p "$T_DIR/clock" || fail "clock"
+  printf '#!/bin/sh\ncase $* in +%%s) echo %s ;; *) exec %s "$@" ;; esac\n' "$1" "'$T_DATE'" >|"$T_DIR/clock/date" ||
+    fail "clock"
+  chmod +x "$T_DIR/clock/date" || fail "clock"
 }
 
 # A PATH without jq: a folder of links to every tool on PATH but jq. One ln
@@ -270,13 +291,15 @@ wt_in() {
 
 # swarm_policy [jq filter]: policy.json with swarm `s` live and no run, as
 # swarm/guard.ts's writeSwarmPolicy writes it, then `active`. Its owner check
-# is fresh (checkedAt now), so the guard runs no git; the filter edits it
+# is fresh (checkedAt now), and the guard's clock stops at that now (t_clock),
+# so however long the case runs the guard runs no git; the filter edits it
 # last, e.g. '.swarm.swarms.s.state = "stopping"'. A test that sets a stale
 # check uses `swarm_ref` for the ref and oid.
 swarm_policy() {
   sp_hooks=$(hooks_dir)
   sp_co=$(real_project)
-  jq -n --arg co "$sp_co" --arg ld "$sp_co/.claude/litter" --argjson roles "$T_ROLES" --argjson now "$(date +%s)" \
+  sp_now=$(date +%s)
+  jq -n --arg co "$sp_co" --arg ld "$sp_co/.claude/litter" --argjson roles "$T_ROLES" --argjson now "$sp_now" \
     --arg oid "${SWARM_OID:-0123456789abcdef0123456789abcdef01234567}" '
     {v: 1, session: "s1", litterDir: $ld, run: null, roles: $roles,
      swarm: {swarms: {s: {launch: "20261003-120000", state: "live", commonDir: ($co + "/.git"),
@@ -284,6 +307,7 @@ swarm_policy() {
        nodeTypes: ["litter:sw-s-lead", "litter:sw-s-fixer", "litter:sw-s-reviewer"]}}}}' |
     jq "${1:-.}" >|"$sp_hooks/policy.json" || fail "swarm policy fixture"
   : >|"$sp_hooks/active"
+  t_clock "$sp_now"
 }
 
 # swarm_ref: the scratch repository (see `repo`) gets refs/litter-swarm/s at

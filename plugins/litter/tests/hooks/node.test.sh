@@ -247,9 +247,12 @@ case_node_commit_false() {
 case_node_run_checkout_executor() {
   repo
   rc_co=$(real_project)
+  rc_now=$(date +%s)
   policy ".run.runIds = [] | .swarm = {swarms: {s: {launch: \"20261003-120000\", state: \"live\", commonDir: \"$rc_co/.git\",
-    owner: {ref: \"refs/litter-swarm/s\", oid: \"0123456789abcdef0123456789abcdef01234567\", generation: 1, session: \"s1\", checkedAt: $(date +%s)},
+    owner: {ref: \"refs/litter-swarm/s\", oid: \"0123456789abcdef0123456789abcdef01234567\", generation: 1, session: \"s1\", checkedAt: $rc_now},
     nodeTypes: [\"litter:sw-s-runner\", \"litter:sw-s-executor\", \"litter:sw-s-critic\"]}}}"
+  # The check stays fresh however long the case runs, as swarm_policy's does.
+  t_clock "$rc_now"
   node_policy a1 '.node = "executor" | .kind = "worker" | .type = "litter:sw-s-executor" | .parent = "a0"
     | .authority = {commit: false, push: "none", rewriteHistory: false, worktreeOps: false, verify: true}'
   write_call litter:sw-s-executor "$rc_co/src/x.py" Edit | run_hook guard.sh

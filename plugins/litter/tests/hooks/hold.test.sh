@@ -35,6 +35,21 @@ assert_goes() {
 
 hold_lines() { spool_lines | jq -r 'select(.ev == "hold") | "\(.phase) \(.children | join(","))"' | paste -sd '|' -; }
 
+# A sleep that runs <command> at the hold's first poll (hold.sh's `sleep 2`,
+# HOLD_POLL), then sleeps for real, as every other sleep does (the read's
+# watchdog). So a change lands during the hold, after its first look, however
+# loaded the machine; a background `sleep n` could land it before hold.sh
+# first reads. $T_DIR/polled marks the poll. poll_sleep <command>: prints the
+# folder to put first on PATH.
+poll_sleep() {
+  ps_real=$(command -v sleep)
+  fake_tool sleep "if [ \"\$1\" = 2 ] && [ ! -e '$T_DIR/polled' ]; then
+  : >'$T_DIR/polled'
+  $1 || exit 1
+fi
+exec '$ps_real' \"\$@\""
+}
+
 # --- who is held ---------------------------------------------------------------
 
 case_not_bound() {
@@ -99,21 +114,22 @@ case_all_done() {
 
 # --- the hold ------------------------------------------------------------------
 
-# A child's done/ lands after 3 s: the hold lets the worker's turn go on.
+# A child's done/ lands during the hold's first poll: the hold lets the
+# worker's turn go on, once that poll's 2 s are up.
 case_poll_releases() {
   worker
   child c1
   child c2
   mark_done c2
-  (sleep 3 && mkdir -p "$(hooks_dir)/done" && printf '{"v":1,"at":1,"via":"stop"}\n' >|"$(done_file c1)") &
-  pr_bg=$!
+  printf '{"v":1,"at":1,"via":"stop"}\n' >|"$T_DIR/c1.done"
+  PATH=$(poll_sleep "mv '$T_DIR/c1.done' '$(done_file c1)'"):$PATH
   pr_t0=$(date +%s)
   w1_stop
   pr_t1=$(date +%s)
-  wait "$pr_bg"
   assert_code 0
   assert_eq "$BLOCK" "$(cat "$T_DIR/out")" "the block"
-  [ $((pr_t1 - pr_t0)) -ge 2 ] || fail "released after $((pr_t1 - pr_t0)) s, before the child was done"
+  assert_file "$T_DIR/polled"
+  [ $((pr_t1 - pr_t0)) -ge 2 ] || fail "released after $((pr_t1 - pr_t0)) s, before its poll was up"
   assert_eq '{"v":1,"children":["c1"]}' "$(cat "$(hooks_dir)/hold/w1")" hold/w1
   assert_eq 'held c1|released c1' "$(hold_lines)" "hold lines"
   assert_eq 'number s1 w1' "$(spool_lines | jq -r 'select(.ev == "hold") | "\(.ts | type) \(.session_id) \(.agent_id)"' | sort -u)" "line fields"
@@ -163,14 +179,16 @@ case_cap() {
   assert_file "$(done_file w1)"
 }
 
-# The swarm starts stopping during the hold: the worker is let go.
+# The swarm starts stopping during the hold: the worker is let go. The
+# stopping policy replaces the live one whole at the first poll, as the mod's
+# atomic write does.
 case_lets_go() {
   worker
   child c1
-  (sleep 1 && swarm_policy '.swarm.swarms.s.state = "stopping"') &
-  lg_bg=$!
+  jq '.swarm.swarms.s.state = "stopping"' "$(hooks_dir)/policy.json" >|"$T_DIR/stopping.json" || fail "stopping policy"
+  PATH=$(poll_sleep "mv '$T_DIR/stopping.json' '$(hooks_dir)/policy.json'"):$PATH
   w1_stop
-  wait "$lg_bg"
+  assert_file "$T_DIR/polled"
   assert_goes
   assert_eq 'held c1' "$(hold_lines)" "hold lines"
   assert_no_file "$(done_file w1)"
@@ -226,20 +244,20 @@ case_done_others_shells() {
 # --- the listing of children (R11) ------------------------------------------------
 
 # A malformed sibling binding fails the listing: a worker is still held, the
-# listing tried again on each poll, here until the bad file is gone.
+# listing tried again on each poll, here until the bad file is gone, at the
+# first poll.
 case_listing_retried() {
   worker
   child c1
   mark_done c1
   printf '{"v":1,"node":' >|"$(hooks_dir)/agents/x9.json"
-  (sleep 3 && rm -f "$(hooks_dir)/agents/x9.json") &
-  lr_bg=$!
+  PATH=$(poll_sleep "rm -f '$(hooks_dir)/agents/x9.json'"):$PATH
   lr_t0=$(date +%s)
   w1_stop
   lr_t1=$(date +%s)
-  wait "$lr_bg"
   # Its one child was done already: once the listing reads, the stop goes ahead, marked done.
   assert_goes
+  assert_file "$T_DIR/polled"
   [ $((lr_t1 - lr_t0)) -ge 2 ] || fail "went ahead after $((lr_t1 - lr_t0)) s, before the listing could read"
   assert_file "$(done_file w1)"
   assert_eq '' "$(hold_lines)" "hold lines"
@@ -332,7 +350,7 @@ t "an agent with no node binding is never held or marked" case_not_bound
 t "an orchestrator, a child, and a worker stopping, stopped, unadmitted, handed over or of another launch are not held" case_not_held
 t "a worker with no children goes ahead, marked done" case_no_children
 t "a worker whose children are all done or gone goes ahead, marked done" case_all_done
-t "a child done after 3 s releases the hold with the block" case_poll_releases
+t "a child done during the hold's poll releases it with the block" case_poll_releases
 t "under stop_hook_active a worker is held once per child" case_once_per_child
 t "the hold ends at LT_HOLD_CAP, and the stop goes ahead" case_cap
 t "a swarm that starts stopping lets the held worker go" case_lets_go
