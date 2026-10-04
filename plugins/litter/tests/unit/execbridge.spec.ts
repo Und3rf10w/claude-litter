@@ -35,7 +35,7 @@ import {
 } from '../../hooks/repair'
 import { refOf, world, type World } from './swarmlaunch-harness'
 import { runAfters, type TestPorts } from './support/node-ports'
-import { BRANCH, GAP, RUN, afterHalt, declinedReason, executeRun, runRecords, type Exec, type ExecOpts } from './execbridge-harness'
+import { BRANCH, CLASH, GAP, RUN, afterHalt, declinedReason, executeRun, runRecords, type Exec, type ExecOpts } from './execbridge-harness'
 
 setDefaultTimeout(120_000)
 
@@ -126,10 +126,10 @@ describe('under repair: auto, the halts that bridge', () => {
     expect(await refOf(w, x.name)).not.toBeNull()
     const { records: spec } = await readLedger(w.p, swarmDir(w.litterDir, x.name), `swarm:${x.name}`)
     expect(spec.find(r => r.kind === 'swarm.revision')?.body).toEqual(expect.objectContaining({ n: 1, from: 'repair' }))
-    // The spec takes over only the gates with no land.
+    // The spec takes over only the gates with no land; the gap is the critic's words.
     const task = (await savedSpec(x)).nodes[0]!.task!
     expect(task).toContain('Gates to land, in the plan\'s order: G2 and G3')
-    expect(task).toContain(`"${GAP}"`)
+    expect(task).toContain(`The plan gap, as the critic's last verdict on G2 states it: "${GAP}"\n`)
 
     // The run's own confirmation covers it: no ask, no prompt fill; the baseline is found, not run.
     expect(w.p.asked).toEqual([])
@@ -146,6 +146,29 @@ describe('under repair: auto, the halts that bridge', () => {
     expect(await runAfters(w.p)).toBe(1)
     expect(w.p.submitted).toEqual([renderSlots(REPAIR_START, { swarm: x.name, run: RUN })])
   })
+
+  for (const [halt, n] of [['executor_gap', 1], ['executor_gap_late', 2]] as const) {
+    test(`an executor's plan-gap stop on attempt ${n}${n === 2 ? ', after a rejection,' : ', before any verdict,'} starts it too, in the executor's words (WP-AH)`, async () => {
+      const x = await run({ halt })
+      await continueAsRepair(w.p, x.runDir)
+      expect(await afterHalt(x)).toEqual(['run.repair'])
+      expect(liveSwarm(x.name)?.run).toEqual({ runDir: x.runDir, run: RUN, generation: 2 })
+      const task = (await savedSpec(x)).nodes[0]!.task!
+      expect(task).toContain(`which halted at gate G2: the executor stopped on attempt ${n} with a plan gap, before the attempt was judged.\n`)
+      expect(task).toContain(`The plan gap, as the executor stated it when it stopped on G2, before its attempt was judged: "${GAP}"\n`)
+      expect(task).not.toContain("the critic's last verdict")
+      // The stop cites no verify; the evidence is the last judged attempt's, when there was one.
+      if (n === 1) expect(task).not.toContain("the full log of the halted gate's last verify")
+      else expect(task).toContain(`the full log of the halted gate's last verify ${x.g2[0]!.verify_id} (exit 0)`)
+      expect(task).toContain("Gates to land, in the plan's order: G2 and G3\n")
+      expect(w.p.asked).toEqual([])
+      expect(calls.verifies).toBe(0)
+      // summary.md: the Repair part says what took over; Where it stopped shows the executor's gap.
+      const text = summary(x)
+      expect(text).toContain(`Plan-template swarm ${x.name} (launch `)
+      expect(text).toContain(`Its executor stopped on attempt ${n} before the attempt was judged, naming a plan gap:\n- plan_gap: ${GAP}`)
+    })
+  }
 
   for (const halt of ['attempts', 'recritique'] as const) {
     test(`attempts out${halt === 'recritique' ? ', a re-critique counted,' : ''} start it too`, async () => {
@@ -173,6 +196,15 @@ describe('under repair: auto, the halts that bridge', () => {
 describe('under repair: auto, the halts that decline (decision 6)', () => {
   const cases: [string, ExecOpts, string][] = [
     ["an executor's blocked", { halt: 'blocked' }, `the run halted at gate G2 (G2: the executor is blocked: it needs a database the plan never mentions), and ${THE_TWO}`],
+    // WP-AH: every block with an empty plan_gap still declines, whatever stopped it.
+    ["an executor's block on a plan line clashing with a rule", { halt: 'blocked', blocked: 'plan.md:8 asks for curl, and P-no-net@1 bans the network' }, `the run halted at gate G2 (G2: the executor is blocked: plan.md:8 asks for curl, and P-no-net@1 bans the network), and ${THE_TWO}`],
+    ["an executor's block on a denied tool", { halt: 'blocked', blocked: 'Bash(npm install) was denied' }, `(G2: the executor is blocked: Bash(npm install) was denied), and ${THE_TWO}`],
+    ["an executor's block on checks it can't make pass", { halt: 'blocked', blocked: 'tests/test_load.sh still fails' }, `(G2: the executor is blocked: tests/test_load.sh still fails), and ${THE_TWO}`],
+    ["a critic's rule clash, the user's to settle", { halt: 'rule_clash' }, `gate G2's critic names a rule clash, which only you can settle ("${CLASH}"), and ${THE_TWO}`],
+    // The executor's earlier plan-gap stop doesn't bridge once a later verdict on the gate is the latest event.
+    ["an executor's plan-gap stop, then a later verdict's rule clash", { halt: 'executor_gap_then_clash' }, `gate G2's critic names a rule clash, which only you can settle ("${CLASH}"), and ${THE_TWO}`],
+    // A done executor result after the gate's last verdict, with no verify: the critic returned nothing.
+    ['a critic that returned nothing after a done executor', { halt: 'critic_null' }, `the run halted at gate G2 (critic for G2 returned nothing), and ${THE_TWO}`],
     ['an agent that returned nothing', { halt: 'null_agent' }, `the run halted at gate G2 (G2: the executor returned nothing), and ${THE_TWO}`],
     ['the token budget', { halt: 'budget' }, `the run halted at gate G2 (the token budget ran out at G2), and ${THE_TWO}`],
     ['a land refused with retry: false', { halt: 'retry_false' }, `the run halted at gate G2 (G2: the land was refused: the checkout is on main, not ${BRANCH}), and ${THE_TWO}`],
@@ -356,7 +388,7 @@ describe('repair.start for an execute run, under off', () => {
       "Halted: gate G2, because the critic's verdict on attempt 1 names a plan gap.",
       `The plan gap: "${GAP}"`,
       'Gates left: G2 and G3.',
-      `It works in the run's checkout ${w.dir}, on ${BRANCH}, starting from the halted attempt still in its tree.`,
+      `It works in the run's checkout ${w.dir}, on ${BRANCH}, starting from the halted attempt, if any, still in its tree.`,
       `The mod lands each gate on ${BRANCH} only once it's verified and an independent critic approves it. Nothing is pushed.`,
       'Budget: up to 3 rejected attempts in all, 3 per gate, and 6 agents',
       "verify yes (the mod runs the run's verify)",
@@ -442,6 +474,38 @@ describe("summary.md's Repair section for an execute run", () => {
     expect(text).toContain("A plan-template swarm can't take this on: the run halted at gate G2 (G2: the executor is blocked")
     expect(text).toContain('Instead, read the summary for why; amend the gate (/litter:amend G2)')
     expect(text).not.toContain('/litter:swarm repair')
+  })
+
+  test("a critic's rule clash under off offers no swarm, and repair.start refuses it with where to settle it (WP-AH)", async () => {
+    const x = await run({ mode: 'off', halt: 'rule_clash' })
+    await continueAsRepair(w.p, x.runDir)
+    const text = await repairSummary(w.p, x.runDir)
+    expect(text).toContain(`A plan-template swarm can't take this on: gate G2's critic names a rule clash, which only you can settle ("${CLASH}").`)
+    expect(text).toContain('Instead, edit the rule or add an exception in /litter-rules, or change the plan\'s lines with /litter:amend G2, then continue the run.')
+    expect(text).not.toContain('/litter:swarm repair')
+    expect(summary(x)).toContain(`- rule_clash: ${CLASH}`)
+    const r = (await recordRepairStart(ctxOf(), { kind: 'repair.start', run: RUN })) as { ok: boolean; error?: string }
+    expect(r.error).toContain("can't continue as a swarm: gate G2's critic names a rule clash, which only you can settle")
+    expect(w.p.asked).toEqual([])
+  })
+
+  test("under off, an executor's plan-gap stop is recommended as a swarm with the executor's gap, and repair.start's ask names it", async () => {
+    const x = await run({ mode: 'off', halt: 'executor_gap' })
+    await continueAsRepair(w.p, x.runDir)
+    expect(await declinedReason(x)).toBe('repair is off for this run')
+    const text = await repairSummary(w.p, x.runDir)
+    expect(text).toContain(
+      'Recommended: continue as a plan-template swarm. Gate G2 halted: the executor stopped on attempt 1 with a plan gap, before the attempt was judged.',
+    )
+    expect(text).toContain(`The plan gap: "${GAP}".`)
+    const all = summary(x)
+    expect(all).toContain(`halted: G2 plan gap: ${GAP}`)
+    expect(all).toContain(`Its executor stopped on attempt 1 before the attempt was judged, naming a plan gap:\n- plan_gap: ${GAP}\nNo verdict was recorded for it.`)
+    w.p.answers.push('Cancel')
+    await recordRepairStart(ctxOf(), { kind: 'repair.start', run: RUN })
+    const q = w.p.asked[0]!.question
+    expect(q).toContain('Halted: gate G2, because the executor stopped on attempt 1 with a plan gap, before the attempt was judged.')
+    expect(q).toContain(`The plan gap: "${GAP}"`)
   })
 
   test('attempts out names the count, with no gap; an unknown run has no section', async () => {

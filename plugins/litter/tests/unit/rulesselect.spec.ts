@@ -3,9 +3,10 @@
 // loadRules stood in for through select.ts's `deps`: each gate's rules by
 // its Files, a fanout's tasks and verifier, the planner's named paths, the
 // cap and its pointers, workflows and roles, what's in force, a local
-// override, rule.find { applicable }, fanout.js's args.verifierRules, and
-// run.start for real: the versions in run.json, the rules per gate, and a
-// rule file that never rides along in a gate's commit.
+// override, a ban shared whatever its paths (WP-AH), rule.find { applicable },
+// fanout.js's args.verifierRules, and run.start for real: the versions in
+// run.json, the rules per gate, and a rule file that never rides along in a
+// gate's commit.
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
@@ -95,14 +96,15 @@ function store(...rules: (LoadedRule | RuleDoc)[]): { calls: number } {
   return seen
 }
 
-/** 16.5's compact form, written out here so the spec states it. */
+/** 16.5's compact form, written out here so the spec states it. A ban with paths names what it protects. */
+const typeOf = (d: RuleDoc): string => (d.type === 'ban' && d.applies.paths.some(x => x !== '**') ? `ban; protects ${d.applies.paths.join(', ')}` : d.type)
 const fullOf = (d: RuleDoc, over = ''): string =>
   [
-    `${d.id}@${d.version}${over ? ` (overrides ${over})` : ''} (${d.type}) ${d.applies.when}: ${d.body.rule}`,
+    `${d.id}@${d.version}${over ? ` (overrides ${over})` : ''} (${typeOf(d)}) ${d.applies.when}: ${d.body.rule}`,
     ...(d.body.exceptions.length ? [`  Exceptions: ${d.body.exceptions.join('; ')}`] : []),
     ...(d.body.howToCheck.length ? [`  How to check: ${d.body.howToCheck.join('; ')}`] : []),
   ].join('\n')
-const pointerOf = (d: RuleDoc): string => `${d.id}@${d.version} (${d.type}) ${d.applies.when}; full text: rule.find with id ${d.id}`
+const pointerOf = (d: RuleDoc): string => `${d.id}@${d.version} (${typeOf(d)}) ${d.applies.when}; full text: rule.find with id ${d.id}`
 
 let checkout = ''
 /** A checkout with folders on disk, for the Files entries that are folders without a trailing slash. */
@@ -391,6 +393,97 @@ describe("what's in force", () => {
   })
 })
 
+describe('a ban: shared by every unit, whatever its paths (16.5)', () => {
+  test("goes to run (args.rules) for every gate and into no gate's own list, naming what it protects; a rule with the same paths still goes by Files", async () => {
+    checkout = tree('vendor/')
+    const ban = doc('P-vendor', { type: 'ban', paths: ['vendor/**', 'third_party/*.sh'], when: 'changing code', rule: 'Never change vendored code.' })
+    const style = doc('P-vendor-style', { paths: ['vendor/**'] })
+    const bare = doc('P-bare-ban', { type: 'ban' })
+    const star = doc('P-star-ban', { type: 'ban', paths: ['**'] })
+    store(ban, style, bare, star)
+    const sel = await selectForRun(p, input({ gates: [{ id: 'G1', files: ['lib/a.sh'] }, { id: 'G2', files: ['vendor/'] }] }))
+    // A ban without paths (none, or only **) reads as it always did.
+    expect(sel.run).toEqual([
+      'P-bare-ban@1 (ban) working on P-bare-ban: Follow P-bare-ban.',
+      'P-star-ban@1 (ban) working on P-star-ban: Follow P-star-ban.',
+      'P-vendor@1 (ban; protects vendor/**, third_party/*.sh) changing code: Never change vendored code.',
+    ])
+    expect(sel.gates).toEqual({ G1: [], G2: [fullOf(style)] })
+    expect(sel.versions.map(v => v.id)).toEqual(['P-bare-ban', 'P-star-ban', 'P-vendor', 'P-vendor-style'])
+  })
+
+  test('a local ban overriding a user rule shows both, the override first', async () => {
+    checkout = tree()
+    const user = doc('U-gen', { rule: 'Regenerate the client after a schema change.' })
+    const local = doc('L-gen', { type: 'ban', paths: ['gen/**'], overrides: 'U-gen', rule: 'Never edit gen/ by hand.' })
+    store(user, local)
+    const sel = await selectForRun(p, input({ gates: [{ id: 'G1', files: ['src/a.ts'] }] }))
+    expect(sel.run).toEqual(['L-gen@1 (overrides U-gen) (ban; protects gen/**) working on L-gen: Never edit gen/ by hand.'])
+    expect(sel.gates).toEqual({ G1: [] })
+  })
+
+  test("fills the cap as a shared rule at specificity 0, after a gate's own rules however specific its paths, and one gate's pointer is every gate's (decision 26)", async () => {
+    checkout = tree()
+    const g1a = doc('P-g1a', { paths: ['g1/a.ts'], rule: big(3000, 'a') })
+    const g1b = doc('P-g1b', { paths: ['g1/b.ts'], rule: big(3000, 'b') })
+    const gates = [{ id: 'G1', files: ['g1/deep/x.ts', 'g1/a.ts', 'g1/b.ts'] }, { id: 'G2', files: ['g2/z.ts'] }]
+    // As a rule, its paths' specificity (3) fills it first in G1's block, in full, and g1b's goes as a pointer.
+    const asRule = doc('P-deep', { paths: ['g1/deep/x.ts'], rule: big(3000, 'd') })
+    store(asRule, g1a, g1b)
+    let sel = await selectForRun(p, input({ gates }))
+    expect(sel.run).toEqual([])
+    expect(sel.gates).toEqual({ G1: [fullOf(asRule), fullOf(g1a), pointerOf(g1b)], G2: [] })
+    // As a ban it fills after G1's own, so it's a pointer there, and so a pointer in args.rules for G2 too.
+    const asBan = doc('P-deep', { type: 'ban', paths: ['g1/deep/x.ts'], rule: big(3000, 'd') })
+    store(asBan, g1a, g1b)
+    sel = await selectForRun(p, input({ gates }))
+    expect(sel.run).toEqual(['P-deep@1 (ban; protects g1/deep/x.ts) working on P-deep; full text: rule.find with id P-deep'])
+    expect(sel.run).toEqual([pointerOf(asBan)])
+    expect(sel.gates).toEqual({ G1: [fullOf(g1a), fullOf(g1b)], G2: [] })
+    expect(sel.versions.map(v => v.id)).toEqual(['P-deep', 'P-g1a', 'P-g1b'])
+  })
+
+  test("fanout: goes to run for every task and the verifier, in no task's own list, and fanout.js puts it in every task's prompt and the verifier's", async () => {
+    checkout = tree()
+    const ban = doc('P-vendor', { type: 'ban', paths: ['/vendor/**'], rule: 'Never change vendor/.' })
+    const a = doc('P-a', { paths: ['/a/**'] })
+    const style = doc('P-vendor-style', { paths: ['/vendor/**'] })
+    store(ban, a, style)
+    const sel = await selectForRun(p, input({ workflow: 'fanout', tasks: [{ id: 'A', files: ['a/'] }, { id: 'B', files: ['b/'] }, { id: 'R', files: [] }] }))
+    const entry = 'P-vendor@1 (ban; protects /vendor/**) working on P-vendor: Never change vendor/.'
+    expect(sel.run).toEqual([entry])
+    expect(sel.tasks).toEqual({ A: [fullOf(a)], B: [], R: [] })
+    expect(sel.verifier).toEqual([fullOf(a)])
+
+    // As run.start passes them (lifecycle.ts): after your run rules in args.rules, each task's own, and args.verifierRules.
+    const tasks = [TASK_A, TASK_B, TASK_R].map(t => ({ ...t, rules: sel.tasks[t.id]! }))
+    const args = argsWith(tasks, { rules: ['For this run (stated by you): keep changes small', ...sel.run], verifierRules: sel.verifier })
+    const r = await runFanout({
+      args,
+      replies: { 'write:A': done(['a/hello.txt']), 'write:B': done(['b/world.txt']), 'research:R': researched, integrate: merged(['A', 'B']), verifier: check(['A', 'B', 'R']), 'land:fanout': landedOk },
+    })
+    const rulesOf = (label: string) => {
+      const c = r.calls.find(x => x.label === label)
+      return c ? new RegExp(`<rules id="${NONCE}">\\n([\\s\\S]*?)\\n</rules id="${NONCE}">`).exec(c.prompt)?.[1] : `no ${label} call`
+    }
+    expect(rulesOf('write:A')).toBe(['For this run (stated by you): keep changes small', entry, fullOf(a)].join('\n'))
+    expect(rulesOf('write:B')).toBe(['For this run (stated by you): keep changes small', entry].join('\n'))
+    expect(rulesOf('research:R')).toBe(['For this run (stated by you): keep changes small', entry].join('\n'))
+    expect(rulesOf('verifier')).toBe(['For this run (stated by you): keep changes small', entry, fullOf(a)].join('\n'))
+  })
+
+  test('reaches the planner though the plan and goal name none of its paths; a rule with those paths does not', async () => {
+    checkout = tree('src/a.ts', 'vendor/x.sh')
+    const ban = doc('P-vendor', { type: 'ban', paths: ['/vendor/**'] })
+    const style = doc('P-vendor-style', { paths: ['/vendor/**'] })
+    const src = doc('P-src', { paths: ['src/*.ts'] })
+    store(ban, style, src)
+    const sel = await selectForRun(p, input({ workflow: 'plan', goal: 'fix `src/a.ts`' }))
+    expect(sel.planner).toEqual([fullOf(ban), fullOf(src)])
+    expect(sel.versions.map(v => v.id)).toEqual(['P-vendor', 'P-src'])
+  })
+})
+
 // ---------------------------------------------------------------------------
 // rule.find { applicable }, and run.start for real
 
@@ -479,6 +572,20 @@ describe('rule.find { applicable }', () => {
     expect(listing(w.dir)).toEqual(before)
   })
 
+  test("a ban with paths is in run for execute and fanout and in the planner's block, in no gate's or task's own, as selectForRun gives it", async () => {
+    const w = await world()
+    checkout = w.dir
+    const ban = doc('P-vendor', { type: 'ban', paths: ['vendor/**'] })
+    const b = doc('P-b', { paths: ['b/**'] })
+    store(ban, b)
+    const ex = okOf(await findApplicable(w.p, w.litterDir, { workflow: 'execute', planPath: 'plan.md' }))
+    expect([ex.run, ex.gates]).toEqual([[fullOf(ban)], { G1: [], G2: [fullOf(b)] }])
+    const fan = okOf(await findApplicable(w.p, w.litterDir, { workflow: 'fanout', tasks: [{ id: 'a', files: ['a.txt'] }, { id: 'r', files: [], writes: false }] }))
+    expect([fan.run, fan.tasks, fan.verifier]).toEqual([[fullOf(ban)], { a: [], r: [] }, []])
+    const plan = okOf(await findApplicable(w.p, w.litterDir, { workflow: 'plan', goal: 'tidy a.txt' }))
+    expect(plan.planner).toEqual([fullOf(ban)])
+  })
+
   test('a design answers that its selection comes with phase 4; a bad call names the field and the fix', async () => {
     const w = await world()
     checkout = w.dir
@@ -541,6 +648,20 @@ describe('run.start with the selection', () => {
       { id: 'P-all', version: 2 },
       { id: 'P-a', version: 1 },
     ])
+  })
+
+  test("a ban whose paths G1's Files match is in args.rules, in no gate's rules, and in run.json's versions (T4-2's case)", async () => {
+    const w = await world()
+    const ban = doc('P-a-ban', { type: 'ban', paths: ['a.txt'], rule: 'Never write a.txt.' })
+    store(ban)
+    const r = okOf(await recordRunStart(w.ctx(), { kind: 'run.start', workflow: 'execute', planPath: 'plan.md', authorized: ['change a.txt'] } as RecordInput)) as unknown as RunStartReply
+    expect(r.args.rules).toEqual(['P-a-ban@1 (ban; protects a.txt) working on P-a-ban: Never write a.txt.'])
+    expect((r.args.gates as { id: string; rules: string[] }[]).map(g => [g.id, g.rules])).toEqual([
+      ['G1', []],
+      ['G2', []],
+    ])
+    const json = JSON.parse(await w.p.fs.read(runJsonPath(r.runDir))) as RunJson
+    expect(json.rules).toEqual([{ id: 'P-a-ban', version: 1 }])
   })
 
   // 12:1633, the rule snapshot case.

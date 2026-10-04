@@ -291,11 +291,13 @@ function isDim(v: unknown): v is VerdictDimension {
   return v !== null && typeof v === 'object' && typeof (v as { pass?: unknown }).pass === 'boolean'
 }
 
-/** Every verify, verdict and land, by gate. */
+/** Every verify, verdict and land, and the latest executor result, by gate. */
 type GateFacts = {
   verifies: Map<string, VerifyBody[]>
   verdicts: Map<string, GateVerdict[]>
   lands: Map<string, LandBody>
+  /** An execute executor's latest `task.result` (output.ts, GateResultBody), whatever it says. */
+  results: Map<string, StoredRecord>
 }
 
 function gateFacts(records: readonly StoredRecord[]): GateFacts {
@@ -303,6 +305,7 @@ function gateFacts(records: readonly StoredRecord[]): GateFacts {
   const verifies = new Map<string, VerifyBody[]>()
   const verdicts = new Map<string, GateVerdict[]>()
   const lands = new Map<string, LandBody>()
+  const results = new Map<string, StoredRecord>()
   for (const r of records) {
     if (r.kind === 'verify') {
       const v = verifyBody(r)
@@ -320,9 +323,27 @@ function gateFacts(records: readonly StoredRecord[]): GateFacts {
     } else if (r.kind === 'land') {
       const b = r.body as Partial<LandBody>
       if (typeof b.gate === 'string' && typeof b.commit === 'string' && !lands.has(b.gate)) lands.set(b.gate, b as LandBody)
+    } else if (r.kind === 'task.result' && r.body.role === 'executor' && typeof r.body.gate === 'string') {
+      results.set(r.body.gate, r)
     }
   }
-  return { verifies, verdicts, lands }
+  return { verifies, verdicts, lands, results }
+}
+
+/** An executor's stop on a plan gap, before its attempt was judged (WP-AH). */
+type ExecutorStop = { gap: string; attempt: number }
+
+/**
+ * The gate's latest executor result, when it comes after the gate's last
+ * verdict and is a block naming a plan gap, as repair.ts (classifyExecute)
+ * and execsummary.ts (executorStop) read it; null for any other result.
+ */
+function executorStop(result: StoredRecord | undefined, verdict: GateVerdict | undefined): ExecutorStop | null {
+  if (!result || (verdict !== undefined && result.seq <= verdict.rec.seq)) return null
+  const res = result.body.result as Record<string, unknown> | null | undefined
+  if (!res || typeof res !== 'object' || res.status !== 'blocked' || typeof res.plan_gap !== 'string' || res.plan_gap.trim() === '') return null
+  const attempt = result.body.attempt
+  return { gap: res.plan_gap, attempt: Number.isSafeInteger(attempt) && (attempt as number) > 0 ? (attempt as number) : 0 }
 }
 
 const failingOf = (v: GateVerdict | undefined): string[] => (v ? DIMENSIONS.filter(d => !v.body[d].pass) : [])
@@ -484,7 +505,7 @@ function headerOf(f: RunFiles, st: RunState): BoardHeader {
 }
 
 /** One gate's facts, for the detail of its row. */
-type RowFacts = { verifies: VerifyBody[]; verdict: GateVerdict | undefined; runDir: string }
+type RowFacts = { verifies: VerifyBody[]; verdict: GateVerdict | undefined; stop: ExecutorStop | null; runDir: string }
 
 async function gateRows(
   p: Ports,
@@ -514,7 +535,7 @@ async function gateRows(
     const mf = m ? gateFacts(m.records) : null
     const verdict = mf?.verdicts.get(l.id)?.at(-1)
     const mDir = m ? runDir(litterDir, m.run) : f.dir
-    rowFacts.set(l.id, { verifies: mf?.verifies.get(l.id) ?? [], verdict, runDir: mDir })
+    rowFacts.set(l.id, { verifies: mf?.verifies.get(l.id) ?? [], verdict, stop: null, runDir: mDir })
     earlierRows.set(l.id, {
       id: l.id,
       title: oneLine(titleOf(l.id, ''), 120),
@@ -534,19 +555,22 @@ async function gateRows(
     const verifies = facts.verifies.get(g.id) ?? []
     const verdict = facts.verdicts.get(g.id)?.at(-1)
     const land = facts.lands.get(g.id)
+    // An executor that stopped on a plan gap halts its gate as a critic's plan gap does, verified or not.
+    const stop = land ? null : executorStop(facts.results.get(g.id), verdict)
     let state: BoardGateState
     if (land) state = 'landed'
     else if (st.open?.repair) state = 'repairing'
     else if (st.open) state = g.id === current ? 'in progress' : 'waiting'
-    else if (st.ended && status !== 'done' && g.id === current && (verifies.length > 0 || verdict !== undefined)) state = 'halted'
+    else if (st.ended && status !== 'done' && g.id === current && (verifies.length > 0 || verdict !== undefined || stop !== null)) state = 'halted'
     else state = 'waiting'
-    rowFacts.set(g.id, { verifies, verdict, runDir: f.dir })
+    rowFacts.set(g.id, { verifies, verdict, stop, runDir: f.dir })
     workedRows.set(g.id, {
       id: g.id,
       title: oneLine(titleOf(g.id, g.title), 120),
       state,
       ...GATE_STATE[state],
-      attempt: attemptOf(verifies),
+      // The stop's attempt is one past its verifies' (output.ts, gateResultAt): the attempt it stopped on.
+      attempt: Math.max(attemptOf(verifies), stop?.attempt ?? 0),
       maxAttempts,
       failing: failingOf(verdict),
       verdictFile: await verdictPath(p, f.dir, verdict),
@@ -591,6 +615,10 @@ function defaultSelection(rows: readonly BoardGateRow[]): string | null {
 function detailOf(facts: RowFacts | null, gate: string): BoardGateDetail {
   const v = facts?.verdict
   const last = facts?.verifies.at(-1)
+  const stop = facts?.stop ?? null
+  const judged = v && Number.isSafeInteger(v.attempt) && (v.attempt as number) > 0 ? (v.attempt as number) : null
+  // The executor's stop after the last verdict wins, as it does for the bridge and the summary.
+  const planGap = stop ? clean(stop.gap, 600) : v ? clean(v.body.plan_gap, 600) : ''
   return {
     gate,
     dimensions: v
@@ -601,8 +629,12 @@ function detailOf(facts: RowFacts | null, gate: string): BoardGateDetail {
           gaps: (Array.isArray(v.body[name].gaps) ? v.body[name].gaps : []).slice(0, 10).map(g => oneLine(g, 300)),
         }))
       : [],
+    verdictAttempt: judged,
     verify: last && facts ? { id: oneLine(last.verify_id, 80), ended: howEnded(last) + (last.green ? ', green' : ''), log: verifyLogDir(facts.runDir, last.verify_id) } : null,
-    planGap: v ? clean(v.body.plan_gap, 600) : '',
+    planGap,
+    gapBy: planGap === '' ? null : stop ? { who: 'executor', attempt: stop.attempt > 0 ? stop.attempt : null } : { who: 'critic', attempt: judged },
+    // Absent from a verdict recorded before it (WP-AH); a blank one names none, and a later executor stop replaces it.
+    ruleClash: v && !stop ? clean(v.body.rule_clash, 600).trim() : '',
   }
 }
 

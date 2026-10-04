@@ -695,6 +695,7 @@ type PlanVerdictIn = {
   gate: string
   dims: Record<(typeof DIMENSIONS)[number], VerdictDimension>
   plan_gap: string
+  rule_clash: string
   proposed_rules: string[]
 }
 
@@ -723,13 +724,17 @@ function parsePlanVerdict(input: RecordInput, json: RunJson, left: readonly stri
   }
   const gap = input.plan_gap
   if (typeof gap !== 'string') return fail("litter: 'plan_gap' is required: the plan gap in words, or an empty string when there is none", 'plan_gap')
+  const clash = input.rule_clash
+  if (typeof clash !== 'string') {
+    return fail("litter: 'rule_clash' is required: the rule clash in words, naming the rules' ids, or an empty string when there is none", 'rule_clash')
+  }
   const rules = input.proposed_rules ?? []
   if (!Array.isArray(rules)) return fail("litter: 'proposed_rules' must be a list of rules as a person could accept them, or left out", 'proposed_rules')
   for (const [i, r] of rules.entries()) {
     if (typeof r !== 'string' || r.trim() === '') return fail(`litter: 'proposed_rules[${i}]' must be a rule's text`, `proposed_rules[${i}]`)
     if (bytes(r) > RULE_MAX_BYTES) return fail(`litter: 'proposed_rules[${i}]' is over ${RULE_MAX_BYTES} bytes; a rule goes into prompts, so cut it down`, `proposed_rules[${i}]`)
   }
-  return { verify_id: verifyId, gate, dims, plan_gap: gap, proposed_rules: rules as string[] }
+  return { verify_id: verifyId, gate, dims, plan_gap: gap, rule_clash: clash, proposed_rules: rules as string[] }
 }
 
 /** The critic's veto (15.10's table) for one plan gate: from a `verdicts: true` node that writes nothing, in the run's checkout. */
@@ -788,7 +793,8 @@ async function planJudged(p: Ports, call: SwarmGateCall, g: Gated, input: PlanVe
     gaps: input.dims.tests_green.gaps,
   }
   const dims = { ...input.dims, tests_green }
-  const approved = DIMENSIONS.every(d => dims[d].pass) && input.plan_gap.trim() === ''
+  // A rule clash is the user's to settle (WP-AH), so it rejects as a plan gap does, and counts as a round.
+  const approved = DIMENSIONS.every(d => dims[d].pass) && input.plan_gap.trim() === '' && input.rule_clash.trim() === ''
 
   // The round (decision 1): only a rejection is one, numbered by the mod; one past the budget, or past the gate's cap, is refused.
   syncRounds(s.name, records, since)
@@ -816,6 +822,7 @@ async function planJudged(p: Ports, call: SwarmGateCall, g: Gated, input: PlanVe
     no_regressions: dims.no_regressions,
     rules: dims.rules,
     plan_gap: input.plan_gap,
+    rule_clash: input.rule_clash,
     proposed_rules: input.proposed_rules,
     gate,
     attempt: v.attempt,
@@ -902,7 +909,13 @@ async function planLand(p: Ports, call: SwarmGateCall, g: Gated): Promise<Record
     if (latest.body.verify_id !== verifyId) {
       return notLanded(`the latest verdict on gate ${gate} cites verify ${String(latest.body.verify_id)}, not ${verifyId}; a land follows the critic's latest judgment of the gate`)
     }
-    if (latest.body.approved !== true) return notLanded(`the latest verdict on gate ${gate} (on verify ${verifyId}) doesn't approve it; send its gaps to the executor, then have the critic judge again`)
+    if (latest.body.approved !== true) {
+      // A rule clash is the user's to settle (WP-AH): no change of the executor's answers it.
+      if (typeof latest.body.rule_clash === 'string' && latest.body.rule_clash.trim() !== '') {
+        return notLanded(`the latest verdict on gate ${gate} (on verify ${verifyId}) names a rule clash, which only the user can settle; report it to your parent as a rule clash`)
+      }
+      return notLanded(`the latest verdict on gate ${gate} (on verify ${verifyId}) doesn't approve it; send its gaps to the executor, then have the critic judge again`)
+    }
     const judgeId = latest.by.source === 'agent' ? latest.by.agentId : null
     const type = latest.by.source === 'agent' ? latest.by.agentType : null
     const judge = Object.entries(s.types).find(([, t]) => t === type)?.[0]

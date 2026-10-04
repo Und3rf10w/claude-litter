@@ -32,10 +32,13 @@ const counted = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' :
 type Dim = { pass?: unknown; evidence?: unknown; gaps?: unknown }
 type Judged = { rec: StoredRecord; gate: string; attempt: number }
 
-/** What a verdict failed: its dimensions that didn't pass, and a plan gap when it names one. */
+const named = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+
+/** What a verdict failed: its dimensions that didn't pass, and a plan gap or a rule clash when it names one. */
 function failing(body: Record<string, unknown>): string[] {
   const out: string[] = VERDICT_DIMENSIONS.filter(d => (body[d] as Dim | undefined)?.pass !== true)
-  if (typeof body.plan_gap === 'string' && body.plan_gap.trim() !== '') out.push('plan_gap')
+  if (named(body.plan_gap)) out.push('plan_gap')
+  if (named(body.rule_clash)) out.push('rule_clash')
   return out
 }
 
@@ -48,8 +51,20 @@ function evidenceLines(body: Record<string, unknown>): string[] {
     lines.push(`- ${d}: ${typeof dim?.evidence === 'string' && dim.evidence.trim() !== '' ? oneLine(dim.evidence, 1000) : 'no evidence given'}`)
     if (Array.isArray(dim?.gaps)) for (const g of dim.gaps) if (typeof g === 'string' && g.trim() !== '') lines.push(`  - ${oneLine(g, 500)}`)
   }
-  if (typeof body.plan_gap === 'string' && body.plan_gap.trim() !== '') lines.push(`- plan_gap: ${oneLine(body.plan_gap, 1000)}`)
+  if (named(body.plan_gap)) lines.push(`- plan_gap: ${oneLine(body.plan_gap, 1000)}`)
+  if (named(body.rule_clash)) lines.push(`- rule_clash: ${oneLine(body.rule_clash, 1000)}`)
   return lines
+}
+
+/**
+ * A gate's latest executor result before `before` (output.ts's task.result,
+ * GateResultBody), when it's a block naming a plan gap; null otherwise.
+ */
+function executorStop(records: readonly StoredRecord[], gate: string, before: number): { seq: number; attempt: number | string; gap: string } | null {
+  const r = records.filter(x => x.seq < before && x.kind === 'task.result' && x.body.role === 'executor' && x.body.gate === gate).at(-1)
+  const res = r?.body.result as Record<string, unknown> | undefined
+  if (!r || !res || typeof res !== 'object' || res.status !== 'blocked' || typeof res.plan_gap !== 'string' || res.plan_gap.trim() === '') return null
+  return { seq: r.seq, attempt: Number.isSafeInteger(r.body.attempt) ? (r.body.attempt as number) : '?', gap: res.plan_gap }
 }
 
 /** The generation the workflow ran in: the latest launch or resume, not a repair swarm's (2b-2, AC's bridge). */
@@ -80,10 +95,12 @@ export async function executeSummary(p: Ports, ref: RunRef, json: RunJson | null
     if (earlier.length > 0) lines.push('', `Landed earlier in this chain: ${earlier.map(l => `${l.id} (${l.commit})`).join(', ')}`)
   }
 
-  // Attempts, from each gate's verifies; the last verdict on each, by the verify it cites.
+  // Attempts, from each gate's verifies and its executors' results (an executor's stop before a verify is an attempt too, WP-AH);
+  // the last verdict on each, by the verify it cites.
   const attempts = new Map<string, Set<number>>()
   for (const r of records) {
-    if (r.kind !== 'verify' || typeof r.body.gate !== 'string' || !Number.isInteger(r.body.attempt)) continue
+    const result = r.kind === 'task.result' && r.body.role === 'executor'
+    if ((r.kind !== 'verify' && !result) || typeof r.body.gate !== 'string' || !Number.isInteger(r.body.attempt)) continue
     const set = attempts.get(r.body.gate) ?? new Set<number>()
     set.add(r.body.attempt as number)
     attempts.set(r.body.gate, set)
@@ -124,6 +141,11 @@ export async function executeSummary(p: Ports, ref: RunRef, json: RunJson | null
     if (stuck) {
       const v = lastVerdict(stuck.id, before)
       lines.push('', `The gate that didn't land: ${stuck.id}${stuck.title ? ` (${oneLine(stuck.title, 120)})` : ''}.`)
+      // The executor's plan-gap stop after its last verdict (WP-AH): what the bridge read, since a block writes no verdict.
+      const stop = executorStop(records, stuck.id, before)
+      if (stop && (!v || stop.seq > v.rec.seq)) {
+        lines.push(`Its executor stopped on attempt ${stop.attempt} before the attempt was judged, naming a plan gap:`, `- plan_gap: ${oneLine(stop.gap, 1000)}`)
+      }
       if (v && failing(v.rec.body).length > 0) {
         lines.push(`Its last verdict, attempt ${v.attempt} (${verdictFile(ref.runDir, v.gate, v.attempt)}):`, ...evidenceLines(v.rec.body))
       } else if (v) {

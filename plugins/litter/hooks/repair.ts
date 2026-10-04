@@ -86,11 +86,14 @@ import {
   PLAN_CRITIC_BRIEF,
   PLAN_EVIDENCE_VERIFY,
   PLAN_EXECUTOR_BRIEF,
+  PLAN_GAP_BY_CRITIC,
+  PLAN_GAP_BY_EXECUTOR,
   PLAN_GOAL,
   PLAN_GOAL_LINE,
   PLAN_RUNNER_BRIEF,
   PLAN_TASK,
   PLAN_WHY_ATTEMPTS,
+  PLAN_WHY_EXECUTOR_GAP,
   PLAN_WHY_GAP,
 } from './prompts/swarm-plan'
 
@@ -158,9 +161,13 @@ const budgetOf = (json: RunJson): RepairBudget => ({ rounds: json.repair!.rounds
 // Which ending it is (15.11: only three failures repair)
 
 type VerifyRef = { rec: StoredRecord; v: VerifyBody }
-/** An execute run's two (phase 3, decision 6): the first unlanded gate's plan gap, or its attempts out. */
+/**
+ * An execute run's two (phase 3, decision 6): the first unlanded gate's plan
+ * gap, named by its critic's latest verdict or by its executor's stop before
+ * the attempt was judged (WP-AH), or its attempts out.
+ */
 type PlanFailure =
-  | { kind: 'plan_gap'; gate: string; gap: string; attempt: number | null; verify: VerifyRef | null }
+  | { kind: 'plan_gap'; by: 'critic' | 'executor'; gate: string; gap: string; attempt: number | null; verify: VerifyRef | null }
   | { kind: 'attempts'; gate: string; count: number; max: number; verify: VerifyRef | null }
 type Failure =
   | { kind: 'verify'; verify: VerifyRef }
@@ -232,6 +239,9 @@ function failureText(f: Failure): string {
 
 /** A plan failure's {why} (PLAN_TASK). */
 function whyOf(f: PlanFailure): string {
+  if (f.kind === 'plan_gap' && f.by === 'executor') {
+    return f.attempt === null ? 'the executor stopped with a plan gap, before its attempt was judged' : renderSlots(PLAN_WHY_EXECUTOR_GAP, { attempt: f.attempt })
+  }
   if (f.kind === 'plan_gap') return f.attempt === null ? "the critic's last verdict names a plan gap" : renderSlots(PLAN_WHY_GAP, { attempt: f.attempt })
   return renderSlots(PLAN_WHY_ATTEMPTS, { count: f.count, max: f.max })
 }
@@ -276,14 +286,28 @@ function gateOfVerdict(r: StoredRecord, verifies: Map<string, VerifyRef>): strin
   return typeof r.body.verify_id === 'string' ? (verifies.get(r.body.verify_id)?.v.gate ?? null) : null
 }
 
+/** An execute executor's `task.result` (output.ts, GateResultBody): the gate and attempt the mod placed it at. */
+const isGateResult = (r: StoredRecord): boolean => r.kind === 'task.result' && r.body.role === 'executor' && typeof r.body.gate === 'string'
+
+/** The plan gap an executor's blocked result names (WP-AH), or null for any other result. */
+function executorGap(r: StoredRecord): string | null {
+  const res = r.body.result as Record<string, unknown> | null | undefined
+  if (!res || typeof res !== 'object' || res.status !== 'blocked') return null
+  return typeof res.plan_gap === 'string' && res.plan_gap.trim() !== '' ? res.plan_gap : null
+}
+
 /**
  * The execute run's ending from its ledger (decision 6), never the script's
  * reason: the first gate of `args.gates` with no land, then its latest
- * verdict's plan gap, or `maxAttempts` verdicts on it with none landed (a
- * re-critique's verdict counts), in the workflow's generations. A land the
- * mod refused after its latest verdict (land.abandoned or land.blocked: a
- * retry: false refusal it recorded) declines, as does every other halt; a
- * moved branch or ref declines at the baseline.
+ * event. An executor's result after the gate's last verdict bridges only
+ * when it's a block naming a plan gap (WP-AH), and every other stop there
+ * declines. Otherwise a rule clash in the latest verdict declines, as the
+ * user's to settle; then that verdict's plan gap, or `maxAttempts`
+ * verdicts on it with none landed (a re-critique's verdict counts), in the
+ * workflow's generations. A land the mod refused after its latest verdict
+ * (land.abandoned or land.blocked: a retry: false refusal it recorded)
+ * declines, as does every other halt; a moved branch or ref declines at the
+ * baseline.
  */
 function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Ending {
   if (json.amendOf) return { ok: false, why: AMEND_HALT, advice: 'run /litter:design for the gate, then a new plan', alone: true }
@@ -306,12 +330,34 @@ function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Endin
     }
     return { ok: false, why: `every gate landed${endReason ? `, and the run halted after them (${endReason})` : ''}`, advice: 'read the summary for what stopped it' }
   }
+  const halted: Ending = {
+    ok: false,
+    why: `the run halted at gate ${first.id}${endReason ? ` (${endReason})` : ''}`,
+    advice: `read the summary for why; amend the gate (/litter:amend ${first.id}), or continue the run once it's fixed`,
+  }
   const repairAt = records.find(r => r.kind === 'run.repair')?.seq ?? Number.POSITIVE_INFINITY
   const verdicts = records.filter(r => r.seq < repairAt && r.kind === 'verdict' && gateOfVerdict(r, verifies) === first.id)
   const latest = verdicts.at(-1)
   const cited = latest && typeof latest.body.verify_id === 'string' ? (verifies.get(latest.body.verify_id) ?? null) : null
+  // The executor's stop, before its attempt was judged: a plan gap bridges as a critic's does; a rule clash, a denied tool or red checks don't.
+  // Its evidence verify is the one the gate's latest verdict cites, an earlier attempt's, when there is one.
+  const wrote = records.filter(r => r.seq < repairAt && isGateResult(r) && r.body.gate === first.id).at(-1)
+  if (wrote && (!latest || wrote.seq > latest.seq)) {
+    const gap = executorGap(wrote)
+    if (gap === null) return halted
+    const attempt = Number.isSafeInteger(wrote.body.attempt) && (wrote.body.attempt as number) > 0 ? (wrote.body.attempt as number) : null
+    return { ok: true, failure: { kind: 'plan_gap', by: 'executor', gate: first.id, gap, attempt, verify: cited } }
+  }
+  // A rule clash is the user's to settle, never a swarm's (WP-AH).
+  if (latest && typeof latest.body.rule_clash === 'string' && latest.body.rule_clash.trim() !== '') {
+    return {
+      ok: false,
+      why: `gate ${first.id}'s critic names a rule clash, which only you can settle ("${oneLine(latest.body.rule_clash, 500)}")`,
+      advice: `edit the rule or add an exception in /litter-rules, or change the plan's lines with /litter:amend ${first.id}, then continue the run`,
+    }
+  }
   if (latest && typeof latest.body.plan_gap === 'string' && latest.body.plan_gap.trim() !== '') {
-    return { ok: true, failure: { kind: 'plan_gap', gate: first.id, gap: latest.body.plan_gap, attempt: cited?.v.attempt ?? null, verify: cited } }
+    return { ok: true, failure: { kind: 'plan_gap', by: 'critic', gate: first.id, gap: latest.body.plan_gap, attempt: cited?.v.attempt ?? null, verify: cited } }
   }
   const max = maxAttemptsOf(json)
   if (latest && verdicts.length >= max) {
@@ -325,11 +371,7 @@ function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Endin
     }
     return { ok: true, failure: { kind: 'attempts', gate: first.id, count: verdicts.length, max, verify: cited } }
   }
-  return {
-    ok: false,
-    why: `the run halted at gate ${first.id}${endReason ? ` (${endReason})` : ''}`,
-    advice: `read the summary for why; amend the gate (/litter:amend ${first.id}), or continue the run once it's fixed`,
-  }
+  return halted
 }
 
 /** The ending by workflow. */
@@ -458,8 +500,9 @@ function argsGate(json: RunJson, id: string): Record<string, unknown> | null {
 /**
  * The plan template's spec (phase 3, COMMON step 5; WP-AC step 4), from run
  * facts only: the gates with no land, the run's checkout and branch, the
- * halted gate and why (the gap quoted from the critic's verdict, which the
- * runner needs), the budget and the evidence paths. Nodes never commit;
+ * halted gate and why (the gap quoted from the critic's verdict or the
+ * executor's stop, which the runner needs, with whose words it is), the
+ * budget and the evidence paths. Nodes never commit;
  * landing is the mod's.
  */
 async function planSpecOf(p: Ports, f: Facts, failure: PlanFailure, name: string): Promise<RepairSpecResult> {
@@ -482,6 +525,7 @@ async function planSpecOf(p: Ports, f: Facts, failure: PlanFailure, name: string
     run,
     gate: failure.gate,
     why: whyOf(failure),
+    gap_by: failure.kind === 'plan_gap' ? renderSlots(failure.by === 'executor' ? PLAN_GAP_BY_EXECUTOR : PLAN_GAP_BY_CRITIC, { gate: failure.gate }) : null,
     gap: failure.kind === 'plan_gap' ? `"${oneLine(failure.gap, 2000)}"` : null,
     remaining: words(remaining, 100),
     landed: earlier.length + here.length > 0 ? words([...earlier, ...here], 100) : null,
@@ -836,7 +880,7 @@ function planAsk(f: Facts, name: string, failure: PlanFailure, budget: RepairBud
     `Halted: gate ${failure.gate}, because ${whyOf(failure)}.`,
     ...(failure.kind === 'plan_gap' ? [`The plan gap: "${oneLine(failure.gap, 300)}"`] : []),
     `Gates left: ${words(remainingOf(json, records), 50)}.`,
-    `It works in the run's checkout ${json.checkout}, on ${branch}, starting from the halted attempt still in its tree. The mod lands each gate on ${branch} only once it's verified and an independent critic approves it. Nothing is pushed.`,
+    `It works in the run's checkout ${json.checkout}, on ${branch}, starting from the halted attempt, if any, still in its tree. The mod lands each gate on ${branch} only once it's verified and an independent critic approves it. Nothing is pushed.`,
     `Budget: ${planBudgetText(json, budget)}; only your answer to litter's own ask raises it.`,
     `Baseline: verify ${verifyId} is green on ${branch}'s tip ${tipOfLedger(json, records).slice(0, 12)}.`,
   ]
@@ -1214,7 +1258,7 @@ function planSummary(f: Facts): string {
     const b = open.body
     const taken = remainingOf(json, records.filter(r => r.seq < open.seq))
     lines.push(
-      `Plan-template swarm ${b.swarm} (launch ${b.launch}) took over in generation ${b.generation}, to land ${taken.length === 1 ? 'gate' : 'gates'} ${words(taken, 50)}, with a budget of ${planBudgetText(json, b.budget)}. It works in the run's checkout ${json.checkout}, starting from the halted attempt, and the mod lands each gate on ${branch} only once it's verified and an independent critic approves it; nothing is pushed.`,
+      `Plan-template swarm ${b.swarm} (launch ${b.launch}) took over in generation ${b.generation}, to land ${taken.length === 1 ? 'gate' : 'gates'} ${words(taken, 50)}, with a budget of ${planBudgetText(json, b.budget)}. It works in the run's checkout ${json.checkout}, starting from the halted attempt, if any, and the mod lands each gate on ${branch} only once it's verified and an independent critic approves it; nothing is pushed.`,
     )
     const end = records.filter(r => r.kind === 'run.end' && r.seq > open.seq && r.body.generation === b.generation).at(-1)
     const status = end ? body<RunEndBody>(end) : null
@@ -1251,7 +1295,7 @@ function planSummary(f: Facts): string {
     const auto = renderSlots(CONFIRM_AUTO, { rounds: b.rounds, attempts: maxAttemptsOf(json), agents: b.agents })
     lines.push(
       '',
-      `${recommend ? 'Recommended: continue as a plan-template swarm. ' : ''}${capital(failureText(fl))}. ${fl.kind === 'plan_gap' ? `The plan gap: "${oneLine(fl.gap, 500)}". ` : ''}Under repair: auto, ${auto}. It would land ${words(remainingOf(json, records), 50)}, starting from the halted attempt in the tree, and its gate-runner asks you before a gap changes the plan's scope or requirements.`,
+      `${recommend ? 'Recommended: continue as a plan-template swarm. ' : ''}${capital(failureText(fl))}. ${fl.kind === 'plan_gap' ? `The plan gap: "${oneLine(fl.gap, 500)}". ` : ''}Under repair: auto, ${auto}. It would land ${words(remainingOf(json, records), 50)}, starting from the halted attempt in the tree, if any, and its gate-runner asks you before a gap changes the plan's scope or requirements.`,
       '',
       `The ways on: continue as a plan-template swarm (/litter:swarm repair ${ref.run}), amend the gate (/litter:amend ${fl.gate} …), or stop; the halted attempt is still in the tree. Continuing asks you to confirm its authority and budget first.`,
     )

@@ -3,7 +3,7 @@
 # drive.exp types into, since accepting happens only from the rules pane's
 # buttons:
 #
-#   sh tests/headless/rules.sh import   # imported deepwork guardrails: one narrowed to a/** and accepted reaches G1 alone
+#   sh tests/headless/rules.sh import   # imported deepwork guardrails: one, a ban narrowed to a/** and accepted, reaches every gate
 #
 # The repo is lib.sh's plus fixtures/rules-import: parts a/ and b/, each with
 # a function and a check in its test.sh, test.sh running both, and a
@@ -17,8 +17,12 @@
 # narrows the flag ban to a/** and accepts it in project scope from the pane,
 # dismisses the orchestrator one, leaves the rest pending, then runs
 # /litter:execute plan.md through its interview and Launch (repair: off, so a
-# halt stops). H_PERSIST=1 keeps the workflow agents' transcripts, whose
-# prompts the checks read.
+# halt stops). A ban reaches every gate whatever its paths (16.5: they say
+# what must not change, not where the work is), so the checks want it in
+# args.rules, naming a/** as what it protects, and in G1's and G2's executor
+# and critic prompts, and in no gate's own list (args.gates[].rules).
+# H_PERSIST=1 keeps the workflow agents' transcripts, whose prompts the
+# checks read.
 #
 # The pane's key sequence isn't known until one manual run shows it: the
 # steps marked KEYS below are placeholders for main to fill in from that run.
@@ -263,15 +267,18 @@ c_pane_batch() {
   done
 }
 c_run() { [ -n "$RUN" ] && [ -f "$RD/run.json" ] || { echo "no run in $LD"; return 1; }; }
-# lifecycle.ts's prepare: args.gates[].rules each gate's own (select.ts), args.rules the shared ones; run.json.rules
-# the versions delivered. A U- rule would be one of yours from your config dir, not this test's.
+# lifecycle.ts's prepare: args.gates[].rules each gate's own (select.ts), args.rules the shared ones, a ban among them
+# whatever its paths, its entry "<id>@1 (ban; protects a/**) …"; run.json.rules the versions delivered. A U- rule
+# would be one of yours from your config dir, not this test's.
 c_selection() {
   [ -n "$BAN" ] || { echo "no rule was accepted"; return 1; }
-  s=$(jq -r --arg b "$BAN" '[([.args.gates[] | select(.id == "G1") | (.rules // [])[] | select(startswith($b + "@1 "))] | length),
-    ([.args.gates[] | select(.id == "G2") | (.rules // [])[] | select(contains($b))] | length), ([(.args.rules // [])[] | select(contains($b))] | length)]
+  s=$(jq -r --arg b "$BAN" '[([.args.gates[] | select(.id == "G1") | (.rules // [])[] | select(contains($b))] | length),
+    ([.args.gates[] | select(.id == "G2") | (.rules // [])[] | select(contains($b))] | length), ([(.args.rules // [])[] | select(contains($b))] | length),
+    ([(.args.rules // [])[] | select(startswith($b + "@1 (ban; protects a/**)"))] | length)]
     | map(tostring) | join(" ")' "$RD/run.json") ||
     { echo "run.json doesn't parse"; return 1; }
-  [ "$s" = '1 0 0' ] || { echo "the ban's entries in G1's rules, G2's and args.rules number '$s', not '1 0 0'"; return 1; }
+  [ "$s" = '0 0 1 1' ] ||
+    { echo "the ban's entries in G1's rules, G2's, args.rules and args.rules naming a/** as protected number '$s', not '0 0 1 1'"; return 1; }
   r=$(jq -c '[.rules[] | select(.id | startswith("U-") | not) | {id, version}]' "$RD/run.json") || { echo "run.json doesn't parse"; return 1; }
   [ "$r" = "[{\"id\":\"$BAN\",\"version\":1}]" ] || { echo "run.json's rules are $r"; return 1; }
 }
@@ -293,23 +300,19 @@ prompts() {
   done <"$H_DIR/transcripts.txt"
 }
 # execute.js's prompts: the instruction names the gate ("Implement gate G1, attempt …", "Judge the uncommitted change for gate G1, …"),
-# and common() puts the rules in <rules id="<nonce>"> … </rules id="<nonce>">.
+# and common() puts args.rules, then the gate's own, in <rules id="<nonce>"> … </rules id="<nonce>">. No G2 prompt means G2 never ran.
 c_prompts() {
   [ -n "$BAN" ] || { echo "no rule was accepted"; return 1; }
   prompts || return 1
   nonce=$(jq -r '.args.nonce // empty' "$RD/run.json") || { echo "run.json doesn't parse"; return 1; }
   [ -n "$nonce" ] || { echo "run.json's args have no nonce"; return 1; }
-  for who in 'Implement gate G1, attempt' 'Judge the uncommitted change for gate G1, attempt'; do
+  for who in 'Implement gate G1, attempt' 'Judge the uncommitted change for gate G1, attempt' 'Implement gate G2, attempt' 'Judge the uncommitted change for gate G2, attempt'; do
     r=$(jq -s -r --arg w "$who" --arg o "<rules id=\"$nonce\">" --arg c "</rules id=\"$nonce\">" --arg b "$BAN@1" '[.[] | select(.prompt | contains($w))] as $p
       | if ($p | length) == 0 then "none" else [$p[] | select(.prompt | (split($o)[1] // "") | split($c)[0] | contains($b) | not)] | length | tostring end' "$H_DIR/prompts.jsonl") ||
       { echo "prompts.jsonl doesn't parse"; return 1; }
     [ "$r" != none ] || { echo "no prompt says '$who'"; return 1; }
     [ "$r" = 0 ] || { echo "$r prompt(s) saying '$who' have no $BAN@1 in their <rules> block"; return 1; }
   done
-  r=$(jq -s -r --arg b "$BAN" '[.[] | select(.prompt | test("gate G2\\b"))] | if length == 0 then "none" else map(select(.prompt | contains($b))) | length | tostring end' "$H_DIR/prompts.jsonl") ||
-    { echo "prompts.jsonl doesn't parse"; return 1; }
-  [ "$r" != none ] || { echo "no G2 prompt: G2 never ran"; return 1; }
-  [ "$r" = 0 ] || { echo "$r G2 prompt(s) hold $BAN"; return 1; }
   for t in "$G_USER" "$G_ORCH" "$G_SCOPE" "$G_OLD"; do
     n=$(jq -s --arg t "$t" '[.[] | select(.prompt | contains($t))] | length' "$H_DIR/prompts.jsonl") || { echo "prompts.jsonl doesn't parse"; return 1; }
     [ "$n" = 0 ] || { echo "$n prompt(s) hold '$t', which wasn't accepted"; return 1; }
@@ -345,8 +348,8 @@ h_expect "one rule.dismiss, of the orchestrator proposal" c_dismiss
 h_expect "loadRules shows the ban as the one accepted rule" c_load
 h_expect "/litter-rules shows the ban in force as accepted" c_rules_pane
 h_expect "run.start and the launch made a run" c_run
-h_expect "G1's rules hold the ban, G2's and args.rules don't, and run.json's rules are the ban@1" c_selection
-h_expect "the ban is in G1's executor and critic <rules> blocks, in no G2 prompt, and no unaccepted guardrail is in any prompt" c_prompts
+h_expect "args.rules holds the ban, naming a/** as what it protects, no gate's own rules do, and run.json's rules are the ban@1" c_selection
+h_expect "the ban is in G1's and G2's executor and critic <rules> blocks, and no unaccepted guardrail is in any prompt" c_prompts
 h_expect "G1's verdict cites the ban and its version in its rules dimension" c_verdict
 h_expect "the lock is released" c_lock_free
 h_done

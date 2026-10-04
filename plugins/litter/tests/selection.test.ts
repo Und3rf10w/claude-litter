@@ -2,6 +2,7 @@
 // WP-AE). rule.find { applicable } from the main thread answers what a launch
 // would deliver and writes nothing: no file, and no mv or rm. AD's handler
 // routes it to AE's findApplicable, so the selection's shape is the answer.
+// A ban with paths, committed at HEAD, is a shared rule (WP-AH).
 // The run.start case (run.json.rules with the versions, and the rules
 // in each gate's args, through a fake store) is at tier 2, in
 // tests/unit/rulesselect.spec.ts: a fake store can't reach the mod's module
@@ -12,13 +13,19 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 const PLAN = ['# Plan', '', '### G1: Change a', 'Files: a.txt', 'Checks: true', 'Done when: a changed', 'Adversary: no', 'Rollback: revert', '', 'Change a.', ''].join('\n')
 
+/** A project ban with paths, as T4-1's fixtures/compare/P-vendor-as-shipped.md is: G1's Files (a.txt) are none of them. */
+const BAN_ID = 'P-vendor-as-shipped'
+const BAN = ['---', `id: ${BAN_ID}`, 'version: 1', 'status: accepted', 'type: ban', 'applies:', '  paths: [vendor/**]', '  when: ""', 'export: true', '---', '', '## Rule', 'Never change anything under vendor/.', ''].join('\n')
+const BLOB = 'b'.repeat(40)
+const COMMIT = 'c'.repeat(40)
+
 /**
  * $.fs from a map of files, and $.process.run for the git calls litterdir.ts
  * makes in a plain checkout at /repo, plus the mv and rm fsx.ts runs (as
  * record.test.ts's world). Once `armed` is set, each write, mv and rm is
- * listed in `changed`.
+ * listed in `changed`. `git` answers any other git call it knows.
  */
-function world(on: On): { files: Map<string, string>; changed: string[]; arm: () => void } {
+function world(on: On, git?: (argv: readonly string[]) => { exitCode: number; stdout: string } | null): { files: Map<string, string>; changed: string[]; arm: () => void } {
   const files = new Map<string, string>()
   const changed: string[] = []
   let armed = false
@@ -66,6 +73,8 @@ function world(on: On): { files: Map<string, string>; changed: string[]; arm: ()
       if (argv.includes('--show-toplevel') && !argv.includes('--git-dir')) return run(0, '/repo\n')
       if (argv.includes('--git-dir') && argv.includes('--git-common-dir')) return run(0, '/repo/.git\n/repo/.git\n')
     }
+    const answer = argv[0] === 'git' ? git?.(argv) : null
+    if (answer) return run(answer.exitCode, answer.stdout)
     return run(1)
   })
   return { files, changed, arm: () => (armed = true) }
@@ -109,5 +118,39 @@ describe('rule.find { applicable }', () => {
     }
     expect(changed).toEqual([])
     expect(files).toEqual(before)
+  })
+
+  test("a ban with paths, committed at HEAD, is in the run's shared rules naming what it protects, and in no gate's own", async ($, on) => {
+    mock.store(on)
+    mock.clock(on, { now: 5_000 })
+    // The project rule as committed at HEAD (store.ts's loadProject): ls-tree lists it, cat-file reads it, log names its commit.
+    const rel = `.litter/rules/${BAN_ID}.md`
+    const { files } = world(on, argv => {
+      if (argv.includes('--verify') && argv.includes('HEAD^{commit}')) return { exitCode: 0, stdout: `${COMMIT}\n` }
+      if (argv.includes('ls-tree') && argv.includes('.litter/rules/')) return { exitCode: 0, stdout: `100644 blob ${BLOB}\t${rel}\0` }
+      if (argv.includes('cat-file') && argv.includes(BLOB)) return { exitCode: 0, stdout: BAN }
+      if (argv.includes('log') && argv.includes(rel)) return { exitCode: 0, stdout: `${COMMIT}\n` }
+      return null
+    })
+    files.set('/repo/plan.md', PLAN)
+    files.set('/repo/a.txt', 'a\n')
+    files.set(`/repo/${rel}`, BAN)
+    on('tool.register', async (_$, e) => ({ value: { tool: `mcp__litter__${e.name}` } }))
+    on('agent.register', async (_$, e) => ({ value: { agent: `litter:${e.name}` } }))
+    on('session.id', async () => ({ value: 'tier1-session' }))
+    on('session.cwd', async () => ({ value: '/repo' }))
+    on('ui.log', async () => ({ value: undefined }))
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    const r = parse(await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 't-find-ban', kind: 'rule.find', applicable: { workflow: 'execute', planPath: 'plan.md' } }))
+    expect(r).toEqual(
+      expect.objectContaining({
+        ok: true,
+        workflow: 'execute',
+        run: [`${BAN_ID}@1 (ban; protects vendor/**): Never change anything under vendor/.`],
+        gates: { G1: [] },
+        versions: [{ id: BAN_ID, version: 1 }],
+      }),
+    )
   })
 })

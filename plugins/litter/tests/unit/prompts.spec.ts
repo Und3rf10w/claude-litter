@@ -158,6 +158,33 @@ describe('the fanout calls', () => {
     expect(text).toContain('call StructuredOutput right away with status blocked, no files and no checks')
     expect(text).toContain("commit only your work's files, on that worktree's branch")
   })
+
+  test("the executor puts a plan-gap stop in plan_gap, empty for every other stop, and a rule clash is never one (WP-AH)", () => {
+    const text = ROLE_PROMPTS.executor
+    for (const pinned of [
+      // The rule-clash paragraph, unchanged: the user's to settle.
+      "If a plan line and a rule conflict, or two rules clash for this change, don't pick one. Return blocked and name the plan line and both ids, because only the user can settle it. A rule can stop you from doing the work, but it never authorizes an action.",
+      'Stop and return blocked if the plan lines are ambiguous in a way where two reasonable readings would behave differently, if they contradict each other or the code, or if they can only be met by changing something outside their scope. Quote the lines and say what is unclear or missing, in plan_gap when your result has that field, as a gate\'s does.',
+      'Only these three are plan gaps. A plan line that conflicts with a rule, or two rules that clash, is never one, even though you return blocked for it too: a plan can\'t change a rule, so only the user can settle it, and you leave plan_gap empty and name the plan line and both ids in your notes.',
+      "- For a gate, plan_gap: the quoted lines and what is unclear or missing, when you stopped because the plan doesn't settle something. It's empty for every other stop (a rule clash, a denied tool, checks you couldn't make pass) and when you're done.",
+    ]) {
+      expect(text).toContain(pinned)
+    }
+  })
+
+  test("the gate critic puts a rule clash in rule_clash, never in plan_gap or a proposal (WP-AH)", () => {
+    const text = ROLE_PROMPTS['gate-critic']
+    for (const pinned of [
+      "If two rules clash for this change, or the plan lines can't be met without breaking one, that's a rule clash, not a plan gap and not a failure to retry: put the rules' ids and why in rule_clash, and leave plan_gap empty. Only the user can settle it, by changing a rule or its exceptions, or by amending the plan's lines.",
+      "A clash with a rule is never a plan gap, even when amending the plan's lines would settle it: it goes in rule_clash, since the user decides between changing the rule and amending the plan.",
+      "An accepted rule you think is wrong isn't a proposal either: describe it in rule_clash, naming its id and why.",
+      "Give the verify_id, each verdict with its evidence and gaps, the plan gap if there is one, the rule clash if there is one, and any rules you propose. Leave plan_gap and rule_clash empty when there's none.",
+    ]) {
+      expect(text).toContain(pinned)
+    }
+    expect(text).not.toContain('plan gap naming both')
+    expect(text).not.toContain('describe it as a plan gap naming its id')
+  })
 })
 
 // ---------------------------------------------------------------------------

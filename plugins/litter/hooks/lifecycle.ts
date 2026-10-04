@@ -2174,7 +2174,7 @@ async function prepare(
           }
         : {
             ...base,
-            // The planner's own selection (phase 3): the pathless rules, and those the plan or goal's files bring.
+            // The planner's own selection (phase 3): the rules without paths and every ban, and those the plan or goal's files bring.
             rules: [...runRules, ...sel.value.planner],
             goal: spec.goal,
             // planPath for the planner's <plan> tag (AB's plan.js).

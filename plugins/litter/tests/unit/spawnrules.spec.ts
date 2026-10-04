@@ -3,8 +3,9 @@
 // with a fake engine `next` against real files and real git, and AD's
 // loadRules and proposalsOf stood in for through the `deps` tables: a node's
 // rules by its paths or its directory, a plan-template node's by its run's
-// unlanded gates, the swarm's proposals after them, "none apply", the cap,
-// and the selection made before the spawn's reservation.
+// unlanded gates, a ban in every node's block whatever its paths (WP-AH), the
+// swarm's proposals after them, "none apply", the cap, and the selection
+// made before the spawn's reservation.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync } from 'node:fs'
@@ -114,19 +115,20 @@ const block = (prompt: string): string => /<rules id="([^"]+)">\n([\s\S]*?)\n<\/
 // ---------------------------------------------------------------------------
 // Rules and proposals, as AD's store hands them over
 
-function doc(id: string, o: { paths?: string[]; workflows?: string[]; roles?: string[]; rule?: string } = {}): RuleDoc {
+function doc(id: string, o: { paths?: string[]; workflows?: string[]; roles?: string[]; rule?: string; type?: 'rule' | 'ban' } = {}): RuleDoc {
   return {
     id,
     version: 1,
     status: 'accepted',
-    type: 'rule',
+    type: o.type ?? 'rule',
     applies: { paths: o.paths ?? [], ...(o.workflows ? { workflows: o.workflows } : {}), ...(o.roles ? { roles: o.roles } : {}), when: `working on ${id}` },
     export: true,
     extra: [],
     body: { rule: o.rule ?? `Follow ${id}.`, why: '', exceptions: [], howToCheck: [] },
   }
 }
-const entry = (d: RuleDoc) => `${d.id}@1 (rule) working on ${d.id}: ${d.body.rule}`
+/** A ban with paths names what it protects (select.ts's label). */
+const entry = (d: RuleDoc) => `${d.id}@1 (${d.type === 'ban' && d.applies.paths.length > 0 ? `ban; protects ${d.applies.paths.join(', ')}` : d.type}) working on ${d.id}: ${d.body.rule}`
 
 function rules(...docs: RuleDoc[]): void {
   const list: LoadedRule[] = docs.map(d => ({ doc: d, scope: 'project', path: `/r/${d.id}.md`, sha256: 'f'.repeat(64), standing: 'accepted', delivered: d }))
@@ -208,6 +210,34 @@ describe("a node's rules", () => {
     await run(spawnE(T('part-b')), next)
     expect(block(calls[0]!.prompt)).toBe([entry(all), entry(b), entry(md), entry(src)].join('\n'))
     expect(block(calls[1]!.prompt)).toBe([entry(all), entry(b), entry(md)].join('\n'))
+  })
+
+  test("a ban reaches a node without paths with the rules without paths, ahead of path rules however specific, at the top and in a subdirectory", async () => {
+    const ban = doc('P-z-ban', { type: 'ban', paths: ['/vendor/**'] })
+    const style = doc('P-vendor-style', { paths: ['/vendor/**'] })
+    const deep = doc('P-a-deep', { paths: ['/a/b/c.ts'] })
+    const all = doc('P-all')
+    rules(ban, style, deep, all)
+    const { next, calls } = engine()
+    // part-a at the repository's top: every rule. part-b in b/: those that could match under it, and the shared ones.
+    await run(spawnE(T('part-a')), next)
+    state.putLiveSwarm(live())
+    await run(spawnE(T('part-b')), next)
+    expect(block(calls[0]!.prompt)).toBe([entry(all), entry(ban), entry(deep), entry(style)].join('\n'))
+    expect(block(calls[1]!.prompt)).toBe([entry(all), entry(ban)].join('\n'))
+    expect(entry(ban)).toBe('P-z-ban@1 (ban; protects /vendor/**) working on P-z-ban: Follow P-z-ban.')
+  })
+
+  test("a ban reaches a node whose paths are elsewhere; a rule with the ban's paths doesn't", async () => {
+    const ban = doc('P-vendor', { type: 'ban', paths: ['/vendor/**'] })
+    const style = doc('P-vendor-style', { paths: ['/vendor/**'] })
+    const src = doc('P-src', { paths: ['/src/**'] })
+    rules(ban, style, src)
+    const { next, calls } = engine()
+    // fixer's paths are src/, in its own worktree.
+    const a = (await run(spawnE(T('part-a')), next)).agentId!
+    expect((await run(spawnE(T('fixer'), a), next)).agentId).toBeDefined()
+    expect(block(calls[1]!.prompt)).toBe([entry(ban), entry(src)].join('\n'))
   })
 
   test("workflows narrow a swarm's rules to swarm ones, and a node with no role gets no rule with roles set", async () => {
@@ -297,6 +327,21 @@ describe("a plan-template node (an execute run's bridge)", () => {
     expect(block(calls[0]!.prompt)).toBe([entry(executeOnly), entry(folder), entry(open)].join('\n'))
     expect(block(calls[1]!.prompt)).toBe([entry(critic), entry(executeOnly), entry(folder), entry(open)].join('\n'))
     expect(block(calls[2]!.prompt)).toBe([entry(executeOnly), entry(executor), entry(folder), entry(open)].join('\n'))
+  })
+
+  test("every node gets a ban whatever its paths, a landed gate's or no gate's; a rule with those paths reaches none", async () => {
+    await bridged()
+    const ban = doc('P-vendor', { type: 'ban', paths: ['/vendor/**'] })
+    const style = doc('P-vendor-style', { paths: ['/vendor/**'] })
+    const landedBan = doc('P-a-ban', { type: 'ban', paths: ['/a/**'] })
+    const open = doc('P-b', { paths: ['/b/*.ts'] })
+    rules(ban, style, landedBan, open)
+    const { next, calls } = engine()
+    const runner = (await run(spawnE(T('runner')), next)).agentId!
+    await run(spawnE(T('critic'), runner), next)
+    await run(spawnE(T('executor'), runner), next)
+    const want = [entry(landedBan), entry(ban), entry(open)].join('\n')
+    expect(calls.map(c => block(c.prompt))).toEqual([want, want, want])
   })
 
   test("a fanout repair swarm's nodes are plain swarm nodes: swarm rules only, and every rule by directory", async () => {

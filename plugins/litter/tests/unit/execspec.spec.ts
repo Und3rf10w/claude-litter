@@ -132,7 +132,7 @@ describe('the generated spec', () => {
       "Gates to land, in the plan's order: G2 and G3",
       `Landed before you: G1 (${g1.commit.slice(0, 12)})`,
       `The plan: ${planPath(x.runDir)}, each gate's section under its id`,
-      `Your directory, the run's checkout: ${w.dir}, on ${BRANCH} at ${g1.commit}, with the halted attempt still in its tree, uncommitted`,
+      `Your directory, the run's checkout: ${w.dir}, on ${BRANCH} at ${g1.commit}, with the halted attempt, if any, still in its tree, uncommitted`,
       'Budget: 3 rejected attempts in all, 3 per gate, and 6 agents',
       `- ${summaryPath(x.runDir)}: the run's summary`,
       `- ${verdictsDir(x.runDir)}: the critic's verdict files`,
@@ -159,6 +159,17 @@ describe('the generated spec', () => {
     expect(task).not.toContain('The plan gap')
     expect(task).toContain('Budget: 5 rejected attempts in all, 3 per gate, and 4 agents')
     expect(task).toContain(`${verifyLogDir(x.runDir, x.g2[2]!.verify_id)}: the full log of the halted gate's last verify ${x.g2[2]!.verify_id}`)
+  })
+
+  test("an executor's plan-gap stop (WP-AH): the gap line says it's the executor's words, before the attempt was judged; no verify as evidence", async () => {
+    const { r } = await made({ halt: 'executor_gap' })
+    const task = nodeOf(r, 'runner').task!
+    expect(task).toContain(`Continue execute run ${RUN}, which halted at gate G2: the executor stopped on attempt 1 with a plan gap, before the attempt was judged.\n`)
+    expect(task).toContain(`The plan gap, as the executor stated it when it stopped on G2, before its attempt was judged: "${GAP}"\n`)
+    expect(task).not.toContain("the critic's last verdict")
+    expect(task).not.toContain("the full log of the halted gate's last verify")
+    expect(task).not.toMatch(/\{[a-z_]+\}/)
+    expect((await validated(r)).errors).toEqual([])
   })
 
   test('in goal mode the task says so', async () => {
@@ -225,9 +236,12 @@ describe("swarm-plan.ts's texts", () => {
 
   test("the templates' slots are the ones their docs list", () => {
     expect(slotsOf(PLAN_TASK)).toEqual(
-      ['agents', 'attempts', 'branch', 'checkout', 'gap', 'gate', 'goal_line', 'landed', 'plan', 'remaining', 'rounds', 'run', 'summary', 'tip', 'verdicts', 'verify_line', 'why'].sort(),
+      ['agents', 'attempts', 'branch', 'checkout', 'gap', 'gap_by', 'gate', 'goal_line', 'landed', 'plan', 'remaining', 'rounds', 'run', 'summary', 'tip', 'verdicts', 'verify_line', 'why'].sort(),
     )
     expect(slotsOf(planPrompts.PLAN_WHY_GAP)).toEqual(['attempt'])
+    expect(slotsOf(planPrompts.PLAN_WHY_EXECUTOR_GAP)).toEqual(['attempt'])
+    expect(slotsOf(planPrompts.PLAN_GAP_BY_CRITIC)).toEqual(['gate'])
+    expect(slotsOf(planPrompts.PLAN_GAP_BY_EXECUTOR)).toEqual(['gate'])
     expect(slotsOf(planPrompts.PLAN_WHY_ATTEMPTS)).toEqual(['count', 'max'])
     expect(slotsOf(PLAN_GOAL_LINE)).toEqual([])
     expect(slotsOf(planPrompts.PLAN_EVIDENCE_VERIFY)).toEqual(['dir', 'how', 'verify_id'])
@@ -269,6 +283,42 @@ describe("swarm-plan.ts's texts", () => {
     expect(PLAN_EXECUTOR_BRIEF).toContain('Never commit, push or stage anything')
     expect(PLAN_ADVERSARY_BRIEF).toContain('You change nothing')
     for (const brief of [PLAN_EXECUTOR_BRIEF, PLAN_CRITIC_BRIEF, PLAN_ADVERSARY_BRIEF]) expect(brief).toContain('<rules>')
+  })
+
+  test("the executor's brief reports a plan-gap stop to the runner as a plan gap, quoting the lines; a rule clash stays blocked (WP-AH)", () => {
+    for (const text of [
+      'Stop and report a plan gap to your parent if the plan lines are ambiguous in a way where two reasonable readings would behave differently, if they contradict each other or the code, or if they can only be met by changing something outside their scope. Quote the lines and say what is unclear or missing.',
+      'Only these three are plan gaps. A plan line that conflicts with a rule, or two rules that clash, is never one',
+      'you report it as blocked on a rule clash, naming the plan line and both ids',
+      'otherwise report a plan gap, quoting the lines and saying what is unclear or missing, when that\'s why you stopped, and blocked, with the reason, for every other stop.',
+      // The Rules section's clash, named as one, so the runner knows it for the user's.
+      "If a plan line and a rule conflict, or two rules clash for this change, don't pick one. Report it to your parent as blocked on a rule clash, naming the plan line and both ids, because only the user can settle it.",
+    ]) {
+      expect(PLAN_EXECUTOR_BRIEF).toContain(text)
+    }
+    expect(PLAN_EXECUTOR_BRIEF).not.toContain('Stop and report blocked to your parent if the plan lines')
+  })
+
+  test("a rule clash is the user's (WP-AH): the critic gives it in rule_clash and reports it as one; the runner asks the lead and never works around it", () => {
+    for (const text of [
+      "that's a rule clash, not a plan gap and not a failure to retry: put the rules' ids and why in rule_clash, leave plan_gap empty, and report it to your parent as a rule clash. Only the user can settle it, by changing a rule or its exceptions, or by amending the plan's lines.",
+      "A clash with a rule is never a plan gap, even when amending the plan's lines would settle it: it goes in rule_clash, since the user decides between changing the rule and amending the plan.",
+      "An accepted rule you think is wrong isn't a proposal either: describe it in rule_clash, naming its id and why.",
+      "- rule_clash: the rule clash in words, naming the rules' ids, or an empty string when there is none;",
+      'The mod approves the gate only when all four pass and plan_gap and rule_clash are empty.',
+      'the plan gap or the rule clash if there is one',
+    ]) {
+      expect(PLAN_CRITIC_BRIEF).toContain(text)
+    }
+    expect(PLAN_CRITIC_BRIEF).not.toContain('plan gap naming both')
+    for (const text of [
+      "A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter-rules, or amending the gate's lines with /litter:amend, and say which fits and why.",
+      "Ask the lead only when you can't go on without something only the user can give. That's a rule clash (below), or one of four cases:",
+      'The mod approves the gate only when every dimension passes and the verdict names no plan gap and no rule clash.',
+      'the full log of its last verify, if it has any (an executor that stopped on a plan gap before its first attempt was judged leaves neither)',
+    ]) {
+      expect(PLAN_RUNNER_BRIEF).toContain(text)
+    }
   })
 
   test("the briefs don't correct the authority and budget lines, which now hold for this swarm (WP-AG)", () => {

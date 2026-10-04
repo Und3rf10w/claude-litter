@@ -395,7 +395,7 @@ export function reconcileLands(p: Ports, runDir: string, run: string): Promise<R
 // ---------------------------------------------------------------------------
 // The land.
 
-/** The verdict dimensions a land needs passed (plan section 7: PA and RA, and the rules verdict when it has one). */
+/** The verdict dimensions a land needs passed (plan section 7: PA and RA, and the rules verdict when it has one), and no plan gap or rule clash named. */
 function verdictFails(body: Record<string, unknown>): string[] {
   const pass = (d: unknown): boolean => d !== null && typeof d === 'object' && (d as { pass?: unknown }).pass === true
   const out: string[] = []
@@ -403,6 +403,8 @@ function verdictFails(body: Record<string, unknown>): string[] {
   if (!pass(body.no_regressions)) out.push('no_regressions')
   if (body.rules !== undefined && !pass(body.rules)) out.push('rules')
   if (typeof body.plan_gap === 'string' && body.plan_gap.trim() !== '') out.push('plan_gap (it names one)')
+  // A verdict recorded before rule_clash has none (WP-AH).
+  if (typeof body.rule_clash === 'string' && body.rule_clash.trim() !== '') out.push('rule_clash (it names one)')
   return out
 }
 

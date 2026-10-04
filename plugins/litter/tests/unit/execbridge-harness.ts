@@ -16,6 +16,7 @@ import type { Author, RecordCtx, StoredRecord } from '../../hooks/records/core'
 import type { RunEndBody, RunJson } from '../../hooks/records/run'
 import type { GateVerdictBody, LandReply, VerdictDimension, VerifyBody } from '../../hooks/records/execute'
 import type { RunFacts } from '../../hooks/verify'
+import type { GateResultBody } from '../../hooks/output'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { planPath, runDir as runDirOf, runJsonPath } from '../../hooks/layout'
 import { sha256 } from '../../hooks/fsx'
@@ -33,6 +34,7 @@ export const VERIFY = ['sh', '-c', 'test ! -e .claude/red']
 /** The goal check, red while `.claude/goal-red` exists. */
 export const GOAL = ['sh', '-c', 'test ! -e .claude/goal-red']
 export const GAP = 'the plan names no config file for the parser to read, and G2 needs one'
+export const CLASH = 'P-no-env@1 bans reading the environment, and plan.md:8 merges the defaults from it'
 export const TITLES: Readonly<Record<string, string>> = { G1: 'Parse the config file', G2: 'Load the defaults', G3: 'Document the options' }
 /** plan.md's text: a run fact the spec and the task must never copy. */
 export const PLAN_TEXT = [
@@ -52,9 +54,24 @@ export const PLAN_TEXT = [
   '',
 ].join('\n')
 
-/** How generation 1 ended. Every one but the last three is a halt at G2 (goal_red halts after every gate landed). */
+/**
+ * How generation 1 ended. Every one but the last three is a halt at G2
+ * (goal_red halts after every gate landed). `executor_gap`: G2's executor
+ * stopped on attempt 1 with a plan gap, before any verdict on G2;
+ * `executor_gap_late`: on attempt 2, after attempt 1 was rejected;
+ * `rule_clash`: the critic's verdict on attempt 1 names a rule clash;
+ * `executor_gap_then_clash`: the executor's plan-gap stop, then a later
+ * verdict naming a rule clash (the verdict is the latest event);
+ * `critic_null`: the executor's attempt 1 is done, and its critic returned
+ * nothing (no verify, no verdict).
+ */
 export type Halt =
   | 'plan_gap'
+  | 'executor_gap'
+  | 'executor_gap_late'
+  | 'rule_clash'
+  | 'executor_gap_then_clash'
+  | 'critic_null'
   | 'attempts'
   | 'recritique'
   | 'abandoned'
@@ -82,6 +99,8 @@ export type ExecOpts = {
   amend?: boolean
   /** G1's green verify recorded with another argv, so the chain has no green verify of the tip with the run's. */
   staleBaseline?: boolean
+  /** `blocked`'s notes: why the executor stopped, with an empty plan_gap. */
+  blocked?: string
 }
 
 export type Landed = { gate: string; verifyId: string; commit: string; tree: string }
@@ -102,15 +121,16 @@ const pass = (evidence: string): VerdictDimension => ({ pass: true, evidence, ga
 const failed = (gap: string): VerdictDimension => ({ pass: false, evidence: 'read the diff against the plan lines', gaps: [gap] })
 
 /** An execute gate critic's verdict body, as output.ts records it. */
-export function verdictOf(verifyId: string, o: { approve?: boolean; gap?: string } = {}): GateVerdictBody {
+export function verdictOf(verifyId: string, o: { approve?: boolean; gap?: string; clash?: string } = {}): GateVerdictBody {
   const ok = o.approve === true
   return {
     verify_id: verifyId,
-    plan_adherence: ok || o.gap ? pass('plan.md:3-5 against the diff') : failed('the defaults are merged over the settings, not under'),
+    plan_adherence: ok || o.gap || o.clash ? pass('plan.md:3-5 against the diff') : failed('the defaults are merged over the settings, not under'),
     tests_green: pass(`verify ${verifyId} exit 0`),
     no_regressions: pass('searched the callers of loadConfig'),
     rules: pass('none apply'),
     plan_gap: o.gap ?? '',
+    rule_clash: o.clash ?? '',
     proposed_rules: [],
     tool_use_id: `tu-${verifyId}`,
   }
@@ -118,6 +138,27 @@ export function verdictOf(verifyId: string, o: { approve?: boolean; gap?: string
 
 /** Generation 1's agents, as execute's roles record. */
 export const criticOf = (gate: string): Author => ({ source: 'agent', agentId: `critic-${gate}`, agentType: 'litter:gate-critic' })
+export const executorOf = (gate: string): Author => ({ source: 'agent', agentId: `executor-${gate}`, agentType: 'litter:executor' })
+
+/** An execute executor's result body, as output.ts records it (GateResultBody): `gap` set for a plan-gap stop, `notes` for any other block. */
+export function wroteOf(gate: string, attempt: number, o: { gap?: string; notes?: string } = {}): GateResultBody {
+  const blocked = o.gap !== undefined || o.notes !== undefined
+  return {
+    task: null,
+    role: 'executor',
+    tool_use_id: `tu-write-${gate}-${attempt}`,
+    result: {
+      status: blocked ? 'blocked' : 'done',
+      plan_lines: ['plan.md:7-9'],
+      files: blocked ? [] : [`${gate.toLowerCase()}.txt`],
+      checks: blocked ? [] : ['sh -c test: pass'],
+      notes: o.notes ?? (o.gap !== undefined ? 'stopped before changing anything' : ''),
+      plan_gap: o.gap ?? '',
+    },
+    gate,
+    attempt,
+  }
+}
 
 export function write(at: string, path: string, text: string): void {
   mkdirSync(join(at, path, '..'), { recursive: true })
@@ -136,6 +177,7 @@ export async function verifyAs(x: Pick<Exec, 'w' | 'runDir' | 'json'>, gate: str
 /** A gate written, verified green, approved and landed by execute's own land, as execute.js lands it. */
 async function landed(x: Pick<Exec, 'w' | 'runDir' | 'json'>, gate: string, file: string): Promise<Landed> {
   write(x.w.dir, file, `${gate} done\n`)
+  await appendRecord(x.w.p, x.runDir, { run: RUN, kind: 'task.result', by: executorOf(gate), body: wroteOf(gate, 1) })
   const v = await verifyAs(x, gate, 1, criticOf(gate))
   if (!v.green) throw new Error(`the harness's ${gate} verify isn't green: ${v.output_tail}`)
   await appendRecord(x.w.p, x.runDir, { run: RUN, kind: 'verdict', by: criticOf(gate), body: verdictOf(v.verify_id, { approve: true }) })
@@ -242,8 +284,10 @@ export async function executeRun(w: World, o: ExecOpts = {}): Promise<Exec> {
   // G2's attempts, as the halt has them; the attempt stays in the tree, uncommitted.
   const g2: VerifyBody[] = []
   const critic = criticOf('G2')
-  const attempt = async (n: number, verdict: { approve?: boolean; gap?: string } | null): Promise<VerifyBody> => {
+  // Each attempt as execute.js leaves it: the executor's result (output.ts records it before the critic's verify), the verify, the verdict.
+  const attempt = async (n: number, verdict: { approve?: boolean; gap?: string; clash?: string } | null): Promise<VerifyBody> => {
     write(w.dir, 'g2.txt', `G2 attempt ${n}\n`)
+    await add('task.result', wroteOf('G2', n), executorOf('G2'))
     const v = await verifyAs(x, 'G2', n, critic)
     g2.push(v)
     if (verdict) await add('verdict', verdictOf(v.verify_id, verdict), critic)
@@ -255,6 +299,37 @@ export async function executeRun(w: World, o: ExecOpts = {}): Promise<Exec> {
     case 'plan_gap':
       await attempt(1, { gap: GAP })
       reason = `G2: the critic names a plan gap: ${GAP}`
+      break
+    case 'executor_gap':
+      // The executor stops before writing; its result is the only record of attempt 1 (a block writes no verdict).
+      await add('task.result', wroteOf('G2', 1, { gap: GAP }), executorOf('G2'))
+      reason = `G2 plan gap: ${GAP}`
+      break
+    case 'executor_gap_late':
+      await attempt(1, {})
+      await add('task.result', wroteOf('G2', 2, { gap: GAP }), executorOf('G2'))
+      reason = `G2 plan gap: ${GAP}`
+      break
+    case 'rule_clash':
+      await attempt(1, { clash: CLASH })
+      reason = `G2 rule clash: ${CLASH}`
+      break
+    case 'executor_gap_then_clash': {
+      // The executor's plan-gap stop, then a verify and a verdict naming a rule clash, with no result between:
+      // only the verdict being the later event keeps the stale gap from bridging.
+      await add('task.result', wroteOf('G2', 1, { gap: GAP }), executorOf('G2'))
+      write(w.dir, 'g2.txt', 'G2 attempt 1\n')
+      const v = await verifyAs(x, 'G2', 1, critic)
+      g2.push(v)
+      await add('verdict', verdictOf(v.verify_id, { clash: CLASH }), critic)
+      reason = `G2 rule clash: ${CLASH}`
+      break
+    }
+    case 'critic_null':
+      // The executor's attempt 1 is done; its critic returned nothing, twice, so no verify and no verdict.
+      write(w.dir, 'g2.txt', 'G2 attempt 1\n')
+      await add('task.result', wroteOf('G2', 1), executorOf('G2'))
+      reason = 'critic for G2 returned nothing'
       break
     case 'attempts':
       for (const n of [1, 2, 3]) await attempt(n, {})
@@ -284,10 +359,14 @@ export async function executeRun(w: World, o: ExecOpts = {}): Promise<Exec> {
       await attempt(1, { approve: true })
       reason = `G2: the land was refused: the checkout is on main, not ${BRANCH}`
       break
-    case 'blocked':
+    case 'blocked': {
+      // A block with an empty plan_gap (WP-AH): a rule clash, a denied tool or red checks, recorded as the executor returned it.
+      const notes = o.blocked ?? 'it needs a database the plan never mentions'
       write(w.dir, 'g2.txt', 'G2 attempt 1\n')
-      reason = 'G2: the executor is blocked: it needs a database the plan never mentions'
+      await add('task.result', wroteOf('G2', 1, { notes }), executorOf('G2'))
+      reason = `G2: the executor is blocked: ${notes}`
       break
+    }
     case 'null_agent':
       write(w.dir, 'g2.txt', 'G2 attempt 1\n')
       reason = 'G2: the executor returned nothing'

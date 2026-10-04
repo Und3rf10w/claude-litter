@@ -49,9 +49,11 @@ export type BoundWorktree = { name: string; path: string; branch: string }
 export type TaskBindBody = { task: string; worktree: BoundWorktree; supersedes?: string }
 
 /**
- * `task.result`: a fanout writer's or researcher's StructuredOutput, recorded
- * by the mod from the spool (output.ts), as the agent returned it plus what
- * the mod observed. `task` is null for an unbound writer.
+ * `task.result`: a fanout writer's or researcher's StructuredOutput, or an
+ * execute gate executor's (output.ts's GateResultBody, with its gate and
+ * attempt), recorded by the mod from the spool (output.ts), as the agent
+ * returned it plus what the mod observed. `task` is null for an unbound
+ * writer and for every gate executor.
  */
 export type TaskResultBody = {
   task: string | null

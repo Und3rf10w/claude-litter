@@ -49,14 +49,16 @@ export function renderVerdict(run: string, rec: StoredRecord, t: { gate: string;
   const b = rec.body
   const dims = VERDICT_DIMENSIONS.map(name => ({ name, d: (b[name] ?? null) as Dim | null }))
   const gap = text(b.plan_gap).trim()
-  const approved = dims.every(x => x.d?.pass === true) && gap === ''
+  // Absent from a verdict recorded before it (WP-AH), which reads as none.
+  const clash = text(b.rule_clash).trim()
+  const approved = dims.every(x => x.d?.pass === true) && gap === '' && clash === ''
   const failing = dims.filter(x => x.d?.pass !== true).map(x => x.name)
   const lines = [
     `# Verdict on ${t.gate}, attempt ${t.attempt}`,
     '',
     `- Run: ${run}`,
     `- Verify: ${t.verify.verify_id}, ${howEnded(t.verify)}${t.verify.green ? ', green' : ', not green'}`,
-    `- Verdict: ${approved ? 'approved' : `rejected${failing.length > 0 ? `, failing ${failing.join(', ')}` : ''}${gap ? ', with a plan gap' : ''}`}`,
+    `- Verdict: ${approved ? 'approved' : `rejected${failing.length > 0 ? `, failing ${failing.join(', ')}` : ''}${gap ? ', with a plan gap' : ''}${clash ? ', with a rule clash' : ''}`}`,
     `- Agent: ${agentLine(rec)}`,
     `- Ledger seq: ${rec.seq}`,
   ]
@@ -71,6 +73,7 @@ export function renderVerdict(run: string, rec: StoredRecord, t: { gate: string;
     if (gaps.length > 0) lines.push('', 'Gaps:', ...gaps.map(g => `- ${g}`))
   }
   lines.push('', '## Plan gap', '', gap || 'none')
+  if (clash) lines.push('', '## Rule clash', '', clash)
   const proposed = strings(b.proposed_rules)
   lines.push('', '## Rules the critic proposed', '')
   if (proposed.length === 0) lines.push('none')
@@ -83,8 +86,9 @@ export function renderVerdict(run: string, rec: StoredRecord, t: { gate: string;
  * Writes layout.ts's `verdictFile(runDir, gate, attempt)` from a `verdict`
  * record (a GateVerdictBody, or a SwarmGateVerdictBody from AC), taking the
  * gate and attempt from the verify it cites: the verify id and how it ended,
- * each dimension's pass, evidence and gaps, `plan_gap`, the proposals marked
- * "proposed, not accepted", the agent and the ledger seq. The latest verdict
+ * each dimension's pass, evidence and gaps, `plan_gap`, `rule_clash` when it
+ * names one, the proposals marked "proposed, not accepted", the agent and the
+ * ledger seq. The latest verdict
  * for a gate and attempt wins; one whose verify can't be found is logged and
  * skipped. Called by output.ts after a gate-critic's verdict is recorded; a
  * throw is logged there.

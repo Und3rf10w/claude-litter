@@ -298,9 +298,12 @@ export const written = (notes = 'Changed the file the gate names.', extra: Recor
   files: ['src/header.ts'],
   checks: ['bun test header: pass'],
   notes,
+  plan_gap: '',
   ...extra,
 })
 export const blockedWrite = (why: string) => written(why, { status: 'blocked', files: [], checks: [] })
+/** The executor's stop on a plan gap (executor.ts, "When the plan doesn't settle something"): blocked, the gap in plan_gap. */
+export const gapWrite = (gap: string, notes = 'Stopped before changing anything.') => written(notes, { status: 'blocked', files: [], checks: [], plan_gap: gap })
 
 type DimName = 'plan_adherence' | 'tests_green' | 'no_regressions' | 'rules'
 export const pass = (evidence = 'checked') => ({ pass: true, evidence, gaps: [] as string[] })
@@ -309,7 +312,7 @@ export const failDim = (evidence: string, gaps: string[] = []) => ({ pass: false
 /** A verdict on `verifyId`: every dimension passing unless `fail` replaces it. */
 export function verdict(
   verifyId: string,
-  o: { fail?: Partial<Record<DimName, { pass: boolean; evidence: string; gaps: string[] }>>; plan_gap?: string; proposed?: string[] } = {},
+  o: { fail?: Partial<Record<DimName, { pass: boolean; evidence: string; gaps: string[] }>>; plan_gap?: string; rule_clash?: string; proposed?: string[] } = {},
 ): Record<string, unknown> {
   return {
     verify_id: verifyId,
@@ -318,6 +321,7 @@ export function verdict(
     no_regressions: o.fail?.no_regressions ?? pass('no behavior changed outside the gate'),
     rules: o.fail?.rules ?? pass('R1@2 holds'),
     plan_gap: o.plan_gap ?? '',
+    rule_clash: o.rule_clash ?? '',
     proposed_rules: o.proposed ?? [],
   }
 }

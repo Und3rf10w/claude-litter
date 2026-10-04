@@ -59,14 +59,21 @@ const more = (n: number): string => (n === 1 ? 'and 1 more accepted rule; rule.f
 // ---------------------------------------------------------------------------
 // What's in force
 
-/** A rule in force, as selection uses it. `overrides`: the user rule a local one replaces here (16.6). */
-type Rule = { doc: RuleDoc; scope: RuleScope; overrides: string | null; pathless: boolean }
+/**
+ * A rule in force, as selection uses it. `overrides`: the user rule a local
+ * one replaces here (16.6). `shared`: every unit gets it, as a rule without
+ * paths or a ban.
+ */
+type Rule = { doc: RuleDoc; scope: RuleScope; overrides: string | null; shared: boolean }
 
 /**
  * The version in force of each loaded file (16.4): `delivered`, which AD sets
  * for an accepted or committed file, and to HEAD's version for an edited
  * committed one. A local rule naming one of your user rules in `overrides`
- * replaces it in this repository, and shows the override on its entry.
+ * replaces it in this repository, and shows the override on its entry. A
+ * ban is shared whatever its paths (16.5): they say what must not change,
+ * not where the work is, and a gate at risk of changing them seldom lists
+ * them in its Files.
  */
 function inForce(loaded: readonly LoadedRule[]): Rule[] {
   const kept = loaded.filter(r => r.delivered !== null && r.delivered.status === 'accepted')
@@ -76,7 +83,7 @@ function inForce(loaded: readonly LoadedRule[]): Rule[] {
     const doc = r.delivered!
     const overrides = r.scope === 'local' && typeof doc.overrides === 'string' && users.has(doc.overrides) ? doc.overrides : null
     if (overrides) replaced.add(overrides)
-    return { doc, scope: r.scope, overrides, pathless: isPathless(doc.applies.paths) }
+    return { doc, scope: r.scope, overrides, shared: doc.type === 'ban' || isPathless(doc.applies.paths) }
   })
   return rules.filter(r => !(r.scope === 'user' && replaced.has(r.doc.id)))
 }
@@ -147,10 +154,16 @@ const topSpecificity = (rule: Rule): number => Math.max(0, ...rule.doc.applies.p
 // ---------------------------------------------------------------------------
 // Rendering and the cap
 
-/** `<id>@<v>`, a local override, the type and the situation (16.5's compact form). */
+/**
+ * `<id>@<v>`, a local override, the type and the situation (16.5's compact
+ * form). A ban with paths reaches units that don't touch them, so its type
+ * names them: `(ban; protects vendor/**)`.
+ */
 function label(r: Rule): string {
   const when = oneLine(r.doc.applies.when ?? '')
-  return `${r.doc.id}@${r.doc.version}${r.overrides ? ` (overrides ${r.overrides})` : ''} (${r.doc.type})${when ? ` ${when}` : ''}`
+  const paths = r.doc.applies.paths
+  const type = r.doc.type === 'ban' && !isPathless(paths) ? `ban; protects ${paths.map(oneLine).join(', ')}` : r.doc.type
+  return `${r.doc.id}@${r.doc.version}${r.overrides ? ` (overrides ${r.overrides})` : ''} (${type})${when ? ` ${when}` : ''}`
 }
 
 /** `<id>@<v> (<type>) <when>: <rule>`, then `Exceptions: …` and `How to check: …` when it has them. */
@@ -285,11 +298,11 @@ function capAll(runRules: readonly string[], shared: readonly Cand[], units: rea
   return { run, own, versions }
 }
 
-/** The path-matched rules among `rules` for one unit's entries, each at its specificity there. */
+/** The path-matched rules among `rules` for one unit's entries, each at its specificity there; a shared one is never a unit's own. */
 function ownOf(rules: readonly Rule[], entries: readonly Entry[]): Cand[] {
   const out: Cand[] = []
   for (const r of rules) {
-    if (r.pathless) continue
+    if (r.shared) continue
     const spec = hit(r, entries)
     if (spec !== null) out.push(cand(r, spec))
   }
@@ -321,7 +334,7 @@ async function select(p: Ports, input: SelectInput, loaded: readonly LoadedRule[
     const fitting = rules.filter(r => fits(r.doc, ['execute'], EXECUTE_ROLES))
     const units: Unit[] = []
     for (const g of input.gates) units.push({ key: g.id, own: ownOf(fitting, await entriesOf(p, top, g.files)) })
-    const capped = capAll(input.runRules, fitting.filter(r => r.pathless).map(r => cand(r, 0)), units)
+    const capped = capAll(input.runRules, fitting.filter(r => r.shared).map(r => cand(r, 0)), units)
     sel.run = capped.run
     for (const g of input.gates) sel.gates[g.id] = capped.own[g.id] ?? []
     sel.versions = capped.versions
@@ -340,7 +353,7 @@ async function select(p: Ports, input: SelectInput, loaded: readonly LoadedRule[
       units.push({ key: t.id, own: ownOf(rules.filter(r => fits(r.doc, ['fanout'], [roleOf(t)])), entries) })
     }
     units.push({ key: VERIFIER, own: ownOf(rules.filter(r => fits(r.doc, ['fanout'], ['verifier'])), all) })
-    const shared = rules.filter(r => r.pathless && fits(r.doc, ['fanout'], roles)).map(r => cand(r, 0))
+    const shared = rules.filter(r => r.shared && fits(r.doc, ['fanout'], roles)).map(r => cand(r, 0))
     const capped = capAll(input.runRules, shared, units)
     sel.run = capped.run
     for (const t of input.tasks) sel.tasks[t.id] = capped.own[t.id] ?? []
@@ -349,10 +362,10 @@ async function select(p: Ports, input: SelectInput, loaded: readonly LoadedRule[
     return sel
   }
 
-  // plan: the planner's own block, every rule without paths plus those for the paths the plan or goal names.
+  // plan: the planner's own block, every rule without paths and every ban, plus those for the paths the plan or goal names.
   const fitting = rules.filter(r => fits(r.doc, ['plan'], ['planner']))
   const entries = await entriesOf(p, top, await namedPaths(p, top, input.planText, input.goal))
-  const capped = capAll(input.runRules, fitting.filter(r => r.pathless).map(r => cand(r, 0)), [{ key: PLANNER, own: ownOf(fitting, entries) }])
+  const capped = capAll(input.runRules, fitting.filter(r => r.shared).map(r => cand(r, 0)), [{ key: PLANNER, own: ownOf(fitting, entries) }])
   sel.planner = [...capped.run, ...(capped.own[PLANNER] ?? [])]
   sel.versions = capped.versions
   return sel
@@ -403,7 +416,8 @@ async function namedPaths(p: Ports, top: string, planText: string | null, goal: 
  * directory sits in its repository; a directory that doesn't exist yet (an
  * `own` worktree, made after the reservation) is a worktree's top. A node
  * with neither gets every rule that could match under its directory: at the
- * top, every rule (decision 25).
+ * top, every rule (decision 25). Every node gets the rules without paths and
+ * every ban (16.5).
  */
 export async function selectForSpawn(p: Ports, litterDir: string, input: { swarm: LiveSwarm; node: SwarmNode; dir: string }): Promise<string[]> {
   const { swarm, node, dir } = input
@@ -424,8 +438,8 @@ export async function selectForSpawn(p: Ports, litterDir: string, input: { swarm
     entries = at.prefix === '' ? null : [{ path: at.prefix, under: true }]
   }
   const own =
-    entries === null ? fitting.filter(r => !r.pathless).map(r => cand(r, topSpecificity(r))) : ownOf(fitting, entries)
-  const capped = capAll([], fitting.filter(r => r.pathless).map(r => cand(r, 0)), [{ key: NODE, own }])
+    entries === null ? fitting.filter(r => !r.shared).map(r => cand(r, topSpecificity(r))) : ownOf(fitting, entries)
+  const capped = capAll([], fitting.filter(r => r.shared).map(r => cand(r, 0)), [{ key: NODE, own }])
   return [...capped.run, ...(capped.own[NODE] ?? [])]
 }
 

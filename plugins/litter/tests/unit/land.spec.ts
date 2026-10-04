@@ -356,13 +356,14 @@ describe('land: each precondition refused on its own, nothing moved', () => {
     await refusedWith(v.verify_id, /no verdict cites/)
   })
 
-  test('a verdict that fails plan adherence, no regressions or rules, or names a plan gap', async () => {
+  test('a verdict that fails plan adherence, no regressions or rules, or names a plan gap or a rule clash', async () => {
     write('src/x.ts', 'x\n')
     for (const [patch, name] of [
       [{ plan_adherence: { ...PASS, pass: false } }, 'plan_adherence'],
       [{ no_regressions: { ...PASS, pass: false } }, 'no_regressions'],
       [{ rules: { ...PASS, pass: false } }, 'rules'],
       [{ plan_gap: 'G1 needs a schema change' }, 'plan_gap'],
+      [{ rule_clash: 'P-tests-first and L-no-fixtures clash over src/x.ts' }, 'rule_clash \\(it names one\\)'],
       [{ plan_adherence: undefined }, 'plan_adherence'],
     ] as const) {
       const v = await verifyNow()

@@ -4,7 +4,7 @@ version: 1
 status: accepted
 type: ban
 applies:
-  paths: []
+  paths: [vendor/**]
   when: ""
 export: true
 ---
