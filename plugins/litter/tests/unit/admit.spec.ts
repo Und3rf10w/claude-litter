@@ -472,6 +472,35 @@ describe('settling', () => {
     expect(state.status('w1')).toBe('running')
   })
 
+  // Only `running` (2.1.289: finalizing too) holds a settle. A `waiting` node that ended its turn is parked
+  // on children or background work, completed to the engine, so a message resumes it through admission.
+  test('the poll settles a node whose row is `waiting` (parked), as a completed one; a `running` one (finalizing) stays settling', async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    await put(w2(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1'), agent('w2', T('fixer'), 'waiting', 'o1')]
+    for (const id of ['w1', 'w2']) await admit.settleNode(p, { agentId: id, turnId: `t-${id}`, answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    await fireEvery(p)
+    expect(state.status('w1')).toBe('settling')
+    expect(policyOf('w1')?.admitted).toBe(true)
+    expect(state.status('w2')).toBe('idle')
+    expect(policyOf('w2')?.admitted).toBe(false)
+  })
+
+  test("a send to a settling node whose row turns `waiting` goes through admission as soon as the send's own check sees it", async () => {
+    await put(o1(), true)
+    await put(w1(), true)
+    p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
+    await admit.settleNode(p, { agentId: 'w1', turnId: 't1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' } as never)
+    p.onSleep = () => (p.agents = [agent('w1', T('fixer'), 'waiting', 'o1')])
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'and the docs', 'o1'), next)).toEqual({ isDelivered: true })
+    expect(p.sleeps).toEqual([250])
+    expect(calls).toEqual([{ to: 'w1', text: 'and the docs' }])
+    expect(state.status('w1')).toBe('running')
+    expect(policyOf('w1')?.admitted).toBe(true)
+  })
+
   test("the lead's turn start and end set and clear its busy state", async () => {
     await admit.leadTurnStart(p, { text: 'hi', turnId: 'L1' } as never)
     expect(state.leadBusy()).toBe(true)
@@ -611,6 +640,16 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: false }))
     const rs = (await readLaunchLedger(p, litterDir, 'alpha', launch)).records
     expect(rs.at(-1)!.body).toEqual(expect.objectContaining({ agentId: 'x1', adopted: true }))
+  })
+
+  test('one the list shows `waiting` (2.1.289) is adopted alive: it holds a place, its policy admitted', async () => {
+    await put(o1(), true)
+    await instance(1, TOK1)
+    p.agents = [agent('x1', T('fixer'), 'waiting', 'o1')]
+    await admit.adoptUnbound(p)
+    expect(state.binding('x1')).toEqual(expect.objectContaining({ node: 'fixer', n: 1, adopted: true }))
+    expect(state.status('x1')).toBe('running')
+    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: true }))
   })
 })
 

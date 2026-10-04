@@ -23,6 +23,7 @@ import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply }
 import type { BrowserSend, ClearKill, ClearReason, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
+import { agentLive } from '../ports'
 import { agentPolicyPath, hooksDir } from '../layout'
 import { readJson } from '../fsx'
 import { session } from '../session'
@@ -416,7 +417,15 @@ function messageEvent(req: SendReq, to: NodeBinding, route: Route, text: string)
   return { kind: 'message', node: to.node, agentId: to.agentId, from: req.from, to: to.agentId, route, delivery: req.delivery, text: cut(text, EVENT_TEXT_MAX) }
 }
 
-/** The node is done when the list no longer shows it running: settle it now (the hook's own check). */
+/**
+ * The node is done when the list no longer shows it running: settle it now
+ * (the hook's own check). Only `running`, not agentLive: settling covers the
+ * engine still finalizing the task after turn.complete (2.1.289's `running`),
+ * when a message would be resumed with no admission (15.4, "A node that's
+ * settling is neither"). A `waiting` node is parked on children or background
+ * work, completed to the engine, so a message resumes it through admission,
+ * as in 2.1.288; holding it settling would queue every message to it.
+ */
 async function settleIfDone(p: Ports, b: NodeBinding): Promise<void> {
   const row = (await p.listAgents()).find(a => a.id === b.agentId)
   if (row?.status !== 'running' && state.status(b.agentId) === 'settling') await finishSettle(p, b)
@@ -820,6 +829,7 @@ async function settleTick(p: Ports): Promise<void> {
       const listed = await p.listAgents()
       for (const b of settling) {
         const row = listed.find(a => a.id === b.agentId)
+        // Only `running` holds a settle, not `waiting` (settleIfDone says why).
         if (row?.status !== 'running' && state.status(b.agentId) === 'settling') await finishSettle(p, b)
       }
     }
@@ -1362,7 +1372,8 @@ export async function adoptUnbound(p: Ports): Promise<void> {
       const fits = open.filter(i => i.node === node && i.parentAgentId === parent)
       const rivals = unbound.filter(x => x.type === a.type && (x.parentId ?? null) === parent)
       try {
-        if (fits.length === 1 && rivals.length === 1) await adopt(p, dir, s, fits[0]!, a.id, a.status === 'running')
+        // Alive holds a place, `waiting` too (mid-turn on a foreground child, or parked on work that wakes it).
+        if (fits.length === 1 && rivals.length === 1) await adopt(p, dir, s, fits[0]!, a.id, agentLive(a.status))
         else await holdToBind(p, dir, s, a.id, node, parent)
       } catch (err) {
         p.log(`swarm ${s.name}: agent ${a.id} of ${a.type} wasn't adopted: ${errText(err)}`)

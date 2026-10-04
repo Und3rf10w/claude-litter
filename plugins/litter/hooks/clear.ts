@@ -15,6 +15,7 @@ import type { ListedAgent, Ports } from './ports'
 import type { CommandRunHook, PortHook, SessionEndHook } from './hooktypes'
 import type { Policy } from './hookfiles'
 import type { ClearKill, ClearReason, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
+import { agentLive } from './ports'
 import { session, updateSession } from './session'
 import { agentInfo, readPolicy, roleOf, updatePolicy } from './policy'
 import { registerRecordTool } from './ledger'
@@ -86,8 +87,12 @@ const defaults = { ...others }
 // ---------------------------------------------------------------------------
 // The hold (15.4, "Litter holds /clear while anything is running")
 
-/** One agent of a live swarm or the active run that a clear would cut short. */
-type Running = { agentId: string; who: string; swarm: string | null; node: string | null; calls: InflightCall[] }
+/**
+ * One agent of a live swarm or the active run that a clear would cut short.
+ * `held`: the list shows it `waiting`, on a foreground child or on background
+ * work that wakes it, not running a command of its own.
+ */
+type Running = { agentId: string; who: string; swarm: string | null; node: string | null; calls: InflightCall[]; held: boolean }
 
 /** Swarms whose agents run in this process: owned ones, lost ones too (their nodes may still run here). */
 const ownSwarms = (): LiveSwarm[] => liveSwarms().filter(s => !s.readOnly)
@@ -115,10 +120,10 @@ async function runAgentName(p: Ports, agentId: string, type: string | null, run:
 /**
  * Every open call of a node, a node's child or a run agent (the in-flight
  * table, filled from guard.sh's `call` lines), and every such agent the
- * list shows running, each agent once with its calls. A call of an agent the
- * list shows finished is left out: the clear has nothing of it to kill. A
- * workflow's agents aren't in the list (d.ts, AgentLoop), so a run's are
- * known by their calls.
+ * list shows alive (agentLive), each agent once with its calls. A call of
+ * an agent the list shows finished is left out: the clear has nothing of it
+ * to kill. A workflow's agents aren't in the list (d.ts, AgentLoop), so a
+ * run's are known by their calls.
  */
 async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
   const owned = new Set(ownSwarms().map(s => s.name))
@@ -131,7 +136,7 @@ async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
     const b = binding(agentId)
     const typed = a ? swarmOfType(a.type) : null
     const parent = a?.parentId !== undefined ? binding(a.parentId) : null
-    let r: Running | null = null
+    let r: Omit<Running, 'held'> | null = null
     if (b) {
       if (owned.has(b.swarm)) r = { agentId, who: nodeName(b), swarm: b.swarm, node: b.node, calls: [] }
     } else if (swarm !== null) {
@@ -144,18 +149,21 @@ async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
     } else if (run !== null && (a === null || roleOf(a.type) !== null)) {
       r = { agentId, who: await runAgentName(p, agentId, a?.type ?? null, run), swarm: null, node: null, calls: [] }
     }
-    if (r) out.set(agentId, r)
-    return r
+    if (!r) return null
+    const row: Running = { ...r, held: a?.status === 'waiting' }
+    out.set(agentId, row)
+    return row
   }
+  // Alive, `waiting` too: mid-turn on a foreground child, or parked on background work that wakes it.
   for (const c of inflight()) {
     // A call with no swarm is a run agent's: guard.sh spools calls only for nodes, their children and run agents.
     if (c.swarm !== null ? !owned.has(c.swarm) : run === null) continue
     const a = listed.get(c.agentId) ?? null
-    if (a && a.status !== 'running') continue
+    if (a && !agentLive(a.status)) continue
     const r = await entry(c.agentId, c.swarm, a)
     r?.calls.push(c)
   }
-  for (const a of listed.values()) if (a.status === 'running') await entry(a.id, null, a)
+  for (const a of listed.values()) if (agentLive(a.status)) await entry(a.id, null, a)
   return [...out.values()]
 }
 
@@ -173,9 +181,10 @@ function holdQuestion(running: readonly Running[], now: number): string {
     const detail = spoolLine(c.detail ?? '', DETAIL_MAX_BYTES)
     return detail ? `${tool} (${detail})` : tool
   }
+  // A held agent with no open call isn't between commands: it waits (the swarm pane's "held").
   const rows = running.map(r =>
     r.calls.length === 0
-      ? `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: running, between commands`
+      ? `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${r.held ? 'held: waiting on a child or background work' : 'running, between commands'}`
       : `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${r.calls.map(c => `${call(c)}, running for ${age(now - c.at)}`).join('; ')}`,
   )
   return `/clear stops these commands halfway (their shells are killed):\n${rows.join('\n')}\nClear anyway?`

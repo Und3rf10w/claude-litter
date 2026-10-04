@@ -11,7 +11,7 @@
 // whose it is: a blob naming this session id is this session's (a
 // crash-respawn and --resume keep the id, spike 11).
 
-import type { Ports } from '../ports'
+import type { AgentStatus, Ports } from '../ports'
 import type { StoredRecord } from '../records/core'
 import type { SwarmEntry } from '../hookfiles'
 import type {
@@ -23,6 +23,7 @@ import type {
 } from '../records/swarm'
 import type { LiveSwarm, NodeBinding, RecoveryCard, RecoveryNode, SwarmSpec } from './types'
 import { listLaunches, readLaunchLedger } from '../records/swarm'
+import { agentLive } from '../ports'
 import { LAUNCH_ID, NODE_ID, SWARM_NAME, swarmsDir } from '../layout'
 import { readPolicy } from '../policy'
 import { session } from '../session'
@@ -169,7 +170,7 @@ async function specAt(
 }
 
 /** `$.agent.list()` as id → status; empty, with a log line, when it fails. */
-async function listed(p: Ports): Promise<Map<string, string>> {
+async function listed(p: Ports): Promise<Map<string, AgentStatus>> {
   try {
     return new Map((await p.listAgents()).map(a => [a.id, a.status]))
   } catch (err) {
@@ -365,13 +366,20 @@ export async function recoverOwnedLaunch(
     }
   }
   const list = await listed(p)
+  // Alive keeps its place, `waiting` too: a node mid-turn on a foreground child would otherwise lose
+  // it, and its next step's wake could be refused for a cap filled meanwhile.
+  const alive = (id: string): boolean => {
+    const st = list.get(id)
+    return st !== undefined && agentLive(st)
+  }
   for (const x of bindings(name)) {
-    if (list.get(x.agentId) === 'running') markRunning(x.agentId)
+    if (alive(x.agentId)) markRunning(x.agentId)
     else markSettled(x.agentId)
   }
 
-  // 4. Each bound node's policy, so the guard covers a resumed node from its first call. Never from a
-  // spec that didn't match swarm.start: with no types, nothing resumes, and the policies stay as L wrote them.
+  // 4. Each bound node's policy, so the guard covers a resumed node from its first call, admitted as step 3
+  // placed it (litter's admission status, not the list's). Never from a spec that didn't match swarm.start:
+  // with no types, nothing resumes, and the policies stay as L wrote them.
   for (const x of verified ? bindings(name) : []) {
     const why = stopped(name).find(e => e.agentId === x.agentId)?.reason ?? null
     try {
@@ -406,7 +414,7 @@ export async function recoverOwnedLaunch(
       n: x.n,
       agentId: x.agentId,
       kind: x.kind,
-      state: list.get(x.agentId) === 'running' ? 'alive' : list.has(x.agentId) ? 'settled' : 'gone',
+      state: alive(x.agentId) ? 'alive' : list.has(x.agentId) ? 'settled' : 'gone',
       lastReport: lastReport(x.agentId)?.text ?? ledgerReport(facts, x.agentId),
       respawnOnly: x.generation < owner.generation,
     }))

@@ -15,7 +15,7 @@ import type { SwarmEntry } from '../../hooks/hookfiles'
 import type { AgentStatus, ListedAgent, ToolCallResult } from '../../hooks/ports'
 import type { RecordError, RecordOk } from '../../hooks/records/core'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
-import { launchSummaryPath, swarmOwnBranch, swarmOwnWorktreeName } from '../../hooks/layout'
+import { agentPolicyPath, launchSummaryPath, swarmOwnBranch, swarmOwnWorktreeName } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { appendLaunchRecord, newLaunchId, readLaunchLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
@@ -29,6 +29,7 @@ import {
   settleProgress,
   STOPPED_REASON,
   stopNode,
+  sweepLeftPolicies,
   writeSwarmSummary,
 } from '../../hooks/swarm/end'
 import { ackBranchMoved, resetObserveForTests } from '../../hooks/swarm/observe'
@@ -266,6 +267,10 @@ describe('stopNode', () => {
     await expect(stopNode(p, 'alpha', 'ag-y', 'hard')).rejects.toThrow("isn't a node of the swarm alpha")
     await expect(stopNode(p, 'alpha', 'ag-z', 'hard')).rejects.toThrow("isn't a node of the swarm alpha")
     expect(p.toolCalls.length).toBe(1)
+    // One the list shows `waiting` (2.1.289) is alive, and stopped the same way.
+    p.agents.push(listed('ag-w', 'waiting', 'litter:sw-alpha-boss'))
+    await stopNode(p, 'alpha', 'ag-w', 'soft')
+    expect(state.isStopped('ag-w')).toBe(true)
   })
 })
 
@@ -454,6 +459,86 @@ describe('End swarm', () => {
     p.agents[2]!.status = 'completed'
     await fireEvery(p)
     expect(await kinds()).toContain('swarm.end')
+  })
+
+  test('an unbound agent of its types the list shows `waiting` or `pending` keeps the wait open too, worded as the browser words them', async () => {
+    live()
+    p.agents.push(listed('a-stray', 'waiting'), listed('a-new', 'pending'), listed('a-idle', 'idle'))
+    await endSwarm(p, 'alpha', 'request')
+    await fireEvery(p)
+    expect(await kinds()).not.toContain('swarm.end')
+    expect(settleProgress('alpha')!.nodes).toEqual([
+      { agentId: 'a-stray', node: 'fixer', n: 0, status: 'held, not bound' },
+      { agentId: 'a-new', node: 'fixer', n: 0, status: 'starting, not bound' },
+    ])
+  })
+
+  test('a `waiting` node (2.1.289) never counts as ended: mid-turn on a foreground child, or parked after its turn, the wait, its call and its worktree stay until the list shows it completed', async () => {
+    const wt = await ownWorktree(1)
+    live(wt)
+    state.markRunning('a-fix1')
+    // Mid-turn on a foreground child: its one call in flight is the Agent call.
+    state.callStart('a-fix1', 'tu-agent', 'Agent', T0)
+    p.agents[1]!.status = 'waiting'
+    await endSwarm(p, 'alpha', 'request')
+    const stillOpen = async () => {
+      await fireEvery(p)
+      expect(await kinds()).not.toContain('swarm.end')
+      expect(existsSync(wt)).toBe(true)
+      expect(calls.map(c => c[0])).not.toContain('removeNodePolicy')
+      expect(state.liveSwarm('alpha')!.state).toBe('stopping')
+    }
+    await stillOpen()
+    // The list's `waiting` doesn't close its call: the Agent call is in flight on its child.
+    expect(settleProgress('alpha')).toEqual(
+      expect.objectContaining({
+        nodes: [{ agentId: 'a-fix1', node: 'fixer', n: 1, status: 'held' }],
+        calls: [expect.objectContaining({ agentId: 'a-fix1', toolUseId: 'tu-agent', tool: 'Agent' })],
+      }),
+    )
+
+    // Parked: its turn ended (turn.complete, then SubagentStop) on work that will wake it. Neither ends it.
+    state.callEnd('a-fix1', 'tu-agent')
+    state.markSettling('a-fix1')
+    state.noteAgentStopped('a-fix1')
+    await stillOpen()
+    // L's poll lets its place go (the list doesn't show it running); still not ended.
+    state.markSettled('a-fix1')
+    await stillOpen()
+    expect(settleProgress('alpha')).toEqual(expect.objectContaining({ nodes: [{ agentId: 'a-fix1', node: 'fixer', n: 1, status: 'held' }], calls: [] }))
+
+    // Its wake-up turn ends, and the list shows it completed: the wait settles, as before.
+    p.agents[1]!.status = 'completed'
+    await fireEvery(p)
+    expect(await kinds()).toContain('swarm.end')
+    expect(existsSync(wt)).toBe(false)
+    expect(calls.filter(c => c[0] === 'removeNodePolicy').map(c => c[1])).toEqual(['a-boss', 'a-fix1'])
+  })
+
+  test("[End, keep everything] keeps a `waiting` node's policy file, and the sweep keeps it until the list shows it completed", async () => {
+    live()
+    p.agents[1]!.status = 'waiting'
+    await endSwarm(p, 'alpha', 'keep-everything')
+    const removed = () => calls.filter(c => c[0] === 'removeNodePolicy').map(c => c[1])
+    expect(removed()).toEqual(['a-boss'])
+    expect(p.timers.size).toBe(1)
+    await fireEvery(p)
+    expect(removed()).toEqual(['a-boss'])
+    p.agents[1]!.status = 'completed'
+    await fireEvery(p)
+    expect(removed()).toEqual(['a-boss', 'a-fix1'])
+    expect(p.timers.size).toBe(0)
+  })
+
+  test("session start's sweep keeps a leftover policy file of a `waiting` agent until the list shows it completed", async () => {
+    const node = { swarm: 'alpha', launch, node: 'fixer', n: 1 }
+    await p.fs.write(agentPolicyPath(litterDir, 'a-fix1'), JSON.stringify({ v: 1, node }))
+    p.agents = [listed('a-fix1', 'waiting')]
+    await sweepLeftPolicies(p, litterDir, x => x.swarm === 'alpha', false)
+    expect(calls.filter(c => c[0] === 'removeNodePolicy')).toEqual([])
+    p.agents[0]!.status = 'completed'
+    await fireEvery(p)
+    expect(calls.filter(c => c[0] === 'removeNodePolicy')).toEqual([['removeNodePolicy', 'a-fix1']])
   })
 
   test('[End, keep everything] records settled: false, removes nothing, and lists each worktree kept', async () => {

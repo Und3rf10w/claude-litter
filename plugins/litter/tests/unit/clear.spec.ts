@@ -152,7 +152,13 @@ describe('the clear passes', () => {
     state.putBinding(bind('fix-2', { node: 'fixer', n: 2, kind: 'worker', parent: 'orch-b', type: 'litter:sw-alpha-fixer' }))
     // A call whose end never came, of an agent the list shows finished: nothing to kill.
     state.callStart('fix-2', 'tu-old', 'Bash', NOW - 600_000)
-    p.agents = [listed('orch-b', 'litter:sw-alpha-part-b', 'completed'), listed('fix-2', 'litter:sw-alpha-fixer', 'killed'), listed('x', 'Explore')]
+    // An agent of its types listed `idle` (between turns) isn't running either.
+    p.agents = [
+      listed('orch-b', 'litter:sw-alpha-part-b', 'completed'),
+      listed('fix-2', 'litter:sw-alpha-fixer', 'killed'),
+      listed('x', 'Explore'),
+      listed('t-1', 'litter:sw-alpha-fixer', 'idle'),
+    ]
     expect(await clear()).toEqual({ r: ENGINE, cleared: true })
     expect(p.asked).toEqual([])
   })
@@ -193,6 +199,22 @@ describe('the clear is held', () => {
     expect(q).toContain('- a child of part-b: Grep, running for 3 s')
     expect(q).toContain('- fixer (not bound yet): running, between commands')
     expect(q).toContain('- a child of part-b (not bound yet): running, between commands')
+  })
+
+  test('a node the list shows `waiting` (2.1.289) holds it: mid-turn, with its Agent call; parked, as held rather than between commands', async () => {
+    state.putLiveSwarm(swarm())
+    state.putBinding(bind('orch-b'))
+    state.putBinding(bind('fix-2', { node: 'fixer', n: 2, kind: 'worker', parent: 'orch-b', type: 'litter:sw-alpha-fixer' }))
+    // Mid-turn on a foreground child, whose call is in flight; and one parked on background work after its turn.
+    state.markRunning('orch-b')
+    state.callStart('orch-b', 'tu-agent', 'Agent', NOW - 20_000, 'fix the lexer')
+    p.agents = [listed('orch-b', 'litter:sw-alpha-part-b', 'waiting'), listed('fix-2', 'litter:sw-alpha-fixer', 'waiting')]
+    p.answers.push('Cancel')
+    expect(await clear()).toEqual({ r: { text: CLEAR_HELD }, cleared: false })
+    const q = p.asked[0]!.question
+    expect(q).toContain('- part-b: Agent (fix the lexer), running for 20 s')
+    expect(q).toContain('- fixer #2 under part-b: held: waiting on a child or background work')
+    expect(q).not.toContain('between commands')
   })
 
   test('an ask that rejects (nobody can answer: -p, an SDK host) holds it, with the same text', async () => {
