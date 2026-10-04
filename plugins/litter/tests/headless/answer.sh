@@ -19,7 +19,9 @@
 # and the keysh sat out its 600 s before the steps typed Launch).
 #
 # What T4-1 taught the rule: the regex is for the interview's Launch and
-# repair setting alone (attempt 4: one that matched "Leave as written" over
+# repair setting, and the mod's widen dialog's "Add them" (WP-AO: it
+# recommends neither option, and the user it asks has just said yes to the
+# file), alone (attempt 4: one that matched "Leave as written" over
 # the recommended "Add report.sh to G2" answered litter otherwise than
 # deepwork). And no option is left out for stopping: litter's interview
 # recommends fixing the plan first, and its only other option for G2 was

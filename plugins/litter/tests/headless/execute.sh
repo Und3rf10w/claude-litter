@@ -48,7 +48,9 @@
 # for at most 3 hours each (H_DRIVE_MAX, default 10800):
 # - litter: /litter:execute plan.md, its interview answered by the steps
 #   marked KEYS, with verify sh test.sh and repair: auto (main's call: the
-#   bridge is part of what litter's execute does), the plan run as written;
+#   bridge is part of what litter's execute does), the plan run as written.
+#   The mod's widen dialog (WP-AO) is answered "Add them", before Launch and
+#   in the swarm, since it follows a yes to adding the file;
 # - deepwork: S0's command with --guardrail, and agent teams on; it ends with
 #   its state archived and execute-done.sentinel written, or on a question
 #   no one answers.
@@ -100,7 +102,10 @@ compare_side() {
     h_git -C "$H_REPO" commit -q -m 'the vendor ban, an accepted project rule' || exit 1
     cld=$H_REPO/.claude/litter
     # The interview's labels to pick ahead of the recommended ones (answer.sh: jq, case-insensitive): Launch and repair auto.
-    ANSWERS='^launch|^(repair )?auto\b'
+    # And "Add them" in the mod's own widen dialog (WP-AO), which recommends neither option: the user who said yes
+    # to adding a file to a gate, before Launch or to the lead, confirms it there.
+    WIDEN='^add them$'
+    ANSWERS="^launch|^(repair )?auto\\b|$WIDEN"
     # The steps' waits (as the bridge case's): each also ends on a question
     # waiting with no one to answer it, as deepwork's side ends; ask-mark
     # moves past one the steps declined.
@@ -169,11 +174,11 @@ wait 10800 sh $H_DIR/until.sh ended1
 wait 240 sh $H_DIR/until.sh asking
 keysh 6 6 sh $H_DIR/until.sh decline
 # A plan-template swarm, until every gate has landed, the lead's questions
-# answered as the interview's are, with no label preferred. The lead ends
-# the swarm on the gate-runner's report; if it hasn't, the session says
-# to. Then generation 2's run.end. With nothing to continue the run, each
-# of these holds at once.
-keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh landed && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '' $H_DIR/answer-mark $H_DIR/ask-mark
+# answered as the interview's are, with no label preferred but the widen
+# dialog's "Add them". The lead ends the swarm on the gate-runner's report;
+# if it hasn't, the session says to. Then generation 2's run.end. With
+# nothing to continue the run, each of these holds at once.
+keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh landed && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$WIDEN' $H_DIR/answer-mark $H_DIR/ask-mark
 wait 600 sh $H_DIR/until.sh swarm_ended
 sendsh $end_cmd
 wait 900 sh $H_DIR/until.sh over
