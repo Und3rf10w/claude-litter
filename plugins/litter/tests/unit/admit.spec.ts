@@ -490,8 +490,16 @@ describe('settling', () => {
     expect(state.isParked('w2')).toBe(true)
     expect(policyOf('w2')?.admitted).toBe(false)
     expect(state.countFor('alpha', 'o1', 'fixer')).toBe(2)
-    // The poll keeps running while it's parked.
+    // w1 settles; the poll keeps running while w2 is parked, and stops once it has ended.
+    p.agents = [agent('w1', T('fixer'), 'completed', 'o1'), agent('w2', T('fixer'), 'waiting', 'o1')]
+    await fireEvery(p)
+    expect(state.status('w1')).toBe('idle')
+    expect(state.isParked('w2')).toBe(true)
     expect(p.timers.size).toBe(1)
+    p.agents = [agent('w1', T('fixer'), 'completed', 'o1'), agent('w2', T('fixer'), 'completed', 'o1')]
+    await fireEvery(p)
+    expect(state.isParked('w2')).toBe(false)
+    expect(p.timers.size).toBe(0)
   })
 
   test("a send to a settling node whose row turns `waiting` goes through admission as soon as the send's own check sees it", async () => {
@@ -592,7 +600,7 @@ describe('parked nodes', () => {
   }
 
   const PARKED_W1 =
-    '1 of them is parked: fixer #1 (w1), which ended its turn while its own agents or background work run, and keeps its place until it ends; wait for one to finish, or go on without this agent'
+    '1 of them is parked: fixer #1 (w1), which ended its turn with its own agents or background work still running, and keeps its place until it ends; wait for one to finish, or go on without this agent'
 
   test('its wake is admitted at a full cap and at its parent\'s max, on its own place: the count never passes the cap', async () => {
     await parkedW1()
@@ -673,6 +681,48 @@ describe('parked nodes', () => {
       expect(state.isParked('w1')).toBe(true)
       expect(state.countSwarm('alpha')).toBe(2)
     }
+  })
+
+  test("a resume its parent starts while the poll reads the list keeps its place and its admitted policy: the poll frees nothing it holds", async () => {
+    await parkedW1()
+    // The list now shows it completed, but its parent resumes it meanwhile: admitted, its send in flight.
+    p.agents = [agent('o1', T('part-a'), 'running'), agent('w1', T('fixer'), 'completed', 'o1')]
+    let entered!: () => void
+    const inFlight = new Promise<void>(r => (entered = r))
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    const next = (async () => {
+      entered()
+      await gate
+      return { isDelivered: true }
+    }) as never
+    const sent = send(sendE('w1', 'and the docs', 'o1'), next)
+    await inFlight
+    expect(policyOf('w1')?.admitted).toBe(true)
+    await fireEvery(p)
+    expect(state.isParked('w1')).toBe(true)
+    expect(policyOf('w1')?.admitted).toBe(true)
+    release()
+    expect(await sent).toEqual({ isDelivered: true })
+    expect(state.status('w1')).toBe('running')
+    expect(policyOf('w1')?.admitted).toBe(true)
+    expect(state.countSwarm('alpha')).toBe(2)
+  })
+
+  test("another session's swarm, read-only here, is never settled, parked or freed by this session's poll, nor its policies written", async () => {
+    state.putLiveSwarm(live({ readOnly: true }))
+    await put(o1(), false)
+    await put(w1(), true)
+    state.markParked('w1')
+    state.putBinding(w2())
+    state.markSettling('w2')
+    p.agents = []
+    // A tool call kicks the poll: nothing of a read-only swarm is its work.
+    await tool({ node: 'fixer#1', text: 'hi' })
+    expect(p.timers.size).toBe(0)
+    expect(state.isParked('w1')).toBe(true)
+    expect(state.status('w2')).toBe('settling')
+    expect(policyOf('w1')?.admitted).toBe(true)
   })
 
   test('a message to it goes as to a finished node, never queued: its parent resumes it on its own place, anyone else is readdressed', async () => {

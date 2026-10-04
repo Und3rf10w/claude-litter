@@ -19,6 +19,7 @@ import {
   liveSwarm,
   markParked,
   markRunning,
+  markSettling,
   noteQuestion,
   noteReport,
   putBinding,
@@ -160,9 +161,12 @@ describe('recoverSwarms, a swarm this session owns', () => {
     expect(w.calls.adopted).toBe(1)
   })
 
-  // WP-AJ: `waiting` is parked, as the settle poll parks it, so the two paths agree.
-  test('a node the list shows `waiting` (2.1.289) is parked: its place held, its policy not admitted until its next step, alive on the card; `pending` runs; a completed one settles', async () => {
+  // WP-AJ: `waiting` after its turn is parked, as the settle poll parks it, so the two paths agree.
+  test('a node the list shows `waiting` (2.1.289) after its turn is parked: its place held, its policy not admitted until its next step, alive on the card; `pending` runs; a completed one settles', async () => {
     await liveInSessionA()
+    // lead-a's turn.complete came before the restart: settling in the store's copy.
+    markSettling('ag-l1')
+    await settle(w.p)
     const { q } = await crashRespawn()
     q.agents = [
       { id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' },
@@ -185,6 +189,26 @@ describe('recoverSwarms, a swarm this session owns', () => {
       ['ag-f1', 'settled'],
       ['ag-d1', 'alive'],
     ])
+  })
+
+  test('a `waiting` node the store shows mid-turn (no turn.complete since) is on a foreground child: it runs on, admitted', async () => {
+    await liveInSessionA()
+    const { q } = await crashRespawn()
+    q.agents = [{ id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' }]
+    await recoverSwarms(q, w.litterDir)
+    expect(status('ag-l1')).toBe('running')
+    expect(isParked('ag-l1')).toBe(false)
+    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(true)
+  })
+
+  test('with no store copy, a `waiting` node is parked: nothing says it is mid-turn', async () => {
+    await liveInSessionA()
+    const { q } = await crashRespawn()
+    q.storeMap.delete(swarmStateKey(w.litterDir, 'alpha'))
+    q.agents = [{ id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' }]
+    await recoverSwarms(q, w.litterDir)
+    expect(isParked('ag-l1')).toBe(true)
+    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(false)
   })
 
   test('a node parked at the crash held a place there, so it is on the card with the ones that ran', async () => {

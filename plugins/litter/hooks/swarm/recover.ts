@@ -332,6 +332,8 @@ export async function recoverOwnedLaunch(
   const mirror = await loadSwarm(p, litterDir, name)
   // Who held a place at the crash, before the table is rebuilt: a parked node too, its work unfinished.
   const wasRunning = new Set(mirror ? bindings(name).filter(x => status(x.agentId) !== 'idle' || isParked(x.agentId)).map(x => x.agentId) : [])
+  // Who was mid-turn: running, with no turn.complete since (a hot reload keeps them going).
+  const midTurn = new Set(mirror ? bindings(name).filter(x => status(x.agentId) === 'running').map(x => x.agentId) : [])
   const { spec, verified, briefs } = await specAt(p, litterDir, b, mirror)
   if (!spec) {
     p.log(`swarm ${name}: neither $.store nor revision ${b.revision} has its spec; it isn't recovered`)
@@ -368,15 +370,15 @@ export async function recoverOwnedLaunch(
     }
   }
   const list = await listed(p)
-  // Alive keeps its place. `waiting` is parked, as the settle poll parks it (WP-AJ): it keeps its place, and
-  // its next step is admitted on it, so a cap filled meanwhile can't refuse it. That step is its wake, or,
-  // for a node mid-turn on a foreground child, the step after the child returns.
+  // Alive keeps its place. `waiting` after its turn is parked, as the settle poll parks it (WP-AJ): it keeps
+  // its place, and its wake is admitted on it, so a cap filled meanwhile can't refuse it. A `waiting` node the
+  // mirror shows mid-turn (running, no turn.complete since) is on a foreground child: it runs on, admitted.
   const alive = (id: string): boolean => {
     const st = list.get(id)
     return st !== undefined && agentLive(st)
   }
   for (const x of bindings(name)) {
-    if (list.get(x.agentId) === 'waiting') markParked(x.agentId)
+    if (list.get(x.agentId) === 'waiting' && !midTurn.has(x.agentId)) markParked(x.agentId)
     else if (alive(x.agentId)) markRunning(x.agentId)
     else markSettled(x.agentId)
   }

@@ -126,7 +126,8 @@ const PART = {
     bindings: [],
     admission: [
       { agentId: 'ag-1', status: 'running', scope: null, swarm: 'alpha', node: 'lead', parent: null, kind: 'orchestrator' },
-      { agentId: 'ag-f1', status: 'running', scope: null, swarm: 'alpha', node: 'fixer', parent: 'ag-1', kind: 'worker' },
+      // The fixer's turn.complete came before the reload: settling, so the list's `waiting` is a park, not a foreground child.
+      { agentId: 'ag-f1', status: 'settling', scope: null, swarm: 'alpha', node: 'fixer', parent: 'ag-1', kind: 'worker' },
     ],
     stopped: [],
     queue: [],
@@ -408,7 +409,7 @@ describe('a parked node keeps its place (WP-AJ)', () => {
     expect(denied).toEqual({
       deny:
         'litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce), and 1 of them is parked: fixer #1 (ag-f1), ' +
-        'which ended its turn while its own agents or background work run, and keeps its place until it ends; wait for one to finish, or go on without this agent',
+        'which ended its turn with its own agents or background work still running, and keeps its place until it ends; wait for one to finish, or go on without this agent',
     })
 
     // Its wake at the full cap: counted already, so no count or cap refuses it; the step reaches the engine as it came.

@@ -573,7 +573,7 @@ export function markSettling(agentId: string): void {
  * agents or background work, which will wake it. It keeps its place, in the
  * swarm's count and its parent's, and its scope unless given; one that holds
  * none takes its binding's, and an agent with neither is left as it is.
- * `markRunning`, `promote` and `markSettled` clear it.
+ * `markRunning`, `promote`, `markSettling` and `markSettled` clear it.
  */
 export function markParked(agentId: string, scope?: WriteScope | null): void {
   const cur = admission.get(agentId)

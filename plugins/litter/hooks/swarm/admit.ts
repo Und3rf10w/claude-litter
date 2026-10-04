@@ -47,7 +47,7 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 /** A settling node's send waits up to this long, checking every step (15.4, "settling"). */
 export const SETTLE_WAIT_MS = 2_000
 export const SETTLE_STEP_MS = 250
-/** The settle poll: from a node's turn.complete until the list stops showing it running. */
+/** The settle poll: from a node's turn.complete until the list stops showing it running, and while a node is parked. */
 export const SETTLE_POLL_MS = 500
 /** The lead's `<swarm>` block, every live swarm's together, in UTF-8 bytes (litter-prompts.md). */
 export const CONTEXT_MAX_BYTES = 1024
@@ -156,8 +156,8 @@ export function delegatorsOf(agentId: string | null): Set<string> {
 }
 
 /**
- * The running or reserved writer whose scope meets `scope`, leaving out the
- * instances it delegates from (`above`, from delegatorsOf), and a child
+ * The running, parked or reserved writer whose scope meets `scope`, leaving
+ * out the instances it delegates from (`above`, from delegatorsOf), and a child
  * reservation one of them is making: a parent hands work to a worker in its
  * own directory, and holds its own scope while it waits; a node's children
  * work in its scope (WP-L's reading of 15.4). Sibling instances still meet,
@@ -191,9 +191,9 @@ const PARKED_NAMED = 5
 
 /**
  * The parked among the agents a refusal counts, in words, or null when none
- * is (WP-AJ). A parked agent ended its turn while its own agents or
- * background work run, and keeps its place until it ends, so the one refused
- * knows to wait for it, or to go on without the agent it asked for.
+ * is (WP-AJ). A parked agent ended its turn with its own agents or
+ * background work still running, and keeps its place until it ends, so the
+ * one refused knows to wait for it, or to go on without the agent it asked for.
  */
 function parkedClause(ids: readonly string[]): string | null {
   if (ids.length === 0) return null
@@ -203,8 +203,8 @@ function parkedClause(ids: readonly string[]): string | null {
   })
   const more = ids.length > PARKED_NAMED ? ` and ${ids.length - PARKED_NAMED} more` : ''
   return ids.length === 1
-    ? `1 of them is parked: ${names[0]}, which ended its turn while its own agents or background work run, and keeps its place until it ends`
-    : `${ids.length} of them are parked: ${names.join(', ')}${more}, which ended their turns while their own agents or background work run, and keep their places until they end`
+    ? `1 of them is parked: ${names[0]}, which ended its turn with its own agents or background work still running, and keeps its place until it ends`
+    : `${ids.length} of them are parked: ${names.join(', ')}${more}, which ended their turns with their own agents or background work still running, and keep their places until they end`
 }
 
 /** A count's refusal: `at`, then the parked it counts when there are any. */
@@ -406,8 +406,9 @@ function admitWake(b: NodeBinding): Wake {
     state.promote(held.key, b.agentId)
     return { ok: true, patch: false }
   }
-  // Woken while settling (parked, or the engine's stranded-message resume): it keeps its place. Its policy
-  // is still admitted, but the patch removes the done/ its stop may have written: it runs again (R2).
+  // Woken while settling (the engine's stranded-message resume, or a wake before the list shows it parked): it
+  // keeps its place. Its policy is still admitted, but the patch removes the done/ its stop may have written: it
+  // runs again (R2).
   if (state.status(b.agentId) === 'settling') {
     state.markRunning(b.agentId)
     return { ok: true, patch: true }
@@ -884,11 +885,34 @@ async function park(p: Ports, b: NodeBinding): Promise<void> {
   if (dir) await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted after it parked: ${errText(err)}`))
 }
 
+/**
+ * A parked node the list shows ended: its place frees, as a settle's does,
+ * and the messages waiting for room may be handed on. Its policy stays as
+ * its park (or recovery, or adoption) wrote it, not admitted, all in one
+ * synchronous step, so nothing a resume writes meanwhile is undone.
+ */
+function unpark(b: NodeBinding): void {
+  state.markSettled(b.agentId)
+  for (const q of state.queued(b.swarm)) waitingRoom.delete(q.id)
+}
+
 /** A queued message the lead can deliver now: its node idle (parked too), not handed already, not waiting for room. */
 const deliverable = (q: QueuedMessage): boolean => !handed.has(q.id) && !waitingRoom.has(q.id) && state.status(q.agentId) === 'idle'
 
+/**
+ * The bindings of swarms this session runs. A read-only swarm's table is its
+ * owner's copy, and a lost one's another session's now: the poll settles,
+ * parks and frees none of theirs, nor writes their policies.
+ */
+function ownBindings(): NodeBinding[] {
+  return state.bindings().filter(b => {
+    const s = state.liveSwarm(b.swarm)
+    return s !== null && !s.readOnly && !s.lost
+  })
+}
+
 function hasWork(): boolean {
-  return state.bindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId)) || state.queued().some(deliverable)
+  return ownBindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId)) || state.queued().some(deliverable)
 }
 
 /** Starts the settle poll when something settles, is parked, or waits to be handed to the lead. */
@@ -901,16 +925,20 @@ async function settleTick(p: Ports): Promise<void> {
   if (ticking) return
   ticking = true
   try {
-    const settling = state.bindings().filter(b => state.status(b.agentId) === 'settling')
-    const parked = state.bindings().filter(b => state.isParked(b.agentId))
+    const own = ownBindings()
+    const settling = own.filter(b => state.status(b.agentId) === 'settling')
+    const parked = own.filter(b => state.isParked(b.agentId))
     if (settling.length > 0 || parked.length > 0) {
       const listed = await p.listAgents()
       // Only `running` holds a settle, not `waiting`, which parks it (settleIfDone says why).
       for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
       // A parked node goes once the list shows it ended (completed, failed or killed) or gone; alive, it stays.
+      // Checked again after the list's await: a resume or a wake may have taken it meanwhile. Its policy was
+      // written not admitted when it parked, so only its place goes: a resume that has just written it admitted
+      // keeps that.
       for (const b of parked) {
         const row = listed.find(a => a.id === b.agentId)
-        if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId)) await finishSettle(p, b)
+        if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId) && !resuming(b.agentId)) unpark(b)
       }
     }
     handOff(p)
