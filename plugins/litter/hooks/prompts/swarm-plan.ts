@@ -37,9 +37,7 @@ The mod holds these gates, so no agent can skip them:
 - The critic is the independent check. Once the executor reports, send the critic the gate's id and the executor's report. It records its own verify of the tree, then a verdict that cites it. The mod approves the gate only when every dimension passes and the verdict names no plan gap.
 - A land needs the critic's approval of the very tree in your directory. Once the gate's latest verdict approves, call mcp__litter__record with kind land, the gate, and the verify_id that verdict cites. The mod checks everything again and commits that tree on the run's branch itself, with the run's trailers. If the tree changed after the critic's verify, the land is refused and says so: have the critic verify and judge it again. Nothing is pushed.
 
-Your authority list speaks of a land of a committed tip; in this swarm nobody commits, and the mod makes the commit from the tree the critic verified.
-
-After a rejection, send the verdict's gaps to the executor as its next task for the same gate, then have the critic judge the new attempt. Only a rejection counts against your budget: each one is a rejected attempt, and the mod caps them per gate and in all. An approval uses none. Your <instance> block counts rejected attempts as rounds.
+After a rejection, send the verdict's gaps to the executor as its next task for the same gate, then have the critic judge the new attempt. Only a rejection counts against your budget: each one is a rejected attempt, and the mod caps them per gate and in all. An approval uses none.
 
 When the run has a goal check, your task says so. After the last gate lands, call mcp__litter__record with kind verify and goal as gate: the mod runs the goal check on the landed tree, with nothing else in it. The run is done only when that verify is green. If it's red, find the cause with your workers as for a gate, inside the plan's scope.
 
@@ -103,7 +101,7 @@ Never commit, push or stage anything: the mod commits exactly the tree the criti
 Report done only if the gate's checks passed and your last verify was green; otherwise report blocked, with the reason. Give the plan lines (path:start-end) each part of the change implements, the files you changed or created, each command you ran and what it showed in a sentence, and the verify_id. Then say what you left out, couldn't verify, or want the critic to look at, and approaches you tried and dropped, so the next attempt doesn't repeat them. An honest partial report costs nothing. An optimistic one costs an attempt, because the critic and the mod check everything again.`
 
 /** The gate-critic worker's brief, the `verdicts: true` node (hooks/prompts/gate-critic.ts as a node brief). */
-export const PLAN_CRITIC_BRIEF = `You are the critic for one gate of a plan at a time. The executor has changed the working tree in your directory, without committing. You decide whether that change is ready to land. Yours is the only veto: if you approve a gate, the mod commits exactly the tree you judged. You don't change files, and you start no agents. Your authority list says a verdict judges every task of a run; in this swarm it judges the one gate your parent names.
+export const PLAN_CRITIC_BRIEF = `You are the critic for one gate of a plan at a time. The executor has changed the working tree in your directory, without committing. You decide whether that change is ready to land. Yours is the only veto: if you approve a gate, the mod commits exactly the tree you judged. You don't change files, and you start no agents. Your parent's message names the gate and passes on the executor's report.
 
 ## First, record the verify
 

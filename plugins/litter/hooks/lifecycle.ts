@@ -2837,14 +2837,27 @@ async function budgetNow(p: Ports, litterDir: string, r: RunRepairBody): Promise
  * its verifies, each round's verdict, its land (or what refused one), and how
  * it ended. From the run's ledger, the records between its run.repair and its
  * run.end (decision 1: the swarm's gate records go there).
+ *
+ * An execute run's generation is its plan-template swarm's (phase 3): a round
+ * is a rejecting verdict, so an approval is listed with its gate and no round,
+ * and each gate it landed is listed. A fanout's lines are as before.
  */
 async function repairPart(p: Ports, ref: RunRef, json: RunJson | null, records: readonly StoredRecord[], g: Generation): Promise<string[]> {
   const r = g.repair!
   const mine = records.filter(x => x.seq > g.seq && (g.endSeq === null || x.seq < g.endSeq))
   const { budget, raised } = await budgetNow(p, ref.litterDir, r)
+  const execute = (json?.workflow ?? records.find(x => x.kind === 'run.start')?.body.workflow) === 'execute'
   const verifies = mine.filter(x => x.kind === 'verify' && typeof x.body.verify_id === 'string')
   const green = verifies.filter(x => x.body.green === true).length
-  const verdicts = mine.filter(x => x.kind === 'verdict' && typeof x.body.verify_id === 'string')
+  const verdicts = mine.map(v => {
+    if (v.kind !== 'verdict' || typeof v.body.verify_id !== 'string') return null
+    const tasks = Array.isArray(v.body.tasks) ? (v.body.tasks as { id?: unknown; pass?: unknown }[]) : []
+    const failing = tasks.filter(t => t !== null && typeof t === 'object' && t.pass !== true && typeof t.id === 'string').map(t => String(t.id))
+    const approved = typeof v.body.approved === 'boolean' ? v.body.approved : tasks.length > 0 && failing.length === 0
+    return { v, failing, approved }
+  }).filter(x => x !== null)
+  // Decision 1: an execute generation's rounds are its rejections; a fanout's, every verdict (2b-2).
+  const rounds = execute ? verdicts.filter(x => !x.approved).length : verdicts.length
   const lines = [
     '',
     `## Repair generation ${g.n}`,
@@ -2852,19 +2865,25 @@ async function repairPart(p: Ports, ref: RunRef, json: RunJson | null, records: 
     `- Swarm: ${r.swarm}, launch ${r.launch}`,
     `- Budget: ${counted(budget.rounds, 'round')} and ${counted(budget.agents, 'agent')}${raised ? ` (raised from ${r.budget.rounds} and ${r.budget.agents})` : ''}`,
     `- Verifies: ${verifies.length} (${green} green)`,
-    `- Rounds: ${verdicts.length} of ${budget.rounds}`,
+    `- Rounds: ${rounds} of ${budget.rounds}`,
   ]
-  verdicts.forEach((v, i) => {
-    const tasks = Array.isArray(v.body.tasks) ? (v.body.tasks as { id?: unknown; pass?: unknown }[]) : []
-    const failing = tasks.filter(t => t !== null && typeof t === 'object' && t.pass !== true && typeof t.id === 'string').map(t => String(t.id))
-    const approved = typeof v.body.approved === 'boolean' ? v.body.approved : tasks.length > 0 && failing.length === 0
-    const round = typeof v.body.round === 'number' ? v.body.round : i + 1
-    lines.push(`  ${round}. verify ${String(v.body.verify_id)}: ${approved ? 'approved' : `rejected${failing.length > 0 ? `, failing ${failing.join(', ')}` : ''}`}`)
+  verdicts.forEach(({ v, failing, approved }, i) => {
+    const gate = execute && typeof v.body.gate === 'string' ? ` (gate ${v.body.gate})` : ''
+    const what = `verify ${String(v.body.verify_id)}${gate}: ${approved ? 'approved' : `rejected${failing.length > 0 ? `, failing ${failing.join(', ')}` : ''}`}`
+    // A plan-template approval has no round, so no index of its own; a fanout's verdict keeps its place as before.
+    const round = typeof v.body.round === 'number' ? v.body.round : execute ? null : i + 1
+    lines.push(round === null ? `  - ${what}` : `  ${round}. ${what}`)
   })
-  const land = g.land !== null ? records.find(x => x.kind === 'land' && x.body.commit === g.land) : undefined
-  if (land) {
-    const branch = String(json?.ref ?? land.body.ref ?? '').replace(/^refs\/heads\//, '')
-    lines.push(`- Landed: ${json?.base ?? String(land.body.old ?? '')}..${String(land.body.commit)} on ${branch}, verify ${String(land.body.verify_id)}`)
+  const branchOf = (land: StoredRecord): string => String(json?.ref ?? land.body.ref ?? '').replace(/^refs\/heads\//, '')
+  // A plan-template swarm lands gate by gate: each land whose intent (or itself) is in the generation, as runState counts them.
+  const intents = new Set(mine.filter(x => x.kind === 'land.intent' || x.kind === 'land').map(x => x.body.verify_id))
+  const lands = execute ? records.filter(x => x.kind === 'land' && typeof x.body.verify_id === 'string' && intents.has(x.body.verify_id)) : []
+  const land = !execute && g.land !== null ? records.find(x => x.kind === 'land' && x.body.commit === g.land) : undefined
+  if (lands.length > 0) {
+    lines.push(`- Landed: ${counted(lands.length, 'gate')} on ${branchOf(lands[0]!)}`)
+    for (const x of lands) lines.push(`  - ${String(x.body.gate)}: ${String(x.body.commit)}, verify ${String(x.body.verify_id)}`)
+  } else if (land) {
+    lines.push(`- Landed: ${json?.base ?? String(land.body.old ?? '')}..${String(land.body.commit)} on ${branchOf(land)}, verify ${String(land.body.verify_id)}`)
   } else {
     lines.push('- Landed: no')
     for (const x of mine) {

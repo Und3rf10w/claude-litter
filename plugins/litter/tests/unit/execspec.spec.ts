@@ -270,4 +270,14 @@ describe("swarm-plan.ts's texts", () => {
     expect(PLAN_ADVERSARY_BRIEF).toContain('You change nothing')
     for (const brief of [PLAN_EXECUTOR_BRIEF, PLAN_CRITIC_BRIEF, PLAN_ADVERSARY_BRIEF]) expect(brief).toContain('<rules>')
   })
+
+  test("the briefs don't correct the authority and budget lines, which now hold for this swarm (WP-AG)", () => {
+    for (const [key, brief] of Object.entries(briefs)) {
+      expect({ key, corrects: /Your authority list (speaks|says)|counts rejected attempts as rounds/.test(brief) }).toEqual({ key, corrects: false })
+    }
+    // What they add stays: a rejection is what the budget counts, and nobody but the mod commits.
+    expect(PLAN_RUNNER_BRIEF).toContain('Only a rejection counts against your budget: each one is a rejected attempt, and the mod caps them per gate and in all. An approval uses none.')
+    expect(PLAN_RUNNER_BRIEF).toContain('nobody in this swarm commits')
+    expect(PLAN_CRITIC_BRIEF).toContain('You are the critic for one gate of a plan at a time.')
+  })
 })

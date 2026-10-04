@@ -422,7 +422,8 @@ async function judged(p: Ports, call: SwarmGateCall, g: Gated, input: VerdictIn)
 // land
 
 /**
- * The repaired tree's land (land.ts, landRepaired), then each land record of
+ * The repaired tree's land (land.ts, landRepaired), once the budget is
+ * counted (a count that fails lands nothing), then each land record of
  * the generation for this verify that no gate event mirrors yet: the ones
  * this land made, and one an earlier reconcile made (a crash's land recovered
  * at session.start). Z's End reads the `landed` event to end done.
@@ -438,6 +439,16 @@ async function gateLand(p: Ports, call: SwarmGateCall, g: Gated): Promise<Record
   const gate = call.input.gate
   if (gate !== undefined && gate !== FANOUT_GATE) {
     return fail(`litter: a repair swarm lands its run's integration, gate '${FANOUT_GATE}'; leave 'gate' out`, 'gate', [FANOUT_GATE])
+  }
+  // The spawns first, caught up from the launch's swarm.node records, as planLand does: landRepaired's budget
+  // check reads the count, and a land after a reload may come before any spawn's recount. A land already
+  // made for this verify answers as it did (landRepaired), so it isn't counted again.
+  if (!g.records.some(r => r.kind === 'land' && r.body.verify_id === verifyId)) {
+    try {
+      await budgetCounted(p, call.litterDir, g.s.name)
+    } catch (err) {
+      return notLanded(`swarm ${g.s.name}'s repair budget couldn't be counted, so nothing lands: ${errText(err)}`)
+    }
   }
   const ctx: RecordCtx = { p, caller: { agentId: call.caller.agentId, agentType: g.by.source === 'agent' ? g.by.agentType : null }, litterDir: call.litterDir, options: call.options }
   const reply = await landRepaired(ctx, g.f, { verifyId, swarm: g.s.name, agentId: g.b.agentId })

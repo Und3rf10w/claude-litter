@@ -649,7 +649,10 @@ export type RepairPart = {
   link: RunLink
   /** As it stands: the live swarm's, else the last `budget` event's, else `swarm.start`'s; null when none is recorded. */
   budget: RepairBudget | null
-  /** Verdicts on distinct verifies (decision 6). */
+  /**
+   * Verdicts with a round, on distinct verifies (decision 6). A plan-template
+   * swarm's approval has none, since only a rejection is a round (phase 3, decision 1).
+   */
   rounds: number
   /** Workers and children spawned, adoptions not counted (decision 7). */
   agents: number
@@ -665,7 +668,8 @@ export function repairPart(records: readonly StoredRecord[], live: LiveSwarm | n
   const gates = gateEvents(records)
   const raises = budgetEvents(records)
   const budget = live?.budget ?? raises.at(-1)?.body.budget ?? start?.budget ?? null
-  const rounds = new Set(gates.filter(g => g.body.record === 'verdict').map(g => g.body.verify_id)).size
+  // A fanout's verdict mirrors always carry a round; a plan-template approval's has none, and isn't one.
+  const rounds = new Set(gates.filter(g => g.body.record === 'verdict' && typeof g.body.round === 'number').map(g => g.body.verify_id)).size
   const spawned = new Set<string>()
   for (const r of records) {
     const b = r.body

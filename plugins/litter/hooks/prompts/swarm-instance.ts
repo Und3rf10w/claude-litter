@@ -12,7 +12,7 @@
 /**
  * Slots: {nonce}, {node}, {n}, {swarm}, {parent_node}, {parent_route}, {cwd},
  * {branch} (unset drops its line), {spawns_left}, {budget} (REPAIR_BUDGET_LEFT
- * for a repair swarm; unset drops its line), {token}.
+ * or REPAIR_BUDGET_LEFT_PLAN for a repair swarm; unset drops its line), {token}.
  */
 export const SWARM_INSTANCE = `<instance id="{nonce}">
 You are {node} #{n} in swarm {swarm}.
@@ -25,11 +25,17 @@ Bind token: {token}
 </instance id="{nonce}">`
 
 /**
- * {budget} for a repair swarm (plan 15.11, "The repair budget"), at this
- * spawn, after its own count. Slots: {rounds_left}, {rounds}, {agents_left}, {agents}.
+ * {budget} for a fanout's repair swarm (plan 15.11, "The repair budget"), at
+ * this spawn, after its own count. Slots: {rounds_left}, {rounds}, {agents_left}, {agents}.
  */
 export const REPAIR_BUDGET_LEFT =
   "{rounds_left} of {rounds} rounds (a round is the critic's verdict on a new verify), {agents_left} of {agents} agents (the workers and agents the swarm's nodes start). Past either, litter refuses the next spawn or land: report blocked to your parent, saying what you need."
+/**
+ * {budget} for a plan-template swarm (an execute run's, phase 3), whose round
+ * is a rejecting verdict only (decision 1). The same slots as REPAIR_BUDGET_LEFT.
+ */
+export const REPAIR_BUDGET_LEFT_PLAN =
+  "{rounds_left} of {rounds} rounds (a round is a verdict that rejects an attempt; an approval uses none), {agents_left} of {agents} agents (the workers and agents the swarm's nodes start). Past either, litter refuses the next spawn or land: report blocked to your parent, saying what you need."
 
 /** Slots: {nonce}, {rules} (RULES_NONE until phase 3 selects them). */
 export const SWARM_RULES = `<rules id="{nonce}">

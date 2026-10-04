@@ -95,16 +95,25 @@ export const AUTHORITY_WORKTREE_OPS_NO = 'Worktree commands (git worktree, git -
 export const AUTHORITY_WORKTREE_OPS_YES = 'Worktree commands (git worktree, git -C into another worktree): yes.'
 /**
  * Composed (2b-2, plan 15.10): `authority.verify`. Only a repair swarm a run
- * starts has it; the mod runs the run's own verify command, never one a node names.
+ * starts has it; the mod runs the run's own verify command, never one a node
+ * names. A plan-template swarm's verify names its plan gate (phase 3, WP-AG).
  */
 export const AUTHORITY_VERIFY_YES =
-  "Verify: yes. Call mcp__litter__record with kind verify, and nothing else, and the mod runs the run's own verify command in your directory and records the result. Cite the verify_id it returns; don't run the verify command yourself in its place, since only the mod's record counts."
-/** Composed (2b-2): `verdicts: true`. The critic's veto: a land needs an approving verdict that cites the verify its own agent recorded. */
+  "Verify: yes. Call mcp__litter__record with kind verify (in a plan-template swarm, with its gate), and the mod runs the run's own verify command in your directory and records the result. Cite the verify_id it returns; don't run the verify command yourself in its place, since only the mod's record counts."
+/**
+ * Composed (2b-2): `verdicts: true`. The critic's veto: a land needs an
+ * approving verdict that cites the verify its own agent recorded. A fanout's
+ * judges every task; a plan-template swarm's, one plan gate (phase 3, decision 14).
+ */
 export const AUTHORITY_VERDICTS_YES =
-  "Verdicts: yes. Your verdict record is the independent check a land needs. It counts only when it cites a verify you recorded yourself on the tree you judged, and it judges every task of the run once. You never change the tree you judge."
-/** Composed (2b-2): `authority.land`. The mod lands only the committed tip a green verify and an approving verdict cover. */
+  "Verdicts: yes. Your verdict record is the independent check a land needs. It counts only when it cites a verify you recorded yourself on the tree you judged, and it judges every task of a fanout once, or the one plan gate it names. You never change the tree you judge."
+/**
+ * Composed (2b-2): `authority.land`. The mod lands only the tree a green
+ * verify and an approving verdict cover: a fanout's committed integration tip,
+ * or a plan gate's tree in the run's checkout (phase 3, AC's landGate).
+ */
 export const AUTHORITY_LAND_YES =
-  "Land: yes. Once a verdict approves a green verify of the integration branch's committed tip, call mcp__litter__record with kind land and that verify_id. The mod checks everything again before it lands, and refuses a land of any other tree. Nothing is pushed."
+  "Land: yes. Once a verdict approves a green verify, call mcp__litter__record with kind land and that verify_id, and in a plan-template swarm with its gate. The mod checks everything again before it lands, and refuses a land of any tree but the one that verify ran on. Nothing is pushed."
 /** Slot: {paths}, the node's `paths` joined with ", ". */
 export const AUTHORITY_PATHS = 'Change files only under: {paths}.'
 /** When nothing is set. */

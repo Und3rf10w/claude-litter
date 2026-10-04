@@ -174,6 +174,12 @@ export type RuleAcceptBody = {
   /** Of the file's exact bytes: what makes it count as accepted (16.4). */
   sha256: string
   via: 'ui' | 'commit'
+  /**
+   * A user-ledger accept that cites a repository's proposal records that
+   * repository's litter directory, because the user ledger is shared across
+   * repositories: only that repository's proposal counts as accepted by it.
+   */
+  litterDir?: string
 }
 
 /** `rule.dismiss`, only from the pane: `folded` is the sha256 of the text with whitespace and case folded (16.3). */

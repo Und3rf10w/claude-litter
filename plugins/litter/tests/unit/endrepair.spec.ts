@@ -424,4 +424,23 @@ describe("summary.md's repair part", () => {
     await gate({ node: 'critic', run: RUN, seq: 6, record: 'verdict', gate: 'repair', result: 'rejected', verify_id: 'v-1', round: 1 })
     expect(repairPart(await records(), state.liveSwarm(NAME))!.rounds).toBe(1)
   })
+
+  test("a plan-template swarm's approvals carry no round and count none; a fanout's approval, mirrored with its round, still counts", async () => {
+    await live()
+    // A plan-template swarm's verdicts as gate.ts mirrors them (phase 3, decision 1): a rejection is a round, an approval isn't.
+    await gate({ node: 'critic', agentId: 'a-crit1', run: RUN, seq: 5, record: 'verdict', gate: 'G2', result: 'rejected', verify_id: 'G2-2-a', round: 1 })
+    await gate({ node: 'critic', agentId: 'a-crit1', run: RUN, seq: 7, record: 'verdict', gate: 'G2', result: 'approved', verify_id: 'G2-3-b' })
+    await gate({ node: 'critic', agentId: 'a-crit1', run: RUN, seq: 9, record: 'verdict', gate: 'G3', result: 'approved', verify_id: 'G3-1-c' })
+    expect(repairPart(await records(), state.liveSwarm(NAME))!.rounds).toBe(1)
+    let summary = readFileSync(await writeSwarmSummary(p, NAME, launch), 'utf8')
+    expect(summary).toContain('- Repair budget: 1 of 3 rounds used, 2 left;')
+    expect(summary).toMatch(/\n- \S+ verdict by critic: approved \(on verify G2-3-b, run record #7\)\n/)
+
+    // A fanout's verdicts always carry their round, the approval's too: both count, as before.
+    await gate({ node: 'critic', agentId: 'a-crit1', run: RUN, seq: 11, record: 'verdict', gate: 'repair', result: 'rejected', verify_id: 'v-1', round: 2 })
+    await gate({ node: 'critic', agentId: 'a-crit1', run: RUN, seq: 13, record: 'verdict', gate: 'repair', result: 'approved', verify_id: 'v-2', round: 3 })
+    expect(repairPart(await records(), state.liveSwarm(NAME))!.rounds).toBe(3)
+    summary = readFileSync(await writeSwarmSummary(p, NAME, launch), 'utf8')
+    expect(summary).toContain('- Repair budget: 3 of 3 rounds used, 0 left;')
+  })
 })
