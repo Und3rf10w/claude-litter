@@ -1297,7 +1297,7 @@ function planSummary(f: Facts): string {
       '',
       `${recommend ? 'Recommended: continue as a plan-template swarm. ' : ''}${capital(failureText(fl))}. ${fl.kind === 'plan_gap' ? `The plan gap: "${oneLine(fl.gap, 500)}". ` : ''}Under repair: auto, ${auto}. It would land ${words(remainingOf(json, records), 50)}, starting from the halted attempt in the tree, if any, and its gate-runner asks you before a gap changes the plan's scope or requirements.`,
       '',
-      `The ways on: continue as a plan-template swarm (/litter:swarm repair ${ref.run}), amend the gate (/litter:amend ${fl.gate} …), or stop; the halted attempt is still in the tree. Continuing asks you to confirm its authority and budget first.`,
+      `The ways on: continue as a plan-template swarm (/litter:swarm repair ${ref.run}), amend the gate (/litter:amend ${fl.gate} …), or stop; the halted attempt, if any, is still in the tree. Continuing asks you to confirm its authority and budget first.`,
     )
   }
   lines.push('')
