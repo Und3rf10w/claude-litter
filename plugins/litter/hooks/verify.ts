@@ -18,7 +18,7 @@ import { snapshot } from './snapshot'
 import { writeOut } from './output'
 import { integrationWorktree } from './integrate'
 import { markCritique } from './inflight'
-import { widenOf } from './widen'
+import { ADDED_NOTE, addedAfterLaunch, widenOf } from './widen'
 
 // The other packages' functions reached from here, through one table so tier 2
 // can stand in for them (COMMON, "Another package's module").
@@ -522,7 +522,15 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
     output_tail: body.output_tail,
   }
   // A plan gate's critic learns who may add files to its gate from its own verify (WP-AO).
-  if (json.workflow === 'execute' && isPlanGate(json, gate)) reply.widen = widenOf(json)
+  if (json.workflow === 'execute' && isPlanGate(json, gate)) {
+    reply.widen = widenOf(json)
+    // And the files you added to it after launch, which a running workflow's <gate> doesn't list (WP-AP).
+    const added = addedAfterLaunch(ledger.records, gate)
+    if (added.length > 0) {
+      reply.added = added
+      reply.added_note = ADDED_NOTE
+    }
+  }
   return reply
 }
 

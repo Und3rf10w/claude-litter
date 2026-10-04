@@ -420,7 +420,8 @@ const withPlanLocks = <T>(rootDir: string, runDir: string, f: () => Promise<T>):
 
 /** Where a widening reaches the agents, as gate.widen's reply says it. */
 const WIDEN_APPLIES =
-  "An agent that reads the gate from plan.md (a plan-template swarm's) sees the files from its next read. A running execute workflow keeps the gates it launched with, so for it they apply from the chain's next run: continue it with /litter:execute."
+  "The gate's next critic is told of the files in its verify's reply, in a running execute workflow too, and passes them on if it sends the attempt back. " +
+  "An agent that reads the gate from plan.md (a plan-template swarm's) sees them from its next read, and the chain's next run has them in its gates."
 
 /**
  * `gate.widen { run, gate, files, why }` (a GateWidenInput, WP-AO): the

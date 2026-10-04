@@ -15,7 +15,7 @@
 
 import type { Ports } from './ports'
 import type { RecordError, StoredRecord } from './records/core'
-import type { GateWidenBody, WidenedFile } from './records/execute'
+import type { AddedFiles, GateWidenBody, WidenedFile } from './records/execute'
 import type { RunJson, WideningInput } from './records/run'
 import type { WidenMode } from './options'
 import { fail } from './records/core'
@@ -133,6 +133,22 @@ export function runGateFiles(json: Pick<RunJson, 'args'>, records: readonly Stor
   return files
 }
 
+/**
+ * The files you added to gate `gate` after its run launched (gate.widen at
+ * 'run'), with why, in order. The run's args don't carry them, so the
+ * gate's critic is told of them in its verify reply (WP-AP).
+ */
+export function addedAfterLaunch(records: readonly StoredRecord[], gate: string): AddedFiles[] {
+  return yourWidenings(records)
+    .filter(w => w.gate === gate && w.at === 'run' && Array.isArray(w.files))
+    .map(w => ({ files: [...w.files], why: w.why }))
+}
+
+/** What a verify reply's `added` means, for the critic that reads it (WP-AP). */
+export const ADDED_NOTE =
+  "The user added these files to this gate's Files after the run launched, so they're part of its expected files, even where the gate text you were given doesn't list them. " +
+  'If you reject the attempt and its fix needs one of them, say in a gap that the executor may change it.'
+
 /** At most this many paths outside a gate's Files go into a land's body. */
 export const OUTSIDE_MAX = 200
 
@@ -217,8 +233,8 @@ export function applyWidening(text: string, w: { gate: string; files: readonly s
 /**
  * Asks you to add `files` to gate `gate`, in the mod's own dialog: what the
  * gate covers now, what would be added and why, and from when they apply
- * (`at`: a launch's run has them throughout; during a run, a running execute
- * workflow keeps the gates it launched with). `yes` only on your answer;
+ * (`at`: a launch's run has them throughout; during a run, the gate's critic
+ * is told at its next verify, WP-AP). `yes` only on your answer;
  * `unasked` when no one could be asked here (as under -p).
  */
 export async function askWiden(
@@ -231,7 +247,7 @@ export async function askWiden(
   const when =
     o.at === 'launch'
       ? 'in this run and any continuation of it'
-      : "in a repair swarm from its next read of the plan, and otherwise from the run's next continuation (a running execute workflow keeps the gates it launched with)"
+      : "from its critic's next verify, where litter tells the critic of them (it passes them on if it sends the attempt back), and in any continuation of the run"
   const question = [
     `Gate ${o.gate}${o.title ? ` ("${o.title}")` : ''}${whose} covers these files: ${o.current.join(', ')}.`,
     '',

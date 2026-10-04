@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path'
 import type { RoleName } from '../../hooks/hookfiles'
 import { PROMPT_TAGS, ROLE_PROMPTS, ROLE_TAGS } from '../../hooks/prompts/index'
 import { HARNESS_FRAME, READ_ONLY_LIMITS, SHARED_CORE } from '../../hooks/prompts/shared'
+import { PLAN_CRITIC_BRIEF } from '../../hooks/prompts/swarm-plan'
 import { ROLE_NAMES, ROLE_TOOLS } from '../../hooks/roles'
 import {
   argsWith,
@@ -197,6 +198,16 @@ describe('the fanout calls', () => {
     const executor = ROLE_PROMPTS.executor
     expect(executor).toContain('With widen="ask", only the user can: if the work can\'t be done without another file, stop and name it in plan_gap.')
     expect(executor).toContain('With widen="critic", you may change one the work can\'t be done without; name it and why in your notes, and the critic decides.')
+  })
+
+  // WP-AP: files you add during the run reach the critic in its verify's reply.
+  test("both critics count the files their verify's reply lists in added as the gate's", () => {
+    expect(ROLE_PROMPTS['gate-critic']).toContain(
+      "The files touched are the ones the gate's expected files cover, with any the verify reply lists in added: the user added those to the gate after the run launched.",
+    )
+    expect(PLAN_CRITIC_BRIEF).toContain(
+      "The files touched are the ones the gate's expected files cover, with any your verify's reply lists in added: the user added those to the gate after the run launched.",
+    )
   })
 })
 

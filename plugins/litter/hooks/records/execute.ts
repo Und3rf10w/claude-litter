@@ -64,7 +64,18 @@ export type VerifyReply = {
    * gate can't do without. Absent for baseline, goal and integration.
    */
   widen?: 'ask' | 'critic'
+  /**
+   * A plan gate's verify (WP-AP): the files you added to the gate after the
+   * run launched (gate.widen), with why, which its <gate> tag doesn't list.
+   * They're part of its Files. Absent when there are none.
+   */
+  added?: AddedFiles[]
+  /** With `added`: what it means, for the critic. */
+  added_note?: string
 }
+
+/** Files you added to a gate in one gate.widen after its run launched, and why. */
+export type AddedFiles = { files: string[]; why: string }
 
 /** `mcp__litter__record({ kind: 'land', run, gate, verify_id })`. */
 export type LandInput = { kind: 'land'; run: string; gate: GateRef; verify_id: string }
