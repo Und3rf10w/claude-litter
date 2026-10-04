@@ -571,3 +571,69 @@ describe("land: step 5's re-sync to whatever HEAD is now", () => {
     expect(await indexEntry('README.md')).toContain(blob)
   })
 })
+
+// WP-AO: who may add files to a gate, and what a land changed outside its Files.
+describe('land: files outside the gate', () => {
+  const GATES = [
+    { id: 'G1', title: 'Add the parser', lines: { start: 3, end: 9 }, files: ['src/parser.ts'] },
+    { id: 'G2', title: 'Wire it in', lines: { start: 10, end: 20 }, files: ['src/wire.ts'] },
+  ]
+  const withFiles = (patch: Partial<RunJson> = {}) => writeRun({ args: { gates: GATES, planPath: join(runDir, 'plan.md') }, ...patch })
+  /** The parser, plus a file outside G1's Files, verified green and approved with `verdict`. */
+  async function outsideChange(verdict: Record<string, unknown> = {}): Promise<string> {
+    write('src/parser.ts', 'export const parse = (s: string) => s.split(",")\n')
+    write('src/gen.sh', 'echo gen\n')
+    write('notes.md', 'notes\n')
+    const v = await verifyNow()
+    await approve(v.verify_id, CRITIC, verdict)
+    return v.verify_id
+  }
+  const bodyOf = async (kind: string) => (await readLedger(p, runDir, RUN)).records.filter(r => r.kind === kind).map(r => r.body)
+
+  test("a plan gate's verify reply says who may add files: ask, unless run.json says critic", async () => {
+    await withFiles()
+    write('src/parser.ts', 'x\n')
+    expect((await verifyNow()).widen).toBe('ask')
+    await withFiles({ widen: 'critic' })
+    expect((await verifyNow(CRITIC, 'G1', 2)).widen).toBe('critic')
+    const baseline = await recordVerify(ctx(RELAY), { kind: 'verify', run: RUN, gate: 'baseline' })
+    expect(baseline.ok).toBe(true)
+    expect((baseline as VerifyReply).widen).toBeUndefined()
+  })
+
+  test('under widen ask, a verdict that accepts a file outside the Files is refused, and nothing moves', async () => {
+    await withFiles()
+    const verifyId = await outsideChange({ widened: [{ file: 'src/gen.sh', why: 'the parser is generated' }] })
+    const r = await land(verifyId)
+    expect(r).toMatchObject({ landed: false, retry: false })
+    if (r.landed) return
+    expect(r.reason).toContain("accepts files outside G1's Files (src/gen.sh)")
+    expect(r.reason).toContain('only you add files to a gate')
+    expect(await tip()).toBe(base)
+    expect(await kinds()).toEqual(['verify', 'verdict'])
+  })
+
+  test("under widen critic, the land records each accepted file as the critic's widening, and the land lists what neither covers", async () => {
+    await withFiles({ widen: 'critic' })
+    const verifyId = await outsideChange({ widened: [{ file: 'src/gen.sh', why: 'the parser is generated' }] })
+    const r = await land(verifyId)
+    expect(r).toMatchObject({ landed: true })
+    expect(await kinds()).toEqual(['verify', 'verdict', 'land.intent', 'land', 'gate.widen'])
+    expect((await bodyOf('land'))[0]!.outside).toEqual(['notes.md'])
+    expect(await bodyOf('gate.widen')).toEqual([{ gate: 'G1', files: ['src/gen.sh'], why: 'the parser is generated', by: 'critic', at: 'land', verify_id: verifyId }])
+  })
+
+  test('under widen ask, a land with no widened lists every path outside the Files, your widenings during the run counted in', async () => {
+    await withFiles()
+    await appendRecord(p, runDir, { run: RUN, kind: 'gate.widen', by: { source: 'launcher' }, body: { gate: 'G1', files: ['src/gen.sh'], why: 'w', by: 'you', at: 'run', plans: [] } })
+    const verifyId = await outsideChange({ widened: [] })
+    expect(await land(verifyId)).toMatchObject({ landed: true })
+    expect((await bodyOf('land'))[0]!.outside).toEqual(['notes.md'])
+  })
+
+  test('a change inside the Files leaves outside out of the land body', async () => {
+    await withFiles()
+    expect(await land(await approvedChange())).toMatchObject({ landed: true })
+    expect((await bodyOf('land'))[0]).not.toHaveProperty('outside')
+  })
+})

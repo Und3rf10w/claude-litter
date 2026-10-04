@@ -3,9 +3,17 @@
 // unset"), so every "" becomes undefined here and nowhere else.
 //
 // Contract owner: phase 1a; the repair options are phase 2b-2's (package V),
-// `trailers` phase 3's (package AA).
+// `trailers` phase 3's (package AA), `widen` WP-AO's.
 
 export type RepairMode = 'auto' | 'off'
+
+/**
+ * Who may add files to a gate's Files for a run (WP-AO): `ask`, only you, in
+ * the mod's own dialog; `critic`, you, or the gate's critic, for a file the
+ * gate can't do without, each one listed in summary.md for you.
+ */
+export type WidenMode = 'ask' | 'critic'
+export const WIDEN_MODES: readonly WidenMode[] = ['ask', 'critic']
 
 export type LitterOptions = {
   verify?: readonly string[]
@@ -24,6 +32,8 @@ export type LitterOptions = {
   repairRounds: number
   /** The repair budget's agents: the workers and children a repair swarm's nodes spawn. */
   repairAgents: number
+  /** Who may add files to a gate's Files for an execute run (WP-AO); a launch can override it for its run. */
+  widen: WidenMode
   /**
    * The lines litter adds to every commit it makes (decision 4), a land's or
    * a fanout's merge, one `Key: value` each, in order; empty by default.
@@ -77,6 +87,9 @@ const within = (v: unknown, range: { default: number; min: number; max: number }
 /** `off` (any case, trimmed) is off; anything else, unset included, is the default `auto`. */
 const repairMode = (v: unknown): RepairMode => (typeof v === 'string' && v.trim().toLowerCase() === 'off' ? 'off' : 'auto')
 
+/** `critic` (any case, trimmed) lets the critic widen a gate; anything else, unset included, is the default `ask`. */
+const widenMode = (v: unknown): WidenMode => (typeof v === 'string' && v.trim().toLowerCase() === 'critic' ? 'critic' : 'ask')
+
 /**
  * The trailers option (decision 4), a list or one string ("" is unset). Each
  * entry is split into lines and trimmed, and blank lines are skipped; a line
@@ -107,6 +120,7 @@ export function normalizeOptions(raw: Readonly<Record<string, unknown>> | undefi
     repair: repairMode(o.repair),
     repairRounds: within(o.repairRounds, REPAIR_ROUNDS),
     repairAgents: within(o.repairAgents, REPAIR_AGENTS),
+    widen: widenMode(o.widen),
     trailers: trailers.kept,
     trailersDropped: trailers.dropped,
   }

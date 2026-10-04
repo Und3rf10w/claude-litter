@@ -13,10 +13,10 @@
 
 import type { PortHook, PromptSubmitHook, SessionEndHook, TurnCompleteHook } from './hooktypes'
 import type { Ports } from './ports'
-import type { LitterOptions } from './options'
+import type { LitterOptions, WidenMode } from './options'
 import type { AgentPolicy, Policy, RolePolicy, SpoolConsumer } from './hookfiles'
 import type { Author, RecordError, RecordHandler, RecordInput, StoredRecord } from './records/core'
-import type { VerifyBody } from './records/execute'
+import type { GateWidenBody, VerifyBody } from './records/execute'
 import type {
   BarItem,
   Deliverable,
@@ -35,6 +35,7 @@ import type {
   RunStartReply,
   RunStatus,
   RunStoppingBody,
+  WideningInput,
   Workflow,
 } from './records/run'
 import type { RuleRef, SelectInput, Selection, SelectUnit } from './records/rules'
@@ -45,8 +46,10 @@ import type { RepairBudget, RunLink } from './swarm/types'
 import { fail } from './records/core'
 import { DELIVERABLES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS } from './records/run'
 import { readLaunchLedger } from './records/swarm'
-import { REPAIR_AGENTS, REPAIR_ROUNDS } from './options'
+import { REPAIR_AGENTS, REPAIR_ROUNDS, WIDEN_MODES } from './options'
 import { parseGates } from './gates'
+import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
+import { writePlanVersion } from './planversion'
 import { appendRecord, readLedger } from './ledgercore'
 import {
   hooksDir,
@@ -1414,6 +1417,10 @@ type Spec = {
   feedback: string | null
   /** A fanout's repair setting (2b-2), the options' values filled in; null for every other workflow. */
   repair: RepairSettings | null
+  /** An execute run's widen setting (WP-AO), the option's value filled in; null for every other workflow. */
+  widen: WidenMode | null
+  /** An execute run's widenings before Launch (WP-AO), each to be confirmed in the mod's dialog. */
+  widenings: WideningInput[]
 }
 
 type Parsed<T> = { ok: true; value: T } | RecordError
@@ -1559,9 +1566,40 @@ const KNOWN_FIELDS = new Set([
   'kind', 'workflow', 'authorized', 'planPath', 'goal', 'verify', 'goalCheck', 'setup', 'maxAttempts', 'adversary',
   'isolate', 'continueOf', 'amendOf', 'carryOver', 'runRules', 'tasks', 'contract', 'linkDirs', 'mergeOrder',
   'deliverable', 'bar', 'lenses', 'empiricalUnknowns', 'anchors', 'maxRounds', 'priorRun', 'feedback',
-  'repair', 'repairRounds', 'repairAgents',
+  'repair', 'repairRounds', 'repairAgents', 'widen', 'widenings',
 ])
 const REPAIR_FIELDS = ['repair', 'repairRounds', 'repairAgents'] as const
+/** At most this many gates widened at one launch. */
+const WIDENINGS_MAX = 20
+
+/**
+ * An execute run's widen setting and its widenings before Launch (WP-AO):
+ * the launch's override as its confirmation stated it, else the option's
+ * value. Every other workflow refuses both fields. Two widenings of one gate
+ * are refused: the launch states each gate's once.
+ */
+function parseWiden(input: RecordInput, options: LitterOptions, workflow: Workflow): Parsed<{ widen: WidenMode | null; widenings: WideningInput[] }> {
+  if (workflow !== 'execute') {
+    const given = (['widen', 'widenings'] as const).find(f => input[f] !== undefined && input[f] !== null)
+    return given ? fail(`'${given}' is for execute runs, not ${workflow}: only an execute run's gates have Files to widen`, given) : ok({ widen: null, widenings: [] })
+  }
+  const mode = input.widen ?? options.widen
+  if (!(WIDEN_MODES as readonly unknown[]).includes(mode)) {
+    return fail("'widen' must be 'ask' (only you add files to a gate) or 'critic' (the gate's critic may also accept a file the gate can't do without)", 'widen', WIDEN_MODES)
+  }
+  const raw = input.widenings
+  if (raw === undefined || raw === null) return ok({ widen: mode as WidenMode, widenings: [] })
+  if (!Array.isArray(raw)) return fail("'widenings' must be a list of { gate, files, why }: the files you asked to add to a gate, and why", 'widenings')
+  if (raw.length > WIDENINGS_MAX) return fail(`'widenings' widens ${raw.length} gates; a launch widens at most ${WIDENINGS_MAX}`, 'widenings')
+  const widenings: WideningInput[] = []
+  for (const [i, v] of raw.entries()) {
+    const w = parseWidening(v, `widenings[${i}]`)
+    if (!w.ok) return w
+    if (widenings.some(x => x.gate === w.value.gate)) return fail(`'widenings' widens ${w.value.gate} twice; give its files in one entry`, `widenings[${i}].gate`)
+    widenings.push(w.value)
+  }
+  return ok({ widen: mode as WidenMode, widenings })
+}
 
 /**
  * A fanout's or execute run's repair setting (plan 15.11, "Where it's set"):
@@ -1665,6 +1703,8 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     priorRun: null,
     feedback: null,
     repair: null,
+    widen: null,
+    widenings: [],
   }
 
   if (workflow === 'execute') {
@@ -1743,6 +1783,10 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
   const repair = parseRepair(input, options, workflow)
   if (!repair.ok) return repair
   spec.repair = repair.value
+  const widen = parseWiden(input, options, workflow)
+  if (!widen.ok) return widen
+  spec.widen = widen.value.widen
+  spec.widenings = widen.value.widenings
   return ok(spec)
 }
 
@@ -2052,6 +2096,17 @@ type Prepared = {
   switchHead: string | null
   isolatePath: string | null
   plan: { path: string; text: string; sha: string } | null
+  /**
+   * An execute run's widenings you confirmed before Launch (WP-AO), each
+   * with the files it added; `planCopy` is the plan's text with them, which
+   * the run's plan.md gets, and `rootDir` the chain root's folder, whose
+   * plan.md gets them too, for a continuation or an amend.
+   */
+  widened: WideningInput[]
+  planCopy: string | null
+  rootDir: string | null
+  /** The date their notes give, `yyyy-mm-dd`. */
+  widenedOn: string
   verify: string[] | null
   goalCheck: string[] | null
   setup: string[] | null
@@ -2194,6 +2249,10 @@ async function prepare(
         switchHead: null,
         isolatePath: null,
         plan: spec.workflow === 'plan' ? plan : null,
+        widened: [],
+        planCopy: null,
+        rootDir: null,
+        widenedOn: '',
         // A design or plan run runs no argv: the mod doesn't run verify for them.
         verify: null,
         goalCheck: null,
@@ -2244,6 +2303,9 @@ async function prepare(
   let landedArgs: Record<string, unknown> = {}
   let foreignCommits: string[] = []
   let baseline: Record<string, unknown> | null = null
+  const widened: WideningInput[] = []
+  let planCopy: string | null = null
+  let widenedOn = ''
   if (spec.workflow === 'execute') {
     if (chain) {
       const r = await readPlan(p, checkout, runPlanPath(runDirOf(litterDir, chain.root.run)))
@@ -2254,11 +2316,43 @@ async function prepare(
       if (!r.ok) return r
       plan = r
     }
-    const parsed = parseGates(plan.text)
-    if (!parsed.ok) return fail(`litter: ${parsed.error}`, parsed.field ?? 'planPath')
-    if (parsed.gates.length === 0) {
+    const read = parseGates(plan.text)
+    if (!read.ok) return fail(`litter: ${read.error}`, read.field ?? 'planPath')
+    if (read.gates.length === 0) {
       return fail("litter: the plan has no gate sections ('### G<n>: <title>'); split it into gates with a 'plan' run first", 'planPath')
     }
+    // A continuation's landed gates; an amend's only when it widens one.
+    const chainLands = chain && (!spec.amendOf || spec.widenings.length > 0) ? await chainLanded(git, chain.root, chain.members) : null
+    // WP-AO: each widening you asked for before Launch, confirmed in the mod's dialog, then
+    // applied to the text the run's copy of the plan gets; the gates are parsed from that.
+    planCopy = plan.text
+    if (spec.widenings.length > 0) {
+      const ids = read.gates.map(x => x.id)
+      const date = dateOf(await p.now())
+      widenedOn = date
+      for (const [i, w] of spec.widenings.entries()) {
+        const at = `widenings[${i}]`
+        const g = read.gates.find(x => x.id === w.gate)
+        if (!g) return fail(`litter: the plan has no gate ${w.gate} to widen; its gates are ${ids.join(', ')}`, `${at}.gate`, ids)
+        const landedAt = chainLands?.landed.get(w.gate)
+        if (landedAt !== undefined) return fail(`litter: gate ${w.gate} has landed in this chain (${landedAt}), so it takes no more files`, `${at}.gate`)
+        const applied = applyWidening(planCopy, w, date)
+        if (!applied.ok) return fail(`litter: ${w.gate} can't be widened: ${applied.error}`, at)
+        if (applied.added.length === 0) continue
+        const answer = await askWiden(p, { run: chain ? chain.root.run : null, gate: w.gate, title: g.title, current: g.files, files: applied.added, why: w.why, at: 'launch' })
+        if (answer === 'unasked') {
+          return fail(
+            `litter: no one could be asked to confirm ${w.gate}'s added files here (as under -p), and only your answer in litter's dialog widens a gate; launch without 'widenings', or from a session you're at`,
+            at,
+          )
+        }
+        if (answer === 'no') return fail(`litter: you kept ${w.gate} as written, so nothing was launched; launch again without its widening, or with the files you want`, at)
+        planCopy = applied.text
+        widened.push({ gate: w.gate, files: applied.added, why: w.why })
+      }
+    }
+    const parsed = parseGates(planCopy)
+    if (!parsed.ok) return fail(`litter: ${parsed.error}`, parsed.field ?? 'planPath')
     if (spec.amendOf) {
       const g = parsed.gates.find(x => x.id === spec.amendOf!.gate)
       if (!g) return fail(`litter: the plan has no gate ${spec.amendOf.gate}; its gates are ${parsed.gates.map(x => x.id).join(', ')}`, 'amendOf', parsed.gates.map(x => x.id))
@@ -2267,7 +2361,7 @@ async function prepare(
         : undefined
       gates = [argsGate(g, carry ? { carryOver: carry } : {})]
     } else if (chain) {
-      const landed = await chainLanded(git, chain.root, chain.members)
+      const landed = chainLands!
       const remaining = parsed.gates.filter(g => !landed.landed.has(g.id))
       if (remaining.length === 0) return fail(`litter: every gate of run ${chain.root.run}'s plan has landed; there's nothing left to continue`, 'continueOf')
       gates = remaining.map(g => argsGate(g))
@@ -2328,6 +2422,8 @@ async function prepare(
           ...(baseline ? { baseline } : {}),
           ...(spec.continueOf ? { continueOf: spec.continueOf } : {}),
           ...(spec.amendOf ? { amendOf: spec.amendOf } : {}),
+          // Who may add files to a gate (WP-AO): the critic's tag says so (execute.js).
+          widen: spec.widen ?? 'ask',
         }
       : {
           ...common,
@@ -2371,6 +2467,10 @@ async function prepare(
       switchHead,
       isolatePath,
       plan,
+      widened,
+      planCopy,
+      rootDir: chain && widened.length > 0 ? runDirOf(litterDir, chain.root.run) : null,
+      widenedOn,
       verify: verify.value,
       goalCheck: goalCheck.value,
       setup: setup.value,
@@ -2452,6 +2552,26 @@ async function addRunWorktree(p: Ports, options: LitterOptions, s: Started): Pro
   return null
 }
 
+/**
+ * The chain root's plan.md with your launch widenings (WP-AO), so the
+ * chain's next run keeps them. Under the plan lock plan.ts's handlers take,
+ * and read again there, so an amend or a re-split written since the parse
+ * is kept; the previous file is kept as plan.<n>.md. Throws when a widening
+ * no longer applies.
+ */
+async function widenRoot(p: Ports, rootDir: string, widened: readonly WideningInput[], date: string): Promise<void> {
+  await serial(`plan:${rootDir}`, async () => {
+    const before = await p.fs.read(runPlanPath(rootDir))
+    let text = before
+    for (const w of widened) {
+      const a = applyWidening(text, w, date)
+      if (!a.ok) throw new Error(`the chain's plan ${runPlanPath(rootDir)} couldn't take ${w.gate}'s added files: ${a.error}`)
+      text = a.text
+    }
+    if (text !== before) await writePlanVersion(p, rootDir, text)
+  })
+}
+
 /** Steps 1 to 5 with the lock held. Every refusal before step 3 writes nothing; one after it records launch_failed and rolls back. */
 async function startHeld(
   p: Ports,
@@ -2505,6 +2625,8 @@ async function startHeld(
     ...(options.trailers.length > 0 ? { trailers: [...options.trailers] } : {}),
     // The repair setting the launch confirmation stated (2b-2), under runJsonSha256 with the rest.
     ...(spec.repair ? { repair: spec.repair } : {}),
+    // Who may add files to a gate (WP-AO), likewise.
+    ...(spec.widen ? { widen: spec.widen } : {}),
   }
   const jsonText = `${JSON.stringify(json, null, 2)}\n`
 
@@ -2594,12 +2716,21 @@ async function startHeld(
     if (prep.plan) {
       const now = await readPlan(p, checkout, prep.plan.path)
       if (!now.ok || now.sha !== prep.plan.sha) return await abort(`the plan ${prep.plan.path} changed between its parse and its copy`)
-      await atomicWrite(p, runPlanPath(ref.runDir), prep.plan.text)
+      await atomicWrite(p, runPlanPath(ref.runDir), prep.planCopy ?? prep.plan.text)
     }
     if (prep.barText) await atomicWrite(p, `${ref.runDir}/bar.md`, prep.barText)
     await activate(p, litterDir, json, sessionId, { runIds: [], launching: false })
 
     if (!(await stillHeld(p, repo, held.oid))) return await abort('lock lost')
+    // Your widenings (WP-AO), last, so a refused launch leaves the chain's plan as it was:
+    // one record each, then the chain root's plan.md, for a continuation or an amend.
+    if (prep.widened.length > 0) {
+      const plans = [runPlanPath(ref.runDir), ...(prep.rootDir ? [runPlanPath(prep.rootDir)] : [])]
+      for (const w of prep.widened) {
+        await appendRecord<GateWidenBody>(p, ref.runDir, { run, kind: 'gate.widen', by: MOD, body: { ...w, by: 'you', at: 'launch', plans } })
+      }
+      if (prep.rootDir) await widenRoot(p, prep.rootDir, prep.widened, prep.widenedOn)
+    }
     const pending: Pending = { ...ref, checkout: prep.checkout, oid: held.oid, session: sessionId, workflow: spec.workflow, at: await p.now() }
     await p.store.set(pendingKey(litterDir), pending)
     const reply: RunStartReply = { ok: true, run, runDir: ref.runDir, checkout: prep.checkout, args }

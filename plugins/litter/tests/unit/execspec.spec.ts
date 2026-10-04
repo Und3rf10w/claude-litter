@@ -236,8 +236,10 @@ describe("swarm-plan.ts's texts", () => {
 
   test("the templates' slots are the ones their docs list", () => {
     expect(slotsOf(PLAN_TASK)).toEqual(
-      ['agents', 'attempts', 'branch', 'checkout', 'gap', 'gap_by', 'gate', 'goal_line', 'landed', 'plan', 'remaining', 'rounds', 'run', 'summary', 'tip', 'verdicts', 'verify_line', 'why'].sort(),
+      ['agents', 'attempts', 'branch', 'checkout', 'gap', 'gap_by', 'gate', 'goal_line', 'landed', 'plan', 'remaining', 'rounds', 'run', 'summary', 'tip', 'verdicts', 'verify_line', 'why', 'widen_line'].sort(),
     )
+    expect(slotsOf(planPrompts.PLAN_WIDEN_ASK)).toEqual([])
+    expect(slotsOf(planPrompts.PLAN_WIDEN_CRITIC)).toEqual([])
     expect(slotsOf(planPrompts.PLAN_WHY_GAP)).toEqual(['attempt'])
     expect(slotsOf(planPrompts.PLAN_WHY_EXECUTOR_GAP)).toEqual(['attempt'])
     expect(slotsOf(planPrompts.PLAN_GAP_BY_CRITIC)).toEqual(['gate'])

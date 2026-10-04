@@ -109,6 +109,20 @@ describe('skills/execute/SKILL.md', () => {
     expect(section(EXECUTE, '## 4. Launch', '## 5. While it runs')).toContain('the constraints and plan decisions the user stated for this run (section 3)')
   })
 
+  // WP-AO: only the user's answer in the mod's dialog adds files to a gate.
+  test("a file outside a gate's Files goes into widenings, which the mod confirms itself; the widen setting is stated in the mod's words", () => {
+    const decisions = section(settings, '**Problems you found in the plan.**', '**If a gate halts.**')
+    expect(decisions).toContain('put them in `widenings` as `{ gate, files, why }`')
+    expect(decisions).toContain("a yes given to you here doesn't add them by itself")
+    expect(decisions).toContain('`${user_config.widen}`')
+    expect(decisions).toContain('"only you add files to a gate\'s Files during this run, in a dialog litter shows you"')
+    expect(section(EXECUTE, '## 4. Launch', '## 5. While it runs')).toContain('`widen` when they changed it, and `widenings` when they asked for any')
+    const routes = section(EXECUTE, '## 7. When the run finishes', '')
+    expect(routes).toContain("{ kind: 'gate.widen', run, gate, files, why }")
+    expect(routes).toContain("don't take a yes in this conversation as the widening")
+    expect(AMEND).toContain("If the only change is letting the gate change files outside its `Files:`, an amendment isn't needed")
+  })
+
   test('goal mode plans in litter:plan-run, then writes the approved gates with plan.write', () => {
     const goal = section(EXECUTE, '## 6. Goal mode', '## 7. When the run finishes')
     expect(goal).toContain("workflow: 'plan'")

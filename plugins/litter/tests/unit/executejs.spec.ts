@@ -121,7 +121,8 @@ describe('two gates, each landing at its first attempt', () => {
       const c = byLabel(r, l)
       expect(tagBody(c.prompt, 'verify', NONCE)).toBe(VERIFY)
       expect(tagBody(c.prompt, 'authorized', NONCE)).toBe('edit the files the gate names\nrun the verify command')
-      expect(c.prompt).toContain(`<gate id="${NONCE}" gate="G1" plan="${PLAN_PATH}" lines="3-9">`)
+      // An args with no widen (from before WP-AO) reads as ask.
+      expect(c.prompt).toContain(`<gate id="${NONCE}" gate="G1" plan="${PLAN_PATH}" lines="3-9" widen="ask">`)
       expect(tagBody(c.prompt, 'gate', NONCE)).toBe(
         `${G1.title}\n${G1.excerpt}\nExpected files:\nsrc/header.ts\nChecks:\nbun test header\nDone when: header.spec passes`,
       )
@@ -132,6 +133,13 @@ describe('two gates, each landing at its first attempt', () => {
     // No feedback on a first attempt, and no adversary unless asked.
     expect(tagBody(byLabel(r, 'write:G1#1').prompt, 'feedback', NONCE)).toBeNull()
     expect(tagBody(byLabel(r, 'critic:G1#1').prompt, 'adversary', NONCE)).toBeNull()
+  })
+
+  test("the gate's widen attribute is run.start's args.widen: critic only when it says so (WP-AO)", async () => {
+    for (const [widen, attr] of [['critic', 'critic'], ['ask', 'ask'], ['"><x', 'ask']] as const) {
+      const r = await run(executeArgs(undefined, { widen }), happy())
+      expect(byLabel(r, 'critic:G1#1').prompt).toContain(`lines="3-9" widen="${attr}">`)
+    }
   })
 
   test("each gate's prompts carry args.rules plus that gate's own rules, never another gate's", async () => {
@@ -583,8 +591,8 @@ describe('the script', () => {
     expect(props(byLabel(r, 'goal').opts.schema)).toEqual(Object.keys(VERIFIED_FIELDS).sort())
     expect(props(byLabel(r, 'land:G1').opts.schema)).toEqual(Object.keys(LANDED_FIELDS).sort())
     const v = byLabel(r, 'critic:G1#1').opts.schema as { required: string[] }
-    expect(props(v)).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules'].sort())
-    expect(v.required).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules'])
+    expect(props(v)).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules', 'widened'].sort())
+    expect(v.required).toEqual(['verify_id', ...VERDICT_DIMENSIONS, 'plan_gap', 'rule_clash', 'proposed_rules', 'widened'])
     const w = byLabel(r, 'write:G1#1').opts.schema as { required: string[] }
     expect(props(w)).toEqual(['checks', 'files', 'notes', 'plan_gap', 'plan_lines', 'status'])
     expect(w.required).toEqual(['status', 'plan_lines', 'files', 'checks', 'notes', 'plan_gap'])

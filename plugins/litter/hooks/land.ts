@@ -19,6 +19,7 @@ import type { RunJson, RunRepairBody } from './records/run'
 import type { LiveSwarm, NodeBinding, RunLink } from './swarm/types'
 import type {
   GateRef,
+  GateWidenBody,
   LandAbandonedBody,
   LandBlockedBody,
   LandBody,
@@ -37,6 +38,7 @@ import { withInflight } from './inflight'
 import { fanoutTasks, integrationWorktree, wholeResult } from './integrate'
 import { bindings, liveSwarm, spawnsUsed } from './swarm/state'
 import { nodeOf, writesFiles } from './swarm/admit'
+import { outsideOf, runGateFiles, widenedOf, widenOf } from './widen'
 import {
   FIXED_GATES,
   MOD,
@@ -525,6 +527,15 @@ async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string
   if (agentOf(verdict) !== recorder) return refuse(`the verdict citing verify ${verifyId} isn't from the agent that recorded it`, false)
   const failed = verdictFails(verdict.body)
   if (failed.length > 0) return refuse(`the verdict on verify ${verifyId} doesn't pass ${failed.join(', ')}`, false)
+  // The critic accepts files outside the gate's Files only under `widen: critic` (WP-AO); otherwise only you add them.
+  const widened = widenedOf(verdict.body)
+  if (widened.length > 0 && widenOf(json) !== 'critic') {
+    return refuse(
+      `the verdict on verify ${verifyId} accepts files outside ${gate}'s Files (${widened.map(w => w.file).join(', ')}), and in this run only you add files to a gate; ` +
+        `the user can add them (gate.widen), or the change must keep to the gate's Files`,
+      false,
+    )
+  }
   // 3. The checkout is on the run's branch.
   const head = await headRef(p, json.checkout)
   if (head !== json.ref) {
@@ -548,6 +559,12 @@ async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string
   if (now.tree !== T) {
     return refuse(`the tree changed after verify ${verifyId} ran, so it isn't the tree the critic judged; judge the tree as it is now, with a new verify`, true)
   }
+
+  // What the change touches outside the gate's Files (WP-AO), for you to review; it doesn't stop the land.
+  // A gate whose args name no Files (a run.json from before them) has nothing to compare.
+  const entries = runGateFiles(json, records, gate)
+  const changed = entries.length > 0 ? await git(p, json.checkout, ['diff-tree', '-r', '--name-only', '--no-commit-id', '-z', old, T]) : null
+  const outside = changed?.code === 0 ? outsideOf([...entries, ...widened.map(w => w.file)], changed.stdout.split('\0')) : []
 
   // The six steps, in order.
   const intent: LandIntentBody = { gate, verify_id: verifyId, tree: T, old, ref: json.ref, mode: 'index' }
@@ -594,10 +611,16 @@ async function land(ctx: RecordCtx, f: RunFacts, gate: GateRef, verifyId: string
   const note = notes.length > 0 ? notes.join('; ') : undefined
   const body: LandBody = { gate, verify_id: verifyId, commit, tree: T, old, ref: json.ref }
   if (note) body.note = note
+  if (outside.length > 0) body.outside = outside
   try {
     await appendRecord(p, runDir, { run, kind: 'land', by: MOD, body })
+    // Each file the critic accepted outside the gate's Files, as its widening (WP-AO, `widen: critic`), for summary.md to list.
+    for (const w of widened) {
+      const wb: GateWidenBody = { gate, files: [w.file], why: w.why, by: 'critic', at: 'land', verify_id: verifyId }
+      await appendRecord(p, runDir, { run, kind: 'gate.widen', by: MOD, body: wb })
+    }
   } catch (err) {
-    p.log(`land ${run} ${gate}: the land record failed (${message(err)}); reconcile recovers it from the commit's trailer`)
+    p.log(`land ${run} ${gate}: the land record or a widening after it failed (${message(err)}); reconcile recovers the land from the commit's trailer`)
   }
   return landed(commit, note)
 }

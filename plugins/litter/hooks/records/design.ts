@@ -29,7 +29,7 @@ export const KNOWN_KINDS = [
   // launchers and the mod's own
   'run.start', 'run.launch', 'run.resume', 'run.stopping', 'run.end',
   'worktree.intent', 'worktree.create', 'worktree.setup_failed', 'worktree.removed', 'worktree.kept',
-  'plan.write', 'gate.amend', 'wiki.write',
+  'plan.write', 'gate.amend', 'gate.widen', 'wiki.write',
   // rules (phase 3; bodies in records/rules.ts): rule.propose above, and the
   // rules ledger's other two the tool takes
   'rule.open', 'rule.import',
@@ -113,6 +113,8 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'worktree.kept': modKind,
   'plan.write': launcherKind,
   'gate.amend': launcherKind,
+  // WP-AO: the lead's or the execute skill's request; the handler asks you, and records it only on your yes.
+  'gate.widen': launcherKind,
   'wiki.write': { by: 'launcher', run: 'none' },
   // Rules (phase 3): the rules ledger is no run's, so none is resolved.
   'rule.open': { by: 'any', run: 'none' },

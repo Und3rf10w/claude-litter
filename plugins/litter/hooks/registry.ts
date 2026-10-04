@@ -20,7 +20,7 @@ import { recordSwarmBind } from './swarm/admit'
 import { recordSwarmEnd } from './swarm/end'
 import { consumeSwarm } from './swarm/observe'
 import { recordRepairBudget, recordRepairStart } from './repair'
-import { recordGateAmend, recordPlanWrite } from './plan'
+import { recordGateAmend, recordGateWiden, recordPlanWrite } from './plan'
 import { consumeInflight } from './inflight'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
 
@@ -60,6 +60,7 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'worktree.kept': recordGeneric,
   'plan.write': recordPlanWrite,
   'gate.amend': recordGateAmend,
+  'gate.widen': recordGateWiden,
   'wiki.write': recordGeneric,
   // Rules (phase 3): the rules ledger's, rules/records.ts.
   'rule.open': recordRuleOpen,

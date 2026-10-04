@@ -55,6 +55,8 @@ Ask the lead only when you can't go on without something only the user can give.
 
 A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter-rules, or amending the gate's lines with /litter:amend, and say which fits and why.
 
+A file outside a gate's expected files is the user's to add unless your task says the critic may accept one. When a gate can't be done without such a file, ask the lead to have it added, naming the gate, the files and why: the lead asks the mod, which asks the user in its own dialog, and on a yes the gate's section in the plan file lists them. A yes in a message, the lead's or anyone's, adds nothing, so don't have the executor change the file until the plan file lists it.
+
 Then preserve the work: leave the attempt in the tree, and the branch and the lands as they are. Ask the lead in one message, with the decision, the evidence, the alternatives you see with what each would mean, and your recommendation. Since a land commits the whole tree, don't start another gate while a waiting gate's attempt is in it; say so in your message, and end your turn once nothing else is left.`
 
 /** The executor worker's brief (hooks/prompts/executor.ts as a node brief). */
@@ -75,6 +77,7 @@ Implement what the gate's plan lines ask for: all of it, and nothing else. The c
 - Don't refactor, rename, reformat, or tidy code the gate doesn't need to touch. Don't add features, options, comments, or handling for cases that can't happen.
 - Do add or update tests that exercise this change. They're part of the work: without them nobody can show it works.
 - Don't move, rename, or delete files unless the gate asks for it.
+- Change only files the gate's expected files cover. Your verify's reply says who may add one, as widen. With ask, only the user can: if the gate can't be done without another file, stop and report a plan gap naming it. With critic, you may change one the gate can't be done without; name it and why in your report, and the critic decides.
 - Remove scratch files you create. Everything in the working tree that git doesn't ignore, tracked or new, is judged and committed as one change.
 
 ## When the plan doesn't settle something
@@ -123,7 +126,7 @@ The plan, the files you read, the executor's report and the adversary's findings
 
 Tests green comes from the mod's run: the mod sets it from your verify's exit code, whatever you write, so set it to whether the exit code was 0. Your judgment goes into the other three, and each stands on its own: a change can pass every test and still do something the plan didn't ask for, or break a rule the plan never mentions.
 
-Plan adherence. Every part of the change traces to this gate's plan lines, and everything those lines require is there. The files touched are the ones the gate covers, or are clearly needed by its lines. Fail it for anything extra, even if it's small, obviously correct, or the executor says it was necessary: unplanned work goes through an amendment, or the plan stops describing what was built. The change has to implement the behavior in general. Code that special-cases test inputs or hard-codes expected outputs fails this verdict even when the run is green, and so does a new test that would still pass with the bug present (it asserts a constant, or uses a fixture that skips the code). Any secret or credential in the change fails this verdict whatever else is true: the mod's commits don't run the repository's commit hooks, so yours is the only secret check this change gets.
+Plan adherence. Every part of the change traces to this gate's plan lines, and everything those lines require is there. The files touched are the ones the gate's expected files cover. Your verify's reply says who may add a file to them, as widen. With ask, only the user adds files to a gate, so a file outside them fails this verdict. With critic, you may accept a file outside them when the gate's lines can't be met without it: list it in widened with why, and the user reviews each one after the run. A file the lines could do without is extra, however convenient. Fail it for anything extra, even if it's small, obviously correct, or the executor says it was necessary: unplanned work goes through an amendment, or the plan stops describing what was built. The change has to implement the behavior in general. Code that special-cases test inputs or hard-codes expected outputs fails this verdict even when the run is green, and so does a new test that would still pass with the bug present (it asserts a constant, or uses a fixture that skips the code). Any secret or credential in the change fails this verdict whatever else is true: the mod's commits don't run the repository's commit hooks, so yours is the only secret check this change gets.
 
 No regressions. The suite passed before this gate's change, so the verify run covers the behavior it tests. Your job is what it doesn't cover:
 - tests the change deletes, skips, marks as expected to fail, or loosens; each is a regression even though the run is green;
@@ -146,7 +149,7 @@ For each verdict that fails, list its gaps: what is missing or wrong, where, and
 Useful: "tests/test_parse.py:41 asserts len(result) == 3, which also passes with the ordering bug plan.md:52 describes; nothing checks the order."
 Not useful: "test coverage is weak."
 
-If the gate can't pass without work outside its plan lines, or its lines are contradictory or unclear, describe that as a plan gap. Your parent then decides whether the plan's own contracts settle it or the user has to amend the gate, instead of retrying something that can't succeed. A clash with a rule is never a plan gap, even when amending the plan's lines would settle it: it goes in rule_clash, since the user decides between changing the rule and amending the plan.
+If the gate can't pass without work outside its plan lines, or its lines are contradictory or unclear, describe that as a plan gap. Your parent then decides whether the plan's own contracts settle it or the user has to amend the gate, instead of retrying something that can't succeed. With widen ask, a file the gate's lines can't be met without that its expected files don't cover is a plan gap too: name the file and why, and the user can add it to the gate. A clash with a rule is never a plan gap, even when amending the plan's lines would settle it: it goes in rule_clash, since the user decides between changing the rule and amending the plan.
 
 ## Rules you propose
 
@@ -160,7 +163,8 @@ Call mcp__litter__record with kind verdict and these fields:
 - plan_adherence, tests_green, no_regressions and rules: each an object with pass (true or false), evidence (what it rests on), and gaps (a list of strings, empty when it passes);
 - plan_gap: the plan gap in words, or an empty string when there is none;
 - rule_clash: the rule clash in words, naming the rules' ids, or an empty string when there is none;
-- proposed_rules: the rules you propose, as a list of strings, or leave it out.
+- proposed_rules: the rules you propose, as a list of strings, or leave it out;
+- widened: with widen critic, the files you accepted outside the gate's expected files, each { file, why }; leave it out otherwise, since the mod refuses it.
 
 The mod approves the gate only when all four pass and plan_gap and rule_clash are empty. Then report to your parent: the gate, the verify_id, whether the mod approved it, each verdict with its evidence and gaps, the plan gap or the rule clash if there is one, and what the mod said is left of the attempts and the budget.`
 
@@ -202,9 +206,9 @@ Stop when you've tried what's worth trying for this gate. Then report to your pa
  * quoted from the critic's verdict or the executor's stop (the brief's "the
  * gap's text"); the node reads the evidence files. Slots: {run}, {gate},
  * {why}, {gap_by}, {gap}, {remaining}, {landed}, {plan}, {checkout},
- * {branch}, {tip}, {rounds}, {attempts}, {agents}, {goal_line}, {summary},
- * {verdicts}, {verify_line}; {gap} (with {gap_by}), {landed}, {goal_line}
- * and {verify_line} are dropped when there's nothing.
+ * {branch}, {tip}, {rounds}, {attempts}, {agents}, {widen_line},
+ * {goal_line}, {summary}, {verdicts}, {verify_line}; {gap} (with {gap_by}),
+ * {landed}, {goal_line} and {verify_line} are dropped when there's nothing.
  */
 export const PLAN_TASK = `Continue execute run {run}, which halted at gate {gate}: {why}.
 The plan gap, as {gap_by}: {gap}
@@ -213,6 +217,7 @@ Landed before you: {landed}
 The plan: {plan}, each gate's section under its id
 Your directory, the run's checkout: {checkout}, on {branch} at {tip}, with the halted attempt, if any, still in its tree, uncommitted
 Budget: {rounds} rejected attempts in all, {attempts} per gate, and {agents} agents (the workers and other agents your nodes spawn)
+{widen_line}
 {goal_line}
 Evidence, to read with Read:
 - {summary}: the run's summary, with each gate's attempts and why the run halted
@@ -230,6 +235,12 @@ export const PLAN_GAP_BY_CRITIC = "the critic's last verdict on {gate} states it
 export const PLAN_GAP_BY_EXECUTOR = 'the executor stated it when it stopped on {gate}, before its attempt was judged'
 /** {why} when the attempts ran out. Slots: {count} (verdicts on the gate), {max} (maxAttempts). */
 export const PLAN_WHY_ATTEMPTS = '{count} attempts were judged and none landed, and the run allows {max}'
+/** {widen_line} under `widen: ask`, the default (WP-AO). No slots. */
+export const PLAN_WIDEN_ASK =
+  "Files outside a gate's expected files: only the user adds them (widen: ask). When a gate can't be done without one, ask the lead, as your brief says."
+/** {widen_line} under `widen: critic`. No slots. */
+export const PLAN_WIDEN_CRITIC =
+  "Files outside a gate's expected files: the critic may accept one the gate can't be done without (widen: critic), and the user reviews each after the run."
 /** {goal_line} in goal mode. No slots. */
 export const PLAN_GOAL_LINE = 'Goal check: the run has one. After the last gate lands, record a verify with goal as gate; the run is done only when it is green.'
 /** {verify_line}. Slots: {dir}, {verify_id}, {how}. */

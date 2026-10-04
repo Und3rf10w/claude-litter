@@ -73,6 +73,39 @@ function workflowGeneration(generations: readonly Generation[]): Generation | nu
   return null
 }
 
+const WHEN: Record<string, string> = { launch: 'before Launch', run: 'during the run' }
+
+/**
+ * The run's widened gates (WP-AO): the files you added, before Launch or
+ * during the run, then each file a critic accepted under `widen: critic`,
+ * then what a land changed outside its gate's Files with neither, for you
+ * to review. Nothing when there's none of them.
+ */
+function widenLines(json: RunJson | null, records: readonly StoredRecord[]): string[] {
+  const out: string[] = []
+  const files = (v: unknown): string => (Array.isArray(v) ? v.filter((f): f is string => typeof f === 'string').join(', ') : '')
+  for (const r of records) {
+    if (r.kind !== 'gate.widen' || typeof r.body.gate !== 'string') continue
+    const why = named(r.body.why) ? `: ${oneLine(r.body.why, 500)}` : ''
+    const when = WHEN[String(r.body.at)]
+    if (r.body.by === 'you') out.push(`- ${r.body.gate}: ${files(r.body.files)}, added by you${when ? ` ${when}` : ''}${why}`)
+    else if (r.body.by === 'critic') out.push(`- ${r.body.gate}: ${files(r.body.files)}, accepted by its critic (verify ${String(r.body.verify_id ?? '?')}); review it${why}`)
+  }
+  const outside = records.filter(r => r.kind === 'land' && Array.isArray(r.body.outside) && (r.body.outside as unknown[]).length > 0)
+  if (out.length === 0 && outside.length === 0) return []
+  const lines = ['', "## Files outside the gates' Files", '']
+  if (out.length > 0) {
+    if (json?.widen === 'critic') lines.push("This run's critics could accept a file a gate can't do without (widen: critic).", '')
+    lines.push(...out)
+  }
+  if (outside.length > 0) {
+    if (out.length > 0) lines.push('')
+    lines.push("Changed by a land outside its gate's Files, neither added by you nor accepted by its critic:", '')
+    for (const r of outside) lines.push(`- ${String(r.body.gate)} (${String(r.body.commit ?? '').slice(0, 12)}): ${files(r.body.outside)}`)
+  }
+  return lines
+}
+
 /**
  * The lines lifecycle.ts's writeSummary puts in an execute run's summary.md
  * after its header, each section starting with a blank line. A throw is
@@ -155,6 +188,8 @@ export async function executeSummary(p: Ports, ref: RunRef, json: RunJson | null
       }
     }
   }
+
+  lines.push(...widenLines(json, records))
 
   // The accepted rule versions the run was given (decision 19), and what its critics proposed.
   const used = Array.isArray(json?.rules) ? json!.rules.filter(r => r && typeof r.id === 'string').map(r => `${r.id}@${r.version}`) : []

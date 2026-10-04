@@ -1,6 +1,7 @@
-// plan.write and gate.amend (COMMON steps 2 and 3): the planner's gates
-// rendered into plan.md in section 10's format, a re-split of a halted
-// chain's plan, and an amended gate. Every rewrite keeps the previous file as
+// plan.write, gate.amend and gate.widen (COMMON steps 2 and 3; WP-AO): the
+// planner's gates rendered into plan.md in section 10's format, a re-split of
+// a halted chain's plan, an amended gate, and files you added to a gate's
+// Files. Every rewrite keeps the previous file as
 // plan.<n>.md, and is refused unless parseGates reads the new text back to the
 // same gates. Owner: phase 3, package AB.
 //
@@ -10,16 +11,18 @@
 // another gate (plan section 10, "Gate sections in plan.md are a contract").
 
 import type { RecordCtx, RecordError, RecordHandler } from './records/core'
-import type { PlannedGate } from './records/execute'
+import type { GateWidenBody, PlannedGate } from './records/execute'
 import type { RunJson } from './records/run'
 import type { Ports } from './ports'
 import type { Gate } from './gates'
 import { fail } from './records/core'
 import { needText, store } from './records/design'
 import { parseGates } from './gates'
-import { planPath, planVersionPath, runDir as runDirOf, runJsonPath, RUN_ID } from './layout'
-import { atomicWrite, readJson, serial } from './fsx'
+import { planPath, runDir as runDirOf, runJsonPath, RUN_ID } from './layout'
+import { readJson, serial } from './fsx'
 import { chainLanded, gitAt, repoOf, resolveChain } from './lifecycle'
+import { writePlanVersion } from './planversion'
+import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
 
 const GATE_ID = /^G[0-9]+$/
 const FENCE = /^[ \t]{0,3}(```|~~~)/
@@ -162,42 +165,9 @@ function readsBack(text: string, want: Expected[]): { gate: string | null; why: 
 }
 
 // ---------------------------------------------------------------------------
-// Plan versions
+// Plan versions: planversion.ts's writer, which run.start's widenings use too (WP-AO).
 
-/** The next free `n` of `plan.<n>.md` in runDir: one past the highest there. */
-async function nextVersion(p: Ports, runDir: string): Promise<number> {
-  if (!(await p.fs.exists(runDir))) return 1
-  let max = 0
-  for (const e of await p.fs.list(runDir)) {
-    const m = /^plan\.([1-9][0-9]*)\.md$/.exec(e.name)
-    if (m && e.kind === 'file') max = Math.max(max, Number(m[1]))
-  }
-  return max + 1
-}
-
-/**
- * Writes `text` as `<runDir>/plan.md`, first moving the current one, if any,
- * to `plan.<n>.md` with the next free n (layout.ts, planVersionPath).
- * Answers the path written (absolute) and the previous file's new path, or
- * null when there was none.
- *
- * The move is a copy and then the atomic replace, so plan.md is never missing
- * for a run.start that reads it meanwhile (lifecycle.ts reads the chain
- * root's).
- */
-export async function writePlanVersion(p: Ports, runDir: string, text: string): Promise<{ path: string; previous: string | null }> {
-  return serial(`plan-version:${runDir}`, async () => {
-    const path = planPath(runDir)
-    let previous: string | null = null
-    if (await p.fs.exists(path)) {
-      const old = await p.fs.read(path)
-      previous = planVersionPath(runDir, await nextVersion(p, runDir))
-      await atomicWrite(p, previous, old)
-    }
-    await atomicWrite(p, path, text)
-    return { path, previous }
-  })
-}
+export { writePlanVersion }
 
 // ---------------------------------------------------------------------------
 // The handlers
@@ -441,5 +411,87 @@ export const recordGateAmend: RecordHandler = async (ctx, input) => {
     const body: Record<string, unknown> = { gate, after, reason: input.reason, root: chain.rootRun, path: wrote.path, previous: wrote.previous }
     if (input.before !== undefined) body.before = input.before
     return store(ctx, input, body, { path: wrote.path, previous: wrote.previous })
+  })
+}
+
+/** Runs `f` holding the plan locks of the chain root's folder and, when it's another, the run's own: root first, as everywhere. */
+const withPlanLocks = <T>(rootDir: string, runDir: string, f: () => Promise<T>): Promise<T> =>
+  rootDir === runDir ? serial(`plan:${rootDir}`, f) : serial(`plan:${rootDir}`, () => serial(`plan:${runDir}`, f))
+
+/** Where a widening reaches the agents, as gate.widen's reply says it. */
+const WIDEN_APPLIES =
+  "An agent that reads the gate from plan.md (a plan-template swarm's) sees the files from its next read. A running execute workflow keeps the gates it launched with, so for it they apply from the chain's next run: continue it with /litter:execute."
+
+/**
+ * `gate.widen { run, gate, files, why }` (a GateWidenInput, WP-AO): the
+ * lead's or the execute skill's request to add files to a gate's Files. The
+ * mod asks you in its own dialog (widen.ts, askWiden), naming the files and
+ * the why; only on your yes does it add them to the gate in the run's
+ * plan.md and in the chain root's, each with the line saying you added them,
+ * and record it with `by: 'you'`. Files the gate already covers are skipped,
+ * and with none left nothing is asked or recorded. Refused when the gate has
+ * landed in the chain, the run isn't an execute run, you keep the gate as
+ * written, or no one could be asked.
+ */
+export const recordGateWiden: RecordHandler = async (ctx, input) => {
+  const parsed = parseWidening({ gate: input.gate, files: input.files, why: input.why }, '')
+  if (!parsed.ok) return parsed
+  const w = parsed.value
+  const run = input.run as string
+  const runDir = runDirOf(ctx.litterDir!, run)
+  const json = await readJson<RunJson>(ctx.p, runJsonPath(runDir)).catch(() => undefined)
+  if (json?.workflow !== 'execute') {
+    return fail(`litter: a gate is widened in the execute run working it, and run ${run} is ${json ? `a ${json.workflow} run` : 'unreadable'}`, 'run')
+  }
+  const chain = await chainOf(ctx, run, 'run')
+  if ('ok' in chain) return chain
+  const commit = chain.landed.get(w.gate)
+  if (commit !== undefined) {
+    return fail(`litter: gate ${w.gate} has landed in run ${chain.rootRun}'s chain (${commit}), so it takes no more files; plan the change anew`, 'gate')
+  }
+  const now = await readPlanText(ctx.p, runDir, run, 'run')
+  if (typeof now !== 'string') return now
+  const gates = parseGates(now)
+  if (!gates.ok) return fail(`litter: run ${run}'s plan.md doesn't parse (${gates.error}), so it can't be widened`, 'run')
+  const g = gates.gates.find(x => x.id === w.gate)
+  if (!g) {
+    const ids = gates.gates.map(x => x.id)
+    return fail(`litter: run ${run}'s plan has no gate ${w.gate}; its gates are ${ids.join(', ')}`, 'gate', ids)
+  }
+  const date = dateOf(await ctx.p.now())
+  const preview = applyWidening(now, w, date)
+  if (!preview.ok) return fail(`litter: ${w.gate} can't be widened: ${preview.error}`, 'files')
+  if (preview.added.length === 0) return { ok: true, kind: 'gate.widen', run, gate: w.gate, added: [], note: `${w.gate}'s Files already cover ${w.files.join(', ')}; nothing was asked or changed` }
+
+  // Your answer, asked before the locks are taken, since it can take a while.
+  const answer = await askWiden(ctx.p, { run, gate: w.gate, title: g.title, current: g.files, files: preview.added, why: w.why, at: 'run' })
+  if (answer === 'unasked') {
+    return fail(`litter: no one could be asked to widen ${w.gate} here (a session with no one at it, as under -p), and only your answer in litter's dialog widens a gate; nothing was changed`, 'gate')
+  }
+  if (answer === 'no') return fail(`litter: you kept ${w.gate} as written, so its Files are unchanged. Work within them, or ask the user how to go on`, 'files')
+
+  return withPlanLocks(chain.rootDir, runDir, async () => {
+    // Read again under the locks: an amend or a re-split may have written either meanwhile.
+    const own = await readPlanText(ctx.p, runDir, run, 'run')
+    if (typeof own !== 'string') return own
+    const mine = applyWidening(own, { ...w, files: preview.added }, date)
+    if (!mine.ok) return fail(`litter: ${w.gate} can't be widened: ${mine.error}; nothing was written`, 'files')
+    let rootText: string | null = null
+    if (chain.rootDir !== runDir) {
+      const old = await readPlanText(ctx.p, chain.rootDir, chain.rootRun, 'run')
+      if (typeof old !== 'string') return old
+      const root = applyWidening(old, { ...w, files: preview.added }, date)
+      if (!root.ok) return fail(`litter: ${w.gate} can't be widened in run ${chain.rootRun}'s plan, the chain's: ${root.error}; nothing was written`, 'gate')
+      if (root.added.length > 0) rootText = root.text
+    }
+    if (mine.added.length === 0 && rootText === null) {
+      return { ok: true, kind: 'gate.widen', run, gate: w.gate, added: [], note: `${w.gate}'s Files came to cover them meanwhile; nothing was changed` }
+    }
+    const plans: string[] = []
+    if (mine.added.length > 0) plans.push((await writePlanVersion(ctx.p, runDir, mine.text)).path)
+    if (rootText !== null) plans.push((await writePlanVersion(ctx.p, chain.rootDir, rootText)).path)
+    const added = mine.added.length > 0 ? mine.added : preview.added
+    const body: GateWidenBody = { gate: w.gate, files: added, why: w.why, by: 'you', at: 'run', plans }
+    return store(ctx, input, body, { gate: w.gate, added, plans, applies: WIDEN_APPLIES })
   })
 }

@@ -73,3 +73,14 @@ describe('the manifest', () => {
     expect(o.repairAgents).toBe(manifest.userConfig.repairAgents!.default as number)
   })
 })
+
+// WP-AO: who may add files to a gate's Files.
+describe('the widen option', () => {
+  test("critic only for 'critic', in any case and with spaces; unset, '' and anything else is ask, the manifest's default", () => {
+    expect(normalizeOptions({ widen: 'critic' }).widen).toBe('critic')
+    expect(normalizeOptions({ widen: ' Critic ' }).widen).toBe('critic')
+    for (const v of [undefined, '', 'ask', 'yes', 1, null]) expect(normalizeOptions({ widen: v }).widen).toBe('ask')
+    expect(normalizeOptions(undefined).widen).toBe(manifest.userConfig.widen!.default as 'ask')
+    expect(manifest.userConfig.widen).toEqual(expect.objectContaining({ type: 'string', default: 'ask', options: ['ask', 'critic'] }))
+  })
+})

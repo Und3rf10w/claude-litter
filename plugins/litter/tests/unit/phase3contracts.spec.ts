@@ -321,7 +321,7 @@ describe('run.start with the stubs', () => {
     const w = await startWorld()
     const r = okReply(await start(w, 'execute', { runRules: ['keep the public API'] }))
     expect(Object.keys(r.args).sort()).toEqual(
-      ['adversary', 'adversaryClamp', 'authorized', 'gates', 'maxAttempts', 'nonce', 'planPath', 'rules', 'run', 'verifyCommand'],
+      ['adversary', 'adversaryClamp', 'authorized', 'gates', 'maxAttempts', 'nonce', 'planPath', 'rules', 'run', 'verifyCommand', 'widen'],
     )
     expect(r.args.rules).toEqual(['For this run (stated by you): keep the public API'])
     expect((r.args.gates as { id: string; rules: unknown }[]).map(g => [g.id, g.rules])).toEqual([
