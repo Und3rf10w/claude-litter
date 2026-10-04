@@ -99,8 +99,8 @@ compare_side() {
     h_git -C "$H_REPO" add .litter
     h_git -C "$H_REPO" commit -q -m 'the vendor ban, an accepted project rule' || exit 1
     cld=$H_REPO/.claude/litter
-    # The interview's labels to pick (answer.sh: jq, case-insensitive).
-    ANSWERS='as written|anyway|as[- ]is|^launch|^(repair )?auto\b'
+    # The interview's labels to pick ahead of the recommended ones (answer.sh: jq, case-insensitive): Launch and repair auto.
+    ANSWERS='^launch|^(repair )?auto\b'
     # The steps' waits (as the bridge case's): each also ends on a question
     # waiting with no one to answer it, as deepwork's side ends; ask-mark
     # moves past one the steps declined.
@@ -148,13 +148,15 @@ EOF
 sleep 8
 $(h_tool_steps "$H_DIR/debug.txt")
 send /litter:execute plan.md
-# KEYS: the interview, answered by label (answer.sh) until run.start has
-# made run.json: Launch, repair auto, and the plan run as written, deepwork's
-# side running it so. The skill reads the gates' code, and may ask about
-# G5's contradiction and G2's report.sh before Launch, recommending a fix
-# first (T4-1 attempt 2). Every other question takes its first option, the
-# skill's recommended one: verify sh test.sh, max attempts 3, no adversary.
-# Then a Launch asked in plain text rather than as a question is typed.
+# KEYS: the interview, answered (answer.sh) until run.start has made
+# run.json, as every question on both sides is: no option that stops or
+# re-plans, Launch and repair auto by label, else the recommended option,
+# else the first. The skill reads the gates' code and may ask about G5's
+# contradiction and G2's report.sh before Launch, recommending a fix of the
+# plan first (attempt 2: then the first option left, run as written), or
+# dropping G5 and adding report.sh to G2 (attempt 4), as deepwork asks and
+# is answered. Then a Launch asked in plain text rather than as a question
+# is typed.
 keysh 600 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 sendsh ls $cld/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl || echo Launch
 keysh 300 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
@@ -166,13 +168,12 @@ wait 10800 sh $H_DIR/until.sh ended1
 # its 240 s or the lead's first question, which isn't declined.
 wait 240 sh $H_DIR/until.sh asking
 keysh 6 6 sh $H_DIR/until.sh decline
-# A plan-template swarm, until every gate has landed. The lead's questions
-# take their recommended option, else the first, as the interview's do: a
-# user who takes the recommendations, deepwork's side answered the same.
-# The lead ends the swarm on the gate-runner's report; if it hasn't, the
-# session says to. Then generation 2's run.end. With nothing to continue
-# the run, each of these holds at once.
-keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh landed && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl recommended $H_DIR/answer-mark $H_DIR/ask-mark
+# A plan-template swarm, until every gate has landed, the lead's questions
+# answered as the interview's are, with no label preferred. The lead ends
+# the swarm on the gate-runner's report; if it hasn't, the session says
+# to. Then generation 2's run.end. With nothing to continue the run, each
+# of these holds at once.
+keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh landed && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '' $H_DIR/answer-mark $H_DIR/ask-mark
 wait 600 sh $H_DIR/until.sh swarm_ended
 sendsh $end_cmd
 wait 900 sh $H_DIR/until.sh over
@@ -204,9 +205,8 @@ EOF
 sleep 8
 # S0's command (it asked nothing there), with the ban as a guardrail.
 send /deepwork Implement the approved plan in plan.md --mode execute --plan-ref plan.md --guardrail '$BAN_TEXT'
-# To its end, its questions taking their recommended option, else the
-# first, as litter's side's do.
-keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl recommended $H_DIR/answer-mark
+# To its end, its questions answered as litter's side's are (answer.sh).
+keysh 10800 5 ! NOASK=1 sh $H_DIR/until.sh && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '' $H_DIR/answer-mark
 # Time to archive its state; then esc closes a question still open.
 sleep 60
 key esc

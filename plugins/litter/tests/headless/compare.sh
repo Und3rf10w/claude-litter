@@ -114,10 +114,24 @@ wall() {
 
 LD=$L/repo/.claude/litter
 # The session's questions (only the main thread asks: the skill's interview and the swarm lead's), as deepwork's are read.
-# A gate with no land and no halt was asked about when a question's subject,
-# the first gate id it names, is that gate: its outcome is "asked", with
-# those questions as its text. Not any gate it names: Launch's lists them all.
-SUBJECT='def subject: (first(capture("(^|[^A-Za-z0-9])(?<g>G[0-9]+)") | .g) // null);'
+# A gate was asked about when a question names it, unless the question names
+# every gate (Launch's lists them all; attempt 4's "signs off G1, G2 and G4
+# and holds only G3" is about all four it names). A gate with no land and no
+# halt that was asked about has the outcome "asked", with those questions as
+# its text; one that landed after it was asked isn't a silent pick, and its
+# ground check decides. The ids as either side writes them: G5, plan.md#G5,
+# G-exec-5.
+SUBJECT='def names($g; $all): [match("(^|[^A-Za-z0-9])[Gg](-?exec-?)?(?<n>[0-9]+)(?=[^0-9]|$)"; "g") | .captures[] | select(.name == "n") | "G" + .string] | unique
+  | any(.[]; . == $g) and length < ($all | length);'
+# qa <tool-log>: each answered question as {q, a, rec}, rec its "(Recommended)" option's label or null.
+qa() {
+  [ -f "$1" ] || { echo '[]'; return 0; }
+  jq -nRc '[inputs | fromjson? | select(.tool == "AskUserQuestion")] as $a
+    | ([$a[] | select(.ev == "PreToolUse") | .input.questions[]?
+        | {key: (.question // ""), value: ([.options[]?.label | select(test("\\(recommended\\)"; "i"))] | first)}] | from_entries) as $rec
+    | [$a[] | select(.ev == "PostToolUse") | .result | (if type == "string" then (fromjson? // {}) else . end)
+        | (.answers? // {}) | to_entries[] | {q: .key, a: (.value | tostring), rec: $rec[.key]}]' "$1"
+}
 lq='[]'
 if [ -f "$L/tool-log.jsonl" ]; then
   lq=$(jq -nRc '[inputs | fromjson? | select(.tool == "AskUserQuestion" and .ev == "PreToolUse") | .input.questions[]? | .question // empty]' "$L/tool-log.jsonl") || exit 2
@@ -149,12 +163,12 @@ if [ -n "$RUN" ] && [ -f "$LD/$RUN/run.json" ]; then
        ended: (if $end == null then "never ended"
          else "ended \($end.body.status) after \($ends | length) generation(s): \($end.body.reason // "no reason")" end),
        gates: [range(0; $rows | length) as $i | $rows[$i] | .id as $g
-         | [$lq[] | select(subject == $g)] as $asked
+         | [$lq[] | select(names($g; $gates))] as $asked
          | (if .landed then "landed" elif $end != null and $end.body.status != "done" and $i == $stop then "halted"
              elif ($asked | length) > 0 then "asked" else "none" end) as $o
          | . + {
-         outcome: $o,
-         text: (if $o == "halted" then [($end.body.reason // empty), (.verdicts[].gap | select(. != ""))]
+         outcome: $o, asked: $asked,
+         text: (if $o == "halted" then [($end.body.reason // empty), (.verdicts[].gap | select(. != "")), $asked[]]
            | reduce .[] as $t ([]; if any(.[]; contains($t)) then . else . + [$t] end) | join(" | ")
            elif $o == "asked" then $asked | join(" | ") else "" end),
          rejected: [.verdicts[] | select((.ok | not) and .gap == "") | {tree, green}]}]}') || { echo "$0: litter's ledger doesn't parse" >&2; exit 2; }
@@ -195,10 +209,10 @@ if [ -n "$state" ]; then
     | {ran: true, name: "instance \(.instance_id // "?") (\($file))", tip: $tip,
        ended: "phase \($x.phase // "none")\(if $h.summary then ": \($h.summary)" else "" end)",
        gates: [range(0; $rows | length) as $i | $rows[$i] | .id as $g
-         | [$asks.questions[] | select(subject == $g)] as $asked
+         | [$asks.questions[] | select(names($g; $gates))] as $asked
          | (if .landed then "landed" elif $how != null and $i == $stop then $how elif ($asked | length) > 0 then "asked" else "none" end) as $o
          | . + {
-         outcome: $o,
+         outcome: $o, asked: $asked,
          text: (if $i == $stop then [($h.summary // empty), (($h.blockers // [])[] | tostring), $asks.questions[], .notes[],
            (($x.discoveries // [])[] | select(.proposed_outcome != "continue") | "discovery \(.id // ""): \(.context // "")")] | join(" | ")
            elif $o == "asked" then $asked | join(" | ") else "" end)}]}' "$state") ||
@@ -218,6 +232,12 @@ lg=$(ground "$L/final") || exit 2
 dg=$(ground "$D/final") || exit 2
 lfr=$(false_rejections "$L" "$L/repo" "$(printf '%s' "$lf" | jq -c '[.gates[].rejected[]]')")
 dfr=$(false_rejections "$D" "$D/repo" "$(printf '%s' "$df" | jq -c '[.gates[].rejected[]]')")
+# Each side's questions and the answers the steps gave, with the label answer.sh meant to pick (answer-mark.picks).
+picks() { if [ -f "$1" ]; then jq -nRc '[inputs | fromjson? | {key: .q, value: .a}] | from_entries' "$1"; else echo '{}'; fi; }
+lqa=$(qa "$L/tool-log.jsonl") || exit 2
+dqa=$(qa "$D/tool-log.jsonl") || exit 2
+lpk=$(picks "$L/answer-mark.picks") || exit 2
+dpk=$(picks "$D/answer-mark.picks") || exit 2
 hand='[]'
 if [ -n "$HAND" ] && [ -f "$HAND" ]; then
   hand=$(jq -Rsc 'split("\n") | map(capture("^\\s*(?<side>litter|deepwork)\\s+(?<gate>G[0-9]+)\\s+(?<v>right|wrong)\\b[\\s:]*(?<why>.*)$")?)' "$HAND") || exit 2
@@ -225,17 +245,24 @@ fi
 
 table=$(jq -nr --slurpfile e "$EXPECT" --argjson lf "$lf" --argjson df "$df" --argjson lg "$lg" --argjson dg "$dg" --argjson hand "$hand" \
   --arg lfr "$lfr" --arg dfr "$dfr" --arg lw "$(wall "$L")" --arg dw "$(wall "$D")" --arg lt "$(tokens "$L")" --arg dt "$(tokens "$D")" \
+  --argjson lqa "$lqa" --argjson dqa "$dqa" --argjson lpk "$lpk" --argjson dpk "$dpk" \
   --arg hf "${HAND:-\$COMPARE_HAND}" '
   def pad($n): tostring | if length < $n then . + ([range($n - length)] | map(" ") | add) else . end;
+  def answers($side; $qa; $pk): $qa[] | "  \($side): \(.q | gsub("\\s+"; " ") | .[0:110]) -> \(.a)"
+    + (if .rec != null and .rec != .a then " (the recommended: \(.rec))" else "" end)
+    + (if $pk[.q] != null and $pk[.q] != .a then " (MISMATCH: the steps meant \($pk[.q]))" else "" end);
   def judge($side; $f; $ck; $e):
     ($f.gates[] | select(.id == $e.id)) as $x
     | (if $e.check == null then null else $ck[$e.check] end) as $c
     | ([$hand[] | select(.side == $side and .gate == $e.id)] | last) as $h
+    | (($x.asked // []) | length > 0) as $asked
     | (if $x.outcome == "landed" then
-         (if ($e.expect | index("lands")) == null then {r: "no", why: "landed: a silent pick"}
-          elif $c != null and ($c.ok | not) then {r: "no", why: "landed, failing \($e.check)"}
-          else {r: "yes", why: "landed"} end)
-       elif $x.outcome == "none" then {r: "no", why: "no outcome"}
+         # Landed after a question about it: not a silent pick; its ground check decides.
+         (if ($e.expect | index("lands")) == null and ($asked | not) then {r: "no", why: "landed: a silent pick"}
+          elif $c != null and ($c.ok | not) then {r: "no", why: "landed\(if $asked then " after asking" else "" end), failing \($e.check)"}
+          else {r: "yes", why: "landed\(if $asked then " after asking" else "" end)"} end)
+       elif $x.outcome == "none" then
+         (if $h != null then {r: (if $h.v == "right" then "yes" else "no" end), why: "no outcome (hand): \($h.why)"} else {r: "no", why: "no outcome"} end)
        elif ($e.expect | index("halts")) == null then {r: "no", why: "\($x.outcome), where it should land"}
        elif $c != null and ($c.ok | not) then {r: "no", why: "\($x.outcome), but the tree fails \($e.check)"}
        elif $e.names == null or ($x.text | test($e.names; "i")) then {r: "yes", why: "\($x.outcome), naming it"}
@@ -263,6 +290,8 @@ table=$(jq -nr --slurpfile e "$EXPECT" --argjson lf "$lf" --argjson df "$df" --a
     "  deepwork: \([$dg | to_entries[] | "\(.key) \(if .value.ok then "pass" else "fail: \(.value.msg)" end)"] | join("; "))",
     "halts and questions, as each side worded them:",
     ([$rows[] | select(.text != "") | "  \(.side) \(.gate): \(.text)"] | if length == 0 then ["  none"] else . end | .[]),
+    "questions each side asked, and the answers the steps gave (reported, not scored):",
+    ([answers("litter"; $lqa; $lpk), answers("deepwork"; $dqa; $dpk)] | if length == 0 then ["  none"] else . end | .[]),
     "rejected attempts (reported, not scored): litter \([$lf.gates[].rejected[]] | length), \($lfr) of them green and passing every ground check; deepwork \([$df.gates[].rejected[]] | length), \($dfr) of them passing every ground check",
     "right outcomes: litter \($lr), deepwork \($dr)",
     (if ($lf.ran and $df.ran | not) then "INCOMPLETE: \([(if $lf.ran then empty else "litter has no run" end), (if $df.ran then empty else "deepwork has no execute instance" end)] | join(" and ")): run that side again"
