@@ -91,4 +91,13 @@ describe('the agent.spawn block', () => {
     expect((await $.agent.spawn({ ...SPAWN, subagentType: 'litter:sw-worker' })).deny).toBeUndefined()
     expect((await $.agent.spawn({ ...SPAWN, subagentType: 'general-purpose' })).deny).toBeUndefined()
   })
+
+  // 2.1.289 runs agent.spawn for a teammate (isTeammate, background): the fast path past the waits skips no refusal.
+  test("a main-thread teammate of a litter role is refused the same; an outside teammate passes", async ($, on) => {
+    mock.store(on)
+    on('agent.spawn', async () => ({ model: 'test-model', agentId: 'agent-new' }))
+    const mate = { ...SPAWN, name: 'mate', isTeammate: true, background: true } as const
+    expect((await $.agent.spawn({ ...mate, subagentType: 'litter:executor' })).deny).toContain('litter roles run inside litter workflows only')
+    expect(await $.agent.spawn({ ...mate, subagentType: 'general-purpose' })).toEqual({ model: 'test-model', agentId: 'agent-new' })
+  })
 })

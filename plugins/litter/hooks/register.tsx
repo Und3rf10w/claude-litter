@@ -13,7 +13,9 @@
 //  - no logic: each handler lives in its own module;
 //  - every hook but session.start, session.end and the two ui.render hooks
 //    awaits O's `rebound` first, so the first hook after a /clear rebinds the
-//    session (plan 15.4). A render can't: a rebind writes $.state.
+//    session (plan 15.4). A render can't: a rebind writes $.state. One
+//    exception within agent.spawn: a teammate litter has no stake in passes
+//    before it (spawn.ts, outsideTeammate).
 //
 // Contract owner: phase 1a; the swarm wiring is phase 2b-1's (package C), the
 // repair wiring phase 2b-2's (package V).
@@ -40,7 +42,7 @@ import { clearPending } from './swarm/guard'
 import { recoverSwarms } from './swarm/recover'
 import { swarmReadTool } from './swarm/launch'
 import { swarmProposeTool } from './swarm/propose'
-import { swarmSpawn } from './swarm/spawn'
+import { outsideTeammate, swarmSpawn } from './swarm/spawn'
 import { admitSend, admitStep, leadTurnStart, settleNode, swarmContext, swarmSendTool } from './swarm/admit'
 import { observeNodeTurn } from './swarm/observe'
 import { sweepNodePolicies } from './swarm/end'
@@ -354,7 +356,9 @@ export const register: Register = (on, options) => {
 
   // The main thread can't spawn litter roles; then the swarm's spawn check, with
   // the engine's own `next`. A rendezvous, so it keeps the spawner's context.
+  // A teammate litter has no stake in passes first, waiting on no rebind.
   on('agent.spawn', async ($, e, next) => {
+    if (outsideTeammate(e)) return next(e)
     const p = enginePorts($)
     await rebound(p)
     const refused = roleSpawnRefusal(e)

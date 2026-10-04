@@ -23,8 +23,11 @@ const SPAWN = {
 
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as Record<string, unknown>
 
-/** session.start's litter directory at /repo/.claude/litter: a plain checkout, files in memory (as wiring.test.ts's world). */
-function world(on: On): void {
+/**
+ * session.start's litter directory at /repo/.claude/litter: a plain checkout, files in memory (as wiring.test.ts's world).
+ * `sid` is read at each session.id; `register` runs before each agent.register answers.
+ */
+function world(on: On, opts: { sid?: { value: string }; register?: () => Promise<void> } = {}): void {
   const files = new Map<string, string>()
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
   const run = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -68,8 +71,11 @@ function world(on: On): void {
     return run(1)
   })
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__litter__${e.name}` } }))
-  on('agent.register', async (_$, e) => ({ value: { agent: `litter:${e.name}` } }))
-  on('session.id', async () => ({ value: 'tier1-session' }))
+  on('agent.register', async (_$, e) => {
+    await opts.register?.()
+    return { value: { agent: `litter:${e.name}` } }
+  })
+  on('session.id', async () => ({ value: opts.sid?.value ?? 'tier1-session' }))
   on('ui.log', async () => ({ value: undefined }))
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
 }
@@ -180,6 +186,53 @@ describe('with nothing live, every other loop passes to the engine as it came', 
     const r = await $.agent.spawn({ ...SPAWN, subagentType: 'general-purpose', parentAgentId: 'agent-7', cwd: '/repo/sub' })
     expect(r).toEqual({ model: 'test-model', agentId: 'agent-new' })
     expect(seen).toEqual({ cwd: '/repo/sub', background: false, prompt: 'do it', model: undefined })
+  })
+
+  // 2.1.289 runs agent.spawn for teammates: one litter has no stake in waits on no rebind (spawn.ts, outsideTeammate).
+  test("an outside teammate's spawn reaches the engine at once while a /clear's rebind holds the gate closed", async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on, { now: 5_000 })
+    const sid = { value: 'tier1-a' }
+    let hold = false
+    let held = 0
+    world(on, {
+      sid,
+      register: async () => {
+        if (!hold) return
+        held++
+        await clock.sleep(1_000)
+      },
+    })
+    on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
+    const spawned: string[] = []
+    on('agent.spawn', async (_$, e) => {
+      spawned.push(e.tool_use_id)
+      return { model: 'test-model', agentId: `agent-${e.tool_use_id}` }
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+
+    // The engine's clear, then the new id: the next hook starts the rebind, which closes the gate and is held here
+    // at its roles' registration.
+    await $.session.end({ reason: 'clear', sessionId: 'tier1-a', resume: { id: 'tier1-a' } })
+    sid.value = 'tier1-b'
+    hold = true
+    const first = $.agent.spawn({ ...SPAWN, tool_use_id: 'tu-first', subagentType: 'general-purpose' })
+    await clock.settle()
+    expect(held).toBeGreaterThan(0)
+    hold = false
+
+    let mate: unknown = null
+    void $.agent.spawn({ ...SPAWN, tool_use_id: 'tu-mate', subagentType: 'general-purpose', name: 'scout', isTeammate: true, background: true }).then(r => {
+      mate = r
+    })
+    await clock.settle()
+    expect(mate).toEqual({ model: 'test-model', agentId: 'agent-tu-mate' })
+    expect(spawned).toEqual(['tu-mate'])
+
+    // The rebind goes on, and the spawn that started it reaches the engine after it.
+    await clock.advance(1_000)
+    expect(await first).toEqual({ model: 'test-model', agentId: 'agent-tu-first' })
+    expect(spawned).toEqual(['tu-mate', 'tu-first'])
   })
 
   test("the lead's turn.start and turn.complete pass on", async ($, on) => {
