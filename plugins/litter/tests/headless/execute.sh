@@ -96,19 +96,64 @@ compare_side() {
     h_git -C "$H_REPO" add .litter
     h_git -C "$H_REPO" commit -q -m 'the vendor ban, an accepted project rule' || exit 1
     cld=$H_REPO/.claude/litter
+    # The steps' waits (as the bridge case's): each also ends on a question
+    # waiting with no one to answer it, as deepwork's side ends; ask-mark
+    # moves past one the steps declined.
+    cat >|"$H_DIR/until.sh" <<EOF
+#!/bin/sh
+# The waits of this side's steps: sh until.sh <what> exits 0 once it holds.
+LD=$cld
+ASK="sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl $H_DIR/ask-mark"
+EOF
+    cat >>"$H_DIR/until.sh" <<'EOF'
+$ASK && exit 0
+records() { cat "$LD"/2*/ledger/*.json 2>/dev/null | jq -s 'sort_by(.seq)'; }
+# Generation 2 ended, or generation 1 did with nothing to continue it: it didn't halt, or the bridge declined.
+over() { records | jq -e '(map(select(.kind == "run.end")) | length >= 2) or any(.[]; (.kind == "run.end" and .body.status != "halted") or .kind == "repair.declined")' >/dev/null 2>&1; }
+case $1 in
+asking) exit 1 ;;
+ended1) ls "$LD"/2*/ledger/*-run.end.json >/dev/null 2>&1 ;;
+landed) over || records | jq -e --slurpfile j "$(ls "$LD"/2*/run.json 2>/dev/null | head -n 1)" '($j[0].args.gates | map(.id)) as $g
+  | ($g | length) > 0 and ($g - [.[] | select(.kind == "land") | .body.gate]) == []' >/dev/null 2>&1 ;;
+swarm_ended) over || ls "$LD"/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1 ;;
+over) over ;;
+*) exit 2 ;;
+esac
+EOF
+    # Once every gate has landed: the end command, unless the swarm has ended or a question waits (scratch paths hold no spaces or quotes).
+    end_cmd="[ -d $cld/swarms ] && ! sh $H_DIR/until.sh asking && ! ls $cld/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1 && for d in $cld/swarms/repair-*; do echo \"/litter:swarm end \${d##*/}\"; done"
     cat >|"$H_DIR/steps.txt" <<EOF
 # The prompt box is up once drive.exp has answered the trust dialog.
 sleep 8
 send /litter:execute plan.md
 # KEYS: the interview, rules.sh's step 4 (the same skill on a plan with no
 # rules to import): each question's recommended option (verify sh test.sh
-# and repair off come from the settings, max attempts 3, no adversary), then
-# Launch. A placeholder until main fills it in from rules.sh's manual run;
-# until then the waits below time out and this side has no run.
-wait 900 ls $cld/2*/run.json
-# The run, to its run.end or the cap (H_DRIVE_MAX).
-wait 10800 ls $cld/2*/ledger/*-run.end.json
+# and repair auto come from the settings, max attempts 3, no adversary), then
+# Launch. The skill puts its recommended option first, and Enter picks the
+# highlighted one, the first, so Enter every 5 s until run.start has made
+# run.json, however many questions it asks; then a Launch asked in plain
+# text rather than as a question is typed.
+press 600 5 enter ls $cld/2*/run.json
+sendsh ls $cld/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl || echo Launch
+press 300 5 enter ls $cld/2*/run.json
+# Generation 1, to its run.end or the cap (H_DRIVE_MAX).
+wait 10800 sh $H_DIR/until.sh ended1
+# The skill's closing question: one esc declines it, so its turn ends, and a
+# swarm the bridge started (repair: auto) starts at that turn's end. A
+# declined question logs nothing more, so the mark moves past it.
+wait 240 sh $H_DIR/until.sh asking
+press 6 6 esc ! sh $H_DIR/until.sh asking
+until wc -l 2>/dev/null <$H_DIR/tool-log.jsonl >|$H_DIR/ask-mark || : >|$H_DIR/ask-mark
+# A plan-template swarm, until every gate has landed. The lead ends it on the
+# gate-runner's report; if it hasn't, the session says to. Then generation
+# 2's run.end. With nothing to continue the run, each of these holds at once.
+wait 10800 sh $H_DIR/until.sh landed
+wait 600 sh $H_DIR/until.sh swarm_ended
+sendsh $end_cmd
+wait 900 sh $H_DIR/until.sh over
 sleep 60
+# One esc declines a question still waiting, so /exit isn't typed into it.
+press 6 6 esc ! sh $H_DIR/until.sh asking
 exit
 EOF
   else
@@ -146,10 +191,12 @@ EOF
   if [ "$1" = litter ]; then
     (
       cd "$H_REPO" || exit 1
+      # Agent and the swarm tools for a plan-template swarm the bridge starts (repair: auto), as the bridge case's session has them.
       # shellcheck disable=SC2086
       CLAUDE_CODE_EFFORT_LEVEL=medium H_PERSIST=1 H_DRIVE_MAX=${H_DRIVE_MAX:-10800} expect "$H_HERE/drive.exp" "$H_DIR/steps.txt" "$H_DIR/tty.txt" \
         claude ${EXECUTE_MODEL:+--model "$EXECUTE_MODEL"} --effort medium --permission-mode auto --settings "$CSETTINGS" \
-        --allowedTools ToolSearch Workflow Read Glob Grep Write Edit mcp__litter__record 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' \
+        --allowedTools ToolSearch Agent Workflow Read Glob Grep Write Edit mcp__litter__record mcp__litter__swarm_read \
+        mcp__litter__swarm_propose mcp__litter__swarm_send 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' \
         --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" --debug-file "$H_DIR/debug.txt" >|"$H_DIR/drive.txt" 2>&1
     )
   else
@@ -178,7 +225,7 @@ if [ "$mode" = compare ]; then
   BAN=$H_FIX/compare/P-vendor-as-shipped.md
   BAN_TEXT=$(sed -n '/^## Rule$/{n;p;}' "$BAN")
   case $BAN_TEXT in '' | *"'"*) echo "$0: $BAN's rule is empty or holds a quote" >&2; exit 2 ;; esac
-  CSETTINGS=$(jq -cn '{pluginConfigs: {litter: {options: {verify: ["sh", "test.sh"], repair: "off"}}}}') || exit 1
+  CSETTINGS=$(jq -cn '{pluginConfigs: {litter: {options: {verify: ["sh", "test.sh"], repair: "auto"}}}}') || exit 1
   if [ -n "${H_CHECKS:-}" ]; then
     CD=$(cd -P "$H_CHECKS" && pwd -P) || exit 2
   else
