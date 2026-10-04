@@ -417,8 +417,9 @@ async function branchChecks(p: Ports, litterDir: string, name: string, b: NodeBi
       p.log(`swarm ${name}: git for-each-ref failed in ${s.commonDir}; the branches weren't checked`)
       return
     }
-    // The nodes that were running: running or settling now, and the one whose turn just ended.
-    const running = state.bindings(name).filter(x => x.agentId === b.agentId || state.status(x.agentId) !== 'idle')
+    // The nodes that were running: running, settling or parked now (WP-AJ: a parked node's background work can
+    // still commit), and the one whose turn just ended.
+    const running = state.bindings(name).filter(x => x.agentId === b.agentId || state.status(x.agentId) !== 'idle' || state.isParked(x.agentId))
     const runningNodes = [...new Set(running.filter(x => x.kind !== 'child').map(x => x.node))].sort()
     const bound = new Map<string, NodeBinding>()
     for (const x of running) if (x.branch !== null && (!bound.has(x.branch) || x.agentId === b.agentId)) bound.set(x.branch, x)

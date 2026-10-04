@@ -821,7 +821,11 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
   const wake = admitWake(b)
   if (!wake.ok) {
     state.refuseTurn(id, e.turnId)
+    // A parked node recovery or adoption admitted keeps no mark through a refused turn. Queued before any
+    // await, so a resume that admits it later is written later.
+    const cleared = ownSwarm(b.swarm) ? unadmit(p, b, 'after its wake was refused') : null
     await swarmEvent(p, state.liveSwarm(b.swarm), { kind: 'wake-refused', node: b.node, agentId: id, turnId: e.turnId, reason: wake.reason })
+    await cleared
     return yield* refusal(wake.reason)
   }
   if (wake.patch) {
@@ -865,12 +869,23 @@ export async function settleNode(p: Ports, e: Parameters<TurnCompleteHook>[1]): 
   kick(p)
 }
 
+/**
+ * Clears a node's admitted mark. The patch is queued in the caller's
+ * synchronous step, and each policy file's writes run in the order they're
+ * queued (guard.ts), so an admission that comes later is written later.
+ * Never rejects.
+ */
+function unadmit(p: Ports, b: NodeBinding, when: string): Promise<void> {
+  const dir = session().litterDir
+  if (!dir) return Promise.resolve()
+  return patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted ${when}: ${errText(err)}`))
+}
+
 /** Settled: its place is free, its policy no longer admitted, and its swarm's waiting messages may be handed on. */
 async function finishSettle(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
   for (const q of state.queued(b.swarm)) waitingRoom.delete(q.id)
-  const dir = session().litterDir
-  if (dir) await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted after it settled: ${errText(err)}`))
+  await unadmit(p, b, 'after it settled')
 }
 
 /**
@@ -881,34 +896,38 @@ async function finishSettle(p: Ports, b: NodeBinding): Promise<void> {
  */
 async function park(p: Ports, b: NodeBinding): Promise<void> {
   state.markParked(b.agentId)
-  const dir = session().litterDir
-  if (dir) await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted after it parked: ${errText(err)}`))
+  await unadmit(p, b, 'after it parked')
 }
 
 /**
  * A parked node the list shows ended: its place frees, as a settle's does,
  * and the messages waiting for room may be handed on, all in one synchronous
- * step. Its policy stays as its park, recovery or adoption wrote it, so
- * nothing a resume writes meanwhile is undone.
+ * step. Its admitted mark goes too, since recovery and adoption may have
+ * admitted it while it was parked; the patch is queued in that step, so a
+ * resume or a wake that admits it later is written later.
  */
-function unpark(b: NodeBinding): void {
+function unpark(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
   for (const q of state.queued(b.swarm)) waitingRoom.delete(q.id)
+  return unadmit(p, b, 'after it ended')
 }
 
 /** A queued message the lead can deliver now: its node idle (parked too), not handed already, not waiting for room. */
 const deliverable = (q: QueuedMessage): boolean => !handed.has(q.id) && !waitingRoom.has(q.id) && state.status(q.agentId) === 'idle'
 
 /**
- * The bindings of swarms this session runs. A read-only swarm's table is its
- * owner's copy, and a lost one's another session's now: the poll settles,
- * parks and frees none of theirs, nor writes their policies.
+ * A swarm this session runs. A read-only swarm's table is its owner's copy,
+ * and a lost one's another session's now: the poll settles, parks and frees
+ * none of their nodes, and nothing here writes their policies.
  */
+function ownSwarm(name: string): boolean {
+  const s = state.liveSwarm(name)
+  return s !== null && !s.readOnly && !s.lost
+}
+
+/** The bindings of swarms this session runs. */
 function ownBindings(): NodeBinding[] {
-  return state.bindings().filter(b => {
-    const s = state.liveSwarm(b.swarm)
-    return s !== null && !s.readOnly && !s.lost
-  })
+  return state.bindings().filter(b => ownSwarm(b.swarm))
 }
 
 function hasWork(): boolean {
@@ -932,14 +951,16 @@ async function settleTick(p: Ports): Promise<void> {
       const listed = await p.listAgents()
       // A parked node goes once the list shows it ended (completed, failed or killed) or gone; alive, it stays.
       // Checked again after the list's await, a resume or a wake may have taken it meanwhile, and before the
-      // settles' awaits, so the row is no older than that. Its policy is as its park (or recovery, or adoption)
-      // wrote it, so only its place goes: a resume that has just written it admitted keeps that.
+      // settles' awaits, so the row is no older than that. A resume in flight holds it, and the admitted mark
+      // its send wrote stays.
+      const freed: Promise<void>[] = []
       for (const b of parked) {
         const row = listed.find(a => a.id === b.agentId)
-        if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId) && !resuming(b.agentId)) unpark(b)
+        if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId) && !resuming(b.agentId)) freed.push(unpark(p, b))
       }
       // Only `running` holds a settle, not `waiting`, which parks it (settleIfDone says why).
       for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
+      await Promise.all(freed)
     }
     handOff(p)
     if (!hasWork() && poll) {

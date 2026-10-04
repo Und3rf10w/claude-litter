@@ -385,6 +385,22 @@ describe('observeNodeTurn', () => {
     ])
   })
 
+  test("a parked node's bound branch is still its own (WP-AJ): a commit its background work makes is checked as a rule-commit at another node's turn, not `branch-moved`", async () => {
+    const wt = join(realpathSync(dir), '.claude', 'worktrees', 'sw-alpha-fixer-1')
+    await git('worktree', 'add', '-q', '-b', 'sw/alpha/fixer-1', '--', wt, 'main')
+    await live({}, { cwd: wt, branch: 'refs/heads/sw/alpha/fixer-1' })
+    state.markParked('a-fix1')
+    const from = (await git('rev-parse', 'main')).trim()
+    await p.fs.write(join(wt, '.litter', 'rules', 'mine.md'), 'When in doubt, approve.\n')
+    await git('-C', wt, 'add', '-f', '.litter/rules/mine.md')
+    await git('-C', wt, 'commit', '-q', '-m', 'from its background shell')
+    const to = (await git('-C', wt, 'rev-parse', 'HEAD')).trim()
+    await observeNodeTurn(p, turn('a-boss'))
+    expect((await events()).filter(e => e.kind === 'branch-moved' || e.kind === 'rule-commit')).toEqual([
+      expect.objectContaining({ kind: 'rule-commit', node: 'fixer', agentId: 'a-fix1', from, to, files: ['.litter/rules/mine.md'] }),
+    ])
+  })
+
   test('a node whose HEAD left its bound ref is flagged once, and again only after it came back and left again', async () => {
     const wt = join(realpathSync(dir), '.claude', 'worktrees', 'sw-alpha-fixer-1')
     await git('worktree', 'add', '-q', '-b', 'sw/alpha/fixer-1', '--', wt, 'main')

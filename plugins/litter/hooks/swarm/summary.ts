@@ -21,7 +21,7 @@ import { SUMMARY_LABELS, SWARM_SUMMARY } from '../prompts/swarm-summary'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { sha256 } from '../fsx'
 import { getOptions, session } from '../session'
-import { agentStopped, binding, bindings, lastReport, liveSwarms, roundsUsed, spawnsUsed, status, stopped } from './state'
+import { agentStopped, binding, bindings, isParked, lastReport, liveSwarms, roundsUsed, spawnsUsed, status, stopped } from './state'
 
 /**
  * Why a summary is due: the lead's turn ended, a node messaged the lead (L);
@@ -257,6 +257,8 @@ function statusWord(swarm: string, agentId: string): string {
   if (st === 'settling') return 'finishing its turn'
   const stop = stopped(swarm).find(x => x.agentId === agentId)
   if (stop) return `stopped (${one(stop.reason)})`
+  // Parked (WP-AJ): idle to admission, but its work isn't over.
+  if (isParked(agentId)) return 'between turns, waiting on its own agents or background work'
   return agentStopped(agentId) ? 'finished' : 'idle'
 }
 
