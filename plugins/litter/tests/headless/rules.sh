@@ -198,7 +198,8 @@ sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasu
 screen() {
   e=$(printf '\033')
   b=$(printf '\007')
-  LC_ALL=C sed -e "s#${e}\[[0-9]*C# #g" -e "s#${e}\[[0-9:;<=>?]*[ -/]*[@-~]##g" -e "s#${e}][^${b}${e}]*${b}##g" \
+  # A cursor move right (C) or to a column (G) stands for the space it skips: the engine places words so.
+  LC_ALL=C sed -e "s#${e}\[[0-9]*[CG]# #g" -e "s#${e}\[[0-9:;<=>?]*[ -/]*[@-~]##g" -e "s#${e}][^${b}${e}]*${b}##g" \
     -e "s#${e}][^${b}${e}]*${e}[\\\\]##g" -e "s#${e}[()][A-Za-z0-9]##g" -e "s#${e}[^][]##g" ${1:+"$1"} | tr -d '\r'
 }
 
