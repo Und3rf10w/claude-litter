@@ -21,7 +21,7 @@ import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
 import { SWARM_SEND } from '../../hooks/swarm/tools'
 import type { LiveSwarm, NodeBinding, SwarmSpec } from '../../hooks/swarm/types'
-import type { ListedAgent, SessionSendResult } from '../../hooks/ports'
+import type { AgentStatus, ListedAgent, SessionSendResult } from '../../hooks/ports'
 import { fireEvery, nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ async function step(e: ReturnType<typeof stepE>) {
   return { chunks, result: s.value, called }
 }
 
-const agent = (id: string, type: string, status: string, parentId?: string): ListedAgent => ({
+const agent = (id: string, type: string, status: AgentStatus, parentId?: string): ListedAgent => ({
   id,
   description: 'a node',
   type,

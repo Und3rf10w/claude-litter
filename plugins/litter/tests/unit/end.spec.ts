@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SwarmEntry } from '../../hooks/hookfiles'
-import type { ListedAgent, ToolCallResult } from '../../hooks/ports'
+import type { AgentStatus, ListedAgent, ToolCallResult } from '../../hooks/ports'
 import type { RecordError, RecordOk } from '../../hooks/records/core'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
 import { launchSummaryPath, swarmOwnBranch, swarmOwnWorktreeName } from '../../hooks/layout'
@@ -167,7 +167,7 @@ const bindingOf = (agentId: string, over: Partial<NodeBinding> = {}): NodeBindin
   ...over,
 })
 
-const listed = (id: string, status: string, type = 'litter:sw-alpha-fixer'): ListedAgent => ({ id, description: id, type, status })
+const listed = (id: string, status: AgentStatus, type = 'litter:sw-alpha-fixer'): ListedAgent => ({ id, description: id, type, status })
 
 /** An `own` worktree for fixer #n, made as the spawn check makes it. */
 async function ownWorktree(n: number): Promise<string> {

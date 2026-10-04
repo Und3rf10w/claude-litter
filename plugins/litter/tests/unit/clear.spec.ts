@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
-import type { ListedAgent } from '../../hooks/ports'
+import type { AgentStatus, ListedAgent } from '../../hooks/ports'
 import * as state from '../../hooks/swarm/state'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
 import { CLEAR_HELD, CLEAR_OPTIONS, holdClear, resetClearForTests } from '../../hooks/clear'
@@ -68,7 +68,7 @@ function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
   }
 }
 
-const listed = (id: string, type: string, status = 'running', over: Partial<ListedAgent> = {}): ListedAgent => ({ id, type, status, description: id, ...over })
+const listed = (id: string, type: string, status: AgentStatus = 'running', over: Partial<ListedAgent> = {}): ListedAgent => ({ id, type, status, description: id, ...over })
 
 function runPolicy(litterDir: string): RunPolicy {
   return {
