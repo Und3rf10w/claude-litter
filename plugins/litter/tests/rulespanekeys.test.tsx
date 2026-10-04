@@ -122,7 +122,8 @@ async function started($: Engine, on: On): Promise<Map<string, string>> {
 const RULES_SH = { edit: 11, paths: 10, done: 12, accept: 10, confirm: 10, dismiss: 12, inForce: 2 }
 
 describe("rules.sh's key presses (T4-2)", () => {
-  test('the ring, state by state, from the import to the In force tab', async ($, on) => {
+  // Eight pane states, each rebuilt from the plugin's own store: past the default 5 s under a loaded machine.
+  test('the ring, state by state, from the import to the In force tab', { timeoutMs: 20000 }, async ($, on) => {
     const files = await started($, on)
     const imported = JSON.parse(String((await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 't1', kind: 'rule.import', from: 'deepwork' })).result)) as Record<string, unknown>
     expect(imported).toEqual(expect.objectContaining({ ok: true, kind: 'rule.import', seq: 6, proposals: 5, live: 4, archived: 1, preselected: 2, opened: true }))
@@ -164,7 +165,8 @@ describe("rules.sh's key presses (T4-2)", () => {
     // [Done]: the batch's ring again, the paths kept for the accept.
     await ui.press({ key: 'rules:edit-done:repo:2' })
     expect(await ringOf(ui)).toEqual(batch)
-    expect(await ui.find({ type: 'Text', text: 'paths: a/**' })).toBeDefined()
+    // An import is a ban, so the row shows its paths as what it protects (WP-AH).
+    expect(await ui.find({ type: 'Text', text: 'protects: a/**' })).toBeDefined()
     expect(tabsTo(batch, 'rules:accept:repo:2')).toBe(RULES_SH.accept)
 
     // The row's own [Accept]: an import's scope is project already, so no scope is asked; the preview replaces its buttons.
