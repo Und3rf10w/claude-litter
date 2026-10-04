@@ -101,6 +101,8 @@ export type ExecOpts = {
   staleBaseline?: boolean
   /** `blocked`'s notes: why the executor stopped, with an empty plan_gap. */
   blocked?: string
+  /** run.json's widen (WP-AO); left out, as in a run.json from before it. */
+  widen?: 'ask' | 'critic'
 }
 
 export type Landed = { gate: string; verifyId: string; commit: string; tree: string }
@@ -239,6 +241,7 @@ export async function executeRun(w: World, o: ExecOpts = {}): Promise<Exec> {
     session: 'sess-a',
     created: 1,
     ...(o.noRepair ? {} : { repair: { mode: o.mode ?? 'auto', rounds: o.rounds ?? 3, agents: o.agents ?? 6 } }),
+    ...(o.widen ? { widen: o.widen } : {}),
   }
   const text = `${JSON.stringify(json, null, 2)}\n`
   await w.p.fs.write(runJsonPath(runDir), text)

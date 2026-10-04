@@ -16,6 +16,7 @@ import { WORKFLOWS } from '../records/run'
 import { runJsonPath } from '../layout'
 import { readLedger } from '../ledgercore'
 import { parseGates } from '../gates'
+import { runGateFiles } from '../widen'
 import { git } from '../worktrees'
 import { loadRules } from './store'
 import { couldMatchUnder, expandBraceSets, isPathless, matches, specificity } from './match'
@@ -453,7 +454,8 @@ async function whereIs(p: Ports, dir: string): Promise<{ top: string; prefix: st
 
 /**
  * For a swarm whose run is an execute run (the bridge's plan template): the
- * Files of the run's gates with no land, and the run's checkout. Null for
+ * Files of the run's gates with no land, with your widenings during the run,
+ * and the run's checkout. Null for
  * any other run. Records past a broken chain don't count, so a gate landed
  * there still brings its rules.
  */
@@ -462,12 +464,12 @@ async function linkedExecute(p: Ports, link: RunLink): Promise<{ files: string[]
   if (json.workflow !== 'execute') return null
   const gates = Array.isArray(json.args?.gates) ? (json.args.gates as { id?: unknown; files?: unknown }[]) : []
   const ledger = await readLedger(p, link.runDir, link.run)
-  const landed = new Set(
-    ledger.records.filter(r => r.kind === 'land' && (ledger.tampered === null || r.seq < ledger.tampered.seq)).map(r => r.body.gate),
-  )
+  const before = ledger.records.filter(r => ledger.tampered === null || r.seq < ledger.tampered.seq)
+  const landed = new Set(before.filter(r => r.kind === 'land').map(r => r.body.gate))
+  // With the files you added during the run (gate.widen, WP-AO), so a node spawned after it gets their rules.
   const files = gates
-    .filter(g => !landed.has(g.id))
-    .flatMap(g => (Array.isArray(g.files) ? g.files.filter((f): f is string => typeof f === 'string') : []))
+    .filter(g => typeof g.id === 'string' && !landed.has(g.id))
+    .flatMap(g => runGateFiles(json, before, g.id as string))
   return { files, checkout: json.checkout }
 }
 

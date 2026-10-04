@@ -312,7 +312,13 @@ export const failDim = (evidence: string, gaps: string[] = []) => ({ pass: false
 /** A verdict on `verifyId`: every dimension passing unless `fail` replaces it. */
 export function verdict(
   verifyId: string,
-  o: { fail?: Partial<Record<DimName, { pass: boolean; evidence: string; gaps: string[] }>>; plan_gap?: string; rule_clash?: string; proposed?: string[] } = {},
+  o: {
+    fail?: Partial<Record<DimName, { pass: boolean; evidence: string; gaps: string[] }>>
+    plan_gap?: string
+    rule_clash?: string
+    proposed?: string[]
+    widened?: { file: string; why: string }[]
+  } = {},
 ): Record<string, unknown> {
   return {
     verify_id: verifyId,
@@ -323,6 +329,7 @@ export function verdict(
     plan_gap: o.plan_gap ?? '',
     rule_clash: o.rule_clash ?? '',
     proposed_rules: o.proposed ?? [],
+    widened: o.widened ?? [],
   }
 }
 

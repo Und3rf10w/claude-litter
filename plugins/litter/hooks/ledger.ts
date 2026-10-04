@@ -73,6 +73,10 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
   paths: 'strings',
   proposal: 'object',
   applicable: 'object',
+  // WP-AO: gate.widen's files, run.start's widenings, a plan-template critic's widened.
+  files: 'strings',
+  widenings: 'objects',
+  widened: 'objects',
 }
 
 const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {

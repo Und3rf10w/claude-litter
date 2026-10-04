@@ -30,6 +30,7 @@ function ledger() {
   const dim = (pass: boolean, evidence: string, gaps: string[] = []) => ({ pass, evidence, gaps })
   return {
     records,
+    add,
     start: () => add('run.start', { workflow: 'execute' }),
     launch: () => add('run.launch', { taskId: 't1', runId: 'wf_1', session: 's1', oid: 'o' }),
     verify: (gate: string, attempt: number, green = true) =>
@@ -328,5 +329,45 @@ describe('the chain, the rules and the proposals', () => {
     expect(lines).toContain(`| G1 | ${C1} |`)
     expect(lines).not.toContain('## Attempts')
     expect(section(lines, '## Rules used')).toEqual(['## Rules used', '', 'none'])
+  })
+})
+
+// WP-AO: the files added to gates, and what a land changed outside its gate's Files.
+describe("files outside the gates' Files", () => {
+  const HEADING = "## Files outside the gates' Files"
+
+  test('your widenings, the critic\'s, and what a land changed with neither, in the ledger\'s order, before the rules', async () => {
+    const l = ledger()
+    l.start()
+    l.add('gate.widen', { gate: 'G2', files: ['gen.sh', 'lib/'], why: 'b.txt is generated', by: 'you', at: 'launch', plans: [] })
+    l.launch(), l.verify('G1', 1), l.verdict('G1', 1), l.land('G1', C1)
+    l.add('gate.widen', { gate: 'G1', files: ['src/gen.sh'], why: 'the parser is generated', by: 'critic', at: 'land', verify_id: 'G1-1-v' })
+    l.add('gate.widen', { gate: 'G2', files: ['x.sh'], why: 'w', by: 'you', at: 'run', plans: [] })
+    l.add('land', { gate: 'G2', verify_id: 'G2-1-v', commit: 'c2'.repeat(20), outside: ['notes.md', 'z.md'] })
+    l.end('done', null)
+    deps.proposalsOf = async () => []
+    const lines = await summary(json({ widen: 'critic' }), l.records)
+    expect(section(lines, HEADING)).toEqual([
+      HEADING,
+      '',
+      "This run's critics could accept a file a gate can't do without (widen: critic).",
+      '',
+      '- G2: gen.sh, lib/, added by you before Launch: b.txt is generated',
+      '- G1: src/gen.sh, accepted by its critic (verify G1-1-v); review it: the parser is generated',
+      '- G2: x.sh, added by you during the run: w',
+      '',
+      "Changed by a land outside its gate's Files, neither added by you nor accepted by its critic:",
+      '',
+      `- G2 (${'c2'.repeat(6)}): notes.md, z.md`,
+      '',
+    ])
+    expect(lines.indexOf(HEADING)).toBeLessThan(lines.indexOf('## Rules used'))
+  })
+
+  test('none of them, no section', async () => {
+    const l = ledger()
+    l.start(), l.launch(), l.verify('G1', 1), l.verdict('G1', 1), l.land('G1', C1), l.end('done', null)
+    deps.proposalsOf = async () => []
+    expect(await summary(json(), l.records)).not.toContain(HEADING)
   })
 })

@@ -18,6 +18,7 @@ import { snapshot } from './snapshot'
 import { writeOut } from './output'
 import { integrationWorktree } from './integrate'
 import { markCritique } from './inflight'
+import { widenOf } from './widen'
 
 // The other packages' functions reached from here, through one table so tier 2
 // can stand in for them (COMMON, "Another package's module").
@@ -520,6 +521,8 @@ export const recordVerify: RecordHandler = async (ctx, input) => {
     log: ran.log,
     output_tail: body.output_tail,
   }
+  // A plan gate's critic learns who may add files to its gate from its own verify (WP-AO).
+  if (json.workflow === 'execute' && isPlanGate(json, gate)) reply.widen = widenOf(json)
   return reply
 }
 

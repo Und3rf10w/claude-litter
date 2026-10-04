@@ -329,6 +329,20 @@ describe("a plan-template node (an execute run's bridge)", () => {
     expect(block(calls[2]!.prompt)).toBe([entry(executeOnly), entry(executor), entry(folder), entry(open)].join('\n'))
   })
 
+  test("a file you added to a gate during the run (gate.widen) brings its rules to a node spawned after it; a critic's doesn't", async () => {
+    await bridged()
+    const rd = runDirOf(litterDir, RUN)
+    const widened = doc('P-d', { paths: ['/d/*.sh'] })
+    const critics = doc('P-e', { paths: ['/e/*.sh'] })
+    rules(widened, critics)
+    const body = (by: string, gate: string, file: string) => ({ gate, files: [file], why: 'w', by, at: by === 'you' ? 'run' : 'land' })
+    await appendRecord(p, rd, { run: RUN, kind: 'gate.widen', by: { source: 'launcher' }, body: body('you', 'G2', 'd/gen.sh') })
+    await appendRecord(p, rd, { run: RUN, kind: 'gate.widen', by: { source: 'mod' }, body: body('critic', 'G3', 'e/x.sh') })
+    const { next, calls } = engine()
+    await run(spawnE(T('runner')), next)
+    expect(block(calls[0]!.prompt)).toBe(entry(widened))
+  })
+
   test("every node gets a ban whatever its paths, a landed gate's or no gate's; a rule with those paths reaches none", async () => {
     await bridged()
     const ban = doc('P-vendor', { type: 'ban', paths: ['/vendor/**'] })

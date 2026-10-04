@@ -25,7 +25,7 @@ import type { Ports } from '../ports'
 import type { LitterOptions } from '../options'
 import type { Author, RecordCtx, RecordError, RecordInput, RecordReply, StoredRecord } from '../records/core'
 import type { RunJson, RunRepairBody } from '../records/run'
-import type { LandReply, SwarmGateVerdictBody, SwarmVerdictBody, SwarmVerdictTask, VerdictDimension, VerifyReply } from '../records/execute'
+import type { LandReply, SwarmGateVerdictBody, SwarmVerdictBody, SwarmVerdictTask, VerdictDimension, VerifyReply, WidenedFile } from '../records/execute'
 import type { GateRecordKind, GateResult, SwarmEventBody, SwarmNodeBody } from '../records/swarm'
 import type { FanoutTask } from '../integrate'
 import type { RunFacts, VerifyRan, VerifyRun } from '../verify'
@@ -44,6 +44,7 @@ import { nodeOf, swarmRefusal, writesFiles } from './admit'
 import { proposeFromCritic } from '../rules/store'
 import { writeVerdictFile } from '../verdicts'
 import { realOf } from '../worktrees'
+import { parseWidened, widenOf } from '../widen'
 import * as state from './state'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -685,6 +686,8 @@ async function planVerify(p: Ports, call: SwarmGateCall, g: Gated): Promise<Reco
     gate,
     attempt,
   }
+  // Who may add files to the gate (WP-AO), for the critic that cites this verify.
+  if (gate !== 'goal') reply.widen = widenOf(json)
   return reply
 }
 
@@ -697,6 +700,8 @@ type PlanVerdictIn = {
   plan_gap: string
   rule_clash: string
   proposed_rules: string[]
+  /** The files the critic accepts outside the gate's Files (WP-AO): only under `widen: critic`. */
+  widened: WidenedFile[]
 }
 
 /** Execute's VERDICT plus `gate` (decision 14), each field refused on its own. */
@@ -734,7 +739,15 @@ function parsePlanVerdict(input: RecordInput, json: RunJson, left: readonly stri
     if (typeof r !== 'string' || r.trim() === '') return fail(`litter: 'proposed_rules[${i}]' must be a rule's text`, `proposed_rules[${i}]`)
     if (bytes(r) > RULE_MAX_BYTES) return fail(`litter: 'proposed_rules[${i}]' is over ${RULE_MAX_BYTES} bytes; a rule goes into prompts, so cut it down`, `proposed_rules[${i}]`)
   }
-  return { verify_id: verifyId, gate, dims, plan_gap: gap, rule_clash: clash, proposed_rules: rules as string[] }
+  const widened = parseWidened(input.widened)
+  if (!widened.ok) return widened
+  if (widened.value.length > 0 && widenOf(json) !== 'critic') {
+    return fail(
+      `litter: in run ${String(json.run)} only the user adds files to a gate (widen: ask), so leave 'widened' empty; if the gate can't pass without a file outside its Files, name it in plan_gap`,
+      'widened',
+    )
+  }
+  return { verify_id: verifyId, gate, dims, plan_gap: gap, rule_clash: clash, proposed_rules: rules as string[], widened: widened.value }
 }
 
 /** The critic's veto (15.10's table) for one plan gate: from a `verdicts: true` node that writes nothing, in the run's checkout. */
@@ -824,6 +837,7 @@ async function planJudged(p: Ports, call: SwarmGateCall, g: Gated, input: PlanVe
     plan_gap: input.plan_gap,
     rule_clash: input.rule_clash,
     proposed_rules: input.proposed_rules,
+    widened: input.widened,
     gate,
     attempt: v.attempt,
     approved,

@@ -58,6 +58,12 @@ export type VerifyReply = {
   /** The log part folder, absolute, under litterDir. */
   log: string
   output_tail: string
+  /**
+   * A plan gate's verify (WP-AO): who may add files to a gate in this run.
+   * `critic`: the critic may accept a file outside the gate's Files that the
+   * gate can't do without. Absent for baseline, goal and integration.
+   */
+  widen?: 'ask' | 'critic'
 }
 
 /** `mcp__litter__record({ kind: 'land', run, gate, verify_id })`. */
@@ -93,6 +99,14 @@ export type LandBody = {
   recovered?: true
   /** The checkout moved, or the re-sync left paths alone. */
   note?: string
+  /**
+   * The paths the commit changes that the gate's Files don't cover (WP-AO),
+   * with your widenings and the critic's accepted files counted in; absent
+   * when there are none, when the run's args give the gate no Files, or when
+   * git couldn't list them. For you to review:
+   * it doesn't stop the land, which the critic's verdict decides.
+   */
+  outside?: string[]
 }
 
 export type LandAbandonedBody = { gate: GateRef; verify_id: string; reason: string }
@@ -123,6 +137,43 @@ export type PlanWriteInput = { kind: 'plan.write'; run: string; gates: PlannedGa
 
 /** `mcp__litter__record({ kind: 'gate.amend', run, gate, before?, after, reason })`. */
 export type GateAmendInput = { kind: 'gate.amend'; run: string; gate: string; before?: string; after: string; reason: string }
+
+// ---------------------------------------------------------------------------
+// Widening a gate's Files (WP-AO)
+
+/**
+ * `mcp__litter__record({ kind: 'gate.widen', run, gate, files, why })`, from
+ * the lead while a plan-template swarm works the run, or from the execute
+ * skill after a halt. The mod asks you itself; the lead's or a node's yes
+ * never widens a gate.
+ */
+export type GateWidenInput = { kind: 'gate.widen'; run: string; gate: string; files: string[]; why: string }
+
+/**
+ * A `gate.widen` record, the mod's, in the run's ledger: files added to one
+ * gate's Files, and why.
+ *  - `you`: you confirmed it in the mod's dialog, at Launch (`at: 'launch'`)
+ *    or during the run (`at: 'run'`). The mod added the files to the gate's
+ *    Files line in the run's copy of the plan, with a line saying so, and in
+ *    the chain's first run's copy, so a continuation keeps them; `plans`
+ *    names the copies it wrote.
+ *  - `critic`: an approving verdict accepted the file under `widen: critic`,
+ *    and the land of that verdict's verify records it (`at: 'land'`),
+ *    citing the verify. The plan isn't changed: the gate has landed.
+ */
+export type GateWidenBody = {
+  gate: string
+  /** Repository-relative; a trailing `/` is a folder. */
+  files: string[]
+  why: string
+  by: 'you' | 'critic'
+  at: 'launch' | 'run' | 'land'
+  verify_id?: string
+  plans?: string[]
+}
+
+/** One file a critic accepted outside the gate's Files (WP-AO, `widen: critic`), and why the gate needs it. */
+export type WidenedFile = { file: string; why: string }
 
 // ---------------------------------------------------------------------------
 // The gate critic's verdict (plan section 7, execute.js's VERDICT; phase 3)
@@ -158,6 +209,13 @@ export type GateVerdictBody = {
   rule_clash?: string
   /** Proposals only (section 16.4): each becomes a `rule.propose` in the rules ledger. */
   proposed_rules: string[]
+  /**
+   * The files outside the gate's Files the critic accepted (WP-AO), each
+   * with why; empty unless the run's `widen` is `critic`, where a land
+   * records them as the critic's widening. Absent from verdicts recorded
+   * before it, which read as empty.
+   */
+  widened?: WidenedFile[]
   /** Absent for a swarm node's, which records its verdict through the tool. */
   tool_use_id?: string
 }

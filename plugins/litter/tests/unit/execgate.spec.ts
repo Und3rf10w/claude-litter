@@ -339,6 +339,35 @@ describe('verdict', () => {
     expect(await kindsAfterRepair()).not.toContain('land')
   })
 
+  // WP-AO: who may add files to a gate.
+  test("under widen ask, the default, the verify says so and a verdict's widened is refused, naming the plan gap instead", async () => {
+    await started()
+    const v = await verify('cr-1', 'G2')
+    expect(v.widen).toBe('ask')
+    const r = asError(await gate('verdict', 'cr-1', { ...verdict(v.verify_id), widened: [{ file: 'gen.sh', why: 'g2.txt is generated' }] }))
+    expect(r.field).toBe('widened')
+    expect(r.error).toContain("only the user adds files to a gate (widen: ask), so leave 'widened' empty")
+    expect(asError(await gate('verdict', 'cr-1', { ...verdict(v.verify_id), widened: 'gen.sh' })).field).toBe('widened')
+    expect((await gate('verdict', 'cr-1', { ...verdict(v.verify_id), widened: [] })).ok).toBe(true)
+  })
+
+  test("under widen critic, the verdict keeps widened, and its land records each file as the critic's widening", async () => {
+    await started({ widen: 'critic' })
+    write(w.dir, 'g2.txt', 'G2 in the swarm\n')
+    write(w.dir, 'gen.sh', 'echo g2\n')
+    const v = await verify('cr-1', 'G2')
+    expect(v.widen).toBe('critic')
+    const widened = [{ file: 'gen.sh', why: 'g2.txt is generated' }]
+    const r = (await gate('verdict', 'cr-1', { ...verdict(v.verify_id), widened })) as Record<string, unknown>
+    expect(r).toEqual(expect.objectContaining({ ok: true, approved: true }))
+    expect(((await verdictsNow()).at(-1)!.body as unknown as SwarmGateVerdictBody).widened).toEqual(widened)
+    const land = (await gate('land', 'run-1', { gate: 'G2', verify_id: v.verify_id })) as LandReply
+    expect(land).toEqual(expect.objectContaining({ ok: true, landed: true }))
+    const after = await runRecords(x)
+    expect(after.filter(r => r.kind === 'gate.widen').map(r => r.body)).toEqual([{ gate: 'G2', files: ['gen.sh'], why: 'g2.txt is generated', by: 'critic', at: 'land', verify_id: v.verify_id }])
+    expect(after.filter(r => r.kind === 'land').at(-1)!.body).not.toHaveProperty('outside')
+  })
+
   test('a round only on a rejection: an approval is round null and uses none; past repairRounds a rejection is refused with the ask', async () => {
     await started({ rounds: 2 })
     const name = x.name

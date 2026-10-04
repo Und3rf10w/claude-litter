@@ -91,6 +91,13 @@
       "min": 1,
       "max": 50
     },
+    "widen": {
+      "type": "string",
+      "title": "Files outside a gate",
+      "description": "ask: only you add files to a gate's Files during an execute run, in a dialog litter shows you. critic: the gate's critic may also accept a file the gate can't do without, and each one it adds is listed in the run's summary for you to review. A launch can override it for its run.",
+      "default": "ask",
+      "options": ["ask", "critic"]
+    },
     "trailers": {
       "type": "string",
       "multiple": true,

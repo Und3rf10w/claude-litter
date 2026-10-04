@@ -24,8 +24,10 @@ const VERDICT = { type: 'object', properties: {
   rules: DIM,                     // the accepted rules in this gate's <rules> (section 16.5); "none apply" passes
   plan_gap: str,                  // '' unless the gate can't pass without an amendment
   rule_clash: str,                // '' unless rules clash, the plan can't be met without breaking one, or an accepted rule looks wrong: yours to settle
-  proposed_rules: strs },         // proposals only: run-local notes now, reviewed by you after the run
-  required: ['verify_id', 'plan_adherence', 'tests_green', 'no_regressions', 'rules', 'plan_gap', 'rule_clash', 'proposed_rules'] }
+  proposed_rules: strs,           // proposals only: run-local notes now, reviewed by you after the run
+  widened: { type: 'array', items: { type: 'object', properties: { file: str, why: str }, required: ['file', 'why'] } } },
+                                  // [] unless widen="critic": files outside the gate's Files it can't do without; the land lists each for you
+  required: ['verify_id', 'plan_adherence', 'tests_green', 'no_regressions', 'rules', 'plan_gap', 'rule_clash', 'proposed_rules', 'widened'] }
 const WRITTEN = { type: 'object', properties: {
   status: { enum: ['done', 'blocked'] }, plan_lines: strs, files: strs, checks: strs, notes: str,
   plan_gap: str },                // '' unless it stopped because the gate's plan lines don't settle the work
@@ -54,7 +56,8 @@ const common = g => tag('authorized', args.authorized) + tag('verify', args.veri
   tag('rules', [...(args.rules ?? []), ...(g.rules ?? []),                      // accepted, rendered by run.start
     ...[...proposed].map(p => `Proposed in this run, not accepted: ${p}`)].join('\n'))
 const gateTag = g => tag('gate', `${g.title}\n${g.excerpt}\nExpected files:\n${list(g.files)}\n` +
-  `Checks:\n${list(g.checks)}\nDone when: ${g.done_when}`, ` gate="${g.id}" plan="${args.planPath}" lines="${g.lines}"`)
+  `Checks:\n${list(g.checks)}\nDone when: ${g.done_when}`,
+  ` gate="${g.id}" plan="${args.planPath}" lines="${g.lines}" widen="${args.widen === 'critic' ? 'critic' : 'ask'}"`)  // who may add files (WP-AO)
 
 const passed = v => DIMS.every(d => v?.[d]?.pass === true)
 const feedbackFrom = (v, wrote, n) => [`Attempt ${n} was rejected.`,

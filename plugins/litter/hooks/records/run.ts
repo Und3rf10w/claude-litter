@@ -4,6 +4,7 @@
 // the names below.
 
 import type { RepairBudget } from '../swarm/types'
+import type { WidenMode } from '../options'
 import type { RuleRef } from './rules'
 
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
@@ -100,7 +101,21 @@ export type RunStartInput = {
   repairRounds?: number
   /** 1 to 50. */
   repairAgents?: number
+  /**
+   * Execute only (WP-AO): who may add files to a gate's Files in this run,
+   * as the launch confirmation stated it; unset, the `widen` option applies.
+   */
+  widen?: WidenMode
+  /**
+   * Execute only (WP-AO): files you asked to add to a gate before Launch. The
+   * mod asks you to confirm each gate's in its own dialog before the run is
+   * made; one you don't confirm refuses the launch.
+   */
+  widenings?: WideningInput[]
 }
+
+/** One gate's files to add, and why, in your words (WP-AO). Paths are repository-relative; a trailing `/` is a folder. */
+export type WideningInput = { gate: string; files: string[]; why: string }
 
 export type RunStartReply = {
   ok: true
@@ -161,6 +176,12 @@ export type RunJson = {
    * though an amend's halt never bridges (decision 13).
    */
   repair?: RepairSettings
+  /**
+   * Who may add files to a gate's Files (WP-AO), covered by `runJsonSha256`.
+   * Written for execute runs; absent, as in a run.json written before it,
+   * it's `ask`: only you.
+   */
+  widen?: WidenMode
 }
 
 /** The `run.start` ledger body: run.json's facts, chained, with run.json's and the args' sha256. */

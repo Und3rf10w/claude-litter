@@ -178,12 +178,25 @@ describe('the fanout calls', () => {
       "If two rules clash for this change, or the plan lines can't be met without breaking one, that's a rule clash, not a plan gap and not a failure to retry: put the rules' ids and why in rule_clash, and leave plan_gap empty. Only the user can settle it, by changing a rule or its exceptions, or by amending the plan's lines.",
       "A clash with a rule is never a plan gap, even when amending the plan's lines would settle it: it goes in rule_clash, since the user decides between changing the rule and amending the plan.",
       "An accepted rule you think is wrong isn't a proposal either: describe it in rule_clash, naming its id and why.",
-      "Give the verify_id, each verdict with its evidence and gaps, the plan gap if there is one, the rule clash if there is one, and any rules you propose. Leave plan_gap and rule_clash empty when there's none.",
+      "Give the verify_id, each verdict with its evidence and gaps, the plan gap if there is one, the rule clash if there is one, the files you accepted outside the gate's expected files, and any rules you propose. Leave plan_gap and rule_clash empty when there's none, and widened empty unless widen is \"critic\" and you accepted a file.",
     ]) {
       expect(text).toContain(pinned)
     }
     expect(text).not.toContain('plan gap naming both')
     expect(text).not.toContain('describe it as a plan gap naming its id')
+  })
+
+  // WP-AO: the gate's widen attribute says who may add a file to its Files.
+  test('the executor and the gate critic read widen from <gate>: under ask a needed file outside the Files is a plan gap, under critic the critic may accept it', () => {
+    const critic = ROLE_PROMPTS['gate-critic']
+    expect(critic).toContain('and in its widen attribute who may add files to it')
+    expect(critic).toContain('With widen="ask", only the user adds files to a gate, so a file outside them fails this verdict.')
+    expect(critic).toContain("With widen=\"critic\", you may accept a file outside them when the gate's lines can't be met without it: list it in widened with why")
+    expect(critic).toContain("With widen=\"ask\", a file the gate's lines can't be met without that its expected files don't cover is a plan gap too")
+    expect(critic).not.toContain('or are clearly needed by its lines')
+    const executor = ROLE_PROMPTS.executor
+    expect(executor).toContain('With widen="ask", only the user can: if the work can\'t be done without another file, stop and name it in plan_gap.')
+    expect(executor).toContain('With widen="critic", you may change one the work can\'t be done without; name it and why in your notes, and the critic decides.')
   })
 })
 
@@ -307,6 +320,11 @@ const section = (text: string, n: number): string => {
 describe('skills/swarm/SKILL.md', () => {
   test('stays under the size every skill is held to', () => {
     expect(swarmSkill().length).toBeLessThan(10_000)
+  })
+
+  test("the lead records a plan-template orchestrator's request for files outside a gate as gate.widen, and no yes in the session adds one (WP-AO)", () => {
+    const lead = swarmSkill().slice(swarmSkill().indexOf('**Repair swarms.**'))
+    expect(lead).toContain("or for files outside a gate `{ kind: 'gate.widen', run, gate, files, why }`; the mod asks the user either way (no yes here adds a file)")
   })
 
   test('its frontmatter names the skill, pre-approves the read-only tools and the four litter tools, and pins no model', () => {

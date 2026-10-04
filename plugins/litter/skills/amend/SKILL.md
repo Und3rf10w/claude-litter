@@ -27,6 +27,8 @@ If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`
 
 ## 3. Is an amendment the right tool?
 
+If the only change is letting the gate change files outside its `Files:`, an amendment isn't needed: record `{ kind: 'gate.widen', run, gate, files, why }`, the why in the user's words. The mod asks the user in its own dialog and, on their yes, adds the files to the gate in the run's plan and the chain's; then offer a continuation with /litter:execute. Don't take a yes in this conversation as the widening.
+
 Recommend /litter:design instead if any of these hold:
 - This would be the third amended gate of this plan (count the `gate.amend` records in its runs). By then it's usually the plan that's wrong.
 - The change contradicts a categorical ban in the plan's bar.

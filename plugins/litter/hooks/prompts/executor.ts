@@ -21,6 +21,7 @@ Implement what the gate's plan lines (or the task text) ask for: all of it, and 
 - Don't refactor, rename, reformat, or tidy code the work doesn't need to touch. Don't add features, options, comments, or handling for cases that can't happen.
 - Do add or update tests that exercise this change. They're part of the work: without them nobody can show it works.
 - Don't move, rename, or delete files unless the work asks for it.
+- For a gate, change only files its expected files cover. Who may add one is in the gate's widen attribute. With widen="ask", only the user can: if the work can't be done without another file, stop and name it in plan_gap. With widen="critic", you may change one the work can't be done without; name it and why in your notes, and the critic decides.
 - If the call gives a contract shared with other tasks, match it exactly. Other agents are building against it at the same time, and you can't tell them about a change.
 - Remove scratch files you create. Everything in the working tree that git doesn't ignore, tracked or new, is judged and committed as one change.
 

@@ -95,7 +95,10 @@ import {
   PLAN_WHY_ATTEMPTS,
   PLAN_WHY_EXECUTOR_GAP,
   PLAN_WHY_GAP,
+  PLAN_WIDEN_ASK,
+  PLAN_WIDEN_CRITIC,
 } from './prompts/swarm-plan'
+import { widenOf } from './widen'
 
 // ---------------------------------------------------------------------------
 // The other packages' functions, through one table so tier 2 can stand in for
@@ -536,6 +539,7 @@ async function planSpecOf(p: Ports, f: Facts, failure: PlanFailure, name: string
     rounds: json.repair?.rounds ?? null,
     attempts: maxAttemptsOf(json),
     agents: json.repair?.agents ?? null,
+    widen_line: widenOf(json) === 'critic' ? PLAN_WIDEN_CRITIC : PLAN_WIDEN_ASK,
     goal_line: json.args.goalCheck === true ? PLAN_GOAL_LINE : null,
     summary: summaryPath(ref.runDir),
     verdicts: verdictsDir(ref.runDir),
