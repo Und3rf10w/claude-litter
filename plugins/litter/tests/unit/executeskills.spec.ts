@@ -100,6 +100,15 @@ describe('skills/execute/SKILL.md', () => {
     expect(settings.indexOf('**Rules.**')).toBeLessThan(settings.indexOf('ask for an explicit "Launch"'))
   })
 
+  // T4-1: a decision left in the interview was asked again mid-run, and its gate halted on it.
+  test("a decision on a plan problem goes into runRules; one that changes a gate's Files doesn't, and is a plan edit or an amend", () => {
+    const decisions = section(settings, '**Problems you found in the plan.**', '**If a gate halts.**')
+    expect(decisions).toContain('add that decision to `runRules` in their words, naming the gate and what they chose')
+    expect(decisions).toContain("isn't a run rule: the critic still holds each gate to its `Files:`")
+    expect(decisions).toContain('/litter:amend')
+    expect(section(EXECUTE, '## 4. Launch', '## 5. While it runs')).toContain('the constraints and plan decisions the user stated for this run (section 3)')
+  })
+
   test('goal mode plans in litter:plan-run, then writes the approved gates with plan.write', () => {
     const goal = section(EXECUTE, '## 6. Goal mode', '## 7. When the run finishes')
     expect(goal).toContain("workflow: 'plan'")
