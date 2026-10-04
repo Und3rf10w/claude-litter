@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/core'
 import { appendRecord } from '../../hooks/ledgercore'
 import { hooksDir, ledgerDir, pointerPath, runDir, runJsonPath } from '../../hooks/layout'
-import { recordRunFind, resolveLitterDir, type FoundRun, type LitterDirResult } from '../../hooks/litterdir'
+import { LITTER_GITIGNORE, recordRunFind, resolveLitterDir, writeGitignore, type FoundRun, type LitterDirResult } from '../../hooks/litterdir'
 import { normalizeOptions } from '../../hooks/options'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
@@ -164,6 +164,63 @@ describe('resolveLitterDir', () => {
       throw new Error('spawn git ENOENT')
     }
     expect((await resolveLitterDir(p, root)).ok).toBe(false)
+  })
+})
+
+// WP-AQ: what of .claude/litter/ git leaves out, and what it offers you to commit.
+describe("litterDir's .gitignore", () => {
+  test("leaves out the hooks' state, the locks, the ledgers and the verify logs, and nothing else of the runs and swarms", async () => {
+    const dir = await repo('a')
+    const litterDir = join(dir, '.claude', 'litter')
+    mkdirSync(litterDir, { recursive: true })
+    await writeGitignore(p, litterDir)
+    expect(readFileSync(join(litterDir, '.gitignore'), 'utf8')).toBe(LITTER_GITIGNORE)
+    const RUN = '20261004-execute-abc123'
+    const out = [
+      'hooks/policy.json',
+      'hooks/agents/a1.json',
+      'lock-lease-0123abcd.json',
+      'rules-ledger/000001-rule.accept.json',
+      `${RUN}/ledger/000001-run.start.json`,
+      `${RUN}/ledger-export/x.json`,
+      `${RUN}/verify/v1/0001.log`,
+      'swarms/alpha/ledger/000001-swarm.propose.json',
+      'swarms/alpha/owner-lease-0123abcd.json',
+      'swarms/alpha/launches/20261004-063550/ledger/000001-swarm.start.json',
+    ]
+    const kept = [
+      '.gitignore',
+      `${RUN}/run.json`,
+      `${RUN}/plan.md`,
+      `${RUN}/plan.1.md`,
+      `${RUN}/summary.md`,
+      `${RUN}/verdicts/G1-1.md`,
+      `${RUN}/proposals/v1.md`,
+      'swarms/alpha/swarm.json',
+      'swarms/alpha/briefs/runner.md',
+      'swarms/alpha/revisions/1.json',
+      'swarms/alpha/launches/20261004-063550/summary.md',
+      // A swarm named like a run's folder keeps its spec: only run folders' ledger/, ledger-export/ and verify/ are left out by those lines.
+      'swarms/ledger/swarm.json',
+      'swarm-templates/review.json',
+      'WIKI.md',
+    ]
+    const ignored = async (rel: string) => (await p.run(['git', 'check-ignore', '-q', '--no-index', `.claude/litter/${rel}`], { cwd: dir })).code === 0
+    for (const rel of out) expect({ rel, ignored: await ignored(rel) }).toEqual({ rel, ignored: true })
+    for (const rel of kept) expect({ rel, ignored: await ignored(rel) }).toEqual({ rel, ignored: false })
+  })
+
+  test("one already there is left as it is, and a bare repository's litterDir gets none", async () => {
+    const dir = await repo('a')
+    const litterDir = join(dir, '.claude', 'litter')
+    mkdirSync(litterDir, { recursive: true })
+    writeFileSync(join(litterDir, '.gitignore'), '# mine\n')
+    await writeGitignore(p, litterDir)
+    expect(readFileSync(join(litterDir, '.gitignore'), 'utf8')).toBe('# mine\n')
+    const bare = join(root, 'bare.git', 'litter')
+    mkdirSync(bare, { recursive: true })
+    await writeGitignore(p, bare)
+    expect(existsSync(join(bare, '.gitignore'))).toBe(false)
   })
 })
 

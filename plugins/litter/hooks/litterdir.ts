@@ -173,6 +173,39 @@ export async function writePointer(p: Ports, projectDir: string, litterDir: stri
   }
 }
 
+/**
+ * `<litterDir>/.gitignore`: what of litter's folder never goes into git (plan
+ * section 14, "Should .claude/litter/ be committed?"). The rest is yours to
+ * commit.
+ */
+export const LITTER_GITIGNORE = [
+  "# Written by litter. Its runtime files and logs stay out of git: the hooks' state, the locks, the ledgers and",
+  "# the verify logs. The rest is yours to commit: each run's run.json, its copies of the plan, summary.md,",
+  '# verdicts and proposals; each swarm\'s spec, briefs, revisions and summaries; the swarm templates.',
+  '/hooks/',
+  '/lock-lease-*.json',
+  '/rules-ledger/',
+  '/[0-9]*/ledger/',
+  '/[0-9]*/ledger-export/',
+  '/[0-9]*/verify/',
+  '/swarms/*/ledger/',
+  '/swarms/*/owner-lease-*.json',
+  '/swarms/*/launches/*/ledger/',
+  '',
+].join('\n')
+
+/**
+ * Writes `<litterDir>/.gitignore` (LITTER_GITIGNORE) once, when there's none:
+ * one you've changed or removed the lines of is left as it is. Only for a
+ * checkout's `.claude/litter`; a bare repository's lies outside any tree.
+ */
+export async function writeGitignore(p: Ports, litterDir: string): Promise<void> {
+  if (!litterDir.endsWith('/.claude/litter')) return
+  const path = `${litterDir}/.gitignore`
+  if (await p.fs.exists(path)) return
+  await atomicWrite(p, path, LITTER_GITIGNORE)
+}
+
 const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
 
 export type FoundRun = {
