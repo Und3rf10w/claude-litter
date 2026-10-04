@@ -78,20 +78,53 @@ send /litter:rules import
 wait 600 ls $RL/*-rule.import.json
 sleep 15
 #
-# KEYS: each step marked KEYS is a placeholder, to be filled in from one manual
-# run of this case: key and send lines (drive.exp's header lists the keys;
-# ctrl-x tab focuses the pane, esc goes back to the prompt, enter or space
-# presses the focused button, send types into a focused field and presses
-# Enter). Keep each KEYS comment above the lines that replace it.
+# KEYS: how the pane takes keys (CC 2.1.288 and 2.1.289). ctrl-x tab gives
+# the first pane opened the keyboard, with nothing held (a band above the
+# prompt that draws a field would take it first). Tab walks the ring, the
+# pane's Button, Input and Select elements in tree order, the first Tab
+# landing on the first; enter presses the held button (space isn't bound);
+# a held field takes typing, and its Enter sets it, the field still held;
+# esc gives the keyboard back. The pane holds an element by its place in the
+# ring, so a press that changes the tree leaves that place on another
+# element: each press below starts again from ctrl-x tab, after a few
+# seconds for the last press's redraw. tests/rulespanekeys.test.tsx pins
+# every count, from the pane this fixture's import draws: change the two
+# together.
 #
 # Step 2: narrow the flag ban to a/** and accept it in project scope.
 # KEYS: ctrl-x tab into the pane; move to the [Edit…] of live1's flag row ("$G_FLAG") and press it.
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab enter
+sleep 3
+key esc
+sleep 2
 # KEYS: in its Paths field, type a/** and set it (send a/**); then press [Done].
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab
+send a/**
+sleep 3
+key tab tab enter
+sleep 3
+key esc
+sleep 2
 # KEYS: press that row's own [Accept], not the batch's [Accept selected] (which would also accept the preselected user guardrail); pick project if it asks the scope.
+# (An import is a project proposal already, so it doesn't ask: the preview replaces the row's buttons.)
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab enter
+sleep 5
+key esc
+sleep 2
 # KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept].
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.accept.json
+sleep 3
+key esc
+sleep 2
 # Step 3: dismiss the orchestrator proposal; the others stay pending.
 # KEYS: move to the orchestrator row ("$G_ORCH") and press its [Dismiss].
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.dismiss.json
 key esc
 sleep 2
@@ -100,16 +133,30 @@ until wc -c <$H_DIR/tty.txt >|$H_DIR/rules-mark
 send /litter-rules
 sleep 10
 # KEYS: ctrl-x tab into the pane; press the [In force (1)] tab.
+# (/litter-rules opens on the Proposed tab with no batch: the ring starts with its two tabs.)
+key ctrl-x tab
+key tab tab enter
 sleep 10
 key esc
 sleep 2
 # Step 4: the execute run, through the skill's interview and Launch.
 send /litter:execute plan.md
 # KEYS: answer the interview's settings question(s), each with its recommended option, then choose Launch.
-wait 900 ls $LD/2*/run.json
+# The skill puts its recommended option first, where an AskUserQuestion's
+# highlight starts, and Enter picks it and moves to the next question; after
+# the last of several, Enter on the highlighted Submit answers sends them.
+# How many questions it asks varies, so Enter every 5 s until run.start has
+# made run.json. Enter on an empty prompt sends nothing, mid-turn too.
+press 600 5 enter ls $LD/2*/run.json
+# A Launch asked in plain text rather than as a question: type it, unless a question is still waiting.
+sendsh ls $LD/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl || echo Launch
+press 300 5 enter ls $LD/2*/run.json
 wait 3600 ls $LD/2*/ledger/*-run.end.json
 sleep 60
 # KEYS: close the skill's closing question about the next step (esc), if the manual run shows one.
+# The skill offers the next step with AskUserQuestion: one esc declines it, so /exit isn't typed into it.
+wait 240 sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl
+press 6 6 esc ! sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl
 exit
 EOF
 fi

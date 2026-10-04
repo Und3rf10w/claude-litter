@@ -12,7 +12,20 @@
 #                               down, up, left, right, space, shift-tab, ctrl-x
 #                               (ctrl-x then tab focuses a pane; esc goes back
 #                               to the prompt)
+#   press <secs> <every> <name> <sh command>
+#                               run the command; while it exits non-zero, press
+#                               the key and run it again <every> seconds later,
+#                               giving up after <secs>. For asks whose count
+#                               varies: `press 600 5 enter ls <run.json>` picks
+#                               each AskUserQuestion's first option, then its
+#                               Submit answers, until the run exists (Enter on
+#                               an empty prompt sends nothing; in a multiSelect
+#                               question it only toggles the option). With
+#                               <secs> equal to <every>, it presses once at most
 #   exit                        /exit, then ctrl-c twice if it's still up
+# A sh command fails when it exits non-zero or writes to stderr (Tcl's exec),
+# so send a check's own errors to /dev/null. Keep it POSIX sh: it runs under
+# whatever sh is first on PATH, BusyBox's included.
 # The whole run gives up after H_DRIVE_MAX seconds (default 2400).
 #
 #   expect drive.exp <steps> <transcript.txt> <claude> <args...>
@@ -88,6 +101,21 @@ foreach line $lines {
         if {![info exists keys($k)]} { puts "drive: unknown key $k"; exit 2 }
         send -- $keys($k); pump 1
       }
+    }
+    press {
+      if {![regexp {^([0-9]+) ([1-9][0-9]*) (\S+) (.+)$} $arg -> secs every k c]} { puts "drive: press needs <secs> <every, 1 or more> <key> <sh command>"; exit 2 }
+      if {![info exists keys($k)]} { puts "drive: unknown key $k"; exit 2 }
+      set end [expr {[clock seconds] + $secs}]
+      set n 0
+      set held [expr {![catch {exec sh -c $c}]}]
+      while {!$held && [clock seconds] < $end} {
+        send -- $keys($k)
+        incr n
+        set next [expr {[clock seconds] + $every}]
+        while {[clock seconds] < $next} { pump 1 }
+        set held [expr {![catch {exec sh -c $c}]}]
+      }
+      puts "drive: press $k: $n presses, [expr {$held ? {the command holds} : {gave up}}]"
     }
     exit {
       send "/exit\r"
