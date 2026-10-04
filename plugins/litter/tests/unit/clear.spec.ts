@@ -217,6 +217,17 @@ describe('the clear is held', () => {
     expect(q).not.toContain('between commands')
   })
 
+  test('a node the list shows `pending` holds it too, as starting', async () => {
+    state.putLiveSwarm(swarm())
+    state.putBinding(bind('orch-b'))
+    p.agents = [listed('orch-b', 'litter:sw-alpha-part-b', 'pending')]
+    p.answers.push('Cancel')
+    expect(await clear()).toEqual({ r: { text: CLEAR_HELD }, cleared: false })
+    const q = p.asked[0]!.question
+    expect(q).toContain('- part-b: starting')
+    expect(q).not.toContain('between commands')
+  })
+
   test('an ask that rejects (nobody can answer: -p, an SDK host) holds it, with the same text', async () => {
     busySwarm()
     expect(await clear()).toEqual({ r: { text: CLEAR_HELD }, cleared: false })

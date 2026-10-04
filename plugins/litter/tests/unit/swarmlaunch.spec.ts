@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentSpec } from '../../hooks/ports'
+import type { AgentSpec, AgentStatus } from '../../hooks/ports'
 import type { SwarmStartBody } from '../../hooks/records/swarm'
 import type { Policy } from '../../hooks/hookfiles'
 import type { SwarmSpec } from '../../hooks/swarm/types'
@@ -560,8 +560,8 @@ describe('mcp__litter__swarm_read', () => {
     await bind(w, launch, { agentId: 'ag-f2', node: 'fixer', n: 2, kind: 'worker', cwd: wtPath(), parent: 'ag-l1' })
     await bind(w, launch, { agentId: 'ag-s1', node: 'scout', n: 1, kind: 'worker', cwd: wtPath(), parent: 'ag-l1' })
     markRunning('ag-l1')
-    const row = (id: string, status: string) => ({ id, description: id, type: 'litter:sw-alpha-fixer', status })
-    w.p.agents = [row('ag-l1', 'waiting'), row('ag-f1', 'waiting'), row('ag-f2', 'idle'), row('ag-s1', 'pending')] as never
+    const row = (id: string, status: AgentStatus) => ({ id, description: id, type: 'litter:sw-alpha-fixer', status })
+    w.p.agents = [row('ag-l1', 'waiting'), row('ag-f1', 'waiting'), row('ag-f2', 'idle'), row('ag-s1', 'pending')]
     const r = await read({ swarm: 'alpha' })
     const status = Object.fromEntries(
       r.nodes.flatMap((n: { instances: { agentId: string; status: string }[] }) => n.instances.map(i => [i.agentId, i.status])),

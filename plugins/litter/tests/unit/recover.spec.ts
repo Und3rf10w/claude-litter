@@ -164,7 +164,7 @@ describe('recoverSwarms, a swarm this session owns', () => {
       { id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' },
       { id: 'ag-f1', description: 'fixer', type: 'litter:sw-alpha-fixer', status: 'completed' },
       { id: 'ag-d1', description: 'docs', type: 'litter:sw-alpha-docs', status: 'pending' },
-    ] as never
+    ]
     await recoverSwarms(q, w.litterDir)
     // Its place held, so its next step's wake can't be refused for a cap filled meanwhile.
     expect(status('ag-l1')).toBe('running')

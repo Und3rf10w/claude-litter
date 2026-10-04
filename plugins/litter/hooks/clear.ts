@@ -11,7 +11,7 @@
 // moves what names the session to the new id. Nothing is resumed or
 // re-spawned (15.4, step 3).
 
-import type { ListedAgent, Ports } from './ports'
+import type { AgentStatus, ListedAgent, Ports } from './ports'
 import type { CommandRunHook, PortHook, SessionEndHook } from './hooktypes'
 import type { Policy } from './hookfiles'
 import type { ClearKill, ClearReason, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
@@ -89,10 +89,11 @@ const defaults = { ...others }
 
 /**
  * One agent of a live swarm or the active run that a clear would cut short.
- * `held`: the list shows it `waiting`, on a foreground child or on background
- * work that wakes it, not running a command of its own.
+ * `listed`: its list status, null when it isn't listed (a workflow's agent).
+ * `waiting` is held, on a foreground child or on background work that wakes
+ * it, not running a command of its own; `pending` hasn't started.
  */
-type Running = { agentId: string; who: string; swarm: string | null; node: string | null; calls: InflightCall[]; held: boolean }
+type Running = { agentId: string; who: string; swarm: string | null; node: string | null; calls: InflightCall[]; listed: AgentStatus | null }
 
 /** Swarms whose agents run in this process: owned ones, lost ones too (their nodes may still run here). */
 const ownSwarms = (): LiveSwarm[] => liveSwarms().filter(s => !s.readOnly)
@@ -136,7 +137,7 @@ async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
     const b = binding(agentId)
     const typed = a ? swarmOfType(a.type) : null
     const parent = a?.parentId !== undefined ? binding(a.parentId) : null
-    let r: Omit<Running, 'held'> | null = null
+    let r: Omit<Running, 'listed'> | null = null
     if (b) {
       if (owned.has(b.swarm)) r = { agentId, who: nodeName(b), swarm: b.swarm, node: b.node, calls: [] }
     } else if (swarm !== null) {
@@ -150,7 +151,7 @@ async function whatRuns(p: Ports, run: string | null): Promise<Running[]> {
       r = { agentId, who: await runAgentName(p, agentId, a?.type ?? null, run), swarm: null, node: null, calls: [] }
     }
     if (!r) return null
-    const row: Running = { ...r, held: a?.status === 'waiting' }
+    const row: Running = { ...r, listed: a?.status ?? null }
     out.set(agentId, row)
     return row
   }
@@ -181,10 +182,12 @@ function holdQuestion(running: readonly Running[], now: number): string {
     const detail = spoolLine(c.detail ?? '', DETAIL_MAX_BYTES)
     return detail ? `${tool} (${detail})` : tool
   }
-  // A held agent with no open call isn't between commands: it waits (the swarm pane's "held").
+  // With no open call, a held agent isn't between commands: it waits; a pending one hasn't started (the swarm pane's words).
+  const idleWord = (r: Running): string =>
+    r.listed === 'waiting' ? 'held: waiting on a child or background work' : r.listed === 'pending' ? 'starting' : 'running, between commands'
   const rows = running.map(r =>
     r.calls.length === 0
-      ? `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${r.held ? 'held: waiting on a child or background work' : 'running, between commands'}`
+      ? `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${idleWord(r)}`
       : `- ${spoolLine(r.who, DETAIL_MAX_BYTES)}: ${r.calls.map(c => `${call(c)}, running for ${age(now - c.at)}`).join('; ')}`,
   )
   return `/clear stops these commands halfway (their shells are killed):\n${rows.join('\n')}\nClear anyway?`
