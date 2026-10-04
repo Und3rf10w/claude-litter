@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "mode": "default",
+  "goal": "An earlier pass over part b",
+  "instance_id": "old1",
+  "started_at": "2026-08-01T09:00:00Z",
+  "last_updated": "2026-08-01T11:00:00Z",
+  "phase": "done",
+  "guardrails": [
+    { "rule": "never delete a test in b/", "source": "flag", "timestamp": "2026-08-01T09:30:00Z" }
+  ]
+}

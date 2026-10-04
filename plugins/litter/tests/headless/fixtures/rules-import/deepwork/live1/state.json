@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "default",
+  "goal": "Add report functions to parts a and b",
+  "instance_id": "live1",
+  "started_at": "2026-09-30T10:00:00Z",
+  "last_updated": "2026-09-30T12:00:00Z",
+  "phase": "scope",
+  "guardrails": [
+    { "rule": "never call curl in a/", "source": "user", "timestamp": "2026-09-30T10:05:00Z" },
+    { "rule": "never write to a/out.txt", "source": "flag", "timestamp": "2026-09-30T10:06:00Z" },
+    { "rule": "never run the b/ tests twice in one gate", "source": "orchestrator", "timestamp": "2026-09-30T11:00:00Z", "incident_ref": "inc-orch-1" },
+    { "rule": "never touch files outside a/ and b/", "source": "scope-boundary", "timestamp": "2026-09-30T11:30:00Z" }
+  ]
+}

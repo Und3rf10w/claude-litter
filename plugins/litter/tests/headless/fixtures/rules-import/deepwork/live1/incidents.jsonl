@@ -1,0 +1,1 @@
+{"rule":"never run the b/ tests twice in one gate","source":"orchestrator","timestamp":"2026-09-30T11:00:00Z","incident_ref":"inc-orch-1"}

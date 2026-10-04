@@ -7,17 +7,28 @@
 #
 #   sh tests/headless/run.sh
 #
-# Exits non-zero when any case fails. The managed-settings cases need a box
-# whose /etc/claude-code they may write: container/container.sh runs them.
+# Exits non-zero when any case fails, and 3 when none failed but one was
+# inconclusive (exit 3: execute.sh bridge's run that didn't halt where it
+# must; run it again). The managed-settings cases need a box whose
+# /etc/claude-code they may write: container/container.sh runs them.
+# execute.sh compare and the deepwork smoke check are run by hand.
 
 here=$(cd "$(dirname "$0")" && pwd)
 failed=0
+inconclusive=0
 for c in 'isolation.sh alone' 'isolation.sh broad' 'land.sh edit' 'land.sh clean' \
   'fanout.sh land' 'fanout.sh edit' 'fanout.sh red' 'fanout.sh stop' 'worktrees.sh resume' 'worktrees.sh default' \
-  'swarm.sh trio' 'repair.sh auto' 'repair.sh off'; do
+  'swarm.sh trio' 'repair.sh auto' 'repair.sh off' \
+  'execute.sh basic' 'rules.sh import' 'execute.sh bridge auto' 'execute.sh bridge off'; do
   # A word list on purpose: the script and its mode.
   # shellcheck disable=SC2086
-  sh "$here"/$c || failed=$((failed + 1))
+  sh "$here"/$c
+  case $? in 0) ;; 3) inconclusive=$((inconclusive + 1)) ;; *) failed=$((failed + 1)) ;; esac
 done
-[ "$failed" -eq 0 ] && echo 'tests/headless: every case passed' || echo "tests/headless: $failed case(s) failed"
-[ "$failed" -eq 0 ]
+if [ "$failed" -gt 0 ]; then
+  echo "tests/headless: $failed case(s) failed, $inconclusive inconclusive"
+  exit 1
+fi
+[ "$inconclusive" -eq 0 ] && echo 'tests/headless: every case passed' && exit 0
+echo "tests/headless: no case failed, $inconclusive inconclusive: run those again"
+exit 3

@@ -9,8 +9,9 @@
 #   sendsh <sh command>         run the command; if it exits 0 with output, type
 #                               its first line, then Enter; otherwise send nothing
 #   key <name>...               press keys, a second apart: enter, tab, esc,
-#                               down, up, ctrl-x (ctrl-x then tab focuses a pane;
-#                               esc goes back to the prompt)
+#                               down, up, left, right, space, shift-tab, ctrl-x
+#                               (ctrl-x then tab focuses a pane; esc goes back
+#                               to the prompt)
 #   exit                        /exit, then ctrl-c twice if it's still up
 # The whole run gives up after H_DRIVE_MAX seconds (default 2400).
 #
@@ -55,7 +56,8 @@ proc pump {secs} {
     exit 3
   }
 }
-array set keys [list enter "\r" tab "\t" esc "\x1b" down "\x1b\[B" up "\x1b\[A" ctrl-x "\x18"]
+array set keys [list enter "\r" tab "\t" esc "\x1b" down "\x1b\[B" up "\x1b\[A" left "\x1b\[D" right "\x1b\[C" \
+  space " " shift-tab "\x1b\[Z" ctrl-x "\x18"]
 set f [open $steps]
 set lines [split [read $f] "\n"]
 close $f
