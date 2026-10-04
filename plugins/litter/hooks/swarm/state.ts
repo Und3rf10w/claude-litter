@@ -103,11 +103,14 @@ function jsonBytes(v: unknown): number {
 export type AdmissionPlace = { swarm: string; node: string; parent: string | null; kind: BindingKind }
 
 /**
- * One running or settling agent's place. It carries what it counts under,
- * copied from its reservation by `promote` (or from the binding, or given, by
- * `markRunning`), so it counts before its binding is put.
+ * One running, settling or parked agent's place. It carries what it counts
+ * under, copied from its reservation by `promote` (or from the binding, or
+ * given, by `markRunning`), so it counts before its binding is put. `parked`
+ * (WP-AJ): its turn ended while the list shows it `waiting` on its own agents
+ * or background work. It's alive, so it keeps its place, but `status` reads
+ * it `idle`: a message or a wake resumes it, through admission.
  */
-type AdmissionEntry = AdmissionPlace & { agentId: string; status: 'running' | 'settling'; scope: WriteScope | null }
+type AdmissionEntry = AdmissionPlace & { agentId: string; status: 'running' | 'settling' | 'parked'; scope: WriteScope | null }
 
 const placeOf = (x: AdmissionPlace): AdmissionPlace => ({ swarm: x.swarm, node: x.node, parent: x.parent, kind: x.kind })
 /** A stopped node or child, by agentId. */
@@ -488,7 +491,7 @@ export const bindingByToken = (swarm: string, token: string): NodeBinding | null
   [...bindingsById.values()].find(b => b.swarm === swarm && b.token !== null && b.token === token) ?? null
 
 // ---------------------------------------------------------------------------
-// Admission: running, settling and reserved places
+// Admission: running, settling, parked and reserved places
 
 /** Takes a place. A key already held is a bug in the caller, so it throws. */
 export function reserve(r: Reservation): void {
@@ -522,7 +525,18 @@ export function release(key: string): boolean {
 export const reservations = (swarm?: string): Reservation[] =>
   [...reserved.values()].filter(r => swarm === undefined || r.swarm === swarm)
 
-export const status = (agentId: string): AdmissionStatus => admission.get(agentId)?.status ?? 'idle'
+/** Running, settling, or idle; a parked agent is idle here, between turns, though it holds its place (`isParked`). */
+export function status(agentId: string): AdmissionStatus {
+  const st = admission.get(agentId)?.status
+  return st === undefined || st === 'parked' ? 'idle' : st
+}
+
+/** Parked (WP-AJ): its turn over, its place still held while the list shows it `waiting`. */
+export const isParked = (agentId: string): boolean => admission.get(agentId)?.status === 'parked'
+
+/** The parked agents of a swarm, each with the place it counts under. */
+export const parkedIn = (swarm: string): (AdmissionPlace & { agentId: string })[] =>
+  [...admission.values()].filter(a => a.swarm === swarm && a.status === 'parked').map(a => ({ ...placeOf(a), agentId: a.agentId }))
 
 /**
  * Running (a spawn bound, a resume admitted). Clears a stop noted earlier: the
@@ -554,6 +568,22 @@ export function markSettling(agentId: string): void {
   changed(at.swarm)
 }
 
+/**
+ * Parked (WP-AJ): its turn ended, and the list shows it `waiting` on its own
+ * agents or background work, which will wake it. It keeps its place, in the
+ * swarm's count and its parent's, and its scope unless given; one that holds
+ * none takes its binding's, and an agent with neither is left as it is.
+ * `markRunning`, `promote`, `markSettling` and `markSettled` clear it.
+ */
+export function markParked(agentId: string, scope?: WriteScope | null): void {
+  const cur = admission.get(agentId)
+  const b = bindingsById.get(agentId)
+  const at = cur ? placeOf(cur) : b ? placeOf(b) : null
+  if (!at) return
+  admission.set(agentId, { agentId, status: 'parked', scope: scope !== undefined ? scope : (cur?.scope ?? null), ...at })
+  changed(at.swarm)
+}
+
 /** Settled: its place is free. */
 export function markSettled(agentId: string): void {
   const cur = admission.get(agentId)
@@ -578,14 +608,14 @@ function places(swarm: string): (AdmissionPlace & { scope: WriteScope | null; ag
   return out
 }
 
-/** Running, settling and reserved instances of `node` under `parent` (null: the lead). Children don't count. */
+/** Running, settling, parked and reserved instances of `node` under `parent` (null: the lead). Children don't count. */
 export const countFor = (swarm: string, parent: string | null, node: string): number =>
   places(swarm).filter(x => x.kind !== 'child' && x.node === node && x.parent === parent).length
 
-/** Running, settling and reserved agents of the swarm, children included (`maxAgentsAtOnce`). */
+/** Running, settling, parked and reserved agents of the swarm, children included (`maxAgentsAtOnce`). */
 export const countSwarm = (swarm: string): number => places(swarm).length
 
-/** Each running, settling or reserved writing instance's scope. */
+/** Each running, settling, parked or reserved writing instance's scope. */
 export const activeScopes = (swarm: string): ActiveScope[] =>
   places(swarm)
     .filter((x): x is typeof x & { scope: WriteScope } => x.scope !== null)

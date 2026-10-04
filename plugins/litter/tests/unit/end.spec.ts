@@ -502,8 +502,8 @@ describe('End swarm', () => {
     state.markSettling('a-fix1')
     state.noteAgentStopped('a-fix1')
     await stillOpen()
-    // L's poll lets its place go (the list doesn't show it running); still not ended.
-    state.markSettled('a-fix1')
+    // L's poll parks it (the list shows it `waiting`), so it keeps its place (WP-AJ); still not ended.
+    state.markParked('a-fix1')
     await stillOpen()
     expect(settleProgress('alpha')).toEqual(expect.objectContaining({ nodes: [{ agentId: 'a-fix1', node: 'fixer', n: 1, status: 'held' }], calls: [] }))
 
@@ -513,6 +513,18 @@ describe('End swarm', () => {
     expect(await kinds()).toContain('swarm.end')
     expect(existsSync(wt)).toBe(false)
     expect(calls.filter(c => c[0] === 'removeNodePolicy').map(c => c[1])).toEqual(['a-boss', 'a-fix1'])
+  })
+
+  test('before the wait has read the list, a parked node (WP-AJ) holds its place, so it reads held, not ended', async () => {
+    live()
+    state.markParked('a-fix1')
+    p.agents[1]!.status = 'waiting'
+    await endSwarm(p, 'alpha', 'request')
+    expect(settleProgress('alpha')!.nodes).toEqual([{ agentId: 'a-fix1', node: 'fixer', n: 1, status: 'held' }])
+    // The list read, it goes by the list, as any node does.
+    p.agents[1]!.status = 'completed'
+    await fireEvery(p)
+    expect(await kinds()).toContain('swarm.end')
   })
 
   test("[End, keep everything] keeps a `waiting` node's policy file, and the sweep keeps it until the list shows it completed", async () => {

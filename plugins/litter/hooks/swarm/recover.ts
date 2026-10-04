@@ -31,11 +31,13 @@ import {
   binding,
   bindings,
   dropLiveSwarm,
+  isParked,
   isStopped,
   lastReport,
   liveSwarm,
   liveSwarms,
   loadSwarm,
+  markParked,
   markRunning,
   markSettled,
   noteInstance,
@@ -328,8 +330,14 @@ export async function recoverOwnedLaunch(
   if (!start) throw new Error(`litter: launch ${facts.launch} of ${name} has no swarm.start`)
   const b = start.body
   const mirror = await loadSwarm(p, litterDir, name)
-  // Who held a place at the crash, before the table is rebuilt.
-  const wasRunning = new Set(mirror ? bindings(name).filter(x => status(x.agentId) !== 'idle').map(x => x.agentId) : [])
+  // The copy's places, read before the table is rebuilt, for each node the copy or the ledger binds.
+  const known = mirror ? [...new Set([...bindings(name).map(x => x.agentId), ...[...facts.nodes.values()].map(r => r.body.agentId)])] : []
+  // Who held a place at the crash: a parked node too, its work unfinished.
+  const wasRunning = new Set(known.filter(id => status(id) !== 'idle' || isParked(id)))
+  // Who was mid-turn: running, with no turn.complete since (a hot reload keeps them going). And whose turn the
+  // copy shows over: settling or parked.
+  const midTurn = new Set(known.filter(id => status(id) === 'running'))
+  const turnOver = new Set(known.filter(id => status(id) === 'settling' || isParked(id)))
   const { spec, verified, briefs } = await specAt(p, litterDir, b, mirror)
   if (!spec) {
     p.log(`swarm ${name}: neither $.store nor revision ${b.revision} has its spec; it isn't recovered`)
@@ -366,24 +374,30 @@ export async function recoverOwnedLaunch(
     }
   }
   const list = await listed(p)
-  // Alive keeps its place, `waiting` too: a node mid-turn on a foreground child would otherwise lose
-  // it, and its next step's wake could be refused for a cap filled meanwhile.
+  // Alive keeps its place. `waiting` is parked, as the settle poll parks it (WP-AJ): it keeps its place, and
+  // its wake is admitted on it, so a cap filled meanwhile can't refuse it. A `waiting` node the mirror shows
+  // mid-turn (running, no turn.complete since) is on a foreground child: it runs on, admitted.
   const alive = (id: string): boolean => {
     const st = list.get(id)
     return st !== undefined && agentLive(st)
   }
   for (const x of bindings(name)) {
-    if (alive(x.agentId)) markRunning(x.agentId)
+    if (list.get(x.agentId) === 'waiting' && !midTurn.has(x.agentId)) markParked(x.agentId)
+    else if (alive(x.agentId)) markRunning(x.agentId)
     else markSettled(x.agentId)
   }
 
   // 4. Each bound node's policy, so the guard covers a resumed node from its first call, admitted as step 3
-  // placed it (litter's admission status, not the list's). Never from a spec that didn't match swarm.start:
-  // with no types, nothing resumes, and the policies stay as L wrote them.
+  // placed it (litter's admission status, not the list's). A parked node's is admitted unless the copy shows
+  // its turn over, as at its park, until its next step is admitted: with no copy, or none of it, it may be
+  // mid-turn on a foreground child, its response holding a call to run with no step between, while one whose
+  // turn is over makes no call before its next step, which runs admission. Never from a spec that didn't
+  // match swarm.start: with no types, nothing resumes, and the policies stay as L wrote them.
+  const admitted = (id: string): boolean => status(id) === 'running' || (isParked(id) && !turnOver.has(id))
   for (const x of verified ? bindings(name) : []) {
     const why = stopped(name).find(e => e.agentId === x.agentId)?.reason ?? null
     try {
-      await deps.writeNodePolicy(p, litterDir, x.agentId, deps.nodePolicyFor(x, s, { admitted: status(x.agentId) === 'running', stopped: why, bind: false }))
+      await deps.writeNodePolicy(p, litterDir, x.agentId, deps.nodePolicyFor(x, s, { admitted: admitted(x.agentId), stopped: why, bind: false }))
     } catch (err) {
       p.log(`swarm ${name}: ${x.node} #${x.n} (${x.agentId}): its policy wasn't rewritten: ${errText(err)}`)
     }
@@ -697,7 +711,7 @@ export async function continuationText(p: Ports, name: string, node: string, how
   if (!litterDir) throw new Error("litter: this session has no litter directory")
   const facts = await readLaunchFacts(p, litterDir, name, s.launch)
   const card = cards.get(name)
-  const wasRunning = (id: string) => (card ? card.nodes.some(x => x.agentId === id) : status(id) !== 'idle')
+  const wasRunning = (id: string) => (card ? card.nodes.some(x => x.agentId === id) : status(id) !== 'idle' || isParked(id))
   const mine = bindings(name).filter(b => b.node === node && b.kind !== 'child')
 
   if (how === 'resume') {

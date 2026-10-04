@@ -312,18 +312,23 @@ function views(on: On, swarm: SwarmPaneView | null, doctor: DoctorPaneView | nul
   })
 }
 
-/** What the pane logged (`litter: …` lines) and toasted. */
-function watch(on: On): { logs: string[]; toasts: string[] } {
+/** What the pane logged (`litter: …` lines) and toasted; `nextLog(part)`, the first line holding `part` logged after it asked. */
+function watch(on: On): { logs: string[]; toasts: string[]; nextLog: (part: string) => Promise<string> } {
   const seen = { logs: [] as string[], toasts: [] as string[] }
+  const waiting: { part: string; resolve: (line: string) => void }[] = []
   on('ui.log', async (_$, e) => {
     seen.logs.push(e.text)
+    for (const w of waiting.filter(w => e.text.includes(w.part))) {
+      waiting.splice(waiting.indexOf(w), 1)
+      w.resolve(e.text)
+    }
     return { value: undefined }
   })
   on('ui.toast', async (_$, e) => {
     seen.toasts.push(e.text)
     return { value: undefined }
   })
-  return seen
+  return { ...seen, nextLog: part => new Promise<string>(resolve => waiting.push({ part, resolve })) }
 }
 
 /** The pane's navigation as a reload finds it in $.store, written by this session. */
@@ -551,12 +556,16 @@ describe('the tree', () => {
     views(on, BUILDER)
     const ui = await mountSwarm($, 'terminal')
     expect(await ui.find({ type: 'Text', text: 'part-a', in: 'swarm-tree' })).toBeDefined()
+    // The menu is the Client's own state, drawn again before the act resolves.
     await ui.pointer({ type: 'down', x: 6, y: 1, button: 'right', in: 'swarm-tree' })
     expect(await ui.find({ type: 'Text', text: 'duplicate', in: 'swarm-tree' })).toBeDefined()
+    // A pick only posts: litter handles the post (a ui.message) after the act
+    // resolves, which the act's settle can stop short of, so wait for its line.
+    const picked = seen.nextLog("swarm pane: the tree's ")
     await ui.key({ key: 'down', in: 'swarm-tree' })
     await ui.key({ key: 'down', in: 'swarm-tree' })
     await ui.key({ key: 'return', in: 'swarm-tree' })
-    expect(seen.logs.some(l => l.includes("swarm pane: the tree's duplicate on part-a"))).toBe(true)
+    expect(await picked).toContain("swarm pane: the tree's duplicate on part-a")
   })
 
   test('the keys post too: ↓ then a adds a child under the row', async ($, on) => {
@@ -565,11 +574,14 @@ describe('the tree', () => {
     const seen = watch(on)
     views(on, BUILDER)
     const ui = await mountSwarm($, 'terminal')
+    // Each post is handled after its act resolves: wait for its line (see above).
+    let picked = seen.nextLog("swarm pane: the tree's ")
     await ui.pointer({ type: 'down', x: 6, y: 0, button: 'left', in: 'swarm-tree' })
+    expect(await picked).toContain("swarm pane: the tree's select on @lead")
+    picked = seen.nextLog("swarm pane: the tree's ")
     await ui.key({ key: 'down', in: 'swarm-tree' })
     await ui.key({ key: 'a', in: 'swarm-tree' })
-    expect(seen.logs.some(l => l.includes("swarm pane: the tree's select on @lead"))).toBe(true)
-    expect(seen.logs.some(l => l.includes("swarm pane: the tree's add on part-a"))).toBe(true)
+    expect(await picked).toContain("swarm pane: the tree's add on part-a")
   })
 
   test('a saved draft focuses [Launch], so the keyboard reaches it (ctrl+x tab, Enter)', async ($, on) => {

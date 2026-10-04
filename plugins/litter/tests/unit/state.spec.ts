@@ -183,6 +183,51 @@ describe('admission', () => {
     expect(state.countSwarm('beta')).toBe(0)
   })
 
+  // WP-AJ: a parked agent is between turns, so `status` reads it idle, but it holds its place and its scope.
+  test('parked: idle to status, its place and scope kept, listed by parkedIn; markRunning, promote, markSettling and markSettled clear it', () => {
+    state.putBinding(bind('w1'))
+    state.putBinding(bind('w2', { parent: 'orch-2' }))
+    state.markRunning('w1', scope('/a'))
+    state.markSettling('w1')
+    state.markParked('w1')
+    expect(state.status('w1')).toBe('idle')
+    expect(state.isParked('w1')).toBe(true)
+    expect(state.countFor('alpha', 'orch-1', 'fixer')).toBe(1)
+    expect(state.countSwarm('alpha')).toBe(1)
+    expect(state.activeScopes('alpha').map(x => [x.agentId, x.dir])).toEqual([['w1', '/a']])
+    expect(state.parkedIn('alpha')).toEqual([{ agentId: 'w1', swarm: 'alpha', node: 'fixer', parent: 'orch-1', kind: 'worker' }])
+    expect(state.parkedIn('beta')).toEqual([])
+    // One that holds no place takes its binding's; one with neither is left as it is.
+    state.markParked('w2', null)
+    expect(state.parkedIn('alpha').map(x => [x.agentId, x.parent])).toEqual([['w1', 'orch-1'], ['w2', 'orch-2']])
+    state.markParked('nobody')
+    expect(state.isParked('nobody')).toBe(false)
+    // A resume's reservation for it isn't counted twice, and its promote runs it.
+    state.reserve(res('r1', { agentId: 'w1', n: 1 }))
+    expect(state.countFor('alpha', 'orch-1', 'fixer')).toBe(1)
+    state.promote('r1', 'w1')
+    expect(state.status('w1')).toBe('running')
+    expect(state.isParked('w1')).toBe(false)
+    for (const clear of [() => state.markRunning('w2'), () => state.markSettling('w2'), () => state.markSettled('w2')]) {
+      state.markParked('w2')
+      clear()
+      expect(state.isParked('w2')).toBe(false)
+    }
+  })
+
+  test('a parked place is mirrored and comes back parked', async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    state.putBinding(bind('w1'))
+    state.markParked('w1', scope('/a'))
+    await state.flushed()
+    state.resetForTests()
+    await state.loadSwarm(p, LITTER, 'alpha')
+    expect(state.isParked('w1')).toBe(true)
+    expect(state.status('w1')).toBe('idle')
+    expect(state.countSwarm('alpha')).toBe(1)
+  })
+
   test("a resume's reservation for an agent already counted isn't counted twice", () => {
     state.putBinding(bind('w1'))
     state.markSettling('w1')
@@ -457,6 +502,7 @@ describe('turns, the clear and the rest', () => {
       () => state.reserve(res('t1')),
       () => state.promote('t1', 'w1'),
       () => state.markSettling('w1'),
+      () => state.markParked('w1'),
       () => state.markRunning('w1'),
       () => state.markSettled('w1'),
       () => state.reserve(res('t2')),

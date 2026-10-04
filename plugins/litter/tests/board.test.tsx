@@ -9,6 +9,7 @@
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
+import type { BoardView } from '../types/index'
 
 const SESSION = 'tier1-session'
 const LITTER = '/repo/.claude/litter'
@@ -27,11 +28,21 @@ const pane = (title: string) =>
 const run = ($: Engine, command: string, args = '') =>
   $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
 
-/** $.fs from a map, git as a plain checkout at /repo answers it, and `git diff --stat` for the land; what ran and what opened. */
-function world(on: On): { files: Map<string, string>; argv: string[][]; opened: string[] } {
+/**
+ * $.fs from a map, git as a plain checkout at /repo answers it, and `git diff --stat` for the land; what ran and what opened;
+ * and `nextBoard()`, the next board view litter writes ($.state `board`) once it has landed.
+ */
+function world(on: On): { files: Map<string, string>; argv: string[][]; opened: string[]; nextBoard: () => Promise<BoardView> } {
   const files = new Map<string, string>()
   const argv: string[][] = []
   const opened: string[] = []
+  // Each waiter gets the first board view written after it asked, passed on beneath litter.
+  const waiting: ((view: BoardView) => void)[] = []
+  on('state.set', async (_$, e, next) => {
+    const set = await next(e)
+    if (e.key === 'board') for (const resolve of waiting.splice(0)) resolve(e.value as BoardView)
+    return set
+  })
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
   const ran = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('fs.exists', async (_$, e) => ({ value: files.has(e.path) || isDir(e.path) }))
@@ -89,7 +100,7 @@ function world(on: On): { files: Map<string, string>; argv: string[][]; opened: 
   on('session.id', async () => ({ value: SESSION }))
   on('session.cwd', async () => ({ value: '/repo' }))
   mock.env(on, { HOME: '/home/tier1' })
-  return { files, argv, opened }
+  return { files, argv, opened, nextBoard: () => new Promise<BoardView>(resolve => waiting.push(resolve)) }
 }
 
 const hex = (buf: ArrayBuffer): string => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('')
@@ -353,28 +364,32 @@ describe('the board, from a recorded ledger', () => {
     const w = await start($, on)
     await run($, 'litter-board', EXEC)
     const ui = await mountBoard($, 'terminal')
+    // A press resolves once litter's handler has drawn the view. A click or a key
+    // in the Client only posts: litter handles the post (a ui.message) after the
+    // act resolves, and the act's settle can give up before that's done (it stops
+    // at the first 2 ms in which no host call starts or ends while a hook of the
+    // test's is held, as mock.clock holds the session's timers). So a read after
+    // a post waits for the view that post writes.
     // The header is the table's first row; G1 is the next.
-    // A post or press is handled after the act resolves, and the view is rebuilt
-    // after that: settle after each act before reading the redraw.
+    let drawn = w.nextBoard()
     await ui.pointer({ type: 'down', x: 4, y: 1, button: 'left', in: 'board-gates' })
-    await w.clock.settle()
+    expect((await drawn).body?.gates?.selected).toBe('G1')
     expect(await ui.find({ type: 'Text', text: 'G1 as planned' })).toBeDefined()
     // G1's verdict predates rule_clash, so its detail has no clash line.
     expect(await ui.find({ type: 'Text', text: '⚑ rule clash' })).toBeUndefined()
     await ui.press({ key: 'board:diff:G1' })
-    await w.clock.settle()
     const diff = w.argv.find(a => a[0] === 'git' && a.includes('diff'))
     expect(diff).toEqual(['git', '-C', '/repo', 'diff', '--stat', '--no-color', '--end-of-options', BASE, LANDED, '--'])
     expect(await ui.find({ type: 'Code', text: 'src/header.ts | 12' })).toBeDefined()
     // ↑↓ and Enter post too: back to G2.
+    drawn = w.nextBoard()
     await ui.key({ key: 'down', in: 'board-gates' })
     await ui.key({ key: 'return', in: 'board-gates' })
-    await w.clock.settle()
+    expect((await drawn).body?.gates?.selected).toBe('G2')
     expect(await ui.find({ type: 'Text', text: 'the retry has no backoff' })).toBeDefined()
     // The diff was G1's, so it closed; [Plan] scrolls to G2's section.
     expect(await ui.find({ type: 'Code' })).toBeUndefined()
     await ui.press({ key: 'board:plan' })
-    await w.clock.settle()
     expect(await ui.find({ type: 'Text', text: 'plan.md from G2 (line 10)' })).toBeDefined()
     expect(await ui.find({ type: 'Code', text: '### G2: Retry the refresh once' })).toBeDefined()
   })
