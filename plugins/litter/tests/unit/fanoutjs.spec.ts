@@ -483,7 +483,7 @@ const prop = (s: unknown, ...path: string[]): unknown => {
 describe('the script', () => {
   test("meta is a literal naming the workflow, and its phases are the ones the calls use", async () => {
     const { meta } = loadScript()
-    expect(meta.name).toBe('fanout')
+    expect(meta.name).toBe('fanout-run')
     expect(typeof meta.description).toBe('string')
     const titles = (meta.phases as { title: string }[]).map(p => p.title)
     expect(titles).toEqual(['Run', 'Integrate', 'Verify', 'Land'])

@@ -1,11 +1,11 @@
 export const meta = {
-  name: 'plan',
+  name: 'plan-run',
   description: 'Turn a goal, or a plan with no gate list, into ordered gates for an execute run; nothing is changed',
   whenToUse: 'Only through /litter:execute, which records run.start and passes its args; never called directly',
   phases: [{ title: 'Plan' }],
 }
 
-// litter's planner run (plan section 7, "Gates come from a litter:plan
+// litter's planner run (plan section 7, "Gates come from a litter:plan-run
 // workflow"; docs/litter-execute COMMON.md, step 2). The main thread can't
 // spawn litter roles, so the planner runs here, once. It reads code and
 // changes nothing; the skill shows you its gates and questions, and only

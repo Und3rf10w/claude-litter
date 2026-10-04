@@ -9,7 +9,7 @@
 #
 # The repo is lib.sh's, whose HEAD is ahead of origin/main, plus two packages
 # with a check each and a verify command (sh check.sh) that passes today.
-# One session calls run.start and launches litter:fanout with its args, as
+# One session calls run.start and launches litter:fanout-run with its args, as
 # the skill would after you confirm.
 
 set -u
@@ -60,7 +60,7 @@ else
 fi
 PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: $START
-2. Call the Workflow tool with name \"litter:fanout\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:fanout-run\" and args set to the args object step 1 returned, unchanged.
 $STEPS
 If a step is refused, note the refusal verbatim and stop."
 

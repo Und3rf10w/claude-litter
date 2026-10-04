@@ -1,4 +1,4 @@
-// Tier 2: workflows/plan.js (plan section 7, "Gates come from a litter:plan
+// Tier 2: workflows/plan.js (plan section 7, "Gates come from a litter:plan-run
 // workflow"; docs/litter-execute COMMON.md, step 2), run under bun against a
 // scripted agent() whose results are checked against the GATES schema. One
 // planner call, its tags as the planner's role sees them, and the return as
@@ -162,7 +162,7 @@ describe('when the planner does not answer', () => {
 describe('the script', () => {
   test('meta names the workflow and its one phase; deterministic; a strict GATES schema', async () => {
     const { meta, body } = loadScript('plan')
-    expect(meta.name).toBe('plan')
+    expect(meta.name).toBe('plan-run')
     expect((meta.phases as { title: string }[]).map(p => p.title)).toEqual(['Plan'])
     expect(body).not.toMatch(/Date\.now|Math\.random|new Date\b|performance\.|crypto\./)
     expect(body).not.toMatch(/^\s*import\b|\brequire\(|\bimport\(/m)

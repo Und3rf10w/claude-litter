@@ -1,5 +1,5 @@
 // litter:planner, ported verbatim from docs/litter-prompts.md ("planner").
-// Runs only from the litter:plan workflow.
+// Runs only from the litter:plan-run workflow.
 
 import { assemble, HARNESS_FRAME } from './shared'
 

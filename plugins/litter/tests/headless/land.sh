@@ -18,7 +18,7 @@ case $mode in edit | clean) ;; *) echo "usage: $0 edit|clean" >&2; exit 2 ;; esa
 
 PROMPT='You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: {"kind": "run.start", "workflow": "execute", "authorized": ["tier-4 land probe"], "planPath": "plan.md"}
-2. Call the Workflow tool with name "litter:execute" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name "litter:execute-run" and args set to the args object step 1 returned, unchanged.
 3. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.
 If a step is refused, note the refusal verbatim and stop.'
 

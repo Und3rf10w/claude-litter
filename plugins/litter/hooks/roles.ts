@@ -71,7 +71,7 @@ const USED_IN: Readonly<Record<RoleName, string>> = {
   executor: 'execute and fanout runs',
   adversary: 'execute runs',
   relay: 'execute and fanout runs',
-  planner: 'litter:plan runs',
+  planner: 'plan runs',
   verifier: 'fanout runs',
   researcher: 'fanout runs',
 }

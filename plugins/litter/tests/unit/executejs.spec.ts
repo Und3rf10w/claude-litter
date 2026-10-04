@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { LandReply, VerifyReply } from '../../hooks/records/execute'
-import { WORKFLOWS } from '../../hooks/records/run'
+import { WORKFLOWS, workflowName } from '../../hooks/records/run'
 import { sha256 } from '../../hooks/fsx'
 import { VERDICT_DIMENSIONS } from '../../hooks/records/execute'
 import { decodeReturn } from '../../hooks/lifecycle'
@@ -547,7 +547,7 @@ const VERIFIED_FIELDS: Record<keyof Pick<VerifyReply, 'verify_id' | 'exit_code' 
 describe('the script', () => {
   test('meta is a literal naming the workflow, and its phases are the ones the calls use', async () => {
     const { meta } = loadScript('execute')
-    expect(meta.name).toBe('execute')
+    expect(`litter:${meta.name}`).toBe(workflowName('execute'))
     expect(typeof meta.description).toBe('string')
     expect(typeof meta.whenToUse).toBe('string')
     const titles = (meta.phases as { title: string }[]).map(p => p.title)
@@ -563,7 +563,7 @@ describe('the script', () => {
       const path = join(import.meta.dir, '..', '..', 'workflows', `${w}.js`)
       if (!existsSync(path)) continue
       shas.add(await sha256(readFileSync(path, 'utf8')))
-      if (w === 'execute' || w === 'plan') expect(loadScript(w).meta.name).toBe(w)
+      if (w === 'execute' || w === 'plan') expect(`litter:${loadScript(w).meta.name}`).toBe(workflowName(w))
     }
     expect(existsSync(join(import.meta.dir, '..', '..', 'workflows', 'execute.js'))).toBe(true)
     expect(existsSync(join(import.meta.dir, '..', '..', 'workflows', 'plan.js'))).toBe(true)

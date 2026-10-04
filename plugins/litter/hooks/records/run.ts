@@ -9,6 +9,20 @@ import type { RuleRef } from './rules'
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
 export const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
 
+/**
+ * A workflow's name as the Workflow tool takes it, its script's `meta.name`
+ * with the plugin's prefix. Not `litter:execute`: the engine lists workflows
+ * ahead of plugin skills and dispatches a name to the first it finds, so a
+ * workflow named like a skill takes that skill's slash command.
+ */
+export const workflowName = (w: Workflow): string => `litter:${w}-run`
+
+/** The workflow a Workflow tool name launches: `litter:execute-run` is execute; null for any other name. */
+export function workflowOfName(name: string): Workflow | null {
+  const m = /^litter:(.+)-run$/.exec(name)
+  return m && (WORKFLOWS as readonly string[]).includes(m[1]!) ? (m[1] as Workflow) : null
+}
+
 export type RunStatus = 'launch_failed' | 'done' | 'needs_user' | 'halted' | 'failed' | 'stopped' | 'interrupted'
 export const RUN_STATUSES: readonly RunStatus[] = ['launch_failed', 'done', 'needs_user', 'halted', 'failed', 'stopped', 'interrupted']
 

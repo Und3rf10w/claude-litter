@@ -54,7 +54,7 @@ Then show the gate list and the settings together, and ask for an explicit "Laun
    - Add `isolate: true` in a background session that blocks edits in the shared checkout until you isolate, unless your working directory is already under `.claude/worktrees/`.
    - The mod checks the tree and the mode, creates `litter/<run>` at the current commit, copies the plan, and returns `{ run, runDir, checkout, args }`. If it refuses, pass the reason on and stop.
 2. If you passed `isolate: true`, call EnterWorktree with `path` set to the returned `checkout`. Don't call it with a name, which would start from the remote default branch instead of the user's commit.
-3. Call Workflow with `name: 'litter:execute'` and the `args` it returned, as a JSON object rather than a string. If it returns an error, show it; the mod records the failed launch.
+3. Call Workflow with `name: 'litter:execute-run'` and the `args` it returned, as a JSON object rather than a string. If it returns an error, show it; the mod records the failed launch.
 
 ## 5. While it runs
 
@@ -64,7 +64,7 @@ If a notice says the run was orphaned or interrupted and can be resumed with `re
 
 ## 6. Goal mode
 
-1. Record `run.start` with `workflow: 'plan'`, the goal, the verify command and the goal check. Launch Workflow `litter:plan` with the returned `args`, and end your turn as in section 5.
+1. Record `run.start` with `workflow: 'plan'`, the goal, the verify command and the goal check. Launch Workflow `litter:plan-run` with the returned `args`, and end your turn as in section 5.
 2. When it finishes, show the proposed gates, the out-of-scope list and the assumptions, and ask the planner's questions. If it returned only questions, ask them and offer a new planning run with the answers.
 3. Once the user approves the gates, as proposed or edited, record `{ kind: 'plan.write', run, gates }`. The mod writes the plan in the gate format and returns its path. Continue from section 3 with that plan, keeping the goal check.
 

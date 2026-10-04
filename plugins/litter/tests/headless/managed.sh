@@ -44,7 +44,7 @@ if [ "$mode" = seated ]; then
   exit
 fi
 
-PROMPT='You are running a scripted test. Call the Workflow tool once, with name "litter:fanout" and args {"run": "20261002-probe"}, then reply with its result verbatim. Do nothing else.'
+PROMPT='You are running a scripted test. Call the Workflow tool once, with name "litter:fanout-run" and args {"run": "20261002-probe"}, then reply with its result verbatim. Do nothing else.'
 h_scratch "managed-$mode"
 h_claude "$PROMPT" --allowedTools Workflow
 

@@ -283,12 +283,12 @@ describe('skills/fanout/SKILL.md', () => {
     expect(settings).toContain('`repair off`, rounds 1 to 10, agents 1 to 50')
   })
 
-  test('records run.start with the fields run.start takes, the repair setting as stated, and launches litter:fanout by name', () => {
+  test('records run.start with the fields run.start takes, the repair setting as stated, and launches litter:fanout-run by name', () => {
     const text = skillText()
     expect(text).toContain(
       "{ kind: 'run.start', workflow: 'fanout', tasks, contract, verify, setup, linkDirs, authorized, mergeOrder, runRules, repair, repairRounds, repairAgents }`, the repair setting as you stated it.",
     )
-    expect(text).toContain("Call Workflow with `name: 'litter:fanout'`")
+    expect(text).toContain("Call Workflow with `name: 'litter:fanout-run'`")
   })
 })
 

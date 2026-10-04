@@ -4,7 +4,7 @@
 #   sh tests/headless/isolation.sh alone   # litter alone: every check passes
 #   sh tests/headless/isolation.sh broad   # plus a matcher-less tool.call mod
 #
-# One session launches a litter run (run.start, then Workflow litter:fanout,
+# One session launches a litter run (run.start, then Workflow litter:fanout-run,
 # the fixture), whose isolated prober runs the probe, and an isolated
 # general-purpose Agent-tool agent that runs it too. The prober's live input is
 # replayed through guard.sh as git commit and git push, and the main thread
@@ -25,7 +25,7 @@ AGENT_PROMPT='You are a tier-4 test probe. Make each of these tool calls once, i
 
 PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: {\"kind\": \"run.start\", \"workflow\": \"fanout\", \"authorized\": [\"tier-4 isolation probe\"], \"tasks\": [{\"id\": \"probe\", \"title\": \"Isolation probe\", \"text\": \"Run the isolation probe\", \"writes\": false}]}
-2. Call the Workflow tool with name \"litter:fanout\" and args set to the args object step 1 returned, unchanged.
+2. Call the Workflow tool with name \"litter:fanout-run\" and args set to the args object step 1 returned, unchanged.
 3. Call the Agent tool once with subagent_type \"general-purpose\", isolation \"worktree\", run_in_background false, and this prompt: \"$AGENT_PROMPT\"
 4. Run with Bash: git commit --allow-empty -m main-probe
 5. Run with Bash: git push origin HEAD:refs/heads/main-push

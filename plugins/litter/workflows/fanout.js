@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'fanout',
+  name: 'fanout-run',
   description: 'Run independent tasks in parallel, writers in their own worktrees; the mod merges and verifies, a verifier checks each task, the mod lands',
   whenToUse: 'Only through /litter:fanout, which records run.start and passes its args; never called directly',
   phases: [{ title: 'Run' }, { title: 'Integrate' }, { title: 'Verify' }, { title: 'Land' }],

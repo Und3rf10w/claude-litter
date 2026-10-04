@@ -55,7 +55,7 @@ Show the task list and the settings together, and ask for an explicit "Launch". 
 
 1. Record `{ kind: 'run.start', workflow: 'fanout', tasks, contract, verify, setup, linkDirs, authorized, mergeOrder, runRules, repair, repairRounds, repairAgents }`, the repair setting as you stated it. Add `isolate: true` if this is a background session whose instructions say edits in the shared checkout are blocked until you isolate, and your working directory isn't already under `.claude/worktrees/`. The mod checks the tree and the mode, creates `litter/<run>` at the current commit, and returns `{ run, runDir, checkout, args }`. If it refuses, pass the reason on and stop.
 2. If you passed `isolate: true`, call EnterWorktree with `path` set to the returned `checkout`, so the landed result lives in that worktree. Don't call EnterWorktree with a name, which would start from the remote default branch.
-3. Call Workflow with `name: 'litter:fanout'` and the returned `args` as a JSON object. If it returns an error, show it; the mod records the failed launch.
+3. Call Workflow with `name: 'litter:fanout-run'` and the returned `args` as a JSON object. If it returns an error, show it; the mod records the failed launch.
 
 Leave the checkout alone while the run works: the mod lands nothing if the checkout or its index changed since the launch.
 
