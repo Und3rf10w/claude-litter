@@ -270,7 +270,7 @@ describe("the preconditions, in decision 7's order", () => {
     expect(text).toContain(`The plan gap: "${GAP}".`)
     expect(text).toContain(`Under repair: auto, ${renderSlots(CONFIRM_AUTO, { rounds: 3, attempts: 3, agents: 6 })}.`)
     expect(text).toContain(
-      `The ways on: continue as a plan-template swarm (/litter:swarm repair ${RUN}), amend the gate (/litter:amend G2 …), or stop; the halted attempt is still in the tree.`,
+      `The ways on: continue as a plan-template swarm (/litter:swarm repair ${RUN}), amend the gate (/litter:amend G2 …), or stop; the halted attempt, if any, is still in the tree.`,
     )
   })
 
