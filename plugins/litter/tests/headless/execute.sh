@@ -149,15 +149,15 @@ sleep 8
 $(h_tool_steps "$H_DIR/debug.txt")
 send /litter:execute plan.md
 # KEYS: the interview, answered (answer.sh) until run.start has made
-# run.json, as every question on both sides is: no option that stops or
-# re-plans, Launch and repair auto by label, else the recommended option,
-# else the first. The skill reads the gates' code and may ask about G5's
-# contradiction and G2's report.sh before Launch, recommending a fix of the
-# plan first (attempt 2: then the first option left, run as written), or
-# dropping G5 and adding report.sh to G2 (attempt 4), as deepwork asks and
-# is answered. Then a Launch asked in plain text rather than as a question
-# is typed.
-keysh 600 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
+# run.json, as every question on both sides is: Launch and repair auto by
+# label, else the recommended option, else the first. The skill reads the
+# gates' code and may ask about G5's contradiction and G2's report.sh before
+# Launch, recommending a fix of the plan first (attempts 2 and 5) or dropping
+# G5 and adding report.sh to G2 (attempt 4), as deepwork asks and is
+# answered. If the skill ends its turn without launching (two quiet minutes,
+# QUIET_MIN), Launch is typed, as a user who wants the run would, with the
+# plan as it is; deepwork's run starts with its command.
+keysh 600 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && QUIET_MIN=2 sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 sendsh ls $cld/2*/run.json >/dev/null 2>&1 || sh $H_HERE/asking.sh $H_DIR/tool-log.jsonl || echo Launch
 keysh 300 5 ! ls $cld/2*/run.json >/dev/null 2>&1 && sh $H_HERE/answer.sh $H_DIR/tool-log.jsonl '$ANSWERS' $H_DIR/answer-mark
 # Generation 1, to its run.end or the cap (H_DRIVE_MAX).
