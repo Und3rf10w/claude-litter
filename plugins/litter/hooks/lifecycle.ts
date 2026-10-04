@@ -65,7 +65,7 @@ import {
 import { atomicWrite, randomId, readJson, remove, serial, sha256 } from './fsx'
 import { forgetRunAgents, policyKey, readPolicy, setActive, updatePolicy, writePolicy } from './policy'
 import { removeActiveIfUnbound } from './swarm/guard'
-import { endVerifies, verifiesInFlight } from './verify'
+import { endVerifies, isGreen, notGreen, planGates, verifiesInFlight, verifyBody } from './verify'
 import { ROLE_POLICIES } from './roles'
 import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
@@ -774,14 +774,15 @@ export const onPromptSubmit: PortHook<PromptSubmitHook> = async (p, e, next) => 
 // The repair bridge's call-out, and a repair generation (phase 2b-2)
 
 /**
- * Hands a halted fanout to X's bridge (repair.ts) once its run.end is
- * recorded: after endRun returned, so outside the run's serial key, which the
- * bridge's own records and summary rewrite take. Only the end this call
- * recorded: a notification and the launcher's fallback can race, and the
- * loser's endRun records nothing. A rejection is logged; the end stands.
+ * Hands a halted fanout, or a halted execute run (phase 3, AC), to the bridge
+ * (repair.ts) once its run.end is recorded: after endRun returned, so outside
+ * the run's serial key, which the bridge's own records and summary rewrite
+ * take. Only the end this call recorded: a notification and the launcher's
+ * fallback can race, and the loser's endRun records nothing. A rejection is
+ * logged; the end stands.
  */
 async function afterEnd(p: Ports, ref: RunRef, workflow: Workflow, out: { recorded: boolean; end: RunEndBody }): Promise<void> {
-  if (!out.recorded || out.end.status !== 'halted' || workflow !== 'fanout') return
+  if (!out.recorded || out.end.status !== 'halted' || (workflow !== 'fanout' && workflow !== 'execute')) return
   try {
     await continueAsRepair(p, ref.runDir)
   } catch (err) {
@@ -818,7 +819,8 @@ const wholeIn = (v: unknown, lo: number, hi: number): boolean => typeof v === 'n
  * (`LiveSwarm.run`).
  *
  * Also refused, writing nothing: a run.json that isn't run.start's (its sha),
- * a run that isn't a fanout, one launched before repairs (no `repair` in
+ * a run that isn't a fanout or an execute run (phase 3's plan template, AC),
+ * one launched before repairs (no `repair` in
  * run.json, so its confirmation never stated one), one that never launched or
  * ended done, and a budget over the one its launch approved. A lock whose run
  * has ended is stale (a crash before its release) and is released first, as
@@ -840,7 +842,9 @@ export async function reopenForRepair(p: Ports, runDir: string, open: RepairOpen
     const loaded = await loadLaunchable(p, ref)
     if (!loaded.ok) return no(loaded.reason)
     const { json, st } = loaded
-    if (json.workflow !== 'fanout') return no(`its workflow is ${json.workflow}, and in this version only a fanout continues as a repair swarm`)
+    if (json.workflow !== 'fanout' && json.workflow !== 'execute') {
+      return no(`its workflow is ${json.workflow}, and only a fanout or an execute run continues as a repair swarm`)
+    }
     const approved: RepairSettings | undefined = json.repair
     if (!approved) return no("its run.json has no repair setting (it was launched before repairs), so its launch confirmation never stated one")
     if (b.rounds > approved.rounds || b.agents > approved.agents) {
@@ -905,12 +909,17 @@ async function releaseIfEnded(p: Ports, litterDir: string, r: LockRefused): Prom
  * its serial key. Idempotent: an ended generation answers its run.end with
  * `recorded: false`.
  *
- * The ledger decides the status, not `outcome`: `done` exactly when a land
- * belongs to the generation, else `halted` with the outcome's reason (or
- * "ended without a land"). Lands are reconciled first (land.ts, under its own
- * key), so a land a crash left between its intent and its record counts. The
- * generation is the open one, or the latest repair generation once it ended.
- * Throws for a run with none, or a tampered ledger.
+ * The ledger decides the status, not `outcome`: for a fanout, `done` exactly
+ * when a land belongs to the generation; for an execute run (phase 3, COMMON
+ * step 5), exactly when every gate of `args.gates` has a land in the run's
+ * ledger and, with a goal check, the generation's latest goal verify is green
+ * on the last land's tree. Else `halted` with the outcome's reason (or what's
+ * missing). Nothing is cleaned up for the halted attempt: an execute run has
+ * no integration worktree, and whatever is uncommitted in its checkout stays.
+ * Lands are reconciled first (land.ts, under its own key), so a land a crash
+ * left between its intent and its record counts. The generation is the open
+ * one, or the latest repair generation once it ended. Throws for a run with
+ * none, or a tampered ledger.
  */
 export async function endRepairGeneration(p: Ports, runDir: string, outcome: RepairOutcome): Promise<{ recorded: boolean; end: RunEndBody }> {
   const ref = runRefOf(runDir)
@@ -924,19 +933,50 @@ export async function endRepairGeneration(p: Ports, runDir: string, outcome: Rep
     if (!gen) throw new Error(`litter: run ${ref.run} has no repair generation to end`)
     if (gen.end) return { recorded: false, end: gen.end }
     const swarm = gen.repair!.swarm
-    if (outcome.status === 'done' && gen.land === null) p.log(`run ${ref.run}: repair swarm ${swarm} ended done, but generation ${gen.n} has no land, so it ends halted`)
+    // An execute run's rule needs its gates, from run.json; the workflow is run.start's, so a changed run.json can't make it a fanout.
+    let missing: string | null
+    if (st.start?.workflow === 'execute') {
+      const loaded = await loadLaunchable(p, ref)
+      missing = loaded.ok ? executeUnfinished(swarm, loaded.json, ledger.records, gen.seq) : `its gates can't be checked: ${loaded.reason}`
+    } else missing = gen.land !== null ? null : `repair swarm ${swarm} ended without a land`
+    if (outcome.status === 'done' && missing !== null) {
+      const why = st.start?.workflow === 'execute' ? `isn't done (${missing})` : 'has no land'
+      p.log(`run ${ref.run}: repair swarm ${swarm} ended done, but generation ${gen.n} ${why}, so it ends halted`)
+    }
     const body: RunEndBody =
-      gen.land !== null
+      missing === null
         ? { taskId: null, generation: gen.n, status: 'done', reason: null, source: 'mod' }
         : {
             taskId: null,
             generation: gen.n,
             status: 'halted',
-            reason: outcome.status === 'halted' && outcome.reason ? outcome.reason : `repair swarm ${swarm} ended without a land`,
+            reason: outcome.status === 'halted' && outcome.reason ? outcome.reason : missing,
             source: 'mod',
           }
     return recordEnd(p, ref, st, body, gen === st.latest)
   })
+}
+
+/**
+ * Why an execute run's repair generation isn't done (COMMON step 5, decision
+ * 12), or null when it is: a gate of `args.gates` with no land in the run's
+ * ledger, or in goal mode no green goal verify in this generation after the
+ * last land, on the tree it landed.
+ */
+function executeUnfinished(swarm: string, json: RunJson, records: readonly StoredRecord[], since: number): string | null {
+  const gates = (planGates(json) ?? []).map(g => g.id)
+  if (gates.length === 0) return `run.json names no plan gates, so repair swarm ${swarm} can't have landed them`
+  const lands = records.filter(r => r.kind === 'land' && typeof r.body.gate === 'string')
+  const left = gates.filter(id => !lands.some(r => r.body.gate === id))
+  if (left.length > 0) return `repair swarm ${swarm} ended with ${left.length === 1 ? 'gate' : 'gates'} ${left.join(', ')} not landed`
+  if (json.args.goalCheck !== true) return null
+  const last = lands.at(-1)!
+  const goal = records.filter(r => r.seq > since && verifyBody(r)?.gate === 'goal').at(-1)
+  const v = goal ? verifyBody(goal)! : null
+  if (!goal || !v || goal.seq < last.seq) return `every gate landed, but repair swarm ${swarm} ran no goal check after the last land`
+  if (!isGreen(v)) return `every gate landed, but the goal check ${v.verify_id} wasn't green (${notGreen(v)})`
+  if (v.tree_before !== last.body.tree) return `every gate landed, but the goal check ${v.verify_id} ran on tree ${v.tree_before}, not the landed tree ${String(last.body.tree)}`
+  return null
 }
 
 /**
@@ -1524,15 +1564,19 @@ const KNOWN_FIELDS = new Set([
 const REPAIR_FIELDS = ['repair', 'repairRounds', 'repairAgents'] as const
 
 /**
- * A fanout's repair setting (plan 15.11, "Where it's set"): the launch's
- * override for this run, as its confirmation stated it, else the options'
- * values. In this version only a failed fanout continues as a repair swarm,
- * so another workflow refuses the fields (execute's bridge is phase 3).
+ * A fanout's or execute run's repair setting (plan 15.11, "Where it's set"):
+ * the launch's override for this run, as its confirmation stated it, else the
+ * options' values. A failed fanout continues as a repair swarm, and a halted
+ * execute as a plan-template swarm (phase 3, COMMON step 4); an amend run
+ * stores its setting too, though its halt never continues (decision 13).
+ * Design and plan runs have no repair, so they refuse the fields.
  */
 function parseRepair(input: RecordInput, options: LitterOptions, workflow: Workflow): Parsed<RepairSettings | null> {
-  if (workflow !== 'fanout') {
+  if (workflow !== 'fanout' && workflow !== 'execute') {
     const given = REPAIR_FIELDS.find(f => input[f] !== undefined && input[f] !== null)
-    return given ? fail(`'${given}' is for fanout runs, not ${workflow}: in this version only a failed fanout continues as a repair swarm`, given) : ok(null)
+    return given
+      ? fail(`'${given}' is for fanout and execute runs, not ${workflow}: only a failed fanout or a halted execute run continues as a repair swarm`, given)
+      : ok(null)
   }
   const mode = input.repair ?? options.repair
   if (!(REPAIR_MODES as readonly unknown[]).includes(mode)) {
@@ -1826,7 +1870,13 @@ async function readPlan(p: Ports, checkout: string, path: string): Promise<{ ok:
 /** One run of a chain, as resolveChain loaded it. Exported, with resolveChain and chainLanded, for plan.ts (phase 3). */
 export type Member = { run: string; json: RunJson; records: StoredRecord[] }
 
-/** A continuation's or amend's chain: the original run, its amends and its continuations (plan section 9, "Continuations"). */
+/**
+ * A continuation's or amend's chain: the original run, its amends and its
+ * continuations (plan section 9, "Continuations"). A plan run that names the
+ * chain (a re-split's, with `continueOf`) isn't a member: it names it only for
+ * its landed and halted context, lands nothing, and is on its own
+ * `refs/litter/<run>/base`, not the chain's branch (phase 3, AB's finding).
+ */
 export async function resolveChain(p: Ports, litterDir: string, run: string): Promise<{ ok: true; root: Member; members: Member[] } | RecordError> {
   const cache = new Map<string, Loaded>()
   const load = async (r: string): Promise<Loaded> => {
@@ -1859,6 +1909,7 @@ export async function resolveChain(p: Ports, litterDir: string, run: string): Pr
   for (const r of await listRuns(p, litterDir)) {
     if ((await rootOf(r)) !== rootRun) continue
     const l = await load(r)
+    if (l.json?.workflow === 'plan' && r !== rootRun) continue
     if (l.tampered) return fail(`litter: run ${r} in this chain has a tampered ledger (at ${l.tampered.seq}); litter won't continue it`, 'continueOf')
     members.push({ run: r, json: l.json!, records: l.records })
   }
@@ -1971,8 +2022,12 @@ function sameArgv(a: readonly string[], b: unknown): boolean {
   return Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i])
 }
 
-/** A carry-over reuses a green verify of HEAD's tree with the same argv, from anywhere in the chain. */
-function greenBaseline(members: Member[], headTree: string, verify: readonly string[]): Record<string, unknown> | null {
+/**
+ * A carry-over reuses a green verify of HEAD's tree with the same argv, from
+ * anywhere in the chain. Exported for the execute bridge's baseline
+ * (repair.ts, decision 9), which finds the branch tip's the same way.
+ */
+export function greenBaseline(members: Member[], headTree: string, verify: readonly string[]): Record<string, unknown> | null {
   for (const m of [...members].reverse()) {
     for (const r of [...m.records].reverse()) {
       if (r.kind !== 'verify') continue

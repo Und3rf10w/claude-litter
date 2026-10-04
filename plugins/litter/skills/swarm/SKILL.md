@@ -38,9 +38,9 @@ This covers a description from the user, and a request the builder sends you (it
 
 A repair swarm starts the same way, from that line or from litter's own message asking you to start it.
 
-### Repair a fanout (repair <run>)
+### Repair a run (repair <run>)
 
-Record `{ kind: 'repair.start', run }` with `mcp__litter__record`. The mod checks the run and its base, then asks the user itself; don't ask first. If it's refused, show the reason and stop; don't build a repair swarm by hand. If it's live, say its start line is in the prompt box, and end your turn.
+For a failed fanout, or an execute run halted on a plan gap or out of attempts. Record `{ kind: 'repair.start', run }` with `mcp__litter__record`. The mod checks the run and its baseline, then asks the user itself; don't ask first. If it's refused, show the reason and stop; don't build a repair swarm by hand. If it's live, say its start line is in the prompt box, and end your turn.
 
 ## 4. While it runs: you are the lead
 
