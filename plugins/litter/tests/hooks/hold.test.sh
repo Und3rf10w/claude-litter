@@ -43,8 +43,9 @@ hold_lines() { spool_lines | jq -r 'select(.ev == "hold") | "\(.phase) \(.childr
 # folder to put first on PATH.
 poll_sleep() {
   ps_real=$(command -v sleep)
+  case $ps_real in /*) ;; *) ps_real=/bin/sleep ;; esac
   fake_tool sleep "if [ \"\$1\" = 2 ] && [ ! -e '$T_DIR/polled' ]; then
-  : >'$T_DIR/polled'
+  : >|'$T_DIR/polled'
   $1 || exit 1
 fi
 exec '$ps_real' \"\$@\""

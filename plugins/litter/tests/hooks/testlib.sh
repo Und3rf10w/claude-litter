@@ -12,8 +12,10 @@ LITTER_ROOT=${LITTER_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 T_PASS=0
 T_FAIL=0
 T_ONLY=${T_ONLY:-}
-# The real date, found before any case puts one of its own on PATH (t_clock).
+# The real date, found before any case puts one of its own on PATH (t_clock):
+# a path, as a shell whose date is a builtin answers with the bare name.
 T_DATE=$(command -v date)
+case $T_DATE in /*) ;; *) T_DATE=/bin/date ;; esac
 
 t() {
   t_name=$1

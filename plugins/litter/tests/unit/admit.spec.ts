@@ -720,6 +720,15 @@ describe('parked nodes', () => {
     // A tool call kicks the poll: nothing of a read-only swarm is its work.
     await tool({ node: 'fixer#1', text: 'hi' })
     expect(p.timers.size).toBe(0)
+    // A swarm of this session's own gives it work, and its tick, with no agent listed, still leaves them be.
+    state.putLiveSwarm(live({ name: 'beta', owner: { ref: 'refs/litter-swarm/beta', oid: 'b'.repeat(40), generation: 1, session: 'test-session' } }))
+    state.putBinding(bind('b1', { swarm: 'beta', node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo' }))
+    state.markSettling('b1')
+    await tool({ node: 'fixer#1', text: 'hi' })
+    expect(p.timers.size).toBe(1)
+    await fireEvery(p)
+    expect(state.status('b1')).toBe('idle')
+    expect(p.timers.size).toBe(0)
     expect(state.isParked('w1')).toBe(true)
     expect(state.status('w2')).toBe('settling')
     expect(policyOf('w1')?.admitted).toBe(true)
@@ -891,8 +900,8 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(rs.at(-1)!.body).toEqual(expect.objectContaining({ agentId: 'x1', adopted: true }))
   })
 
-  // WP-AJ: as recovery marks a `waiting` node, so its next step is admitted on the place it holds.
-  test('one the list shows `waiting` (2.1.289) is adopted parked: it holds its place, its policy admitted from its next step', async () => {
+  // WP-AJ: as recovery marks a `waiting` node with no copy, so its next step is admitted on the place it holds.
+  test('one the list shows `waiting` (2.1.289) is adopted parked: it holds its place, its policy admitted, as it may be mid-turn, and so is its next step', async () => {
     await put(o1(), true)
     await instance(1, TOK1)
     p.agents = [agent('x1', T('fixer'), 'waiting', 'o1')]
@@ -900,7 +909,8 @@ describe('swarm.bind and adoption after a reload', () => {
     expect(state.binding('x1')).toEqual(expect.objectContaining({ node: 'fixer', n: 1, adopted: true }))
     expect(state.isParked('x1')).toBe(true)
     expect(state.countFor('alpha', 'o1', 'fixer')).toBe(1)
-    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: false }))
+    // With no copy to say its turn is over, a call of its response may still be due with no step between.
+    expect(policyOf('x1')).toEqual(expect.objectContaining({ bind: false, admitted: true }))
     // Its parent is at its max of 1 fixer, x1 counted: the step is admitted on x1's own place.
     expect((await step(stepE('x1', 'T1', 0))).called).toBe(true)
     expect(state.status('x1')).toBe('running')

@@ -887,9 +887,9 @@ async function park(p: Ports, b: NodeBinding): Promise<void> {
 
 /**
  * A parked node the list shows ended: its place frees, as a settle's does,
- * and the messages waiting for room may be handed on. Its policy stays as
- * its park (or recovery, or adoption) wrote it, not admitted, all in one
- * synchronous step, so nothing a resume writes meanwhile is undone.
+ * and the messages waiting for room may be handed on, all in one synchronous
+ * step. Its policy stays as its park, recovery or adoption wrote it, so
+ * nothing a resume writes meanwhile is undone.
  */
 function unpark(b: NodeBinding): void {
   state.markSettled(b.agentId)
@@ -930,16 +930,16 @@ async function settleTick(p: Ports): Promise<void> {
     const parked = own.filter(b => state.isParked(b.agentId))
     if (settling.length > 0 || parked.length > 0) {
       const listed = await p.listAgents()
-      // Only `running` holds a settle, not `waiting`, which parks it (settleIfDone says why).
-      for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
       // A parked node goes once the list shows it ended (completed, failed or killed) or gone; alive, it stays.
-      // Checked again after the list's await: a resume or a wake may have taken it meanwhile. Its policy was
-      // written not admitted when it parked, so only its place goes: a resume that has just written it admitted
-      // keeps that.
+      // Checked again after the list's await, a resume or a wake may have taken it meanwhile, and before the
+      // settles' awaits, so the row is no older than that. Its policy is as its park (or recovery, or adoption)
+      // wrote it, so only its place goes: a resume that has just written it admitted keeps that.
       for (const b of parked) {
         const row = listed.find(a => a.id === b.agentId)
         if ((row === undefined || !agentLive(row.status)) && state.isParked(b.agentId) && !resuming(b.agentId)) unpark(b)
       }
+      // Only `running` holds a settle, not `waiting`, which parks it (settleIfDone says why).
+      for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
     }
     handOff(p)
     if (!hasWork() && poll) {
@@ -1390,8 +1390,12 @@ async function ledgerInstances(p: Ports, dir: string, s: LiveSwarm): Promise<{ i
 
 /**
  * Binds an agent to its recorded instance: `swarm.node { adopted: true }`,
- * the binding, its place (`as`: running, parked or none), the policy,
- * admitted only when it runs.
+ * the binding, its place (`as`: running, parked or none), and the policy,
+ * admitted when it holds a place. A parked one's is admitted too: adoption
+ * has no copy to tell a `waiting` agent mid-turn on a foreground child,
+ * whose response may still have a call to run with no step between, from one
+ * whose turn is over, which makes no call before its next step, and that
+ * step runs admission.
  */
 async function adopt(p: Ports, dir: string, s: LiveSwarm, inst: SwarmInstanceBody, agentId: string, as: 'running' | 'parked' | 'idle'): Promise<NodeBinding> {
   const node = nodeOf(s, inst.node)
@@ -1432,7 +1436,7 @@ async function adopt(p: Ports, dir: string, s: LiveSwarm, inst: SwarmInstanceBod
   const scope = node ? scopeOf(node, inst.cwd) : null
   if (as === 'running') state.markRunning(agentId, scope)
   else if (as === 'parked') state.markParked(agentId, scope)
-  await writeNodePolicy(p, dir, agentId, nodePolicyFor(b, s, { admitted: as === 'running', stopped: null, bind: false }))
+  await writeNodePolicy(p, dir, agentId, nodePolicyFor(b, s, { admitted: as !== 'idle', stopped: null, bind: false }))
   return b
 }
 
@@ -1487,8 +1491,9 @@ export async function adoptUnbound(p: Ports): Promise<void> {
       const fits = open.filter(i => i.node === node && i.parentAgentId === parent)
       const rivals = unbound.filter(x => x.type === a.type && (x.parentId ?? null) === parent)
       try {
-        // Alive holds a place. `waiting` is parked, as recovery marks it (WP-AJ): its next step is admitted on
-        // that place, whether it's a wake or, mid-turn on a foreground child, the step after the child returns.
+        // Alive holds a place. `waiting` is parked (WP-AJ), as recovery marks one with no copy to say it was
+        // mid-turn: its next step is admitted on that place, whether it's a wake or, mid-turn on a foreground
+        // child, the step after the child returns.
         const as = a.status === 'waiting' ? 'parked' : agentLive(a.status) ? 'running' : 'idle'
         if (fits.length === 1 && rivals.length === 1) await adopt(p, dir, s, fits[0]!, a.id, as)
         else await holdToBind(p, dir, s, a.id, node, parent)

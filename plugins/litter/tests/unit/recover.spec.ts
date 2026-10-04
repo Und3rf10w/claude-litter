@@ -201,14 +201,30 @@ describe('recoverSwarms, a swarm this session owns', () => {
     expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(true)
   })
 
-  test('with no store copy, a `waiting` node is parked: nothing says it is mid-turn', async () => {
+  test('with no store copy, a `waiting` node is parked, its policy admitted: nothing says whether it is mid-turn, a call of its response still to run', async () => {
     await liveInSessionA()
     const { q } = await crashRespawn()
     q.storeMap.delete(swarmStateKey(w.litterDir, 'alpha'))
     q.agents = [{ id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' }]
     await recoverSwarms(q, w.litterDir)
     expect(isParked('ag-l1')).toBe(true)
+    expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(true)
+  })
+
+  test("a `waiting` node the store's copy shows idle may have woken since: parked, its policy admitted; one the copy shows parked stays parked, not admitted", async () => {
+    await liveInSessionA()
+    markParked('ag-l1')
+    await settle(w.p)
+    const { q } = await crashRespawn()
+    q.agents = [
+      { id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'waiting' },
+      { id: 'ag-f2', description: 'fixer', type: 'litter:sw-alpha-fixer', status: 'waiting' },
+    ]
+    await recoverSwarms(q, w.litterDir)
+    expect(isParked('ag-l1')).toBe(true)
+    expect(isParked('ag-f2')).toBe(true)
     expect((await readNodePolicy(w, 'ag-l1'))!.node.admitted).toBe(false)
+    expect((await readNodePolicy(w, 'ag-f2'))!.node.admitted).toBe(true)
   })
 
   test('a node parked at the crash held a place there, so it is on the card with the ones that ran', async () => {
