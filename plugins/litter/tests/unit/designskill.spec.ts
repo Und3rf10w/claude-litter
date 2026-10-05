@@ -145,10 +145,12 @@ describe('settings and launch', () => {
   const settings = part('## 4. Settings', '## 5. Launch')
   const launch = part('## 5. Launch', '## 6. While it runs')
 
-  test("the rules come from rule.find's design answer before Launch, shown with the bar items they add, joined as 16.5 says", () => {
-    expect(settings).toContain("Record `{ kind: 'rule.find', applicable: { workflow: 'design', anchors, goal, runRules } }`")
+  test("the rules come from rule.find's design answer before Launch, given the draft bar, shown with the ids the reply gives the items they add, joined as 16.5 says", () => {
+    expect(settings).toContain("Record `{ kind: 'rule.find', applicable: { workflow: 'design', anchors, goal, runRules, bar } }`")
+    expect(settings).toContain('draft bar you\'ll launch with, the bar in the shape `run.start` takes (section 5)')
     expect(settings).toContain('replies `{ ok, workflow, run, bar, versions, problems }`')
-    expect(settings).toContain('Show each rule in `run` on one line, then the items in `bar` that the rules add, as they\'ll appear in the frozen bar')
+    expect(settings).toContain("Show each rule in `run` on one line, then the items in `bar` that the rules add, with the ids the reply gives them: the ids they'll have in the frozen bar.")
+    expect(settings).toContain('If the reply has a `note` instead, because you passed no bar, say the ids are assigned at launch.')
     expect(settings).toContain('each ban as a categorical ban, and the rest as one criterion, "consistent with these rules, or asks before changing one, as a blocking user decision"')
     expect(settings.indexOf('**Rules.**')).toBeLessThan(settings.indexOf('ask for an explicit "Launch"'))
   })
@@ -173,7 +175,9 @@ describe('settings and launch', () => {
   })
 
   test("passes the bar minimum's refusal or warning on (decision 5)", () => {
-    expect(launch).toContain('The mod refuses a bar with fewer than 6 of your items or no ban, and warns past 12; pass a warning on to the user with the launch.')
+    expect(launch).toContain(
+      "The mod refuses a bar with fewer than 6 criteria or no ban (your own items; the rules' don't count), and warns past 12 criteria; pass a warning on to the user with the launch.",
+    )
     expect(launch).toContain('If it refuses, pass the reason on and stop.')
   })
 
@@ -308,11 +312,11 @@ describe('the design eval cases', () => {
     }
   })
 
-  test('each request gives a bar run.start takes: at least 6 items, at least one a ban, and Launch', () => {
+  test('each request gives a bar run.start takes: at least 6 criteria and a ban, and Launch', () => {
     for (const dir of designDirs()) {
       const prompt = String(readCase(dir).execution.prompt)
       const ids = [...prompt.matchAll(/^- ([CB][0-9]+): /gm)].map(m => m[1]!)
-      expect(ids.length).toBeGreaterThanOrEqual(6)
+      expect(ids.filter(id => id.startsWith('C')).length).toBeGreaterThanOrEqual(6)
       expect(new Set(ids).size).toBe(ids.length)
       expect(ids.some(id => id.startsWith('B'))).toBe(true)
       expect(prompt).toContain('Launch.')
