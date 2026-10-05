@@ -4,7 +4,8 @@
 // with the ports in place of `$` (ports.ts says why). A catch never uses `$`,
 // so a module exports it with the engine's own catch type.
 //
-// Contract owner: phase 1a; the swarm hooks below are phase 2b-1's (package C).
+// Contract owner: phase 1a; the swarm hooks below are phase 2b-1's (package C),
+// the band's and the card's phase 5's (WP-CA).
 
 import type { CatchHandler, Elements, Hook, MatchedHook, RenderSurface } from 'claude-code'
 import type { Ports } from './ports'
@@ -86,3 +87,32 @@ export type SwarmSendCatch = CatchHandler<SwarmSendHook>
 export type PaneRender = Parameters<UiRenderHook>[1]
 /** What `$.ui.resolve(e)` answers for a pane's render: the surface's element table (`Box`, `Text`, `Button`, …). */
 export type PaneElements = Elements[RenderSurface]
+
+// Phase 5 (WP-CA): the band above the prompt, the finished-run card, and their presses.
+
+/**
+ * The band's draw, matched on `{ component: 'AbovePrompt' }`: one instance
+ * (the engine's `requestId` is `above-prompt`), raised on the terminal and
+ * desktop only. `e.props`: hasSurvey, isWorking, maxRows, bodyColumns, scroll, view.
+ */
+export type BandRenderHook = MatchedHook<'ui.render', { readonly component: 'AbovePrompt' }>
+export type BandRenderCatch = CatchHandler<BandRenderHook>
+export type BandRender = Parameters<BandRenderHook>[1]
+/** What `$.ui.resolve(e)` answers for the band's render. */
+export type BandElements = Elements[BandRender['surface']]
+/**
+ * A transcript row's draw, matched on `{ component: 'UserMessage' }`: every
+ * user-role row, on every surface. `e.props`: text, origin, isExpanded, task
+ * (a notification's), from, onScreen; all but `text` read-only.
+ */
+export type CardRenderHook = MatchedHook<'ui.render', { readonly component: 'UserMessage' }>
+export type CardRenderCatch = CatchHandler<CardRenderHook>
+export type CardRender = Parameters<CardRenderHook>[1]
+/** What `$.ui.resolve(e)` answers for a row's render. */
+export type CardElements = Elements[CardRender['surface']]
+/** A press on a Button in the band, any plugin's: matched on `{ component: 'AbovePrompt' }`; litter's keys start `band:`. */
+export type BandPressHook = MatchedHook<'ui.press', { readonly component: 'AbovePrompt' }>
+export type BandPressCatch = CatchHandler<BandPressHook>
+/** A press on a Button in a transcript row, any plugin's: matched on `{ component: 'UserMessage' }`; litter's keys start `card:`. */
+export type CardPressHook = MatchedHook<'ui.press', { readonly component: 'UserMessage' }>
+export type CardPressCatch = CatchHandler<CardPressHook>

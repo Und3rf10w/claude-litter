@@ -123,7 +123,8 @@ describe('/litter-board and /litter-rules', () => {
     const sid = { value: SESSION as string | null }
     sessionId(on, sid)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    expect(commands).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }, ...PHASE3])
+    // Phase 5's two follow (phase5wiring.test.tsx).
+    expect(commands.slice(0, 4)).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }, ...PHASE3])
 
     // The engine's clear: session.end `clear`, then a new id, and no session.start.
     await clearEnds($, SESSION)

@@ -105,6 +105,8 @@ const REQUIRED: Readonly<Record<SpoolEvent, readonly string[]>> = {
   call: ['agent_id', 'agent_type', 'tool', 'tool_use_id', 'phase'],
   handback: ['agent_id', 'agent_type', 'tool_use_id'],
   hold: ['agent_id', 'phase'],
+  // Phase 5's permission ask (consumed by asks.ts).
+  ask: ['agent_id', 'tool'],
 }
 
 /**
