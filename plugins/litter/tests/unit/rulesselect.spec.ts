@@ -214,12 +214,27 @@ describe('execute: each gate by its Files', () => {
     ])
   })
 
-  test('a design selects nothing, and loads nothing', async () => {
-    checkout = tree()
-    const seen = store(doc('P-always'))
-    const sel = await selectForRun(p, input({ workflow: 'design' }))
-    expect(sel).toEqual({ run: [], gates: {}, tasks: {}, verifier: [], planner: [], versions: [] })
-    expect(seen.calls).toBe(0)
+  test('a design selects into run alone: the rules without paths, the bans, and those its anchors bring (WP-BD)', async () => {
+    checkout = tree('src/a.ts')
+    const always = doc('P-always')
+    const vendor = doc('P-vendor', { type: 'ban', paths: ['vendor/**'] })
+    const src = doc('P-src', { paths: ['src/**'] })
+    const docs = doc('P-docs', { paths: ['docs/**'] })
+    const seen = store(always, vendor, src, docs)
+    const sel = await selectForRun(p, input({ workflow: 'design', anchors: ['src/a.ts'], runRules: ['For this run (stated by you): keep it small'] }))
+    expect(sel).toEqual({
+      run: [fullOf(always), fullOf(vendor), fullOf(src)],
+      gates: {},
+      tasks: {},
+      verifier: [],
+      planner: [],
+      versions: [
+        { id: 'P-always', version: 1 },
+        { id: 'P-vendor', version: 1 },
+        { id: 'P-src', version: 1 },
+      ],
+    })
+    expect(seen.calls).toBe(1)
   })
 })
 
@@ -586,25 +601,38 @@ describe('rule.find { applicable }', () => {
     expect(plan.planner).toEqual([fullOf(ban)])
   })
 
-  test('a design answers that its selection comes with phase 4; a bad call names the field and the fix', async () => {
+  test("a design answers with selectForRun's run and versions, and the items they add to the bar (WP-BD); a bad call names the field and the fix", async () => {
     const w = await world()
     checkout = w.dir
-    const seen = store(doc('P-all'))
-    expect(await findApplicable(w.p, w.litterDir, { workflow: 'design', goal: 'g' })).toEqual({
+    const all = doc('P-all')
+    const ban = doc('P-no-sleep', { type: 'ban', rule: 'Never sleep in a test.' })
+    store(all, ban)
+    const sel = await selectForRun(w.p, input({ workflow: 'design', checkout: w.dir, litterDir: w.litterDir, goal: 'g' }))
+    expect(await findApplicable(w.p, w.litterDir, { workflow: 'design', goal: 'g', bar: [{ id: 'C3' }, { id: 'B2' }] })).toEqual({
       ok: true,
       workflow: 'design',
-      run: [],
-      versions: [],
-      problems: [],
-      note: 'a design gets only your run rules in this version: the accepted rules join its frozen bar in phase 4, so rule.find has nothing to select for it',
+      run: sel.run,
+      bar: [
+        { id: 'B3', text: 'Never sleep in a test.', evidence: "the proposal's file list and design, checked against the ban", reason: 'because', rule: { id: 'P-no-sleep', version: 1 } },
+        {
+          id: 'C4',
+          text: 'Consistent with rules P-all@1, or asks before changing one, as a blocking user decision.',
+          evidence: 'each rule checked against the proposal, by id',
+          rules: [{ id: 'P-all', version: 1 }],
+        },
+      ],
+      versions: sel.versions,
+      problems: ['one id in two scopes: P-dup'],
     })
-    expect(seen.calls).toBe(0)
+    expect(sel.run).toEqual([fullOf(all), fullOf(ban)])
     const refusals: [Record<string, unknown>, string][] = [
       [{ workflow: 'swarm' }, "litter: 'applicable.workflow' is the launch's workflow: execute, fanout, plan or design"],
       [{ workflow: 'execute' }, "litter: rule.find { applicable } for execute needs 'planPath', the plan the launch would read, absolute or relative to the checkout"],
       [{ workflow: 'execute', planPath: 'nope.md' }, "litter: can't read the plan 'nope.md'"],
       [{ workflow: 'fanout', tasks: [{ files: ['a'] }] }, "litter: rule.find { applicable } for fanout needs 'tasks', each { id, files, writes? } as run.start takes them"],
       [{ workflow: 'plan', runRules: 'one' }, "litter: 'applicable.runRules' is your run rules as a list of strings, as run.start takes them"],
+      [{ workflow: 'design', anchors: 'src/a.ts' }, "litter: 'applicable.anchors' is the design's anchors as a list of strings, as run.start takes them"],
+      [{ workflow: 'design', bar: 'C1' }, "litter: 'applicable.bar' is your bar as run.start takes it"],
     ]
     for (const [applicable, error] of refusals) {
       const r = await findApplicable(w.p, w.litterDir, applicable)

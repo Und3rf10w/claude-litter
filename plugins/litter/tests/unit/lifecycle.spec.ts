@@ -165,7 +165,19 @@ async function world(): Promise<World> {
 async function started(w: World, workflow: Workflow = 'execute'): Promise<RunStartReply & { ref: RunRef }> {
   const input: Record<string, unknown> =
     workflow === 'design'
-      ? { goal: 'g', deliverable: 'research', bar: [{ id: 'C1', text: 't', evidence: 'e' }] }
+      ? {
+          goal: 'g',
+          deliverable: 'research',
+          bar: [
+            { id: 'C1', text: 'retries once', evidence: 'a test' },
+            { id: 'C2', text: 'keeps the timeout', evidence: 'the config' },
+            { id: 'C3', text: 'logs each retry', evidence: 'a log line' },
+            { id: 'C4', text: 'needs no new dependency', evidence: 'package.json' },
+            { id: 'C5', text: 'consistent with rules', evidence: 'the rules' },
+            { id: 'C6', text: 'keeps the public API', evidence: 'the exports' },
+            { id: 'B1', text: 'no sleep in tests', evidence: 'grep', reason: 'flaky' },
+          ],
+        }
       : { planPath: 'plan.md' }
   const r = (await recordRunStart(w.ctx, { kind: 'run.start', workflow, authorized: ['test'], ...input } as RecordInput)) as RunStartReply
   if (!r.ok) throw new Error(JSON.stringify(r))

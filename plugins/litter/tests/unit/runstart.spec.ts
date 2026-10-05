@@ -491,7 +491,15 @@ describe('run.start: isolate, design, plan, fanout', () => {
         ...AUTH,
         goal: 'design the retry',
         deliverable: 'plan',
-        bar: [{ id: 'C1', text: 'retries once', evidence: 'a test' }, { id: 'B1', text: 'no sleep', evidence: 'grep', reason: 'flaky' }],
+        bar: [
+          { id: 'C1', text: 'retries once', evidence: 'a test' },
+          { id: 'C2', text: 'keeps the timeout', evidence: 'the config' },
+          { id: 'C3', text: 'logs each retry', evidence: 'a log line' },
+          { id: 'C4', text: 'needs no new dependency', evidence: 'package.json' },
+          { id: 'C5', text: 'consistent with rules', evidence: 'the rules' },
+          { id: 'C6', text: 'keeps the public API', evidence: 'the exports' },
+          { id: 'B1', text: 'no sleep', evidence: 'grep', reason: 'flaky' },
+        ],
       }),
     )
     const ref = `refs/litter/${r.run}/base`

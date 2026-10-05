@@ -283,7 +283,19 @@ const start = (w: StartWorld, workflow: string, extra: Record<string, unknown> =
     execute: { planPath: 'plan.md' },
     fanout: { tasks: TASKS },
     plan: { goal: 'add a retry' },
-    design: { goal: 'design the retry', deliverable: 'plan', bar: [{ id: 'C1', text: 'retries once', evidence: 'a test' }] },
+    design: {
+      goal: 'design the retry',
+      deliverable: 'plan',
+      bar: [
+        { id: 'C1', text: 'retries once', evidence: 'a test' },
+        { id: 'C2', text: 'keeps the timeout', evidence: 'the config' },
+        { id: 'C3', text: 'logs each retry', evidence: 'a log line' },
+        { id: 'C4', text: 'needs no new dependency', evidence: 'package.json' },
+        { id: 'C5', text: 'consistent with rules', evidence: 'the rules' },
+        { id: 'C6', text: 'keeps the public API', evidence: 'the exports' },
+        { id: 'B1', text: 'no sleep in tests', evidence: 'grep', reason: 'flaky' },
+      ],
+    },
   }
   return recordRunStart(w.ctx, { kind: 'run.start', workflow, ...AUTH, ...byWorkflow[workflow], ...extra } as RecordInput)
 }
