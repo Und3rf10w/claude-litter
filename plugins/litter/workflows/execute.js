@@ -76,6 +76,7 @@ async function call(prompt, opts) {                   // one retry on null, then
       const msg = String(e?.message)
       if (/^\s*WorktreeCreate hook failed/.test(msg)) { refused = msg; return null }  // the same name would be refused again
       if (e?.name === 'WorkflowBudgetExceededError' || /^Workflow token budget exceeded/.test(msg)) { outOfBudget = true; return null }
+      if (/subagent completed without calling StructuredOutput/.test(msg)) continue  // a role that ended without its result: a null (WP-BG)
       if (!/agent type 'litter:[^']*' not found/.test(msg)) throw e   // denied type, bad schema: fatal
       interrupted = msg                                // the run's agent list is fixed, so only a resume can help
       return null

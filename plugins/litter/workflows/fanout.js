@@ -70,7 +70,7 @@ let refused = null                                           // worktree.sh refu
 let outOfBudget = false                                      // the engine's hard ceiling stopped an agent() call
 let verifyId = null, landed = null
 
-/** One agent() call: null for a null result, and for the rejections that halt without a retry. */
+/** One agent() call: null for a null result and for a role that ended without its result, and for the rejections that halt without a retry. */
 async function attempt(prompt, opts) {
   try {
     return await agent(prompt, opts)
@@ -79,6 +79,7 @@ async function attempt(prompt, opts) {
     if (/^\s*WorktreeCreate hook failed/.test(msg)) { refused ??= msg; return null }  // the same name would be refused again
     if (/agent type 'litter:[^']*' not found/.test(msg)) { interrupted ??= msg; return null }  // only a resume can help
     if (e?.name === 'WorkflowBudgetExceededError' || /^Workflow token budget exceeded/.test(msg)) { outOfBudget = true; return null }
+    if (/subagent completed without calling StructuredOutput/.test(msg)) return null  // a null, retried once (WP-BG)
     throw e                                                  // a denied type, a bad schema: fatal
   }
 }

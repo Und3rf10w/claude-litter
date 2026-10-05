@@ -38,8 +38,11 @@ import {
   type Run,
   type Task,
 } from './fanoutjs-harness'
+import { retryCap } from './executejs-harness'
 
 const THREE = argsWith([TASK_A, TASK_B, TASK_R])
+/** The engine's rejection when a role ends without calling StructuredOutput (agent({schema}), cli 2.1.289 :967519-967522). */
+const NO_OUTPUT = 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)'
 const happy = (extra: Record<string, Reply | Reply[]> = {}): Record<string, Reply | Reply[]> => ({
   'write:A': done(['a/hello.txt']),
   'write:B': done(['b/world.txt']),
@@ -331,6 +334,49 @@ describe('null results and rejections', () => {
     const r = await runFanout({ args: THREE, replies: happy({ integrate: null, 'integrate (retry)': null }) })
     expect(labels(r).slice(3)).toEqual(['integrate', 'integrate (retry)'])
     expect(decoded(r)).toEqual({ status: 'halted', reason: 'relay for integrate returned nothing' })
+  })
+
+  // WP-BG: the engine rejects a call whose role ended without its StructuredOutput; the script reads it as a null.
+  test('a role that ended without its StructuredOutput, then a good retry, goes on as a null would, inside parallel() too', async () => {
+    for (const [label, good] of [['write:A', done(['a/hello.txt'])], ['research:R', researched], ['verifier', check(['A', 'B', 'R'])]] as const) {
+      const nulled = await runFanout({ args: THREE, replies: happy({ [label]: null, [`${label} (retry)`]: good }) })
+      const r = await runFanout({ args: THREE, replies: happy({ [label]: { throws: NO_OUTPUT }, [`${label} (retry)`]: good }) })
+      expect({ label, error: r.error }).toEqual({ label, error: null })
+      expect(labels(r)).toEqual(labels(nulled))
+      expect(labels(r)).toContain(`${label} (retry)`)
+      expect(r.result).toEqual(nulled.result!)
+      expect(decoded(r)).toEqual({ status: 'done', reason: null })
+    }
+  })
+
+  test("a role that ends without its StructuredOutput twice halts with the caller's reason, not a throw", async () => {
+    const sites = [
+      ['write:A', 'executor for A returned nothing'],
+      ['research:R', 'researcher for R returned nothing'],
+      ['integrate', 'relay for integrate returned nothing'],
+      ['verifier', 'verifier returned nothing'],
+      ['land:fanout', 'relay for the land returned nothing'],
+    ] as const
+    for (const [label, reason] of sites) {
+      const nulled = await runFanout({ args: THREE, replies: happy({ [label]: null, [`${label} (retry)`]: null }) })
+      const r = await runFanout({ args: THREE, replies: happy({ [label]: { throws: NO_OUTPUT }, [`${label} (retry)`]: { throws: NO_OUTPUT } }) })
+      expect({ label, error: r.error }).toEqual({ label, error: null })
+      expect(labels(r)).toEqual(labels(nulled))
+      expect(r.result).toEqual(nulled.result!)
+      expect(r.result!.interrupted).toBeUndefined()
+      expect(decoded(r)).toEqual({ status: 'halted', reason })
+    }
+  })
+
+  test("only a role that ended without its StructuredOutput is a null: the engine's retry cap, a bad schema, stays fatal", async () => {
+    const msg = retryCap("$: missing required 'summary'")
+    const inRun = await runFanout({ args: THREE, replies: happy({ 'write:A': { throws: msg }, 'write:A (retry)': done(['a/hello.txt']) }) })
+    expect(labels(inRun)).toEqual(['write:A', 'write:B', 'research:R'])
+    expect(inRun.result).toBeUndefined()
+    expect(String((inRun.error as Error)?.message)).toBe(msg)
+    const later = await runFanout({ args: THREE, replies: happy({ verifier: { throws: msg }, 'verifier (retry)': check(['A', 'B', 'R']) }) })
+    expect(labels(later).at(-1)).toBe('verifier')
+    expect(String((later.error as Error)?.message)).toBe(msg)
   })
 })
 
