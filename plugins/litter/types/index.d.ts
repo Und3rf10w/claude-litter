@@ -1,6 +1,11 @@
 // litter's $.state contract (named in plugin.json as "types"). Self-contained:
 // no import or reference. $.state holds only what the panes draw: /clear
 // wipes it, and every run fact lives in the ledger or $.store.
+//
+// Phase 5 (WP-CA) marks five sections with begin and end banners naming
+// their owners: the board (CD), the band (CB), the cards (CC), the tasks pane
+// (CE) and the agents pane (CG). An owner edits only between its two banners;
+// every line outside them is CA's.
 
 // ---------------------------------------------------------------------------
 // The swarm panes (package N; plan 15.5, 15.6, 15.7): the one thing in
@@ -392,6 +397,7 @@ export type DoctorPaneBody = {
  */
 export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
 
+// ===== begin board section (owner: WP-CD) =====
 // ---------------------------------------------------------------------------
 // The board (phase 3, AF; plan section 11, decision 21): one run, drawn from
 // its ledger only, by hooks/board/view.ts. Execute runs get the gate table
@@ -520,6 +526,7 @@ export type BoardBody = {
  * picked; `body` is absent until the first build is in.
  */
 export type BoardView = { view: 'board'; v: number; run: string | null; body?: BoardBody }
+// ===== end board section (owner: WP-CD) =====
 
 // ---------------------------------------------------------------------------
 // The rules pane (phase 3, AF; plan 16.3, 16.8): the only place a rule is
@@ -588,6 +595,55 @@ export type RulesBody = {
 /** The `litter-rules` pane's view; `body` is absent until the first build is in. */
 export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: RulesBody }
 
+// ===== begin band section (owner: WP-CB) =====
+// ---------------------------------------------------------------------------
+// The band above the prompt (phase 5; COMMON decisions 7, 11, 12): a row per
+// active run and live swarm, then a row per open permission ask. Built by
+// hooks/band/view.ts, drawn by hooks/band/render.tsx under the rows of the
+// plugins beneath. Texts are cleaned and cut; colors are theme keys with a
+// word or glyph beside each.
+
+/** One of a row's buttons: its key (`band:<action>[:<arg>]`), its label, and its hotkey digit, if any. */
+export type BandButton = { key: string; label: string; hotkey?: string }
+/** One row: its key (the run's, the swarm's or the ask's), its text as spans, and its buttons. */
+export type BandRow = { key: string; spans: SwarmSpan[]; buttons: BandButton[] }
+/** The band's view; with no rows the band draws nothing of litter's. */
+export type BandView = { view: 'band'; v: number; rows: BandRow[] }
+// ===== end band section (owner: WP-CB) =====
+
+// ===== begin cards section (owner: WP-CC) =====
+// ---------------------------------------------------------------------------
+// The finished-run cards (phase 5; COMMON decision 8): a litter run's
+// task-notification row redrawn as a short verdict card, by the row's
+// `task.id`. Built by hooks/card/view.ts, drawn by hooks/card/render.tsx.
+
+/** One card: the notification's task, its run, a title, two to four lines, and [Board]. */
+export type CardView = { taskId: string; run: string; title: SwarmSpan[]; lines: SwarmSpan[][]; buttons: BandButton[] }
+/** Every card built, by the notification's `task.id`. */
+export type CardsView = { view: 'cards'; v: number; byTask: Record<string, CardView> }
+// ===== end cards section (owner: WP-CC) =====
+
+// ===== begin tasks section (owner: WP-CE) =====
+// ---------------------------------------------------------------------------
+// The tasks pane (phase 5; COMMON decisions 4, 15, 16): a task list's tasks,
+// filtered, sorted and edited in place. Built and drawn by hooks/tasks/.
+
+export type TasksBody = { title: SwarmSpan[]; notice: SwarmNotice | null }
+/** The `litter-tasks` pane's view; `body` is absent until the first build is in. */
+export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
+// ===== end tasks section (owner: WP-CE) =====
+
+// ===== begin agents section (owner: WP-CG) =====
+// ---------------------------------------------------------------------------
+// The agents pane (phase 5; COMMON decisions 5, 6, 16): agents, their
+// inboxes and transcripts, a composer and [Stop]. Built and drawn by
+// hooks/agents/.
+
+export type AgentsBody = { title: SwarmSpan[]; notice: SwarmNotice | null }
+/** The `litter-agents` pane's view; `body` is absent until the first build is in. */
+export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
+// ===== end agents section (owner: WP-CG) =====
+
 declare module 'claude-code' {
   interface PluginState {
     litter: {
@@ -595,6 +651,11 @@ declare module 'claude-code' {
       rulesPane: RulesPaneView | null
       swarmPane: SwarmPaneView | null
       doctorPane: DoctorPaneView | null
+      // Phase 5 (WP-CA): the band, the cards, and the tasks and agents panes.
+      band: BandView | null
+      cards: CardsView | null
+      tasksPane: TasksPaneView | null
+      agentsPane: AgentsPaneView | null
     }
   }
 }

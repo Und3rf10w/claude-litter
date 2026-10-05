@@ -101,28 +101,8 @@ export const boardCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   const arg = (e.args ?? '').trim().split(/\s+/)[0] || null
   const litterDir = session().litterDir
   if (!litterDir) {
-    const why = session().litterDirError
     setBoardNav(blankBoardNav(arg))
-    const view: BoardView = {
-      view: 'board',
-      v: 0,
-      run: null,
-      body: {
-        title: [{ text: 'litter · board', bold: true }],
-        notice: { level: 'error', text: `this session has no litter directory${why ? `: ${oneLine(why, 240)}` : ''}` },
-        header: null,
-        gates: null,
-        detail: null,
-        records: [],
-        rules: [],
-        proposals: [],
-        section: null,
-        buttons: [],
-        stamp: '',
-      },
-    }
-    await p.setView('board', view)
-    written = -1
+    await drawNoDirectory(p)
     const placed = await p.openPane(BOARD_PANE, 'litter board')
     return { text: `litter: the board has no litter directory to read${placed ? '' : " (open, but this screen can't draw it now)"}` }
   }
@@ -132,6 +112,51 @@ export const boardCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   const head = view?.body?.header
   const what = view?.run && head ? `run ${view.run} (${head.workflow}, ${head.status.text})` : `nothing: ${view?.body?.notice?.text ?? 'no run'}`
   return { text: `litter: the board shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+}
+
+/** The board when this session has no litter directory: why, and nothing else. */
+async function drawNoDirectory(p: Ports): Promise<void> {
+  const why = session().litterDirError
+  const view: BoardView = {
+    view: 'board',
+    v: 0,
+    run: null,
+    body: {
+      title: [{ text: 'litter · board', bold: true }],
+      notice: { level: 'error', text: `this session has no litter directory${why ? `: ${oneLine(why, 240)}` : ''}` },
+      header: null,
+      gates: null,
+      detail: null,
+      records: [],
+      rules: [],
+      proposals: [],
+      section: null,
+      buttons: [],
+      stamp: '',
+    },
+  }
+  await p.setView('board', view)
+  written = -1
+}
+
+/**
+ * The band's and the card's [Board] (phase 5, WP-CA): the board on `run`, or,
+ * for null, on what /litter-board with no argument opens (the active run,
+ * else the newest). Answers whether the pane was placed; a failure is logged
+ * and answers false, so the caller can say to run /litter-board.
+ */
+export async function openBoard(p: Ports, run: string | null): Promise<boolean> {
+  try {
+    await restoreBoardNav(p)
+    setBoardNav(blankBoardNav(run))
+    const litterDir = session().litterDir
+    if (litterDir) await drawBoard(p, litterDir)
+    else await drawNoDirectory(p)
+    return await p.openPane(BOARD_PANE, 'litter board')
+  } catch (err) {
+    p.log(`board: it didn't open${run ? ` on run ${run}` : ''}: ${errText(err)}`)
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import { consumeSwarm } from './swarm/observe'
 import { recordRepairBudget, recordRepairStart } from './repair'
 import { recordGateAmend, recordGateWiden, recordPlanWrite } from './plan'
 import { consumeInflight } from './inflight'
+import { consumeAsks } from './asks'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
 import { recordProbe, recordProposal, recordVerdict } from './design/records'
 
@@ -103,13 +104,16 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
 /**
  * In order: the agent map first, so the others can look an agent up; an
  * execute run's in-flight flag next (phase 3, decision 24), so a gate-critic's
- * start or stop is seen before its output; the swarm's consumer next, so its
- * in-flight table sees a call before anything acts on it; the worktree
- * records before the outputs, so a writer's result finds its worktree.
+ * start or stop is seen before its output; the permission asks next (phase
+ * 5, decision 1), which read the agent map and pair an ask with a call start;
+ * the swarm's consumer next, so its in-flight table sees a call before
+ * anything acts on it; the worktree records before the outputs, so a
+ * writer's result finds its worktree.
  */
 export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [
   consumeAgents,
   consumeInflight,
+  consumeAsks,
   consumeSwarm,
   consumeWorktrees,
   consumeOutput,

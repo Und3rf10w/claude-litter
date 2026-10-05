@@ -27,6 +27,11 @@ import { nodeTypeSpec } from './swarm/launch'
 import { briefTextFor } from './swarm/store'
 import { registerSwarmCommands, refreshPanes } from './swarm/panes'
 import { refreshBoard, registerPhase3Commands } from './board/pane'
+import { registerPhase5Commands } from './uicommands'
+import { refreshBand } from './band/view'
+import { refreshCards } from './card/view'
+import { refreshTasks } from './tasks/pane'
+import { refreshAgents } from './agents/pane'
 import { patchSwarmPolicy } from './swarm/guard'
 import { ownedSwarm, rebindOwnership, startOwnerBeat, stopOwnerBeat } from './swarm/owner'
 import { refreshReadOnly, typesAccepted } from './swarm/recover'
@@ -81,6 +86,12 @@ export const others = {
   // Phase 3 (AF): /litter-board and /litter-rules, and the board's view.
   registerPhase3Commands: (p: Ports) => registerPhase3Commands(p),
   refreshBoard: (p: Ports) => refreshBoard(p),
+  // Phase 5 (WP-CA): /litter-tasks and /litter-agents, and the band's, the cards' and the two panes' views (CB, CC, CE, CG).
+  registerPhase5Commands: (p: Ports) => registerPhase5Commands(p),
+  refreshBand: (p: Ports) => refreshBand(p),
+  refreshCards: (p: Ports) => refreshCards(p),
+  refreshTasks: (p: Ports) => refreshTasks(p),
+  refreshAgents: (p: Ports) => refreshAgents(p),
 }
 const defaults = { ...others }
 
@@ -363,6 +374,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     if (litterDir) for (const s of owned) if (stillLive(s)) await registerTypes(p, litterDir, s)
     await step(p, 'the swarm commands', () => others.registerSwarmCommands(p))
     await step(p, 'the board and rules commands', () => others.registerPhase3Commands(p))
+    await step(p, 'the tasks and agents commands', () => others.registerPhase5Commands(p))
     if (!litterDir) return
 
     // policy.json's session, and each owned swarm's entry (never one End removed: patchSwarmPolicy leaves a missing entry alone).
@@ -409,10 +421,17 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
   }
 }
 
-/** After the gate opens: the panes' views, since $.state was wiped (N; the board, AF, from its ledger). */
+/**
+ * After the gate opens: the panes' views, since $.state was wiped (N; the
+ * board, AF, from its ledger; phase 5's band, cards, tasks and agents panes).
+ */
 async function redraw(p: Ports): Promise<void> {
   await step(p, 'the panes', () => others.refreshPanes(p))
   await step(p, 'the board', () => others.refreshBoard(p))
+  await step(p, 'the band', () => others.refreshBand(p))
+  await step(p, 'the cards', () => others.refreshCards(p))
+  await step(p, 'the tasks pane', () => others.refreshTasks(p))
+  await step(p, 'the agents pane', () => others.refreshAgents(p))
 }
 
 /** Resolves once the rebind in flight, and the redraw after it, are done (tests). */

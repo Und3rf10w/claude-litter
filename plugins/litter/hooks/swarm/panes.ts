@@ -115,7 +115,8 @@ export const doctorCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ 
 /** Where `/litter-swarm` lands for a live swarm: its recovery card while one waits, else the browser. */
 const liveNav = (name: string): SwarmNav => blankNav(pendingCard(name) ? 'recovery' : 'browser', name)
 
-async function openSwarmPane(p: Ports, arg: string): Promise<string> {
+/** `/litter-swarm [name]`'s work, and the band's [Browser] (phase 5): opens the pane, answering the command's line. */
+export async function openSwarmPane(p: Ports, arg: string): Promise<string> {
   await restoreNav(p)
   const name = arg.split(/\s+/)[0] ?? ''
   if (name !== '' && !SWARM_NAME.test(name)) {

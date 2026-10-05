@@ -23,6 +23,7 @@ import type {
   Ports,
   RunInit,
   RunResult,
+  SendTo,
   SessionMessage,
   SessionSendResult,
   SettingsSourceName,
@@ -74,19 +75,19 @@ export type TestPorts = Ports & {
 
   /** What `listAgents` answers (a copy); a spec changes it between calls. */
   agents: ListedAgent[]
-  /** Every `send`, in order, as the module called the port (before `sendHook`). */
-  sent: { to: string; text: string }[]
+  /** Every `send`, in order, as the module called the port (before `sendHook`); `to` as given, a name or `{ agentId }`. */
+  sent: { to: SendTo; text: string }[]
   /** Answers a send; unset, it's delivered. */
-  sendAnswer?: (to: string, text: string) => SessionSendResult | Promise<SessionSendResult>
+  sendAnswer?: (to: SendTo, text: string) => SessionSendResult | Promise<SessionSendResult>
   /**
    * The session.send hook a send goes through, as the real port goes through
    * litter's own (a spec sets it to call its admitSend). `deliver` is what's
    * beneath: `sendAnswer`, or delivered. Unset, a send is delivered as `sendAnswer` says.
    */
   sendHook?: (
-    to: string,
+    to: SendTo,
     text: string,
-    deliver: (to: string, text: string) => Promise<SessionSendResult>,
+    deliver: (to: SendTo, text: string) => Promise<SessionSendResult>,
   ) => SessionSendResult | Promise<SessionSendResult>
   /** Every `appendUserRow` text, in order. */
   appended: string[]
@@ -144,6 +145,17 @@ export type TestPorts = Ports & {
   /** Answer a registration: throw to refuse it. Unset, it resolves. */
   registerAgentAnswer?: (spec: AgentSpec) => void | Promise<void>
   registerToolAnswer?: (spec: ToolSpec) => void | Promise<void>
+
+  // Phase 5 (WP-CA). Each records its calls or answers what a spec set.
+
+  /** Every `notice`, in order, `text` undefined for a removal. */
+  notices: { toolUseId: string; text: string | undefined }[]
+  /** What `notice` answers (true, the call was made); false as when `$.ui.notice` throws. */
+  noticeAnswer: boolean
+  /** What `toolNames` answers (a copy); empty by default, so TaskUpdate isn't there. */
+  toolNamesValue: string[]
+  /** What `envVar` answers, by name; a name left out is unset. */
+  envValues: Partial<Record<'CLAUDE_CODE_TASK_LIST_ID', string>>
 }
 
 /**
@@ -442,8 +454,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     // Phase 2b, the swarm's ports.
     listAgents: async () => structuredClone(p.agents),
     send: async (to, text) => {
-      p.sent.push({ to, text })
-      const deliver = async (t: string, x: string): Promise<SessionSendResult> => (p.sendAnswer ? p.sendAnswer(t, x) : { isDelivered: true })
+      p.sent.push({ to: typeof to === 'string' ? to : { ...to }, text })
+      const deliver = async (t: SendTo, x: string): Promise<SessionSendResult> => (p.sendAnswer ? p.sendAnswer(t, x) : { isDelivered: true })
       return p.sendHook ? p.sendHook(to, text, deliver) : deliver(to, text)
     },
     appendUserRow: async text => void p.appended.push(text),
@@ -510,6 +522,12 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     setView: async (pane, view) => {
       p.views[pane] = view === null ? null : structuredClone(view)
     },
+    notice: (toolUseId, text) => {
+      p.notices.push({ toolUseId, text })
+      return p.noticeAnswer
+    },
+    toolNames: async () => [...p.toolNamesValue],
+    envVar: async name => p.envValues[name],
     agents: [],
     sent: [],
     appended: [],
@@ -536,6 +554,10 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     views: {},
     registeredAgents: [],
     registeredTools: [],
+    notices: [],
+    noticeAnswer: true,
+    toolNamesValue: [],
+    envValues: {},
   }
   return p
 }

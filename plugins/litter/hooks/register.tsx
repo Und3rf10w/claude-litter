@@ -11,19 +11,31 @@
 //    function declared here but never across an import, so each hook is an
 //    inline literal that builds the ports and calls its module's handler;
 //  - no logic: each handler lives in its own module;
-//  - every hook but session.start, session.end and the two ui.render hooks
+//  - every hook but session.start, session.end and the ui.render hooks
 //    awaits O's `rebound` first, so the first hook after a /clear rebinds the
 //    session (plan 15.4). A render can't: a rebind writes $.state. One
 //    exception within agent.spawn: a teammate litter has no stake in passes
 //    before it (spawn.ts, outsideTeammate).
 //
 // Contract owner: phase 1a; the swarm wiring is phase 2b-1's (package C), the
-// repair wiring phase 2b-2's (package V).
+// repair wiring phase 2b-2's (package V), the UI wiring phase 5's (WP-CA).
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallArgs } from 'claude-code'
-import type { BoardView, DoctorPaneView, Ports, RulesPaneView, SpawnStream, Stat, SwarmPaneView } from './ports'
-import type { CommandRunCatch } from './hooktypes'
+import type {
+  AgentsPaneView,
+  BandView,
+  BoardView,
+  CardsView,
+  DoctorPaneView,
+  Ports,
+  RulesPaneView,
+  SpawnStream,
+  Stat,
+  SwarmPaneView,
+  TasksPaneView,
+} from './ports'
+import type { BandRenderCatch, CardRenderCatch, CommandRunCatch } from './hooktypes'
 import { getOptions, session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
@@ -79,12 +91,26 @@ import {
 } from './swarm/wiring'
 import { boardCommand, onBoardUi, registerPhase3Commands, renderBoardPane, startBoardTimer } from './board/pane'
 import { onRulesUi, renderRulesPane, rulesCommand } from './rules/pane'
+import { registerPhase5Commands } from './uicommands'
+import { startUiTimer } from './uitick'
+import { restoreAsks } from './asks'
+import { bandShows, onBandUi } from './band/view'
+import { renderBand } from './band/render'
+import { cardRow, noteCards, onCardUi, restoreCards } from './card/view'
+import { renderCard } from './card/render'
+import { onTasksUi, renderTasksPane, tasksCommand } from './tasks/pane'
+import { agentsCommand, onAgentsUi, renderAgentsPane } from './agents/pane'
 
 /** The panes' views (types/index.d.ts): package N's two and phase 3's board and rules pane (AF), written through `p.setView`. */
 const swarmPane = atom({ plugin: 'litter', key: 'swarmPane' } as const, null)
 const doctorPane = atom({ plugin: 'litter', key: 'doctorPane' } as const, null)
 const board = atom({ plugin: 'litter', key: 'board' } as const, null)
 const rulesPane = atom({ plugin: 'litter', key: 'rulesPane' } as const, null)
+/** Phase 5's (WP-CA): the band (CB), the cards (CC), the tasks pane (CE) and the agents pane (CG), written through `p.setView`. */
+const band = atom({ plugin: 'litter', key: 'band' } as const, null)
+const cards = atom({ plugin: 'litter', key: 'cards' } as const, null)
+const tasksPane = atom({ plugin: 'litter', key: 'tasksPane' } as const, null)
+const agentsPane = atom({ plugin: 'litter', key: 'agentsPane' } as const, null)
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -97,6 +123,15 @@ const failure = (next: { readonly error?: { readonly kind: string; readonly mess
 /** The phase 3 commands' catches: a line naming the command, as the swarm commands' (swarm/wiring.ts). */
 const boardCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-board failed (${failure(next)})` })
 const rulesCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-rules failed (${failure(next)})` })
+/** The same for phase 5's /litter-tasks and /litter-agents (WP-CA). */
+const tasksCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-tasks failed (${failure(next)})` })
+const agentsCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-agents failed (${failure(next)})` })
+/**
+ * The band's and the card's render catches: next(e), as the panes'
+ * paneRenderFailed, which is typed for `Pane` alone and so can't be theirs.
+ */
+const bandRenderFailed: BandRenderCatch = async ($, e, next) => next(e)
+const cardRenderFailed: CardRenderCatch = async ($, e, next) => next(e)
 
 /** The ports over this dispatch's `$` (ports.ts). */
 function enginePorts($: EngineInterface): Ports {
@@ -190,8 +225,25 @@ function enginePorts($: EngineInterface): Ports {
       if (pane === 'swarm') await update($, swarmPane, () => view as SwarmPaneView | null)
       else if (pane === 'doctor') await update($, doctorPane, () => view as DoctorPaneView | null)
       else if (pane === 'board') await update($, board, () => view as BoardView | null)
-      else await update($, rulesPane, () => view as RulesPaneView | null)
+      else if (pane === 'rules') await update($, rulesPane, () => view as RulesPaneView | null)
+      else if (pane === 'band') await update($, band, () => view as BandView | null)
+      else if (pane === 'cards') await update($, cards, () => view as CardsView | null)
+      else if (pane === 'tasks') await update($, tasksPane, () => view as TasksPaneView | null)
+      else await update($, agentsPane, () => view as AgentsPaneView | null)
     },
+
+    // Phase 5 (WP-CA).
+    notice: (toolUseId, text) => {
+      // Fire-and-forget in 2.1.289: a refusal is a debug-log warning, never a throw (ports.ts).
+      try {
+        $.ui.notice(toolUseId, text)
+        return true
+      } catch {
+        return false
+      }
+    },
+    toolNames: async () => (await $.tool.list()).map(t => t.name),
+    envVar: async name => (name === 'CLAUDE_CODE_TASK_LIST_ID' ? $.env.get('CLAUDE_CODE_TASK_LIST_ID') : undefined),
   }
 }
 
@@ -300,6 +352,11 @@ export const register: Register = (on, options) => {
       await step(p, 'swarm timers', async () => startSwarmTimers(p))
       await step(p, 'pane timer', async () => startPaneTimer(p))
       await step(p, 'board timer', async () => startBoardTimer(p))
+      // Phase 5 (WP-CA): /litter-tasks and /litter-agents, the open asks and the cards back, and the ui tick.
+      await step(p, 'phase 5 commands', () => registerPhase5Commands(p))
+      await step(p, 'asks', () => restoreAsks(p))
+      await step(p, 'cards', () => restoreCards(p))
+      await step(p, 'ui timer', async () => startUiTimer(p))
     })
     updateSession({ ready: true })
     return next(e)
@@ -392,13 +449,15 @@ export const register: Register = (on, options) => {
   // A run's completion notification: run.end and summary.md before the launcher's
   // turn. While a swarm is live, the lead's <swarm> block rides in `context`.
   // In this order (2b-2): the notice settles first, since a halted fanout's
-  // may start a repair swarm; then the block, which shows it; then X's note.
+  // may start a repair swarm; then its run's card (phase 5, CC); then the
+  // block, which shows the repair swarm; then X's note.
   on('prompt.submit', async ($, e, next) => {
     const p = enginePorts($)
     await rebound(p)
     await drainFirst(p)
     notePromptOrigin(e.origin)
     await settleNotices(p, e)
+    await apart(p, 'prompt.submit cards', () => noteCards(p, e))
     const block = await swarmContext(p).catch((err: unknown) => {
       p.log(`prompt.submit swarm context failed: ${errText(err)}`)
       return null
@@ -561,5 +620,105 @@ export const register: Register = (on, options) => {
     const p = enginePorts($)
     await rebound(p)
     return onRulesUi.select(p, e, next)
+  }).catch(uiSelectFailed)
+
+  // Phase 5 (WP-CA). The band above the prompt (CB): litter's rows over the
+  // tree the plugins beneath draw, which it awaits and keeps below its own;
+  // with nothing of litter's to show, theirs alone. A render: no `rebound`.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const view = await read($, band)
+    if (!bandShows(view, e)) return next(e)
+    return renderBand(view, $.ui.resolve(e), e, await next(e))
+  }).catch(bandRenderFailed)
+
+  // The finished-run card (CC). It runs for every message row, so its first
+  // check is synchronous and cheap; a row with no card is the engine's.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (!cardRow(e)) return next(e)
+    return renderCard(await read($, cards), $.ui.resolve(e), e) ?? next(e)
+  }).catch(cardRenderFailed)
+
+  // Their presses: any plugin's button in the band or a row; keys not `band:` or `card:` pass on.
+  on('ui.press', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onBandUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  on('ui.press', { component: 'UserMessage' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onCardUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  // /litter-tasks (CE) and /litter-agents (CG), registered at session.start
+  // and after a /clear; their panes' renders (no `rebound`) and ui.* events,
+  // with the swarm panes' catches.
+  on('command.run', { command: 'litter-tasks' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return tasksCommand(p, e, next)
+  }).catch(tasksCommandFailed)
+
+  on('command.run', { command: 'litter-agents' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return agentsCommand(p, e, next)
+  }).catch(agentsCommandFailed)
+
+  on('ui.render', { component: 'Pane', requestId: 'litter-tasks' }, async ($, e, next) => {
+    return renderTasksPane(await read($, tasksPane), $.ui.resolve(e), e)
+  }).catch(paneRenderFailed)
+
+  on('ui.render', { component: 'Pane', requestId: 'litter-agents' }, async ($, e, next) => {
+    return renderAgentsPane(await read($, agentsPane), $.ui.resolve(e), e)
+  }).catch(paneRenderFailed)
+
+  on('ui.message', { requestId: 'litter-tasks' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onTasksUi.message(p, e, next)
+  }).catch(uiMessageFailed)
+
+  on('ui.press', { requestId: 'litter-tasks' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onTasksUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  on('ui.input', { requestId: 'litter-tasks' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onTasksUi.input(p, e, next)
+  }).catch(uiInputFailed)
+
+  on('ui.select', { requestId: 'litter-tasks' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onTasksUi.select(p, e, next)
+  }).catch(uiSelectFailed)
+
+  on('ui.message', { requestId: 'litter-agents' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onAgentsUi.message(p, e, next)
+  }).catch(uiMessageFailed)
+
+  on('ui.press', { requestId: 'litter-agents' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onAgentsUi.press(p, e, next)
+  }).catch(uiPressFailed)
+
+  on('ui.input', { requestId: 'litter-agents' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onAgentsUi.input(p, e, next)
+  }).catch(uiInputFailed)
+
+  on('ui.select', { requestId: 'litter-agents' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onAgentsUi.select(p, e, next)
   }).catch(uiSelectFailed)
 }

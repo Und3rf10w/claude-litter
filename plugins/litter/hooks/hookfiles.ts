@@ -333,6 +333,14 @@ export type SpoolLine =
    * cap (`timeout`). A `timeout` names no children when the bindings couldn't be listed until the cap.
    */
   | SpoolBase<'hold', { agent_id: string; phase: 'held' | 'released' | 'timeout'; children: string[] }>
+  /**
+   * Phase 5 (COMMON decision 1). ask.sh, on PermissionRequest: a litter
+   * agent's or node's call about to ask you, with the command or path as
+   * `detail` and the agent's permission mode. The input has no tool_use_id,
+   * so the mod pairs the line with guard.sh's `call` start for the same
+   * agent, tool and detail (asks.ts, CF).
+   */
+  | SpoolBase<'ask', { agent_id: string; agent_type: string | null; tool: string; detail: string; mode: string | null }>
 
 type SpoolBase<E extends string, P> = { v: 1; ev: E; ts: number; session_id: string } & P
 

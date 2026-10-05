@@ -23,7 +23,7 @@ import type {
   ToolCallResult,
   ToolSpec,
 } from 'claude-code'
-import type { BoardView, DoctorPaneView, RulesPaneView, SwarmPaneView } from '../types/index'
+import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
@@ -56,11 +56,24 @@ export type SubagentLimits = Readonly<Record<SubagentLimitName, string | undefin
 /** The settings sources the health check reads one by one (`$.settings.read({ source })`; `flag` isn't a file you edit). */
 export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
 
-/** The panes' views in `$.state` (types/index.d.ts): N's swarm and doctor panes, phase 3's board and rules pane. */
-export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules'
-export type { BoardView, DoctorPaneView, RulesPaneView, SwarmPaneView }
-/** Any pane's view; each view's `view` field names its pane, and setView writes it to that pane's atom. */
-export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView
+/**
+ * The views in `$.state` (types/index.d.ts), each in its own atom: N's swarm
+ * and doctor panes, phase 3's board and rules pane, and phase 5's band, cards,
+ * tasks pane and agents pane (WP-CA). The band and the cards aren't panes,
+ * but setView writes them the same way.
+ */
+export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents'
+export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, RulesPaneView, SwarmPaneView, TasksPaneView }
+/** Any of those views; each view's `view` field names it, and setView writes it to its atom. */
+export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView
+
+/**
+ * Whom `send` addresses (the d.ts's SessionSendAddress, less `{ sessionId }`):
+ * SendMessage's spelling (a name, an agent id, a received `from` address), or
+ * `{ agentId }`, a subagent or teammate of this session as `$.agent.list()`
+ * lists it (phase 5, COMMON decision 5).
+ */
+export type SendTo = string | { agentId: string }
 
 export type RunInit = {
   cwd?: string
@@ -161,11 +174,12 @@ export interface Ports {
   listAgents(): Promise<ListedAgent[]>
   /**
    * `$.session.send({ to, text })`: `to` as SendMessage spells it (an agent id,
-   * a name, a received `from` address). It goes through every litter hook but
-   * the calling one, so the mod sends only from a `swarm_send` or `ui.message`
-   * dispatch (COMMON, decision 2). Resolves once queued at the recipient.
+   * a name, a received `from` address), or `{ agentId }` (phase 5), passed on
+   * as is. It goes through every litter hook but the calling one, so the mod
+   * sends only from a `swarm_send` or `ui.*` dispatch (COMMON, decision 2).
+   * Resolves once queued at the recipient.
    */
-  send(to: string, text: string): Promise<SessionSendResult>
+  send(to: SendTo, text: string): Promise<SessionSendResult>
   /**
    * `$.session.append`: a user-role row of one text block in the lead's
    * conversation, which a busy lead reads in its current turn (spike 10).
@@ -216,6 +230,23 @@ export interface Ports {
   toast(text: string): void
   /** `$.ui.copy({ text })`: whether the clipboard took it. */
   copy(text: string): Promise<boolean>
-  /** Writes a pane's view into `$.state` (the atoms in register.tsx); the write redraws the pane. */
+  /** Writes a view into `$.state` (the atoms in register.tsx); the write redraws what reads it. */
   setView(pane: PaneName, view: PaneView | null): Promise<void>
+
+  // Phase 5 (WP-CA).
+
+  /**
+   * `$.ui.notice(tool_use_id, text)`: a line under the dialog open for that
+   * call, or removed with `text` undefined (CF; COMMON decision 1). In 2.1.289
+   * the call is fire-and-forget: it returns before the engine checks the call
+   * is open, and a refusal ("no call with that tool_use_id is open", or
+   * another plugin's `$.tool.call` run) shows only as a debug-log warning,
+   * `[litter] $.ui.notice dropped: …`, never a throw. So true means the call
+   * was made, not that it was accepted; false, it threw.
+   */
+  notice(toolUseId: string, text: string | undefined): boolean
+  /** `$.tool.list()`'s names: the tools the model can call now, built-in and MCP alike (CE checks for TaskUpdate). */
+  toolNames(): Promise<string[]>
+  /** `$.env.get` for the one name the tasks pane reads (COMMON decision 15); undefined when unset. */
+  envVar(name: 'CLAUDE_CODE_TASK_LIST_ID'): Promise<string | undefined>
 }

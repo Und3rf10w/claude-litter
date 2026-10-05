@@ -294,6 +294,11 @@ describe("register.tsx's order and its renders", () => {
       'swarm timers',
       'pane timer',
       'board timer',
+      // Phase 5 (WP-CA): its commands, the asks and the cards back, then the ui tick.
+      'phase 5 commands',
+      'asks',
+      'cards',
+      'ui timer',
     ])
   })
 
