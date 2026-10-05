@@ -267,7 +267,7 @@ describe('the band, with the stub', () => {
   })
 })
 
-/** The engine's own drawing of a row, as the plugins beneath would leave it: its text, and a button keyed as litter's would be. */
+/** The engine's own drawing of a row, as the plugins beneath would leave it: its text, a button keyed as litter's would be, and another's. */
 function rowBeneath(on: On, reached: string[]): void {
   on('ui.render', { component: 'UserMessage' }, async (hooks, e): Promise<RenderElement> => {
     const { Box, Text, Button } = hooks.ui.resolve(e)
@@ -276,12 +276,13 @@ function rowBeneath(on: On, reached: string[]): void {
       children: [
         Text({ children: `engine: ${e.props.text}${e.props.isExpanded ? ' (expanded)' : ''}` }),
         Button({ key: 'card:board:20261005-retry', label: 'Board', onPress: () => void reached.push('card:board') }),
+        Button({ key: 'other', label: 'Other', onPress: () => void reached.push('other') }),
       ],
     })
   })
 }
 
-describe('the finished-run card, with the stub', () => {
+describe('the finished-run card, with no card built', () => {
   test("a prompt row, a task notification row and an expanded one are each the engine's, on every surface", async ($, on) => {
     mock.store(on)
     const seen = stateSeen(on)
@@ -298,8 +299,7 @@ describe('the finished-run card, with the stub', () => {
         await ui.unmount()
       }
     }
-    // The stub's cardRow is false for every row, so the cards atom is never read and nothing is written.
-    expect(seen.reads).not.toContain('cards')
+    // With no card in the atom, the notification row reads it and draws the engine's; nothing is written.
     expect(seen.writes).toEqual([])
   })
 
@@ -311,13 +311,13 @@ describe('the finished-run card, with the stub', () => {
     const sid = { value: SESSION as string | null }
     const ids = sessionId(on, sid)
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'UserMessage', props: row(NOTIFICATION) })
-    expect(await ui.press({ key: 'card:board:20261005-retry', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'card:board:20261005-retry' }))
-    expect(reached).toEqual(['card:board'])
+    expect(await ui.press({ key: 'other', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'other' }))
+    expect(reached).toEqual(['other'])
 
     await breakRebound($, sid)
     const before = ids.calls
     expect(await ui.press({ key: 'card:board:20261005-retry', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'card:board:20261005-retry' }))
-    expect(reached).toEqual(['card:board', 'card:board'])
+    expect(reached).toEqual(['other', 'card:board'])
     expect(ids.calls - before).toBeGreaterThanOrEqual(1)
   })
 

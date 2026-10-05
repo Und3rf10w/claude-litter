@@ -28,7 +28,7 @@ import * as state from '../../hooks/swarm/state'
 import { asksTick, consumeAsks, openAsks, restoreAsks } from '../../hooks/asks'
 import { bandShows, bandTick, onBandUi, refreshBand } from '../../hooks/band/view'
 import { renderBand } from '../../hooks/band/render'
-import { cardRow, noteCards, onCardUi, refreshCards, restoreCards } from '../../hooks/card/view'
+import { cardRow, noteCards, onCardUi, restoreCards } from '../../hooks/card/view'
 import { renderCard } from '../../hooks/card/render'
 import { onTasksUi, refreshTasks, tasksCommand, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
 import { agentsCommand, agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
@@ -193,18 +193,16 @@ describe("CA's stubs keep today's behavior", () => {
     expect(p.logs).toEqual([])
   })
 
-  test('the card: no row is a card, no card is drawn, the builders write nothing, a press passes on', async () => {
+  // WP-CC built the card: what's left of today's behavior (cardview.spec.ts and cardrender.spec.ts cover the rest).
+  test('the card: a typed prompt row is no card, no view draws none, with no litter directory the builders write nothing, a key not card: passes on', async () => {
     const p = nodePorts()
     const notification = rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'task-1', status: 'completed' } })
-    expect(cardRow(notification)).toBe(false)
     expect(cardRow(rowE({ text: 'hi', origin: { kind: 'composer' }, isExpanded: false }))).toBe(false)
-    const cards: CardsView = { view: 'cards', v: 1, byTask: { 'task-1': { taskId: 'task-1', run: '20261005-retry', title: [{ text: 'done' }], lines: [], buttons: [] } } }
-    expect(renderCard(cards, {} as never, notification)).toBeNull()
+    expect(renderCard(null, {} as never, notification)).toBeNull()
     await noteCards(p, { text: '<task-notification></task-notification>', origin: { kind: 'task-notification' } } as never)
     await restoreCards(p)
-    await refreshCards(p)
     const { next, seen } = passes<unknown>()
-    const e = { plugin: 'litter', element: 'card:board:20261005-retry', component: 'UserMessage', requestId: 'msg-1', surface: 'terminal' }
+    const e = { plugin: 'litter', element: 'board:select:G1', component: 'UserMessage', requestId: 'msg-1', surface: 'terminal' }
     expect(await onCardUi.press(p, e as never, next as never)).toEqual({ passed: e } as never)
     expect(seen).toEqual([e])
     expect(p.views).toEqual({})
