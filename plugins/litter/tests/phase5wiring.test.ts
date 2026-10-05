@@ -168,7 +168,7 @@ describe('/litter-tasks and /litter-agents', () => {
       return { value: { isPlaced: true } }
     })
     const seen = stateSeen(on)
-    expect((await run($, 'litter-tasks', 'team-a')).text).toBe("litter: the tasks pane isn't built yet (WP-CE)")
+    // /litter-tasks is built (WP-CE): tests/tasks.test.tsx runs it.
     expect((await run($, 'litter-agents')).text).toBe("litter: the agents pane isn't built yet (WP-CG)")
     expect(opened).toEqual([])
     expect(seen.writes).toEqual([])

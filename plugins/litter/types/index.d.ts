@@ -668,9 +668,72 @@ export type CardsView = { view: 'cards'; v: number; byTask: Record<string, CardV
 // ===== begin tasks section (owner: WP-CE) =====
 // ---------------------------------------------------------------------------
 // The tasks pane (phase 5; COMMON decisions 4, 15, 16): a task list's tasks,
-// filtered, sorted and edited in place. Built and drawn by hooks/tasks/.
+// filtered, sorted and edited in place. Built by hooks/tasks/view.ts from
+// hooks/team/store.ts, drawn by hooks/tasks/pane.tsx. Texts are cleaned and
+// cut; every status pairs its theme key with a glyph and a word.
 
-export type TasksBody = { title: SwarmSpan[]; notice: SwarmNotice | null }
+/** Which tasks the rows show. */
+export type TasksFilter = 'all' | 'pending' | 'in_progress' | 'completed'
+/** What the rows are sorted by (ties by id). */
+export type TasksSort = 'id' | 'status' | 'owner' | 'subject'
+
+/** One task row. Its keys carry `list`, so a press drawn for another list is caught. */
+export type TasksRow = {
+  id: string
+  /** pending `·`, in progress `▸`, completed `✓`, each in its theme key. */
+  status: BoardStatus
+  /** Null: unowned. */
+  owner: string | null
+  /** The ids it's blocked by that aren't completed (a missing one counts, as TaskList counts it); empty when it isn't blocked. */
+  blockedBy: string[]
+  /** One line, cut. */
+  subject: string
+  selected: boolean
+}
+
+/** The selected task's editor: the file's values, or what you typed, held in the navigation until [Save]. */
+export type TasksEditor = {
+  id: string
+  /** Null when the file's subject is too long to edit here. */
+  subject: string | null
+  /** The description in a one-line field, each line break as `⏎`; null when it's too long to edit here. */
+  description: string | null
+  /** The description as the file holds it, cleaned, when it runs past one line. */
+  descriptionText: string | null
+  status: string
+  statuses: SwarmOption[]
+  /** '' for none. */
+  owner: string
+  owners: SwarmOption[]
+  /** "blocks #4 · blocked by #1 #2", or ''. */
+  links: string
+  /** Something you typed or picked differs from the file as the edit began. */
+  dirty: boolean
+  /** The file's mtime moved since the edit began: [Save] refuses and [Reload] is offered. */
+  changed: boolean
+  /** How [Save] writes it: TaskUpdate, or the locked direct write (COMMON decision 4). */
+  via: 'tool' | 'direct'
+}
+
+export type TasksBody = {
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+  /** The list shown, by its folder name (the keys' `list`); null when there's none. */
+  list: string | null
+  /** The list picker: each list with its kind and task count, by name. */
+  lists: SwarmOption[]
+  /** The picker's value: the shown list's name. */
+  listName: string | null
+  filter: TasksFilter
+  counts: Record<TasksFilter, number>
+  sort: TasksSort
+  rows: TasksRow[]
+  /** What stands in for the rows when there are none (a list that went empty says so); null with rows. */
+  empty: string | null
+  /** Task files that couldn't be read, one line each. */
+  problems: string[]
+  editor: TasksEditor | null
+}
 /** The `litter-tasks` pane's view; `body` is absent until the first build is in. */
 export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
 // ===== end tasks section (owner: WP-CE) =====
