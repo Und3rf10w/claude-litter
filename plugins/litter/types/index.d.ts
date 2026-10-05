@@ -603,12 +603,29 @@ export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: Ru
 // plugins beneath. Texts are cleaned and cut; colors are theme keys with a
 // word or glyph beside each.
 
-/** One of a row's buttons: its key (`band:<action>[:<arg>]`), its label, and its hotkey digit, if any. */
+/**
+ * One of a row's buttons: its key (`band:<action>[:<arg>]`), its label, and
+ * its hotkey digit, if any. The band sets none (decision 7: a bare digit in
+ * an empty composer would press it instead of typing).
+ */
 export type BandButton = { key: string; label: string; hotkey?: string }
-/** One row: its key (the run's, the swarm's or the ask's), its text as spans, and its buttons. */
-export type BandRow = { key: string; spans: SwarmSpan[]; buttons: BandButton[] }
-/** The band's view; with no rows the band draws nothing of litter's. */
-export type BandView = { view: 'band'; v: number; rows: BandRow[] }
+/**
+ * What a row is, so the render knows what to fold into the `+<k> more` row
+ * when the band has fewer rows than the view: the asks go first, then the
+ * swarms. A row without a kind is kept whole, as a run's is.
+ */
+export type BandRowKind = 'run' | 'ended' | 'swarm' | 'ask' | 'more'
+/**
+ * One row: its key (the run's or the swarm's with its state, which [Hide]
+ * names; or the ask's), its text as spans, and its buttons.
+ */
+export type BandRow = { key: string; kind?: BandRowKind; spans: SwarmSpan[]; buttons: BandButton[] }
+/**
+ * The band's view; with no rows the band draws nothing of litter's. `asking`
+ * is how many asks are open, shown or folded into the `+<k> more asking` row
+ * (absent: none).
+ */
+export type BandView = { view: 'band'; v: number; rows: BandRow[]; asking?: number }
 // ===== end band section (owner: WP-CB) =====
 
 // ===== begin cards section (owner: WP-CC) =====
