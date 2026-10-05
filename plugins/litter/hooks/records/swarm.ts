@@ -240,6 +240,7 @@ export type SwarmEventKind =
   | 'clear-killed'
   | 'gate'
   | 'budget'
+  | 'start-filled'
 
 /** The run-ledger records a repair swarm's `gate` event mirrors (2b-2, Y). */
 export type GateRecordKind = 'verify' | 'verdict' | 'land'
@@ -283,6 +284,7 @@ export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 
  * | clear-killed (O) | tool, detail |
  * | gate (Y) | run, seq (the run-ledger record's), record, gate, result, verify_id, round (a verdict's) |
  * | budget (X) | requested, granted, budget (as it stands after) |
+ * | start-filled (X) | filled (whether the prompt box took the start line) |
  *
  * A stale owner's stand-down records nothing: it may race the new owner's
  * appends, and the new owner's swarm.handover already says it.
@@ -324,6 +326,13 @@ export type SwarmEventFields = {
    * as it stands after. Under `-p` the ask is refused, so `granted` is false.
    */
   budget: { requested: { rounds?: number; agents?: number }; granted: boolean; budget: RepairBudget }
+  /**
+   * A repair swarm's start the lead's turn didn't make (WP-AS): the start
+   * was submitted, and that turn ended with no orchestrator spawned, so the
+   * mod put /litter:swarm start in your prompt box for your Enter, once.
+   * `filled` is whether the box took it.
+   */
+  'start-filled': { filled: boolean }
 }
 
 /** swarm.event (L, P, O, K): one body per kind. */

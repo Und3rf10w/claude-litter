@@ -26,7 +26,11 @@
 # else on the critic's plan gap or on its one attempt. Under auto the bridge
 # opens generation 2 with no ask, and the plan-template swarm starts on the
 # lead's next turn and lands G2 and G3; once G3 has landed the session ends
-# the swarm (if the lead hasn't). Under off nothing starts, the attempt stays
+# the swarm (if the lead hasn't). If the lead's start is refused (auto mode's
+# classifier, 2026-10-04), litter fills /litter:swarm start in the prompt box
+# and the steps press Enter once, as you would (WP-AS); the checks say which
+# way it started, and a swarm with no orchestrator 10 minutes on ends the
+# waits. Under off nothing starts, the attempt stays
 # in the tree, and summary.md offers the routes. Interactive through
 # drive.exp, as repair.sh, since the swarm starts on the lead's next turn.
 #
@@ -468,13 +472,17 @@ EOF
 
 # The steps' waits (drive.exp runs each until it exits 0). Each also ends once
 # nothing more can come: generation 1 not the halt the case needs, the bridge
-# declined, or generation 2 ended.
+# declined, or generation 2 ended. The swarm's two also end once it stalled:
+# no orchestrator within 10 minutes of litter's fill of the start line, or of
+# run.repair when there's none (startfill.sh stalled; WP-AS), so the checks
+# report it rather than the drive's timeout.
 if [ -z "${H_CHECKS:-}" ]; then
   cat >|"$H_DIR/until.sh" <<EOF
 #!/bin/sh
 # The waits of $H_CASE's steps: sh until.sh <what> exits 0 once it holds.
 LD=$LD
 GEN1=$H_DIR/gen1.jq
+STALLED="sh $H_HERE/startfill.sh stalled $LD"
 EOF
   cat >>"$H_DIR/until.sh" <<'EOF'
 rd=$(ls -d "$LD"/2*/ 2>/dev/null | head -n 1)
@@ -489,8 +497,8 @@ over() {
 }
 case $1 in
 ended1) ls "$rd"/ledger/*-run.end.json >/dev/null 2>&1 ;;
-landed3) over || records | jq -e '(map(select(.kind == "run.repair")) | first | .seq) as $s | $s != null and any(.[]; .kind == "land" and .body.gate == "G3" and .seq > $s)' >/dev/null ;;
-swarm_ended) over || ls "$LD"/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1 ;;
+landed3) over || $STALLED || records | jq -e '(map(select(.kind == "run.repair")) | first | .seq) as $s | $s != null and any(.[]; .kind == "land" and .body.gate == "G3" and .seq > $s)' >/dev/null ;;
+swarm_ended) over || $STALLED || ls "$LD"/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1 ;;
 ends2) over ;;
 *) exit 2 ;;
 esac
@@ -503,7 +511,11 @@ EOF
 $(h_tool_steps "$H_DIR/debug.txt")
 # The first prompt starts the run. Generation 1 halts at G2: a plan gap, or its one attempt rejected.
 wait 2400 sh $H_DIR/until.sh ended1
-# The bridge opens generation 2, and the plan-template swarm runs on the lead's next turns until G3 lands.
+# The bridge opens generation 2, and litter submits the swarm's start after the notification turn. If the
+# lead's turn doesn't start it (its start refused), litter fills /litter:swarm start in the prompt box
+# (WP-AS): Enter, once, as the user, until an orchestrator is spawned, G3 lands, the run is over or it stalled.
+keysh 1800 5 ! sh $H_DIR/until.sh landed3 2>/dev/null && sh $H_HERE/startfill.sh enter $LD $H_DIR/enter-mark
+# The plan-template swarm runs on the lead's next turns until G3 lands.
 wait 3600 sh $H_DIR/until.sh landed3
 # The lead ends the swarm on the gate-runner's report; if it hasn't, the session says to.
 wait 600 sh $H_DIR/until.sh swarm_ended
@@ -734,6 +746,8 @@ h_expect "run.json holds repair: $repair and maxAttempts: 1" c_setting
 h_expect "generation 1 landed G1 and halted at G2, on the executor's or the critic's plan gap, or its one attempt" c_gen1
 case $gen1 in gap | exgap) h_expect "the halt names whose plan gap it was ($gen1)" c_gap_source ;; esac
 if [ "$repair" = auto ]; then
+  # Which way it started, read from the launch ledger (WP-AS): an info line, not a check.
+  echo "$H_CASE: $(sh "$H_HERE/startfill.sh" how "$LD")"
   h_expect "run.repair opened generation 2, and the swarm, confirmed by the run, bound its gate-runner in the run's checkout" c_repair_opened
   h_expect "no ask after the launch" c_no_ask
   h_expect "generation 2's verdicts are critic-node verdict records with gate set, and its verifies number on from generation 1's" c_plan_verdicts

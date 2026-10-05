@@ -19,7 +19,10 @@
 # and launches the repair swarm with no ask, litter starts it after the
 # notification turn, and a fixer, a critic and the orchestrator verify,
 # judge and land the repaired tree. Once it has landed the session ends the
-# swarm (if the lead hasn't already).
+# swarm (if the lead hasn't already). If the lead's start is refused, litter
+# fills /litter:swarm start in the prompt box and the steps press Enter once,
+# as you would (WP-AS, startfill.sh); the checks say which way it started,
+# and a swarm with no orchestrator 10 minutes on ends the waits.
 #
 # Needs expect. REPAIR_MODEL sets the session's model (--model).
 
@@ -65,15 +68,23 @@ landed="ls $LD/2*/ledger/*-land.json >/dev/null 2>&1"
 swarm_ended="ls $LD/swarms/repair-*/launches/*/ledger/*-swarm.end.json >/dev/null 2>&1"
 ends2="[ \$(ls $LD/2*/ledger/*-run.end.json 2>/dev/null | wc -l) -ge 2 ]"
 end_cmd="[ -d $LD/swarms ] && ! $swarm_ended && for d in $LD/swarms/repair-*; do echo \"/litter:swarm end \${d##*/}\"; done"
+# Nothing more can come: the bridge declined, or generation 2 ended.
+over="ls $LD/2*/ledger/*-repair.declined.json >/dev/null 2>&1 || $ends2"
+# No orchestrator within 10 minutes of litter's fill of the start line, or of run.repair when there's none (WP-AS).
+stalled="sh $H_HERE/startfill.sh stalled $LD"
 
 if [ "$mode" = auto ]; then
   cat >|"$H_DIR/steps.txt" <<EOF
 # The first prompt starts the fanout. Generation 1 ends halted at the red integration verify.
 wait 1800 $ended1
-# The bridge opens generation 2, and the repair swarm runs on the lead's next turns until it lands.
-wait 2700 $landed
+# The bridge opens generation 2, and litter submits the swarm's start after the notification turn. If the
+# lead's turn doesn't start it (its start refused), litter fills /litter:swarm start in the prompt box
+# (WP-AS): Enter, once, as the user, until an orchestrator is spawned, it lands, the run is over or it stalled.
+keysh 1800 5 ! { $landed || $over || $stalled; } && sh $H_HERE/startfill.sh enter $LD $H_DIR/enter-mark
+# The repair swarm runs on the lead's next turns until it lands.
+wait 2700 $landed || $over || $stalled
 # The lead ends a landed repair on the orchestrator's report; if it hasn't, the session says to.
-wait 600 $swarm_ended
+wait 600 $swarm_ended || $stalled
 sendsh $end_cmd
 wait 900 $ends2
 sleep 20
@@ -190,6 +201,8 @@ h_expect "run.start and the launch made a run, with the repair setting" c_run
 h_expect "run.json holds repair: $mode" c_setting
 h_expect "generation 1 halted at a red integration verify" c_red_halt
 if [ "$mode" = auto ]; then
+  # Which way it started, read from the launch ledger (WP-AS): an info line, not a check.
+  echo "$H_CASE: $(sh "$H_HERE/startfill.sh" how "$LD")"
   h_expect "run.repair opened generation 2, and the repair swarm, confirmed by the run, spawned its orchestrator" c_repair_opened
   h_expect "no ask after the fanout's launch" c_no_ask
   h_expect "a fix was committed on the integration branch" c_fixed_on_branch

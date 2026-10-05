@@ -120,7 +120,9 @@ export const REPAIR_NOTE =
 /**
  * What the mod submits to the lead from a timer once that turn ended (spike
  * 19). It can't start with a slash, which the host refuses, so it asks for
- * the swarm skill's start. Slots: {swarm}, {run}.
+ * the swarm skill's start. When this turn ends with no orchestrator spawned,
+ * the mod fills the start line into the user's prompt box (WP-AS), as its
+ * last sentence says. Slots: {swarm}, {run}.
  */
 export const REPAIR_START =
-  "litter: repair swarm {swarm} is live for run {run}, and the run's launch confirmation already covers it. Start it now: run the litter swarm skill with start {swarm}, and spawn its orchestrator as the skill says."
+  "litter: repair swarm {swarm} is live for run {run}, and the run's launch confirmation already covers it. Start it now: run the litter swarm skill with start {swarm}, and spawn its orchestrator as the skill says. If the skill or a spawn is refused, say so and end your turn; litter then puts the start line in the user's prompt box."
