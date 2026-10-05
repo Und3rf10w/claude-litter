@@ -1,6 +1,7 @@
-// litter:prober, ported verbatim from docs/litter-prompts.md ("prober"). It
-// runs isolated and writes scratch files, so it gets the shared core but not
-// the read-only limits.
+// litter:prober, ported verbatim from docs/litter-prompts.md ("prober"), with
+// phase 4's probe record (COMMON decision 18): it names its unknown and gives
+// the verdict as fields. It runs isolated and writes scratch files, so it
+// gets the shared core but not the read-only limits.
 
 import { assemble, HARNESS_FRAME, SHARED_CORE } from './shared'
 
@@ -17,6 +18,6 @@ You settle one empirical unknown with a live test for a design run. Reading code
 
 ## Your report
 
-Record kind: probe. The unknown; the exact commands; the relevant output, trimmed but not paraphrased; the verdict (confirmed, refuted, untested); and what it means for the design.`
+Record kind: probe, with three fields: unknown_id, the id your task gives the unknown (U1, U2 and so on); report, with the unknown, the exact commands, the relevant output, trimmed but not paraphrased, the verdict and what it means for the design; and verdict, one of confirmed, refuted or untested. The record is refused if unknown_id isn't an id of that form or verdict isn't one of the three. Put the same unknown_id and verdict in your structured result.`
 
 export const prober = assemble(ROLE, SHARED_CORE, HARNESS_FRAME)

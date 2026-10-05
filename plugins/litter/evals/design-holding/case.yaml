@@ -1,0 +1,84 @@
+# Run from the repository root (it spends tokens), as design-launch says:
+#   claude plugin eval plugins/litter --scaffold --ablation none --runs 1 --no-publish \
+#     --allow-tools Bash Edit Write Workflow ToolSearch EnterPlanMode ExitPlanMode mcp__litter__record --case design-holding
+# --scaffold runs each case's scaffold.sh; --allow-tools grants the gated tools
+# the case lists (dontAsk denies the rest); --ablation none skips the
+# no-plugin arm, where /litter:design doesn't exist.
+schema_version: "1.1"
+name: design-holding
+description: >-
+  /litter:design launches a one-round design run (maxRounds 1) whose bar no
+  design can meet: C6 asks for the report's run time measured on
+  data/export-2024.csv, a file the repository doesn't have, so no evidence
+  can clear it. The run ends without an approving verdict, nothing is
+  delivered, and the skill doesn't use plan mode: approving a plan there
+  would look like the critic's approval, which it didn't give. It reports
+  the open criteria from summary.md, with the critic's evidence and the kind
+  of work that would close each, and offers the next steps.
+tags: [litter, design, holding]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 60
+  timeout_seconds: 2400
+  allowed_tools: [Skill, ToolSearch, AskUserQuestion, Read, Grep, Glob, Edit, Write, Bash, Workflow, TaskStop, EnterPlanMode, ExitPlanMode, mcp__litter__record]
+  prompt: |
+    /litter:design Make report.sh print the total in dollars and cents, such as 12.34, instead of in raw cents, without changing the item lines.
+
+    The deliverable is a plan. Anchors: report.sh, check.sh and data/sales.csv.
+
+    The bar, which I've read and agree to:
+    - C1: The plan changes only the total line; each item line stays byte for byte as report.sh prints it today. Evidence: the plan's file list, and a gate check that compares the item lines with today's output.
+    - C2: The total prints with exactly two decimals: 1234 cents as 12.34, 5 cents as 0.05, and 0 cents as 0.00. Evidence: a gate check that runs report.sh on a fixture with those totals.
+    - C3: The conversion uses the shell's integer arithmetic and printf, not floating point. Evidence: the design's code.
+    - C4: check.sh covers the new total format and still passes. Evidence: a gate whose checks include sh check.sh.
+    - C5: Each gate can be rolled back by reverting its own commit. Evidence: each gate's rollback.
+    - C6: The plan quotes report.sh's run time on the full sales export, data/export-2024.csv, measured before and after the change. Evidence: the timing output for that file, quoted in the plan.
+    - B1: Never add a dependency on bc, awk, python or any other program beyond the shell and printf. Reason: the CI image has only a POSIX sh.
+
+    No empirical unknowns. Lenses: one falsifier on where report.sh computes and prints the total, and what reads its output; one mechanism on the smallest change to the total line. No coverage lens: this runs in one environment.
+
+    Settings: max rounds 1. Authorized actions: the defaults. The probers need no dependencies: no setup command and no directories to link. No extra rules for this run.
+
+    I've read the bar, the lenses and these settings, and I confirm them: Launch. When the run finishes, report the result from its summary.
+runs: 1
+graders:
+  - type: tool_used
+    name: launched-litter-design
+    tool: Workflow
+    input_match: "litter:design-run"
+    min: 1
+    max: 1
+  - type: tool_used
+    name: run-start-has-one-round
+    tool: mcp__litter__record
+    input_match: "\"maxRounds\"\\s*:\\s*\"?1\\b"
+    min: 1
+    weight: 0.5
+  - type: tool_used
+    name: read-the-summary
+    tool: Read
+    input_match: "summary\\.md"
+    min: 1
+  - type: tool_used
+    name: no-enter-plan-mode
+    tool: EnterPlanMode
+    min: 0
+    max: 0
+  - type: tool_used
+    name: no-exit-plan-mode
+    tool: ExitPlanMode
+    min: 0
+    max: 0
+  - type: regex
+    name: names-the-open-criterion
+    pattern: "\\bC6\\b"
+  - type: llm
+    name: reports-the-open-criteria
+    weight: 2
+    criteria: |
+      The final message reports a litter design run that ended without the critic's approval, as its summary describes it:
+      - it says the run wasn't approved, and why it stopped (max rounds, or an early return for the user if the summary says so);
+      - it names the criteria that aren't PASS, C6 among them, each with the critic's evidence and the kind of work that would close it (investigation, design, wording, or a user decision); or, if the run stopped early on a question for the user, it asks that question;
+      - it offers next steps such as another run with more rounds, a narrower scope or an adjusted bar, or stopping;
+      - it doesn't present the plan as approved, doesn't offer /litter:execute as if it were, and doesn't start implementing.
