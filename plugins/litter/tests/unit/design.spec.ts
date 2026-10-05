@@ -2,8 +2,9 @@
 // through the dispatcher as a role or a launcher calls it: the fields, the
 // versions, the bar, the bindings, the files written.
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Policy } from '../../hooks/hookfiles'
 import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/core'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
@@ -15,7 +16,10 @@ import { readRuleLedger } from '../../hooks/rules/ledger'
 import { sha256 } from '../../hooks/fsx'
 import { bareBacktickPaths, KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, recordGeneric } from '../../hooks/records/design'
 import { wikiPath } from '../../hooks/layout'
-import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// A verdict's snapshot runs real git; a loaded machine takes seconds.
+setDefaultTimeout(120_000)
 
 const RUN = '20261002-design'
 
@@ -23,11 +27,14 @@ let p: TestPorts
 let dir: string
 let cleanup: () => void
 let env: DispatchEnv
+/** run.json's fields besides its args: a verdict's snapshot needs the checkout and base (WP-BC). */
+let runFields: Record<string, unknown>
 
 beforeEach(async () => {
   p = nodePorts()
   ;({ dir, cleanup } = scratch())
   env = { litterDir: dir, litterDirError: null, ready: true, options: normalizeOptions(undefined) }
+  runFields = {}
   await makeRun({})
   await writePolicy(p, dir, policyFor(RUN))
 })
@@ -58,8 +65,10 @@ function policyFor(run: string): Policy {
   }
 }
 
+// A research design unless the args say otherwise: its proposals are their text, with no gates (designproposal.spec.ts renders a plan's).
 async function makeRun(args: Record<string, unknown>) {
-  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify({ v: 1, run: RUN, workflow: 'design', args, ref: `litter/${RUN}` })}\n`)
+  const json = { v: 1, run: RUN, workflow: 'design', args: { deliverable: 'research', ...args }, ref: `litter/${RUN}`, ...runFields }
+  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify(json)}\n`)
 }
 
 async function startAgent(id: string, role: string, cwd = `/work/${id}`) {
@@ -97,8 +106,9 @@ describe('KIND_RULES', () => {
   })
 })
 
+// The prober's probe names its unknown and verdict too (decision 18): designrecords.spec.ts.
 describe("the investigators' reports", () => {
-  for (const [kind, role] of [['finding', 'falsifier'], ['coverage', 'coverage'], ['mechanism', 'mechanism'], ['probe', 'prober'], ['reframe', 'reframer']] as const) {
+  for (const [kind, role] of [['finding', 'falsifier'], ['coverage', 'coverage'], ['mechanism', 'mechanism'], ['reframe', 'reframer']] as const) {
     test(`${kind}: report is required, then stored with its author`, async () => {
       await startAgent('a1', role)
       expect(asError(await call({ kind }, 'a1')).field).toBe('report')
@@ -112,11 +122,11 @@ describe("the investigators' reports", () => {
   }
 })
 
+// A plan's gates, rendered into its text: designproposal.spec.ts and designrecords.spec.ts.
 describe('proposal', () => {
-  test('text is required, and gates are refused until design runs render them', async () => {
+  test('text is required, and delta is a list or one text', async () => {
     await startAgent('au', 'author')
     expect(asError(await call({ kind: 'proposal' }, 'au')).field).toBe('text')
-    expect(asError(await call({ kind: 'proposal', text: 'x', gates: [{ id: 'G1' }] }, 'au')).field).toBe('gates')
     expect(asError(await call({ kind: 'proposal', text: 'x', delta: 5 }, 'au')).field).toBe('delta')
   })
 
@@ -158,8 +168,18 @@ describe('proposal', () => {
   })
 })
 
+// The snapshot, the gap kinds, the out file and verdicts/vN.md: designrecords.spec.ts.
 describe('verdict', () => {
-  const criteria = (ids: string[], verdict = 'PASS') => ids.map(id => ({ id, verdict }))
+  const criteria = (ids: string[], verdict = 'PASS') => ids.map(id => ({ id, verdict, evidence: `${id}.ts:1` }))
+
+  // A checkout for the verdict's snapshot, and a base commit at its HEAD.
+  beforeEach(async () => {
+    const checkout = join(dir, 'checkout')
+    mkdirSync(checkout)
+    const { git } = await scratchRepo(p, checkout)
+    runFields = { checkout, base: (await git('rev-parse', 'HEAD')).trim() }
+    await makeRun({})
+  })
 
   test('needs a proposal, and must name the latest version', async () => {
     await startAgent('cr', 'design-critic')

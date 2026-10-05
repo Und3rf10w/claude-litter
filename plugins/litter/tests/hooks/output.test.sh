@@ -112,6 +112,36 @@ case_design_critic() {
   assert_eq 'true' "$(updated | jq -r '.source_changed')" source_changed
 }
 
+# The design critic's out file as recordVerdict writes it (decision 7): the
+# recorded version, source_changed, criteria and overall.
+DESIGN_RECORDED='{"version":"v3","source_changed":true,"criteria":[{"id":"C1","verdict":"PASS","evidence":"src/a.ts:1"},{"id":"B1","verdict":"FAIL","evidence":"none found","gap_or_reason":"no fallback","gap_kind":"design"}],"overall":"HOLDING"}'
+DESIGN_CLAIMED='{"version":"v3","source_changed":false,"criteria":[{"id":"C1","verdict":"PASS","evidence":"claimed"},{"id":"B1","verdict":"PASS","evidence":"claimed"}],"overall":"APPROVED","notes":"kept"}'
+
+case_design_critic_recorded() {
+  setup
+  out_file '{"version":"v3"}' "$DESIGN_RECORDED"
+  so litter:design-critic "$DESIGN_CLAIMED" | run_hook output.sh
+  assert_code 0
+  # The four fields are the ledger's, and the critic's other fields stay.
+  assert_eq "$(printf '%s' "$DESIGN_RECORDED" | jq -c '. + {notes: "kept"}')" "$(updated | jq -c '{version, source_changed, criteria, overall, notes}')" updatedInput
+  assert_eq 'HOLDING design' "$(spool_lines | jq -r 'select(.ev == "output") | "\(.input.overall) \(.input.criteria[1].gap_kind)"')" "spooled result"
+}
+
+case_design_critic_other_version() {
+  setup
+  out_file '{"version":"v2"}' "$(printf '%s' "$DESIGN_RECORDED" | jq -c '.version = "v2"')"
+  so litter:design-critic "$DESIGN_CLAIMED" | run_hook output.sh
+  assert_deny 'your result gives version \"v3\", but your latest record is for \"v2\": return that version, or record again first'
+  assert_eq '' "$(spool_lines | jq -c 'select(.ev == "output")')" "no result spooled"
+}
+
+case_design_critic_no_out() {
+  setup
+  so litter:design-critic "$DESIGN_CLAIMED" | run_hook output.sh
+  assert_deny 'no verdict recorded by you for version \"v3\": record kind verdict first, then return'
+  assert_eq '' "$(spool_lines | jq -c 'select(.ev == "output")')" "no result spooled"
+}
+
 case_no_fields_needed() {
   setup
   so litter:executor '{"status":"done","plan_lines":[],"files":["a.py"],"checks":[],"notes":"n"}' | run_hook output.sh
@@ -289,6 +319,9 @@ t "a land relay with no land recorded is denied" case_relay_land_missing
 t "an author's proposal is filled with the recorded text" case_author_filled
 t "an author naming a version it didn't record is denied" case_author_other_version
 t "a design critic's source_changed is filled, and needs its verdict" case_design_critic
+t "a design critic gets the recorded version, source_changed, criteria and overall" case_design_critic_recorded
+t "a design critic naming another version than it recorded is denied" case_design_critic_other_version
+t "a design critic with no out file is told to record its verdict first" case_design_critic_no_out
 t "a role with no observed fields passes, and its result is spooled" case_no_fields_needed
 t "an unreadable or other-version out file denies" case_out_unreadable
 t "an out file for another agent denies" case_out_for_another_agent

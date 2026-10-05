@@ -37,9 +37,9 @@ const entry = (s: string): string => s.trim().replace(/^`(.*)`$/, '$1').trim()
 // The renderer
 
 /** What a gate must read back as: section 10's fields, as parseGates gives them. */
-type Expected = { id: string; files: string[]; checks: string; doneWhen: string; adversary: boolean }
+type Expected = { id: string; files: string[]; checks: string; doneWhen: string; adversary: boolean; rollback: string | null }
 
-const expectedOf = (g: Gate): Expected => ({ id: g.id, files: g.files, checks: g.checks, doneWhen: g.doneWhen, adversary: g.adversary })
+const expectedOf = (g: Gate): Expected => ({ id: g.id, files: g.files, checks: g.checks, doneWhen: g.doneWhen, adversary: g.adversary, rollback: g.rollback })
 
 /** The first difference between what a gate parsed as and what it should be, or null. */
 function differs(got: Gate, want: Expected): string | null {
@@ -48,6 +48,7 @@ function differs(got: Gate, want: Expected): string | null {
   if (got.checks !== want.checks) return `its Checks read as ${JSON.stringify(got.checks)}`
   if (got.doneWhen !== want.doneWhen) return `its Done when reads as ${JSON.stringify(got.doneWhen)}`
   if (got.adversary !== want.adversary) return `its Adversary reads as ${got.adversary ? 'yes' : 'no'}`
+  if (got.rollback !== want.rollback) return `its Rollback reads as ${JSON.stringify(got.rollback)}`
   return null
 }
 
@@ -65,16 +66,18 @@ function fenceLeftOpen(text: string): boolean {
 
 /**
  * One gate's section in section 10's format: the heading, the Files, Checks
- * and Done when lines (and `Adversary: yes`), then the scope as prose, ending
- * with `Plan lines: <lines>` when it cites any. The one renderer; phase 4's
- * proposals reuse it.
+ * and Done when lines (and `Adversary: yes`, then `Rollback: <rollback>` when
+ * the gate has one: a design author's, decision 6), then the scope as prose,
+ * ending with `Plan lines: <lines>` when it cites any. The one renderer;
+ * phase 4's proposals reuse it. A gate without `rollback` (the planner's)
+ * renders as it did before phase 4.
  *
  * Throws, naming the gate and the field, when the gate can't be written in
  * the format: a missing field, a Files or Checks entry with a line break, a
  * scope that opens a code fence it doesn't close, or a section that parseGates
  * doesn't read back as exactly this gate (a scope line that is a heading ends
- * the section early). The title and Done when are prose, so their line breaks
- * become spaces.
+ * the section early). The title, Done when and Rollback are prose, so their
+ * line breaks become spaces.
  */
 export function renderGateSection(g: PlannedGate): string {
   const id = typeof g.id === 'string' ? g.id : String(g.id)
@@ -98,6 +101,13 @@ export function renderGateSection(g: PlannedGate): string {
   const doneWhen = typeof g.done_when === 'string' ? oneLine(g.done_when) : ''
   if (doneWhen === '') throw bad('done_when', 'is required: what must hold when the gate is done')
   const adversary = g.adversary === true
+  // Unset for the planner's gates, so their sections don't change.
+  let rollback: string | null = null
+  if (g.rollback !== undefined) {
+    if (typeof g.rollback !== 'string') throw bad('rollback', 'must be text: how to undo the gate')
+    rollback = oneLine(g.rollback)
+    if (rollback === '') throw bad('rollback', 'is empty; say how to undo the gate')
+  }
 
   const lines = [`### ${id}: ${title}`]
   // A path with a comma can't go on the comma-separated line, so the list form holds it.
@@ -107,6 +117,7 @@ export function renderGateSection(g: PlannedGate): string {
   else lines.push('Checks:', ...checks.map(c => `- ${c}`))
   lines.push(`Done when: ${doneWhen}`)
   if (adversary) lines.push('Adversary: yes')
+  if (rollback !== null) lines.push(`Rollback: ${rollback}`)
   const scope = (typeof g.scope === 'string' ? g.scope : '').replace(/\r\n?/g, '\n').replace(/^(?:[ \t]*\n)+/, '').trimEnd()
   const cites = typeof g.lines === 'string' ? oneLine(g.lines) : ''
   const prose = [scope, cites ? `Plan lines: ${cites}` : ''].filter(x => x !== '')
@@ -119,7 +130,7 @@ export function renderGateSection(g: PlannedGate): string {
   if (back.gates.length !== 1) {
     throw bad('scope', `holds another gate's heading (${back.gates.map(x => x.id).join(', ')}); reword that line so it isn't a '### G<n>:' heading`)
   }
-  const why = differs(back.gates[0]!, { id, files, checks: checks.join('\n'), doneWhen, adversary })
+  const why = differs(back.gates[0]!, { id, files, checks: checks.join('\n'), doneWhen, adversary, rollback })
   if (why) throw bad('scope', `doesn't read back as this gate: ${why}`)
   if (back.gates[0]!.excerpt !== text.slice(0, -1)) {
     throw bad('scope', 'holds a heading that ends the section early; make it a level-4 heading or plain text')
