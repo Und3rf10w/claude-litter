@@ -1,0 +1,93 @@
+# Run the design cases from the repository root (they spend tokens):
+#   claude plugin eval plugins/litter --scaffold --ablation none --runs 1 --no-publish \
+#     --allow-tools Bash Edit Write Workflow ToolSearch EnterPlanMode ExitPlanMode mcp__litter__record --case design-launch
+# --scaffold runs each case's scaffold.sh; --allow-tools grants the gated tools
+# the case lists (dontAsk denies the rest); --ablation none skips the
+# no-plugin arm, where /litter:design doesn't exist. Add --case <name> for one.
+schema_version: "1.1"
+name: design-launch
+description: >-
+  /litter:design launches a design run in a scratch repository whose
+  report.sh prints its total in raw cents, with the bar, an empirical
+  unknown, the lenses and the settings all given in the request, and
+  "Launch". The skill shows the rules in scope (rule.find) before it records
+  run.start, launches litter:design-run with the args run.start returned, and
+  when the run ends reports it from summary.md. It uses plan mode only when
+  the summary's Delivery section says the plan was delivered, and then writes
+  the run's plan.md into the plan file unchanged and offers /litter:execute
+  instead of coding. Approval isn't graded: what the critic decides is the
+  run's, and either way the skill has to follow the summary.
+tags: [litter, design, launch]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 60
+  timeout_seconds: 3600
+  allowed_tools: [Skill, ToolSearch, AskUserQuestion, Read, Grep, Glob, Edit, Write, Bash, Workflow, TaskStop, EnterPlanMode, ExitPlanMode, mcp__litter__record]
+  prompt: |
+    /litter:design Make report.sh print the total in dollars and cents, such as 12.34, instead of in raw cents, without changing the item lines.
+
+    The deliverable is a plan. Anchors: report.sh, check.sh and data/sales.csv.
+
+    The bar, which I've read and agree to:
+    - C1: The plan changes only the total line; each item line stays byte for byte as report.sh prints it today. Evidence: the plan's file list, and a gate check that compares the item lines with today's output.
+    - C2: The total prints with exactly two decimals: 1234 cents as 12.34, 5 cents as 0.05, and 0 cents as 0.00. Evidence: a gate check that runs report.sh on a fixture with those totals.
+    - C3: The conversion uses the shell's integer arithmetic and printf, not floating point. Evidence: the design's code.
+    - C4: It behaves the same under dash, BusyBox sh and bash, with no bash-only constructs. Evidence: the design's code, checked construct by construct.
+    - C5: check.sh covers the new total format and still passes. Evidence: a gate whose checks include sh check.sh.
+    - C6: Each gate can be rolled back by reverting its own commit. Evidence: each gate's rollback.
+    - B1: Never add a dependency on bc, awk, python or any other program beyond the shell and printf. Reason: the CI image has only a POSIX sh.
+
+    One empirical unknown: does this machine's sh printf pad %02d with a zero, so that 5 prints as 05? The smallest test: run sh -c 'printf "%02d\n" 5'. The result that would kill the design: anything other than 05.
+
+    Lenses: one falsifier on where report.sh computes and prints the total, and what reads its output; one mechanism on the smallest change to the total line. No coverage lens: C4 is settled by reading the code.
+
+    Settings: at most 2 rounds. Authorized actions: the defaults, and the prober may run sh and printf in its worktree. The probers need no dependencies: no setup command and no directories to link. No extra rules for this run.
+
+    I've read the bar, the unknown, the lenses and these settings, and I confirm them: Launch. When the run finishes, report the result from its summary, and deliver the plan if it was approved.
+runs: 1
+graders:
+  - type: tool_order
+    name: rule-find-before-run-start
+    before: { tool: mcp__litter__record, input_match: "rule\\.find" }
+    after: { tool: mcp__litter__record, input_match: "run\\.start" }
+  - type: tool_order
+    name: run-start-before-launch
+    before: { tool: mcp__litter__record, input_match: "run\\.start" }
+    after: { tool: Workflow, input_match: "litter:design-run" }
+  - type: tool_used
+    name: launched-litter-design
+    tool: Workflow
+    input_match: "litter:design-run"
+    min: 1
+    max: 1
+  - type: tool_used
+    name: run-start-carries-the-unknown
+    tool: mcp__litter__record
+    input_match: "smallest_test"
+    min: 1
+    weight: 0.5
+  - type: tool_used
+    name: read-the-summary
+    tool: Read
+    input_match: "summary\\.md"
+    min: 1
+  - type: llm
+    name: plan-mode-only-when-delivered
+    focus: trace
+    weight: 2
+    criteria: |
+      The trace shows a litter design run reported from its summary.md, and plan mode used only for a delivered plan:
+      - the session read the run's summary.md after the run's completion, before it used EnterPlanMode or ExitPlanMode, if it used them at all;
+      - if that summary's Delivery section says the plan was delivered, the session called EnterPlanMode, wrote the run's plan.md into the plan file plan mode named without changing it, and then called ExitPlanMode;
+      - if the Delivery section says delivery was refused, or the summary has no Delivery section saying it was delivered, the session called neither EnterPlanMode nor ExitPlanMode;
+      - the session didn't edit report.sh, check.sh or any other project file itself.
+  - type: llm
+    name: reports-from-the-summary
+    weight: 2
+    criteria: |
+      The final message reports a litter design run that has ended, as its summary describes it:
+      - it says why the run stopped (the critic approved, a round added nothing new, max rounds, an early return for the user, or another stop the summary names);
+      - it gives the verdict on the bar's criteria, quoting the critic's evidence for any criterion that isn't PASS;
+      - if the plan was delivered, it offers /litter:execute with the absolute path of the run's plan.md and doesn't start implementing; if it wasn't, it says why and offers another run, a narrower scope or an adjusted bar, or stopping;
+      - it doesn't present a plan the critic didn't approve as approved.
