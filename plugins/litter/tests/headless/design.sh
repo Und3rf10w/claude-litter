@@ -257,6 +257,10 @@ EOF
 ls "$R"/.claude/deepwork/*/state.archived.json >/dev/null 2>&1 && exit 0
 for s in "$R"/.claude/deepwork/*/state.json; do
   [ -f "$s" ] && jq -e '.phase == "halt" or .halt_reason != null' "$s" >/dev/null 2>&1 && exit 0
+  # Delivered in chat and waiting on the user, no halt recorded (compare run 1,
+  # 2026-10-05): the phase at deliver, a final proposal, and 3 quiet minutes.
+  [ -f "$s" ] && jq -e '.phase == "deliver"' "$s" >/dev/null 2>&1 && ls "${s%/state.json}"/proposals/*-final.md >/dev/null 2>&1 &&
+    [ -f "$LOG" ] && [ -z "$(find "$LOG" -mmin -3 2>/dev/null)" ] && exit 0
 done
 [ -z "${NOASK:-}" ] || exit 1
 [ -f "$LOG" ] || exit 1
