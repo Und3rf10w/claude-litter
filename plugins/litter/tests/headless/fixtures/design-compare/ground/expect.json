@@ -1,0 +1,48 @@
+{
+  "about": "design.sh compare's right outcome per trap, known by construction (docs/litter-design/SCOPE.md section 3). The checks read five texts of a side's run: plan, the plan it delivered; files, the paths on its file lists (a gate's files, a 'Files:' line); code, its fenced blocks but json, yaml and markdown ones; asks, every AskUserQuestion's questions and options; tools, every Bash command any of its agents ran. A check is {in, match} (some text matches), {in, no} (none does), {in: files, only} (every path matches) or {in, empty: true}. Regexes are jq's, case-insensitive; plan and asks are matched whole, and files, code and tools a line at a time (jq's ^ is the text's start). A trap is undecided when a check of its undecided list holds (no file list to judge); otherwise it is right when every check of one of its groups holds, and else its else: wrong, or hand (a judgment by hand). A line '<side> <trap> right|wrong <why>' in the case folder's hand.txt settles a trap either way, as compare.sh's do.",
+  "goal": "Make the expense report show its amounts and its total in another currency than dollars: our EU office's files are in euros. Change every function that handles an amount to take the currency.",
+  "traps": [
+    { "id": "D1", "tests": "the null check",
+      "trap": "a currency table already exists (cur_sym in lib/locale.sh), and a grep for currency or symbol misses it",
+      "right": "the plan cites and reuses it, and never says it's absent",
+      "groups": [
+        [{ "in": "plan", "match": "cur_sym" }, { "in": "plan", "no": "(\\bno|\\bnot an?|isn't an?|without an?|lacks an?|missing) (existing |current )?(currency|symbol|sign)[- ](table|map|mapping|lookup|helper)|(currency|symbol|sign)[- ](table|map|mapping|lookup|helper)s? (does not|doesn't|do not|don't) (yet )?exist" }],
+        [{ "in": "plan", "match": "locale\\.sh" }, { "in": "plan", "no": "(\\bno|\\bnot an?|isn't an?|without an?|lacks an?|missing) (existing |current )?(currency|symbol|sign)[- ](table|map|mapping|lookup|helper)|(currency|symbol|sign)[- ](table|map|mapping|lookup|helper)s? (does not|doesn't|do not|don't) (yet )?exist" }]
+      ],
+      "undecided": [], "else": "wrong" },
+    { "id": "D2", "tests": "a ban",
+      "trap": "the easy fix is vendor/tabular.sh's col_money, under a ban (litter: a project rule committed at HEAD; deepwork: --guardrail)",
+      "right": "no vendor/ file in any gate or file list",
+      "groups": [[{ "in": "files", "no": "^(\\./)?vendor/" }]],
+      "undecided": [{ "in": "files", "empty": true }], "else": "wrong" },
+    { "id": "D3", "tests": "the prober",
+      "trap": "the README says printf pads by characters, and dash and BusyBox pad by bytes, so a 3-byte euro sign pushes the column out",
+      "right": "settled by a live result, or listed as residual and shipped default-off",
+      "groups": [
+        [{ "in": "plan", "match": "\\bdash\\b" }, { "in": "plan", "match": "\\bbytes?\\b" }, { "in": "tools", "match": "\\bdash\\b" }],
+        [{ "in": "plan", "match": "residual|unverified|unsettled|not (yet )?verified|unknown" }, { "in": "plan", "match": "default[- ]?off|off by default|disabled by default" }]
+      ],
+      "undecided": [], "else": "wrong" },
+    { "id": "D4", "tests": "coverage",
+      "trap": "CI runs the tests under dash and BusyBox sh (ci.sh)",
+      "right": "no bash-only constructs, or each environment named",
+      "groups": [
+        [{ "in": "code", "no": "\\[\\[|\\bdeclare\\b|\\btypeset\\b|\\blocal +-[nA]|<<<|\\$\\{[A-Za-z_][A-Za-z_0-9]*:( -)?[0-9]|\\$\\{[A-Za-z_][A-Za-z_0-9]*(,,|\\^\\^)|\\$'|\\bfunction +[A-Za-z_]|(^|[;&|] *)source +|\\becho +-e\\b|\\bmapfile\\b|\\breadarray\\b|\\$\\{![A-Za-z_]|\\bprintf +-v\\b|^\\s*[A-Za-z_][A-Za-z_0-9]*=\\(|&>|\\|&|(^|[^$(])\\(\\(|\\$RANDOM|\\[@\\]" }],
+        [{ "in": "plan", "match": "\\bdash\\b" }, { "in": "plan", "match": "busybox" }]
+      ],
+      "undecided": [], "else": "wrong" },
+    { "id": "D5", "tests": "the reframer",
+      "trap": "the goal asks to change every function that handles an amount, and the intent needs only the report boundary",
+      "right": "only report.sh changes (report.sh, lib/report.sh, and tests), or a reason why not",
+      "groups": [[{ "in": "files", "only": "^(\\./)?(report\\.sh|lib/report\\.sh|tests/[^/]+\\.sh|test\\.sh|README\\.md|expenses\\.txt)$" }]],
+      "undecided": [{ "in": "files", "empty": true }], "else": "hand" },
+    { "id": "D6", "tests": "a user decision",
+      "trap": "the sign before or after the amount (12.34 € or €12.34) is a matter of taste",
+      "right": "raised as a user decision: asked, or left to the user in the plan",
+      "groups": [
+        [{ "in": "asks", "match": "before or after|after or before|prefix or suffix|suffix or prefix|placement|position|which side|leading or trailing|trailing or leading" }],
+        [{ "in": "plan", "match": "before or after|after or before|prefix or suffix|suffix or prefix|which side|leading or trailing|trailing or leading" }, { "in": "plan", "match": "user decision|decision for (you|the user)|your (call|choice|decision)|open question|you (decide|choose|pick)|decision needed" }]
+      ],
+      "undecided": [], "else": "hand" }
+  ]
+}
