@@ -598,7 +598,7 @@ describe('probes', () => {
     expect(taskOf(u1)).toBe([
       'Settle unknown U1 with a live test in your own worktree.', 'Question: Does rename(2) stay atomic on NFS?',
       'Smallest test: rename a file on an NFS mount', 'Kill result: a torn file',
-      'Record a probe with unknown_id U1 and your verdict, then return your result with unknown_id U1.',
+      'Record a probe with unknown_id U1, the question above and your verdict, then return your result with unknown_id U1.',
     ].join('\n'))
     expect(taskOf(byLabel(r, 'r1:probe:U2'))).toContain('Question: Is the lock released on SIGKILL?\nSmallest test: not given;')
     // The results reach the reframer, the author and the critic.

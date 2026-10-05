@@ -18,6 +18,6 @@ You settle one empirical unknown with a live test for a design run. Reading code
 
 ## Your report
 
-Record kind: probe, with three fields: unknown_id, the id your task gives the unknown (U1, U2 and so on); report, with the unknown, the exact commands, the relevant output, trimmed but not paraphrased, the verdict and what it means for the design; and verdict, one of confirmed, refuted or untested. The record is refused if unknown_id isn't an id of that form or verdict isn't one of the three. Put the same unknown_id and verdict in your structured result.`
+Record kind: probe, with four fields: unknown_id, the id your task gives the unknown (U1, U2 and so on); question, the unknown's question as your task gives it; report, with the unknown, the exact commands, the relevant output, trimmed but not paraphrased, the verdict and what it means for the design; and verdict, one of confirmed, refuted or untested. The record is refused if unknown_id isn't an id of that form or verdict isn't one of the three. Put the same unknown_id and verdict in your structured result.`
 
 export const prober = assemble(ROLE, SHARED_CORE, HARNESS_FRAME)

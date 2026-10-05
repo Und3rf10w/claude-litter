@@ -75,15 +75,17 @@ export function renderDesignVerdict(rec: StoredRecord): string {
   return lines.join('\n')
 }
 
-/** A probe's file: the unknown's id, the verdict, and the report as recorded. */
+/** A probe's file: the unknown's id and question, the verdict, and the report as recorded. */
 export function renderProbe(rec: StoredRecord): string {
   const b = rec.body
   const report = text(b.report)
+  const question = typeof b.question === 'string' ? b.question.replace(/\s+/g, ' ').trim() : ''
   const lines = [
     `# Probe of ${text(b.unknown_id)}`,
     '',
     `- Run: ${rec.run}`,
     `- Unknown: ${text(b.unknown_id)}`,
+    ...(question ? [`- Question: ${question}`] : []),
     `- Verdict: ${text(b.verdict) || 'not recorded'}`,
     `- Agent: ${agentLine(rec)}`,
     `- Ledger seq: ${rec.seq}`,

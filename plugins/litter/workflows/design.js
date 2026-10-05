@@ -381,7 +381,7 @@ const probeTask = u => [
   `Question: ${u.question}`,
   `Smallest test: ${u.smallest_test.trim() || 'not given; choose the smallest test that exercises the real behaviour'}`,
   `Kill result: ${u.kill_result.trim() || 'not given; state the result that would refute it before you run anything'}`,
-  `Record a probe with unknown_id ${u.id} and your verdict, then return your result with unknown_id ${u.id}.`,
+  `Record a probe with unknown_id ${u.id}, the question above and your verdict, then return your result with unknown_id ${u.id}.`,
 ].join('\n')
 
 const reframeTask = later => later

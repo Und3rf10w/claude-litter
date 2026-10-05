@@ -122,6 +122,14 @@ describe('probes/<id>.md', () => {
     expect(renderProbe({ ...rec, body: { unknown_id: 'U2', report: 'ends\n', verdict: 'confirmed' } }).endsWith('\n\nends\n')).toBe(true)
   })
 
+  test('a question, when the prober gave one, on one line after the id; none, no line', async () => {
+    const rec = await append('probe', PROBER, { unknown_id: 'U3', question: 'Does ash pad\n  by bytes?', report: 'r', verdict: 'untested' })
+    expect(renderProbe(rec).split('\n').slice(3, 6)).toEqual(['- Unknown: U3', '- Question: Does ash pad by bytes?', '- Verdict: untested'])
+    for (const question of ['', ' \n ', 5]) {
+      expect(renderProbe({ ...rec, body: { ...rec.body, question } })).not.toContain('- Question:')
+    }
+  })
+
   test('the latest record for an id wins, whatever order the writes finish in', async () => {
     const first = await append('probe', PROBER, { unknown_id: 'U1', report: 'first', verdict: 'untested' })
     const second = await append('probe', PROBER, { unknown_id: 'U1', report: 'second', verdict: 'confirmed' })

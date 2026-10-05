@@ -102,9 +102,10 @@ describe("the author's and prober's prompts (decisions 6 and 18)", () => {
     expect(report).toContain('the gates, each with the fields of step 7')
   })
 
-  test("the prober records unknown_id, report and verdict, and returns unknown_id", () => {
+  test("the prober records unknown_id, question, report and verdict, and returns unknown_id", () => {
     const report = ROLE_PROMPTS.prober.slice(ROLE_PROMPTS.prober.indexOf('## Your report'))
-    expect(report).toContain('Record kind: probe, with three fields: unknown_id, the id your task gives the unknown (U1, U2 and so on)')
+    expect(report).toContain('Record kind: probe, with four fields: unknown_id, the id your task gives the unknown (U1, U2 and so on)')
+    expect(report).toContain("question, the unknown's question as your task gives it")
     expect(report).toContain('verdict, one of confirmed, refuted or untested')
     expect(report).toContain('Put the same unknown_id and verdict in your structured result.')
   })

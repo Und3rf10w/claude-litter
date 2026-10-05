@@ -196,8 +196,10 @@ async function probeLines(p: Ports, ref: RunRef, json: RunJson | null, records: 
   const out: string[] = []
   for (const id of ids) {
     const u = given.find(x => x.id === id)
-    const what = u ? `: ${text(u.question, 500) || 'no question given'}` : ", a mechanism's unknown"
     const probe = probes.get(id)
+    // A mechanism's unknown has its question only in its probe, when the prober gave it.
+    const asked = text(probe?.question, 500)
+    const what = u ? `: ${text(u.question, 500) || 'no question given'}` : asked ? `, a mechanism's unknown: ${asked}` : ", a mechanism's unknown"
     if (!probe) {
       out.push(`- ${id}${what}; untested, never probed`)
       continue

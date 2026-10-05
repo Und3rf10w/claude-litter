@@ -317,6 +317,19 @@ describe('the parts from design.result and the bar', () => {
     ])
   })
 
+  test("Probes: a mechanism's unknown with the question its probe gave; the run's own question wins for a given one", async () => {
+    const w = await world({ empiricalUnknowns: [{ id: 'U1', question: 'Does the proxy keep the header?' }] })
+    const pr = { source: 'agent', agentId: 'pr', agentType: 'litter:prober' } as const
+    await w.add('probe', { unknown_id: 'U1', question: 'Something else?', report: '# U1', verdict: 'confirmed' }, pr)
+    await w.add('probe', { unknown_id: 'U3', question: 'Does ash pad\n by bytes?', report: '# U3', verdict: 'refuted' }, pr)
+    await w.add('probe', { unknown_id: 'U4', question: '  ', report: '# U4', verdict: 'untested' }, pr)
+    expect(section(await w.lines(), 'Probes')).toEqual([
+      '- U1: Does the proxy keep the header?; confirmed',
+      "- U3, a mechanism's unknown: Does ash pad by bytes?; refuted",
+      "- U4, a mechanism's unknown; untested",
+    ])
+  })
+
   test("Probes: before WP-BD, a bare string is its unknown's question, numbered in the order given", async () => {
     const w = await world({ empiricalUnknowns: ['Does the proxy keep the header?', 'Is the clock monotonic?'] })
     expect(section(await w.lines(), 'Probes')).toEqual([

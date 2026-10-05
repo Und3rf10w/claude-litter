@@ -229,9 +229,11 @@ export type DesignVerdictBody = {
 /**
  * A stored `probe` record's body (decision 18): the unknown it settles and
  * the verdict. The record tool requires both (WP-BC); they stay optional
- * here for a probe recorded before then, which has only its report.
+ * here for a probe recorded before then, which has only its report. The
+ * question, as the task gave it, is optional: for an unknown a mechanism
+ * proposed, it's the only record of the question.
  */
-export type ProbeBody = { unknown_id?: string; report: string; verdict?: ProbeVerdict }
+export type ProbeBody = { unknown_id?: string; question?: string; report: string; verdict?: ProbeVerdict }
 
 /**
  * `design.result`, the mod's (decision 15): the author's or the reframer's
