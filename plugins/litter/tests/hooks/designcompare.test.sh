@@ -115,7 +115,7 @@ case_unapproved_delivery_fails() {
   right_plan | side litter "$(ran litter false)"
   dc
   assert_code 1
-  assert_stdout_contains "FAIL: litter the plan file it wrote is not the proposal's bytes (false)"
+  assert_stdout_contains "FAIL: litter the plan it put up for review is not the proposal's bytes (false)"
 }
 
 # No file list at all: D2 and D5 can't be judged by a check, until hand.txt says.

@@ -41,10 +41,14 @@ case $seen in
 esac
 
 # The screen as text (execute.sh's screen()), then its last run of numbered options.
+# The engine moves between rows with cursor escapes, not newlines, so each move
+# to another row starts a line (design.sh basic, 2026-10-04: without that the
+# screen was one line, and no option list was read off it).
 e=$(printf '\033')
 b=$(printf '\007')
-labels=$(LC_ALL=C sed -e "s#${e}\[[0-9]*[CG]# #g" -e "s#${e}\[[0-9:;<=>?]*[ -/]*[@-~]##g" -e "s#${e}][^${b}${e}]*${b}##g" \
-  -e "s#${e}][^${b}${e}]*${e}[\\\\]##g" -e "s#${e}[()][A-Za-z0-9]##g" -e "s#${e}[^][]##g" "$tty" | tr -d '\r' | tail -n 400 | awk '
+row=$(printf '\001')
+labels=$(LC_ALL=C sed -e "s#${e}\[[0-9;]*[ABEFHfd]#${row}#g" -e "s#${e}\[[0-9]*[CG]# #g" -e "s#${e}\[[0-9:;<=>?]*[ -/]*[@-~]##g" -e "s#${e}][^${b}${e}]*${b}##g" \
+  -e "s#${e}][^${b}${e}]*${e}[\\\\]##g" -e "s#${e}[()][A-Za-z0-9]##g" -e "s#${e}[^][]##g" "$tty" | tr '\001\r' '\n\n' | tail -n 400 | awk '
   {
     l = $0
     gsub(/│/, " ", l)

@@ -175,12 +175,12 @@ litter_texts() {
     cp "$rd/plan.md" "$sd/texts/plan.md"
     printf '%s' "$recs" | jq -r --arg v "$dver" '[.[] | select(.kind == "proposal" and .body.version == $v)] | last | .body.gates // [] | .[].files[]?' \
       | LC_ALL=C sort -u >|"$sd/texts/files.txt"
-    # The plan file the skill wrote: the main thread's last Write before its ExitPlanMode.
+    # The plan ExitPlanMode put up for review: the plan file as it read it (c_planmode).
     if [ -f "$sd/tool-log.jsonl" ]; then
-      jq -nRj '[inputs | fromjson? | select(.agent_id == null and .tool == "Write" and .ev == "PreToolUse") | .input.content // empty] | last // empty' \
-        "$sd/tool-log.jsonl" >|"$sd/texts/written.md"
-      if [ -s "$sd/texts/written.md" ]; then
-        cmp -s "$sd/texts/written.md" "$rd/plan.md" && same=true || same=false
+      jq -nRj '[inputs | fromjson? | select(.agent_id == null and .tool == "ExitPlanMode" and .ev == "PreToolUse") | .input.plan // empty] | last // empty' \
+        "$sd/tool-log.jsonl" >|"$sd/texts/reviewed.md"
+      if [ -s "$sd/texts/reviewed.md" ]; then
+        cmp -s "$sd/texts/reviewed.md" "$rd/plan.md" && same=true || same=false
       fi
     fi
   fi
@@ -394,12 +394,14 @@ c_summary() {
     ;;
   esac
 }
-# Plan mode: entered, the plan file written with plan.md's bytes, ExitPlanMode answered.
+# Plan mode: entered, ExitPlanMode answered, and the plan it put up for review is
+# plan.md's bytes. That plan is the plan file as ExitPlanMode read it, however the
+# skill wrote the file (design.sh basic, 2026-10-04: it copied plan.md with cp).
 c_planmode() {
   [ "$(main_tool EnterPlanMode PostToolUse)" -ge 1 ] || { echo "EnterPlanMode never returned (pre: $(main_tool EnterPlanMode PreToolUse))"; return 1; }
-  jq -nRj '[inputs | fromjson? | select(.agent_id == null and .tool == "Write" and .ev == "PreToolUse") | .input.content // empty] | last // empty' "$LOG" >|"$H_DIR/written.md"
-  cmp -s "$H_DIR/written.md" "$RD/plan.md" || { echo "the main thread's last Write isn't plan.md's bytes ($(wc -c <"$H_DIR/written.md" | tr -d ' ') bytes)"; return 1; }
   [ "$(main_tool ExitPlanMode PostToolUse)" -ge 1 ] || { echo "ExitPlanMode never returned (pre: $(main_tool ExitPlanMode PreToolUse), failed: $(main_tool ExitPlanMode PostToolUseFailure))"; return 1; }
+  jq -nRj '[inputs | fromjson? | select(.agent_id == null and .tool == "ExitPlanMode" and .ev == "PreToolUse") | .input.plan // empty] | last // empty' "$LOG" >|"$H_DIR/reviewed.md"
+  cmp -s "$H_DIR/reviewed.md" "$RD/plan.md" || { echo "the plan ExitPlanMode put up isn't plan.md's bytes ($(wc -c <"$H_DIR/reviewed.md" | tr -d ' ') bytes against $(wc -c <"$RD/plan.md" | tr -d ' '))"; return 1; }
 }
 c_no_planmode() {
   n=$(($(main_tool EnterPlanMode PreToolUse) + $(main_tool ExitPlanMode PreToolUse)))

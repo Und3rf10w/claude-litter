@@ -15,8 +15,9 @@
 #                     bullets under one
 #   texts/meta.json   {ran, name, ended, delivered, approved, same_bytes,
 #                     versions, rounds}: approved, the verdict the delivery
-#                     followed; same_bytes, the plan file written against
-#                     the proposal it came from (litter's; null for none)
+#                     followed; same_bytes, the plan ExitPlanMode put up
+#                     for review against the proposal it came from
+#                     (litter's; null for none)
 #   tool-log.jsonl    the toollog fixture's: asks (AskUserQuestion's
 #                     questions and options) and tools (every agent's Bash
 #                     commands)
@@ -169,7 +170,7 @@ table=$(jq -nr --slurpfile e "$EXPECT" --argjson ls "$ls_" --argjson ds "$ds_" -
   def deliv($s): $s.meta as $m
     | if ($m.delivered // false) | not then {ok: true, why: "delivered nothing"}
       elif $m.approved != true then {ok: false, why: "delivered without an approving verdict"}
-      elif $m.same_bytes != true then {ok: false, why: "the plan file it wrote is not the proposal'"'"'s bytes (\($m.same_bytes))"}
+      elif $m.same_bytes != true then {ok: false, why: "the plan it put up for review is not the proposal'"'"'s bytes (\($m.same_bytes))"}
       else {ok: true, why: "delivered after an approving verdict, the proposal'"'"'s bytes"} end;
   def about($n; $s; $w; $tk): $s.meta as $m
     | "  \($n | pad(10))\($m.name // "no run"), \($m.ended // "never ended"); versions \($m.versions // "?"), rounds \($m.rounds // "?"); wall \($w); tokens \($tk)";

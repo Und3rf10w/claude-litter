@@ -79,7 +79,29 @@ case_no_log() {
   assert_stdout_empty
 }
 
+# As 2.1.289 draws it (design.sh basic, 2026-10-04): no newlines, each row
+# reached with a cursor move and the words spaced with cursor moves too.
+case_rows_by_cursor() {
+  esc=$(printf '\033')
+  : >|"$T_DIR/tty"
+  ev ExitPlanMode PreToolUse
+  printf '%s[2J%s[3;1H1.%s[1CPlan%s[4;1HWould%s[1Cyou%s[1Clike%s[1Cto%s[1Cproceed?' "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" >>"$T_DIR/tty"
+  printf '%s[6;3H%s[1m❯%s[1C1.%s[1CYes,%s[1Cand%s[1Cuse%s[1Cauto%s[1Cmode%s[0m' "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" >>"$T_DIR/tty"
+  printf '%s[1B%s[5G2.%s[1CYes,%s[1Cmanually%s[1Capprove%s[1Cedits' "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" >>"$T_DIR/tty"
+  printf '%s[1B%s[5G3.%s[1CTell%s[1CClaude%s[1Cwhat%s[1Cto%s[1Cchange' "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" "$esc" >>"$T_DIR/tty"
+  pp '^yes'
+  pp 'manually'
+  assert_code 0
+  assert_eq 'down enter' "$(cat "$T_DIR/out")" keys
+  ev ExitPlanMode PostToolUse
+  ev ExitPlanMode PreToolUse
+  pp '^yes'
+  pp '^yes'
+  assert_eq 'enter' "$(cat "$T_DIR/out")" keys
+}
+
 t "it answers a waiting dialog once, the round after it shows, with the first fitting option" case_once_the_round_after
 t "no fitting option exits 1; never can be set" case_nothing_fits
 t "no tool log: nothing waits" case_no_log
+t "a dialog drawn with cursor moves, not newlines, is read row by row" case_rows_by_cursor
 done_testing
