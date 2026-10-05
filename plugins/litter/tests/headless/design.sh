@@ -97,12 +97,19 @@ settled)
   jq -nRe '[inputs | fromjson? | select(.tool == "ExitPlanMode" and (.ev == "PostToolUse" or .ev == "PostToolUseFailure"))] | length > 0' "$LOG" >/dev/null 2>&1 && exit 0
   quiet 3
   ;;
-# deliver: the keys for a waiting plan-mode dialog, else for a waiting question; exit 1 once settled.
+# deliver: the keys for a waiting plan-mode dialog; exit 1 once settled. A
+# question after the run (a new run, more rounds) is declined with esc, the
+# round after it shows, so the case runs once (design.sh drift, 2026-10-05:
+# answering the recommended "New run from this one" started a second run).
 deliver)
   sh "$DIR/until.sh" settled && exit 1
   k=$(sh "$HERE/planpick.sh" "$DIR/tty.txt" "$LOG" "$DIR/plan-mark" '^yes') || exit 1
   [ -n "$k" ] && { echo "$k"; exit 0; }
-  sh "$HERE/answer.sh" "$LOG" '' "$DIR/answer-mark"
+  sh "$HERE/asking.sh" "$LOG" "$DIR/ask-mark" || { rm -f "$DIR/ask-seen"; exit 0; }
+  [ -f "$DIR/ask-seen" ] || { : >|"$DIR/ask-seen"; exit 0; }
+  rm -f "$DIR/ask-seen"
+  wc -l <"$LOG" | tr -d ' ' >|"$DIR/ask-mark"
+  echo esc
   ;;
 *) exit 2 ;;
 esac
@@ -123,7 +130,7 @@ EOF
     echo "keysh 1200 5 sh $1/until.sh deliver"
     echo 'sleep 20'
     echo '# One esc declines a question still waiting, so /exit is not typed into it.'
-    echo "press 6 6 esc ! sh $H_HERE/asking.sh $1/tool-log.jsonl"
+    echo "press 6 6 esc ! sh $H_HERE/asking.sh $1/tool-log.jsonl $1/ask-mark"
     echo 'exit'
   } >|"$1/steps.txt"
 }
