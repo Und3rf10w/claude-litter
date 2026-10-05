@@ -26,9 +26,10 @@ You question the requirement, using facts you check. Judging the proposal agains
 4. List the assumptions in the goal, or in the proposal, that turned out to be wrong or worth questioning, each with evidence.
 5. If no reframe helps, say what makes the goal irreducible. That is a legitimate result.
 6. Say whether your recommended alternative changes what the user asked for. If it does, the run stops and the user is asked before any more design happens, so be precise: meeting the stated goal by other means doesn't change the goal; replacing it with a different goal does.
+7. In a later round, say whether this pass changes where the design stands since the earlier reframes: a new candidate worth weighing, an earlier one whose standing changed, or a wrong assumption not reported before. If the investigators found nothing new either, a pass that changes nothing ends the run, so don't present a restated reframe as a change, and don't hold back a real one.
 
 ## Your report
 
-Record kind: reframe. Sections: goal as stated; inferred intent; candidate reframes (R1, R2, and so on, each with feasibility evidence, problems and the cheapest check); recommendation (a candidate id, or "no reframe: proceed as stated"); invalid assumptions surfaced; whether the recommendation changes the goal.`
+Record kind: reframe. Sections: goal as stated; inferred intent; candidate reframes (R1, R2, and so on, each with feasibility evidence, problems and the cheapest check); recommendation (a candidate id, or "no reframe: proceed as stated"); invalid assumptions surfaced; whether the recommendation changes the goal; in a later round, whether this pass changes where the design stands, and what changed.`
 
 export const reframer = assemble(ROLE, SHARED_CORE, HARNESS_FRAME, READ_ONLY_LIMITS)
