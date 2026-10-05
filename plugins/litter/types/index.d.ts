@@ -401,9 +401,11 @@ export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
 // ---------------------------------------------------------------------------
 // The board (phase 3, AF; plan section 11, decision 21): one run, drawn from
 // its ledger only, by hooks/board/view.ts. Execute runs get the gate table
-// and its detail; fanout, plan and design runs a header and their last
-// records. Texts are cleaned and cut, and colors are theme keys with a word or
-// glyph beside each, as in the swarm panes.
+// and its detail, and the table's menu (phase 5, CD; COMMON decision 9);
+// design runs the bar × version matrix (decision 10) above their last
+// records; fanout and plan runs a header and their last records. Texts are
+// cleaned and cut, and colors are theme keys with a word or glyph beside
+// each, as in the swarm panes.
 
 /** A status as drawn: its word, and the color and glyph beside it (15.6). */
 export type BoardStatus = { text: string; color: string; glyph: string }
@@ -432,6 +434,13 @@ export type BoardHeader = {
 /** A gate's state on the board. */
 export type BoardGateState = 'landed' | 'in progress' | 'halted' | 'waiting' | 'repairing'
 
+/**
+ * What the gate table's menu does for a row (COMMON decision 9): `replay`
+ * fills `/litter:amend <gate> ` into the prompt, `note` opens the critic's
+ * verdict file, `copy` copies the land's full commit id.
+ */
+export type BoardGateAction = 'replay' | 'note' | 'copy'
+
 /** One gate row: `args.gates`', or one of the chain's earlier lands (`earlier`). */
 export type BoardGateRow = {
   id: string
@@ -448,8 +457,12 @@ export type BoardGateRow = {
   verdictFile: string | null
   /** The land's commit, abbreviated, or null. */
   commit: string | null
+  /** The land's full commit id (40 or 64 hex), the land record's or `args.landed`'s; null when there's none or it isn't a full id. */
+  oid: string | null
   /** Landed by an earlier run of the chain, named here. */
   earlier: string | null
+  /** The menu's items for this row, each only where it applies: `replay` once the run has ended, `note` with a verdict file, `copy` with an `oid`. */
+  actions: BoardGateAction[]
 }
 
 /** The props of the gate table's Client (hooks/board/gates.tsx): plain JSON. */
@@ -490,11 +503,38 @@ export type BoardProposalRow = { text: string; source: string; gate: string | nu
 /** One record of a fanout, plan or design run: its kind and a short summary. */
 export type BoardRecordRow = { seq: number; kind: string; text: string }
 
-/** What [Plan] or [Diff G<n>] opened in the pane, or null. */
+/**
+ * One cell of the design matrix (COMMON decision 10), from the latest verdict
+ * on that version: `✓` PASS, `~` CONDITIONAL or `✕` FAIL, the last two
+ * followed by the gap kind's first letter, or `·` not judged; with its theme key.
+ */
+export type BoardMatrixCell = { text: string; color: string }
+
+/** One bar item's row: its id, its text, a cell per version shown. `outside`: an id a verdict names that the bar doesn't have. */
+export type BoardMatrixRow = { id: string; text: string; cells: BoardMatrixCell[]; outside: boolean }
+
+/** One version's line under the matrix: its latest verdict's overall (or `not judged`), its proposal's sha256 abbreviated, and whether the checkout changed while it was judged. */
+export type BoardVersionLine = { version: string; overall: string; color: string; sha: string; sourceChanged: boolean }
+
+/** A design run's bar × version matrix, above its records. */
+export type BoardDesign = {
+  /** The versions shown, oldest first: the last 8. */
+  versions: string[]
+  /** How many earlier versions aren't shown. */
+  hidden: number
+  /** The bar's items in its order (its rule items included), then the ids outside it. */
+  rows: BoardMatrixRow[]
+  /** The glyphs and the gap kinds' letters, spelled out. */
+  legend: string
+  /** One per version shown. */
+  lines: BoardVersionLine[]
+}
+
+/** What [Plan], [Diff G<n>] or the menu's critic note opened in the pane, or null. */
 export type BoardSection = {
-  kind: 'plan' | 'diff'
+  kind: 'plan' | 'diff' | 'verdict'
   title: string
-  /** Absolute: the plan file, or null for a diff. */
+  /** Absolute: the plan, proposal or verdict file, or null for a diff. */
   path: string | null
   text: string
 }
@@ -510,12 +550,14 @@ export type BoardBody = {
   /** Execute only. */
   gates: BoardGatesProps | null
   detail: BoardGateDetail | null
+  /** Design only. */
+  design: BoardDesign | null
   /** The last 30, for the other workflows; empty for execute. */
   records: BoardRecordRow[]
   rules: BoardRuleRow[]
   proposals: BoardProposalRow[]
   section: BoardSection | null
-  /** [Plan], [Diff G<n>] and [Rules], those that apply. */
+  /** [Plan], [Diff G<n>] and [Rules], those that apply. The selected gate's actions are drawn from its row, under a static table. */
   buttons: BoardButton[]
   /** The run's ledger head the view was built from, so a rebuild with nothing new is skipped. */
   stamp: string

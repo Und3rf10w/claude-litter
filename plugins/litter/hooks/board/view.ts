@@ -1,7 +1,9 @@
 // The board's view (decision 21), built from a run's ledger and run.json
 // only: the header, the execute gate table and its detail, a record list
 // for the other workflows, the rule versions used and the proposals made.
-// Owner: phase 3, package AF.
+// Owner: phase 3, package AF. Phase 5 (package CD; COMMON decisions 9 and
+// 10): each gate row's menu items and full commit id, a design run's bar ×
+// version matrix and its records' lines, and the critic note section.
 //
 // The navigation (the run shown, the selected row, the open section) lives
 // in module memory and is mirrored in $.store (BOARD_STORE_KEY), as the
@@ -17,26 +19,34 @@ import type { StoredRecord } from '../records/core'
 import type { RunJson, RunEndBody, Workflow } from '../records/run'
 import type { GateVerdictBody, LandBody, VerdictDimension, VerifyBody } from '../records/execute'
 import type { LoadedRule, ProposalRef, RuleProposeBody, RuleStatus } from '../records/rules'
+import type { DesignCriterion, DesignVerdictBody } from '../records/design'
 import type { RunState } from '../lifecycle'
 import type { FoundRun } from '../litterdir'
 import type {
   BoardBody,
   BoardButton,
+  BoardDesign,
+  BoardGateAction,
   BoardGateDetail,
   BoardGateRow,
   BoardGateState,
   BoardHeader,
+  BoardMatrixCell,
+  BoardMatrixRow,
   BoardProposalRow,
   BoardRecordRow,
   BoardRuleRow,
   BoardSection,
   BoardStatus,
+  BoardVersionLine,
   BoardView,
   SwarmNotice,
   SwarmSpan,
 } from '../../types/index'
 import { headKey, readLedger } from '../ledgercore'
-import { RUN_ID, planPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
+import { RUN_ID, UNKNOWN_ID, planPath, proposalPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
+import { GAP_KINDS, PROBE_VERDICTS } from '../records/design'
+import { barIds, isVersion, proposalRecords, verdictRecords } from '../design/finalize'
 import { readJson } from '../fsx'
 import { readPolicy } from '../policy'
 import { primaryOf, repoOf, resolveChain, runState } from '../lifecycle'
@@ -58,8 +68,8 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 
 /** The workflows `/litter-board <workflow>` takes: the newest run of it. */
 const WORKFLOW_ARGS: readonly Workflow[] = ['execute', 'design', 'fanout', 'plan']
-/** A full object id, as the land record holds it; only these reach git's argv. */
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+/** A full object id, as the land record holds it; only these reach git's argv, or the clipboard (the menu's copy). */
+export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 /** How many records the other workflows list (decision 21). */
 export const RECORD_ROWS = 30
 /** A section's text: under the engine's 10000-character bound for Code. */
@@ -68,7 +78,8 @@ const SECTION_MAX = 8000
 // ---------------------------------------------------------------------------
 // The navigation
 
-export type BoardSectionNav = { kind: 'plan' } | { kind: 'diff'; gate: string }
+/** [Plan], [Diff G<n>], or the menu's critic note on a gate. */
+export type BoardSectionNav = { kind: 'plan' } | { kind: 'diff'; gate: string } | { kind: 'verdict'; gate: string }
 
 export type BoardNav = {
   /** /litter-board's argument as given: a run id, a workflow, or null. */
@@ -115,7 +126,8 @@ export async function restoreBoardNav(p: Ports): Promise<void> {
       arg: typeof n.arg === 'string' ? n.arg : null,
       run: typeof n.run === 'string' && RUN_ID.test(n.run) ? n.run : null,
       selected: typeof n.selected === 'string' ? n.selected : null,
-      section: n.section && (n.section.kind === 'plan' || (n.section.kind === 'diff' && typeof n.section.gate === 'string')) ? n.section : null,
+      section:
+        n.section && (n.section.kind === 'plan' || ((n.section.kind === 'diff' || n.section.kind === 'verdict') && typeof n.section.gate === 'string')) ? n.section : null,
       notice: null,
     }
     rev++
@@ -420,6 +432,7 @@ function emptyBody(why: string, nav: BoardNav, refused: string | null): BoardBod
     header: null,
     gates: null,
     detail: null,
+    design: null,
     records: [],
     rules: [],
     proposals: [],
@@ -438,9 +451,11 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
   const header = headerOf(f, st)
   const planText = await readText(p, planPath(f.dir))
+  const plan = workflow === 'design' ? await designPlan(p, f, planText) : planText !== null ? { title: 'plan.md', path: planPath(f.dir), text: planText, scroll: true } : null
 
   let gates: BoardBody['gates'] = null
   let detail: BoardGateDetail | null = null
+  let design: BoardDesign | null = null
   let records: BoardRecordRow[] = []
   let selectedRow: BoardGateRow | null = null
   if (workflow === 'execute') {
@@ -449,15 +464,19 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
     gates = { run, rows: table.rows, selected }
     selectedRow = table.rows.find(r => r.id === selected) ?? null
     detail = selected ? detailOf(table.facts.get(selected) ?? null, selected) : null
+  } else if (workflow === 'design') {
+    design = designOf(f.json, f.records)
+    records = recordRows(f.records, recordContext(f.json))
   } else {
     records = recordRows(f.records)
   }
 
   const [rules, proposals] = await Promise.all([ruleRows(p, litterDir, f.json), proposalRows(p, litterDir, run, f.records)])
-  const section = await sectionOf(p, litterDir, f, nav, planText, gates?.selected ?? null)
+  const section = await sectionOf(p, litterDir, f, nav, plan, gates)
 
   const buttons: BoardButton[] = []
-  if (planText !== null) buttons.push({ key: 'board:plan', label: 'Plan' })
+  // A design's [Plan] is its delivered plan.md, else its latest proposal; for a deliverable that isn't a plan, that proposal.
+  if (plan !== null) buttons.push({ key: 'board:plan', label: workflow === 'design' && f.json?.args?.deliverable !== 'plan' ? 'Proposal' : 'Plan' })
   if (selectedRow && selectedRow.state === 'landed' && selectedRow.commit) buttons.push({ key: `board:diff:${selectedRow.id}`, label: `Diff ${selectedRow.id}` })
   buttons.push({ key: 'board:rules', label: 'Rules' })
   if (section) buttons.push({ key: 'board:close', label: 'Close' })
@@ -469,6 +488,7 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
     header,
     gates,
     detail,
+    design,
     records,
     rules,
     proposals,
@@ -526,6 +546,8 @@ async function gateRows(
   const rows: BoardGateRow[] = []
   const status = runStatusOf(st, f.tampered !== null)
   const current = worked.find(g => !facts.lands.has(g.id))?.id ?? null
+  // Replay is for a run that has ended: not running, stopping or repairing, and not before its launch (decision 9).
+  const ended = st.open === null && st.ended
 
   // The chain's earlier lands: the run that landed each, read from its own ledger.
   const members = earlier.length > 0 ? await chainMembers(p, litterDir, f.run) : []
@@ -536,6 +558,8 @@ async function gateRows(
     const verdict = mf?.verdicts.get(l.id)?.at(-1)
     const mDir = m ? runDir(litterDir, m.run) : f.dir
     rowFacts.set(l.id, { verifies: mf?.verifies.get(l.id) ?? [], verdict, stop: null, runDir: mDir })
+    const file = await verdictPath(p, mDir, verdict)
+    const oid = OID.test(l.commit) ? l.commit : null
     earlierRows.set(l.id, {
       id: l.id,
       title: oneLine(titleOf(l.id, ''), 120),
@@ -544,9 +568,11 @@ async function gateRows(
       attempt: attemptOf(mf?.verifies.get(l.id)),
       maxAttempts: m && typeof m.json.args?.maxAttempts === 'number' ? (m.json.args.maxAttempts as number) : maxAttempts,
       failing: failingOf(verdict),
-      verdictFile: await verdictPath(p, mDir, verdict),
+      verdictFile: file,
       commit: shortSha(l.commit) || null,
+      oid,
       earlier: m ? m.run : 'an earlier run',
+      actions: actionsOf(ended, file, oid),
     })
   }
 
@@ -564,6 +590,8 @@ async function gateRows(
     else if (st.ended && status !== 'done' && g.id === current && (verifies.length > 0 || verdict !== undefined || stop !== null)) state = 'halted'
     else state = 'waiting'
     rowFacts.set(g.id, { verifies, verdict, stop, runDir: f.dir })
+    const file = await verdictPath(p, f.dir, verdict)
+    const oid = land && OID.test(land.commit) ? land.commit : null
     workedRows.set(g.id, {
       id: g.id,
       title: oneLine(titleOf(g.id, g.title), 120),
@@ -573,9 +601,11 @@ async function gateRows(
       attempt: Math.max(attemptOf(verifies), stop?.attempt ?? 0),
       maxAttempts,
       failing: failingOf(verdict),
-      verdictFile: await verdictPath(p, f.dir, verdict),
+      verdictFile: file,
       commit: land ? shortSha(land.commit) || null : null,
+      oid,
       earlier: null,
+      actions: actionsOf(ended, file, oid),
     })
   }
 
@@ -605,6 +635,15 @@ async function verdictPath(p: Ports, dir: string, v: GateVerdict | undefined): P
   if (!v || v.gate === null || v.attempt === null || !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(v.gate) || !Number.isInteger(v.attempt)) return null
   const path = verdictFile(dir, v.gate, v.attempt)
   return (await p.fs.exists(path).catch(() => false)) ? path : null
+}
+
+/** A row's menu items (decision 9), in the menu's order, each only where it applies. */
+function actionsOf(ended: boolean, verdictFile: string | null, oid: string | null): BoardGateAction[] {
+  const out: BoardGateAction[] = []
+  if (ended) out.push('replay')
+  if (verdictFile !== null) out.push('note')
+  if (oid !== null) out.push('copy')
+  return out
 }
 
 /** The gate being worked, else the last row. */
@@ -645,8 +684,46 @@ function field(b: Record<string, unknown>, k: string): string {
   return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : ''
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** What a design run's record lines read beyond the record: the bar's ids, and each unknown's question by its id. */
+export type RecordContext = { bar: readonly string[] | null; unknowns: ReadonlyMap<string, string> }
+
+const NO_CONTEXT: RecordContext = { bar: null, unknowns: new Map() }
+
+/** A design run's context from run.json's args: the frozen bar, and the unknowns as summary.ts reads them (a bare string is `U<n>`'s question). */
+function recordContext(json: RunJson | null): RecordContext {
+  const list = Array.isArray(json?.args?.empiricalUnknowns) ? (json!.args.empiricalUnknowns as unknown[]) : []
+  const unknowns = new Map<string, string>()
+  list.forEach((u, i) => {
+    if (typeof u === 'string') unknowns.set(`U${i + 1}`, u)
+    else if (isObj(u) && typeof u.id === 'string' && UNKNOWN_ID.test(u.id) && typeof u.question === 'string') unknowns.set(u.id, u.question)
+  })
+  return { bar: barIds(json), unknowns }
+}
+
+/** A verdict's criteria with an id, the first of each id. */
+function criteriaOf(v: unknown): DesignCriterion[] {
+  const out: DesignCriterion[] = []
+  for (const c of Array.isArray(v) ? v : []) if (isObj(c) && typeof c.id === 'string' && !out.some(x => x.id === c.id)) out.push(c as unknown as DesignCriterion)
+  return out
+}
+
+/**
+ * A design critic's verdict: `v3 APPROVED · 8/8 pass`, or `v3 HOLDING · 5/8
+ * pass, open C3 C5`. Counted over the bar and every id the verdict judged, so a
+ * bar item it left out is open, as the approval reads it (design/finalize.ts).
+ */
+function designVerdictLine(b: Record<string, unknown>, bar: readonly string[] | null): string {
+  const criteria = criteriaOf(b.criteria)
+  const ids = [...new Set([...(bar ?? []), ...criteria.map(c => c.id)])]
+  const open = ids.filter(id => criteria.find(c => c.id === id)?.verdict !== 'PASS')
+  const counted = `${ids.length - open.length}/${ids.length} pass${open.length > 0 ? `, open ${open.map(id => oneLine(id, 20)).join(' ')}` : ''}`
+  return `${field(b, 'version')} ${oneLine(b.overall, 20)} · ${counted}`
+}
+
 /** One record in a line: its kind's own summary where there is one, else its first plain fields. */
-export function recordLine(r: StoredRecord): string {
+export function recordLine(r: StoredRecord, ctx: RecordContext = NO_CONTEXT): string {
   const b = (r.body ?? {}) as Record<string, unknown>
   const text = (() => {
     switch (r.kind) {
@@ -666,12 +743,41 @@ export function recordLine(r: StoredRecord): string {
         return v ? `${v.gate} attempt ${v.attempt}: ${v.green ? '✓ green' : `✕ ${howEnded(v)}`}` : 'verify'
       }
       case 'verdict': {
+        // Three shapes, told apart before any is worded: a design critic's, a fanout's, execute's four dimensions.
+        if (Array.isArray(b.criteria) && typeof b.overall === 'string') return designVerdictLine(b, ctx.bar)
         if (Array.isArray(b.tasks)) {
           const tasks = b.tasks as { pass?: unknown }[]
           return `${tasks.filter(t => t?.pass === true).length} of ${tasks.length} tasks pass${b.approved === true ? ', approved' : ''}`
         }
-        const failing = DIMENSIONS.filter(d => isDim(b[d]) && !(b[d] as VerdictDimension).pass)
-        return `on ${field(b, 'verify_id')}: ${failing.length === 0 ? '✓ passes' : `✕ ${failing.join(', ')}`}`
+        if (DIMENSIONS.every(d => isDim(b[d]))) {
+          const failing = DIMENSIONS.filter(d => !(b[d] as VerdictDimension).pass)
+          return `on ${field(b, 'verify_id')}: ${failing.length === 0 ? '✓ passes' : `✕ ${failing.join(', ')}`}`
+        }
+        return 'verdict (unrecognized)'
+      }
+      case 'proposal': {
+        const n = Array.isArray(b.gates) ? b.gates.length : null
+        return `${field(b, 'version')}${n === null ? '' : ` · ${n} gate${n === 1 ? '' : 's'}`}`
+      }
+      case 'probe': {
+        const id = typeof b.unknown_id === 'string' && UNKNOWN_ID.test(b.unknown_id) ? b.unknown_id : null
+        // A probe recorded before the unknown and the verdict were required has only its report.
+        if (id === null) return `no unknown named: ${field(b, 'report')}`
+        const verdict = (PROBE_VERDICTS as readonly unknown[]).includes(b.verdict) ? String(b.verdict) : 'no verdict recorded'
+        const question = typeof b.question === 'string' && b.question.trim() !== '' ? b.question : (ctx.unknowns.get(id) ?? '')
+        return `${id} ${verdict}${question ? `: ${question}` : ''}`
+      }
+      case 'design.result': {
+        const res = isObj(b.result) ? b.result : {}
+        if (b.role === 'author') return `author${isVersion(res.version) ? `, ${res.version}` : ''}`
+        if (b.role !== 'reframer') return field(b, 'role')
+        const rec = typeof res.recommendation === 'string' ? oneLine(res.recommendation, 40) : ''
+        return `reframer, ${rec === '' || rec.toLowerCase() === 'none' ? 'no reframe' : `recommends ${rec}`}`
+      }
+      case 'design.deliver': {
+        const version = isVersion(b.version) ? ` ${b.version}` : ''
+        if (typeof b.refused === 'string') return `refused${version}: ${b.refused}`
+        return `delivered${version} as ${field(b, 'path')}`
       }
       case 'land':
         return `${field(b, 'gate')} landed ${shortSha(b.commit)}`
@@ -695,8 +801,88 @@ export function recordLine(r: StoredRecord): string {
   return oneLine(text, 160)
 }
 
-function recordRows(records: readonly StoredRecord[]): BoardRecordRow[] {
-  return records.slice(-RECORD_ROWS).map(r => ({ seq: r.seq, kind: oneLine(r.kind, 40), text: recordLine(r) }))
+function recordRows(records: readonly StoredRecord[], ctx: RecordContext = NO_CONTEXT): BoardRecordRow[] {
+  return records.slice(-RECORD_ROWS).map(r => ({ seq: r.seq, kind: oneLine(r.kind, 40), text: recordLine(r, ctx) }))
+}
+
+// The design view: the bar × version matrix (decision 10)
+
+/** The versions the matrix shows at most, the last ones. */
+export const MATRIX_VERSIONS = 8
+/** Ids a verdict names outside the bar get a row each, up to this many: a verdict's ids are model text. */
+const OUTSIDE_ROWS = 10
+
+const CELL: Record<string, { glyph: string; color: string }> = {
+  PASS: { glyph: '✓', color: 'success' },
+  CONDITIONAL: { glyph: '~', color: 'warning' },
+  FAIL: { glyph: '✕', color: 'error' },
+}
+const NOT_JUDGED: BoardMatrixCell = { text: '·', color: 'inactive' }
+const OVERALL_COLOR: Record<string, string> = { APPROVED: 'success', HOLDING: 'warning' }
+
+/** The line under the matrix that spells its glyphs and the gap kinds' letters out. */
+export const MATRIX_LEGEND = `✓ PASS  ~ CONDITIONAL  ✕ FAIL  · not judged  ·  gap kind: ${GAP_KINDS.map(k => `${k[0]} ${k}`).join(', ')}`
+
+const versionNumber = (v: string): number => Number(v.slice(1))
+
+/** A criterion's cell: its glyph, then for CONDITIONAL and FAIL its gap kind's first letter. */
+function cellOf(c: DesignCriterion | undefined): BoardMatrixCell {
+  const look = c ? CELL[c.verdict] : undefined
+  if (!c || !look) return NOT_JUDGED
+  const gap = c.verdict !== 'PASS' && (GAP_KINDS as readonly unknown[]).includes(c.gap_kind) ? c.gap_kind![0]! : ''
+  return { text: `${look.glyph}${gap}`, color: look.color }
+}
+
+/**
+ * A design run's matrix: a row per bar item (run.json's bar, its rule items
+ * included, in its order), a column per version (the last 8), each cell from
+ * the latest verdict on that version; then a row for each id a shown verdict
+ * names that the bar doesn't have, and a line per version shown.
+ */
+function designOf(json: RunJson | null, records: readonly StoredRecord[]): BoardDesign {
+  const bar = (Array.isArray(json?.args?.bar) ? (json!.args.bar as unknown[]) : []).filter(
+    (b): b is { id: string; text?: unknown } => isObj(b) && typeof b.id === 'string',
+  )
+  const proposals = proposalRecords(records)
+  const verdicts = verdictRecords(records)
+  const all = [...new Set([...proposals, ...verdicts].map(r => r.body.version as string))].sort((a, b) => versionNumber(a) - versionNumber(b))
+  const versions = all.slice(-MATRIX_VERSIONS)
+  const judged = versions.map(v => {
+    const body = verdicts.filter(r => r.body.version === v).at(-1)?.body as Partial<DesignVerdictBody> | undefined
+    return body ? { body, criteria: criteriaOf(body.criteria) } : null
+  })
+  const outside: string[] = []
+  for (const j of judged) {
+    for (const c of j?.criteria ?? []) if (!bar.some(b => b.id === c.id) && !outside.includes(c.id)) outside.push(c.id)
+  }
+  const cells = (id: string) => judged.map(j => cellOf(j?.criteria.find(c => c.id === id)))
+  const rows: BoardMatrixRow[] = [
+    ...bar.map(b => ({ id: oneLine(b.id, 16), text: oneLine(b.text, 300), cells: cells(b.id), outside: false })),
+    ...outside.slice(0, OUTSIDE_ROWS).map(id => ({ id: oneLine(id, 16), text: 'not in the bar', cells: cells(id), outside: true })),
+  ]
+  const lines: BoardVersionLine[] = versions.map((version, i) => {
+    const j = judged[i]
+    const overall = j ? oneLine(j.body.overall, 20) || 'no overall' : 'not judged'
+    const sha = shortSha(proposals.find(r => r.body.version === version)?.body.sha256)
+    return { version, overall, color: OVERALL_COLOR[overall] ?? 'inactive', sha, sourceChanged: j?.body.source_changed === true }
+  })
+  return { versions, hidden: all.length - versions.length, rows, legend: MATRIX_LEGEND, lines }
+}
+
+/** What a design's [Plan] opens (decision 10): plan.md once a delivery is recorded, else the latest proposals/vN.md. */
+type PlanFile = { title: string; path: string; text: string | null; scroll: boolean }
+
+async function designPlan(p: Ports, f: RunFiles, planText: string | null): Promise<PlanFile | null> {
+  const delivered = f.records.filter(r => r.kind === 'design.deliver' && typeof r.body.path === 'string' && r.body.refused === undefined).at(-1)
+  if (delivered && planText !== null) {
+    const v = isVersion(delivered.body.version) ? `${delivered.body.version}, ` : ''
+    return { title: `plan.md (${v}delivered)`, path: planPath(f.dir), text: planText, scroll: false }
+  }
+  // isVersion has passed it, so it names a file under proposals/.
+  const latest = proposalRecords(f.records).at(-1)?.body.version as string | undefined
+  if (!latest) return null
+  const path = proposalPath(f.dir, latest)
+  return { title: `proposal ${latest}`, path, text: await readText(p, path), scroll: false }
 }
 
 // The rules
@@ -769,33 +955,44 @@ async function proposalRows(p: Ports, litterDir: string, run: string, records: r
   return rows
 }
 
-// The sections [Plan] and [Diff G<n>] open
+// The sections [Plan], [Diff G<n>] and the menu's critic note open
 
 async function sectionOf(
   p: Ports,
   litterDir: string,
   f: RunFiles,
   nav: BoardNav,
-  planText: string | null,
-  selected: string | null,
+  plan: PlanFile | null,
+  gates: BoardBody['gates'],
 ): Promise<BoardSection | null> {
   const s = nav.section
   if (!s) return null
   if (s.kind === 'plan') {
-    if (planText === null) return { kind: 'plan', title: "plan.md isn't there", path: planPath(f.dir), text: '' }
+    if (plan === null) return { kind: 'plan', title: "plan.md isn't there", path: planPath(f.dir), text: '' }
+    if (plan.text === null) return { kind: 'plan', title: `${plan.title} isn't there`, path: plan.path, text: '' }
     // "Scrolled to the selected gate's section": from its heading on (gates.ts's lines, 1-based).
-    const parsed = parseGates(planText)
-    const g = parsed.ok && selected ? parsed.gates.find(x => x.id === selected) : undefined
+    const parsed = plan.scroll ? parseGates(plan.text) : null
+    const g = parsed?.ok && gates?.selected ? parsed.gates.find(x => x.id === gates.selected) : undefined
     const from = g ? g.lines.start : 1
-    const shown = planText.split('\n').slice(from - 1).join('\n')
+    const shown = plan.text.split('\n').slice(from - 1).join('\n')
     return {
       kind: 'plan',
-      title: g ? `plan.md from ${g.id} (line ${from})` : 'plan.md',
-      path: planPath(f.dir),
+      title: g ? `${plan.title} from ${g.id} (line ${from})` : plan.title,
+      path: plan.path,
       text: clean(shown, SECTION_MAX),
     }
   }
+  if (s.kind === 'verdict') return verdictSection(p, gates, s.gate)
   return diffSection(p, litterDir, f, s.gate)
+}
+
+/** The menu's critic note: the row's verdict file (AB's verdicts.ts), cleaned and cut as the plan is. */
+async function verdictSection(p: Ports, gates: BoardBody['gates'], gate: string): Promise<BoardSection> {
+  const file = gates?.rows.find(r => r.id === gate)?.verdictFile ?? null
+  if (file === null) return { kind: 'verdict', title: `${gate} has no critic note`, path: null, text: '' }
+  const text = await readText(p, file)
+  if (text === null) return { kind: 'verdict', title: `${gate}'s critic note isn't there`, path: file, text: '' }
+  return { kind: 'verdict', title: `critic note on ${gate}`, path: file, text: clean(text, SECTION_MAX) }
 }
 
 /**

@@ -7,14 +7,18 @@
 // The gate table is the Client module gates.tsx where the surface has one,
 // whose ↑↓ and Enter post `{ run, action: 'select', gate }` (a ui.message
 // here), and a static table of buttons elsewhere. [Plan] and [Diff G<n>]
-// open a section in the pane; [Rules] opens the rules pane. There's no
-// right-click menu yet (phase 5).
+// open a section in the pane; [Rules] opens the rules pane. The table's
+// right-click menu (phase 5, package CD; COMMON decision 9) posts `replay`,
+// `note` or `copy` for its row; on a surface with no Client the selected
+// gate's actions are buttons under the table. A design run gets its bar ×
+// version matrix (decision 10) above its records.
 
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
 import type { CommandRunHook, PaneElements, PaneRender, PaneUiHandlers, PortHook } from '../hooktypes'
 import type {
-  BoardBody,
+  BoardDesign,
+  BoardGateAction,
   BoardGateDetail,
   BoardGateRow,
   BoardGatesProps,
@@ -28,7 +32,7 @@ import type {
 import { session } from '../session'
 import { buttons, header, section, tableFor } from '../swarm/builder'
 import { oneLine } from '../swarm/view'
-import { blankBoardNav, boardNavRev, buildBoard, navOf, restoreBoardNav, saveBoardNav, setBoardNav } from './view'
+import { OID, blankBoardNav, boardNavRev, buildBoard, navOf, restoreBoardNav, saveBoardNav, setBoardNav } from './view'
 import { openRulesPane, refreshRulesPane, rulesTick } from '../rules/pane'
 
 export const BOARD_PANE = 'litter-board'
@@ -127,6 +131,7 @@ async function drawNoDirectory(p: Ports): Promise<void> {
       header: null,
       gates: null,
       detail: null,
+      design: null,
       records: [],
       rules: [],
       proposals: [],
@@ -182,6 +187,7 @@ export function renderBoardPane(view: BoardView | null, resolved: PaneElements, 
       {body.header ? headerPart(el, body.header) : null}
       {body.gates ? gatesPart(el, body.gates) : null}
       {body.detail ? detailPart(el, body.detail) : null}
+      {body.design ? designPart(el, body.design, e.props.bodyColumns) : null}
       {records.length > 0 ? recordsPart(el, records) : null}
       {body.header ? rulesPart(el, body.rules ?? [], body.proposals ?? []) : null}
       {body.section ? sectionPart(el, body.section) : null}
@@ -232,6 +238,9 @@ function gatesPart(el: PaneElements, gates: BoardGatesProps): RenderElement {
     )
   }
   const { Button } = el
+  // With no pointer for the menu, the selected gate's actions are buttons under the table (decision 9).
+  const picked = rows.find(r => r.id === gates.selected)
+  const actions = picked && Array.isArray(picked.actions) ? picked.actions : []
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold>{'  gate  state         try   commit   failing      title'}</Text>
@@ -243,6 +252,59 @@ function gatesPart(el: PaneElements, gates: BoardGatesProps): RenderElement {
         </Box>
       ))}
       {rows.some(r => r.earlier) && <Text dimColor>{rows.filter(r => r.earlier).map(r => `${r.id} landed in ${r.earlier}`).join(' · ')}</Text>}
+      {picked && actions.length > 0 && buttons(el, actions.map(a => ({ key: `board:${a}:${picked.id}`, label: ACTION_LABEL[a](picked.id) })))}
+    </Box>
+  )
+}
+
+/** The static table's action buttons, named for their gate. */
+const ACTION_LABEL: Record<BoardGateAction, (gate: string) => string> = {
+  replay: gate => `Replay ${gate} with /litter:amend`,
+  note: gate => `Open ${gate}'s critic note`,
+  copy: gate => `Copy ${gate}'s commit`,
+}
+
+/** A cell of `n` columns: cut with `…`, or padded. */
+const fit = (s: string, n: number): string => (s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s.padEnd(n))
+
+/**
+ * The bar × version matrix (decision 10) as a Text table sized to the pane:
+ * the id, a cell per version, then the item's text cut to what's left of
+ * `columns`; the legend; a line per version. No Client is needed.
+ */
+function designPart(el: PaneElements, d: BoardDesign, columns: number): RenderElement {
+  const { Box, Text } = el
+  const idW = Math.max(5, ...d.rows.map(r => r.id.length + 1))
+  const cellW = Math.max(4, ...d.versions.map(v => v.length + 1))
+  const textW = Math.max(12, (Number.isFinite(columns) ? columns : 80) - 2 - idW - cellW * d.versions.length)
+  return (
+    <Box flexDirection="column">
+      {section(el, 'Bar × versions', { text: `${d.rows.filter(r => !r.outside).length} items, ${d.versions.length + d.hidden} versions`, dim: true })}
+      <Box flexDirection="row">
+        <Text bold>{`  ${'item'.padEnd(idW)}${d.versions.map(v => v.padEnd(cellW)).join('')}`}</Text>
+        {d.hidden > 0 && <Text dimColor>{`${d.hidden} earlier version${d.hidden === 1 ? '' : 's'} hidden`}</Text>}
+      </Box>
+      {d.rows.map(r => (
+        <Box flexDirection="row">
+          <Text color={r.outside ? 'warning' : undefined}>{`  ${r.id.padEnd(idW)}`}</Text>
+          {r.cells.map(c => (
+            <Text color={c.color}>{c.text.padEnd(cellW)}</Text>
+          ))}
+          <Text color={r.outside ? 'warning' : undefined} dimColor={!r.outside} wrap="truncate-end">
+            {fit(r.text, textW).trimEnd()}
+          </Text>
+        </Box>
+      ))}
+      {d.versions.length === 0 && <Text dimColor>no version recorded yet</Text>}
+      <Text dimColor wrap="truncate-end">{`  ${d.legend}`}</Text>
+      {d.lines.map(l => (
+        <Box flexDirection="row" columnGap={1}>
+          <Text bold>{`  ${l.version.padEnd(cellW)}`}</Text>
+          <Text color={l.color}>{l.overall}</Text>
+          <Text color={l.sha ? 'yellow' : 'gray'}>{l.sha ? `sha256 ${l.sha}` : 'sha256 not recorded'}</Text>
+          {l.sourceChanged && <Text color="warning">! source changed</Text>}
+        </Box>
+      ))}
     </Box>
   )
 }
@@ -326,7 +388,7 @@ function sectionPart(el: PaneElements, s: BoardSection): RenderElement {
   return (
     <Box flexDirection="column">
       {section(el, s.title, s.path ? { text: s.path, color: 'blue' } : undefined)}
-      {s.text === '' ? <Text dimColor>nothing to show</Text> : <Code source={s.text} {...(s.kind === 'plan' ? { language: 'markdown' } : {})} />}
+      {s.text === '' ? <Text dimColor>nothing to show</Text> : <Code source={s.text} {...(s.kind === 'diff' ? {} : { language: 'markdown' })} />}
     </Box>
   )
 }
@@ -362,9 +424,26 @@ export async function handleBoard(p: Ports, key: string, from: { run?: string } 
   switch (k.action) {
     case 'select':
       if (!gate) return
-      // A diff was the last gate's; the plan scrolls to the new one.
-      setBoardNav({ ...n, selected: gate, section: n.section?.kind === 'diff' ? null : n.section, notice: null })
+      // A diff or a critic note was the last gate's; the plan scrolls to the new one.
+      setBoardNav({ ...n, selected: gate, section: n.section?.kind === 'diff' || n.section?.kind === 'verdict' ? null : n.section, notice: null })
       break
+    case 'replay':
+    case 'note':
+    case 'copy': {
+      if (!gate) return
+      const action: BoardGateAction = k.action
+      // Checked against the row as the ledger has it now, so a pick from an older drawing is never acted on blindly.
+      const view = await drawBoard(p, litterDir)
+      const row = view?.body?.gates?.rows.find(r => r.id === gate)
+      if (!row || !(Array.isArray(row.actions) && row.actions.includes(action))) {
+        p.toast(`litter: ${notAvailable(action, gate, view, row)}`)
+        return
+      }
+      if (action === 'replay') return replay(p, gate)
+      if (action === 'copy') return copyCommit(p, gate, row.oid)
+      setBoardNav({ ...n, selected: gate, section: { kind: 'verdict', gate }, notice: null })
+      break
+    }
     case 'plan':
       setBoardNav({ ...n, section: { kind: 'plan' }, notice: null })
       break
@@ -388,13 +467,56 @@ export async function handleBoard(p: Ports, key: string, from: { run?: string } 
   await drawBoard(p, litterDir)
 }
 
+/** Why a menu action isn't there for a row, in one line, with what to do instead. */
+function notAvailable(action: BoardGateAction, gate: string, view: BoardView | null, row: BoardGateRow | undefined): string {
+  if (!row) return `${gate} isn't a gate of the run the board shows, so that was ignored`
+  if (action === 'replay') {
+    const status = view?.body?.header?.status.text ?? 'not ended'
+    return `run ${view?.run ?? ''} is ${status}, so it can't be replayed yet: wait for it to end, then use /litter:amend ${gate}`
+  }
+  if (action === 'note') return `${gate} has no critic note yet, so there's nothing to open`
+  return row.state === 'landed' ? `${gate}'s land doesn't record a full commit id, so nothing was copied` : `${gate} hasn't landed, so there's no commit to copy`
+}
+
+/** Replay: `/litter:amend <gate> ` into the prompt box as your draft. It never submits: you add the change and press Enter. */
+async function replay(p: Ports, gate: string): Promise<void> {
+  const text = `/litter:amend ${gate} `
+  let filled = false
+  try {
+    filled = await p.fillPrompt(text)
+  } catch (err) {
+    p.log(`board: the prompt box refused ${text.trim()}: ${errText(err)}`)
+  }
+  p.log(`board: replay ${gate}: ${filled ? 'filled' : 'refused'}`)
+  p.toast(filled ? `litter: /litter:amend ${gate} is in the prompt box: add the change and press Enter` : `litter: the prompt box didn't take it: type /litter:amend ${gate} <change>`)
+}
+
+/** Copy: the land's full commit id, checked as one first; the toast says what was copied, or that it wasn't. */
+async function copyCommit(p: Ports, gate: string, oid: string | null): Promise<void> {
+  if (oid === null || !OID.test(oid)) {
+    p.toast(`litter: ${gate}'s land doesn't record a full commit id, so nothing was copied`)
+    return
+  }
+  let copied = false
+  try {
+    copied = await p.copy(oid)
+  } catch (err) {
+    p.log(`board: the copy of ${gate}'s commit failed: ${errText(err)}`)
+  }
+  p.toast(copied ? `litter: copied ${oid.slice(0, 7)} (${gate})` : `litter: ${oid.slice(0, 7)} (${gate}) wasn't copied: this screen's clipboard refused it`)
+}
+
+/** Every action handleBoard knows, so a Client's post can carry any of them. */
+export const BOARD_ACTIONS = ['select', 'plan', 'diff', 'close', 'rules', 'replay', 'note', 'copy'] as const
+
 /** The board's ui.message (the gate table's posts), ui.press, ui.input and ui.select; anything not keyed `board:` passes on. */
 export const onBoardUi: PaneUiHandlers = {
   message: async (p, e, next) => {
     if (e.element !== GATES_KEY) return next(e)
     const data = e.data !== null && typeof e.data === 'object' && !Array.isArray(e.data) ? (e.data as Record<string, unknown>) : {}
-    if (data.action !== 'select' || typeof data.gate !== 'string' || typeof data.run !== 'string') return {}
-    await handleBoard(p, `board:select:${data.gate}`, { run: data.run })
+    const action = typeof data.action === 'string' && (BOARD_ACTIONS as readonly string[]).includes(data.action) ? data.action : null
+    if (action === null || typeof data.run !== 'string' || (data.gate !== undefined && typeof data.gate !== 'string')) return {}
+    await handleBoard(p, `board:${action}${typeof data.gate === 'string' ? `:${data.gate}` : ''}`, { run: data.run })
     return {}
   },
   press: async (p, e, next) => {
