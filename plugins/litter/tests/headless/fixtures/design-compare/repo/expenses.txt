@@ -1,0 +1,3 @@
+taxi 1250
+lunch 899
+hotel 14000
