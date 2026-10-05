@@ -6,6 +6,7 @@
 import type { RepairBudget } from '../swarm/types'
 import type { WidenMode } from '../options'
 import type { RuleRef } from './rules'
+import type { DesignCriterion } from './design'
 
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
 export const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
@@ -33,11 +34,100 @@ export const RESUMABLE: readonly RunStatus[] = ['failed', 'stopped', 'interrupte
 export type Deliverable = 'plan' | 'research' | 'audit' | 'review'
 export const DELIVERABLES: readonly Deliverable[] = ['plan', 'research', 'audit', 'review']
 
-/** A design bar entry: `C<n>` criteria and `B<n>` bans (plan section 7, design.js "Args"). */
-export type BarItem = { id: string; text: string; evidence: string; reason?: string }
+/**
+ * A design bar entry: `C<n>` criteria and `B<n>` bans (plan section 7,
+ * design.js "Args"). An item run.start added from the accepted rules in
+ * scope (16.5; decision 4) names them: a ban its `rule`, the one criterion
+ * for the rest its `rules`. Your own items name neither.
+ */
+export type BarItem = { id: string; text: string; evidence: string; reason?: string; rule?: RuleRef; rules?: RuleRef[] }
 
 export type LensRole = 'falsifier' | 'coverage' | 'mechanism'
 export type Lens = { role: LensRole; name: string; focus: string; anchors: string[] }
+
+/**
+ * An empirical unknown (decision 3): `U1` and `U2` from the interview, in the
+ * order given; design.js numbers a mechanism's on from there (decision 10).
+ */
+export type EmpiricalUnknown = { id: string; question: string; smallest_test: string; kill_result: string }
+
+/**
+ * A follow-up run's prior (decision 12, WP-BD's): the prior design run, its
+ * latest proposal's version and text (cut at 64 KiB, with a note), its
+ * latest verdict on that version, and the feedback, its `design.feedback`
+ * records' then this run's. `version` and `proposal` are null when the prior
+ * recorded none.
+ */
+export type DesignPrior = {
+  run: string
+  version: string | null
+  proposal: string | null
+  verdict: { criteria: DesignCriterion[]; overall: string } | null
+  feedback: string[]
+}
+
+/**
+ * A design run's args, the contract between run.start (design/launch.ts's
+ * designArgs) and workflows/design.js (plan section 7, design.js "Args").
+ *
+ * Until WP-BD builds designArgs, its stub gives today's args: each of
+ * `empiricalUnknowns` is the question as a bare string, `template` and
+ * `prior` are absent, and `bar` holds your items only.
+ */
+export type DesignArgs = {
+  /** The run id. */
+  run: string
+  /** The run's tag nonce (plan 7a), drawn once by run.start. */
+  nonce: string
+  /** Your authorized actions, one per line, as the launch confirmation stated them. */
+  authorized: string
+  /** Your words, verbatim. */
+  goal: string
+  deliverable: Deliverable
+  /** Frozen at run.start: your items, then the ones the accepted rules in scope add (decision 4). */
+  bar: BarItem[]
+  /** Each call's `<rules>`: your run rules first, then the accepted rules in 16.5's compact form, under the 8 KiB cap. */
+  rules: string[]
+  anchors: string[]
+  lenses: Lens[]
+  /** At most two, `U1` and `U2` (decision 3). */
+  empiricalUnknowns: EmpiricalUnknown[]
+  maxRounds: number
+  /** The base snapshot's commit, `refs/litter/<run>/base`: the probers' worktrees start there (plan section 9, "Run worktrees"). */
+  base: string
+  /** The author's section template for the deliverable (decision 13); '' leaves the author's `<template>` out. */
+  template: string
+  /** A follow-up run's prior (decision 12), or null. */
+  prior: DesignPrior | null
+  /** The run this one follows, as run.start was given it. */
+  priorRun?: string
+  /** Your feedback on that run's result, in your words. */
+  feedback?: string
+}
+
+/** design.js's `{ stopped: null }` outcomes and stops (plan section 7; decisions 1 and 2), which the decoder accepts. */
+export const DESIGN_OUTCOMES = ['approved', 'holding'] as const
+export const DESIGN_BYS = ['approved', 'no-new-material', 'max-rounds', 'budget'] as const
+
+/**
+ * What workflows/design.js returns (plan section 7, "What design.js
+ * returns"; COMMON decisions 1 and 2), one shape per stop, so the decoder
+ * maps each to a run.end. `version` is null when no version was recorded.
+ * `halted` is a call that returned nothing after its retry, or a refused
+ * prober worktree; `interrupted` is call()'s rejection handling, as in execute.
+ */
+export type DesignReturn =
+  | { stopped: null; outcome: (typeof DESIGN_OUTCOMES)[number]; by: (typeof DESIGN_BYS)[number]; version: string | null }
+  /** The reframer's result whose recommendation changes the goal. */
+  | { stopped: 'goal-change'; reframe: Record<string, unknown> }
+  /** The author's blocking entry in `user_decisions`. */
+  | { stopped: 'blocking-decision'; decision: Record<string, unknown> }
+  /** The criteria whose `gap_kind` is `user`. */
+  | { stopped: 'user-gap'; criteria: DesignCriterion[] }
+  /** The verdict's version, whose `source_changed` was true. */
+  | { stopped: 'source-changed'; version: string }
+  | { stopped: 'halted'; reason: string }
+  | { stopped: 'interrupted'; reason: string }
 
 /** A fanout task as the launcher passes it; `files` are owned paths, a trailing `/` owns a folder. */
 export type FanoutTaskInput = { id: string; title: string; text: string; writes?: boolean; files?: string[] }
@@ -68,6 +158,7 @@ export type RunStartInput = {
   /** An argv other than the configured one: asked through $.ui.ask before it's used. */
   verify?: string[]
   goalCheck?: string[]
+  /** A new worktree's dependency setup: a fanout's writers, an isolated execute run, and a design's probers (decision 11). */
   setup?: string[]
   maxAttempts?: number
   adversary?: boolean
@@ -81,13 +172,15 @@ export type RunStartInput = {
   // fanout
   tasks?: FanoutTaskInput[]
   contract?: string
+  /** Ignored folders each new worktree links from the checkout: a fanout's writers, and a design's probers (decision 11). */
   linkDirs?: string[]
   mergeOrder?: string[]
   // design
   deliverable?: Deliverable
   bar?: BarItem[]
   lenses?: Lens[]
-  empiricalUnknowns?: string[]
+  /** At most two (decision 3): each `{ question, smallest_test, kill_result }`, or a bare string as its question. run.start assigns the ids. */
+  empiricalUnknowns?: (string | Partial<EmpiricalUnknown>)[]
   anchors?: string[]
   maxRounds?: number
   priorRun?: string

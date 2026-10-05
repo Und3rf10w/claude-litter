@@ -5,11 +5,13 @@
 // a land's commit, a proposal's text) calls writeOut before it answers, so
 // output.sh finds out/<agent_id>.json when the agent returns. consumeOutput
 // records each spooled StructuredOutput result in the ledger, so a verdict
-// needn't be recorded twice.
+// needn't be recorded twice, and a design's author and reframer results are
+// in the ledger for its summary (phase 4).
 
 import type { Ports } from './ports'
 import type { OutFile, SpoolConsumer } from './hookfiles'
 import type { Author, StoredRecord } from './records/core'
+import type { DesignResultBody } from './records/design'
 import type { RunJson } from './records/run'
 import type { TaskResultBody } from './records/fanout'
 import type { CriticProposal } from './records/rules'
@@ -64,6 +66,14 @@ export async function writeOut(p: Ports, litterDir: string, out: OutFile): Promi
 const VERDICT_ROLES: readonly string[] = ['gate-critic', 'verifier']
 
 /**
+ * A design's roles whose result the mod records as `design.result` (decision
+ * 15): the author's residual unknowns and user decisions, and the
+ * reframer's candidates, are in no record their calls make. The other design
+ * roles' facts are in their reports.
+ */
+const DESIGN_RESULT_ROLES: readonly string[] = ['author', 'reframer']
+
+/**
  * `task.result` for an execute gate's executor (WP-AH): fanout's body with no
  * task, and the gate and attempt the mod placed the result at. The bridge
  * (repair.ts) and summary.md (execsummary.ts) read its `result.plan_gap`,
@@ -99,9 +109,11 @@ function gateResultAt(json: RunJson, records: readonly StoredRecord[]): { gate: 
  * A fanout writer's becomes its `task.result`, with the task from its latest
  * `task.bind` (null when unbound): integration reads it (fanout.js step 3).
  * An execute gate's executor's becomes its `task.result` too, at its gate
- * and attempt (gateResultAt). Recorded once per tool_use_id, so a line
- * drained twice changes nothing. A result from an agent the map doesn't
- * know, or that contradicts it, is logged and skipped.
+ * and attempt (gateResultAt). A design's author's and reframer's become its
+ * `design.result` (decision 15), the author's without its `proposal`.
+ * Recorded once per tool_use_id, so a line drained twice changes nothing. A
+ * result from an agent the map doesn't know, or that contradicts it, is
+ * logged and skipped.
  */
 export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   if (line.ev !== 'output') return
@@ -117,11 +129,13 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   const run = info.run
   if (!run || !info.role) return
   const writer = info.role === 'executor'
-  if (!writer && !VERDICT_ROLES.includes(info.role)) return
+  const designResult = DESIGN_RESULT_ROLES.includes(info.role)
+  if (!writer && !designResult && !VERDICT_ROLES.includes(info.role)) return
   const dir = runDir(ctx.litterDir, run)
-  // A writer's result is a fanout task's or an execute gate's; no other workflow runs one.
-  const json = writer ? await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined) : undefined
+  // A writer's result is a fanout task's or an execute gate's; no other workflow runs one. An author or reframer runs only in a design.
+  const json = writer || designResult ? await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined) : undefined
   if (writer && json?.workflow !== 'fanout' && json?.workflow !== 'execute') return
+  if (designResult && json?.workflow !== 'design') return
   const input = line.input
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     ctx.p.log(`output from ${info.role} ${line.agent_id} (${line.tool_use_id}) carries no result; not recorded`)
@@ -133,6 +147,18 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
     const { records, tampered } = await readLedger(ctx.p, dir, run)
     if (tampered) {
       ctx.p.log(`output ${line.tool_use_id}: run ${run}'s ledger is tampered at ${tampered.seq}; not recorded`)
+      return
+    }
+    if (designResult) {
+      if (records.some(r => r.kind === 'design.result' && r.body.tool_use_id === line.tool_use_id)) return
+      // The author's text is proposals/<version>.md's, so its observed `proposal` isn't kept twice.
+      const { proposal: _text, ...rest } = input
+      const body: DesignResultBody = {
+        role: info.role === 'author' ? 'author' : 'reframer',
+        tool_use_id: line.tool_use_id,
+        result: info.role === 'author' ? rest : input,
+      }
+      await appendRecord(ctx.p, dir, { run, kind: 'design.result', by, body })
       return
     }
     if (writer) {

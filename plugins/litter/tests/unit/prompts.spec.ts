@@ -1,13 +1,13 @@
 // Tier 2: the static prompt checks (plan section 12, "Prompt and skill
-// checks"): no backtick, no `${`, no model named, the tags each execute and
-// fanout role's calls carry, and the shared parts each role assembles.
+// checks"): no backtick, no `${`, no model named, the tags each role's calls
+// carry, and the shared parts each role assembles.
 
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { RoleName } from '../../hooks/hookfiles'
-import { PROMPT_TAGS, ROLE_PROMPTS, ROLE_TAGS } from '../../hooks/prompts/index'
+import { PROMPT_TAGS, ROLE_PROMPTS, ROLE_TAGS, type PromptTag } from '../../hooks/prompts/index'
 import { HARNESS_FRAME, READ_ONLY_LIMITS, SHARED_CORE } from '../../hooks/prompts/shared'
 import { PLAN_CRITIC_BRIEF } from '../../hooks/prompts/swarm-plan'
 import { ROLE_NAMES, ROLE_TOOLS } from '../../hooks/roles'
@@ -69,7 +69,7 @@ describe('every prompt', () => {
 })
 
 describe('tags', () => {
-  test("each execute and fanout role names every tag its calls carry, and only the contract's", () => {
+  test("each role names every tag its calls carry, and only the contract's", () => {
     for (const [role, tags] of Object.entries(ROLE_TAGS)) {
       const text = ROLE_PROMPTS[role as keyof typeof ROLE_PROMPTS]
       for (const tag of tags!) expect({ role, tag, named: text.includes(`<${tag}>`) }).toEqual({ role, tag, named: true })
@@ -89,9 +89,19 @@ describe('tags', () => {
     expect(text).toContain('an API or a data shape one task changes and another consumes')
   })
 
-  test('every execute and fanout role is listed', () => {
+  test('every role is listed', () => {
     const listed = Object.keys(ROLE_TAGS).sort()
-    expect(listed).toEqual(ROLE_NAMES.filter(r => !(DESIGN as readonly string[]).includes(r) && r !== 'prober').sort())
+    expect(listed).toEqual([...ROLE_NAMES].sort())
+  })
+
+  // Phase 4 (WP-BA): plan 7a's envelope, and each design role's own tags beside it.
+  test('every design call carries the envelope, and the reframer, author and critic their own tags', () => {
+    const envelope: PromptTag[] = ['goal', 'bar', 'rules', 'anchors', 'material', 'task']
+    for (const role of [...DESIGN, 'prober'] as const) expect(ROLE_TAGS[role].slice(0, envelope.length)).toEqual(envelope)
+    expect(ROLE_TAGS.reframer.slice(envelope.length)).toEqual(['proposal'])
+    expect(ROLE_TAGS.author.slice(envelope.length)).toEqual(['proposal', 'prior_verdict', 'template', 'feedback'])
+    expect(ROLE_TAGS['design-critic'].slice(envelope.length)).toEqual(['proposal', 'delta', 'prior_verdict'])
+    for (const role of ['falsifier', 'coverage', 'mechanism', 'prober'] as const) expect(ROLE_TAGS[role]).toHaveLength(envelope.length)
   })
 })
 

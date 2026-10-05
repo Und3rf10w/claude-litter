@@ -23,15 +23,17 @@ import { recordRepairBudget, recordRepairStart } from './repair'
 import { recordGateAmend, recordGateWiden, recordPlanWrite } from './plan'
 import { consumeInflight } from './inflight'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
+import { recordProbe, recordProposal, recordVerdict } from './design/records'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
   coverage: recordGeneric,
   mechanism: recordGeneric,
-  probe: recordGeneric,
+  // Design (phase 4): the prober's, the author's and the design critic's, design/records.ts's (WP-BC).
+  probe: recordProbe,
   reframe: recordGeneric,
-  proposal: recordGeneric,
-  verdict: recordGeneric,
+  proposal: recordProposal,
+  verdict: recordVerdict,
   'design.feedback': recordGeneric,
   verify: recordVerify,
   'land.intent': recordGeneric,
@@ -93,6 +95,9 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'repair.declined': recordGeneric,
   'repair.start': recordRepairStart,
   'repair.budget': recordRepairBudget,
+  // Design (phase 4): the mod's own, refused before this table.
+  'design.result': recordGeneric,
+  'design.deliver': recordGeneric,
 }
 
 /**

@@ -170,7 +170,8 @@ describe('the script', () => {
     const s = r.calls[0]!.opts.schema
     expect(strictProblem(s)).toBeNull()
     const gate = ((s as { properties: { gates: { items: { properties: object; required: string[] } } } }).properties.gates.items)
-    const fields: Record<keyof PlannedGate, true> = { id: true, title: true, scope: true, lines: true, files: true, done_when: true, checks: true, adversary: true }
+    // `rollback` is a design author's gate's (phase 4, decision 6); the planner's gates leave it unset.
+    const fields: Record<Exclude<keyof PlannedGate, 'rollback'>, true> = { id: true, title: true, scope: true, lines: true, files: true, done_when: true, checks: true, adversary: true }
     expect(Object.keys(gate.properties).sort()).toEqual(Object.keys(fields).sort())
     expect([...gate.required].sort()).toEqual(Object.keys(fields).sort())
   })

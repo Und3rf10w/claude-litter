@@ -141,6 +141,12 @@ export type PlannedGate = {
   done_when: string
   checks: string[]
   adversary: boolean
+  /**
+   * A design author's gate's rollback (phase 4, decision 6): renderGateSection
+   * writes it as the `Rollback:` line (WP-BC). The planner's gates leave it
+   * unset, so their sections don't change.
+   */
+  rollback?: string
 }
 
 /** `mcp__litter__record({ kind: 'plan.write', run, gates, continueOf? })`: a re-split names the execute run it continues. */

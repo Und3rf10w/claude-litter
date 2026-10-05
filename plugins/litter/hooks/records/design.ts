@@ -1,8 +1,8 @@
 // Record bodies for design runs, plans and the rest of the kinds the record
 // tool validates itself (plan section 9, "The record kinds"). Owner: phase 1b,
-// work package B. Design runs are phase 4: in phase 1 these kinds are
-// validated as loosely as section 9 allows and stored, so the tool's error
-// shape and bounds are exercised end to end.
+// work package B; phase 4's design bodies are WP-BA's contract. The design
+// records' handlers (proposal, verdict, probe) are hooks/design/records.ts's
+// (WP-BC); the rest of the kinds this file validates are below.
 
 import type { Author, Caller, RecordCtx, RecordError, RecordHandler, RecordInput, RecordReply, StoredRecord } from './core'
 import type { RunJson } from './run'
@@ -10,8 +10,8 @@ import type { BoundWorktree, TaskBindBody, WorktreeCreateBody } from './fanout'
 import type { AgentPolicy } from '../hookfiles'
 import { fail } from './core'
 import { appendRecord, readLedger } from '../ledgercore'
-import { agentPolicyPath, integrationName, outPath, proposalPath, runDir, runJsonPath, wikiPath } from '../layout'
-import { atomicWrite, atomicWriteJson, readJson, remove, serial, sha256 } from '../fsx'
+import { agentPolicyPath, integrationName, outPath, runDir, runJsonPath, wikiPath } from '../layout'
+import { atomicWrite, atomicWriteJson, readJson, remove, serial } from '../fsx'
 import { safeFileName, writeOut } from '../output'
 import { agentInfo } from '../policy'
 import { recordedWorktrees } from '../worktrees'
@@ -44,6 +44,9 @@ export const KNOWN_KINDS = [
   // repair (phase 2b-2; bodies in records/run.ts and records/swarm.ts). Through
   // the tool only the launcher's repair.start and repair.budget; the rest are the mod's.
   'run.repair', 'repair.declined', 'repair.start', 'repair.budget',
+  // design, the mod's (phase 4; bodies below): the author's and the reframer's
+  // results (decision 15), and a plan's delivery at run.end (decision 16)
+  'design.result', 'design.deliver',
 ] as const
 
 export type KnownKind = (typeof KNOWN_KINDS)[number]
@@ -59,6 +62,7 @@ export const MOD_ONLY_KINDS: readonly KnownKind[] = [
   'swarm.instance', 'swarm.node', 'swarm.event', 'swarm.summary',
   'swarm.stop', 'swarm.stopping', 'swarm.handover', 'session.rebind',
   'run.repair', 'repair.declined',
+  'design.result', 'design.deliver',
 ]
 
 /** Rule steps that are yours alone, from the rules pane (section 16.3); the tool refuses them whatever the caller. */
@@ -147,19 +151,108 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'repair.declined': modKind,
   'repair.start': launcherKind,
   'repair.budget': { by: 'launcher', run: 'none' },
+  // Design (phase 4): consumeOutput's and finalizeDesign's, never the tool's.
+  'design.result': modKind,
+  'design.deliver': modKind,
 }
 
 /** The `by` of a record a caller made through the tool. */
 export const authorOf = (caller: Caller): Author =>
   caller.agentId === null ? { source: 'launcher' } : { source: 'agent', agentId: caller.agentId, agentType: caller.agentType }
 
+// ---------------------------------------------------------------------------
+// The design records' bodies (phase 4; COMMON decisions 6, 7, 15 to 18). A
+// version and an unknown id are layout.ts's PROPOSAL_VERSION and UNKNOWN_ID.
 
-const VERSION = /^v[1-9][0-9]*$/
-const VERDICTS = ['PASS', 'CONDITIONAL', 'FAIL'] as const
-const OVERALLS = ['APPROVED', 'HOLDING'] as const
+/** A criterion's verdict, and a verdict's overall result (plan 7, step 8). */
+export const CRITERION_VERDICTS = ['PASS', 'CONDITIONAL', 'FAIL'] as const
+export const OVERALLS = ['APPROVED', 'HOLDING'] as const
+/** Where a criterion that isn't PASS sends the next round (plan 7, step 9). */
+export const GAP_KINDS = ['investigation', 'design', 'wording', 'user'] as const
+export type GapKind = (typeof GAP_KINDS)[number]
+/** A probe's verdict on its unknown (decision 18). */
+export const PROBE_VERDICTS = ['confirmed', 'refuted', 'untested'] as const
+export type ProbeVerdict = (typeof PROBE_VERDICTS)[number]
 
-// needText, bodyOf and store are shared with the handlers phase 3 moved out
-// (plan.ts's plan.write and gate.amend, rules/records.ts's rule.propose).
+/**
+ * One of the author's gates (decision 6), as its `proposal` record carries
+ * it. renderProposal (hooks/design/proposal.ts) writes it after the prose in
+ * section 10's format: `scope` is the gate's prose, closed by the line
+ * `Implements: <plan_section>`, and `plan_section` names a heading of the
+ * proposal's prose.
+ */
+export type AuthorGate = {
+  id: string
+  title: string
+  plan_section: string
+  scope: string
+  files: string[]
+  checks: string[]
+  done_when: string
+  rollback: string
+  adversary?: boolean
+}
+
+/**
+ * A stored `proposal` record's body: the mod assigns `version`. `text` is the
+ * author's prose as recorded, and `sha256` is the stored file's,
+ * `proposals/<version>.md`, which for a plan holds the gate sections too.
+ */
+export type ProposalBody = { text: string; delta?: unknown; gates?: AuthorGate[]; version: string; sha256: string }
+
+/** One bar item's verdict, by its id. Every one that isn't PASS carries a `gap_kind` (BC checks it). */
+export type DesignCriterion = {
+  id: string
+  verdict: (typeof CRITERION_VERDICTS)[number]
+  gap_or_reason?: string
+  evidence: string
+  kept_from?: string
+  reversed?: boolean
+  gap_kind?: GapKind
+}
+
+/**
+ * A stored `verdict` record's body, the design critic's: `sha256` is the
+ * judged version's, from its proposal record. `tree` and `source_changed`
+ * are the checkout's snapshot when the critic recorded it, against base
+ * (decision 17, WP-BC's); a record from before BC has neither.
+ */
+export type DesignVerdictBody = {
+  version: string
+  criteria: DesignCriterion[]
+  overall: (typeof OVERALLS)[number]
+  sha256: string | null
+  tree?: string
+  source_changed?: boolean
+}
+
+/**
+ * A stored `probe` record's body (decision 18): the unknown it settles and
+ * the verdict. Optional until WP-BC makes both required; a probe recorded
+ * before then has only its report.
+ */
+export type ProbeBody = { unknown_id?: string; report: string; verdict?: ProbeVerdict }
+
+/**
+ * `design.result`, the mod's (decision 15): the author's or the reframer's
+ * StructuredOutput, as spooled, recorded once per `tool_use_id` by
+ * consumeOutput. The author's `proposal` is left out of `result`, since its
+ * text is in `proposals/<version>.md`; its `version` stays.
+ */
+export type DesignResultBody = { role: 'author' | 'reframer'; tool_use_id: string; result: Record<string, unknown> }
+
+/**
+ * `design.deliver`, the mod's (decision 16): one per run end of a plan
+ * deliverable, recorded by finalizeDesign (WP-BE). Delivered: `version`,
+ * `sha256` and `path` (`<runDir>/plan.md`, the approved bytes). Refused:
+ * `refused` says why, and `version` is the latest one, or null when none
+ * was recorded.
+ */
+export type DesignDeliverBody = { version: string | null; sha256?: string; path?: string; refused?: string }
+
+// needText, bodyOf, scoped and store are shared with the handlers moved out
+// (plan.ts's plan.write and gate.amend, rules/records.ts's rule.propose, and
+// design/records.ts's proposal, verdict and probe).
 
 /** A required non-empty string field, or the error naming it. */
 export function needText(input: RecordInput, field: string, what: string): RecordError | null {
@@ -173,10 +266,10 @@ export function bodyOf(input: RecordInput): Record<string, unknown> {
   return rest
 }
 
-type Scoped = { run: string; runDir: string }
+export type Scoped = { run: string; runDir: string }
 
 /** The run the record tool resolved. A handler reached without one is a wiring bug, so it throws. */
-function scoped(ctx: RecordCtx, input: RecordInput): Scoped {
+export function scoped(ctx: RecordCtx, input: RecordInput): Scoped {
   if (!ctx.litterDir || typeof input.run !== 'string') throw new Error(`records/design: '${input.kind}' reached its handler without a run`)
   return { run: input.run, runDir: runDir(ctx.litterDir, input.run) }
 }
@@ -188,7 +281,8 @@ export async function store(ctx: RecordCtx, input: RecordInput, body: Record<str
   return { ok: true, kind: rec.kind, run, seq: rec.seq, ...extra }
 }
 
-// The investigators' reports (section 6): one markdown report each.
+// The investigators' reports (section 6): one markdown report each. The
+// prober's is design/records.ts's recordProbe.
 const report: RecordHandler = async (ctx, input) =>
   needText(input, 'report', 'your report, as markdown, in the sections your role names') ?? store(ctx, input, bodyOf(input))
 
@@ -219,121 +313,6 @@ export function bareBacktickPaths(text: string): string[] {
     }
   }
   return [...found]
-}
-
-/**
- * `proposal`: the mod assigns the next version, stores the text as
- * `proposals/vN.md` and its sha256 in the record, and writes the author's
- * observed `proposal` field for output.sh. Rendering `gates` into plan
- * sections, checked by execute's parser, comes with design runs (phase 4), so
- * a proposal with gates is refused until then rather than stored unrendered.
- */
-const proposal: RecordHandler = async (ctx, input) => {
-  const missing = needText(input, 'text', 'the full proposal text, as markdown')
-  if (missing) return missing
-  if (input.gates !== undefined && !(Array.isArray(input.gates) && input.gates.length === 0)) {
-    return fail(
-      "litter: a proposal's 'gates' are rendered into the plan's gate sections from phase 4 (design runs); record the text without them for now",
-      'gates',
-    )
-  }
-  if (input.delta !== undefined && typeof input.delta !== 'string' && !Array.isArray(input.delta)) {
-    return fail("litter: 'delta' must be a list of changes from the previous version, or one text", 'delta')
-  }
-  const { run, runDir: dir } = scoped(ctx, input)
-  const text = input.text as string
-  // One version per call: the count and the write must not interleave with another proposal of this run.
-  return serial(`proposal:${dir}`, async () => {
-    const { records } = await readLedger(ctx.p, dir, run)
-    const n = records.filter(r => r.kind === 'proposal').length + 1
-    const version = `v${n}`
-    const sha = await sha256(text)
-    await atomicWrite(ctx.p, proposalPath(dir, version), text)
-    const reply = await store(ctx, input, { ...bodyOf(input), version, sha256: sha }, { version, sha256: sha })
-    const warnings: string[] = []
-    const bare = bareBacktickPaths(text)
-    if (bare.length > 0) {
-      const shown = bare.slice(0, 10).join(', ') + (bare.length > 10 ? `, and ${bare.length - 10} more` : '')
-      warnings.push(
-        `litter: bare backticked paths in the prose (${shown}); write them as [label](path) links so they navigate. ${version} was recorded as it is.`,
-      )
-    }
-    if (ctx.caller.agentId !== null) {
-      try {
-        await writeOut(ctx.p, ctx.litterDir!, {
-          v: 1,
-          agent_id: ctx.caller.agentId,
-          for: { version },
-          fields: { version, proposal: text },
-        })
-      } catch (err) {
-        ctx.p.log(`proposal ${run} ${version}: out file not written: ${err instanceof Error ? err.message : String(err)}`)
-        warnings.push(`litter: ${version} is recorded, but the observed proposal field couldn't be written; return your result anyway`)
-      }
-    }
-    return warnings.length > 0 ? { ...reply, warnings } : reply
-  })
-}
-
-/** The bar's ids (criteria and bans), fixed at run.start in run.json's args; null when the run has no bar. */
-async function barIds(ctx: RecordCtx, dir: string): Promise<string[] | null> {
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(dir))
-  const bar = json?.args?.bar
-  if (!Array.isArray(bar)) return null
-  const ids = bar.map(c => (c && typeof c === 'object' ? (c as { id?: unknown }).id : undefined)).filter((id): id is string => typeof id === 'string')
-  return ids.length > 0 ? ids : null
-}
-
-/**
- * `verdict`, the design critic's: it must name the run's latest proposal
- * version (the bar is fixed at run.start), cover the bar exactly once, and
- * agree with its own criteria. The mod adds the judged version's sha256.
- */
-const verdict: RecordHandler = async (ctx, input) => {
-  const { run, runDir: dir } = scoped(ctx, input)
-  const { records } = await readLedger(ctx.p, dir, run)
-  const latest = records.filter(r => r.kind === 'proposal').at(-1)?.body as { version?: string; sha256?: string } | undefined
-  if (!latest?.version) return fail("litter: no proposal is recorded in this run yet, so there's no version to judge", 'version')
-  if (input.version !== latest.version) {
-    return fail(`litter: 'version' must name the run's latest proposal, ${latest.version}`, 'version', [latest.version])
-  }
-  const bar = await barIds(ctx, dir)
-  const criteria = input.criteria
-  if (!Array.isArray(criteria) || criteria.length === 0) {
-    return fail("litter: 'criteria' is required: one { id, verdict } per bar id, with verdict PASS, CONDITIONAL or FAIL", 'criteria', bar ?? undefined)
-  }
-  const ids: string[] = []
-  for (let i = 0; i < criteria.length; i++) {
-    const c = criteria[i] as { id?: unknown; verdict?: unknown } | null
-    if (!c || typeof c !== 'object' || typeof c.id !== 'string' || c.id === '') {
-      return fail(`litter: 'criteria[${i}].id' is required: the bar id this verdict is for`, `criteria[${i}].id`, bar ?? undefined)
-    }
-    if (typeof c.verdict !== 'string' || !(VERDICTS as readonly string[]).includes(c.verdict)) {
-      return fail(`litter: 'criteria[${i}].verdict' must be one of the allowed values`, `criteria[${i}].verdict`, VERDICTS)
-    }
-    ids.push(c.id)
-  }
-  if (typeof input.overall !== 'string' || !(OVERALLS as readonly string[]).includes(input.overall)) {
-    return fail("litter: 'overall' must be one of the allowed values", 'overall', OVERALLS)
-  }
-  if (bar) {
-    const missing = bar.filter(id => !ids.includes(id))
-    const repeated = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))]
-    const unknown = [...new Set(ids.filter(id => !bar.includes(id)))]
-    if (missing.length + repeated.length + unknown.length > 0) {
-      const parts = [
-        missing.length ? `missing ${missing.join(', ')}` : '',
-        repeated.length ? `repeated ${repeated.join(', ')}` : '',
-        unknown.length ? `not in the bar ${unknown.join(', ')}` : '',
-      ].filter(Boolean)
-      return fail(`litter: 'criteria' must cover the bar exactly once: ${parts.join('; ')}`, 'criteria', bar)
-    }
-  }
-  const allPass = criteria.every(c => (c as { verdict: string }).verdict === 'PASS')
-  if (input.overall === 'APPROVED' && !allPass) {
-    return fail("litter: 'overall' is APPROVED only when every criterion is PASS", 'overall', ['HOLDING'])
-  }
-  return store(ctx, input, { ...bodyOf(input), sha256: latest.sha256 ?? null })
 }
 
 type BindTask = { id: string; bind: string; files: string[] }
@@ -490,14 +469,12 @@ const wikiWrite: RecordHandler = async (ctx, input) => {
   return { ok: true, kind: 'wiki.write', path }
 }
 
+// proposal, verdict and probe are design/records.ts's (registry.ts points to them).
 const HANDLERS: Partial<Record<KnownKind, RecordHandler>> = {
   finding: report,
   coverage: report,
   mechanism: report,
-  probe: report,
   reframe: report,
-  proposal,
-  verdict,
   'design.feedback': designFeedback,
   'task.bind': taskBind,
   'wiki.write': wikiWrite,
