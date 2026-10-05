@@ -160,7 +160,8 @@ describe('/litter-tasks and /litter-agents', () => {
     expect(commands.slice(before).filter(c => c.name === 'litter-tasks' || c.name === 'litter-agents')).toEqual(PHASE5)
   })
 
-  test("each answers its stub's line, opening nothing and writing nothing", async ($, on) => {
+  // WP-CG built /litter-agents: tests/agents.test.tsx has its command.
+  test("/litter-tasks answers its stub's line, opening nothing and writing nothing", async ($, on) => {
     mock.store(on)
     const opened: string[] = []
     on('ui.open', async (_$, e) => {
@@ -169,7 +170,6 @@ describe('/litter-tasks and /litter-agents', () => {
     })
     const seen = stateSeen(on)
     expect((await run($, 'litter-tasks', 'team-a')).text).toBe("litter: the tasks pane isn't built yet (WP-CE)")
-    expect((await run($, 'litter-agents')).text).toBe("litter: the agents pane isn't built yet (WP-CG)")
     expect(opened).toEqual([])
     expect(seen.writes).toEqual([])
   })

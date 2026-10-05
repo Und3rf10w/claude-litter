@@ -31,7 +31,7 @@ import { renderBand } from '../../hooks/band/render'
 import { cardRow, noteCards, onCardUi, refreshCards, restoreCards } from '../../hooks/card/view'
 import { renderCard } from '../../hooks/card/render'
 import { onTasksUi, refreshTasks, tasksCommand, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
-import { agentsCommand, agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
+import { agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
 import { appendInbox, readInbox, readTasks, taskLists, teams, updateTask } from '../../hooks/team/store'
 import { BOARD_PANE, openBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests, resolveRun } from '../../hooks/board/view'
@@ -210,16 +210,15 @@ describe("CA's stubs keep today's behavior", () => {
     expect(p.views).toEqual({})
   })
 
-  test("the tasks and agents panes: each command answers its stub's line and opens nothing; each ui handler passes on", async () => {
+  test("the tasks pane: its command answers its stub's line and opens nothing; each ui handler passes on", async () => {
     const p = nodePorts()
     const cmd = (command: string) => ({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
     const never = (async () => {
       throw new Error('a command stub answers, never passing on')
     }) as never
     expect(await tasksCommand(p, cmd('litter-tasks'), never)).toEqual({ text: "litter: the tasks pane isn't built yet (WP-CE)" })
-    expect(await agentsCommand(p, cmd('litter-agents'), never)).toEqual({ text: "litter: the agents pane isn't built yet (WP-CG)" })
-    expect([TASKS_PANE, AGENTS_PANE]).toEqual(['litter-tasks', 'litter-agents'])
-    for (const handlers of [onTasksUi, onAgentsUi]) {
+    expect(TASKS_PANE).toBe('litter-tasks')
+    for (const handlers of [onTasksUi]) {
       for (const event of ['message', 'press', 'input', 'select'] as const) {
         const { next, seen } = passes<unknown>()
         const e = { element: `x:${event}`, requestId: 'r' }
@@ -229,6 +228,22 @@ describe("CA's stubs keep today's behavior", () => {
     }
     await tasksTick(p)
     await refreshTasks(p)
+    expect(p.panes.opened).toEqual([])
+    expect(p.views).toEqual({})
+  })
+
+  // WP-CG built the agents pane: its command is tested in agentspane.spec.ts. What still holds of the stub's case:
+  test('the agents pane: each ui handler passes on a key not its own; the tick and the refresh write nothing before it opens', async () => {
+    const p = nodePorts()
+    expect(AGENTS_PANE).toBe('litter-agents')
+    for (const handlers of [onAgentsUi]) {
+      for (const event of ['message', 'press', 'input', 'select'] as const) {
+        const { next, seen } = passes<unknown>()
+        const e = { element: `x:${event}`, requestId: 'r' }
+        expect(await handlers[event](p, e as never, next as never)).toEqual({ passed: e } as never)
+        expect(seen).toEqual([e])
+      }
+    }
     await agentsTick(p)
     await refreshAgents(p)
     expect(p.panes.opened).toEqual([])
