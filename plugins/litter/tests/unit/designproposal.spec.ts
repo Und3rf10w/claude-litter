@@ -225,4 +225,24 @@ describe("renderGateSection's Rollback", () => {
     expect(() => renderGateSection(planner({ rollback: ' \n ' }))).toThrow("gate G1: 'rollback' is empty")
     expect(() => renderGateSection(planner({ rollback: 5 as unknown as string }))).toThrow("gate G1: 'rollback' must be text")
   })
+
+  // design.sh basic, 2026-10-04: collapsing the blanks in a quoted literal
+  // made the critic hold the same done_when three rounds.
+  test("the title, Done when and Rollback keep the blanks inside a line, and each line break with the blanks around it is one space", () => {
+    const text = renderGateSection(planner({
+      title: 'Pad  the amount',
+      done_when: "a negative row prints '      -¤7.50'  \n\t under\r\ndash and  BusyBox",
+      rollback: 'revert the\tcommit',
+    }))
+    expect(text.split('\n').slice(0, 1)).toEqual(['### G1: Pad  the amount'])
+    expect(text.split('\n').slice(3, 6)).toEqual([
+      "Done when: a negative row prints '      -¤7.50' under dash and  BusyBox",
+      'Adversary: yes',
+      'Rollback: revert the\tcommit',
+    ])
+    const back = parseGates(text)
+    expect(back.ok && back.gates[0]!.title).toBe('Pad  the amount')
+    expect(back.ok && back.gates[0]!.doneWhen).toBe("a negative row prints '      -¤7.50' under dash and  BusyBox")
+    expect(back.ok && back.gates[0]!.rollback).toBe('revert the\tcommit')
+  })
 })

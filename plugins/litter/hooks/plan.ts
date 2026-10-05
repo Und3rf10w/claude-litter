@@ -28,8 +28,13 @@ const GATE_ID = /^G[0-9]+$/
 const FENCE = /^[ \t]{0,3}(```|~~~)/
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** Prose on one line: every run of whitespace, line breaks included, as one space. */
-const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
+/**
+ * Prose on one line: each line break, with the blanks around it, as one
+ * space. Blanks inside a line stay as written, so a literal a gate quotes
+ * ('      -¤7.50') reaches the plan unchanged (design.sh basic, 2026-10-04:
+ * collapsing them made the critic hold the same literal three rounds).
+ */
+const oneLine = (s: string): string => s.replace(/[ \t]*(?:\r\n?|[\n\v\f\p{Zl}\p{Zp}])[ \t]*/gu, ' ').trim()
 /** A Files or Checks entry as the gate format reads it: trimmed, and one surrounding pair of backticks dropped (gates.ts). */
 const entry = (s: string): string => s.trim().replace(/^`(.*)`$/, '$1').trim()
 
