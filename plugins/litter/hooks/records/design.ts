@@ -228,8 +228,8 @@ export type DesignVerdictBody = {
 
 /**
  * A stored `probe` record's body (decision 18): the unknown it settles and
- * the verdict. Optional until WP-BC makes both required; a probe recorded
- * before then has only its report.
+ * the verdict. The record tool requires both (WP-BC); they stay optional
+ * here for a probe recorded before then, which has only its report.
  */
 export type ProbeBody = { unknown_id?: string; report: string; verdict?: ProbeVerdict }
 

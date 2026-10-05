@@ -69,10 +69,6 @@ export type DesignPrior = {
 /**
  * A design run's args, the contract between run.start (design/launch.ts's
  * designArgs) and workflows/design.js (plan section 7, design.js "Args").
- *
- * Until WP-BD builds designArgs, its stub gives today's args: each of
- * `empiricalUnknowns` is the question as a bare string, `template` and
- * `prior` are absent, and `bar` holds your items only.
  */
 export type DesignArgs = {
   /** The run id. */

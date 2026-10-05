@@ -1,14 +1,12 @@
 // Tier 1: phase 4's wiring as the engine runs the mod (WP-BA). A design
-// run.start through the record tool, with BD's parseDesign and designArgs
-// stubs behind lifecycle's `deps`, answers as before: the run, its folder,
-// the checkout and the args, with bar.md, run.json and the base ref written.
-// Its parse refusals, and the new mod-only kinds' (design.result and
-// design.deliver), answer in the tool's error shape.
+// run.start through the record tool, with parseDesign and designArgs behind
+// lifecycle's `deps`, answers with the run, its folder, the checkout and the
+// args, with bar.md, run.json and the base ref written. Its parse refusals,
+// and the new mod-only kinds' (design.result and design.deliver), answer in
+// the tool's error shape.
 //
-// Not here: `warnings` from parseDesign. The stub gives none, and the
-// engine-loaded mod's `deps` can't be stood in for from a tier-1 test, so
-// that case is tier 2's (tests/unit/phase4contracts.spec.ts) until BD's
-// parse gives a warning of its own.
+// Not here: `warnings` from parseDesign, which tests/designlaunch.test.ts
+// covers (WP-BD).
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'

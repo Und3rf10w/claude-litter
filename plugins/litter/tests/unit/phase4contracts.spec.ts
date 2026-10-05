@@ -99,7 +99,7 @@ async function toolWorld(workflow: Workflow = 'design'): Promise<ToolWorld> {
   const s = scratch()
   cleanups.push(s.cleanup)
   const dir = s.dir
-  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify({ v: 1, run: RUN, workflow, args: { bar: BAR }, ref: `litter/${RUN}` })}\n`)
+  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify({ v: 1, run: RUN, workflow, args: { deliverable: 'research', bar: BAR }, ref: `litter/${RUN}` })}\n`)
   await writePolicy(p, dir, policyFor(dir, RUN, workflow))
   return { p, dir, env: { litterDir: dir, litterDirError: null, ready: true, options: normalizeOptions(undefined) } }
 }
@@ -162,13 +162,15 @@ describe('proposal, verdict and probe', () => {
     const short = asError(await call(w, { kind: 'verdict', version: 'v1', criteria: pass.slice(1), overall: 'HOLDING' }, 'cr'))
     expect(short).toEqual(expect.objectContaining({ field: 'criteria', allowed: BAR_IDS }))
     expect(short.error).toContain('missing C1')
-    expect((await call(w, { kind: 'verdict', version: 'v1', criteria: pass, overall: 'APPROVED' }, 'cr')).ok).toBe(true)
+    // This world has no checkout, so the verdict's snapshot refuses it (decision 17); designrecords.spec.ts records one.
+    expect(asError(await call(w, { kind: 'verdict', version: 'v1', criteria: pass, overall: 'APPROVED' }, 'cr')).error).toContain('names no checkout and base')
     expect(asError(await call(w, { kind: 'probe' }, 'pr')).field).toBe('report')
-    expect((await call(w, { kind: 'probe', report: '## Result\nconfirmed' }, 'pr')).ok).toBe(true)
+    expect(asError(await call(w, { kind: 'probe', report: '## Result\nconfirmed' }, 'pr')).field).toBe('unknown_id')
+    expect((await call(w, { kind: 'probe', unknown_id: 'U1', report: '## Result\nconfirmed', verdict: 'confirmed' }, 'pr')).ok).toBe(true)
     const recs = await recordsOf(w)
-    expect(recs.map(r => r.kind)).toEqual(['proposal', 'verdict', 'probe'])
-    expect(recs[1]!.body.sha256).toBe(await sha256('the design'))
-    expect(recs[2]!.body).toEqual({ report: '## Result\nconfirmed' })
+    expect(recs.map(r => r.kind)).toEqual(['proposal', 'probe'])
+    expect(recs[0]!.body.sha256).toBe(await sha256('the design'))
+    expect(recs[1]!.body).toEqual({ unknown_id: 'U1', report: '## Result\nconfirmed', verdict: 'confirmed' })
   })
 
   test("the layout's new paths and ids", () => {
