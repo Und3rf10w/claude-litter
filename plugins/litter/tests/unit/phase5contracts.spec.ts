@@ -210,16 +210,33 @@ describe("CA's stubs keep today's behavior", () => {
     expect(p.views).toEqual({})
   })
 
-  test("the tasks and agents panes: each command answers its stub's line and opens nothing; each ui handler passes on", async () => {
+  // WP-CE built the tasks pane and the store: what stays true of the pane is
+  // that a key not its own passes on and, never opened, its tick and refresh
+  // write nothing. The store's cases are teamstore.spec.ts's.
+  test('the tasks pane: each ui handler passes a key not its own on; never opened, its tick and refresh write nothing', async () => {
+    const p = nodePorts()
+    expect(TASKS_PANE).toBe('litter-tasks')
+    for (const event of ['message', 'press', 'input', 'select'] as const) {
+      const { next, seen } = passes<unknown>()
+      const e = { element: `x:${event}`, requestId: 'r' }
+      expect(await onTasksUi[event](p, e as never, next as never)).toEqual({ passed: e } as never)
+      expect(seen).toEqual([e])
+    }
+    await tasksTick(p)
+    await refreshTasks(p)
+    expect(p.panes.opened).toEqual([])
+    expect(p.views).toEqual({})
+  })
+
+  test("the agents pane: its command answers its stub's line and opens nothing; each ui handler passes on", async () => {
     const p = nodePorts()
     const cmd = (command: string) => ({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
     const never = (async () => {
       throw new Error('a command stub answers, never passing on')
     }) as never
-    expect(await tasksCommand(p, cmd('litter-tasks'), never)).toEqual({ text: "litter: the tasks pane isn't built yet (WP-CE)" })
     expect(await agentsCommand(p, cmd('litter-agents'), never)).toEqual({ text: "litter: the agents pane isn't built yet (WP-CG)" })
     expect([TASKS_PANE, AGENTS_PANE]).toEqual(['litter-tasks', 'litter-agents'])
-    for (const handlers of [onTasksUi, onAgentsUi]) {
+    for (const handlers of [onAgentsUi]) {
       for (const event of ['message', 'press', 'input', 'select'] as const) {
         const { next, seen } = passes<unknown>()
         const e = { element: `x:${event}`, requestId: 'r' }
@@ -227,28 +244,10 @@ describe("CA's stubs keep today's behavior", () => {
         expect(seen).toEqual([e])
       }
     }
-    await tasksTick(p)
-    await refreshTasks(p)
     await agentsTick(p)
     await refreshAgents(p)
     expect(p.panes.opened).toEqual([])
     expect(p.views).toEqual({})
-  })
-
-  test('the store: every read answers empty and every write refuses, touching nothing under the config dir', async () => {
-    const p = nodePorts()
-    const config = scratchDir()
-    p.configDirValue = config
-    const list = { name: 's1', dir: join(config, 'tasks', 's1'), kind: 'session', team: null, mine: true } as const
-    expect(await taskLists(p)).toEqual([])
-    expect(await readTasks(p, list)).toEqual({ tasks: [], problems: [], stamp: '' })
-    expect(await teams(p)).toEqual([])
-    expect(await readInbox(p, 'team-a', 'reviewer')).toEqual({ entries: [], stamp: '' })
-    const refused = { ok: false, error: 'not built yet (WP-CE)' } as const
-    expect(await updateTask(p, list, '3', { status: 'completed' })).toEqual(refused)
-    expect(await appendInbox(p, 'team-a', 'reviewer', { from: 'user', text: 'hi' })).toEqual(refused)
-    expect(readdirSync(config)).toEqual([])
-    expect(p.toolCalls).toEqual([])
   })
 
   test('the asks: none open, and restoring, ticking and consuming change nothing', async () => {
