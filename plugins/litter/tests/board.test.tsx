@@ -6,6 +6,10 @@
 // it on the terminal and the desktop: the gate table as the Client there,
 // a static table of buttons on VS Code; a pick in the table shows its row's
 // detail, [Diff G1] the land's stat, and [Rules] opens the rules pane.
+// Phase 5 (WP-CD): the table's right-click menu with only its row's items,
+// a pick that copies and one that fills the prompt; on VS Code the selected
+// gate's actions as buttons, the critic note among them; and a design run's
+// bar × version matrix, its record lines and its [Plan].
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
@@ -16,6 +20,7 @@ const LITTER = '/repo/.claude/litter'
 const EXEC = '20261003-api'
 const FAN = '20261003-fan'
 const STOP = '20261001-stop'
+const DESIGN = '20261002-design-ab12cd'
 const STOP_GAP = 'the plan never says which header wins when both are sent'
 const NOW = 1_800_000_000_000
 const BASE = 'a'.repeat(40)
@@ -28,16 +33,30 @@ const pane = (title: string) =>
 const run = ($: Engine, command: string, args = '') =>
   $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
 
+type World = {
+  files: Map<string, string>
+  argv: string[][]
+  opened: string[]
+  copied: string[]
+  filled: string[]
+  nextBoard: () => Promise<BoardView>
+  nextToast: () => Promise<string>
+}
+
 /**
- * $.fs from a map, git as a plain checkout at /repo answers it, and `git diff --stat` for the land; what ran and what opened;
- * and `nextBoard()`, the next board view litter writes ($.state `board`) once it has landed.
+ * $.fs from a map, git as a plain checkout at /repo answers it, and `git diff --stat` for the land; what ran, opened, was copied
+ * and filled into the prompt; `nextBoard()`, the next board view litter writes ($.state `board`) once it has landed, and
+ * `nextToast()`, the next toast.
  */
-function world(on: On): { files: Map<string, string>; argv: string[][]; opened: string[]; nextBoard: () => Promise<BoardView> } {
+function world(on: On): World {
   const files = new Map<string, string>()
   const argv: string[][] = []
   const opened: string[] = []
+  const copied: string[] = []
+  const filled: string[] = []
   // Each waiter gets the first board view written after it asked, passed on beneath litter.
   const waiting: ((view: BoardView) => void)[] = []
+  const toasted: ((text: string) => void)[] = []
   on('state.set', async (_$, e, next) => {
     const set = await next(e)
     if (e.key === 'board') for (const resolve of waiting.splice(0)) resolve(e.value as BoardView)
@@ -91,7 +110,18 @@ function world(on: On): { files: Map<string, string>; argv: string[][]; opened: 
   on('agent.list', async () => ({ value: [] }))
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
   on('ui.log', async () => ({ value: undefined }))
-  on('ui.toast', async () => ({ value: undefined }))
+  on('ui.toast', async (_$, e) => {
+    for (const resolve of toasted.splice(0)) resolve(e.text)
+    return { value: undefined }
+  })
+  on('ui.copy', async (_$, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('prompt.fill', async (_$, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
   on('ui.open', async (_$, e) => {
     opened.push(e.id)
     return { value: { isPlaced: true } }
@@ -100,7 +130,15 @@ function world(on: On): { files: Map<string, string>; argv: string[][]; opened: 
   on('session.id', async () => ({ value: SESSION }))
   on('session.cwd', async () => ({ value: '/repo' }))
   mock.env(on, { HOME: '/home/tier1' })
-  return { files, argv, opened, nextBoard: () => new Promise<BoardView>(resolve => waiting.push(resolve)) }
+  return {
+    files,
+    argv,
+    opened,
+    copied,
+    filled,
+    nextBoard: () => new Promise<BoardView>(resolve => waiting.push(resolve)),
+    nextToast: () => new Promise<string>(resolve => toasted.push(resolve)),
+  }
 }
 
 const hex = (buf: ArrayBuffer): string => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('')
@@ -268,6 +306,42 @@ async function recordRuns(files: Map<string, string>): Promise<void> {
     },
     { kind: 'run.end', body: { taskId: 't1', generation: 1, status: 'halted', reason: `G1 plan gap: ${STOP_GAP}`, source: 'notification' } },
   ])
+  // G2's critic note, for the menu (phase 5).
+  files.set(`${LITTER}/${EXEC}/verdicts/G2-2.md`, '# G2, attempt 2\n\nplan_adherence: the retry has no backoff\n')
+
+  // A design run (phase 5): v1 HOLDING with the checkout changed, v2 not judged yet.
+  const bar = [
+    { id: 'C1', text: 'retries once on a 401', evidence: 'a test' },
+    { id: 'C2', text: 'keeps the timeout', evidence: 'the config' },
+    { id: 'B1', text: 'no sleep in tests', evidence: 'grep', reason: 'flaky' },
+  ]
+  files.set(`${LITTER}/${DESIGN}/run.json`, json(DESIGN, 'design', { deliverable: 'plan', bar, empiricalUnknowns: [] }))
+  files.set(`${LITTER}/${DESIGN}/proposals/v1.md`, '# Proposal v1\n')
+  files.set(`${LITTER}/${DESIGN}/proposals/v2.md`, '# Proposal v2\n\nRetry once, with backoff.\n')
+  const critic = { source: 'agent', agentId: 'dc', agentType: 'litter:design-critic' }
+  const author = { source: 'agent', agentId: 'au', agentType: 'litter:author' }
+  await ledger(files, DESIGN, [
+    { kind: 'run.start', body: start('design', DESIGN) },
+    { kind: 'run.launch', body: launch },
+    { kind: 'proposal', body: { text: 'Proposal v1', version: 'v1', sha256: '1'.repeat(64), gates: [{ id: 'G1' }, { id: 'G2' }] }, by: author },
+    {
+      kind: 'verdict',
+      body: {
+        version: 'v1',
+        criteria: [
+          { id: 'C1', verdict: 'PASS', evidence: 'a test' },
+          { id: 'C2', verdict: 'CONDITIONAL', evidence: 'no timeout named', gap_kind: 'design' },
+          { id: 'C7', verdict: 'FAIL', evidence: 'not in the bar', gap_kind: 'wording' },
+        ],
+        overall: 'HOLDING',
+        sha256: '1'.repeat(64),
+        source_changed: true,
+      },
+      by: critic,
+    },
+    { kind: 'proposal', body: { text: 'Proposal v2', version: 'v2', sha256: '2'.repeat(64), gates: [{ id: 'G1' }] }, by: author },
+    { kind: 'run.end', body: { taskId: 't1', generation: 1, status: 'done', reason: null, source: 'notification', payload: { outcome: 'holding', by: 'max-rounds', version: 'v2' } } },
+  ])
 }
 
 /** A session started in /repo, the runs recorded after its start-up (so reconcile leaves them as recorded). */
@@ -410,4 +484,101 @@ describe('the board, from a recorded ledger', () => {
     const bad = await run($, 'litter-board', 'nonsense')
     expect(bad.text).toContain(`"nonsense" isn't a run id`)
   })
+})
+
+describe("the gate table's menu (phase 5)", () => {
+  // A pick only posts: litter handles the post (a ui.message) after the act
+  // resolves, which the act's settle can stop short of, so each read after a
+  // pick waits for what it does (its toast, or the view it writes).
+  test("a right-click on a row draws its menu with only that row's items; ↓ ⏎ copies the land's full commit id", async ($, on) => {
+    const w = await start($, on)
+    await run($, 'litter-board', EXEC)
+    const ui = await mountBoard($, 'terminal')
+    // The header is the table's first row; G1 is the next. The menu is the Client's own state, drawn before the act resolves.
+    await ui.pointer({ type: 'down', x: 4, y: 1, button: 'right', in: 'board-gates' })
+    expect(await ui.find({ type: 'Text', text: 'replay with /litter:amend', in: 'board-gates' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'copy commit', in: 'board-gates' })).toBeDefined()
+    // G1 has no verdict file: no critic note.
+    expect(await ui.find({ type: 'Text', text: 'open critic note', in: 'board-gates' })).toBeUndefined()
+    const toast = w.nextToast()
+    await ui.key({ key: 'down', in: 'board-gates' })
+    await ui.key({ key: 'return', in: 'board-gates' })
+    expect(await toast).toBe('litter: copied bbbbbbb (G1)')
+    expect(w.copied).toEqual([LANDED])
+    expect(await ui.find({ type: 'Text', text: 'copy commit', in: 'board-gates' })).toBeUndefined()
+  })
+
+  test("G2's menu has its critic note and no copy; a second right-click closes it; replay fills the prompt, the note opens", async ($, on) => {
+    const w = await start($, on)
+    await run($, 'litter-board', EXEC)
+    const ui = await mountBoard($, 'terminal')
+    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
+    expect(await ui.find({ type: 'Text', text: 'open critic note', in: 'board-gates' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'copy commit', in: 'board-gates' })).toBeUndefined()
+    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
+    expect(await ui.find({ type: 'Text', text: 'open critic note', in: 'board-gates' })).toBeUndefined()
+
+    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
+    const toast = w.nextToast()
+    await ui.key({ key: 'return', in: 'board-gates' })
+    expect(await toast).toBe('litter: /litter:amend G2 is in the prompt box: add the change and press Enter')
+    expect(w.filled).toEqual(['/litter:amend G2 '])
+
+    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
+    const drawn = w.nextBoard()
+    await ui.key({ key: 'down', in: 'board-gates' })
+    await ui.key({ key: 'return', in: 'board-gates' })
+    expect((await drawn).body?.section?.kind).toBe('verdict')
+    expect(await ui.find({ type: 'Text', text: 'critic note on G2' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: `${LITTER}/${EXEC}/verdicts/G2-2.md` })).toBeDefined()
+    expect(await ui.find({ type: 'Code', text: 'the retry has no backoff' })).toBeDefined()
+  })
+
+  test("with no Client (VS Code), the selected gate's actions are buttons under the table", async ($, on) => {
+    const w = await start($, on)
+    await run($, 'litter-board', EXEC)
+    const ui = await mountBoard($, 'vscode')
+    // G2 is selected: replay and its note, and no copy (it didn't land).
+    expect(await ui.find({ type: 'Button', key: 'board:replay:G2' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'board:note:G2' })).toBeDefined()
+    expect(await ui.find({ key: 'board:copy:G2' })).toBeUndefined()
+    await ui.press({ key: 'board:note:G2' })
+    expect(await ui.find({ type: 'Text', text: 'critic note on G2' })).toBeDefined()
+    await ui.press({ key: 'board:replay:G2' })
+    expect(w.filled).toEqual(['/litter:amend G2 '])
+    await ui.press({ key: 'board:select:G1' })
+    // The note was G2's, so it closed.
+    expect(await ui.find({ type: 'Text', text: 'critic note on G2' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'board:copy:G1', text: "Copy G1's commit" })).toBeDefined()
+    await ui.press({ key: 'board:copy:G1' })
+    expect(w.copied).toEqual([LANDED])
+  })
+})
+
+describe('the design view (phase 5)', () => {
+  for (const surface of [...SURFACES, 'vscode'] as const) {
+    test(`the bar × version matrix above the records, its legend and version lines, and [Plan] on the latest proposal, on the ${surface}`, async ($, on) => {
+      await start($, on)
+      expect((await run($, 'litter-board', DESIGN)).text).toBe(`litter: the board shows run ${DESIGN} (design, done)`)
+      const ui = await mountBoard($, surface)
+      expect(await ui.find({ type: 'Client' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: 'Bar × versions' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'item v1  v2' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'retries once on a 401' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '~d' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '✕w' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'not in the bar' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'gap kind: i investigation, d design, w wording, u user' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'not judged' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'sha256 1111111' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '! source changed' })).toBeDefined()
+      // The records: a design verdict reads its overall, never "✓ passes".
+      expect(await ui.find({ type: 'Text', text: 'v1 HOLDING · 1/4 pass, open C2 B1 C7' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'v1 · 2 gates' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'passes' })).toBeUndefined()
+      await ui.press({ key: 'board:plan' })
+      expect(await ui.find({ type: 'Text', text: 'proposal v2' })).toBeDefined()
+      expect(await ui.find({ type: 'Code', text: 'Retry once, with backoff.' })).toBeDefined()
+    })
+  }
 })

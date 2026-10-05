@@ -283,7 +283,10 @@ describe('the execute gate table', () => {
       failing: [],
       verdictFile: null,
       commit: landed.slice(0, 7),
+      oid: landed,
       earlier: null,
+      // The run has ended, and G1 landed with a full commit id (phase 5's menu; no verdict file yet).
+      actions: ['replay', 'copy'],
     })
     const g2 = rowOf(view, 'G2')
     expect(g2.state).toBe('halted')
