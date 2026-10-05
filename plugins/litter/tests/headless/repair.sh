@@ -107,8 +107,9 @@ echo "$H_CASE: driving the session in $R"
   cd "$R" || exit 1
   # Auto mode, as swarm.sh: the classifier answers the lead's and the nodes' asks, and the repair's start needs no ask.
   # A fanout and then a repair run longer than drive.exp's default 40 minutes.
+  # Transcripts kept (H_PERSIST), so a role's failure can be read afterwards.
   # shellcheck disable=SC2086
-  H_DRIVE_MAX=${H_DRIVE_MAX:-7200} LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh expect "$H_HERE/drive.exp" "$H_DIR/steps.txt" "$H_DIR/tty.txt" \
+  H_PERSIST=1 H_DRIVE_MAX=${H_DRIVE_MAX:-7200} LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh expect "$H_HERE/drive.exp" "$H_DIR/steps.txt" "$H_DIR/tty.txt" \
     claude ${REPAIR_MODEL:+--model "$REPAIR_MODEL"} --permission-mode auto --settings "$SETTINGS" \
     --allowedTools ToolSearch Agent Workflow Read Glob Grep Write Edit mcp__litter__record mcp__litter__swarm_read \
     mcp__litter__swarm_propose mcp__litter__swarm_send 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' \
