@@ -1,6 +1,7 @@
 // Selection and delivery (16.5; COMMON decisions 25 and 26): which accepted
 // rules reach each call, in compact form under the 8 KiB cap, and which
-// versions a run used. Owner: phase 3, package AE.
+// versions a run used. Owner: phase 3, package AE; the design branch and
+// rule.find's design answer are phase 4's, WP-BD.
 //
 // AD's loadRules says which files are in force; this file only picks among
 // them, by workflow, role and path, and renders them. Nothing here writes.
@@ -8,7 +9,7 @@
 import type { Ports } from '../ports'
 import type { RecordReply } from '../records/core'
 import type { LoadedRule, RuleDoc, RuleRef, RuleScope, SelectInput, SelectUnit, Selection } from '../records/rules'
-import type { RunJson, Workflow } from '../records/run'
+import type { BarItem, RunJson, Workflow } from '../records/run'
 import type { LiveSwarm, RunLink, SwarmNode } from '../swarm/types'
 import { fail } from '../records/core'
 import { emptySelection } from '../records/rules'
@@ -20,6 +21,7 @@ import { runGateFiles } from '../widen'
 import { git } from '../worktrees'
 import { loadRules } from './store'
 import { couldMatchUnder, expandBraceSets, isPathless, matches, specificity } from './match'
+import { rulesIntoBar, selectedRules } from '../design/bar'
 
 // AD's store, through one table so tier 2 can stand in for it (COMMON, "Another package's module").
 export const deps = {
@@ -39,16 +41,21 @@ const EXECUTE_ROLES = ['executor', 'gate-critic', 'adversary']
  */
 const PLAN_ROLES: Readonly<Record<string, string>> = { executor: 'executor', critic: 'gate-critic', 'gate-critic': 'gate-critic', adversary: 'adversary' }
 
+/** A design's roles (section 6): every call of the run gets the one `<rules>` block, args.rules. */
+const DESIGN_ROLES = ['falsifier', 'coverage', 'mechanism', 'prober', 'reframer', 'author', 'design-critic']
+
 /** The verifier's unit key: no task id can take it (lifecycle.ts's TASK_ID). */
 const VERIFIER = '@verifier'
 const PLANNER = '@planner'
 const NODE = '@node'
+const DESIGN = '@design'
 
 /** Your run rules, as run.start renders them into args.rules (lifecycle.ts, renderRunRules). */
 const RUN_RULE = 'For this run (stated by you): '
 
-const DESIGN_NOTE =
-  'a design gets only your run rules in this version: the accepted rules join its frozen bar in phase 4, so rule.find has nothing to select for it'
+/** rule.find's design answer without your draft bar. */
+const DESIGN_IDS_NOTE =
+  "the ids in 'bar' are numbered from C1 and B1 here; run.start assigns them at launch, after your own items' ids. Pass 'bar', your draft bar, to see them numbered as run.start will"
 
 const bytes = (s: string): number => new TextEncoder().encode(s).length
 /** A block's size: each entry and the newline that joins it. */
@@ -319,17 +326,25 @@ function ownOf(rules: readonly Rule[], entries: readonly Entry[]): Cand[] {
  * delivered. A throw refuses the launch.
  */
 export async function selectForRun(p: Ports, input: SelectInput): Promise<Selection> {
-  if (input.workflow === 'design') return emptySelection()
   const { rules } = await deps.loadRules(p, input.litterDir)
   return select(p, input, rules)
 }
 
 async function select(p: Ports, input: SelectInput, loaded: readonly LoadedRule[]): Promise<Selection> {
   const sel = emptySelection()
-  // Phase 4 puts the accepted rules into a design's frozen bar; until then a design gets your run rules only.
-  if (input.workflow === 'design') return sel
   const rules = inForce(loaded)
   const top = input.checkout
+
+  if (input.workflow === 'design') {
+    // design (16.5): every rule without paths and every ban, plus those for the run's anchors and the
+    // files the goal names, in one block every call shares. run.start puts them into the bar too (design/bar.ts).
+    const fitting = rules.filter(r => fits(r.doc, ['design'], DESIGN_ROLES))
+    const entries = await entriesOf(p, top, [...anchorPaths(top, input.anchors), ...(await namedPaths(p, top, null, input.goal))])
+    const capped = capAll(input.runRules, fitting.filter(r => r.shared).map(r => cand(r, 0)), [{ key: DESIGN, own: ownOf(fitting, entries) }])
+    sel.run = [...capped.run, ...(capped.own[DESIGN] ?? [])]
+    sel.versions = capped.versions
+    return sel
+  }
 
   if (input.workflow === 'execute') {
     const fitting = rules.filter(r => fits(r.doc, ['execute'], EXECUTE_ROLES))
@@ -400,6 +415,31 @@ async function namedPaths(p: Ports, top: string, planText: string | null, goal: 
     if (await p.fs.exists(`${top}/${x.replace(/\/+$/, '')}`).catch(() => false)) out.push(x)
   }
   return out
+}
+
+/**
+ * A design's anchors as paths (16.5's design line): each anchor, and each
+ * link or backticked path in it, with a `#anchor` or `:line` suffix dropped.
+ * Unlike the goal's, they needn't exist: you named them as where the problem
+ * is, and a folder or glob among them gets every rule that could match under
+ * it, as a gate's Files entry does. A URL, a phrase with spaces (a function's
+ * description, an incident) and a path outside the checkout are no path.
+ */
+function anchorPaths(top: string, anchors: readonly string[]): string[] {
+  const out = new Set<string>()
+  for (const anchor of anchors) {
+    const raws = [anchor.trim().replace(/^`([^`\n]+)`$/, '$1')]
+    for (const m of anchor.matchAll(/\[[^\]\n]*\]\(<?([^)\s>]+)>?(?:\s+"[^"\n]*")?\)/g)) raws.push(m[1]!)
+    for (const m of anchor.matchAll(/`([^`\n]+)`/g)) raws.push(m[1]!)
+    for (const raw of raws) {
+      // The suffix first, so `a.ts:12` isn't read as a URL's scheme.
+      const x = raw.trim().replace(/#.*$/, '').replace(/:\d+(?:[-:]\d+)?$/, '')
+      if (/^[a-z][a-z0-9+.-]*:/i.test(x)) continue // a URL, or `C:`
+      if (x === '' || /\s/.test(x) || (x.startsWith('/') && !x.startsWith(`${top}/`))) continue
+      out.add(x)
+    }
+  }
+  return [...out]
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +521,12 @@ async function linkedExecute(p: Ports, link: RunLink): Promise<{ files: string[]
  * (records.ts, AD's, through its deps): exactly what selectForRun would give
  * for that launch, as `{ ok: true, run, gates | tasks, versions, problems }`.
  * Writes nothing. `applicable` is the call's field as given, unchecked.
+ *
+ * A design's answer is `{ ok: true, workflow, run, bar, versions, problems }`:
+ * `bar` is the items run.start would add to the bar (design/bar.ts), numbered
+ * on from the highest C and B of `applicable.bar` (your draft bar, as
+ * run.start takes it) as run.start would number them. Without it they're
+ * numbered from C1 and B1, and `note` says the ids are assigned at launch.
  */
 export async function findApplicable(p: Ports, litterDir: string, applicable: Record<string, unknown>): Promise<RecordReply> {
   const a = applicable ?? {}
@@ -488,10 +534,13 @@ export async function findApplicable(p: Ports, litterDir: string, applicable: Re
   if (typeof workflow !== 'string' || !(WORKFLOWS as readonly string[]).includes(workflow)) {
     return fail("litter: 'applicable.workflow' is the launch's workflow: execute, fanout, plan or design", 'applicable', WORKFLOWS)
   }
-  if (workflow === 'design') return { ok: true, workflow, run: [], versions: [], problems: [], note: DESIGN_NOTE }
   const runRules = strings(a.runRules)
   if (runRules === null) return fail("litter: 'applicable.runRules' is your run rules as a list of strings, as run.start takes them", 'applicable')
   const goal = typeof a.goal === 'string' && a.goal.trim() !== '' ? a.goal : null
+  const anchors = workflow === 'design' ? strings(a.anchors) : []
+  if (anchors === null) return fail("litter: 'applicable.anchors' is the design's anchors as a list of strings, as run.start takes them", 'applicable')
+  const mine = workflow === 'design' ? barIds(a.bar) : []
+  if (mine === null) return fail("litter: 'applicable.bar' is your bar as run.start takes it, a list of { id, text, evidence, reason? }, so the rules' items number on from your ids", 'applicable')
   try {
     const checkout = await checkoutOf(p, litterDir)
     let gates: SelectUnit[] = []
@@ -527,11 +576,18 @@ export async function findApplicable(p: Ports, litterDir: string, applicable: Re
       tasks,
       planText,
       goal,
-      anchors: [],
+      anchors,
       checkout,
       runRules: runRules.map(r => `${RUN_RULE}${r}`),
     }
     const sel = await select(p, input, rules)
+    if (workflow === 'design') {
+      // The same load the selection read, so every version it delivered is there.
+      const picked = selectedRules(rules, sel.versions)
+      if ('changed' in picked) throw new Error(`rule ${picked.changed.id}@${picked.changed.version} was selected but isn't loaded`)
+      const bar = rulesIntoBar(mine, picked.rules).slice(mine.length)
+      return { ok: true, workflow, run: sel.run, bar, versions: sel.versions, problems, ...(a.bar === undefined || a.bar === null ? { note: DESIGN_IDS_NOTE } : {}) }
+    }
     const units =
       workflow === 'execute' ? { run: sel.run, gates: sel.gates } : workflow === 'fanout' ? { run: sel.run, tasks: sel.tasks, verifier: sel.verifier } : { planner: sel.planner }
     return { ok: true, workflow, ...units, versions: sel.versions, problems }
@@ -542,6 +598,16 @@ export async function findApplicable(p: Ports, litterDir: string, applicable: Re
 
 const strings = (v: unknown): string[] | null =>
   v === undefined || v === null ? [] : Array.isArray(v) && v.every(x => typeof x === 'string') ? v.map(x => x.trim()).filter(x => x !== '') : null
+
+/**
+ * Your bar's items, as far as the rules' numbering needs them: their ids
+ * (run.start checks the rest). Null for anything but a list.
+ */
+function barIds(v: unknown): BarItem[] | null {
+  if (v === undefined || v === null) return []
+  if (!Array.isArray(v)) return null
+  return v.flatMap(b => (typeof b === 'object' && b !== null && typeof (b as BarItem).id === 'string' ? [{ id: (b as BarItem).id, text: '', evidence: '' }] : []))
+}
 
 /** A fanout's tasks as run.start reads their files: a task that doesn't write owns none. */
 function tasksOf(v: unknown): SelectUnit[] | string {

@@ -20,13 +20,14 @@ const SNAP = 'e'.repeat(40)
 const LOCK_OID = 'f'.repeat(40)
 const LITTER = '/repo/.claude/litter'
 
-/** The six-item bar with a ban that BD's minimum (decision 5) takes. */
+/** The six criteria and a ban that BD's minimum (decision 5) takes. */
 const BAR = [
   { id: 'C1', text: 'retries once', evidence: 'a test' },
   { id: 'C2', text: 'keeps the timeout', evidence: 'the config' },
   { id: 'C3', text: 'logs each retry', evidence: 'a log line' },
   { id: 'C4', text: 'needs no new dependency', evidence: 'package.json' },
   { id: 'C5', text: 'consistent with rules', evidence: 'the rules' },
+  { id: 'C6', text: 'keeps the public API', evidence: 'the exports' },
   { id: 'B1', text: 'no sleep in tests', evidence: 'grep', reason: 'flaky' },
 ]
 
@@ -212,6 +213,7 @@ describe('a design run.start through the record tool', () => {
         '- **C3** logs each retry\n  Evidence: a log line',
         '- **C4** needs no new dependency\n  Evidence: package.json',
         '- **C5** consistent with rules\n  Evidence: the rules',
+        '- **C6** keeps the public API\n  Evidence: the exports',
         '- **B1** no sleep in tests\n  Evidence: grep\n  Reason: flaky',
         '',
       ].join('\n'),
