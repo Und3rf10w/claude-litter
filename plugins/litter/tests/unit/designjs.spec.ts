@@ -31,6 +31,7 @@ import {
   nullOf,
   probed,
   reframed,
+  retryCap,
   round,
   runDesign,
   schemaProblem,
@@ -48,6 +49,8 @@ import {
 } from './designjs-harness'
 
 const run = (args: unknown, replies: Record<string, Reply | Reply[]>, budget?: (calls: Call[]) => Budget) => runDesign({ args, replies, budget })
+/** The engine's rejection when a role ends without calling StructuredOutput (agent({schema}), cli 2.1.289 :967519-967522). */
+const NO_OUTPUT = 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)'
 
 const labels = (r: Run) => r.calls.map(c => c.label)
 const byLabel = (r: Run, label: string): Call => {
@@ -387,6 +390,45 @@ describe('the stops', () => {
     expect(twice.result).toEqual({ stopped: 'halted', reason: 'the coverage platforms returned nothing twice in round 1 (Investigate)' })
   })
 
+  // WP-BG: the engine rejects a call whose role ended without its StructuredOutput; the script reads it as a null.
+  test('a role that ended without its StructuredOutput, then a good retry, goes on as a null would, in a batch too', async () => {
+    const unknowns = { empiricalUnknowns: ['Does rename(2) stay atomic?'] }
+    const sites: [Record<string, unknown>, string, Reply][] = [
+      [{}, 'critic:v1', judged('v1')],
+      [{}, 'r1:author', authored('v1')],
+      [{}, 'r1:coverage:platforms', covered()],
+      [unknowns, 'r1:probe:U1', probed('U1')],
+    ]
+    for (const [extra, label, good] of sites) {
+      const base = { ...round(1), 'r1:probe:U1': probed('U1') }
+      const nulled = await run(designArgs(extra), { ...base, [label]: null, [`${label} (retry)`]: good })
+      const r = await run(designArgs(extra), { ...base, [label]: { throws: NO_OUTPUT }, [`${label} (retry)`]: good })
+      expect({ label, error: r.error }).toEqual({ label, error: null })
+      expect(labels(r)).toEqual(labels(nulled))
+      expect(labels(r)).toContain(`${label} (retry)`)
+      expect(r.result).toEqual({ stopped: null, outcome: 'approved', by: 'approved', version: 'v1' })
+    }
+  })
+
+  test("a role that ends without its StructuredOutput twice halts with the caller's reason, naming the role and the round, not a throw", async () => {
+    const unknowns = { empiricalUnknowns: ['Does rename(2) stay atomic?'] }
+    const sites: [Record<string, unknown>, string, string][] = [
+      [{}, 'critic:v1', 'the design critic returned nothing twice on v1 in round 1 (Judge)'],
+      [{}, 'r1:reframer', 'the reframer returned nothing twice in round 1 (Reframe)'],
+      [{}, 'r1:coverage:platforms', 'the coverage platforms returned nothing twice in round 1 (Investigate)'],
+      [unknowns, 'r1:probe:U1', 'the prober for U1 returned nothing twice in round 1 (Probe)'],
+    ]
+    for (const [extra, label, reason] of sites) {
+      const base = { ...round(1), 'r1:probe:U1': probed('U1') }
+      const nulled = await run(designArgs(extra), { ...base, [label]: null, [`${label} (retry)`]: null })
+      const r = await run(designArgs(extra), { ...base, [label]: { throws: NO_OUTPUT }, [`${label} (retry)`]: { throws: NO_OUTPUT } })
+      expect({ label, error: r.error }).toEqual({ label, error: null })
+      expect(labels(r)).toEqual(labels(nulled))
+      expect(r.result).toEqual({ stopped: 'halted', reason })
+      expect(decoded(r)).toEqual({ status: 'halted', reason })
+    }
+  })
+
   test('a missing role interrupts the run, with no retry', async () => {
     const msg = "agent type 'litter:coverage' not found. Available agents: general-purpose"
     const r = await run(designArgs(), round(1, { coverage: { throws: msg } }))
@@ -407,6 +449,17 @@ describe('the stops', () => {
     const r = await run(designArgs(), round(1, { reframer: { throws: 'agent type litter:reframer is denied by your settings' } }))
     expect(r.result).toBeUndefined()
     expect(String((r.error as Error).message)).toContain('is denied')
+  })
+
+  test("only a role that ended without its StructuredOutput is a null: the engine's retry cap, a bad schema, stays fatal, in a batch too", async () => {
+    const msg = retryCap("$: missing required 'overall'")
+    const r = await run(designArgs(), { ...round(1, { critic: { throws: msg } }), 'critic:v1 (retry)': judged('v1') })
+    expect(labels(r).at(-1)).toBe('critic:v1')
+    expect(r.result).toBeUndefined()
+    expect(String((r.error as Error).message)).toBe(msg)
+    const lens = await run(designArgs(), { ...round(1, { coverage: { throws: msg } }), 'r1:coverage:platforms (retry)': covered() })
+    expect(labels(lens)).toEqual(lensLabels(1))
+    expect(String((lens.error as Error).message)).toBe(msg)
   })
 })
 

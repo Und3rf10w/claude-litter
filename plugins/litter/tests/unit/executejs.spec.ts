@@ -36,6 +36,7 @@ import {
   notLanded,
   PLAN_PATH,
   red,
+  retryCap,
   RUN_RULES,
   runScript,
   strictProblem,
@@ -51,6 +52,8 @@ import {
 
 const run = (args: unknown, replies: Record<string, Reply | Reply[]>, budget?: Parameters<typeof runScript>[1]['budget']) =>
   runScript('execute', { args, replies, budget })
+/** The engine's rejection when a role ends without calling StructuredOutput (agent({schema}), cli 2.1.289 :967519-967522). */
+const NO_OUTPUT = 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)'
 
 const labels = (r: Run) => r.calls.map(c => c.label)
 const byLabel = (r: Run, label: string): Call => {
@@ -182,6 +185,29 @@ describe('null results', () => {
     expect(labels(r).slice(0, 4)).toEqual(['baseline', 'write:G1#1', 'critic:G1#1', 'critic:G1#1 (retry)'])
     expect(decoded(r)).toEqual({ status: 'done', reason: null })
   })
+
+  // WP-BG: the engine rejects a call whose role ended without its StructuredOutput; the script reads it as a null.
+  test('a role that ended without its StructuredOutput, then a good retry, goes on as a null would', async () => {
+    const nulled = await run(executeArgs(), happy({ 'critic:G1#1': null, 'critic:G1#1 (retry)': verdict('G1-1-bb') }))
+    const r = await run(executeArgs(), happy({ 'critic:G1#1': { throws: NO_OUTPUT }, 'critic:G1#1 (retry)': verdict('G1-1-bb') }))
+    expect(r.error).toBeNull()
+    expect(labels(r)).toEqual(labels(nulled))
+    expect(r.result).toEqual(nulled.result!)
+    expect(decoded(r)).toEqual({ status: 'done', reason: null })
+  })
+
+  for (const s of sites) {
+    test(`${s.label}: a role that ends without its StructuredOutput twice halts with the caller's reason, not a throw`, async () => {
+      const replies = happy({ 'adversary:G1#1': noBreaks, 'adversary:G2#1': noBreaks })
+      const nulled = await run(executeArgs(undefined, s.args), { ...replies, [s.label]: null, [`${s.label} (retry)`]: null })
+      const r = await run(executeArgs(undefined, s.args), { ...replies, [s.label]: { throws: NO_OUTPUT }, [`${s.label} (retry)`]: { throws: NO_OUTPUT } })
+      expect(labels(r)).toEqual(labels(nulled))
+      expect(halted(r)).toBe(s.reason)
+      expect(r.result).toEqual(nulled.result!)
+      expect(r.result!.interrupted).toBeUndefined()
+      expect(decoded(r)).toEqual({ status: 'halted', reason: s.reason })
+    })
+  }
 })
 
 describe('the baseline', () => {
@@ -492,6 +518,14 @@ describe('rejections', () => {
     expect(r.result).toBeUndefined()
     expect(String((r.error as Error).message)).toBe(msg)
     expect(decodeReturn('execute', { status: 'failed', error: msg })).toEqual({ status: 'failed', reason: msg })
+  })
+
+  test("only a role that ended without its StructuredOutput is a null: the engine's retry cap, a bad schema, stays fatal", async () => {
+    const msg = retryCap("$: missing required 'rules'")
+    const r = await run(executeArgs(), happy({ 'critic:G1#1': { throws: msg }, 'critic:G1#1 (retry)': verdict('G1-1-bb') }))
+    expect(labels(r).at(-1)).toBe('critic:G1#1')
+    expect(r.result).toBeUndefined()
+    expect(String((r.error as Error).message)).toBe(msg)
   })
 
   test('a critic result without rules fails its schema, as the engine would, and the workflow fails', async () => {

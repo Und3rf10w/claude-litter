@@ -18,6 +18,7 @@ import {
   planArgs,
   plannedGate,
   PROSE_PATH,
+  retryCap,
   runScript,
   strictProblem,
   tagBody,
@@ -27,6 +28,8 @@ import {
 } from './executejs-harness'
 
 const run = (args: unknown, replies: Record<string, Reply | Reply[]>) => runScript('plan', { args, replies })
+/** The engine's rejection when a role ends without calling StructuredOutput (agent({schema}), cli 2.1.289 :967519-967522). */
+const NO_OUTPUT = 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)'
 const labels = (r: Run) => r.calls.map(c => c.label)
 const decoded = (r: Run) => {
   expect(r.error).toBeNull()
@@ -120,6 +123,30 @@ describe('when the planner does not answer', () => {
   test('a null answered by its retry returns the retry', async () => {
     const r = await run(planArgs(), { planner: null, 'planner (retry)': gatesReply(['G1']) })
     expect(decoded(r).status).toBe('done')
+  })
+
+  // WP-BG: the engine rejects a call whose role ended without its StructuredOutput; the script reads it as a null.
+  test('a planner that ended without its StructuredOutput, then a good retry, returns the retry', async () => {
+    const reply = gatesReply(['G1'])
+    const r = await run(planArgs(), { planner: { throws: NO_OUTPUT }, 'planner (retry)': reply })
+    expect(labels(r)).toEqual(['planner', 'planner (retry)'])
+    expect(r.result).toEqual(reply)
+    expect(decoded(r)).toEqual({ status: 'done', reason: null })
+  })
+
+  test("a planner that ends without its StructuredOutput twice halts with the planner's reason, not a throw", async () => {
+    const r = await run(planArgs(), { planner: { throws: NO_OUTPUT }, 'planner (retry)': { throws: NO_OUTPUT } })
+    expect(labels(r)).toEqual(['planner', 'planner (retry)'])
+    expect(r.result).toEqual({ halted: 'the planner returned nothing' })
+    expect(decoded(r)).toEqual({ status: 'halted', reason: 'the planner returned nothing' })
+  })
+
+  test("only a role that ended without its StructuredOutput is a null: the engine's retry cap, a bad schema, stays fatal", async () => {
+    const msg = retryCap("$: missing required 'checks'")
+    const r = await run(planArgs(), { planner: { throws: msg }, 'planner (retry)': gatesReply(['G1']) })
+    expect(labels(r)).toEqual(['planner'])
+    expect(r.result).toBeUndefined()
+    expect(String((r.error as Error).message)).toBe(msg)
   })
 
   test('a missing role ends interrupted, without a retry', async () => {

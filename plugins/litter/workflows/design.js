@@ -291,8 +291,9 @@ function material(rs, showRound) {
 }
 
 // ---------------------------------------------------------------------------
-// Calls (as execute.js's call()): one retry on null; a missing role interrupts,
-// a refused worktree halts, and the engine's budget ends the run holding.
+// Calls (as execute.js's call()): one retry on null, a role that ended without
+// its StructuredOutput included; a missing role interrupts, a refused worktree
+// halts, and the engine's budget ends the run holding.
 
 let interrupted = null                                       // a role missing when the run (re)started (section 9)
 let refused = null                                           // worktree.sh refused a prober's worktree (section 9, "Run worktrees")
@@ -308,6 +309,7 @@ async function attempt(prompt, opts) {
     if (/^\s*WorktreeCreate hook failed/.test(msg)) { refused ??= msg; return null }  // the same name would be refused again
     if (/agent type 'litter:[^']*' not found/.test(msg)) { interrupted ??= msg; return null }  // only a resume can help
     if (e?.name === 'WorkflowBudgetExceededError' || /^Workflow token budget exceeded/.test(msg)) { outOfBudget = true; return null }
+    if (/subagent completed without calling StructuredOutput/.test(msg)) return null  // a null, retried once (WP-BG)
     throw e                                                  // a denied type, a bad schema: fatal
   }
 }
