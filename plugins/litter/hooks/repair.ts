@@ -2,7 +2,8 @@
 // 6): whether a halted fanout continues as a repair swarm, its baseline, the
 // spec generated from run facts, the launch with no ask under `repair: auto`
 // (and with one on `repair.start` under `off`), the start on the lead's next
-// turn, and more budget. Phase 3 (AC; COMMON steps 4 and 5) adds the execute
+// turn (your Enter on its start line when that turn didn't make it, WP-AS),
+// and more budget. Phase 3 (AC; COMMON steps 4 and 5) adds the execute
 // bridge beside it: a halted execute run whose first unlanded gate halted on
 // a plan gap or ran out of attempts continues as a plan-template swarm, in
 // the run's own checkout, through the same reopen, launch and start.
@@ -31,6 +32,7 @@ import type { VerifyBody } from './records/execute'
 import type { SwarmEventBody } from './records/swarm'
 import type { RepairBudget, RunLink, SwarmNode, SwarmSpec } from './swarm/types'
 import type { LaunchPlan } from './swarm/launch'
+import type { LaunchFacts } from './swarm/recover'
 import type { RunRef, RunState } from './lifecycle'
 import { fail } from './records/core'
 import { appendRecord, readLedger } from './ledgercore'
@@ -61,7 +63,7 @@ import { saveRevision } from './swarm/store'
 import { beginLaunch, fillStart, goLive, launchQuestion, planLaunch } from './swarm/launch'
 import { bindings, interactive, liveSwarm, patchLiveSwarm, reservations, roundsUsed, spawnsUsed } from './swarm/state'
 import { confirmOwnership } from './swarm/owner'
-import { readLaunchFacts } from './swarm/recover'
+import { authorityLines, readLaunchFacts } from './swarm/recover'
 import { renderSlots } from './prompts/slots'
 import {
   EVIDENCE_CONFLICT,
@@ -1048,10 +1050,26 @@ async function raiseBudget(ctx: RecordCtx, litterDir: string, name: string, more
 }
 
 // ---------------------------------------------------------------------------
-// The start on the lead's next turn (decision 2; spike 19)
+// The start on the lead's next turn (decision 2; spike 19), and your Enter
+// when that turn didn't make it (WP-AS)
 
-/** A repair swarm the bridge started, waiting for the lead's start. In `$.store`, so a reload keeps it. */
-type PendingStart = { swarm: string; launch: string; run: string; runDir: string; litterDir: string; at: number; submitted?: boolean }
+/**
+ * A repair swarm the bridge started, waiting for the lead's start. In
+ * `$.store`, so a reload keeps it. `submitted`: the start went to the lead.
+ * `filled`: that start's turn ended with nothing spawned, and the mod put the
+ * start line in your prompt box (`inBox`: whether the box took it); never twice.
+ */
+type PendingStart = {
+  swarm: string
+  launch: string
+  run: string
+  runDir: string
+  litterDir: string
+  at: number
+  submitted?: boolean
+  filled?: boolean
+  inBox?: boolean
+}
 
 const pendingKey = (litterDir: string) => `litter.repair.start.${litterDir}`
 const keyOf = (e: Pick<PendingStart, 'swarm' | 'launch'>) => `${e.swarm}/${e.launch}`
@@ -1067,9 +1085,13 @@ const isPending = (v: unknown): v is PendingStart => {
   return !!e && typeof e === 'object' && typeof e.swarm === 'string' && typeof e.launch === 'string' && typeof e.run === 'string' && typeof e.runDir === 'string' && typeof e.litterDir === 'string'
 }
 
-async function loadPending(p: Ports, litterDir: string): Promise<void> {
+async function storedPending(p: Ports, litterDir: string): Promise<PendingStart[]> {
   const list = await p.store.get(pendingKey(litterDir))
-  const read = Array.isArray(list) ? list.filter(isPending).filter(e => e.litterDir === litterDir) : []
+  return Array.isArray(list) ? list.filter(isPending).filter(e => e.litterDir === litterDir) : []
+}
+
+async function loadPending(p: Ports, litterDir: string): Promise<void> {
+  const read = await storedPending(p, litterDir)
   pending = [...pending.filter(e => e.litterDir !== litterDir), ...read]
   loaded.add(litterDir)
 }
@@ -1099,19 +1121,28 @@ const startedHere = (e: PendingStart): boolean =>
 /** Waiting for its start in this process: not submitted, not handed to a timer, owned here, nothing spawned. */
 const waiting = (e: PendingStart): boolean => !e.submitted && !scheduled.has(keyOf(e)) && ownedHere(e) && !startedHere(e)
 
+/** Submitted, and its turn ended with nothing spawned (WP-AS): not filled, not handed to a timer, owned here. */
+const unstarted = (e: PendingStart): boolean => e.submitted === true && e.filled !== true && !scheduled.has(keyOf(e)) && ownedHere(e) && !startedHere(e)
+
+/** The launch ledger has an orchestrator's swarm.node. */
+const orchestratorBound = (facts: LaunchFacts): boolean => [...facts.nodes.values()].some(r => r.body.kind === 'orchestrator')
+
+const runRefOf = (e: PendingStart): RunRef => ({ run: e.run, runDir: e.runDir, litterDir: e.litterDir })
+
 /** Drops each start whose launch ended, never started, or has an orchestrator: it's done with. */
 async function prunePending(p: Ports, litterDir: string): Promise<void> {
   const keep: PendingStart[] = []
-  let dropped = false
+  const done: PendingStart[] = []
   for (const e of pending.filter(x => x.litterDir === litterDir)) {
     const facts = await readLaunchFacts(p, litterDir, e.swarm, e.launch).catch(() => null)
-    const spawned = facts !== null && [...facts.nodes.values()].some(r => r.body.kind === 'orchestrator')
-    if (facts && (!facts.start || facts.ended || spawned || startedHere(e))) dropped = true
+    if (facts && (!facts.start || facts.ended || orchestratorBound(facts) || startedHere(e))) done.push(e)
     else keep.push(e)
   }
-  if (!dropped) return
+  if (done.length === 0) return
   pending = [...pending.filter(x => x.litterDir !== litterDir), ...keep]
   await savePending(p, litterDir)
+  // A filled start's summary said it waited for your Enter, which it no longer does.
+  for (const e of done) if (e.filled === true) await rewriteSummary(p, runRefOf(e))
 }
 
 /**
@@ -1142,20 +1173,29 @@ export function repairNote(_p: Ports): string | null {
  * Every turn.complete, the lead's and each subagent's (it acts on the lead's):
  * once the notification turn that started a repair swarm ends, it schedules
  * `p.after(0, …)` to submit the start for that swarm (never awaited in the
- * hook; the text doesn't start with `/`). register.tsx calls it inside the
- * hook's own catch: a rejection is logged and the turn passes on.
+ * hook; the text doesn't start with `/`). The lead turn after a submitted
+ * start, aborted or not, that left no orchestrator spawned or admitted
+ * schedules the fill of its start line instead, once (WP-AS: the skill or the
+ * spawn may have been refused). register.tsx calls it inside the hook's own
+ * catch: a rejection is logged and the turn passes on.
  */
 export async function repairTurnComplete(p: Ports, e: Parameters<TurnCompleteHook>[1]): Promise<void> {
-  if (e.agentId !== undefined || e.isAborted) return
+  if (e.agentId !== undefined) return
   const litterDir = session().litterDir
   if (!litterDir) return
   if (!loaded.has(litterDir)) await loadPending(p, litterDir)
   if (!pending.some(x => x.litterDir === litterDir)) return
   await prunePending(p, litterDir)
   if (interactive() !== true) return
+  // The engine doesn't await a timer's callback, and neither step rejects; the promise is handed back for a test's runAfters.
+  for (const entry of pending.filter(x => x.litterDir === litterDir && unstarted(x))) {
+    scheduled.add(keyOf(entry))
+    p.after(0, () => fillStartLine(p, entry))
+  }
+  if (e.isAborted) return
   for (const entry of pending.filter(x => x.litterDir === litterDir && waiting(x))) {
     scheduled.add(keyOf(entry))
-    p.after(0, () => void submitStart(p, entry))
+    p.after(0, () => submitStart(p, entry))
   }
 }
 
@@ -1174,6 +1214,67 @@ async function submitStart(p: Ports, entry: PendingStart): Promise<void> {
   } finally {
     scheduled.delete(key)
   }
+}
+
+/**
+ * From the timer, once per pending start (WP-AS): the start went to the
+ * lead, and its turn ended with no orchestrator spawned or admitted. The
+ * start line, with the authority the launch recorded, goes in your prompt
+ * box, so your Enter makes the start your own message, as the builder's
+ * Launch does (`fillStart`). A toast says so; a `start-filled` event records
+ * whether the box took it; the start is marked filled in the store first, so
+ * a reload doesn't fill it again; summary.md says it's waiting for you.
+ */
+async function fillStartLine(p: Ports, entry: PendingStart): Promise<void> {
+  const key = keyOf(entry)
+  try {
+    const now = pending.find(x => keyOf(x) === key)
+    if (!now || now.submitted !== true || now.filled === true || !ownedHere(now) || startedHere(now)) return
+    const facts = await readLaunchFacts(p, now.litterDir, now.swarm, now.launch)
+    if (facts.ended || orchestratorBound(facts)) return
+    now.filled = true
+    await savePending(p, now.litterDir)
+    const line = `/litter:swarm start ${now.swarm}`
+    const s = liveSwarm(now.swarm)
+    const authority = s ? authorityLines(s, facts.start?.body ?? null) : []
+    const inBox = await p.fillPrompt([line, ...authority].join('\n')).catch(() => false)
+    now.inBox = inBox
+    await savePending(p, now.litterDir)
+    const why = `litter: repair swarm ${now.swarm} didn't start on the lead's turn (its start may have been refused)`
+    if (inBox) p.toast(`${why}; press Enter to start it, or /litter:swarm end ${now.swarm} to stop it`)
+    else {
+      p.log(`repair swarm ${now.swarm}: the prompt box didn't take its start line`)
+      p.toast(`${why}; send ${line} to start it, or /litter:swarm end ${now.swarm} to stop it`)
+    }
+    const event: SwarmEventBody = { kind: 'start-filled', filled: inBox }
+    // The event log is a record, not a gate: a failed append is logged, and the summary still says it waits.
+    await appendLaunchRecord(p, now.litterDir, now.swarm, now.launch, 'swarm.event', event).catch((err: unknown) =>
+      p.log(`repair swarm ${now.swarm}: its start-filled event wasn't recorded: ${errText(err)}`),
+    )
+    await rewriteSummary(p, runRefOf(now))
+  } catch (err) {
+    p.log(`repair swarm ${entry.swarm}: its start line wasn't filled: ${errText(err)}`)
+  } finally {
+    scheduled.delete(key)
+  }
+}
+
+/**
+ * The Repair section's line while the start litter filled waits for you
+ * (WP-AS): a filled pending start of this launch, with no orchestrator and
+ * the launch not ended. Null otherwise. Reads the store when this process
+ * hasn't loaded it, and changes nothing.
+ */
+async function waitingLine(p: Ports, litterDir: string, swarm: string, launch: string): Promise<string | null> {
+  const list = loaded.has(litterDir) ? pending.filter(x => x.litterDir === litterDir) : await storedPending(p, litterDir)
+  const e = list.find(x => x.swarm === swarm && x.launch === launch && x.filled === true)
+  if (!e || startedHere(e)) return null
+  const facts = await readLaunchFacts(p, litterDir, swarm, launch).catch(() => null)
+  if (facts && (facts.ended || orchestratorBound(facts))) return null
+  const line = `/litter:swarm start ${swarm}`
+  return e.inBox === false
+    ? `It didn't start on the lead's turn (its start may have been refused), and the prompt box didn't take its start line: it's waiting for you to send ${line}, or /litter:swarm end ${swarm} to stop it.`
+    : `It didn't start on the lead's turn (its start may have been refused): it's waiting for your Enter on ${line}, which litter put in your prompt box, or /litter:swarm end ${swarm} to stop it.`
 }
 
 /** A fresh module's pending starts, for tests. */
@@ -1198,12 +1299,14 @@ export async function repairSummary(p: Ports, runDir: string): Promise<string> {
   const read = await loadFacts(p, runDir)
   if (!read.ok) return ''
   const { ref, json, records, st } = read.facts
-  if (json.workflow === 'execute' && json.repair) return planSummary(read.facts)
-  if (json.workflow !== 'fanout' || !json.repair) return ''
+  if ((json.workflow !== 'execute' && json.workflow !== 'fanout') || !json.repair) return ''
+  const open = repairOf(records)
+  // A start the lead's turn didn't make, waiting for your Enter (WP-AS).
+  const wait = open ? await waitingLine(p, ref.litterDir, open.body.swarm, open.body.launch) : null
+  if (json.workflow === 'execute') return planSummary(read.facts, wait)
   const lines = ['## Repair', '']
   const branch = short(json.ref)
 
-  const open = repairOf(records)
   if (open) {
     const b = open.body
     lines.push(
@@ -1211,6 +1314,7 @@ export async function repairSummary(p: Ports, runDir: string): Promise<string> {
     )
     const end = records.filter(r => r.kind === 'run.end' && r.seq > open.seq && r.body.generation === b.generation).at(-1)
     const status = end ? body<RunEndBody>(end) : null
+    if (!status && wait) lines.push('', wait)
     if (!status) lines.push('', `Watch it with /litter-swarm ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
     else if (status.status === 'done') {
       const land = records.filter(r => r.kind === 'land' && r.seq > open.seq).at(-1)
@@ -1251,8 +1355,9 @@ const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
  * the gates it took over, the budget, how to watch it) and how it ended; or
  * why nothing started, and, when the halt is one the plan template takes on,
  * decision 5's routes: continue as that swarm, amend the gate, or stop.
+ * `wait` is waitingLine's, while the swarm waits for your Enter (WP-AS).
  */
-function planSummary(f: Facts): string {
+function planSummary(f: Facts, wait: string | null): string {
   const { ref, json, records, st } = f
   const lines = ['## Repair', '']
   const branch = short(json.ref)
@@ -1269,6 +1374,7 @@ function planSummary(f: Facts): string {
     const lands = records
       .filter(r => r.kind === 'land' && r.seq > open.seq && typeof r.body.gate === 'string')
       .map(r => `${String(r.body.gate)} (${String(r.body.commit ?? '').slice(0, 12)})`)
+    if (!status && wait) lines.push('', wait)
     if (!status) lines.push('', `Watch it with /litter-swarm ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
     else if (status.status === 'done') lines.push('', `It landed ${words(lands, 50)} on ${branch}: generation ${b.generation} ended done.`)
     else {

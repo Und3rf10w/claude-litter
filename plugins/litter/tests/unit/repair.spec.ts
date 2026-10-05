@@ -320,8 +320,12 @@ describe('the bridge under repair: auto', () => {
     expect(text).toContain(`run the litter swarm skill with start ${name}`)
     // Submitted once: kept in the store as submitted, until the orchestrator is spawned.
     expect(w.p.storeMap.get(pendingKey())).toEqual([expect.objectContaining({ swarm: name, launch, run: RUN, submitted: true })])
+    // The start's own turn ends with no orchestrator: the timer after it fills the start line, and submits nothing more (WP-AS, repairfill.spec.ts).
     await repairTurnComplete(w.p, leadTurn)
-    expect(w.p.afters).toHaveLength(1)
+    expect(w.p.afters).toHaveLength(2)
+    expect(await runAfters(w.p)).toBe(1)
+    expect(w.p.submitted).toEqual([text])
+    expect(w.p.filled.map(f => f.split('\n')[0])).toEqual([`/litter:swarm start ${name}`])
   })
 
   for (const failure of ['verdict', 'conflict'] as const) {
