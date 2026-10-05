@@ -18,11 +18,7 @@ import type { AgentPolicy, Policy, RolePolicy, SpoolConsumer } from './hookfiles
 import type { Author, RecordError, RecordHandler, RecordInput, StoredRecord } from './records/core'
 import type { GateWidenBody, VerifyBody } from './records/execute'
 import type {
-  BarItem,
-  Deliverable,
   FanoutTaskInput,
-  Lens,
-  LensRole,
   LockBlob,
   LockForcedBody,
   LockRecoveredBody,
@@ -43,8 +39,9 @@ import type { Gate } from './gates'
 import type { LockHeld, LockRefused } from './lock'
 import type { SessionRebindBody } from './records/swarm'
 import type { RepairBudget, RunLink } from './swarm/types'
+import type { DesignSpec } from './design/launch'
 import { fail } from './records/core'
-import { DELIVERABLES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS } from './records/run'
+import { DESIGN_BYS, DESIGN_OUTCOMES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS } from './records/run'
 import { readLaunchLedger } from './records/swarm'
 import { REPAIR_AGENTS, REPAIR_ROUNDS, WIDEN_MODES } from './options'
 import { parseGates } from './gates'
@@ -79,6 +76,9 @@ import { fanoutSummary } from './integrate'
 import { continueAsRepair, repairSummary } from './repair'
 import { executeSummary } from './execsummary'
 import { selectForRun } from './rules/select'
+import { designArgs, parseDesign } from './design/launch'
+import { finalizeDesign } from './design/finalize'
+import { designSummary } from './design/summary'
 import {
   acquireLock,
   leaseStale,
@@ -95,12 +95,17 @@ import {
 const MOD: Author = { source: 'mod' }
 const LAUNCHER: Author = { source: 'launcher' }
 
-// The other packages' functions phase 3 reaches from here (AE's selection,
-// AB's summary part), through one table so tier 2 can stand in for them
-// (COMMON, "Another package's module"). The mod never changes it.
+// The other packages' functions phases 3 and 4 reach from here (AE's
+// selection, AB's summary part; BD's design launch, BE's design end and
+// summary part), through one table so tier 2 can stand in for them (COMMON,
+// "Another package's module"). The mod never changes it.
 export const deps = {
   selectForRun: (...a: Parameters<typeof selectForRun>) => selectForRun(...a),
   executeSummary: (...a: Parameters<typeof executeSummary>) => executeSummary(...a),
+  parseDesign: (...a: Parameters<typeof parseDesign>) => parseDesign(...a),
+  designArgs: (...a: Parameters<typeof designArgs>) => designArgs(...a),
+  finalizeDesign: (...a: Parameters<typeof finalizeDesign>) => finalizeDesign(...a),
+  designSummary: (...a: Parameters<typeof designSummary>) => designSummary(...a),
 }
 
 /** The modes the launch check and run.start refuse (plan section 9, "Launch check"). */
@@ -322,9 +327,14 @@ export function runState(records: readonly StoredRecord[]): RunState {
   return { start, startedAt, generations, launchEnd, latest, open, ended, oid: latest?.oid || start?.oid || null }
 }
 
-type Loaded = { json: RunJson | null; records: StoredRecord[]; tampered: { seq: number; reason: string } | null }
+export type Loaded = { json: RunJson | null; records: StoredRecord[]; tampered: { seq: number; reason: string } | null }
 
-async function loadRun(p: Ports, litterDir: string, run: string): Promise<Loaded> {
+/**
+ * A run's run.json (null unless it's this run's, version 1) and its ledger's
+ * records, up to a tamper point if there is one. Exported for the design
+ * launch's prior run and the design end (phase 4, BD and BE).
+ */
+export async function loadRun(p: Ports, litterDir: string, run: string): Promise<Loaded> {
   const dir = runDirOf(litterDir, run)
   const [json, ledger] = await Promise.all([
     readJson<RunJson>(p, runJsonPath(dir)).catch(() => undefined),
@@ -520,14 +530,19 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
 
 /**
  * endRun's steps once it chose to record, under the run's serial key, which
- * the caller holds: run.end, then for the current generation the cleanup,
- * summary.md, the policy files, the bindings, the lock and the indexes.
+ * the caller holds: run.end, then for the current generation the cleanup, a
+ * design's delivery (BE's finalizeDesign, decision 16), summary.md, the
+ * policy files, the bindings, the lock and the indexes.
  */
 async function recordEnd(p: Ports, ref: RunRef, st: RunState, body: RunEndBody, current: boolean): Promise<{ recorded: true; end: RunEndBody }> {
   await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body })
   if (current) {
     // Cleanup first, so the summary lists what it kept (plan section 9, "Cleanup is the mod's").
     await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
+    // A design's plan.md before its summary, which says whether it was delivered.
+    if (st.start?.workflow === 'design') {
+      await deps.finalizeDesign(p, ref, body).catch(err => p.log(`design delivery for ${ref.run} failed: ${errText(err)}`))
+    }
     await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
     await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
     await removeRunBindings(p, ref.litterDir, run => run === ref.run).catch(err => p.log(`writer bindings of ${ref.run} not removed: ${errText(err)}`))
@@ -550,7 +565,7 @@ export type Decoded = { status: RunStatus; reason: string | null; payload?: Reco
 
 const MISSING_ROLE = /agent type 'litter:[^']*' not found/
 const UNRECOGNIZED: Decoded = { status: 'failed', reason: 'unrecognized result' }
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+export const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** Maps a workflow's end to a run.end status, by the workflow run.json records. Fails closed. */
 export function decodeReturn(workflow: Workflow, end: EngineEnd): Decoded {
@@ -574,12 +589,13 @@ export function decodeReturn(workflow: Workflow, end: EngineEnd): Decoded {
     if (Array.isArray(r.gates) || Array.isArray(r.questions)) return { status: 'done', reason: null }
     return UNRECOGNIZED
   }
-  // design
+  // design (DesignReturn, records/run.ts)
   if (!('stopped' in r)) return UNRECOGNIZED
   const { stopped } = r
   if (stopped === null) {
-    const outcomes = ['approved', 'holding']
-    const bys = ['approved', 'no-new-material', 'max-rounds']
+    // The budget's stop is done, holding (decision 2): a holding outcome never delivers.
+    const outcomes: readonly string[] = DESIGN_OUTCOMES
+    const bys: readonly string[] = DESIGN_BYS
     if (!outcomes.includes(String(r.outcome)) || !bys.includes(String(r.by))) return UNRECOGNIZED
     return { status: 'done', reason: null, payload: { outcome: r.outcome, by: r.by, version: r.version ?? null } }
   }
@@ -587,9 +603,16 @@ export function decodeReturn(workflow: Workflow, end: EngineEnd): Decoded {
     return { status: 'needs_user', reason: stopped, payload: boundPayload(r) }
   }
   if (stopped === 'source-changed') return { status: 'halted', reason: 'source-changed', payload: { version: r.version ?? null } }
+  // A call that returned nothing after its retry, or a refused prober worktree (decision 1): the reason names the role and the round.
+  if (stopped === 'halted') {
+    return typeof r.reason === 'string' && r.reason.trim() !== '' ? { status: 'halted', reason: oneLine(r.reason, HALT_REASON_MAX) } : UNRECOGNIZED
+  }
   if (stopped === 'interrupted') return { status: 'interrupted', reason: typeof r.reason === 'string' ? r.reason : 'interrupted' }
   return UNRECOGNIZED
 }
+
+/** A design's halted reason, on one line and cut, as the hooks' other refusal reasons are (ledger.ts's recordFailed). */
+const HALT_REASON_MAX = 300
 
 /** A design stop's payload, kept well inside a record's bound. */
 function boundPayload(r: Record<string, unknown>): Record<string, unknown> {
@@ -1388,7 +1411,8 @@ export async function takeLock(p: Ports, litterDir: string, blob: LockBlob, inte
 
 type Task = { id: string; title: string; text: string; writes: boolean; files: string[] }
 
-type Spec = {
+/** run.start's input once parseStart checked it (exported for the design launch's designArgs, BD's). */
+export type Spec = {
   workflow: Workflow
   authorized: string[]
   planPath: string | null
@@ -1405,16 +1429,14 @@ type Spec = {
   runRules: string[]
   tasks: Task[]
   contract: string | null
+  /** A fanout's writers' and a design's probers' (decision 11); none for every other workflow. */
   linkDirs: string[]
   mergeOrder: string[]
-  deliverable: Deliverable | null
-  bar: BarItem[]
-  lenses: Lens[]
-  empiricalUnknowns: string[]
-  anchors: string[]
+  /** A design's own fields, parseDesign's (BD's); null for every other workflow. */
+  design: DesignSpec | null
   maxRounds: number
-  priorRun: string | null
-  feedback: string | null
+  /** What run.start's reply says beside the launch, from the parse (parseDesign's). */
+  warnings: string[]
   /** A fanout's repair setting (2b-2), the options' values filled in; null for every other workflow. */
   repair: RepairSettings | null
   /** An execute run's widen setting (WP-AO), the option's value filled in; null for every other workflow. */
@@ -1423,11 +1445,15 @@ type Spec = {
   widenings: WideningInput[]
 }
 
-type Parsed<T> = { ok: true; value: T } | RecordError
+// The parse's helpers, exported for the design launch's parse (design/launch.ts, BD's).
 
-const ok = <T>(value: T): Parsed<T> => ({ ok: true, value })
+/** A field's value as checked, or the refusal naming it. */
+export type Parsed<T> = { ok: true; value: T } | RecordError
 
-function strings(v: unknown, field: string, opts: { min?: number; optional?: boolean } = {}): Parsed<string[]> {
+export const ok = <T>(value: T): Parsed<T> => ({ ok: true, value })
+
+/** A list of strings, each trimmed and the empty ones dropped. */
+export function strings(v: unknown, field: string, opts: { min?: number; optional?: boolean } = {}): Parsed<string[]> {
   if (v === undefined || v === null) {
     return opts.optional ? ok([]) : fail(`'${field}' is required: a list of strings`, field)
   }
@@ -1447,7 +1473,8 @@ function argvOf(v: unknown, field: string): Parsed<string[] | null> {
   return ok(list)
 }
 
-const text = (v: unknown, field: string, optional = true): Parsed<string | null> => {
+/** A string, trimmed; null when it's absent or blank and `optional`. */
+export const text = (v: unknown, field: string, optional = true): Parsed<string | null> => {
   if (v === undefined || v === null) return optional ? ok(null) : fail(`'${field}' is required`, field)
   if (typeof v !== 'string') return fail(`'${field}' must be a string`, field)
   const t = v.trim()
@@ -1526,40 +1553,20 @@ function parseTasks(v: unknown): Parsed<Task[]> {
   return ok(tasks)
 }
 
-function parseBar(v: unknown): Parsed<BarItem[]> {
-  if (!Array.isArray(v) || v.length === 0) return fail("'bar' is required for a design: a list of { id: 'C1' | 'B1', text, evidence, reason? }", 'bar')
-  const ids = new Set<string>()
-  const bar: BarItem[] = []
-  for (let i = 0; i < v.length; i++) {
-    const b = v[i] as BarItem
-    const at = `bar[${i}]`
-    if (!isObject(b) || typeof b.id !== 'string' || !/^[CB][0-9]+$/.test(b.id)) return fail(`'${at}.id' must be C<n> for a criterion or B<n> for a ban`, `${at}.id`)
-    if (ids.has(b.id)) return fail(`bar id '${b.id}' appears twice`, `${at}.id`)
-    ids.add(b.id)
-    if (typeof b.text !== 'string' || b.text.trim() === '') return fail(`'${at}.text' is required`, `${at}.text`)
-    if (typeof b.evidence !== 'string' || b.evidence.trim() === '') return fail(`'${at}.evidence' is required: what evidence ${b.id} needs`, `${at}.evidence`)
-    if (b.id.startsWith('B') && (typeof b.reason !== 'string' || b.reason.trim() === '')) return fail(`ban ${b.id} needs a '${at}.reason'`, `${at}.reason`)
-    bar.push({ id: b.id, text: b.text, evidence: b.evidence, ...(typeof b.reason === 'string' ? { reason: b.reason } : {}) })
+/**
+ * The ignored folders each new worktree links from the checkout: a fanout's
+ * writers' and, from phase 4, a design's probers' (decision 11). Unset, the
+ * option's apply.
+ */
+function parseLinkDirs(input: RecordInput, options: LitterOptions): Parsed<string[]> {
+  const links = strings(input.linkDirs, 'linkDirs', { optional: true })
+  if (!links.ok) return links
+  const dirs = input.linkDirs === undefined ? [...options.linkDirs] : links.value
+  for (const d of dirs) {
+    const why = ownedPathError(d.endsWith('/') ? d : `${d}/`)
+    if (why) return fail(`linkDirs entry '${d}' ${why}`, 'linkDirs')
   }
-  return ok(bar)
-}
-
-const LENS_ROLES: readonly LensRole[] = ['falsifier', 'coverage', 'mechanism']
-const DEFAULT_LENSES: Lens[] = LENS_ROLES.map(role => ({ role, name: role, focus: '', anchors: [] }))
-
-function parseLenses(v: unknown): Parsed<Lens[]> {
-  if (v === undefined || v === null) return ok(DEFAULT_LENSES.map(l => ({ ...l })))
-  if (!Array.isArray(v) || v.length === 0) return fail("'lenses' must be a list of { role, name, focus, anchors }", 'lenses')
-  const lenses: Lens[] = []
-  for (let i = 0; i < v.length; i++) {
-    const l = v[i] as Lens
-    const at = `lenses[${i}]`
-    if (!isObject(l) || !LENS_ROLES.includes(l.role)) return fail(`'${at}.role' must be one of ${LENS_ROLES.join(', ')}`, `${at}.role`, LENS_ROLES)
-    const anchors = strings(l.anchors, `${at}.anchors`, { optional: true })
-    if (!anchors.ok) return anchors
-    lenses.push({ role: l.role, name: typeof l.name === 'string' && l.name.trim() !== '' ? l.name : l.role, focus: typeof l.focus === 'string' ? l.focus : '', anchors: anchors.value })
-  }
-  return ok(lenses)
+  return ok(dirs)
 }
 
 const KNOWN_FIELDS = new Set([
@@ -1694,14 +1701,9 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     contract: null,
     linkDirs: [],
     mergeOrder: [],
-    deliverable: null,
-    bar: [],
-    lenses: [],
-    empiricalUnknowns: [],
-    anchors: [],
+    design: null,
     maxRounds: maxRounds.value,
-    priorRun: null,
-    feedback: null,
+    warnings: [],
     repair: null,
     widen: null,
     widenings: [],
@@ -1725,13 +1727,9 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     const contract = text(input.contract, 'contract')
     if (!contract.ok) return contract
     spec.contract = contract.value
-    const links = strings(input.linkDirs, 'linkDirs', { optional: true })
+    const links = parseLinkDirs(input, options)
     if (!links.ok) return links
-    spec.linkDirs = input.linkDirs === undefined ? [...options.linkDirs] : links.value
-    for (const d of spec.linkDirs) {
-      const why = ownedPathError(d.endsWith('/') ? d : `${d}/`)
-      if (why) return fail(`linkDirs entry '${d}' ${why}`, 'linkDirs')
-    }
+    spec.linkDirs = links.value
     const writers = spec.tasks.filter(t => t.writes).map(t => t.id)
     const order = strings(input.mergeOrder, 'mergeOrder', { optional: true })
     if (!order.ok) return order
@@ -1748,29 +1746,15 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
   }
 
   if (workflow === 'design') {
-    if (!goal.value) return fail("a design run needs 'goal': the user's words, verbatim", 'goal')
-    if (!DELIVERABLES.includes(input.deliverable as Deliverable)) return fail("'deliverable' must say what the design delivers", 'deliverable', DELIVERABLES)
-    spec.deliverable = input.deliverable as Deliverable
-    const bar = parseBar(input.bar)
-    if (!bar.ok) return bar
-    spec.bar = bar.value
-    const lenses = parseLenses(input.lenses)
-    if (!lenses.ok) return lenses
-    spec.lenses = lenses.value
-    const unknowns = strings(input.empiricalUnknowns, 'empiricalUnknowns', { optional: true })
-    if (!unknowns.ok) return unknowns
-    if (unknowns.value.length > 2) return fail("'empiricalUnknowns' takes at most two", 'empiricalUnknowns')
-    spec.empiricalUnknowns = unknowns.value
-    const anchors = strings(input.anchors, 'anchors', { optional: true })
-    if (!anchors.ok) return anchors
-    spec.anchors = anchors.value
-    const prior = text(input.priorRun, 'priorRun')
-    if (!prior.ok) return prior
-    if (prior.value && !RUN_ID.test(prior.value)) return fail("'priorRun' must be a run id", 'priorRun')
-    spec.priorRun = prior.value
-    const feedback = text(input.feedback, 'feedback')
-    if (!feedback.ok) return feedback
-    spec.feedback = feedback.value
+    // A design's own fields are BD's parse (design/launch.ts); its warnings join the reply's.
+    const design = deps.parseDesign(input)
+    if (!design.ok) return design
+    spec.design = design.value
+    spec.warnings.push(...(design.warnings ?? []))
+    // The probers' worktrees take the setup and links a fanout's writers do (decision 11).
+    const links = parseLinkDirs(input, options)
+    if (!links.ok) return links
+    spec.linkDirs = links.value
   } else {
     for (const f of ['deliverable', 'bar', 'lenses', 'empiricalUnknowns'] as const) {
       if (input[f] !== undefined) return fail(`'${f}' is for design runs, not ${workflow}`, f)
@@ -2136,9 +2120,6 @@ async function snapshotBase(p: Ports, git: Git, checkout: string, run: string): 
   return r.stdout.trim()
 }
 
-const renderBar = (bar: readonly BarItem[]): string =>
-  ['# Bar', '', ...bar.map(b => `- **${b.id}** ${b.text}\n  Evidence: ${b.evidence}${b.reason ? `\n  Reason: ${b.reason}` : ''}`), ''].join('\n')
-
 /** Steps 1 and 2, and the args of step 5: everything that can refuse, writing nothing. */
 async function prepare(
   p: Ports,
@@ -2162,11 +2143,12 @@ async function prepare(
       tasks: units.tasks ?? [],
       planText: units.planText ?? null,
       goal: spec.goal,
-      anchors: spec.anchors,
+      anchors: spec.design?.anchors ?? [],
       checkout,
       runRules,
     })
-  const warnings: string[] = []
+  // The parse's warnings first (a design's bar, BD's), then the checks'.
+  const warnings: string[] = [...spec.warnings]
   const symbolic = await git(['symbolic-ref', '-q', 'HEAD'])
   const headRef = symbolic.code === 0 ? symbolic.stdout.trim() : null
   if (headRef !== null && !/^refs\/heads\/[^\s]+$/.test(headRef)) return fail(`litter: HEAD names '${headRef}', which isn't a branch`)
@@ -2205,39 +2187,52 @@ async function prepare(
         plan = r
       }
     }
-    const sel = await select({ planText: plan?.text ?? null })
-    if (!sel.ok) return sel
+    // A plan run's selection is the planner's (phase 3); a design's is in its args, BD's designArgs.
+    const sel = spec.workflow === 'plan' ? await select({ planText: plan?.text ?? null }) : null
+    if (sel && !sel.ok) return sel
     const snapBase = await snapshotBase(p, git, checkout, run)
     const ref = `refs/litter/${run}/base`
-    const verify = spec.verify ?? (options.verify ? [...options.verify] : null)
-    const goalCheck = spec.goalCheck ?? (options.goalCheck ? [...options.goalCheck] : null)
-    const args: Record<string, unknown> =
-      spec.workflow === 'design'
-        ? {
-            ...base,
-            rules: [...runRules, ...sel.value.run],
-            goal: spec.goal,
-            deliverable: spec.deliverable,
-            bar: spec.bar,
-            anchors: spec.anchors,
-            lenses: spec.lenses,
-            empiricalUnknowns: spec.empiricalUnknowns,
-            maxRounds: spec.maxRounds,
-            base: snapBase,
-            ...(spec.priorRun ? { priorRun: spec.priorRun } : {}),
-            ...(spec.feedback ? { feedback: spec.feedback } : {}),
-          }
-        : {
-            ...base,
-            // The planner's own selection (phase 3): the rules without paths and every ban, and those the plan or goal's files bring.
-            rules: [...runRules, ...sel.value.planner],
-            goal: spec.goal,
-            // planPath for the planner's <plan> tag (AB's plan.js).
-            ...(plan ? { plan: plan.text, planPath: plan.path } : {}),
-            ...(verify ? { verifyCommand: shellQuote(verify) } : {}),
-            ...(goalCheck ? { goalCheckCommand: shellQuote(goalCheck) } : {}),
-            ...landedArgs,
-          }
+    let args: Record<string, unknown>
+    let rules: RuleRef[]
+    let barText: string | null = null
+    let setup: string[] | null = null
+    let linkDirs: string[] = []
+    if (spec.workflow === 'design') {
+      const launch = await deps.designArgs(p, {
+        litterDir,
+        checkout,
+        run,
+        spec,
+        runRules,
+        base,
+        snapBase,
+        options,
+        selectRules: input => selectRules(p, input),
+      })
+      if (!launch.ok) return launch
+      ;({ args, rules, barText } = launch.value)
+      // The probers' worktrees (decision 11): the setup a fanout's writers get, asked for the same
+      // way, after the args' own refusals. policy.json carries it and the links for worktree.sh.
+      const approved = await approveArgv(p, 'setup', spec.setup, options.setup)
+      if (!approved.ok) return approved
+      setup = approved.value
+      linkDirs = spec.linkDirs
+    } else {
+      const verify = spec.verify ?? (options.verify ? [...options.verify] : null)
+      const goalCheck = spec.goalCheck ?? (options.goalCheck ? [...options.goalCheck] : null)
+      args = {
+        ...base,
+        // The planner's own selection (phase 3): the rules without paths and every ban, and those the plan or goal's files bring.
+        rules: [...runRules, ...sel!.value.planner],
+        goal: spec.goal,
+        // planPath for the planner's <plan> tag (AB's plan.js).
+        ...(plan ? { plan: plan.text, planPath: plan.path } : {}),
+        ...(verify ? { verifyCommand: shellQuote(verify) } : {}),
+        ...(goalCheck ? { goalCheckCommand: shellQuote(goalCheck) } : {}),
+        ...landedArgs,
+      }
+      rules = sel!.value.versions
+    }
     return {
       ok: true,
       value: {
@@ -2256,13 +2251,14 @@ async function prepare(
         // A design or plan run runs no argv: the mod doesn't run verify for them.
         verify: null,
         goalCheck: null,
-        setup: null,
-        linkDirs: [],
+        // A plan run makes no worktree; a design's probers each get one.
+        setup,
+        linkDirs,
         args,
         foreignCommits: [],
         warnings,
-        barText: spec.workflow === 'design' ? renderBar(spec.bar) : null,
-        rules: sel.value.versions,
+        barText,
+        rules,
       },
     }
   }
@@ -2882,6 +2878,9 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   if (workflow === 'execute') {
     // AB's execute part (phase 3): attempts, verdicts, the halt, rules and proposals.
     lines.push(...(await executePart(p, ref, json, records)))
+  } else if (workflow === 'design') {
+    // BE's design part (phase 4): the stop, the delivery, the verdict card and the rest the skill reads.
+    lines.push(...(await designPart(p, ref, json, records)))
   } else {
     const lands = records.filter(r => r.kind === 'land' && typeof r.body.gate === 'string')
     const planned = Array.isArray(json?.args.gates) ? (json!.args.gates as { id?: unknown }[]).map(g => String(g.id)) : []
@@ -2919,6 +2918,16 @@ async function executePart(p: Ports, ref: RunRef, json: RunJson | null, records:
     return await deps.executeSummary(p, ref, json, records)
   } catch (err) {
     p.log(`run ${ref.run}: the summary's execute part failed: ${errText(err)}`)
+    return []
+  }
+}
+
+/** BE's design part (design/summary.ts). Its failure is logged, and the rest of the summary stands. */
+async function designPart(p: Ports, ref: RunRef, json: RunJson | null, records: readonly StoredRecord[]): Promise<string[]> {
+  try {
+    return await deps.designSummary(p, ref, json, records)
+  } catch (err) {
+    p.log(`run ${ref.run}: the summary's design part failed: ${errText(err)}`)
     return []
   }
 }

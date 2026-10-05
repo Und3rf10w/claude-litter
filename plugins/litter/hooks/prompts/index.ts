@@ -24,21 +24,33 @@ import { verifier } from './verifier'
  * "Tag contract"). The doc puts the list in types/index.d.ts, which is the
  * $.state contract, so it's kept here until it moves. `changed` is missing
  * from the doc's list but is in its fanout table and the verifier's prompt.
+ * The design tags are plan 7a's envelope (phase 4); design.js's `task` is the
+ * call's instruction, where execute's and fanout's is a task's data.
  */
 export const PROMPT_TAGS = [
   'gate', 'task', 'contract', 'authorized', 'verify', 'rules', 'feedback', 'change', 'adversary',
   'where', 'base', 'tasks', 'changed', 'goal', 'goal_check', 'plan', 'landed', 'halted',
+  'bar', 'anchors', 'material', 'proposal', 'delta', 'prior_verdict', 'template',
 ] as const
 
 export type PromptTag = (typeof PROMPT_TAGS)[number]
 
+/** Plan 7a's envelope, which every design call carries: then its own tags, and last its task. */
+const DESIGN_ENVELOPE = ['goal', 'bar', 'rules', 'anchors', 'material', 'task'] as const
+
 /**
- * The tags each execute and fanout role's calls carry (plan section 7's
- * execute.js sketch; litter-prompts.md's fanout.js table). Its prompt names
- * every one. The design roles' calls use section 7a's design tags, which their
- * prompts describe in prose.
+ * The tags each role's calls carry (plan section 7's execute.js sketch and
+ * 7a's design envelope; litter-prompts.md's fanout.js table and design
+ * roles). Its prompt names every one: a design role's through SHARED_CORE.
  */
-export const ROLE_TAGS: Readonly<Partial<Record<RoleName, readonly PromptTag[]>>> = {
+export const ROLE_TAGS: Readonly<Record<RoleName, readonly PromptTag[]>> = {
+  falsifier: [...DESIGN_ENVELOPE],
+  coverage: [...DESIGN_ENVELOPE],
+  mechanism: [...DESIGN_ENVELOPE],
+  prober: [...DESIGN_ENVELOPE],
+  reframer: [...DESIGN_ENVELOPE, 'proposal'],
+  author: [...DESIGN_ENVELOPE, 'proposal', 'prior_verdict', 'template', 'feedback'],
+  'design-critic': [...DESIGN_ENVELOPE, 'proposal', 'delta', 'prior_verdict'],
   executor: ['gate', 'task', 'contract', 'authorized', 'verify', 'rules', 'feedback'],
   'gate-critic': ['gate', 'authorized', 'verify', 'rules', 'change', 'adversary', 'feedback'],
   adversary: ['gate', 'authorized', 'verify', 'rules', 'change'],

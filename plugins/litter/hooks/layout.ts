@@ -62,6 +62,17 @@ export const verdictsDir = (runDir: string) => join(runDir, 'verdicts')
  * are `goal`) and are a whole number, so they join.
  */
 export const verdictFile = (runDir: string, gate: string, attempt: number) => join(verdictsDir(runDir), `${gate}-${attempt}.md`)
+/**
+ * A design verdict, rendered from its ledger record (plan section 10; phase
+ * 4): the version it judged, which has passed PROPOSAL_VERSION.
+ */
+export const designVerdictPath = (runDir: string, version: string) => join(verdictsDir(runDir), `${version}.md`)
+/** A probe's report on one unknown (plan section 10; decision 18): the id has passed UNKNOWN_ID. */
+export const probePath = (runDir: string, unknownId: string) => join(runDir, 'probes', `${unknownId}.md`)
+/** A version the mod assigns a design's proposal, `v<n>` from 1 (plan 7, step 6): it names `proposals/` and `verdicts/` files. */
+export const PROPOSAL_VERSION = /^v[1-9][0-9]*$/
+/** An empirical unknown's id, `U<n>` from 1 (decisions 3 and 18): it names a `probes/` file. */
+export const UNKNOWN_ID = /^U[1-9][0-9]*$/
 /** An earlier `plan.md`, kept by plan.write and gate.amend (plan section 10), from 1. */
 export const planVersionPath = (runDir: string, n: number) => join(runDir, `plan.${n}.md`)
 /** A worktree's setup log, `verify/setup-<name>/0001.log`, written by worktree.sh or the mod. */

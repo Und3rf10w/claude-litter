@@ -26,7 +26,7 @@ import { getOptions, session } from './session'
 import { binding, ready as swarmReady } from './swarm/state'
 import { isSwarmGateKind, swarmGateRecord } from './swarm/gate'
 
-type FieldType = 'strings' | 'objects' | 'object' | 'boolean' | 'integer'
+type FieldType = 'strings' | 'objects' | 'texts or objects' | 'object' | 'boolean' | 'integer'
 
 /**
  * The fields of any kind whose value isn't a string. A model sends a field the
@@ -42,7 +42,8 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
   runRules: 'strings',
   linkDirs: 'strings',
   mergeOrder: 'strings',
-  empiricalUnknowns: 'strings',
+  // Phase 4 (decision 3): each { question, smallest_test, kill_result }, or a bare question.
+  empiricalUnknowns: 'texts or objects',
   anchors: 'strings',
   tasks: 'objects',
   bar: 'objects',
@@ -82,13 +83,14 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
 const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {
   strings: { type: 'array', items: { type: 'string' } },
   objects: { type: 'array', items: { type: 'object' } },
+  'texts or objects': { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object' }] } },
   object: { type: 'object' },
   boolean: { type: 'boolean' },
   integer: { type: 'integer' },
 }
 
 const hasType = (v: unknown, t: FieldType): boolean =>
-  t === 'strings' || t === 'objects'
+  t === 'strings' || t === 'objects' || t === 'texts or objects'
     ? Array.isArray(v)
     : t === 'object'
       ? typeof v === 'object' && v !== null && !Array.isArray(v)
