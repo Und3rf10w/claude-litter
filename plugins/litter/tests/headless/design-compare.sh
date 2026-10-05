@@ -47,7 +47,9 @@ L=$1/litter D=$1/deepwork HAND=${COMPARE_HAND:-$1/hand.txt}
 for s in "$L" "$D"; do [ -d "$s" ] || { echo "$0: no $s" >&2; exit 2; }; done
 jq -e '.traps | length > 0' "$EXPECT" >/dev/null || exit 2
 
-# files_of <plan>: the paths on its "Files:" lines, and on the bullets under one with nothing after its colon.
+# files_of <plan>: the paths on its "Files:" lines, on the bullets under one
+# with nothing after its colon, and in a "Files touched" (or changed, or to
+# change) section up to the next heading (deepwork's form, compare run 1).
 files_of() {
   awk '
   function emit(s,   n, i, t, a) {
@@ -63,6 +65,17 @@ files_of() {
   }
   /^[ \t]*(```|~~~)/ { fence = !fence; next }
   fence { next }
+  /^[ \t]*#/ {
+    l = tolower($0)
+    insect = l ~ /^[ \t]*#+[ \t]+((changed|touched) )?files( touched| changed| to (change|edit|touch))?[ \t]*$/
+    next
+  }
+  # A sentence there that names what is not touched ("Nothing under vendor/") lists nothing.
+  insect {
+    n = split($0, part, "[.!?][ \t]+|[*][*]")
+    for (j = 1; j <= n; j++) if (tolower(part[j]) !~ "(^|[^a-z])(nothing|none|not|never|no|unchanged|untouched)([^a-z]|$)") emit(part[j])
+    next
+  }
   inlist && /^[ \t]*[-*+][ \t]/ { emit($0); seen = 1; next }
   inlist && /^[ \t]*$/ { if (seen) inlist = 0; next }
   { inlist = 0 }

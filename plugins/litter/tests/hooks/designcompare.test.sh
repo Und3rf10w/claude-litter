@@ -161,6 +161,20 @@ EOF
   assert_stdout_contains "  deepwork: vendor/tabular.sh"
 }
 
+# deepwork's form (compare run 1, 2026-10-05): a heading, then links on a line, to the next heading.
+case_files_touched_section() {
+  cat <<'EOF' | side deepwork "$(dw)"
+## Files touched
+[lib/locale.sh](../../../../lib/locale.sh), [report.sh](../../../../report.sh), and a new [tests/test_cli.sh](/tmp/proto/tests/test_cli.sh) (in the prototype). **Nothing under [vendor/](../../../../vendor/tabular.sh).** README.md stays unchanged.
+
+## Code
+Uses [vendor/tabular.sh](../../../../vendor/tabular.sh) as shipped.
+EOF
+  right_plan | side litter "$(ran litter)"
+  dc
+  assert_stdout_contains "  deepwork: lib/locale.sh, report.sh, tests/test_cli.sh"
+}
+
 # path:line citations against the fixture; bash-only code in a json block doesn't count; asks and tools.
 case_citations_code_asks_tools() {
   cat <<'EOF' | side litter "$(ran litter)"
@@ -192,5 +206,6 @@ t "litter delivering without approval, or other bytes than the proposal's, fails
 t "a plan with no file list leaves D2 and D5 to a hand judgment" case_no_file_list_is_undecided
 t "a side that never ran is incomplete" case_a_side_that_never_ran
 t "the file lists: Files lines, bullets under one, files.txt; not fenced or e.g." case_file_lists
+t "a Files touched section, to the next heading, is a file list" case_files_touched_section
 t "citations, code blocks, asks and tools" case_citations_code_asks_tools
 done_testing
