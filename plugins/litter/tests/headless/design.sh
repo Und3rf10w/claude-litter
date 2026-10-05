@@ -443,9 +443,10 @@ c_refused() {
 }
 
 # What the run says, reported and not scored: the unknowns as they arrived, the versions, the probes, the stop.
+# The run.start record keeps no unknowns; run.json's args holds them as the run took them.
 if [ -n "$RUN" ]; then
-  recs | jq -r '([.[] | select(.kind == "run.start")] | first | .body.empiricalUnknowns // [] | map(type) | unique | join(",")) as $u
-    | "the unknowns arrived as: \(if $u == "" then "none" else $u end); versions \([.[] | select(.kind == "proposal")] | length); verdicts \([.[] | select(.kind == "verdict")] | length); probes \([.[] | select(.kind == "probe")] | length)"'
+  u=$(jq -r '.args.empiricalUnknowns // [] | map(type) | unique | join(",")' "$RD/run.json" 2>/dev/null)
+  recs | jq -r --arg u "$u" '"the unknowns arrived as: \(if $u == "" then "none" else $u end); versions \([.[] | select(.kind == "proposal")] | length); verdicts \([.[] | select(.kind == "verdict")] | length); probes \([.[] | select(.kind == "probe")] | length)"'
 fi
 h_expect "a design run was launched" c_run
 h_expect "its bar has 6 criteria and a ban of the user's own" c_bar
