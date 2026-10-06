@@ -91,15 +91,15 @@ describe('/litter-agents', () => {
   test("opens on this session's agents, then on the team named; a name that's no team shows this session, saying so", async () => {
     fakeStore({ teams: [team('team-b', ['team-lead', 'writer'])] })
     const p = ports([agent('a1', { name: 'reviewer' }), agent('a2')])
-    expect(await open(p)).toBe("litter: the agents pane shows this session's 2 agents")
+    expect(await open(p)).toBe("the agents pane shows this session's 2 agents")
     expect(p.panes.opened).toEqual([{ id: 'litter-agents', title: 'litter agents' }])
     expect(body(p).scope).toBe(S)
     expect(body(p).rows.map(r => r.key)).toEqual(['a1', 'a2'])
 
-    expect(await open(p, 'team-b')).toBe("litter: the agents pane shows team team-b's 2 members")
+    expect(await open(p, 'team-b')).toBe("the agents pane shows team team-b's 2 members")
     expect(body(p).scope).toBe(T('team-b'))
 
-    expect(await open(p, 'nope')).toBe("litter: the agents pane shows this session's 2 agents")
+    expect(await open(p, 'nope')).toBe("the agents pane shows this session's 2 agents")
     expect(body(p).notice).toEqual({ level: 'warning', text: "there's no team named nope, so this session's agents are shown: the picker lists the teams" })
   })
 
@@ -372,16 +372,16 @@ describe('stale presses and the picker', () => {
     await type(p, 'hello')
     p.agents = []
     await press(p, `agents:send:${rowArg(S, 'a1')}`)
-    expect(p.toasts).toEqual(["litter: a1 isn't listed any more, so that was ignored"])
+    expect(p.toasts).toEqual(["a1 isn't listed any more, so that was ignored"])
     expect(p.sent).toEqual([])
     expect(agentsNavOf()!.selected).toBeNull()
 
     await press(p, `agents:send:${rowArg(T('team-b'), 'writer')}`)
-    expect(p.toasts.at(-1)).toBe("litter: that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
+    expect(p.toasts.at(-1)).toBe("that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
     await press(p, `agents:broadcast:${T('team-b')}`)
-    expect(p.toasts.at(-1)).toBe("litter: that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
+    expect(p.toasts.at(-1)).toBe("that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
     await press(p, `agents:stop:${rowArg(S, 'a9')}`)
-    expect(p.toasts.at(-1)).toBe("litter: a9 isn't listed any more, so that was ignored")
+    expect(p.toasts.at(-1)).toBe("a9 isn't listed any more, so that was ignored")
     expect(p.sent).toEqual([])
     expect(p.toolCalls).toEqual([])
   })
@@ -390,7 +390,7 @@ describe('stale presses and the picker', () => {
     fakeStore()
     const p = ports([agent('a1')])
     expect(await press(p, `agents:send:${rowArg(S, 'a1')}`)).toEqual({ element: `agents:send:${rowArg(S, 'a1')}` })
-    expect(p.toasts).toEqual(["litter: the agents pane isn't open in this session, so that was ignored: /litter-agents opens it"])
+    expect(p.toasts).toEqual(["the agents pane isn't open in this session, so that was ignored: /litter-agents opens it"])
     expect(p.sent).toEqual([])
   })
 

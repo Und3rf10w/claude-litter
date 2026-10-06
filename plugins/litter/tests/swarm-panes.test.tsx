@@ -312,7 +312,7 @@ function views(on: On, swarm: SwarmPaneView | null, doctor: DoctorPaneView | nul
   })
 }
 
-/** What the pane logged (`litter: …` lines) and toasted; `nextLog(part)`, the first line holding `part` logged after it asked. */
+/** What the pane logged (the debug lines, which the engine labels itself) and toasted; `nextLog(part)`, the first line holding `part` logged after it asked. */
 function watch(on: On): { logs: string[]; toasts: string[]; nextLog: (part: string) => Promise<string> } {
   const seen = { logs: [] as string[], toasts: [] as string[] }
   const waiting: { part: string; resolve: (line: string) => void }[] = []
@@ -631,28 +631,28 @@ describe('a press reaches its owner', () => {
       const seen = await start($, on, BUILDER, { view: 'builder', swarm: 'demo' }, { [`litter.swarm.draft.${LITTER}.demo`]: draft })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:builder:launch:demo' })
-      expect(seen.logs).toContain('litter: swarm pane: launchSwarm demo')
+      expect(seen.logs).toContain('swarm pane: launchSwarm demo')
     })
 
     test(`[Send] reaches sendFromBrowser with the instance shown, on the ${surface}`, async ($, on) => {
       const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo', selected: 'w1', inputs: { 'swarm:browser:text:demo': 'hello' } })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:browser:send:demo/fixer#1' })
-      expect(seen.logs).toContain('litter: swarm pane: sendFromBrowser demo fixer#1 interject direct')
+      expect(seen.logs).toContain('swarm pane: sendFromBrowser demo fixer#1 interject direct')
     })
 
     test(`[Stop node] reaches stopNode, on the ${surface}`, async ($, on) => {
       const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo', selected: 'w1' })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:browser:stop:demo/w1' })
-      expect(seen.logs).toContain('litter: swarm pane: stopNode demo w1 soft')
+      expect(seen.logs).toContain('swarm pane: stopNode demo w1 soft')
     })
 
     test(`[End swarm] reaches endSwarm, on the ${surface}`, async ($, on) => {
       const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo' })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:browser:end:demo' })
-      expect(seen.logs).toContain('litter: swarm pane: endSwarm demo request')
+      expect(seen.logs).toContain('swarm pane: endSwarm demo request')
     })
   }
 
@@ -660,7 +660,7 @@ describe('a press reaches its owner', () => {
     const seen = await start($, on, BROWSER, { view: 'builder', swarm: 'demo' })
     const ui = await mountSwarm($, 'terminal')
     await ui.press({ key: 'swarm:browser:end:demo' })
-    expect(seen.logs).not.toContain('litter: swarm pane: endSwarm demo request')
+    expect(seen.logs).not.toContain('swarm pane: endSwarm demo request')
     expect(seen.toasts.some(t => t.includes('so it was ignored'))).toBe(true)
   })
 })
@@ -688,10 +688,10 @@ describe('the commands', () => {
       return { value: { isPlaced: true } }
     })
     const r = await run($, 'litter-swarm')
-    expect(r.text).toBe('litter: the swarm pane shows the start screen')
+    expect(r.text).toBe('the swarm pane shows the start screen')
     expect(opened).toEqual(['litter-swarm'])
     const named = await run($, 'litter-swarm', 'demo')
-    expect(named.text).toBe('litter: the swarm pane shows the builder for demo')
+    expect(named.text).toBe('the swarm pane shows the builder for demo')
   })
 
   test('/litter-doctor answers with a line and opens its pane', async ($, on) => {
@@ -702,7 +702,7 @@ describe('the commands', () => {
       return { value: { isPlaced: true } }
     })
     const r = await run($, 'litter-doctor')
-    expect(r.text).toMatch(/^litter: the doctor pane checks this session, with no swarm spec/)
+    expect(r.text).toMatch(/^the doctor pane checks this session, with no swarm spec/)
     expect(opened).toEqual(['litter-doctor'])
   })
 })

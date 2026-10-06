@@ -507,10 +507,10 @@ export const onCardUi: { press: PortHook<CardPressHook> } = {
     if (run === null) return { element: e.element }
     const litterDir = session().litterDir
     if (!litterDir || !(await p.fs.exists(runJsonPath(runDir(litterDir, run))))) {
-      p.toast(`litter: run ${run} is gone (its run.json isn't there), so there's no board to open`)
+      p.toast(`run ${run} is gone (its run.json isn't there), so there's no board to open`)
       return { element: e.element }
     }
-    if (!(await deps.openBoard(p, run))) p.toast(`litter: the board didn't open here; run /litter-board ${run}`)
+    if (!(await deps.openBoard(p, run))) p.toast(`the board didn't open here; run /litter-board ${run}`)
     return { element: e.element }
   },
 }

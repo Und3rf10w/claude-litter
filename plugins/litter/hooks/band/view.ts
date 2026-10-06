@@ -39,7 +39,7 @@ import { openBoard } from '../board/pane'
 import { openSwarmPane } from '../swarm/panes'
 import { openAsks } from '../asks'
 import { bindings, liveSwarms, openQuestions, status as admissionStatus } from '../swarm/state'
-import { oneLine } from '../swarm/view'
+import { oneLine, unprefixed } from '../swarm/view'
 
 // The other packages' modules the band calls, through one table so tier 2
 // can stand in for them (COMMON, "Another package's module"): CF's open asks,
@@ -717,19 +717,19 @@ async function handleBand(p: Ports, key: string, k: BandKey): Promise<void> {
   if (current === null) await rebuild(p)
   // A press drawn for a row the band no longer shows is stale: ignored, with a toast (as the board's).
   if (!(current?.rows ?? []).some(r => r.buttons.some(b => b.key === key))) {
-    p.toast(`litter: the band doesn't show ${aboutOf(k)} now, so that was ignored`)
+    p.toast(`the band doesn't show ${aboutOf(k)} now, so that was ignored`)
     return
   }
   switch (k.action) {
     case 'board': {
       if (!RUN_ID.test(k.arg)) return
-      if (!(await deps.openBoard(p, k.arg))) p.toast(`litter: the board can't be drawn here now: run /litter-board ${k.arg}`)
+      if (!(await deps.openBoard(p, k.arg))) p.toast(`the board can't be drawn here now: run /litter-board ${k.arg}`)
       return
     }
     case 'browser': {
       if (!SWARM_NAME.test(k.arg)) return
       const line = await deps.openSwarmPane(p, k.arg)
-      if (!line.startsWith('litter: the swarm pane shows ') || line.includes("can't draw")) p.toast(oneLine(line, 200))
+      if (!line.startsWith('the swarm pane shows ') || line.includes("can't draw")) p.toast(oneLine(line, 200))
       return
     }
     case 'hide': {
@@ -757,7 +757,7 @@ export const onBandUi: { press: PortHook<BandPressHook> } = {
       await handleBand(p, e.element, k)
     } catch (err) {
       p.log(`band: ${e.element} failed: ${errText(err)}`)
-      p.toast(`litter: that didn't work (${oneLine(errText(err), 120)}); claude --debug has the details`)
+      p.toast(`that didn't work (${oneLine(unprefixed(errText(err)), 120)}); claude --debug has the details`)
     }
     return { element: e.element }
   },

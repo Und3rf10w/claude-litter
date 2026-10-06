@@ -40,6 +40,7 @@ import { SWARM_TYPE_PREFIX } from '../layout'
 import { roleSpawnFailed } from '../launch'
 import { binding, liveSwarm, liveSwarms, swarmOfType } from './state'
 import { keepsOwn, keptSwarmOf } from './end'
+import { unprefixed } from './view'
 
 /** Why the hook failed, on one line, for a refusal's text. */
 function why(next: { readonly error?: { readonly kind: string; readonly message?: string } }): string {
@@ -119,11 +120,11 @@ export const agentOfferFailed: AgentOfferCatch = async ($, e, next) => next(e)
 /** command.run `clear`'s catch: the clear goes ahead. */
 export const clearHoldFailed: CommandRunCatch = async ($, e, next) => next(e)
 
-/** command.run `litter-swarm`'s catch. */
-export const swarmCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-swarm failed (${why(next)})` })
+/** command.run `litter-swarm`'s catch: a line the person reads, so no `litter: ` (the engine names the plugin first). */
+export const swarmCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-swarm failed (${unprefixed(why(next))})` })
 
-/** command.run `litter-doctor`'s catch. */
-export const doctorCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-doctor failed (${why(next)})` })
+/** command.run `litter-doctor`'s catch, the same. */
+export const doctorCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-doctor failed (${unprefixed(why(next))})` })
 
 /** ui.render's catch for both panes: the engine draws its own. */
 export const paneRenderFailed: UiRenderCatch = async ($, e, next) => next(e)

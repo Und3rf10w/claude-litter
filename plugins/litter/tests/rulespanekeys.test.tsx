@@ -202,7 +202,7 @@ describe("rules.sh's key presses (T4-2)", () => {
 
     // /litter-rules: the Proposed tab with no batch (no checks, no [Accept selected]), then its In force tab.
     const r = await $.command.run({ command: 'litter-rules', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })
-    expect(r.text).toBe('litter: the rules pane shows 3 proposed or unverified, 1 in force')
+    expect(r.text).toBe('the rules pane shows 3 proposed or unverified, 1 in force')
     const proposed = [...tabs(3, 1), ...['repo:1', 'repo:4', 'repo:5'].flatMap(k => [`Select rules:scope:${k} Scope`, ...actions(k)])]
     expect(await ringOf(ui)).toEqual(proposed)
     expect(tabsTo(proposed, 'rules:tab:in-force')).toBe(RULES_SH.inForce)

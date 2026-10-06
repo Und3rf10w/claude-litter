@@ -643,7 +643,7 @@ describe('recovery', () => {
     await repairTurnComplete(w.p, leadTurn)
     await runAfters(w.p)
     expect(w.p.logs.some(l => l.includes(`repair swarm ${name}: its start wasn't submitted: the session is busy`))).toBe(true)
-    expect(w.p.toasts).toContain(`litter: repair swarm ${name} is live; send /litter:swarm start ${name} to start it`)
+    expect(w.p.toasts).toContain(`repair swarm ${name} is live; send /litter:swarm start ${name} to start it`)
     w.p.submitAnswer = undefined
     await repairTurnComplete(w.p, leadTurn)
     await runAfters(w.p)

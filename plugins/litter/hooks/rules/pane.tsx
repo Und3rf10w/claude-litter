@@ -126,7 +126,7 @@ export const rulesCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   const placed = await p.openPane(RULES_PANE, 'litter rules')
   const c = view?.body?.counts
   const what = session().litterDir && c ? `shows ${c.proposed} proposed or unverified, ${c.inForce} in force` : 'has no litter directory to read'
-  return { text: `litter: the rules pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `the rules pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
 }
 
 const validFocus = (focus: { id?: unknown; proposal?: unknown } | null): RulesNav['focus'] => {
@@ -413,7 +413,7 @@ const say = (n: RulesNav, level: SwarmNotice['level'], text: string): void => se
 function rowFor(p: Ports, n: RulesNav, key: string, action: string): ShownRow | null {
   const row = n.shown[key]
   if (row && row.actions.includes(action)) return row
-  p.toast("litter: that rule isn't shown any more, so it was ignored")
+  p.toast("that rule isn't shown any more, so it was ignored")
   say(n, 'warning', "that rule isn't shown any more, so the press was ignored")
   return null
 }
@@ -495,7 +495,7 @@ async function accept(p: Ports, litterDir: string, n: RulesNav, key: string): Pr
 
 async function confirmAccept(p: Ports, litterDir: string, n: RulesNav, key: string): Promise<void> {
   if (n.pending?.kind !== 'preview' || n.pending.key !== key) {
-    p.toast('litter: there was no file waiting to be confirmed, so that was ignored')
+    p.toast('there was no file waiting to be confirmed, so that was ignored')
     return say(n, 'warning', 'there was no file waiting to be confirmed, so the press was ignored')
   }
   if (nonInteractive(n)) return
@@ -525,7 +525,7 @@ function checkedOf(n: RulesNav, seq: number): { key: string; row: ShownRow; scop
  */
 async function acceptBatch(p: Ports, litterDir: string, n: RulesNav, seq: number, confirmed: boolean): Promise<void> {
   if (n.batch !== seq) {
-    p.toast("litter: that import batch isn't shown any more, so it was ignored")
+    p.toast("that import batch isn't shown any more, so it was ignored")
     return say(n, 'warning', "that import batch isn't shown any more, so the press was ignored")
   }
   if (nonInteractive(n)) return
@@ -583,7 +583,7 @@ async function retire(p: Ports, litterDir: string, n: RulesNav, key: string, con
     return
   }
   if (n.pending?.kind !== 'retire' || n.pending.key !== key) {
-    p.toast('litter: there was no retire waiting to be confirmed, so that was ignored')
+    p.toast('there was no retire waiting to be confirmed, so that was ignored')
     return say(n, 'warning', 'there was no retire waiting to be confirmed, so the press was ignored')
   }
   const r = await call(p, `retireRule ${row.id}@${row.version}`, () => deps.retireRule(p, litterDir, { id: row.id!, version: row.version! }))
@@ -635,7 +635,7 @@ export async function pressRules(p: Ports, key: string): Promise<void> {
   const cur = rulesNavOf()
   const litterDir = session().litterDir
   if (!cur || !litterDir) {
-    p.toast('litter: the rules pane was closed, so that was ignored')
+    p.toast('the rules pane was closed, so that was ignored')
     return
   }
   // A new action's outcome replaces the last one's.

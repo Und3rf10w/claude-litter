@@ -341,7 +341,7 @@ export async function recoverOwnedLaunch(
   const { spec, verified, briefs } = await specAt(p, litterDir, b, mirror)
   if (!spec) {
     p.log(`swarm ${name}: neither $.store nor revision ${b.revision} has its spec; it isn't recovered`)
-    p.toast(`litter: swarm ${name} couldn't be recovered: its spec at revision ${b.revision} is gone`)
+    p.toast(`swarm ${name} couldn't be recovered: its spec at revision ${b.revision} is gone`)
     return
   }
 

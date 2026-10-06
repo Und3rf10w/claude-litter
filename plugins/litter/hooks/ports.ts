@@ -152,7 +152,7 @@ export interface Ports {
    * and managed policy included, as the engine runs under them. A snapshot.
    */
   settings(): Promise<Readonly<Record<string, unknown>>>
-  /** One line in the debug log (`claude --debug`), prefixed `litter: `. */
+  /** One line in the debug log (`claude --debug`), which the engine prefixes `[litter] $.ui.log (to debug): `. */
   log(text: string): void
   /** `$.tool.register`: served as `mcp__litter__<name>`. Rejects when the engine refuses it. */
   registerTool(spec: ToolSpec): Promise<void>
@@ -226,7 +226,7 @@ export interface Ports {
   openPane(id: string, title: string): Promise<boolean>
   /** `$.ui.close({ id })`; an id that isn't open is left alone. */
   closePane(id: string): Promise<void>
-  /** `$.ui.toast(text)`: a few seconds over the transcript's corner. */
+  /** `$.ui.toast(text)`: a few seconds over the transcript's corner, after the `litter: ` the engine puts first (so the text has none). */
   toast(text: string): void
   /** `$.ui.copy({ text })`: whether the clipboard took it. */
   copy(text: string): Promise<boolean>

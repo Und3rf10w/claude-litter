@@ -500,6 +500,14 @@ export const oneLine = (text: unknown, max = 160): string =>
 /** The first non-empty line. */
 export const firstLine = (text: unknown, max = 120): string => oneLine(clean(text, 4000).split('\n').find(l => l.trim() !== '') ?? '', max)
 
+/**
+ * A line litter hands the model too (a refusal, a thrown error), as the person
+ * is shown it: without its leading `litter: `. The engine already puts the
+ * plugin's name before a toast, a command's reply and a log line (2.1.290,
+ * JXe), while the model's copy keeps the prefix to say which plugin refused.
+ */
+export const unprefixed = (line: string): string => (line.startsWith('litter: ') ? line.slice('litter: '.length) : line)
+
 /** A short JSON of a spec value, for a diff row. */
 export function short(value: unknown, max = 60): string {
   if (value === undefined) return 'not set'

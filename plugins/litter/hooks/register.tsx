@@ -100,6 +100,7 @@ import { cardRow, noteCards, onCardUi, restoreCards } from './card/view'
 import { renderCard } from './card/render'
 import { onTasksUi, renderTasksPane, tasksCommand } from './tasks/pane'
 import { agentsCommand, onAgentsUi, renderAgentsPane } from './agents/pane'
+import { unprefixed } from './swarm/view'
 
 /** The panes' views (types/index.d.ts): package N's two and phase 3's board and rules pane (AF), written through `p.setView`. */
 const swarmPane = atom({ plugin: 'litter', key: 'swarmPane' } as const, null)
@@ -114,18 +115,21 @@ const agentsPane = atom({ plugin: 'litter', key: 'agentsPane' } as const, null)
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** Why a hook failed, on one line, for a catch's text (as swarm/wiring.ts's). */
+/**
+ * Why a hook failed, on one line, for a command catch's text (as swarm/wiring.ts's).
+ * The person reads it, so without the `litter: ` a litter or engine error starts with.
+ */
 const failure = (next: { readonly error?: { readonly kind: string; readonly message?: string } }): string => {
   const m = next.error?.message
-  return typeof m === 'string' && m !== '' ? m.replace(/\s+/g, ' ').slice(0, 300) : (next.error?.kind ?? 'unknown')
+  return typeof m === 'string' && m !== '' ? unprefixed(m.replace(/\s+/g, ' ').slice(0, 300)) : (next.error?.kind ?? 'unknown')
 }
 
 /** The phase 3 commands' catches: a line naming the command, as the swarm commands' (swarm/wiring.ts). */
-const boardCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-board failed (${failure(next)})` })
-const rulesCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-rules failed (${failure(next)})` })
+const boardCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-board failed (${failure(next)})` })
+const rulesCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-rules failed (${failure(next)})` })
 /** The same for phase 5's /litter-tasks and /litter-agents (WP-CA). */
-const tasksCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-tasks failed (${failure(next)})` })
-const agentsCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `litter: /litter-agents failed (${failure(next)})` })
+const tasksCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-tasks failed (${failure(next)})` })
+const agentsCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-agents failed (${failure(next)})` })
 /**
  * The band's and the card's render catches: next(e), as the panes'
  * paneRenderFailed, which is typed for `Pane` alone and so can't be theirs.
@@ -163,7 +167,8 @@ function enginePorts($: EngineInterface): Ports {
     cwd: () => $.session.cwd(),
     pluginRoot: $.plugin.root,
     settings: () => $.settings.read(),
-    log: text => $.ui.log(`litter: ${text}`, { to: 'debug' }),
+    // The engine writes `[litter] $.ui.log (to debug): <text>` (2.1.290), so no prefix of litter's own.
+    log: text => $.ui.log(text, { to: 'debug' }),
     registerTool: async spec => {
       await $.tool.register(spec)
     },

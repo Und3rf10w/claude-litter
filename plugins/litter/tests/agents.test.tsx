@@ -84,7 +84,7 @@ describe('/litter-agents', () => {
   test("opens the pane on this session's agents and writes its view", async ($, on) => {
     const w = world(on)
     const r = await run($, 'litter-agents')
-    expect(r.text).toBe("litter: the agents pane shows this session's 2 agents")
+    expect(r.text).toBe("the agents pane shows this session's 2 agents")
     expect(w.opened).toEqual(['litter-agents'])
     const body = w.views.at(-1)?.body
     expect(body?.scope).toBe('session')

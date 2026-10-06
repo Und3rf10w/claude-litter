@@ -283,9 +283,9 @@ async function start($: Engine, on: On, opts: { nav?: Record<string, unknown>; v
 const mountRules = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S) =>
   $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
 
-/** The store calls the pane logged, in order (`litter: rules pane: <fn> …`). */
+/** The store calls the pane logged, in order (`rules pane: <fn> …`). */
 const storeCalls = (logs: readonly string[]) =>
-  logs.filter(l => /^litter: rules pane: (acceptRule|dismissRule|retireRule|previewAccept) /.test(l)).map(l => l.slice('litter: rules pane: '.length))
+  logs.filter(l => /^rules pane: (acceptRule|dismissRule|retireRule|previewAccept) /.test(l)).map(l => l.slice('rules pane: '.length))
 const acting = (logs: readonly string[]) => storeCalls(logs).filter(l => /^(acceptRule|dismissRule|retireRule) /.test(l))
 
 describe('the rules pane draws both tabs', () => {
@@ -387,7 +387,7 @@ describe('the buttons reach the store, one press at a time', () => {
     const ui = await mountRules($, 'terminal')
     await ui.press({ key: 'rules:accept:repo:5' })
     expect(storeCalls(s.logs)).toEqual([])
-    expect(s.logs).toContain('litter: rules pane: asks the scope for repo:5')
+    expect(s.logs).toContain('rules pane: asks the scope for repo:5')
     expect(s.written.at(-1)?.body?.notice?.text).toContain('pick the scope to accept it into')
   })
 
@@ -520,7 +520,7 @@ describe('/litter-rules', () => {
     const w = world(on)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
     const r = await $.command.run({ command: 'litter-rules', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-    expect(r.text).toBe('litter: the rules pane shows 0 proposed or unverified, 0 in force')
+    expect(r.text).toBe('the rules pane shows 0 proposed or unverified, 0 in force')
     expect(w.opened).toEqual(['litter-rules'])
     const ui = await mountRules($, 'desktop')
     expect(await ui.find({ type: 'Text', text: 'nothing proposed' })).toBeDefined()

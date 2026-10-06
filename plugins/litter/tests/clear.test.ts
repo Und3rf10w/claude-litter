@@ -13,7 +13,7 @@ const LITTER = '/repo/.claude/litter'
 const POLICY = `${LITTER}/hooks/policy.json`
 const RUN = '20270115-execute-abcdef'
 const CLEAR = { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as const
-const HELD = "litter: /clear held; the swarm browser shows when they're idle"
+const HELD = "/clear held; the swarm browser shows when they're idle"
 
 /**
  * $.fs from a map of files, and $.process.run for the git calls litterdir.ts

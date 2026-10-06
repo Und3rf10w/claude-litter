@@ -81,7 +81,7 @@ async function opened(): Promise<{ p: TestPorts; config: string }> {
     { id: '4', subject: 'Archive', status: 'completed', owner: 'executor' },
   ])
   const answer = await tasksCommand(w.p, cmd('team-a'), never)
-  expect(answer).toEqual({ text: 'litter: the tasks pane shows team-a (5 tasks)' })
+  expect(answer).toEqual({ text: 'the tasks pane shows team-a (5 tasks)' })
   return w
 }
 
@@ -102,7 +102,7 @@ describe('the list, the filters and the sort', () => {
 
   test("with no argument it opens this session's list; a name that isn't a list says so", async () => {
     const { p } = world()
-    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: `litter: the tasks pane shows ${SESSION} (0 tasks)` })
+    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: `the tasks pane shows ${SESSION} (0 tasks)` })
     expect(body(p).empty).toBe("no tasks in this session's list yet")
     await tasksCommand(p, cmd('nope'), never)
     expect(body(p).notice).toEqual({ level: 'warning', text: "there's no task list named nope, so this session's is shown" })
@@ -161,7 +161,7 @@ describe('the list, the filters and the sort', () => {
     // Its own list is kept as "this session's", so it follows a new session id.
     expect(tasksNavOf()?.list).toBeNull()
     await pick(p, 'tasks:list', 'gone-team')
-    expect(p.toasts).toEqual(["litter: that list isn't offered any more, so it was ignored"])
+    expect(p.toasts).toEqual(["that list isn't offered any more, so it was ignored"])
     expect(body(p).list).toBe(SESSION)
   })
 })
@@ -285,7 +285,7 @@ describe('stale presses and a key not the pane\'s', () => {
   test("a press drawn for another list, or for a task that's gone, is ignored with a toast", async () => {
     const { p, config } = await opened()
     await press(p, 'tasks:select:other-list/3')
-    expect(p.toasts).toEqual(["litter: that was drawn for another list, or for a task that's gone, so it was ignored"])
+    expect(p.toasts).toEqual(["that was drawn for another list, or for a task that's gone, so it was ignored"])
     expect(body(p).editor).toBeNull()
     await press(p, 'tasks:select:team-a/3')
     await type(p, 'tasks:subject:team-a/3', 'edited')
@@ -313,7 +313,7 @@ describe('stale presses and a key not the pane\'s', () => {
     expect(await onTasksUi.message(p, { element: 'tasks:select:a/1' } as never, next)).toEqual({ passed: true } as never)
     expect(passed).toHaveLength(3)
     expect(await press(p, 'tasks:filter:all')).toEqual({ element: 'tasks:filter:all' })
-    expect(p.toasts).toEqual(['litter: the tasks pane was closed, so that was ignored'])
+    expect(p.toasts).toEqual(['the tasks pane was closed, so that was ignored'])
     expect(p.views).toEqual({})
   })
 })
@@ -389,7 +389,7 @@ describe('the tick and the navigation', () => {
   test("the config dir can't be known: the pane says why, and nothing throws", async () => {
     const { p } = world()
     p.configDirValue = null
-    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: "litter: the tasks pane has nothing to show: the task lists can't be read: no config dir in tier 2 (set configDirValue)" })
+    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: "the tasks pane has nothing to show: the task lists can't be read: no config dir in tier 2 (set configDirValue)" })
     expect(body(p).notice?.level).toBe('error')
   })
 })
