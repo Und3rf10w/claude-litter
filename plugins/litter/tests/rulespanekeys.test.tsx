@@ -8,7 +8,10 @@
 // The ring is CC's: the pane's Button, Input and Select elements in
 // depth-first tree order (as 2.1.288 and 2.1.289 walk the drawn tree), the
 // same order a mounted drawing's findAll lists them in. The pane chrome's tabs and ✕ come after them, so
-// they never move a count. The state is made by the plugin's own import of
+// they never move a count. litter's own chrome comes first (phase 5b, WP-DA):
+// the `litter` pane's section strip, with Rules shown, is the other six
+// sections' Buttons, so each count is the Rules body's place plus 6. The
+// state is made by the plugin's own import of
 // fixtures/rules-import's deepwork guardrails (rulespanekeys-fixture.ts, which
 // tier 2 checks against the fixture's files), and each step is the press
 // rules.sh makes.
@@ -91,7 +94,10 @@ async function ringOf(ui: Drawn): Promise<Ring> {
 /** How many Tabs from nothing held reach the element keyed `key`: its 1-based place in the ring. */
 const tabsTo = (ring: Ring, key: string): number => ring.findIndex(r => r.split(' ')[1] === key) + 1
 
-const tabs = (proposed: number, inForce: number): Ring => [`Button rules:tab:proposed Proposed (${proposed})`, `Button rules:tab:in-force In force (${inForce})`]
+/** The `litter` pane's strip with Rules shown: each other section a Button, in the strip's order (the shown tab is Text). */
+const STRIP: Ring = ['home Home', 'runs Runs', 'swarms Swarms', 'tasks Tasks', 'agents Agents', 'doctor Doctor'].map(s => `Button litter:section:${s}`)
+/** The ring's head: the strip, then the Rules body's two tabs. */
+const tabs = (proposed: number, inForce: number): Ring => [...STRIP, `Button rules:tab:proposed Proposed (${proposed})`, `Button rules:tab:in-force In force (${inForce})`]
 /** A batch row: its check, its scope (an import asks it in a Select), then its own buttons. */
 const batchRow = (key: string, checked: boolean): Ring => [`Button rules:check:${key} ${checked ? '[x]' : '[ ]'}`, `Select rules:scope:${key} Scope`, ...actions(key)]
 const actions = (key: string): Ring => [`Button rules:accept:${key} Accept`, `Button rules:edit:${key} Edit…`, `Button rules:dismiss:${key} Dismiss`]
@@ -119,7 +125,7 @@ async function started($: Engine, on: On): Promise<Map<string, string>> {
 }
 
 /** rules.sh's Tab counts, each from nothing held (ctrl+x tab), then Enter; the Paths field takes `send a/**` instead. */
-const RULES_SH = { edit: 11, paths: 10, done: 12, accept: 10, confirm: 10, dismiss: 12, inForce: 2 }
+const RULES_SH = { edit: 17, paths: 16, done: 18, accept: 16, confirm: 16, dismiss: 18, inForce: 8 }
 
 describe("rules.sh's key presses (T4-2)", () => {
   // Eight pane states, each rebuilt from the plugin's own store: past the default 5 s under a loaded machine.
@@ -135,9 +141,9 @@ describe("rules.sh's key presses (T4-2)", () => {
       'never touch files outside a/ and b/': 'repo:4',
       'never delete a test in b/': 'repo:5',
     })
-    const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
+    const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'Pane', requestId: 'litter', props: pane('litter') })
 
-    // Step 1: the pane opens on the batch, live1's user and flag rows checked.
+    // Step 1: the pane opens on Rules, on the batch, live1's user and flag rows checked.
     const batch = [...tabs(5, 0), ...batchRow('repo:1', true), ...batchRow('repo:2', true), ...batchRow('repo:3', false), ...batchRow('repo:4', false), ...batchRow('repo:5', false), ...acceptSelected(6)]
     expect(await ringOf(ui)).toEqual(batch)
     expect(tabsTo(batch, 'rules:edit:repo:2')).toBe(RULES_SH.edit)
@@ -200,9 +206,9 @@ describe("rules.sh's key presses (T4-2)", () => {
     expect(await ringOf(ui)).toEqual([...tabs(3, 1), ...batchRow('repo:1', true), ...batchRow('repo:4', false), ...batchRow('repo:5', false), ...acceptSelected(6)])
     expect(ruleLedger(files).map(r => r.kind).slice(6)).toEqual(['rule.accept', 'rule.dismiss'])
 
-    // /litter-rules: the Proposed tab with no batch (no checks, no [Accept selected]), then its In force tab.
-    const r = await $.command.run({ command: 'litter-rules', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })
-    expect(r.text).toBe('the rules pane shows 3 proposed or unverified, 1 in force')
+    // /litter rules: the Proposed tab with no batch (no checks, no [Accept selected]), then its In force tab.
+    const r = await $.command.run({ command: 'litter', args: 'rules', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })
+    expect(r.text).toBe('Rules shows 3 proposed or unverified, 1 in force')
     const proposed = [...tabs(3, 1), ...['repo:1', 'repo:4', 'repo:5'].flatMap(k => [`Select rules:scope:${k} Scope`, ...actions(k)])]
     expect(await ringOf(ui)).toEqual(proposed)
     expect(tabsTo(proposed, 'rules:tab:in-force')).toBe(RULES_SH.inForce)

@@ -650,7 +650,7 @@ describe('rule.find { applicable }', () => {
     }
     expect(await findApplicable(w.p, w.litterDir, { workflow: 'execute', planPath: 'plan.md' })).toEqual({
       ok: false,
-      error: "litter: the accepted rules couldn't be selected (the rules ledger is tampered at seq 4); /litter-rules shows them and their problems",
+      error: "litter: the accepted rules couldn't be selected (the rules ledger is tampered at seq 4); /litter rules shows them and their problems",
     })
   })
 })

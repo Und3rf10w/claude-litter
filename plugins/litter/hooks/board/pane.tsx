@@ -1,21 +1,24 @@
-// /litter-board and /litter-rules, and the board pane (phase 3; plan section
-// 11, decision 21): a run drawn from its ledger, rebuilt by a timer while
-// the pane is open, its keys `board:<action>[:<arg>]`. Owner: phase 3,
-// package AF.
+// `/litter runs` and the board, the `litter` pane's Runs section (phase 3;
+// plan section 11, decision 21; phase 5b, WP-DA): a run drawn from its
+// ledger, rebuilt by the ui tick while Runs is shown, its keys
+// `board:<action>[:<arg>]`. Owner: phase 3, package AF.
 //
-// The render is a pure function of the view in $.state (view.ts builds it).
-// The gate table is the Client module gates.tsx where the surface has one,
-// whose ↑↓ and Enter post `{ run, action: 'select', gate }` (a ui.message
-// here), and a static table of buttons elsewhere. [Plan] and [Diff G<n>]
-// open a section in the pane; [Rules] opens the rules pane. The table's
-// right-click menu (phase 5, package CD; COMMON decision 9) posts `replay`,
-// `note` or `copy` for its row; on a surface with no Client the selected
-// gate's actions are buttons under the table. A design run gets its bar ×
-// version matrix (decision 10) above its records.
+// The render is a pure body renderer of the view in $.state (view.ts builds
+// it), drawn under the hub's chrome (ui/pane.tsx). The gate table is the
+// Client module gates.tsx where the surface has one, whose ↑↓ and Enter post
+// `{ run, action: 'select', gate }` (a ui.message here), and a static table
+// of buttons elsewhere. [Plan] and [Diff G<n>] open a section in the board;
+// [Rules] shows the Rules section. The table's right-click menu (phase 5,
+// package CD; COMMON decision 9) posts `replay`, `note` or `copy` for its
+// row; on a surface with no Client the selected gate's actions are buttons
+// under the table. A design run gets its bar × version matrix (decision 10)
+// above its records.
 
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
-import type { CommandRunHook, PaneElements, PaneRender, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { BodyContext } from '../ui/chrome'
+import type { Loaded } from '../ui/hub'
 import type {
   BoardDesign,
   BoardGateAction,
@@ -32,35 +35,16 @@ import type {
 import { session } from '../session'
 import { buttons, header, section, tableFor } from '../swarm/builder'
 import { oneLine, unprefixed } from '../swarm/view'
+import { STYLE } from '../ui/style'
+import { openSection } from '../ui/hub'
 import { OID, blankBoardNav, boardNavRev, buildBoard, navOf, restoreBoardNav, saveBoardNav, setBoardNav } from './view'
-import { openRulesPane, refreshRulesPane, rulesTick } from '../rules/pane'
+import { refreshRulesPane } from '../rules/pane'
 
-export const BOARD_PANE = 'litter-board'
 /** The gate table Client's key: `e.element` of its ui.message. */
 export const GATES_KEY = 'board-gates'
-/** The board's tick (WP-AF): a rebuild only when a ledger head or the navigation moved. */
-export const BOARD_TICK_MS = 2000
 
 const GATE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
-
-/**
- * At session.start's commands step and again after a /clear (clear.ts):
- * `/litter-board [run | execute | design]` and `/litter-rules`.
- */
-export async function registerPhase3Commands(p: Ports): Promise<void> {
-  await p.registerCommand({
-    name: 'litter-board',
-    description: 'Open the board: a litter run, its gates, verdicts, rules and proposals, from its ledger',
-    argumentHint: '[run | execute | design]',
-    immediate: true,
-  })
-  await p.registerCommand({
-    name: 'litter-rules',
-    description: 'Open the rules pane: accept, edit, dismiss or retire rules and proposals',
-    immediate: true,
-  })
-}
 
 // ---------------------------------------------------------------------------
 // The command, and drawing
@@ -95,28 +79,43 @@ async function drawBoard(p: Ports, litterDir: string, force = false): Promise<Bo
 }
 
 /**
- * command.run on `litter-board`: builds the view (view.ts, buildBoard) for
- * the run named, else the newest `execute` or `design` run, else the active
- * one, else the newest; writes it with `p.setView('board', …)`, opens the
- * `litter-board` pane, and answers a one-line `text`.
+ * `/litter runs [run | execute | design]` (ui/hub.ts's litterCommand hands
+ * it the argument): shows Runs, loaded for it, in the `litter` pane.
  */
-export const boardCommand: PortHook<CommandRunHook> = async (p, e, next) => {
+export const boardCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'runs', (e.args ?? '').trim(), { focus: true })).text })
+
+/**
+ * Runs' load (openSection): builds the view (view.ts, buildBoard) for the run
+ * named, else the newest `execute` or `design` run, else the active one, else
+ * the newest; writes it with `p.setView('board', …)`, and answers the reply's
+ * line. The band's and the card's [Board] load it with the run's id.
+ */
+export async function loadBoard(p: Ports, args: string): Promise<Loaded> {
   await restoreBoardNav(p)
-  const arg = (e.args ?? '').trim().split(/\s+/)[0] || null
+  const arg = args.trim().split(/\s+/)[0] || null
   const litterDir = session().litterDir
-  if (!litterDir) {
-    setBoardNav(blankBoardNav(arg))
-    await drawNoDirectory(p)
-    const placed = await p.openPane(BOARD_PANE, 'litter board')
-    return { text: `the board has no litter directory to read${placed ? '' : " (open, but this screen can't draw it now)"}` }
-  }
   setBoardNav(blankBoardNav(arg))
+  if (!litterDir) {
+    await drawNoDirectory(p)
+    return { text: 'Runs has no litter directory to read' }
+  }
   const view = await drawBoard(p, litterDir)
-  const placed = await p.openPane(BOARD_PANE, 'litter board')
   const head = view?.body?.header
   // The notice can be the record tool's refusal, as the engine worded it (`litter: $.tool.register: …`).
   const what = view?.run && head ? `run ${view.run} (${head.workflow}, ${head.status.text})` : `nothing: ${unprefixed(view?.body?.notice?.text ?? 'no run')}`
-  return { text: `the board shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `Runs shows ${what}` }
+}
+
+/** Runs from the strip or Home: the run it showed, drawn again, else what `/litter runs` opens. */
+export async function resumeBoard(p: Ports): Promise<void> {
+  await restoreBoardNav(p)
+  const litterDir = session().litterDir
+  if (!navOf()) {
+    await loadBoard(p, '')
+    return
+  }
+  if (litterDir) await drawBoard(p, litterDir)
+  else await drawNoDirectory(p)
 }
 
 /** The board when this session has no litter directory: why, and nothing else. */
@@ -145,39 +144,19 @@ async function drawNoDirectory(p: Ports): Promise<void> {
   written = -1
 }
 
-/**
- * The band's and the card's [Board] (phase 5, WP-CA): the board on `run`, or,
- * for null, on what /litter-board with no argument opens (the active run,
- * else the newest). Answers whether the pane was placed; a failure is logged
- * and answers false, so the caller can say to run /litter-board.
- */
-export async function openBoard(p: Ports, run: string | null): Promise<boolean> {
-  try {
-    await restoreBoardNav(p)
-    setBoardNav(blankBoardNav(run))
-    const litterDir = session().litterDir
-    if (litterDir) await drawBoard(p, litterDir)
-    else await drawNoDirectory(p)
-    return await p.openPane(BOARD_PANE, 'litter board')
-  } catch (err) {
-    p.log(`board: it didn't open${run ? ` on run ${run}` : ''}: ${errText(err)}`)
-    return false
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The render
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-board' }` calls it with the board atom. A pure renderer. */
-export function renderBoardPane(view: BoardView | null, resolved: PaneElements, e: PaneRender): RenderElement {
-  const el = tableFor(resolved, e.surface)
+/** Runs' body renderer (ui/pane.tsx calls it with the board atom under the hub's chrome). Pure. */
+export function renderBoardPane(view: BoardView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
+  const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
   if (!body) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · board</Text>
-        <Text dimColor>nothing to show yet: /litter-board opens a run</Text>
+        <Text dimColor>nothing to show yet: /litter runs opens a run</Text>
       </Box>
     )
   }
@@ -188,7 +167,7 @@ export function renderBoardPane(view: BoardView | null, resolved: PaneElements, 
       {body.header ? headerPart(el, body.header) : null}
       {body.gates ? gatesPart(el, body.gates) : null}
       {body.detail ? detailPart(el, body.detail) : null}
-      {body.design ? designPart(el, body.design, e.props.bodyColumns) : null}
+      {body.design ? designPart(el, body.design, ctx.bodyColumns) : null}
       {records.length > 0 ? recordsPart(el, records) : null}
       {body.header ? rulesPart(el, body.rules ?? [], body.proposals ?? []) : null}
       {body.section ? sectionPart(el, body.section) : null}
@@ -209,10 +188,10 @@ function headerPart(el: PaneElements, head: BoardHeader): RenderElement {
         <Text color={head.status.color}>{`${head.status.glyph} ${head.status.text}`}</Text>
         <Text>{run}</Text>
       </Box>
-      {where !== '' && <Text color="yellow" wrap="truncate-end">{where}</Text>}
-      {head.checkout !== '' && <Text color="blue" wrap="truncate-end">{`checkout ${head.checkout}`}</Text>}
+      {where !== '' && <Text color={STYLE.sha} wrap="truncate-end">{where}</Text>}
+      {head.checkout !== '' && <Text color={STYLE.path} wrap="truncate-end">{`checkout ${head.checkout}`}</Text>}
       {when !== '' && <Text dimColor>{when}</Text>}
-      {head.tampered && <Text color="error">{`✕ ${head.tampered}`}</Text>}
+      {head.tampered && <Text color={STYLE.failed}>{`✕ ${head.tampered}`}</Text>}
     </Box>
   )
 }
@@ -287,11 +266,11 @@ function designPart(el: PaneElements, d: BoardDesign, columns: number): RenderEl
       </Box>
       {d.rows.map(r => (
         <Box flexDirection="row">
-          <Text color={r.outside ? 'warning' : undefined}>{`  ${r.id.padEnd(idW)}`}</Text>
+          <Text color={r.outside ? STYLE.warning : undefined}>{`  ${r.id.padEnd(idW)}`}</Text>
           {r.cells.map(c => (
             <Text color={c.color}>{c.text.padEnd(cellW)}</Text>
           ))}
-          <Text color={r.outside ? 'warning' : undefined} dimColor={!r.outside} wrap="truncate-end">
+          <Text color={r.outside ? STYLE.warning : undefined} dimColor={!r.outside} wrap="truncate-end">
             {fit(r.text, textW).trimEnd()}
           </Text>
         </Box>
@@ -302,8 +281,8 @@ function designPart(el: PaneElements, d: BoardDesign, columns: number): RenderEl
         <Box flexDirection="row" columnGap={1}>
           <Text bold>{`  ${l.version.padEnd(cellW)}`}</Text>
           <Text color={l.color}>{l.overall}</Text>
-          <Text color={l.sha ? 'yellow' : 'gray'}>{l.sha ? `sha256 ${l.sha}` : 'sha256 not recorded'}</Text>
-          {l.sourceChanged && <Text color="warning">! source changed</Text>}
+          <Text color={l.sha ? STYLE.sha : STYLE.muted}>{l.sha ? `sha256 ${l.sha}` : 'sha256 not recorded'}</Text>
+          {l.sourceChanged && <Text color={STYLE.warning}>! source changed</Text>}
         </Box>
       ))}
     </Box>
@@ -321,23 +300,23 @@ function detailPart(el: PaneElements, d: BoardGateDetail): RenderElement {
       {d.dimensions.map(x => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            <Text color={x.pass ? 'success' : 'error'}>{x.pass ? '✓' : '✕'}</Text>
+            <Text color={x.pass ? STYLE.done : STYLE.failed}>{x.pass ? '✓' : '✕'}</Text>
             <Text bold>{x.name}</Text>
           </Box>
           {x.evidence !== '' && <Text wrap="wrap">{`    ${x.evidence}`}</Text>}
           {x.gaps.map(g => (
-            <Text color="warning" wrap="wrap">{`    − ${g}`}</Text>
+            <Text color={STYLE.warning} wrap="wrap">{`    − ${g}`}</Text>
           ))}
         </Box>
       ))}
       {d.verify && (
         <Box flexDirection="column">
           <Text>{`verify ${d.verify.id}: ${d.verify.ended}`}</Text>
-          <Text color="blue" wrap="truncate-end">{`  log ${d.verify.log}`}</Text>
+          <Text color={STYLE.path} wrap="truncate-end">{`  log ${d.verify.log}`}</Text>
         </Box>
       )}
-      {d.planGap !== '' && <Text color="warning" wrap="wrap">{`⚑ plan gap${gapBy}: ${d.planGap}`}</Text>}
-      {d.ruleClash !== '' && <Text color="warning" wrap="wrap">{`⚑ rule clash: ${d.ruleClash}`}</Text>}
+      {d.planGap !== '' && <Text color={STYLE.warning} wrap="wrap">{`⚑ plan gap${gapBy}: ${d.planGap}`}</Text>}
+      {d.ruleClash !== '' && <Text color={STYLE.warning} wrap="wrap">{`⚑ rule clash: ${d.ruleClash}`}</Text>}
     </Box>
   )
 }
@@ -376,7 +355,7 @@ function rulesPart(el: PaneElements, rules: readonly BoardRuleRow[], proposals: 
           <Text wrap="wrap">{`"${x.text}"`}</Text>
           <Box flexDirection="row" columnGap={1}>
             <Text dimColor>{[x.source, x.gate].filter(Boolean).join(' · ')}</Text>
-            <Text color="permission">{`⚑ ${x.label}`}</Text>
+            <Text color={STYLE.needsYou}>{`⚑ ${x.label}`}</Text>
           </Box>
         </Box>
       ))}
@@ -388,7 +367,7 @@ function sectionPart(el: PaneElements, s: BoardSection): RenderElement {
   const { Box, Code, Text } = el
   return (
     <Box flexDirection="column">
-      {section(el, s.title, s.path ? { text: s.path, color: 'blue' } : undefined)}
+      {section(el, s.title, s.path ? { text: s.path, color: STYLE.path } : undefined)}
       {s.text === '' ? <Text dimColor>nothing to show</Text> : <Code source={s.text} {...(s.kind === 'diff' ? {} : { language: 'markdown' })} />}
     </Box>
   )
@@ -456,10 +435,16 @@ export async function handleBoard(p: Ports, key: string, from: { run?: string } 
       setBoardNav({ ...n, section: null, notice: null })
       break
     case 'rules': {
-      p.log('board: [Rules] opens the rules pane')
-      const opened = await openRulesPane(p, null)
+      p.log('board: [Rules] shows the Rules section')
+      const opened = await openSection(p, 'rules', '', { focus: true }).then(
+        r => r.placed,
+        (err: unknown) => {
+          p.log(`board: the Rules section didn't open: ${errText(err)}`)
+          return false
+        },
+      )
       if (opened) return
-      setBoardNav({ ...n, notice: { level: 'warning', text: "the rules pane can't be drawn here now: run /litter-rules" } })
+      setBoardNav({ ...n, notice: { level: 'warning', text: "Rules can't be drawn here now: run /litter rules" } })
       break
     }
     default:
@@ -533,36 +518,18 @@ export const onBoardUi: PaneUiHandlers = {
 // ---------------------------------------------------------------------------
 // The tick
 
-let timer: { cancel(): void } | null = null
-let ticking = false
-
 /**
- * At session.start's timers step: `p.every(2000, …)` rebuilds the board's
- * view while it's open, only when the run's ledger head (or a rules
- * ledger's, or the navigation) moved, and the rules pane's the same way.
+ * Runs' tick (ui/hub.ts's litterTick, every 2 s while Runs is shown): the
+ * board when it shows a run, rebuilt only when the run's ledger head (or a
+ * rules ledger's, or the navigation) moved; it writes only a view that changed.
  */
-export function startBoardTimer(p: Ports): void {
-  timer?.cancel()
-  timer = p.every(BOARD_TICK_MS, () => {
-    if (ticking) return
-    ticking = true
-    boardTick(p)
-      .catch((err: unknown) => p.log(`board: the tick failed: ${errText(err)}`))
-      .finally(() => {
-        ticking = false
-      })
-  })
-}
-
-/** One tick: the board when it shows a run, then the rules pane; each writes only a view that changed. */
 export async function boardTick(p: Ports): Promise<void> {
   await restoreBoardNav(p)
   const litterDir = session().litterDir
   if (litterDir && navOf()?.run) await drawBoard(p, litterDir)
-  await rulesTick(p)
 }
 
-/** Rebuilds the board's view now, if one is shown (after a /clear, from the ledger); cheap when nothing changed. The rules pane's too. */
+/** Rebuilds the board's view now, if one is shown (after a /clear, from the ledger); cheap when nothing changed. The rules section's too. */
 export async function refreshBoard(p: Ports): Promise<void> {
   await restoreBoardNav(p)
   const litterDir = session().litterDir
@@ -572,9 +539,6 @@ export async function refreshBoard(p: Ports): Promise<void> {
 }
 
 export function resetBoardPaneForTests(): void {
-  timer?.cancel()
-  timer = null
-  ticking = false
   written = -1
   savedRev = -1
 }

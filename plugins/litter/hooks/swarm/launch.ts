@@ -569,7 +569,7 @@ export async function planLaunch(
     return refused(name, [
       stuck.left
         ? `refs/litter-swarm/${name} exists: ${stuck.left}; launch again once that session has closed`
-        : `refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter-swarm ${name}`,
+        : `refs/litter-swarm/${name} exists: it's owned by ${who}; end it there, or take it over from /litter swarms ${name}`,
     ])
   }
   // An entry of its own name with no ref is a leftover no one owns: this launch's entry replaces it.
@@ -949,7 +949,7 @@ async function readSwarm(p: Ports, e: Parameters<SwarmReadHook>[1], budget: Wait
   await ready(p, await budget.left())
   if (input.draft === true) return readDraftOf(p, litterDir, name)
   const s = liveSwarm(name)
-  if (!s) return no(`swarm ${name} isn't live; launch it from the swarm builder (/litter-swarm ${name}), or read its draft with draft: true`)
+  if (!s) return no(`swarm ${name} isn't live; launch it from the swarm builder (/litter swarms ${name}), or read its draft with draft: true`)
   if (s.lost) return no(`swarm ${name} was handed to another session; this session no longer acts on it`)
   if (how !== undefined) return continuationRead(p, s, node as string, how)
   return launchRead(p, litterDir, s)

@@ -10,9 +10,9 @@
 // starting `litter: ` anywhere in the arguments of a toast, log, logOnce,
 // status, notice or note call (p.note, the ask line's transcript row, WP-CK)
 // or in a `text:` value (a ternary's branches and a call written over
-// several lines included); and every pane command's reply
-// and /clear's hold, which helpers and constants build where the scan can't
-// follow them.
+// several lines included); and `/litter`'s replies, one per section and the
+// usage line, and /clear's hold, which helpers and constants build where the
+// scan can't follow them.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -30,6 +30,7 @@ import { resetTasksPaneForTests, tasksCommand } from '../../hooks/tasks/pane'
 import { resetTasksViewForTests } from '../../hooks/tasks/view'
 import { agentsCommand, resetAgentsPaneForTests } from '../../hooks/agents/pane'
 import { resetAgentsNavForTests } from '../../hooks/agents/view'
+import { litterCommand, resetHubForTests } from '../../hooks/ui/hub'
 import { nodePorts, scratch } from './support/node-ports'
 
 setDefaultTimeout(120_000)
@@ -154,6 +155,7 @@ const resets = (): void => {
   resetTasksViewForTests()
   resetAgentsPaneForTests()
   resetAgentsNavForTests()
+  resetHubForTests()
 }
 
 describe("the pane commands' replies and /clear's hold", () => {
@@ -174,30 +176,35 @@ describe("the pane commands' replies and /clear's hold", () => {
     cleanup = s.cleanup
     const p = nodePorts({ sessionId: 's1', cwd: s.dir })
     p.configDirValue = s.dir
-    const command = (name: string, args = '') => ({ command: name, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+    const command = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
     const next = (async () => ({ text: 'passed on' })) as never
     const replies: unknown[] = []
+    // `/litter`, through litterCommand, and each section's command as it hands them on.
     for (const r of [
-      () => swarmCommand(p, command('litter-swarm'), next),
-      () => swarmCommand(p, command('litter-swarm', 'Not-A-Name'), next),
-      () => doctorCommand(p, command('litter-doctor'), next),
-      () => boardCommand(p, command('litter-board'), next),
-      () => rulesCommand(p, command('litter-rules'), next),
-      () => tasksCommand(p, command('litter-tasks'), next),
-      () => agentsCommand(p, command('litter-agents'), next),
+      () => litterCommand(p, command(''), next),
+      () => litterCommand(p, command('swarms'), next),
+      () => swarmCommand(p, command('Not-A-Name'), next),
+      () => doctorCommand(p, command(''), next),
+      () => boardCommand(p, command(''), next),
+      () => rulesCommand(p, command(''), next),
+      () => tasksCommand(p, command(''), next),
+      () => agentsCommand(p, command(''), next),
+      () => litterCommand(p, command('nonsense'), next),
     ]) {
       replies.push(((await r()) as { text?: unknown }).text)
     }
     const lines = replies.map(t => (typeof t === 'string' ? t : `not a line: ${String(t)}`))
     expect(lines.filter(l => l.startsWith(PREFIX))).toEqual([])
-    expect(lines.map(l => l.split(' ').slice(0, 3).join(' '))).toEqual([
-      'the swarm pane',
-      `"Not-A-Name" isn't a`,
-      'the doctor pane',
-      'the board has',
-      'the rules pane',
-      'the tasks pane',
-      'the agents pane',
+    expect(lines.map(l => l.split(' ').slice(0, 2).join(' '))).toEqual([
+      'Home shows',
+      'Swarms shows',
+      `"Not-A-Name" isn't`,
+      'Doctor checks',
+      'Runs has',
+      'Rules has',
+      'Tasks shows',
+      'Agents shows',
+      'usage: /litter',
     ])
   })
 

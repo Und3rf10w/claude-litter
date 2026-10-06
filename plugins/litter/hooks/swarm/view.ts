@@ -70,6 +70,7 @@ import { headKey } from '../ledgercore'
 import { launchDir, swarmBriefPath, swarmDir, swarmProposalDir } from '../layout'
 import { repoOf } from '../lifecycle'
 import { readLaunchLedger } from '../records/swarm'
+import { IDENTITY, STYLE } from '../ui/style'
 import {
   binding,
   bindings,
@@ -537,42 +538,39 @@ export function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`
 }
 
-/** 15.6's table. */
+/** 15.6's table, its keys from ui/style.ts. */
 export const COLOR = {
-  running: 'background',
-  done: 'success',
-  failed: 'error',
-  waiting: 'warning',
-  idle: 'inactive',
-  you: 'permission',
-  subtle: 'subtle',
-  added: 'diffAddedWord',
-  removed: 'diffRemovedWord',
-  changed: 'warning',
-  link: 'suggestion',
-  sha: 'yellow',
-  path: 'blue',
-  draft: 'gray',
+  running: STYLE.running,
+  done: STYLE.done,
+  failed: STYLE.failed,
+  waiting: STYLE.warning,
+  idle: STYLE.idle,
+  you: STYLE.needsYou,
+  /** Secondary text: every use carries words, so `muted`, not `faint`. */
+  subtle: STYLE.muted,
+  added: STYLE.added,
+  removed: STYLE.removed,
+  changed: STYLE.changed,
+  link: STYLE.link,
+  sha: STYLE.sha,
+  path: STYLE.path,
+  draft: STYLE.draft,
 } as const
 
 /** Each orchestrator's identity color, in order, red last (it reads as an error). Its workers take it, dimmed. */
-export const ORCHESTRATOR_COLORS = [
-  'blue_FOR_SUBAGENTS_ONLY',
-  'green_FOR_SUBAGENTS_ONLY',
-  'yellow_FOR_SUBAGENTS_ONLY',
-  'purple_FOR_SUBAGENTS_ONLY',
-  'orange_FOR_SUBAGENTS_ONLY',
-  'pink_FOR_SUBAGENTS_ONLY',
-  'cyan_FOR_SUBAGENTS_ONLY',
-  'red_FOR_SUBAGENTS_ONLY',
-] as const
+export const ORCHESTRATOR_COLORS = IDENTITY
 
 /** Enforcement badges, strongest to weakest. */
-export const BADGE_COLOR: Record<SwarmBadge, string> = { engine: 'success', litter: 'ide', prompt: 'inactive', '—': 'subtle' }
+export const BADGE_COLOR: Record<SwarmBadge, string> = {
+  engine: STYLE.enforcedEngine,
+  litter: STYLE.enforcedLitter,
+  prompt: STYLE.enforcedPrompt,
+  '—': STYLE.faint,
+}
 
 const SEVERITY: Record<'ok' | 'info' | 'warning' | 'error', { glyph: string; color: string }> = {
   ok: { glyph: '✓', color: COLOR.done },
-  info: { glyph: '·', color: COLOR.subtle },
+  info: { glyph: '·', color: STYLE.muted },
   warning: { glyph: '!', color: COLOR.waiting },
   error: { glyph: '✕', color: COLOR.failed },
 }
@@ -2492,7 +2490,7 @@ export async function doctorView(p: Ports, opts: { test?: boolean } = {}): Promi
 // ---------------------------------------------------------------------------
 // What the handlers need of a live swarm
 
-/** The swarm a no-name `/litter-swarm` opens: one this session owns, the latest started, else any live one. */
+/** The swarm a no-name `/litter swarms` opens: one this session owns, the latest started, else any live one. */
 export function defaultLiveSwarm(): string | null {
   const live = liveSwarms()
   const owned = live.filter(s => !s.readOnly && !s.lost).sort((a, b) => b.startedAt - a.startedAt)

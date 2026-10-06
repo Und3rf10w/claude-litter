@@ -115,7 +115,7 @@ export const EVIDENCE_CONFLICT = 'the conflicted files, in your directory: {file
  * Slots: {swarm}, {run}.
  */
 export const REPAIR_NOTE =
-  "litter: repair swarm {swarm} is live for run {run}; litter starts it after this turn. Tell the user it will start and that /litter-swarm {swarm} shows it; don't start it yourself in this turn."
+  "litter: repair swarm {swarm} is live for run {run}; litter starts it after this turn. Tell the user it will start and that /litter swarms {swarm} shows it; don't start it yourself in this turn."
 
 /**
  * What the mod submits to the lead from a timer once that turn ended (spike

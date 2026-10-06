@@ -39,12 +39,13 @@ import {
   roomFor,
 } from '../../hooks/band/view'
 import { resetPanesForTests } from '../../hooks/swarm/panes'
+import { resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 setDefaultTimeout(120_000)
 
-/** The real call into the swarm pane, kept before any test stands in for it. */
-const defaultOpenSwarmPane = deps.openSwarmPane
+/** The real call into the hub's opener, kept before any test stands in for it. */
+const defaultOpenSection = deps.openSection
 
 const NOW = 1_800_000_000_000
 const MIN = 60_000
@@ -59,10 +60,14 @@ let litterDir: string
 let cleanup: () => void
 let boards: string[]
 let browsers: string[]
+/** What the stand-in opener answers for Runs and for Swarms; a function that throws, throws. */
+let boardOpen: () => Promise<boolean>
+let browserOpen: (name: string) => Promise<{ placed: boolean; text: string }>
 
 beforeEach(() => {
   resetBandForTests()
   resetAsksForTests()
+  resetHubForTests()
   state.resetForTests()
   ;({ dir, cleanup } = scratch())
   p = nodePorts({ sessionId: 's1', cwd: dir })
@@ -72,14 +77,26 @@ beforeEach(() => {
   updateSession({ litterDir })
   boards = []
   browsers = []
-  deps.openBoard = async (_p, run) => (boards.push(run), true)
-  deps.openSwarmPane = async (_p, name) => (browsers.push(name), `the swarm pane shows swarm ${name}`)
+  boardOpen = async () => true
+  browserOpen = async name => ({ placed: true, text: `Swarms shows ${name}, live` })
+  // The band's presses are the person's: each asks for the keyboard.
+  deps.openSection = async (_p, id, arg, opts) => {
+    expect(opts).toEqual({ focus: true })
+    if (id === 'runs') {
+      boards.push(arg as string)
+      return { placed: await boardOpen(), text: '' }
+    }
+    expect(id).toBe('swarms')
+    browsers.push(arg as string)
+    return browserOpen(arg as string)
+  }
 })
 
 afterEach(() => {
   resetBandForTests()
   resetAsksForTests()
   resetPanesForTests()
+  resetHubForTests()
   state.resetForTests()
   updateSession({ litterDir: null })
   setOptions(undefined)
@@ -150,10 +167,10 @@ describe("an execute run's row", () => {
       { key: `band:board:${EXEC}`, label: 'Board' },
       { key: `band:hide:run:${EXEC}:1:open`, label: 'Hide' },
     ])
-    // The colors: the glyph its RUN_STATUS color, the run id cyan, the elapsed time dim.
+    // The colors: the glyph its RUN_STATUS color, the run id the name color, the elapsed time dim.
     const spans = rows[0]!.spans
     expect(spans[0]).toEqual({ text: '▸', color: 'background' })
-    expect(spans.find(s => s.text === EXEC)?.color).toBe('cyan')
+    expect(spans.find(s => s.text === EXEC)?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     expect(spans.at(-1)).toEqual({ text: '14m', dim: true })
   })
 
@@ -409,7 +426,7 @@ describe('a live swarm', () => {
       { key: 'band:hide:swarm:review:20261005-093000', label: 'Hide' },
     ])
     expect(row.spans.find(s => s.text === '1 waiting')?.color).toBe('warning')
-    expect(row.spans.find(s => s.text === 'review')?.color).toBe('cyan')
+    expect(row.spans.find(s => s.text === 'review')?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
   })
 
   test("a run's repair swarm is shown in the run's row only; a read-only swarm says so", async () => {
@@ -586,11 +603,18 @@ describe('the presses', () => {
     await executeRun()
     liveSwarm('review')
     await bandTick(p)
-    deps.openBoard = async () => false
-    deps.openSwarmPane = async () => "the swarm pane shows swarm review (open, but this screen can't draw it now)"
+    boardOpen = async () => false
+    browserOpen = async () => ({ placed: false, text: "Swarms shows review, live (open, but this screen can't draw it now)" })
     await press(`band:board:${EXEC}`)
     await press('band:browser:review')
-    expect(p.toasts).toEqual([`the board can't be drawn here now: run /litter-board ${EXEC}`, "the swarm pane shows swarm review (open, but this screen can't draw it now)"])
+    expect(p.toasts).toEqual([`the board can't be drawn here now: run /litter runs ${EXEC}`, "Swarms shows review, live (open, but this screen can't draw it now)"])
+    // An open that throws on Runs is the same toast, its reason logged.
+    boardOpen = async () => {
+      throw new Error('ui.open refused')
+    }
+    await press(`band:board:${EXEC}`)
+    expect(p.toasts.at(-1)).toBe(`the board can't be drawn here now: run /litter runs ${EXEC}`)
+    expect(p.logs).toContain(`band: Runs didn't open on run ${EXEC}: ui.open refused`)
   })
 
   test('a press for a row the band no longer shows is ignored with a toast', async () => {
@@ -618,29 +642,30 @@ describe('the presses', () => {
   })
 
   test('a press that throws answers its element, logs and toasts', async () => {
-    await executeRun()
-    await bandTick(p)
-    deps.openBoard = async () => {
-      throw new Error('pane refused')
-    }
-    expect(await press(`band:board:${EXEC}`)).toEqual({ element: `band:board:${EXEC}` })
-    expect(p.logs).toContain(`band: band:board:${EXEC} failed: pane refused`)
-    expect(p.toasts).toEqual(["that didn't work (pane refused); claude --debug has the details"])
-    // An error worded for the model, as litter's and the engine's are, loses its prefix in the toast; the log keeps it whole.
-    deps.openBoard = async () => {
-      throw new Error('litter: $.ui.open refused')
-    }
-    await press(`band:board:${EXEC}`)
-    expect(p.toasts.at(-1)).toBe("that didn't work ($.ui.open refused); claude --debug has the details")
-    expect(p.logs).toContain(`band: band:board:${EXEC} failed: litter: $.ui.open refused`)
-  })
-
-  test("[Browser]'s check of the swarm pane's reply holds for the pane's real reply: no toast when it's drawn", async () => {
     liveSwarm('review')
     await bandTick(p)
-    deps.openSwarmPane = defaultOpenSwarmPane
+    browserOpen = async () => {
+      throw new Error('pane refused')
+    }
     expect(await press('band:browser:review')).toEqual({ element: 'band:browser:review' })
-    expect(p.panes.opened.map(o => o.id)).toEqual(['litter-swarm'])
+    expect(p.logs).toContain('band: band:browser:review failed: pane refused')
+    expect(p.toasts).toEqual(["that didn't work (pane refused); claude --debug has the details"])
+    // An error worded for the model, as litter's and the engine's are, loses its prefix in the toast; the log keeps it whole.
+    browserOpen = async () => {
+      throw new Error('litter: $.ui.open refused')
+    }
+    await press('band:browser:review')
+    expect(p.toasts.at(-1)).toBe("that didn't work ($.ui.open refused); claude --debug has the details")
+    expect(p.logs).toContain('band: band:browser:review failed: litter: $.ui.open refused')
+  })
+
+  test("[Browser]'s check of the opener's reply holds for the real one: `litter` opens on Swarms with the keyboard, and no toast", async () => {
+    liveSwarm('review')
+    await bandTick(p)
+    deps.openSection = defaultOpenSection
+    expect(await press('band:browser:review')).toEqual({ element: 'band:browser:review' })
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
+    expect(shownSection()).toBe('swarms')
     expect(p.toasts).toEqual([])
   })
 })

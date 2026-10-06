@@ -592,7 +592,7 @@ export async function findApplicable(p: Ports, litterDir: string, applicable: Re
       workflow === 'execute' ? { run: sel.run, gates: sel.gates } : workflow === 'fanout' ? { run: sel.run, tasks: sel.tasks, verifier: sel.verifier } : { planner: sel.planner }
     return { ok: true, workflow, ...units, versions: sel.versions, problems }
   } catch (err) {
-    return fail(`litter: the accepted rules couldn't be selected (${errText(err)}); /litter-rules shows them and their problems`)
+    return fail(`litter: the accepted rules couldn't be selected (${errText(err)}); /litter rules shows them and their problems`)
   }
 }
 

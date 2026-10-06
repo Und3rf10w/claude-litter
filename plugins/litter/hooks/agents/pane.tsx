@@ -1,8 +1,9 @@
-// /litter-agents and the agents pane (phase 5; COMMON step 6, decisions 5, 6,
-// 16): this session's agents and the picked team's members, with status and
-// unread counts; the selected agent's pending inbox and transcript tail; a
+// `/litter agents` and the agents pane, the `litter` pane's Agents section
+// (phase 5; COMMON step 6, decisions 5, 6, 16; phase 5b, WP-DA): this
+// session's agents and the picked team's members, with status and unread
+// counts; the selected agent's pending inbox and transcript tail; a
 // composer, a broadcast to the team, and [Stop] with a confirm. Rebuilt on
-// the ui tick while the pane is open. Keys are `agents:<action>[:<arg>]`.
+// the ui tick while Agents is shown. Keys are `agents:<action>[:<arg>]`.
 // Inboxes go through hooks/team/store.ts. Owner: WP-CG.
 //
 // The render is a pure function of the view in $.state (view.ts builds it).
@@ -17,12 +18,16 @@
 
 import type { RenderElement } from 'claude-code'
 import type { Ports, ToolCallResult } from '../ports'
-import type { CommandRunHook, PaneElements, PaneRender, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
 import type { AgentsBody, AgentsPaneView, AgentsRow, AgentsSelected, SwarmNotice, SwarmOption } from '../../types/index'
 import type { TeamInfo } from '../uitypes'
 import type { AgentsFacts, RowFacts } from './view'
+import type { BodyContext } from '../ui/chrome'
+import type { Loaded } from '../ui/hub'
 import { button, buttons, header, input, line, section, select, tableFor } from '../swarm/builder'
 import { clean, oneLine } from '../swarm/view'
+import { STYLE } from '../ui/style'
+import { openSection } from '../ui/hub'
 import {
   SESSION_SCOPE,
   agentsNavOf,
@@ -45,8 +50,6 @@ import {
   setAgentsNav,
   teamOfScope,
 } from './view'
-
-export const AGENTS_PANE = 'litter-agents'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
@@ -82,10 +85,13 @@ async function drawAgents(p: Ports, force = false): Promise<AgentsFacts | null> 
   return facts
 }
 
-/** command.run on `litter-agents`: opens the pane on the team named, else this session's agents; answers a one-line `text`. */
-export const agentsCommand: PortHook<CommandRunHook> = async (p, e, next) => {
+/** `/litter agents [team]` (ui/hub.ts's litterCommand): shows Agents on that team in the `litter` pane. */
+export const agentsCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'agents', e.args ?? '', { focus: true })).text })
+
+/** Agents' load (openSection): the team named, else this session's agents; answers the reply's line. */
+export async function loadAgents(p: Ports, args: string): Promise<Loaded> {
   await restoreAgentsNav(p)
-  const arg = clean(e.args ?? '', 200).trim()
+  const arg = clean(args, 200).trim()
   let team: string | null = null
   let notice: SwarmNotice | null = null
   if (arg !== '') {
@@ -105,25 +111,31 @@ export const agentsCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   const text = prev?.text ?? ''
   setAgentsNav({ ...blankAgentsNav(team), text, gen: (prev?.gen ?? 0) + 1, field: text, notice })
   const facts = await drawAgents(p, true)
-  const placed = await p.openPane(AGENTS_PANE, 'litter agents')
   const count = facts?.rows.length ?? 0
   const what = team === null ? `this session's ${plural(count, 'agent')}` : `team ${oneLine(team, 60)}'s ${plural(count, 'member')}`
-  return { text: `the agents pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `Agents shows ${what}` }
+}
+
+/** Agents from the strip or Home: the scope it showed, drawn again, else this session's agents. */
+export async function resumeAgents(p: Ports): Promise<void> {
+  await restoreAgentsNav(p)
+  if (agentsNavOf()) await drawAgents(p, true)
+  else await loadAgents(p, '')
 }
 
 // ---------------------------------------------------------------------------
 // The render
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-agents' }` calls it with the agentsPane atom. A pure renderer. */
-export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElements, e: PaneRender): RenderElement {
-  const el = tableFor(resolved, e.surface)
+/** Agents' body renderer (ui/pane.tsx calls it with the agentsPane atom under the hub's chrome). Pure. */
+export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
+  const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
   if (!body) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · agents</Text>
-        <Text dimColor>nothing to show yet: /litter-agents opens this session's agents</Text>
+        <Text dimColor>nothing to show yet: /litter agents opens this session's agents</Text>
       </Box>
     )
   }
@@ -140,7 +152,7 @@ export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElem
       {rows.map(r => rowPart(el, scope, r, sel?.key === r.key))}
       {(body.hiddenRows ?? 0) > 0 && <Text dimColor>{`${body.hiddenRows} more not shown`}</Text>}
       {(body.problems ?? []).map(x => (
-        <Text color="warning" wrap="wrap">{`! ${x}`}</Text>
+        <Text color={STYLE.warning} wrap="wrap">{`! ${x}`}</Text>
       ))}
       {sel === null && rows.length > 0 && <Text dimColor>press a row for its inbox, its transcript and the composer</Text>}
       {sel && inboxPart(el, sel)}
@@ -151,7 +163,7 @@ export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElem
   )
 }
 
-/** A heading, with the agent's name in cyan (the user's convention for names). */
+/** A heading, with the agent's name in the name color (the user's convention: cyan for names). */
 function heading(el: PaneElements, label: string, name: string | null, aside?: string): RenderElement {
   const { Box, Text } = el
   return (
@@ -159,7 +171,7 @@ function heading(el: PaneElements, label: string, name: string | null, aside?: s
       <Text bold>{label}</Text>
       {name !== null && <Text bold>{' · '}</Text>}
       {name !== null && (
-        <Text bold color="cyan">
+        <Text bold color={STYLE.name}>
           {name}
         </Text>
       )}
@@ -193,7 +205,7 @@ function rowPart(el: PaneElements, scope: string, r: AgentsRow, selected: boolea
       <Text color={st.color} dimColor={st.dim === true} wrap="truncate-end">
         {st.glyph ? `${st.glyph} ${st.text}` : st.text}
       </Text>
-      {r.unread !== null && r.unread > 0 && <Text color="warning">{`✉ ${r.unread}`}</Text>}
+      {r.unread !== null && r.unread > 0 && <Text color={STYLE.warning}>{`✉ ${r.unread}`}</Text>}
     </Box>
   )
 }
@@ -216,13 +228,13 @@ function inboxPart(el: PaneElements, sel: AgentsSelected): RenderElement {
       <Text dimColor wrap="wrap">
         only what's unread: the engine drops a message once it's delivered
       </Text>
-      {inbox.error !== null && <Text color="error" wrap="wrap">{`✕ it couldn't be read: ${inbox.error}`}</Text>}
+      {inbox.error !== null && <Text color={STYLE.failed} wrap="wrap">{`✕ it couldn't be read: ${inbox.error}`}</Text>}
       {inbox.error === null && inbox.entries.length === 0 && <Text dimColor>nothing pending</Text>}
       {inbox.hidden > 0 && <Text dimColor>{`${inbox.hidden} earlier not shown`}</Text>}
       {inbox.entries.map(x => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            <Text color="cyan">{x.from}</Text>
+            <Text color={STYLE.name}>{x.from}</Text>
             <Text dimColor>{`· ${x.at} ·`}</Text>
             <Text wrap="truncate-end">{x.lines[0] ?? ''}</Text>
           </Box>
@@ -264,7 +276,7 @@ function stopPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderE
   return (
     <Box flexDirection="row" columnGap={1} marginTop={1}>
       {button(el, { key: `agents:stop:${rowArg(scope, sel.key)}`, label: 'Stop', ...(sel.stop.armed ? { primary: true } : {}) })}
-      {sel.stop.armed && <Text color="warning" wrap="truncate-end">{`[Stop] again to stop ${sel.name}`}</Text>}
+      {sel.stop.armed && <Text color={STYLE.warning} wrap="truncate-end">{`[Stop] again to stop ${sel.name}`}</Text>}
     </Box>
   )
 }
@@ -312,7 +324,7 @@ function say(level: SwarmNotice['level'], text: string): void {
 }
 
 const staleToast = (p: Ports, was: string, now: string): void =>
-  p.toast(`that was for ${scopeWords(was)}, and the agents pane shows ${scopeWords(now)} now, so it was ignored`)
+  p.toast(`that was for ${scopeWords(was)}, and Agents shows ${scopeWords(now)} now, so it was ignored`)
 
 /**
  * The row a press names, read again: only while the pane still shows the
@@ -459,7 +471,7 @@ export async function pressAgents(p: Ports, key: string): Promise<void> {
   await restoreAgentsNav(p)
   const cur = agentsNavOf()
   if (!cur) {
-    p.toast("the agents pane isn't open in this session, so that was ignored: /litter-agents opens it")
+    p.toast("Agents isn't open in this session, so that was ignored: /litter agents opens it")
     return
   }
   // A new action's outcome replaces the last one's.
@@ -564,7 +576,7 @@ export const onAgentsUi: PaneUiHandlers = {
 // ---------------------------------------------------------------------------
 // The tick
 
-/** The ui tick's fourth step (uitick.ts): the pane's view again while it's open, written only when its stamp moved. */
+/** Agents' tick (ui/hub.ts's litterTick, while Agents is shown): the view again, written only when its stamp moved. */
 export async function agentsTick(p: Ports): Promise<void> {
   await restoreAgentsNav(p)
   if (!agentsNavOf()) return

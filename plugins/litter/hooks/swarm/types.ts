@@ -172,7 +172,7 @@ export type InstancePlan = {
 /** A swarm as saved: the spec at `revision`, and its briefs (node id → text). */
 export type SavedSwarm = { spec: SwarmSpec; revision: number; briefs: Record<string, string> }
 
-/** One row of the start screen and `/litter-swarm`'s list. */
+/** One row of the start screen and `/litter swarms`'s list. */
 export type SwarmListing = { name: string; goal: string; revision: number; nodes: number; live: boolean }
 
 /** One edit the builder made to a draft: the field's path (as SpecError's) or `brief:<node>`, and when. */
@@ -294,7 +294,7 @@ export type HealthRow = {
  */
 export type HealthReport = { rows: HealthRow[]; errors: number; warnings: number; snippet: { env: Record<string, string> } | null }
 
-/** What `checkHealth` checks: a spec (or none, for /litter-doctor without one). */
+/** What `checkHealth` checks: a spec (or none, for /litter doctor without one). */
 export type HealthInput = {
   spec: SwarmSpec | null
   litterDir: string | null

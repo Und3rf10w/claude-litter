@@ -1,7 +1,7 @@
 // Tier 2: the rules' record kinds through the record tool (WP-AD, plan
 // 16.9): rule.propose with and without a run, from text and from a file,
 // and the duplicate of an accepted rule; rule.find in all four forms, which
-// writes nothing; rule.open and rule.import, with AF's openRulesPane and
+// writes nothing; rule.open and rule.import, with the hub's openSection and
 // AE's findApplicable and matches faked through records.ts's deps.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -33,9 +33,11 @@ beforeEach(async () => {
   w = await rulesWorld()
   opened = []
   paneAnswer = async () => true
-  recordsDeps.openRulesPane = async (_p, focus) => {
+  recordsDeps.openSection = async (_p, id, focus, opts) => {
+    // The model's call opens Rules on its focus, never asking for the keyboard.
+    expect({ id, opts }).toEqual({ id: 'rules', opts: undefined })
     opened.push(focus as RuleOpenBody)
-    return paneAnswer()
+    return { placed: await paneAnswer(), text: '' }
   }
   // AE's matcher, as far as these tests need it: a trailing /** matches under its folder, anything else exactly.
   recordsDeps.matches = (pattern, path) => (pattern.endsWith('/**') ? path.startsWith(pattern.slice(0, -2)) : pattern === path)
@@ -322,10 +324,12 @@ describe('rule.open', () => {
     expect((await readRuleLedger(w.p, w.litterDir, 'user')).records.map(x => x.kind)).toEqual(['rule.accept', 'rule.open'])
   })
 
-  test('a pane that refuses or throws: the open is still recorded, and the reply says to run /litter-rules', async () => {
+  test('a pane that refuses or throws: the open is still recorded, and the reply says to run /litter rules', async () => {
     const ref = asOk(await call({ kind: 'rule.propose', rule: 'Keep fixtures small.' })).proposal
     paneAnswer = async () => false
-    expect(asOk(await call({ kind: 'rule.open', proposal: ref }))).toEqual(expect.objectContaining({ opened: false, note: "the rules pane didn't open here; tell the user to run /litter-rules" }))
+    expect(asOk(await call({ kind: 'rule.open', proposal: ref }))).toEqual(
+      expect.objectContaining({ opened: false, note: "litter's Rules section didn't open here; tell the user to run /litter rules" }),
+    )
     paneAnswer = async () => {
       throw new Error('ui.open refused')
     }

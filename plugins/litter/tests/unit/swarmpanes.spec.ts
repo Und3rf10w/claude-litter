@@ -20,6 +20,7 @@ import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, Swa
 import type { Owners } from '../../hooks/swarm/view'
 import { blankNav, clean, composerKey, nav, resetViewForTests, setNav, setOwnersForTests, swarmView } from '../../hooks/swarm/view'
 import { doctorCommand, handle, onUiInput, onUiPress, paneTick, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
+import { resetHubForTests } from '../../hooks/ui/hub'
 import type { WaitBudget } from '../../hooks/swarm/admit'
 import type {
   DoctorPaneView,
@@ -77,7 +78,7 @@ function fake<K extends keyof Owners>(fn: K, answer: (...args: any[]) => unknown
 }
 const called = (fn: string) => calls.filter(c => c.fn === fn).map(c => c.args)
 
-const command = (args = '') => ({ command: 'litter-swarm', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const command = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
 const next = (async () => ({ text: 'engine' })) as never
 const shown = <T>() => p.views.swarm as T
 
@@ -145,6 +146,7 @@ beforeEach(async () => {
   state.resetForTests()
   resetViewForTests()
   resetPanesForTests()
+  resetHubForTests()
   resetEndForTests()
   ;({ dir, cleanup } = scratch())
   p = nodePorts({ sessionId: 's1', cwd: dir })
@@ -173,6 +175,21 @@ async function openProposal(): Promise<SwarmProposalView> {
   expect(nav()?.view).toBe('proposal')
   return shown<SwarmProposalView>()
 }
+
+describe("the pane timer's gate (phase 5b, WP-DA)", () => {
+  test("while `litter` doesn't show Swarms the tick draws nothing; once it does, it draws", async () => {
+    setNav(blankNav('builder', SWARM))
+    let asked = 0
+    await paneTick(p, async () => {
+      asked++
+      return false
+    })
+    expect(asked).toBe(1)
+    expect(p.views.swarm).toBeUndefined()
+    await paneTick(p, async () => true)
+    expect((p.views.swarm as SwarmBuilderView).view).toBe('builder')
+  })
+})
 
 describe('S1: a brief of an added or removed node goes with its node', () => {
   test('unticking the add and the removal keeps both nodes as they were, whatever their briefs showed', async () => {
@@ -592,7 +609,7 @@ describe('S13: [Test] runs once per press', () => {
         snippet: { env: { X: '1' } },
       })),
     })
-    await doctorCommand(p, { command: 'litter-doctor', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never, next)
+    await doctorCommand(p, { command: 'litter', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never, next)
     await handle(p, 'swarm:doctor:test', {})
     const tests = () => called('checkHealth').filter(a => (a[0] as { testSummaryModel?: boolean }).testSummaryModel === true).length
     expect(tests()).toBe(1)
@@ -608,14 +625,14 @@ describe('S13: [Test] runs once per press', () => {
 })
 
 describe('S14: undecided proposals come back from the spec ledger', () => {
-  test('/litter-swarm <name> opens one staged before a reload', async () => {
+  test('/litter swarms <name> opens one staged before a reload', async () => {
     await saveRev1()
     await stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: { ...rev1(), goal: 'Lead' }, briefs: {}, changes: [{ path: 'goal', reason: 'x' }] })
     // A reload: nothing in module memory, nothing in state's queue.
     state.takeProposals()
     resetViewForTests()
     setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY) })
-    expect(await swarmCommand(p, command(SWARM), next)).toEqual({ text: "the swarm pane shows the lead's proposal 1 for alpha" })
+    expect(await swarmCommand(p, command(SWARM), next)).toEqual({ text: "Swarms shows the lead's proposal 1 for alpha" })
     expect(shown<SwarmProposalView>().view).toBe('proposal')
   })
 })

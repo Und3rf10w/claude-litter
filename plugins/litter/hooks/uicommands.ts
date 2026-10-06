@@ -1,20 +1,17 @@
-// Phase 5's commands (WP-CA): `/litter-tasks [list]` (CE's pane) and
-// `/litter-agents [team]` (CG's), registered at session.start and again after
-// a /clear (clear.ts), each served by a command.run hook in register.tsx.
+// litter's one command (phase 5b, WP-DA): `/litter [section] [arg]`, which
+// opens the `litter` pane on a section (ui/hub.ts, litterCommand). It
+// replaces phase 3's and phase 5's six pane commands. Registered at
+// session.start and again after a /clear (clear.ts), served by the
+// command.run hook in register.tsx.
 
 import type { Ports } from './ports'
+import { ARGUMENT_HINT } from './ui/hub'
 
-export async function registerPhase5Commands(p: Ports): Promise<void> {
+export async function registerLitterCommand(p: Ports): Promise<void> {
   await p.registerCommand({
-    name: 'litter-tasks',
-    description: "Open the tasks pane: a task list's tasks, filtered, sorted and edited in place",
-    argumentHint: '[list]',
-    immediate: true,
-  })
-  await p.registerCommand({
-    name: 'litter-agents',
-    description: 'Open the agents pane: agents, their inboxes and transcripts; message one, broadcast to a team, or stop one',
-    argumentHint: '[team]',
+    name: 'litter',
+    description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents or Doctor",
+    argumentHint: ARGUMENT_HINT,
     immediate: true,
   })
 }

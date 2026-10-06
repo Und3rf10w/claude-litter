@@ -358,7 +358,7 @@ function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Endin
     return {
       ok: false,
       why: `gate ${first.id}'s critic names a rule clash, which only you can settle ("${oneLine(latest.body.rule_clash, 500)}")`,
-      advice: `edit the rule or add an exception in /litter-rules, or change the plan's lines with /litter:amend ${first.id}, then continue the run`,
+      advice: `edit the rule or add an exception in /litter rules, or change the plan's lines with /litter:amend ${first.id}, then continue the run`,
     }
   }
   if (latest && typeof latest.body.plan_gap === 'string' && latest.body.plan_gap.trim() !== '') {
@@ -847,7 +847,7 @@ async function bridge(p: Ports, runDir: string): Promise<void> {
 
 /** `repair.start { run }` (the launcher's, under `repair: off`): the mod's own ask, going live, then the prompt fill. */
 export const recordRepairStart: RecordHandler = async (ctx, input) => {
-  if (ctx.litterDir === null) return fail("litter: this session has no litter directory (see /litter-doctor)")
+  if (ctx.litterDir === null) return fail("litter: this session has no litter directory (see /litter doctor)")
   const run = input.run
   if (typeof run !== 'string' || !RUN_ID.test(run)) return fail("litter: 'run' must be a run id like 20261002-my-run", 'run')
   const runDir = runDirOf(ctx.litterDir, run)
@@ -960,7 +960,7 @@ async function startByAsk(ctx: RecordCtx, runDir: string): Promise<RecordReply> 
 
 /** `repair.budget { swarm, rounds?, agents? }` (the launcher's): the mod's own ask, then the raised budget and a `budget` event. */
 export const recordRepairBudget: RecordHandler = async (ctx, input) => {
-  if (ctx.litterDir === null) return fail("litter: this session has no litter directory (see /litter-doctor)")
+  if (ctx.litterDir === null) return fail("litter: this session has no litter directory (see /litter doctor)")
   const name = input.swarm
   if (typeof name !== 'string' || !SWARM_NAME.test(name)) return fail("litter: 'swarm' must be the repair swarm's name", 'swarm')
   const more: { rounds?: number; agents?: number } = {}
@@ -1315,7 +1315,7 @@ export async function repairSummary(p: Ports, runDir: string): Promise<string> {
     const end = records.filter(r => r.kind === 'run.end' && r.seq > open.seq && r.body.generation === b.generation).at(-1)
     const status = end ? body<RunEndBody>(end) : null
     if (!status && wait) lines.push('', wait)
-    if (!status) lines.push('', `Watch it with /litter-swarm ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
+    if (!status) lines.push('', `Watch it with /litter swarms ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
     else if (status.status === 'done') {
       const land = records.filter(r => r.kind === 'land' && r.seq > open.seq).at(-1)
       lines.push('', `It landed${land && typeof land.body.commit === 'string' ? ` ${land.body.commit} on ${branch}` : ''}: generation ${b.generation} ended done.`)
@@ -1375,7 +1375,7 @@ function planSummary(f: Facts, wait: string | null): string {
       .filter(r => r.kind === 'land' && r.seq > open.seq && typeof r.body.gate === 'string')
       .map(r => `${String(r.body.gate)} (${String(r.body.commit ?? '').slice(0, 12)})`)
     if (!status && wait) lines.push('', wait)
-    if (!status) lines.push('', `Watch it with /litter-swarm ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
+    if (!status) lines.push('', `Watch it with /litter swarms ${b.swarm}; it shows the budget used and each verify, verdict and land.`)
     else if (status.status === 'done') lines.push('', `It landed ${words(lands, 50)} on ${branch}: generation ${b.generation} ended done.`)
     else {
       const left = remainingOf(json, records)

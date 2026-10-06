@@ -301,7 +301,7 @@ describe('the chain, the rules and the proposals', () => {
     expect(section(lines, '## Rules proposed in this run')).toEqual([
       '## Rules proposed in this run',
       '',
-      'Proposed, not accepted, waiting in /litter-rules:',
+      'Proposed, not accepted, waiting in /litter rules:',
       '',
       '- parse with the shared tokenizer (critic, G2)',
       '- log through the logger (critic), now dismissed',
@@ -316,7 +316,7 @@ describe('the chain, the rules and the proposals', () => {
     expect(section(lines, '## Rules proposed in this run')).toEqual([
       '## Rules proposed in this run',
       '',
-      "The proposals couldn't be read: the rules ledger is tampered at 3. /litter-rules lists them.",
+      "The proposals couldn't be read: the rules ledger is tampered at 3. /litter rules lists them.",
     ])
     expect(lines).toContain('## Gates')
   })

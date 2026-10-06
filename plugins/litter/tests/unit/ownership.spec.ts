@@ -631,7 +631,7 @@ describe("another session's swarm, read again (Q5)", () => {
 describe('the /clear rebind of a swarm this session owns (Q7, Q8)', () => {
   /** The engine's /clear: session.end `clear`, then the id moves; the first litter hook after it rebinds. */
   async function cleared(p: TestPorts, from: string, to: string): Promise<void> {
-    clearOthers.registerSwarmCommands = async () => undefined
+    clearOthers.registerLitterCommand = async () => undefined
     clearOthers.refreshPanes = async () => undefined
     await noteSessionEnd(p, { sessionId: from, reason: 'clear' } as never)
     p.sessionId = async () => to

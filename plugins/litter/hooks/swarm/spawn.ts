@@ -453,7 +453,7 @@ export const swarmSpawn: PortHook<SpawnHook> = async (p, e, next) => {
   try {
     rules = await rulesBlock(p, dir, e, parentB, root)
   } catch (err) {
-    return deny(`swarm ${swarm}'s accepted rules couldn't be selected, so it starts nothing: ${errText(err)}. /litter-rules shows them and their problems`)
+    return deny(`swarm ${swarm}'s accepted rules couldn't be selected, so it starts nothing: ${errText(err)}. /litter rules shows them and their problems`)
   }
 
   const plan = planSpawn(e, root, at)

@@ -1,12 +1,14 @@
-// WP-N: /litter-swarm and /litter-doctor, and the panes' handlers: every
-// press, input, pick and tree message calls the package that owns it, then
-// refreshes the view (p.setView), which register.tsx's ui.render hooks draw.
+// WP-N: `/litter swarms` and `/litter doctor`, the `litter` pane's Swarms
+// and Doctor sections (phase 5b, WP-DA), and their handlers: every press,
+// input, pick and tree message calls the package that owns it, then
+// refreshes the view (p.setView), which the hub's render draws.
 //
 // Keys are `swarm:<view>:<action>[:<arg>]`, the arg `<swarm>` or
-// `<swarm>/<rest>` on every view but the start screen and the doctor's. A
-// press on a view the pane no longer shows (another view, another swarm,
-// another proposal) is stale: it's ignored, with a toast, and the pane is
-// drawn again. Anything not keyed so passes to next(e).
+// `<swarm>/<rest>` on every view but the start screen and the doctor's
+// (`swarm:doctor:`, Doctor's: ui/hub.ts's key rule). A press on a view the
+// section no longer shows (another view, another swarm, another proposal) is
+// stale: it's ignored, with a toast, and the view is drawn again. Anything
+// not keyed so passes to next(e).
 //
 // Contract owner: phase 2b-1, package N (C picked the signatures).
 
@@ -16,6 +18,8 @@ import type { SwarmNotice } from '../../types/index'
 import type { Draft, SwarmNode, SwarmSpec, Template } from './types'
 import type { SwarmNav } from './view'
 import type { WaitBudget } from './admit'
+import type { Loaded } from '../ui/hub'
+import { litterShows, openSection } from '../ui/hub'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
 import { liveSwarm, takeProposals, version } from './state'
@@ -80,8 +84,6 @@ import {
   unprefixed,
 } from './view'
 
-export const SWARM_PANE = 'litter-swarm'
-export const DOCTOR_PANE = 'litter-doctor'
 /** The tree Client's key: `e.element` of its ui.message. */
 export const TREE_KEY = 'swarm-tree'
 /** What the tree posts: `{ swarm, action, row, worker? }`. */
@@ -92,37 +94,28 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 // ---------------------------------------------------------------------------
 // The commands
 
-/** At session.start, with the roles: `/litter-swarm [name]` and `/litter-doctor`. */
-export async function registerSwarmCommands(p: Ports): Promise<void> {
-  await p.registerCommand({
-    name: 'litter-swarm',
-    description: 'Open the swarm pane: build a swarm, or watch and steer a live one',
-    argumentHint: '[name]',
-    immediate: true,
-  })
-  await p.registerCommand({
-    name: 'litter-doctor',
-    description: "Check what a swarm needs of this session's settings and limits",
-    immediate: true,
-  })
-}
+/** `/litter swarms [name]` (ui/hub.ts's litterCommand): shows Swarms in the `litter` pane, answering with a one-line `text`. */
+export const swarmCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'swarms', (e.args ?? '').trim(), { focus: true })).text })
 
-/** command.run on `litter-swarm`: opens the `litter-swarm` pane, answering with a one-line `text`. */
-export const swarmCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: await openSwarmPane(p, e.args.trim()) })
+/** `/litter doctor [swarm]`: shows Doctor, checking that swarm's spec (else the builder's, else none). */
+export const doctorCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'doctor', (e.args ?? '').trim(), { focus: true })).text })
 
-/** command.run on `litter-doctor`: opens the `litter-doctor` pane. */
-export const doctorCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: await openDoctorPane(p) })
-
-/** Where `/litter-swarm` lands for a live swarm: its recovery card while one waits, else the browser. */
+/** Where `/litter swarms` lands for a live swarm: its recovery card while one waits, else the browser. */
 const liveNav = (name: string): SwarmNav => blankNav(pendingCard(name) ? 'recovery' : 'browser', name)
 
-/** `/litter-swarm [name]`'s work, and the band's [Browser] (phase 5): opens the pane, answering the command's line. */
-export async function openSwarmPane(p: Ports, arg: string): Promise<string> {
+/** A swarm name an argument names, or the refusal's line. */
+function swarmNamed(arg: string): { name: string } | { refused: string } {
+  const name = arg.trim().split(/\s+/)[0] ?? ''
+  if (name !== '' && !SWARM_NAME.test(name)) return { refused: `"${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)` }
+  return { name }
+}
+
+/** Swarms' load (openSection): `/litter swarms [name]`'s work, and the band's [Browser]; answers the command's line. */
+export async function loadSwarm(p: Ports, arg: string): Promise<Loaded> {
   await restoreNav(p)
-  const name = arg.split(/\s+/)[0] ?? ''
-  if (name !== '' && !SWARM_NAME.test(name)) {
-    return `"${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`
-  }
+  const named = swarmNamed(arg)
+  if ('refused' in named) return { text: named.refused, refused: true }
+  const name = named.name
   let n: SwarmNav
   // The swarm's undecided proposals, from J's spec ledger: module memory is empty after a reload.
   const opened = name !== '' ? name : defaultLiveSwarm()
@@ -138,10 +131,16 @@ export async function openSwarmPane(p: Ports, arg: string): Promise<string> {
   }
   setNav(n)
   await drawSwarm(p)
-  const placed = await p.openPane(SWARM_PANE, 'litter swarm')
   const shows = nav()
   const what = shows ? describeNav(shows) : 'nothing'
-  return `the swarm pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}`
+  return { text: `Swarms shows ${what}` }
+}
+
+/** Swarms from the strip or Home: the view it showed, drawn again, else what `/litter swarms` opens. */
+export async function resumeSwarm(p: Ports): Promise<void> {
+  await restoreNav(p)
+  if (nav()) await drawSwarm(p)
+  else await loadSwarm(p, '')
 }
 
 const describeNav = (n: SwarmNav): string => {
@@ -164,16 +163,29 @@ const describeNav = (n: SwarmNav): string => {
   }
 }
 
-async function openDoctorPane(p: Ports, swarm?: string | null): Promise<string> {
+/**
+ * Doctor's load (openSection): `/litter doctor [swarm]`, and the builder's
+ * [Doctor] with its swarm's name. With no name, the swarm the builder or a
+ * proposal shows, else this session alone. Answers the command's line.
+ */
+export async function loadDoctor(p: Ports, arg: string): Promise<Loaded> {
   await restoreNav(p)
+  const named = swarmNamed(arg)
+  if ('refused' in named) return { text: named.refused, refused: true }
   const n = nav()
-  const which = swarm !== undefined ? swarm : n && (n.view === 'builder' || n.view === 'proposal') ? n.swarm : null
+  const which = named.name !== '' ? named.name : n && (n.view === 'builder' || n.view === 'proposal') ? n.swarm : null
   setDoctorNav({ swarm: which, notice: null, tested: null })
   const view = await drawDoctor(p)
-  const placed = await p.openPane(DOCTOR_PANE, 'litter doctor')
   const body = view?.body
   const counts = body ? `: ${body.errors} error${body.errors === 1 ? '' : 's'}, ${body.warnings} warning${body.warnings === 1 ? '' : 's'}` : ''
-  return `the doctor pane checks ${which ? which : 'this session, with no swarm spec'}${counts}${placed ? '' : " (open, but this screen can't draw it now)"}`
+  return { text: `Doctor checks ${which ? which : 'this session, with no swarm spec'}${counts}` }
+}
+
+/** Doctor from the strip or Home: the checks it showed, run again, else what `/litter doctor` opens. */
+export async function resumeDoctor(p: Ports): Promise<void> {
+  await restoreNav(p)
+  if (doctorNavigation()) await drawDoctor(p)
+  else await loadDoctor(p, '')
 }
 
 // ---------------------------------------------------------------------------
@@ -240,13 +252,18 @@ let ticking = false
 /** The builder's strip waits this long after the last edit, so typing isn't checked per key. */
 export const STRIP_DEBOUNCE_MS = 800
 
-/** At session.start, with the timers: rebuilds an open pane's view every second when state.ts's version or a ledger head changed. */
+/**
+ * At session.start, with the timers: every second, the proposals handed
+ * over, then, while the `litter` pane is open on Swarms (ui/hub.ts,
+ * litterShows), the view rebuilt when state.ts's version or a ledger head
+ * changed.
+ */
 export function startPaneTimer(p: Ports): void {
   timer?.cancel()
   timer = p.every(1000, () => {
     if (ticking) return
     ticking = true
-    paneTick(p)
+    paneTick(p, () => litterShows(p, 'swarms'))
       .catch((err: unknown) => p.log(`swarm pane: the tick failed: ${errText(err)}`))
       .finally(() => {
         ticking = false
@@ -254,12 +271,18 @@ export function startPaneTimer(p: Ports): void {
   })
 }
 
-/** One tick: proposals handed over, the strip's check when due, the recovery card and unsettled report, then a redraw if anything moved. */
-export async function paneTick(p: Ports): Promise<void> {
+/**
+ * One tick: proposals handed over (always: a proposal's toast never waits on
+ * the pane), then, when `shown` answers true (no `shown`: always), the
+ * strip's check when due, the recovery card and unsettled report, and a
+ * redraw if anything moved.
+ */
+export async function paneTick(p: Ports, shown?: () => Promise<boolean>): Promise<void> {
   await restoreNav(p)
   for (const staged of takeProposals()) await proposalArrived(p, staged.name, staged.n)
   const n = nav()
   if (!n) return
+  if (shown && !(await shown())) return
   const now = await p.now()
   let force = false
   // A pane a reload brought back from $.store: its swarm's proposals, from the ledger, once.
@@ -303,7 +326,7 @@ async function proposalArrived(p: Ports, name: string, num: number): Promise<voi
     setNav(await proposalNav(p, name, num))
     return
   }
-  p.toast(`the lead proposed changes to ${name}: /litter-swarm ${name} shows them`)
+  p.toast(`the lead proposed changes to ${name}: /litter swarms ${name} shows them`)
 }
 
 /**
@@ -974,7 +997,8 @@ async function builderAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
     case 'launch':
       return launch(p, name)
     case 'doctor':
-      await openDoctorPane(p, name)
+      // Doctor is a section of its own: the builder's view stays kept for the strip's way back.
+      await openSection(p, 'doctor', name, { focus: true })
       return true
     case 'browser':
       if (liveSwarm(name)) setNav(liveNav(name))

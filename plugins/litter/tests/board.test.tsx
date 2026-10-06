@@ -2,10 +2,11 @@
 // rendering from a recorded ledger"). Two recorded runs are laid out in a
 // checkout at /repo, ledger files chained as ledgercore writes them: an
 // execute run with one landed gate and one halted on a plan gap, and a
-// fanout. /litter-board <run> builds the view from them, and the pane draws
-// it on the terminal and the desktop: the gate table as the Client there,
-// a static table of buttons on VS Code; a pick in the table shows its row's
-// detail, [Diff G1] the land's stat, and [Rules] opens the rules pane.
+// fanout. /litter runs <run> builds the view from them, and the `litter`
+// pane (phase 5b, WP-DA) draws it as its Runs section on the terminal and the
+// desktop: the gate table as the Client there, a static table of buttons on
+// VS Code; a pick in the table shows its row's detail, [Diff G1] the land's
+// stat, and [Rules] shows Rules in the same pane.
 // Phase 5 (WP-CD): the table's right-click menu with only its row's items,
 // a pick that copies and one that fills the prompt; on VS Code the selected
 // gate's actions as buttons, the critic note among them; and a design run's
@@ -30,13 +31,15 @@ const SURFACES = ['terminal', 'desktop'] as const
 const pane = (title: string) =>
   ({ title, isFocused: false, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} }) as const
 
-const run = ($: Engine, command: string, args = '') =>
-  $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+/** `/litter runs [arg]`: Runs in the `litter` pane. */
+const runs = ($: Engine, arg = '') =>
+  $.command.run({ command: 'litter', args: `runs ${arg}`, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
 
 type World = {
   files: Map<string, string>
   argv: string[][]
-  opened: string[]
+  /** Each ui.open: the pane's id, and whether it asked for the keyboard. */
+  opened: { id: string; focus: boolean }[]
   copied: string[]
   filled: string[]
   nextBoard: () => Promise<BoardView>
@@ -51,7 +54,7 @@ type World = {
 function world(on: On): World {
   const files = new Map<string, string>()
   const argv: string[][] = []
-  const opened: string[] = []
+  const opened: { id: string; focus: boolean }[] = []
   const copied: string[] = []
   const filled: string[] = []
   // Each waiter gets the first board view written after it asked, passed on beneath litter.
@@ -123,7 +126,7 @@ function world(on: On): World {
     return { isFilled: true }
   })
   on('ui.open', async (_$, e) => {
-    opened.push(e.id)
+    opened.push({ id: e.id, focus: e.focus === true })
     return { value: { isPlaced: true } }
   })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -355,16 +358,20 @@ async function start($: Engine, on: On) {
 }
 
 const mountBoard = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S) =>
-  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-board', props: pane('litter board') })
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter') })
 
 describe('the board, from a recorded ledger', () => {
   for (const surface of SURFACES) {
     test(`an execute run with one landed gate and one halted, on the ${surface}`, async ($, on) => {
       const w = await start($, on)
-      const r = await run($, 'litter-board', EXEC)
-      expect(r.text).toBe(`the board shows run ${EXEC} (execute, halted)`)
-      expect(w.opened).toEqual(['litter-board'])
+      const r = await runs($, EXEC)
+      expect(r.text).toBe(`Runs shows run ${EXEC} (execute, halted)`)
+      expect(w.opened).toEqual([{ id: 'litter', focus: true }])
       const ui = await mountBoard($, surface)
+      // The hub's chrome: `litter · Runs`, the strip with Runs shown.
+      expect(await ui.find({ type: 'Text', text: ' · Runs' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'litter:section:rules' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'litter:section:runs' })).toBeUndefined()
       // The header, left-aligned: status, workflow, branch, base, when.
       expect(await ui.find({ type: 'Text', text: '⚑ halted' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: `branch litter/${EXEC} · base aaaaaaa` })).toBeDefined()
@@ -396,7 +403,7 @@ describe('the board, from a recorded ledger', () => {
 
     test(`a gate whose executor stopped on a plan gap after a verdict: halted, the gap the executor's, the dimensions the verdict's attempt's, on the ${surface}`, async ($, on) => {
       await start($, on)
-      expect((await run($, 'litter-board', STOP)).text).toBe(`the board shows run ${STOP} (execute, halted)`)
+      expect((await runs($, STOP)).text).toBe(`Runs shows run ${STOP} (execute, halted)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Text', text: '⚑ halted', in: 'board-gates' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '2/3', in: 'board-gates' })).toBeDefined()
@@ -409,8 +416,8 @@ describe('the board, from a recorded ledger', () => {
 
     test(`a fanout gets its header and its last records, on the ${surface}`, async ($, on) => {
       await start($, on)
-      const r = await run($, 'litter-board', FAN)
-      expect(r.text).toBe(`the board shows run ${FAN} (fanout, done)`)
+      const r = await runs($, FAN)
+      expect(r.text).toBe(`Runs shows run ${FAN} (fanout, done)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Text', text: '✓ done' })).toBeDefined()
       expect(await ui.find({ type: 'Client' })).toBeUndefined()
@@ -423,7 +430,7 @@ describe('the board, from a recorded ledger', () => {
 
   test('with no Client (VS Code), the gate table is a button per row', async ($, on) => {
     await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'vscode')
     expect(await ui.find({ type: 'Client' })).toBeUndefined()
     expect(await ui.find({ type: 'Button', key: 'board:select:G1' })).toBeDefined()
@@ -436,7 +443,7 @@ describe('the board, from a recorded ledger', () => {
 
   test("a click in the Client table posts the pick, and the row's detail is drawn; [Diff G1] runs git diff --stat on the land's oids", async ($, on) => {
     const w = await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'terminal')
     // A press resolves once litter's handler has drawn the view. A click or a key
     // in the Client only posts: litter handles the post (a ui.message) after the
@@ -468,20 +475,25 @@ describe('the board, from a recorded ledger', () => {
     expect(await ui.find({ type: 'Code', text: '### G2: Retry the refresh once' })).toBeDefined()
   })
 
-  test('[Rules] opens the rules pane', async ($, on) => {
+  test('[Rules] shows Rules in the same pane, with the keyboard', async ($, on) => {
     const w = await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'desktop')
     await ui.press({ key: 'board:rules' })
-    expect(w.opened).toEqual(['litter-board', 'litter-rules'])
-    const rules = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
-    expect(await rules.find({ type: 'Button', key: 'rules:tab:in-force' })).toBeDefined()
+    expect(w.opened).toEqual([
+      { id: 'litter', focus: true },
+      { id: 'litter', focus: true },
+    ])
+    // The one pane draws Rules now, where the board was.
+    expect(await ui.find({ type: 'Text', text: ' · Rules' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'rules:tab:in-force' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'board:rules' })).toBeUndefined()
   })
 
   test('with no run named, the newest execute run; a name that is neither a run nor a workflow is said so', async ($, on) => {
     await start($, on)
-    expect((await run($, 'litter-board', 'execute')).text).toBe(`the board shows run ${EXEC} (execute, halted)`)
-    const bad = await run($, 'litter-board', 'nonsense')
+    expect((await runs($, 'execute')).text).toBe(`Runs shows run ${EXEC} (execute, halted)`)
+    const bad = await runs($, 'nonsense')
     expect(bad.text).toContain(`"nonsense" isn't a run id`)
   })
 })
@@ -492,7 +504,7 @@ describe("the gate table's menu (phase 5)", () => {
   // pick waits for what it does (its toast, or the view it writes).
   test("a right-click on a row draws its menu with only that row's items; ↓ ⏎ copies the land's full commit id", async ($, on) => {
     const w = await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'terminal')
     // The header is the table's first row; G1 is the next. The menu is the Client's own state, drawn before the act resolves.
     await ui.pointer({ type: 'down', x: 4, y: 1, button: 'right', in: 'board-gates' })
@@ -510,7 +522,7 @@ describe("the gate table's menu (phase 5)", () => {
 
   test("G2's menu has its critic note and no copy; a second right-click closes it; replay fills the prompt, the note opens", async ($, on) => {
     const w = await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'terminal')
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
     expect(await ui.find({ type: 'Text', text: 'open critic note', in: 'board-gates' })).toBeDefined()
@@ -536,7 +548,7 @@ describe("the gate table's menu (phase 5)", () => {
 
   test("with no Client (VS Code), the selected gate's actions are buttons under the table", async ($, on) => {
     const w = await start($, on)
-    await run($, 'litter-board', EXEC)
+    await runs($, EXEC)
     const ui = await mountBoard($, 'vscode')
     // G2 is selected: replay and its note, and no copy (it didn't land).
     expect(await ui.find({ type: 'Button', key: 'board:replay:G2' })).toBeDefined()
@@ -559,7 +571,7 @@ describe('the design view (phase 5)', () => {
   for (const surface of [...SURFACES, 'vscode'] as const) {
     test(`the bar × version matrix above the records, its legend and version lines, and [Plan] on the latest proposal, on the ${surface}`, async ($, on) => {
       await start($, on)
-      expect((await run($, 'litter-board', DESIGN)).text).toBe(`the board shows run ${DESIGN} (design, done)`)
+      expect((await runs($, DESIGN)).text).toBe(`Runs shows run ${DESIGN} (design, done)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Client' })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: 'Bar × versions' })).toBeDefined()

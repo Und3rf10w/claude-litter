@@ -23,7 +23,7 @@ import type {
   ToolCallResult,
   ToolSpec,
 } from 'claude-code'
-import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
+import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
@@ -62,10 +62,14 @@ export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
  * tasks pane and agents pane (WP-CA). The band and the cards aren't panes,
  * but setView writes them the same way.
  */
-export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents'
-export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, RulesPaneView, SwarmPaneView, TasksPaneView }
-/** Any of those views; each view's `view` field names it, and setView writes it to its atom. */
-export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView
+export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents' | 'hub'
+export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SwarmPaneView, TasksPaneView }
+/**
+ * Any of those views; each view's `view` field names it, and setView writes it
+ * to its atom. Phase 5b (WP-DA): the six pane views are the `litter` pane's
+ * sections, and `hub` is the pane's own (ui/hub.ts).
+ */
+export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView | HubView
 
 /**
  * Whom `send` addresses (the d.ts's SessionSendAddress, less `{ sessionId }`):
@@ -222,8 +226,20 @@ export interface Ports {
   configDir(): Promise<string>
   /** `$.command.register`: `/<name>`, served by a `command.run` hook on `{ command: name }`. Rejects when refused. */
   registerCommand(spec: CommandSpec): Promise<void>
-  /** `$.ui.open({ id, title })`: whether the pane was placed (drawn). An open answering your command is placed at any width. */
-  openPane(id: string, title: string): Promise<boolean>
+  /**
+   * `$.ui.open({ id, title, focus })`: whether the pane was placed (drawn). An
+   * open answering your command is placed at any width. `focus` (phase 5b,
+   * WP-DA) asks for the keyboard when the person asked for the pane (the
+   * command, a button): a request the surface refuses while a band or another
+   * pane holds the keys or the composer has text (d.ts `:7166`).
+   */
+  openPane(id: string, title: string, focus?: boolean): Promise<boolean>
+  /**
+   * Whether this plugin's pane `id` is open now (`$.ui.panes()`), drawn or
+   * waiting undrawn (phase 5b, WP-DA): the ticks refresh the `litter` pane's
+   * section only while it is.
+   */
+  paneOpen(id: string): Promise<boolean>
   /** `$.ui.close({ id })`; an id that isn't open is left alone. */
   closePane(id: string): Promise<void>
   /** `$.ui.toast(text)`: a few seconds over the transcript's corner, after the `litter: ` the engine puts first (so the text has none). */

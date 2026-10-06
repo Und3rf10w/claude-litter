@@ -20,19 +20,20 @@ import { fakePatterns, rulesWorld, type RulesWorld } from './rules-harness'
 let w: RulesWorld
 let restore: () => void
 let opened: RuleOpenBody[]
-const realOpen = recordsDeps.openRulesPane
+const realOpen = recordsDeps.openSection
 
 beforeEach(async () => {
   restore = fakePatterns()
   w = await rulesWorld()
   opened = []
-  recordsDeps.openRulesPane = async (_p, focus) => {
+  recordsDeps.openSection = async (_p, id, focus) => {
+    expect(id).toBe('rules')
     opened.push(focus as RuleOpenBody)
-    return true
+    return { placed: true, text: '' }
   }
 })
 afterEach(() => {
-  recordsDeps.openRulesPane = realOpen
+  recordsDeps.openSection = realOpen
   restore()
   w.cleanup()
 })

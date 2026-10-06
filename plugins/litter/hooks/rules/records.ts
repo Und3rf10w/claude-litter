@@ -30,7 +30,7 @@ import { localRulesDir, projectRulesDir, ruleHistoryDir, runJsonPath, userRulesD
 import { readJson } from '../fsx'
 import { primaryOf } from '../lifecycle'
 import { recordRunFind } from '../litterdir'
-import { openRulesPane } from './pane'
+import { openSection } from '../ui/hub'
 import { findApplicable } from './select'
 import { matches } from './match'
 import { readDeepwork } from './import'
@@ -38,11 +38,11 @@ import { appendRuleRecord, readRuleLedger } from './ledger'
 import { bytes, foldText, parseRule, renderRule, RULE_ID, RULE_MAX_BYTES } from './format'
 import { foldedSha, loadRules, narrowPaths, proposalsOf, proposalText } from './store'
 
-// The other packages' functions reached from here (AF's pane, AE's
-// selection and matcher), through one table so tier 2 can stand in for them
-// (COMMON, "Another package's module").
+// The other packages' functions reached from here (the `litter` pane's
+// opener, AE's selection and matcher), through one table so tier 2 can stand
+// in for them (COMMON, "Another package's module").
 export const deps = {
-  openRulesPane: (...a: Parameters<typeof openRulesPane>) => openRulesPane(...a),
+  openSection: (...a: Parameters<typeof openSection>) => openSection(...a),
   findApplicable: (...a: Parameters<typeof findApplicable>) => findApplicable(...a),
   matches: (pattern: string, path: string) => matches(pattern, path),
 }
@@ -50,7 +50,7 @@ export const deps = {
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/
 const EDITS = /^([UPL]-[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?)@([1-9][0-9]*)$/
-const OPEN_IT = "the rules pane didn't open here; tell the user to run /litter-rules"
+const OPEN_IT = "litter's Rules section didn't open here; tell the user to run /litter rules"
 const cut = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
 
 /** The rules ledger's own refusals in the tool's error shape; anything else throws, so the hook's catch denies. */
@@ -72,12 +72,16 @@ function litterDirOf(ctx: RecordCtx, input: RecordInput): string {
 const validRef = (r: unknown): r is ProposalRef =>
   typeof r === 'object' && r !== null && ((r as ProposalRef).store === 'repo' || (r as ProposalRef).store === 'user') && Number.isInteger((r as ProposalRef).seq) && (r as ProposalRef).seq >= 1
 
-/** AF's openRulesPane, which may refuse or throw: either way the reply says to run /litter-rules. */
+/**
+ * The Rules section on `focus`, through the `litter` pane's one opener
+ * (ui/hub.ts). The model asked, not the person, so it doesn't ask for the
+ * keyboard. A refusal or a throw: the reply says to run /litter rules.
+ */
 async function openPane(p: Ports, focus: RuleOpenBody): Promise<boolean> {
   try {
-    return (await deps.openRulesPane(p, focus)) === true
+    return (await deps.openSection(p, 'rules', focus)).placed === true
   } catch (err) {
-    p.log(`rules: the rules pane didn't open: ${errText(err)}`)
+    p.log(`rules: the Rules section didn't open: ${errText(err)}`)
     return false
   }
 }
@@ -175,8 +179,8 @@ export const recordRuleProposal: RecordHandler = async (ctx, input) => {
 
 /**
  * `rule.open { id }` or `rule.open { proposal: { store, seq } }`: records the
- * open in the rules ledger, then opens the rules pane on it (AF's
- * openRulesPane). A pane that doesn't open answers "run /litter-rules".
+ * open in the rules ledger, then shows it in the `litter` pane's Rules
+ * section (openSection). A pane that doesn't open answers "run /litter rules".
  */
 export const recordRuleOpen: RecordHandler = async (ctx, input) => {
   const litterDir = litterDirOf(ctx, input)

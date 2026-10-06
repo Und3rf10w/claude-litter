@@ -242,7 +242,7 @@ async function resumeRun(p: Ports, e: E, next: Next, litterDir: string, workflow
   if (latest.stopping && !latest.end) return deny(`litter: run ${ref.run} is still stopping; resume it once its stop has settled`)
   // Only its swarm's End closes a repair generation (2b-2), so a resume can't mark it interrupted.
   if (latest.repair && !latest.end) {
-    return deny(`litter: run ${ref.run} is being repaired by swarm ${latest.repair.swarm}; resume it only after that swarm ends (End swarm in /litter-swarm ${latest.repair.swarm})`)
+    return deny(`litter: run ${ref.run} is being repaired by swarm ${latest.repair.swarm}; resume it only after that swarm ends (End swarm in /litter swarms ${latest.repair.swarm})`)
   }
   if (latest.end && !RESUMABLE.includes(latest.end.status)) {
     return deny(`litter: run ${ref.run} ended ${latest.end.status}; only failed, stopped and interrupted runs resume. Start a continuation (continueOf) instead`)

@@ -1,5 +1,6 @@
-// Tier 1: the agents pane as the engine runs it (WP-CG): /litter-agents opens
-// `litter-agents` and writes its view; the render draws this session's agents
+// Tier 1: the Agents section as the engine runs it (WP-CG, phase 5b's WP-DA):
+// /litter agents opens the `litter` pane on Agents, asking for the keyboard,
+// and writes its view; the render draws this session's agents
 // with their status and, once one is selected, its inbox, its transcript's
 // tail, [Stop] and the composer, on every surface (the mobile app with no
 // fields); and [Send]'s press reaches $.session.send and answers
@@ -20,8 +21,9 @@ const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const pane = (title: string) =>
   ({ title, isFocused: false, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} }) as const
 
-const run = ($: Engine, command: string, args = '') =>
-  $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+/** `/litter <args>`. */
+const run = ($: Engine, args = '') =>
+  $.command.run({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
 
 const AGENTS = [
   { id: 'a1', description: 'review the parser', type: 'general-purpose', status: 'running', name: 'reviewer' },
@@ -35,8 +37,8 @@ const TRANSCRIPT = [
 ] as const
 
 /** The engine around the pane: what opened, what was sent, the agents pane's views as written. */
-function world(on: On): { opened: string[]; sent: { to: unknown; text: string }[]; views: AgentsPaneView[] } {
-  const opened: string[] = []
+function world(on: On): { opened: { id: string; focus: boolean }[]; sent: { to: unknown; text: string }[]; views: AgentsPaneView[] } {
+  const opened: { id: string; focus: boolean }[] = []
   const sent: { to: unknown; text: string }[] = []
   const views: AgentsPaneView[] = []
   on('agent.list', async () => ({ value: AGENTS.map(a => ({ ...a })) }))
@@ -47,7 +49,7 @@ function world(on: On): { opened: string[]; sent: { to: unknown; text: string }[
     return { isDelivered: true }
   })
   on('ui.open', async (_$, e) => {
-    opened.push(e.id)
+    opened.push({ id: e.id, focus: e.focus === true })
     return { value: { isPlaced: true } }
   })
   on('ui.toast', async () => ({ value: undefined }))
@@ -78,14 +80,14 @@ function world(on: On): { opened: string[]; sent: { to: unknown; text: string }[
 }
 
 const mountAgents = <S extends (typeof SURFACES)[number]>($: Engine, surface: S) =>
-  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-agents', props: pane('litter agents') })
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter') })
 
-describe('/litter-agents', () => {
-  test("opens the pane on this session's agents and writes its view", async ($, on) => {
+describe('/litter agents', () => {
+  test("opens `litter` on this session's agents, with the keyboard, and writes its view", async ($, on) => {
     const w = world(on)
-    const r = await run($, 'litter-agents')
-    expect(r.text).toBe("the agents pane shows this session's 2 agents")
-    expect(w.opened).toEqual(['litter-agents'])
+    const r = await run($, 'agents')
+    expect(r.text).toBe("Agents shows this session's 2 agents")
+    expect(w.opened).toEqual([{ id: 'litter', focus: true }])
     const body = w.views.at(-1)?.body
     expect(body?.scope).toBe('session')
     expect(body?.rows.map(x => [x.key, x.name, x.status.text])).toEqual([
@@ -99,8 +101,10 @@ describe('the render', () => {
   for (const surface of SURFACES) {
     test(`draws the rows, then the selected agent's inbox, transcript, [Stop] and composer, on the ${surface}`, async ($, on) => {
       const w = world(on)
-      await run($, 'litter-agents')
+      await run($, 'agents')
       const ui = await mountAgents($, surface)
+      // The hub's header names the section; Agents' own title follows in the body.
+      expect(await ui.find({ type: 'Text', text: ' · Agents' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /^ · this session · 2 agents · 1 running$/ })).toBeDefined()
       expect((await ui.find({ type: 'Button', key: 'agents:select:session/a1' }))?.text).toBe('reviewer')
       expect((await ui.find({ type: 'Button', key: 'agents:select:session/a2' }))?.text).toBe('fix G2')
@@ -130,7 +134,7 @@ describe('the render', () => {
 describe('[Send]', () => {
   test("its press reaches $.session.send with the text typed and answers `{ element }`; the notice says queued", async ($, on) => {
     const w = world(on)
-    await run($, 'litter-agents')
+    await run($, 'agents')
     const ui = await mountAgents($, 'terminal')
     await ui.press({ key: 'agents:select:session/a1' })
     const key = w.views.at(-1)?.body?.composer?.key

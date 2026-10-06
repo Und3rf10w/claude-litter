@@ -54,9 +54,11 @@ beforeEach(() => {
   }
   boards = []
   boardAnswer = true
-  deps.openBoard = async (_p, run) => {
-    boards.push(run)
-    return boardAnswer
+  // The card's [Board] is the person's press: Runs on the run, the keyboard asked for.
+  deps.openSection = async (_p, id, run, opts) => {
+    expect({ id, opts }).toEqual({ id: 'runs', opts: { focus: true } })
+    boards.push(run as string)
+    return { placed: boardAnswer, text: '' }
   }
 })
 
@@ -204,9 +206,9 @@ describe('a card for each way a run ends', () => {
     // run.launch at minute 2, run.end at minute 12.
     expect(textOf(card.title)).toBe(`✓ done · litter · execute ${run} · 10m 0s`)
     expect(card.title[0]).toEqual({ text: '✓ done', color: 'success', bold: true })
-    expect(span(card, run)?.color).toBe('cyan')
+    expect(span(card, run)?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     expect(linesOf(card)).toEqual(['3/3 gates landed · last land 3333333'])
-    expect(span(card, '3333333')?.color).toBe('yellow')
+    expect(span(card, '3333333')?.color).toBe('warning')
     expect(card.buttons).toEqual([{ key: `card:board:${run}`, label: 'Board' }])
     expect(card).toEqual(expect.objectContaining({ taskId: 't-exec', run }))
     expect(p.logs).toEqual([])
@@ -360,7 +362,7 @@ describe('a card for each way a run ends', () => {
     await noteCards(p, submit(notice('t-fan')))
     const card = cardOf('t-fan')
     expect(linesOf(card)).toEqual(['2/2 writers done · 1 read-only', 'landed eeeeeee'])
-    expect(span(card, 'eeeeeee')?.color).toBe('yellow')
+    expect(span(card, 'eeeeeee')?.color).toBe('warning')
   })
 
   test('a workflow that failed at launch: the status and the reason, in the error color; a launch that never opened a generation has no card', async () => {
@@ -654,7 +656,14 @@ describe('the [Board] press', () => {
     await executeDone('20261005-exec', 't-exec')
     boardAnswer = false
     await onCardUi.press(p, press('card:board:20261005-exec'), passOn)
-    expect(p.toasts.at(-1)).toBe("the board didn't open here; run /litter-board 20261005-exec")
+    expect(p.toasts.at(-1)).toBe("the board didn't open here; run /litter runs 20261005-exec")
+    // An open that throws is the same toast, its reason logged.
+    deps.openSection = async () => {
+      throw new Error('ui.open refused')
+    }
+    await onCardUi.press(p, press('card:board:20261005-exec'), passOn)
+    expect(p.toasts.at(-1)).toBe("the board didn't open here; run /litter runs 20261005-exec")
+    expect(p.logs).toContain("card: Runs didn't open on run 20261005-exec: ui.open refused")
   })
 
   test("a card key that isn't a run's is answered and does nothing; any other key passes on", async () => {

@@ -243,20 +243,42 @@ describe('the swarm fakes', () => {
 
   test('commands, panes, toasts, copies and views are recorded', async () => {
     const p = nodePorts()
-    await p.registerCommand({ name: 'litter-swarm', description: 'd', argumentHint: '[name]' })
-    expect(await p.openPane('litter-swarm', 'litter swarm')).toBe(true)
-    await p.closePane('litter-swarm')
+    await p.registerCommand({ name: 'litter', description: 'd', argumentHint: '[section] [arg]' })
+    expect(await p.paneOpen('litter')).toBe(false)
+    expect(await p.openPane('litter', 'litter', true)).toBe(true)
+    expect(await p.paneOpen('litter')).toBe(true)
+    expect(await p.openPane('litter', 'litter')).toBe(true)
+    await p.closePane('litter')
+    expect(await p.paneOpen('litter')).toBe(false)
     p.toast('saved')
     expect(await p.copy('snippet')).toBe(true)
     const view = { view: 'start', v: 1 }
     await p.setView('swarm', view)
     view.v = 2
     await p.setView('doctor', null)
-    expect(p.commands.map(c => c.name)).toEqual(['litter-swarm'])
-    expect(p.panes).toEqual({ opened: [{ id: 'litter-swarm', title: 'litter swarm' }], closed: ['litter-swarm'] })
+    expect(p.commands.map(c => c.name)).toEqual(['litter'])
+    // `focus` is there when the open asked for the keyboard.
+    expect(p.panes).toEqual({
+      opened: [
+        { id: 'litter', title: 'litter', focus: true },
+        { id: 'litter', title: 'litter' },
+      ],
+      closed: ['litter'],
+    })
     expect(p.toasts).toEqual(['saved'])
     expect(p.copied).toEqual(['snippet'])
     expect(p.views).toEqual({ swarm: { view: 'start', v: 1 }, doctor: null })
+  })
+
+  test('paneOpen answers paneOpenValue when set, and rejects with paneOpenThrows', async () => {
+    const p = nodePorts()
+    p.paneOpenValue = true
+    expect(await p.paneOpen('litter')).toBe(true)
+    p.paneOpenValue = false
+    await p.openPane('litter', 'litter')
+    expect(await p.paneOpen('litter')).toBe(false)
+    p.paneOpenThrows = true
+    await expect(p.paneOpen('litter')).rejects.toThrow('paneOpenThrows')
   })
 
   test('registerAgent and registerTool record each spec and resolve, unless their answer throws', async () => {

@@ -18,7 +18,7 @@ $ARGUMENTS
 
 ## 1. Preflight
 
-If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and explain that the mod isn't running or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter-doctor` says which, when the mod is loaded.
+If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and explain that the mod isn't running or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter doctor` says which, when the mod is loaded.
 
 ## 2. Find the gate
 

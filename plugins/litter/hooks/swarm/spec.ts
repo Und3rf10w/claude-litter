@@ -708,7 +708,7 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
       limits.add(
         `nodes.${id}`,
         id,
-        `it sits at depth ${d}, past CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (${depthWhy}), so the engine refuses its spawn; raise the limit (/litter-doctor shows how), or move it up the tree`,
+        `it sits at depth ${d}, past CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (${depthWhy}), so the engine refuses its spawn; raise the limit (/litter doctor shows how), or move it up the tree`,
       )
     }
   }
@@ -719,7 +719,7 @@ async function rules(p: Ports, s: SwarmSpec, ctx: ValidateCtx): Promise<Out> {
     warnings.add(
       'limits.maxAgentsAtOnce',
       undefined,
-      `up to ${shape.peak} agents at once, plus ${LEAD_AGENTS} for the lead's own, need ${need}, but CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS is ${concLimit}${parseLimit(rawConc) === null ? ' (the default)' : ''}: spawns past it are refused; raise it (/litter-doctor shows how), or set limits.maxAgentsAtOnce`,
+      `up to ${shape.peak} agents at once, plus ${LEAD_AGENTS} for the lead's own, need ${need}, but CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS is ${concLimit}${parseLimit(rawConc) === null ? ' (the default)' : ''}: spawns past it are refused; raise it (/litter doctor shows how), or set limits.maxAgentsAtOnce`,
     )
   }
   const orchestrators = s.nodes.filter(n => n.kind === 'orchestrator').length

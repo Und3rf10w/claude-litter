@@ -40,11 +40,11 @@ import {
   moveRow,
   paneTick,
   parseKey,
-  registerSwarmCommands,
   resetPanesForTests,
   stalePress,
   swarmCommand,
 } from '../../hooks/swarm/panes'
+import { resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import type {
   SwarmBrowserView,
   SwarmBuilderView,
@@ -205,6 +205,7 @@ beforeEach(() => {
   state.resetForTests()
   resetViewForTests()
   resetPanesForTests()
+  resetHubForTests()
   p = nodePorts({ sessionId: 's1' })
   p.clock.now = NOW
   ;({ dir: litterDir, cleanup } = scratch())
@@ -827,27 +828,23 @@ describe('the commands and the doctor', () => {
     ({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
   const next = (async () => ({ text: 'engine' })) as never
 
-  test('both commands are registered at once-runnable, /litter-swarm with its hint', async () => {
-    await registerSwarmCommands(p)
-    expect(p.commands.map(c => [c.name, c.argumentHint ?? null, c.immediate ?? null])).toEqual([
-      ['litter-swarm', '[name]', true],
-      ['litter-doctor', null, true],
-    ])
-  })
-
-  test('/litter-swarm: the start screen with nothing live, the browser of a live one, a builder by name; each opens the pane', async () => {
-    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'the swarm pane shows the start screen' })
-    expect(p.panes.opened).toEqual([{ id: 'litter-swarm', title: 'litter swarm' }])
+  test('/litter swarms: the start screen with nothing live, the browser of a live one, a builder by name; each opens `litter` on Swarms', async () => {
+    expect(await swarmCommand(p, e('litter', ''), next)).toEqual({ text: 'Swarms shows the start screen' })
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
+    expect(shownSection()).toBe('swarms')
     expect((p.views.swarm as SwarmStartView).view).toBe('start')
-    expect(await swarmCommand(p, e('litter-swarm', 'demo'), next)).toEqual({ text: 'the swarm pane shows the builder for demo' })
+    expect(await swarmCommand(p, e('litter', 'demo'), next)).toEqual({ text: 'Swarms shows the builder for demo' })
     goLive()
-    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'the swarm pane shows demo, live' })
-    expect(await swarmCommand(p, e('litter-swarm', 'Not A Name'), next)).toEqual({
+    expect(await swarmCommand(p, e('litter', ''), next)).toEqual({ text: 'Swarms shows demo, live' })
+    // A refused name switches nothing and opens nothing.
+    const opened = p.panes.opened.length
+    expect(await swarmCommand(p, e('litter', 'Not A Name'), next)).toEqual({
       text: '"Not" isn\'t a swarm name (a-z, 0-9 and -, up to 24, not starting with -)',
     })
+    expect(p.panes.opened).toHaveLength(opened)
   })
 
-  test("/litter-doctor checks the builder's swarm; [Copy], [Ask lead to add it] and [Test]", async () => {
+  test("/litter doctor checks the builder's swarm; [Copy], [Ask lead to add it] and [Test]", async () => {
     owners({
       checkHealth: fake('checkHealth', async () => ({
         rows: [
@@ -865,9 +862,10 @@ describe('the commands and the doctor', () => {
       })),
     })
     setNav(blankNav('builder', SWARM))
-    const r = await doctorCommand(p, e('litter-doctor'), next)
-    expect(r).toEqual({ text: 'the doctor pane checks demo: 1 error, 0 warnings' })
-    expect(p.panes.opened.at(-1)).toEqual({ id: 'litter-doctor', title: 'litter doctor' })
+    const r = await doctorCommand(p, e('litter', ''), next)
+    expect(r).toEqual({ text: 'Doctor checks demo: 1 error, 0 warnings' })
+    expect(p.panes.opened.at(-1)).toEqual({ id: 'litter', title: 'litter', focus: true })
+    expect(shownSection()).toBe('doctor')
     const body = (p.views.doctor as { body?: { rows: { glyph: string; values: string[] }[]; snippet: string | null } }).body!
     expect(body.rows[0]?.glyph).toBe('✕')
     expect(body.rows[0]?.values).toEqual(['needs 6', 'this process: 4', 'your user settings: 4'])

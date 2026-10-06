@@ -29,6 +29,7 @@ import type {
 } from '../../types/index'
 import { appendInbox, readInbox, teams } from '../team/store'
 import { clean, clockAt, firstLine, oneLine } from '../swarm/view'
+import { STYLE } from '../ui/style'
 
 // CE's store, through one table so tier 2 can stand in for it (COMMON,
 // "Another package's module"). The mod never changes it.
@@ -218,25 +219,25 @@ export function resetAgentsNavForTests(): void {
 
 /** `$.agent.list()`'s words in 2.1.289 (AgentStatus), as drawn: the brief's glyphs, 15.6's theme keys. */
 const STATUS = new Map<string, AgentsStatus>([
-  ['running', { text: 'running', glyph: '▸', color: 'background' }],
-  // The engine's `waiting` is held on its own background work (15.6: `background`), not a question.
-  ['waiting', { text: 'waiting', glyph: '·', color: 'background' }],
-  ['idle', { text: 'idle', glyph: '·', color: 'inactive' }],
-  ['completed', { text: 'completed', glyph: '✓', color: 'success' }],
-  ['failed', { text: 'failed', glyph: '✕', color: 'error' }],
-  ['killed', { text: 'stopped', glyph: '−', color: 'inactive' }],
+  ['running', { text: 'running', glyph: '▸', color: STYLE.running }],
+  // The engine's `waiting` is held on its own background work (15.6: `running`), not a question.
+  ['waiting', { text: 'waiting', glyph: '·', color: STYLE.running }],
+  ['idle', { text: 'idle', glyph: '·', color: STYLE.idle }],
+  ['completed', { text: 'completed', glyph: '✓', color: STYLE.done }],
+  ['failed', { text: 'failed', glyph: '✕', color: STYLE.failed }],
+  ['killed', { text: 'stopped', glyph: '−', color: STYLE.idle }],
 ])
 
 /** A listed agent's status; any other word (`pending`, a later engine's) as itself. */
 export function statusOf(status: unknown): AgentsStatus {
   const known = typeof status === 'string' ? STATUS.get(status) : undefined
-  return known ? { ...known } : { text: oneLine(status, 24) || 'unknown', glyph: '', color: 'inactive' }
+  return known ? { ...known } : { text: oneLine(status, 24) || 'unknown', glyph: '', color: STYLE.idle }
 }
 
 /** A team's member that `$.agent.list()` doesn't list: it runs in another session, or not at all. */
-export const NOT_HERE: AgentsStatus = { text: 'not in this session', glyph: '', color: 'inactive', dim: true }
+export const NOT_HERE: AgentsStatus = { text: 'not in this session', glyph: '', color: STYLE.muted, dim: true }
 /** The lead member of a team this session leads: this session itself. */
-const THIS_SESSION: AgentsStatus = { text: 'this session', glyph: '', color: 'inactive', dim: true }
+const THIS_SESSION: AgentsStatus = { text: 'this session', glyph: '', color: STYLE.muted, dim: true }
 
 // ---------------------------------------------------------------------------
 // The reads
@@ -475,7 +476,7 @@ export function messageLine(m: SessionMessage): SwarmSpan | null {
   if (!t) return null
   const arg = firstArg(t.input)
   const more = uses.length > 1 ? ` (+${uses.length - 1} more)` : ''
-  return { text: `↳ ${oneLine(t.tool ?? t.name ?? 'tool', 40)}${arg ? ` ${arg}` : ''}${more}`, color: 'subtle' }
+  return { text: `↳ ${oneLine(t.tool ?? t.name ?? 'tool', 40)}${arg ? ` ${arg}` : ''}${more}`, color: STYLE.muted }
 }
 
 /** The transcript's tail: the last 8 messages that read as a line, or 30 with [More]. */
@@ -532,7 +533,7 @@ function titleOf(f: AgentsFacts, nav: AgentsNav): SwarmSpan[] {
   return [
     head,
     { text: ' · team ' },
-    { text: oneLine(nav.team, 40), color: 'cyan' },
+    { text: oneLine(nav.team, 40), color: STYLE.name },
     { text: f.team ? ` · ${plural(f.rows.length, 'member')}${f.led ? ' · led by this session' : ''}` : ' · not found', ...(f.team ? {} : { dim: true }) },
   ]
 }

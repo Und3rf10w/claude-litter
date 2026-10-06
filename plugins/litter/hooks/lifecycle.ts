@@ -1319,7 +1319,7 @@ async function reconcileHolder(
       freed: false,
       message:
         `litter: run ${blob.run} holds the project's run lock while ${fate.why.replace(/^repair swarm/, 'its repair swarm')} (generation ${gen.n}); ` +
-        `the lock is released when that swarm ends (End swarm in /litter-swarm ${gen.repair.swarm}), then launch again`,
+        `the lock is released when that swarm ends (End swarm in /litter swarms ${gen.repair.swarm}), then launch again`,
     }
   }
   if (gen.stopping) {
@@ -2003,7 +2003,7 @@ async function selectRules(p: Ports, input: SelectInput): Promise<Parsed<Selecti
   try {
     return ok(await deps.selectForRun(p, input))
   } catch (err) {
-    return fail(`litter: the accepted rules couldn't be selected for this run (${errText(err)}); /litter-rules shows them and their problems. Launch again once it's fixed`)
+    return fail(`litter: the accepted rules couldn't be selected for this run (${errText(err)}); /litter rules shows them and their problems. Launch again once it's fixed`)
   }
 }
 

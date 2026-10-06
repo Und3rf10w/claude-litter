@@ -1,4 +1,4 @@
-// WP-J: the health check the builder, Launch and /litter-doctor share (15.7):
+// WP-J: the health check the builder, Launch and /litter doctor share (15.7):
 // one row per check, each value's process and settings sources apart, and the
 // snippet for what falls short. It writes no file, and never settings: the
 // snippet is for you to add.

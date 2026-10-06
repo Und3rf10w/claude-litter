@@ -3,8 +3,8 @@
 // refused from the main thread and from an agent, and nothing is written;
 // rule.find writes nothing; a gate critic's proposed rules land in the
 // repository's rules ledger with the run id, through output.ts's drain; and
-// rule.import and rule.open record, then try the rules pane, answering "run
-// /litter-rules" when it doesn't open. $.fs is a map, git answers as for a
+// rule.import and rule.open record, then try Rules in the `litter` pane,
+// answering "run /litter rules" when it doesn't open. $.fs is a map, git answers as for a
 // checkout with no commit, and the config dir is CLAUDE_CONFIG_DIR's /cfg.
 
 import type { On } from 'claude-code'
@@ -78,19 +78,19 @@ type Reply = { ok: boolean; error?: string; field?: string; allowed?: string[]; 
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as Reply
 
 /** The world, the mocks and a started session at /repo; the panes the mod asked to open. */
-async function started($: Engine, on: On): Promise<{ files: Map<string, string>; opens: string[] }> {
+async function started($: Engine, on: On): Promise<{ files: Map<string, string>; opens: { id: string; focus: boolean }[] }> {
   mock.store(on, AGENTS)
   mock.clock(on, { now: 5_000 })
   mock.env(on, { CLAUDE_CONFIG_DIR: '/cfg' })
   const files = world(on)
-  const opens: string[] = []
+  const opens: { id: string; focus: boolean }[] = []
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__litter__${e.name}` } }))
   on('agent.register', async (_$, e) => ({ value: { agent: `litter:${e.name}` } }))
   on('session.id', async () => ({ value: SESSION }))
   on('ui.log', async () => ({ value: undefined }))
-  // A session that places no panes: whatever opens the rules pane is answered undrawn.
+  // A session that places no panes: whatever opens the `litter` pane on Rules is answered undrawn.
   on('ui.open', async (_$, e) => {
-    opens.push(e.id)
+    opens.push({ id: e.id, focus: e.focus === true })
     return { value: { isPlaced: false, reason: 'tier 1 places no panes' } }
   })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -118,7 +118,7 @@ describe('the steps that are yours alone', () => {
       for (const agentId of [undefined, 'a1', 'gc']) {
         const r = await record($, { kind, proposal: { store: 'repo', seq: 1 }, id: 'P-keep-fixtures-small', version: 1, scope: 'project', via: 'ui' }, agentId)
         expect(r).toEqual(expect.objectContaining({ ok: false, field: 'kind', allowed: ['rule.propose', 'rule.open'] }))
-        expect(r.error).toContain('rules pane (/litter-rules)')
+        expect(r.error).toContain('rules pane (/litter rules)')
       }
     }
     expect(files).toEqual(before)
@@ -179,21 +179,21 @@ describe("a gate critic's proposals", () => {
 })
 
 describe('rule.import and rule.open', () => {
-  test("record, then try the rules pane; one that doesn't open answers run /litter-rules", async ($, on) => {
+  test("record, then try Rules in the `litter` pane; one that doesn't open answers run /litter rules", async ($, on) => {
     const { files, opens } = await started($, on)
     files.set(
       '/repo/.claude/deepwork/live-1/state.json',
       JSON.stringify({ goal: 'Ship it', started_at: '2026-10-01T00:00:00Z', guardrails: [{ rule: 'Never push to main.', source: 'user' }, { rule: 'Ask first.', source: 'orchestrator' }] }),
     )
+    const NOTE = "litter's Rules section didn't open here; tell the user to run /litter rules"
     const imported = await record($, { kind: 'rule.import', from: 'deepwork' })
-    expect(imported).toEqual(
-      expect.objectContaining({ ok: true, kind: 'rule.import', seq: 3, proposals: 2, preselected: 1, opened: false, note: "the rules pane didn't open here; tell the user to run /litter-rules" }),
-    )
+    expect(imported).toEqual(expect.objectContaining({ ok: true, kind: 'rule.import', seq: 3, proposals: 2, preselected: 1, opened: false, note: NOTE }))
     const opened = await record($, { kind: 'rule.open', proposal: JSON.stringify({ store: 'repo', seq: 1 }) })
-    expect(opened).toEqual({ ok: true, kind: 'rule.open', seq: 4, opened: false, note: "the rules pane didn't open here; tell the user to run /litter-rules" })
+    expect(opened).toEqual({ ok: true, kind: 'rule.open', seq: 4, opened: false, note: NOTE })
     expect(ruleLedger(files).map(x => x.kind)).toEqual(['rule.propose', 'rule.propose', 'rule.import', 'rule.open'])
-    // Whatever the pane asked to open, it was the rules pane.
-    for (const id of opens) expect(id).toBe('litter-rules')
+    // Each open was the `litter` pane, and none asked for the keyboard: the model called, not the person.
+    expect(opens.length).toBeGreaterThan(0)
+    for (const o of opens) expect(o).toEqual({ id: 'litter', focus: false })
     // An agent may open a rule but not import.
     expect(await record($, { kind: 'rule.import', from: 'deepwork' }, 'a1')).toEqual(expect.objectContaining({ ok: false, field: 'kind' }))
   })

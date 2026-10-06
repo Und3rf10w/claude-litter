@@ -5,8 +5,8 @@
 // whole; and the engine's row alone otherwise: a typed prompt, a task with no
 // card, a card the render can't draw (its catch passes on). Then, end to
 // end: a recorded run in a checkout at /repo, session.start's restore, the
-// row drawn as its card, compact and expanded, and [Board] opening the board,
-// the press answered `{ element }`.
+// row drawn as its card, compact and expanded, and [Board] opening the board
+// (Runs, in the one `litter` pane: WP-DA), the press answered `{ element }`.
 
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -233,7 +233,8 @@ function world(on: On): { files: Map<string, string>; opened: string[]; cardsWri
   on('ui.log', async () => ({ value: undefined }))
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.open', async (_$, e) => {
-    opened.push(e.id)
+    // The pane's id, and whether the open asked for the keyboard.
+    opened.push(e.focus ? `${e.id} (focus)` : e.id)
     return { value: { isPlaced: true } }
   })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -297,7 +298,8 @@ describe('a recorded run, end to end', () => {
     expect(await ui.find({ type: 'Text', text: `✓ done · litter · execute ${RUN} · 3m 0s` })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2/2 gates landed · last land 2222222' })).toBeDefined()
     expect(await ui.press({ key: `card:board:${RUN}`, plugin: 'litter' })).toEqual(expect.objectContaining({ element: `card:board:${RUN}` }))
-    expect(opened).toEqual(['litter-board'])
+    // [Board] opens the one `litter` pane on Runs, with the keyboard: the person pressed it.
+    expect(opened).toEqual(['litter (focus)'])
     await ui.unmount()
 
     // Under verbose every row is expanded: the card is still drawn, above the engine's own row.

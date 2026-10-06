@@ -295,7 +295,7 @@ describe('skills/fanout/SKILL.md', () => {
     }
     expect(text).toContain('Then report its Repair section.')
     // A repair the bridge started: the lead only says so; litter starts it after the turn (COMMON 2b-2, step 3).
-    expect(text).toContain('litter starts it after this turn (`/litter-swarm <name>` shows it). Don\'t start it yourself or offer other routes.')
+    expect(text).toContain('litter starts it after this turn (`/litter swarms <name>` shows it). Don\'t start it yourself or offer other routes.')
     // No repair started: the routes, through AskUserQuestion, the repair as a swarm first.
     const routes = text.slice(text.indexOf('**No repair started**'))
     expect(routes).toContain('offer with AskUserQuestion')

@@ -38,17 +38,16 @@ import { readPolicy } from '../policy'
 import { loadRun, runState } from '../lifecycle'
 import { getOptions, session } from '../session'
 import { runStatusOf, statusWord } from '../board/view'
-import { openBoard } from '../board/pane'
-import { openSwarmPane } from '../swarm/panes'
+import { openSection } from '../ui/hub'
+import { MARK, STYLE } from '../ui/style'
 import { bindings, liveSwarms, openQuestions, status as admissionStatus } from '../swarm/state'
 import { oneLine, unprefixed } from '../swarm/view'
 
 // The other packages' modules the band calls, through one table so tier 2
-// can stand in for them (COMMON, "Another package's module"): CD's board and
-// N's swarm pane. The mod never changes it.
+// can stand in for them (COMMON, "Another package's module"): the `litter`
+// pane's one opener (phase 5b, WP-DA). The mod never changes it.
 export const deps = {
-  openBoard: (p: Ports, run: string): Promise<boolean> => openBoard(p, run),
-  openSwarmPane: (p: Ports, name: string): Promise<string> => openSwarmPane(p, name),
+  openSection: (...a: Parameters<typeof openSection>) => openSection(...a),
 }
 const defaults = { ...deps }
 
@@ -226,7 +225,7 @@ export function elapsed(ms: number): string {
 }
 
 const lead = (glyph: string, color: string): SwarmSpan[] => [{ text: glyph, color }, { text: ' litter · ' }]
-const runLabel = (f: RunFacts): SwarmSpan[] => [{ text: `${oneLine(f.workflow, 16)} ` }, { text: oneLine(f.run, 72), color: 'cyan' }]
+const runLabel = (f: RunFacts): SwarmSpan[] => [{ text: `${oneLine(f.workflow, 16)} ` }, { text: oneLine(f.run, 72), color: STYLE.name }]
 const runButtons = (run: string, key: string): BandButton[] => [
   { key: `band:board:${run}`, label: 'Board' },
   { key: `band:hide:${key}`, label: 'Hide' },
@@ -234,8 +233,8 @@ const runButtons = (run: string, key: string): BandButton[] => [
 
 /** An open generation's progress, by workflow (WP-CB, "The rows"); a repair generation's is its swarm. */
 function progressSpans(f: RunFacts, inflight: Inflight): SwarmSpan[] {
-  if (f.tamperedAt !== null) return [{ text: `ledger tampered at ${f.tamperedAt}`, color: 'error' }]
-  if (f.repairSwarm !== null) return [{ text: `↻ repair swarm ${f.repairSwarm}`, color: 'background' }]
+  if (f.tamperedAt !== null) return [{ text: `ledger tampered at ${f.tamperedAt}`, color: STYLE.failed }]
+  if (f.repairSwarm !== null) return [{ text: `↻ repair swarm ${f.repairSwarm}`, color: STYLE.running }]
   const g = f.progress
   switch (g?.kind) {
     case 'execute': {
@@ -247,7 +246,7 @@ function progressSpans(f: RunFacts, inflight: Inflight): SwarmSpan[] {
       const retry = g.attempt > 1
       if (!retry && inflight !== 'critique') return out
       out.push(SEP, { text: gate })
-      if (retry) out.push({ text: ' ' }, { text: `retry ${g.attempt - 1}`, color: 'warning' })
+      if (retry) out.push({ text: ' ' }, { text: `retry ${g.attempt - 1}`, color: STYLE.warning })
       if (inflight === 'critique') out.push({ text: ' critic' })
       return out
     }
@@ -317,17 +316,17 @@ function swarmRow(s: LiveSwarm, now: number): BandRow {
   }
   const key = `swarm:${s.name}:${s.launch}`
   const spans: SwarmSpan[] = [
-    { text: '▸', color: 'background' },
+    { text: MARK.running.glyph, color: MARK.running.color },
     { text: ' litter · swarm ' },
-    { text: oneLine(s.name, 24), color: 'cyan' },
+    { text: oneLine(s.name, 24), color: STYLE.name },
     SEP,
-    { text: `${running} running`, color: 'background' },
+    { text: `${running} running`, color: STYLE.running },
     SEP,
-    waiting.size > 0 ? { text: `${waiting.size} waiting`, color: 'warning' } : { text: '0 waiting' },
+    waiting.size > 0 ? { text: `${waiting.size} waiting`, color: STYLE.warning } : { text: '0 waiting' },
   ]
-  if (s.state === 'stopping') spans.push(SEP, { text: 'stopping', color: 'warning' })
-  if (s.lost) spans.push(SEP, { text: 'lost to another session', color: 'error' })
-  else if (s.readOnly) spans.push(SEP, { text: 'read-only', color: 'inactive' })
+  if (s.state === 'stopping') spans.push(SEP, { text: 'stopping', color: STYLE.warning })
+  if (s.lost) spans.push(SEP, { text: 'lost to another session', color: STYLE.failed })
+  else if (s.readOnly) spans.push(SEP, { text: 'read-only', color: STYLE.muted })
   spans.push(SEP, { text: elapsed(now - s.startedAt), dim: true })
   return {
     key,
@@ -458,6 +457,16 @@ export function resetBandForTests(): void {
 
 /** The rows [Hide] hid, oldest first (tests). */
 export const hiddenKeys = (): readonly string[] => hidden
+
+/**
+ * What the last build holds, for the `litter` pane's strip and Home (phase
+ * 5b, WP-DA): its active runs' rows and its ended runs' rows, a hidden one
+ * left out. Module memory only: the ui tick builds it every 2 s.
+ */
+export function bandCounts(): { runs: number; ended: number } {
+  const rows = current?.rows ?? []
+  return { runs: rows.filter(r => r.kind === 'run').length, ended: rows.filter(r => r.kind === 'ended').length }
+}
 
 type BandStore = { v: 1; session: string; hidden: string[] }
 
@@ -680,13 +689,20 @@ async function handleBand(p: Ports, key: string, k: BandKey): Promise<void> {
   switch (k.action) {
     case 'board': {
       if (!RUN_ID.test(k.arg)) return
-      if (!(await deps.openBoard(p, k.arg))) p.toast(`the board can't be drawn here now: run /litter-board ${k.arg}`)
+      const opened = await deps.openSection(p, 'runs', k.arg, { focus: true }).then(
+        r => r.placed,
+        (err: unknown) => {
+          p.log(`band: Runs didn't open on run ${k.arg}: ${errText(err)}`)
+          return false
+        },
+      )
+      if (!opened) p.toast(`the board can't be drawn here now: run /litter runs ${k.arg}`)
       return
     }
     case 'browser': {
       if (!SWARM_NAME.test(k.arg)) return
-      const line = await deps.openSwarmPane(p, k.arg)
-      if (!line.startsWith('the swarm pane shows ') || line.includes("can't draw")) p.toast(oneLine(line, 200))
+      const r = await deps.openSection(p, 'swarms', k.arg, { focus: true })
+      if (!r.placed) p.toast(oneLine(r.text, 200))
       return
     }
     case 'hide': {

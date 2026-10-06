@@ -87,9 +87,14 @@ sleep 15
 # the first pane opened the keyboard, with nothing held (a band above the
 # prompt that draws a field would take it first). Tab walks the ring, the
 # pane's Button, Input and Select elements in tree order, the first Tab
-# landing on the first; enter presses the held button (space isn't bound);
-# a held field takes typing, and its Enter sets it, the field still held;
-# esc gives the keyboard back. The pane holds an element by its place in the
+# landing on the first. The `litter` pane draws its section strip first (phase
+# 5b, WP-DA): with Rules shown, the other six sections' Buttons (Home, Runs,
+# Swarms, Tasks, Agents, Doctor) take the ring's first six places, so every
+# count below is the Rules body's place plus 6. Enter presses the held
+# button (space isn't bound); a held field takes typing, and its Enter sets
+# it, the field still held; esc gives the keyboard back. The strip's digit
+# hotkeys (1–7, while the pane holds the keyboard) never meet these presses,
+# which type no digit. The pane holds an element by its place in the
 # ring, so a press that changes the tree leaves that place on another
 # element: each press below starts again from ctrl-x tab, after a few
 # seconds for the last press's redraw. tests/rulespanekeys.test.tsx pins
@@ -97,15 +102,15 @@ sleep 15
 # together.
 #
 # Step 2: narrow the flag ban to a/** and accept it in project scope.
-# KEYS: ctrl-x tab into the pane; move to the [Edit…] of live1's flag row ("$G_FLAG") and press it.
+# KEYS: ctrl-x tab into the pane; move to the [Edit…] of live1's flag row ("$G_FLAG") and press it (17 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 sleep 3
 key esc
 sleep 2
-# KEYS: in its Paths field, type a/** and set it (send a/**); then press [Done].
+# KEYS: in its Paths field (16 Tabs), type a/** and set it (send a/**); then press [Done], two Tabs on.
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab
 send a/**
 sleep 3
 key tab tab enter
@@ -113,34 +118,34 @@ sleep 3
 key esc
 sleep 2
 # KEYS: press that row's own [Accept], not the batch's [Accept selected] (which would also accept the preselected user guardrail); pick project if it asks the scope.
-# (An import is a project proposal already, so it doesn't ask: the preview replaces the row's buttons.)
+# (An import is a project proposal already, so it doesn't ask: the preview replaces the row's buttons.) 16 Tabs.
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 sleep 5
 key esc
 sleep 2
-# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept].
+# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept] (16 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.accept.json
 sleep 3
 key esc
 sleep 2
 # Step 3: dismiss the orchestrator proposal; the others stay pending.
-# KEYS: move to the orchestrator row ("$G_ORCH") and press its [Dismiss].
+# KEYS: move to the orchestrator row ("$G_ORCH") and press its [Dismiss] (18 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.dismiss.json
 key esc
 sleep 2
-# /litter-rules shows the ban in force as accepted. The checks read tty.txt from the mark on.
+# /litter rules shows the ban in force as accepted. The checks read tty.txt from the mark on.
 until wc -c <$H_DIR/tty.txt >|$H_DIR/rules-mark
-send /litter-rules
+send /litter rules
 sleep 10
 # KEYS: ctrl-x tab into the pane; press the [In force (1)] tab.
-# (/litter-rules opens on the Proposed tab with no batch: the ring starts with its two tabs.)
+# (/litter rules opens on the Proposed tab with no batch: the ring starts with the strip's six, then its two tabs: 8 Tabs.)
 key ctrl-x tab
-key tab tab enter
+key tab tab tab tab tab tab tab tab enter
 sleep 10
 key esc
 sleep 2
@@ -255,13 +260,13 @@ c_load() {
   got=$(printf '%s\n' "$out" | jq -r '[.rules[] | select(.delivered != null and .scope != "user") | "\(.delivered) \(.standing)"] | join(";")') || { echo "rules-load.ts printed '$out'"; return 1; }
   [ -n "$BAN" ] && [ "$got" = "$BAN@1 accepted" ] || { echo "the rules in force are '$got', not ${BAN:-the ban}@1 alone"; return 1; }
 }
-# /litter-rules answers "… N in force" (rules/pane.tsx), and its In force tab draws the ban's row as "✓ accepted <id>@1".
+# /litter rules answers "… N in force" (rules/pane.tsx), and its In force tab draws the ban's row as "✓ accepted <id>@1".
 c_rules_pane() {
-  [ -f "$H_DIR/rules-mark" ] || { echo "the /litter-rules step never ran"; return 1; }
+  [ -f "$H_DIR/rules-mark" ] || { echo "the /litter rules step never ran"; return 1; }
   m=$(tr -dc 0-9 <"$H_DIR/rules-mark")
   s=$(tail -c +"$((${m:-0} + 1))" "$H_DIR/tty.txt" | screen)
   # paneview.ts counts user-scope rules too: one of yours under your config dir makes this 2.
-  printf '%s\n' "$s" | grep -Eq '(^|[^0-9])1 in force' || { echo "/litter-rules didn't answer '1 in force'"; return 1; }
+  printf '%s\n' "$s" | grep -Eq '(^|[^0-9])1 in force' || { echo "/litter rules didn't answer '1 in force'"; return 1; }
   printf '%s\n' "$s" | LC_ALL=C grep -Eq "accepted[^A-Za-z]*$BAN@1" || { echo "the In force tab never showed ${BAN:-the ban}@1 as accepted (its KEYS step)"; return 1; }
 }
 c_pane_batch() {
@@ -350,7 +355,7 @@ h_expect "the pane opened on the batch, every entry with no paths" c_pane_batch
 h_expect "one rule.accept, via ui, of the flag ban in project scope, its sha256 the file's, paths [a/**]" c_accept
 h_expect "one rule.dismiss, of the orchestrator proposal" c_dismiss
 h_expect "loadRules shows the ban as the one accepted rule" c_load
-h_expect "/litter-rules shows the ban in force as accepted" c_rules_pane
+h_expect "/litter rules shows the ban in force as accepted" c_rules_pane
 h_expect "run.start and the launch made a run" c_run
 h_expect "args.rules holds the ban, naming a/** as what it protects, no gate's own rules do, and run.json's rules are the ban@1" c_selection
 h_expect "the ban is in G1's and G2's executor and critic <rules> blocks, and no unaccepted guardrail is in any prompt" c_prompts

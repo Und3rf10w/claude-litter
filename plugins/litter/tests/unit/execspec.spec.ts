@@ -314,7 +314,7 @@ describe("swarm-plan.ts's texts", () => {
     }
     expect(PLAN_CRITIC_BRIEF).not.toContain('plan gap naming both')
     for (const text of [
-      "A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter-rules, or amending the gate's lines with /litter:amend, and say which fits and why.",
+      "A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter rules, or amending the gate's lines with /litter:amend, and say which fits and why.",
       "Ask the lead only when you can't go on without something only the user can give. That's a rule clash (below), or one of four cases:",
       'The mod approves the gate only when every dimension passes and the verdict names no plan gap and no rule clash.',
       'the full log of its last verify, if it has any (an executor that stopped on a plan gap before its first attempt was judged leaves neither)',

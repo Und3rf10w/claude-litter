@@ -120,7 +120,7 @@ describe("the execute bridge's start, when the lead's turn didn't make it", () =
     // summary.md's Repair part, rewritten: it waits for your Enter, and still says how to watch it.
     const repair = summary().slice(summary().indexOf('## Repair'))
     expect(repair).toContain(`It didn't start on the lead's turn (its start may have been refused): ${waitingForEnter(x.name)}`)
-    expect(repair).toContain(`Watch it with /litter-swarm ${x.name}`)
+    expect(repair).toContain(`Watch it with /litter swarms ${x.name}`)
     expect(await repairSummary(w.p, x.runDir)).toContain(waitingForEnter(x.name))
 
     // Never twice: later lead turns, interrupted or not, fill nothing more.
@@ -273,7 +273,7 @@ describe("the execute bridge's start, when the lead's turn didn't make it", () =
     await repairTurnComplete(w.p, leadTurn)
     expect(w.p.storeMap.has(pendingKey())).toBe(false)
     expect(summary()).not.toContain('waiting for your Enter')
-    expect(summary()).toContain(`Watch it with /litter-swarm ${x.name}`)
+    expect(summary()).toContain(`Watch it with /litter swarms ${x.name}`)
     // The event stays in the launch ledger before the runner's swarm.node: it started on your Enter.
     const rs = await launchRecords()
     const fill = rs.find(r => r.kind === 'swarm.event' && r.body.kind === 'start-filled')!

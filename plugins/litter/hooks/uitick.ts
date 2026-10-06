@@ -1,42 +1,42 @@
 // Phase 5's one ui tick (WP-CA; COMMON decision 16): every 2 s, in order, the
 // band (CB), the cards waiting for their run's end (CC's, WP-CH), the open
-// permission asks (CF), the tasks pane (CE) and the agents pane (CG). Each
-// step is caught and logged on its own, so one that throws never stops the
-// next, and the tick never overlaps itself (as the
-// board's, board/pane.tsx's startBoardTimer): a tick still running when the
-// next is due skips it. Each step writes only a view that changed.
+// permission asks (CF), and the `litter` pane (phase 5b, WP-DA: ui/hub.ts's
+// litterTick, which refreshes only the section shown, and only while the
+// pane is open; it took over the tasks and agents steps and the board's own
+// timer). Each step is caught and logged on its own, so one that throws
+// never stops the next, and the tick never overlaps itself: a tick still
+// running when the next is due skips it. Each step writes only a view that
+// changed.
 
 import type { Ports } from './ports'
 import { bandTick } from './band/view'
 import { cardsTick } from './card/view'
 import { asksTick } from './asks'
-import { tasksTick } from './tasks/pane'
-import { agentsTick } from './agents/pane'
+import { litterTick } from './ui/hub'
 
 export const UI_TICK_MS = 2000
 
 /**
- * The five steps, through one table so tier 2 can count and hold the calls.
+ * The four steps, through one table so tier 2 can count and hold the calls.
  * Each reads its import when called, never at import time.
  */
 export const deps = {
   bandTick: (p: Ports) => bandTick(p),
   cardsTick: (p: Ports) => cardsTick(p),
   asksTick: (p: Ports) => asksTick(p),
-  tasksTick: (p: Ports) => tasksTick(p),
-  agentsTick: (p: Ports) => agentsTick(p),
+  litterTick: (p: Ports) => litterTick(p),
 }
 const defaults = { ...deps }
 
-/** The order they run in. */
-const STEPS = ['bandTick', 'cardsTick', 'asksTick', 'tasksTick', 'agentsTick'] as const
+/** The order they run in: the band first, so the pane's strip counts what it just built. */
+const STEPS = ['bandTick', 'cardsTick', 'asksTick', 'litterTick'] as const
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 let timer: { cancel(): void } | null = null
 let ticking = false
 
-/** At session.start, after the board timer: one `p.every(2000, …)`, replacing any earlier one. */
+/** At session.start: one `p.every(2000, …)`, replacing any earlier one. */
 export function startUiTimer(p: Ports): void {
   timer?.cancel()
   timer = p.every(UI_TICK_MS, () => {

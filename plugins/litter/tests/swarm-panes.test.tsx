@@ -1,12 +1,15 @@
-// Tier 1: the swarm panes as the engine draws them (WP-N). Every view, fed to
-// register.tsx's ui.render hooks through a state.get hook beneath, mounts on
-// the terminal and the desktop (a mount rejects a tree the surface refuses);
-// the tree is the Client where the surface has one and plain buttons where it
-// hasn't; a press on [Launch], [Send], [Stop node] and [End swarm] reaches its
-// owner (the pane logs each owner call before making it, so this holds with
-// the owners' stubs and with their bodies); and the two commands answer and
-// open their panes. The plugin's module state isn't the test's, so the pane's
-// navigation is seeded through $.store, as a reload finds it.
+// Tier 1: the Swarms and Doctor sections of the one `litter` pane as the
+// engine draws them (WP-N; phase 5b, WP-DA). Every view, fed to register.tsx's
+// `litter` render through a state.get hook beneath (the section's atom, and
+// the hub's naming the section shown), mounts on the terminal and the desktop
+// (a mount rejects a tree the surface refuses); the tree is the Client where
+// the surface has one and plain buttons where it hasn't; a press on [Launch],
+// [Send], [Stop node] and [End swarm] reaches its owner (the pane logs each
+// owner call before making it, so this holds with the owners' stubs and with
+// their bodies); and `/litter swarms` and `/litter doctor` answer and open
+// `litter`. The plugin's module state isn't the test's, so the pane's
+// navigation and the section shown are seeded through $.store, as a reload
+// finds them.
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
@@ -303,9 +306,15 @@ const DOCTOR: DoctorPaneView = {
   },
 }
 
-/** The views the panes' atoms hold, answered beneath register.tsx's reads; a write beneath them still lands. */
+/**
+ * The views the sections' atoms hold, answered beneath register.tsx's reads,
+ * and the hub's, which names the section shown: Doctor when a doctor view is
+ * given, else Swarms. A write beneath them still lands.
+ */
 function views(on: On, swarm: SwarmPaneView | null, doctor: DoctorPaneView | null = null): void {
+  const hub = { view: 'hub', v: 1, section: doctor ? 'doctor' : 'swarms', live: [], tabs: [] }
   on('state.get', async (_$, e, next) => {
+    if (e.key === 'hub') return { value: { value: hub, version: 0 } }
     if (e.key === 'swarmPane' && swarm) return { value: { value: swarm, version: 0 } }
     if (e.key === 'doctorPane' && doctor) return { value: { value: doctor, version: 0 } }
     return next(e)
@@ -331,8 +340,13 @@ function watch(on: On): { logs: string[]; toasts: string[]; nextLog: (part: stri
   return { ...seen, nextLog: part => new Promise<string>(resolve => waiting.push({ part, resolve })) }
 }
 
-/** The pane's navigation as a reload finds it in $.store, written by this session. */
+/**
+ * The pane's navigation as a reload finds it in $.store, written by this
+ * session, and the hub's section shown, Swarms, so a press or a tree post is
+ * routed to the swarm pane's handlers (ui/hub.ts's key rule).
+ */
 const navStore = (swarm: Record<string, unknown>) => ({
+  'litter.hub': { v: 1, session: SESSION, section: 'swarms' },
   'litter.swarm.pane': {
     v: 1,
     session: SESSION,
@@ -414,8 +428,9 @@ function world(on: On): { commands: { name: string; argumentHint?: string }[] } 
   return { commands }
 }
 
+/** The one `litter` pane, which draws the section the hub's atom names (views(): Swarms, or Doctor). */
 const mountSwarm = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S, bodyColumns = 100) =>
-  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-swarm', props: pane('litter swarm', bodyColumns) })
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter', bodyColumns) })
 
 describe('the swarm panes draw every view', () => {
   for (const surface of SURFACES) {
@@ -438,18 +453,21 @@ describe('the swarm panes draw every view', () => {
       })
     }
 
-    test(`the doctor pane, on the ${surface}`, async ($, on) => {
+    test(`the doctor section, on the ${surface}`, async ($, on) => {
       mock.store(on)
       views(on, null, DOCTOR)
-      const ui = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-doctor', props: pane('litter doctor') })
+      const ui = await mountSwarm($, surface)
+      expect(await ui.find({ type: 'Text', text: ' · Doctor' })).toBeDefined()
       expect(await ui.find({ type: 'Button', key: 'swarm:doctor:ask-lead' })).toBeDefined()
       expect(await ui.find({ type: 'Code', text: 'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS' })).toBeDefined()
     })
 
     test(`nothing to show yet, on the ${surface}`, async ($, on) => {
       mock.store(on)
+      views(on, null)
       const ui = await mountSwarm($, surface)
-      expect(await ui.find({ type: 'Text', text: '/litter-swarm opens' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: ' · Swarms' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '/litter swarms opens' })).toBeDefined()
     })
 
     // 2b-2 (WP-Z): a repair swarm's budget row and its gate and budget events.
@@ -661,48 +679,77 @@ describe('a press reaches its owner', () => {
     const ui = await mountSwarm($, 'terminal')
     await ui.press({ key: 'swarm:browser:end:demo' })
     expect(seen.logs).not.toContain('swarm pane: endSwarm demo request')
-    expect(seen.toasts.some(t => t.includes('so it was ignored'))).toBe(true)
+    // The swarm pane's own stale check answered it, not the hub's.
+    expect(seen.toasts.some(t => t.includes('so it was ignored') && !t.includes('litter shows'))).toBe(true)
+  })
+
+  test("a Swarms key drawn before litter switched to Doctor reaches no handler: the hub's toast says so", async ($, on) => {
+    // Drawn as Swarms (the hub's atom), while litter shows Doctor now (its module memory, from $.store).
+    const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo' }, { 'litter.hub': { v: 1, session: SESSION, section: 'doctor' } })
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.press({ key: 'swarm:browser:end:demo' })).toEqual(expect.objectContaining({ element: 'swarm:browser:end:demo' }))
+    expect(seen.logs).not.toContain('swarm pane: endSwarm demo request')
+    expect(seen.toasts).toContain('that was on Swarms, and litter shows Doctor now, so it was ignored')
   })
 })
 
 describe('the commands', () => {
-  const run = ($: Engine, command: string, args = '') =>
-    $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  const run = ($: Engine, args = '') =>
+    $.command.run({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
 
-  test('session.start registers /litter-swarm [name] and /litter-doctor', async ($, on) => {
+  /** What `litter` opened, each with `(focus)` when the open asked for the keyboard; the debug lines and the agent list answered. */
+  const opens = (on: On): string[] => {
+    const opened: string[] = []
+    on('ui.open', async (_$, e) => {
+      opened.push(e.focus ? `${e.id} (focus)` : e.id)
+      return { value: { isPlaced: true } }
+    })
+    on('ui.log', async () => ({ value: undefined }))
+    on('agent.list', async () => ({ value: [] }))
+    on('session.id', async () => ({ value: SESSION }))
+    return opened
+  }
+
+  test('session.start registers /litter alone, with the sections as its hint: no /litter-swarm or /litter-doctor', async ($, on) => {
     mock.store(on)
     mock.clock(on, { now: 1_800_000_000_000 })
     const { commands } = world(on)
     on('session.id', async () => ({ value: SESSION }))
     on('ui.log', async () => ({ value: undefined }))
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    // Phase 3's two follow (AA's registerPhase3Commands, tests/phase3wiring.test.ts).
-    expect(commands.slice(0, 2)).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }])
+    expect(commands).toEqual([{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]' }])
   })
 
-  test('/litter-swarm answers with a line and opens its pane', async ($, on) => {
+  test('/litter swarms answers with a line and opens `litter` on Swarms, with the keyboard', async ($, on) => {
     mock.store(on)
-    const opened: string[] = []
-    on('ui.open', async (_$, e) => {
-      opened.push(e.id)
-      return { value: { isPlaced: true } }
-    })
-    const r = await run($, 'litter-swarm')
-    expect(r.text).toBe('the swarm pane shows the start screen')
-    expect(opened).toEqual(['litter-swarm'])
-    const named = await run($, 'litter-swarm', 'demo')
-    expect(named.text).toBe('the swarm pane shows the builder for demo')
+    const opened = opens(on)
+    const r = await run($, 'swarms')
+    expect(r.text).toBe('Swarms shows the start screen')
+    expect(opened).toEqual(['litter (focus)'])
+    const named = await run($, 'swarms demo')
+    expect(named.text).toBe('Swarms shows the builder for demo')
+    // The pane draws Swarms: the hub's atom says so, the swarm pane's atom has the builder.
+    const ui = await mountSwarm($, 'terminal')
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain(' · Swarms')
+    expect(texts).toEqual(expect.arrayContaining(['swarm builder · ', 'demo']))
   })
 
-  test('/litter-doctor answers with a line and opens its pane', async ($, on) => {
+  test('/litter doctor answers with a line and opens `litter` on Doctor, with the keyboard', async ($, on) => {
     mock.store(on)
-    const opened: string[] = []
-    on('ui.open', async (_$, e) => {
-      opened.push(e.id)
-      return { value: { isPlaced: true } }
-    })
-    const r = await run($, 'litter-doctor')
-    expect(r.text).toMatch(/^the doctor pane checks this session, with no swarm spec/)
-    expect(opened).toEqual(['litter-doctor'])
+    const opened = opens(on)
+    const r = await run($, 'doctor')
+    expect(r.text).toMatch(/^Doctor checks this session, with no swarm spec/)
+    expect(opened).toEqual(['litter (focus)'])
+    const ui = await mountSwarm($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: ' · Doctor' })).toBeDefined()
+  })
+
+  test("a swarm name that isn't one is the reply, and nothing opens", async ($, on) => {
+    mock.store(on)
+    const opened = opens(on)
+    const r = await run($, 'swarms Not-A-Name')
+    expect(r.text).toBe(`"Not-A-Name" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`)
+    expect(opened).toEqual([])
   })
 })

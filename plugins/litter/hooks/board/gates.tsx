@@ -16,6 +16,12 @@
 import type { ClientModule, ClientPointerEvent } from 'claude-code'
 import type { BoardGateAction, BoardGateRow, BoardGatesProps } from '../../types/index'
 
+/**
+ * hooks/ui/style.ts's keys this module paints, written out: a Client module
+ * imports types only. tests/unit/colorguard.spec.ts checks each against STYLE.
+ */
+const COLORS = { accent: 'claude', sha: 'warning', failed: 'error' } as const
+
 type Item = { label: string; action: BoardGateAction | 'close' }
 type Menu = { row: number; top: number; left: number; sel: number }
 /** The highlighted row, moved by ↑↓ and the pointer, and the open menu; the selection itself is the hooks module's (`props.selected`). */
@@ -154,16 +160,16 @@ const Gates: ClientModule<BoardGatesProps, State> = (props, surface) => {
         const failing = r.failing.length > 0 ? `✕ ${r.failing.map(d => DIM_SHORT[d] ?? d).join(' ')}` : ''
         return (
           <Box flexDirection="row">
-            <Text color="claude">{isSelected ? '› ' : isLit ? '· ' : '  '}</Text>
+            <Text color={COLORS.accent}>{isSelected ? '› ' : isLit ? '· ' : '  '}</Text>
             <Text bold={isSelected} inverse={isLit && !isSelected}>
               {pad(r.id, 6)}
             </Text>
             <Text color={r.color}>{pad(`${r.glyph} ${r.state}`, 14)}</Text>
             <Text dimColor={r.attempt === 0}>{pad(tries, 6)}</Text>
-            <Text color={r.commit ? 'yellow' : undefined} dimColor={!r.commit}>
+            <Text color={r.commit ? COLORS.sha : undefined} dimColor={!r.commit}>
               {pad(r.commit ?? '·', 9)}
             </Text>
-            <Text color={failing ? 'error' : undefined}>{pad(failing, 13)}</Text>
+            <Text color={failing ? COLORS.failed : undefined}>{pad(failing, 13)}</Text>
             <Text dimColor={r.state === 'waiting'} wrap="truncate-end">
               {r.earlier ? `${r.title} (landed in ${r.earlier})` : r.title}
             </Text>

@@ -1,13 +1,18 @@
 // Tier 2: phase 5's ui tick (hooks/uitick.ts; WP-CA, COMMON decision 16): the
-// band's, the waiting cards' (WP-CH), the asks', the tasks pane's and the
-// agents pane's steps run in that order on every tick, a step that throws is
-// logged and the next still runs, and the timer never overlaps itself. The
+// band's, the waiting cards' (WP-CH), the asks' and the `litter` pane's
+// (phase 5b, WP-DA) steps run in that order on every tick, a step that throws
+// is logged and the next still runs, and the timer never overlaps itself. The
 // steps are stood in for through `deps`; with the real steps and nothing to
-// show, a tick writes nothing.
+// show, a tick writes nothing (the pane's step does nothing while `litter`
+// isn't open: hub.spec.ts).
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { Ports } from '../../hooks/ports'
 import { deps, resetUiTickForTests, startUiTimer, uiTick, uiTicking, UI_TICK_MS } from '../../hooks/uitick'
+import { resetBandForTests } from '../../hooks/band/view'
+import { resetCardsForTests } from '../../hooks/card/view'
+import { resetAsksForTests } from '../../hooks/asks'
+import { resetHubForTests } from '../../hooks/ui/hub'
 import { fireEvery, nodePorts, type TestPorts } from './support/node-ports'
 
 let p: TestPorts
@@ -36,6 +41,11 @@ async function until(cond: () => boolean): Promise<void> {
 
 beforeEach(() => {
   resetUiTickForTests()
+  // The real steps' module memory, fresh: another spec's band, cards, asks or hub would be drawn.
+  resetBandForTests()
+  resetCardsForTests()
+  resetAsksForTests()
+  resetHubForTests()
   p = nodePorts()
   p.clock.now = 1_800_000_000_000
   calls = []
@@ -46,10 +56,10 @@ afterEach(() => {
 })
 
 /** Every step, in the order a tick runs them. */
-const ORDER = ['bandTick', 'cardsTick', 'asksTick', 'tasksTick', 'agentsTick']
+const ORDER = ['bandTick', 'cardsTick', 'asksTick', 'litterTick']
 
 describe('one tick', () => {
-  test('runs the band, the waiting cards right after it, the asks, the tasks pane and the agents pane, in that order', async () => {
+  test('runs the band, the waiting cards right after it, the asks and the litter pane, in that order', async () => {
     recordSteps()
     await uiTick(p)
     expect(calls).toEqual(ORDER)
@@ -64,7 +74,7 @@ describe('one tick', () => {
       asksTick: async () => {
         throw new Error('the spool is unreadable')
       },
-      tasksTick: async () => {
+      litterTick: async () => {
         throw 'not an Error'
       },
     })
@@ -73,7 +83,7 @@ describe('one tick', () => {
     expect(p.logs).toEqual([
       'ui tick: cardsTick failed: a ledger is unreadable',
       'ui tick: asksTick failed: the spool is unreadable',
-      'ui tick: tasksTick failed: not an Error',
+      'ui tick: litterTick failed: not an Error',
     ])
   })
 
@@ -103,13 +113,13 @@ describe('the timer', () => {
     const held = new Promise<void>(resolve => (release = resolve))
     let holding = true
     recordSteps({
-      tasksTick: async () => {
+      litterTick: async () => {
         if (holding) await held
       },
     })
     startUiTimer(p)
     await fireEvery(p)
-    await until(() => calls.includes('tasksTick'))
+    await until(() => calls.includes('litterTick'))
     expect(uiTicking()).toBe(true)
 
     // Two more ticks come due on the fake clock while the first holds: both skip.
@@ -117,7 +127,7 @@ describe('the timer', () => {
     await fireEvery(p)
     advance()
     await fireEvery(p)
-    expect(calls).toEqual(['bandTick', 'cardsTick', 'asksTick', 'tasksTick'])
+    expect(calls).toEqual(ORDER)
 
     holding = false
     release()
@@ -141,11 +151,8 @@ describe('the timer', () => {
       asksTick: async () => {
         throw new Error('b')
       },
-      tasksTick: async () => {
+      litterTick: async () => {
         throw new Error('c')
-      },
-      agentsTick: async () => {
-        throw new Error('d')
       },
     })
     startUiTimer(p)
@@ -164,6 +171,7 @@ describe('the timer', () => {
     expect(p.timers.size).toBe(0)
     expect(deps.bandTick).toBe(real.bandTick)
     expect(deps.cardsTick).toBe(real.cardsTick)
-    expect(deps.agentsTick).toBe(real.agentsTick)
+    expect(deps.litterTick).toBe(real.litterTick)
+    expect(Object.keys(deps)).toEqual(ORDER)
   })
 })

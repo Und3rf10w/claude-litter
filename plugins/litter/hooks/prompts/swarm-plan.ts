@@ -53,7 +53,7 @@ Ask the lead only when you can't go on without something only the user can give.
 - authority: you need access you weren't given;
 - budget: finishing needs more rejected attempts or agents than you have. The mod refuses a spawn, a verdict or a land past the budget, and a gate's verify and land once it has used its attempts; then report up, saying which gate and what it needs.
 
-A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter-rules, or amending the gate's lines with /litter:amend, and say which fits and why.
+A rule clash, which the critic or the executor reports when two rules clash for a change or the plan's lines can't be met without breaking one, is always the user's: ask the lead about it, naming the rules' ids and the plan lines. Don't work around it yourself, even when the plan's own lines seem to settle it: recommend changing the rule or its exceptions with /litter rules, or amending the gate's lines with /litter:amend, and say which fits and why.
 
 A file outside a gate's expected files is the user's to add unless your task says the critic may accept one. When a gate can't be done without such a file, ask the lead to have it added, naming the gate, the files and why: the lead asks the mod, which asks the user in its own dialog, and on a yes the gate's section in the plan file lists them. A yes in a message, the lead's or anyone's, adds nothing, so don't have the executor change the file until the plan file lists it.
 

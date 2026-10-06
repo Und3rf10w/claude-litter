@@ -253,7 +253,7 @@ async function loadSelected(p: Ports, litterDir: string, versions: readonly Rule
   try {
     loaded = (await deps.loadRules(p, litterDir)).rules
   } catch (err) {
-    return fail(`litter: the accepted rules couldn't be read into the bar (${errText(err)}); /litter-rules shows them and their problems. Launch again once it's fixed`)
+    return fail(`litter: the accepted rules couldn't be read into the bar (${errText(err)}); /litter rules shows them and their problems. Launch again once it's fixed`)
   }
   const picked = selectedRules(loaded, versions)
   if ('changed' in picked) {

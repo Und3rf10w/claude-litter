@@ -1,6 +1,7 @@
-// /litter-tasks and the tasks pane (phase 5; COMMON step 5, decisions 4, 15,
-// 16): a task list's tasks with filters, a sort, owners and blocked state,
-// and an inline editor, rebuilt on the ui tick while the pane is open. Keys
+// `/litter tasks` and the tasks pane, the `litter` pane's Tasks section
+// (phase 5; COMMON step 5, decisions 4, 15, 16; phase 5b, WP-DA): a task
+// list's tasks with filters, a sort, owners and blocked state, and an inline
+// editor, rebuilt on the ui tick while Tasks is shown. Keys
 // are `tasks:<action>[:<arg>]`, a row's and the editor's
 // `tasks:<action>:<list folder>/<id>`, so a press drawn for another list is
 // caught. Reads and writes go through hooks/team/store.ts. Owner: WP-CE.
@@ -15,11 +16,15 @@
 
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
-import type { CommandRunHook, PaneElements, PaneRender, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
 import type { TaskPatch } from '../uitypes'
 import type { SwarmNotice, TasksBody, TasksEditor, TasksFilter, TasksPaneView, TasksRow, TasksSort } from '../../types/index'
+import type { BodyContext } from '../ui/chrome'
+import type { Loaded } from '../ui/hub'
 import { button, buttons, header, input, section, select, tableFor } from '../swarm/builder'
 import { oneLine } from '../swarm/view'
+import { STYLE } from '../ui/style'
+import { openSection } from '../ui/hub'
 import {
   FILTERS,
   FILTER_LABEL,
@@ -43,8 +48,6 @@ import {
   tasksNavRev,
   type TasksNav,
 } from './view'
-
-export const TASKS_PANE = 'litter-tasks'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const SORT_LABEL: Record<TasksSort, string> = { id: 'id', status: 'status', owner: 'owner', subject: 'subject' }
@@ -71,15 +74,17 @@ async function drawTasks(p: Ports): Promise<TasksPaneView | null> {
   return view
 }
 
+/** `/litter tasks [list]` (ui/hub.ts's litterCommand): shows Tasks on that list in the `litter` pane. */
+export const tasksCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'tasks', (e.args ?? '').trim(), { focus: true })).text })
+
 /**
- * command.run on `litter-tasks`: opens the pane on the list named (its
- * name, its folder's name or its team's), else this session's own, else
- * the first; answers a one-line `text`. The filter, the sort and the edits
- * begun stay from the last time.
+ * Tasks' load (openSection): the list named (its name, its folder's name or
+ * its team's), else this session's own, else the first; answers the reply's
+ * line. The filter, the sort and the edits begun stay from the last time.
  */
-export const tasksCommand: PortHook<CommandRunHook> = async (p, e, next) => {
+export async function loadTasks(p: Ports, args: string): Promise<Loaded> {
   await restoreTasksNav(p)
-  const arg = (e.args ?? '').trim()
+  const arg = args.trim()
   const prior = tasksNavOf()
   const n: TasksNav = { ...blankTasksNav(null), filter: prior?.filter ?? 'all', sort: prior?.sort ?? 'id', edits: prior?.edits ?? {} }
   if (arg !== '') {
@@ -90,28 +95,34 @@ export const tasksCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   }
   setTasksNav(n)
   const view = await drawTasks(p)
-  const placed = await p.openPane(TASKS_PANE, 'litter tasks')
   const b = view?.body
   const what =
     b?.list && b.listName !== null
       ? `shows ${oneLine(b.listName, 80)} (${b.counts.all} task${b.counts.all === 1 ? '' : 's'})`
       : `has nothing to show: ${b?.notice?.text ?? b?.empty ?? 'no task list'}`
-  return { text: `the tasks pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `Tasks ${what}` }
+}
+
+/** Tasks from the strip or Home: the list it showed, drawn again, else this session's. */
+export async function resumeTasks(p: Ports): Promise<void> {
+  await restoreTasksNav(p)
+  if (tasksNavOf()) await drawTasks(p)
+  else await loadTasks(p, '')
 }
 
 // ---------------------------------------------------------------------------
 // The render
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-tasks' }` calls it with the tasksPane atom. A pure renderer. */
-export function renderTasksPane(view: TasksPaneView | null, resolved: PaneElements, e: PaneRender): RenderElement {
-  const el = tableFor(resolved, e.surface)
+/** Tasks' body renderer (ui/pane.tsx calls it with the tasksPane atom under the hub's chrome). Pure. */
+export function renderTasksPane(view: TasksPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
+  const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
   if (!body) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · tasks</Text>
-        <Text dimColor>nothing to show yet: /litter-tasks opens a task list</Text>
+        <Text dimColor>nothing to show yet: /litter tasks opens a task list</Text>
       </Box>
     )
   }
@@ -126,7 +137,7 @@ export function renderTasksPane(view: TasksPaneView | null, resolved: PaneElemen
         <Box flexDirection="column">
           {section(el, 'Not read', { text: 'files the engine would skip too', dim: true })}
           {problems.map(x => (
-            <Text color="warning" wrap="wrap">{`! ${x}`}</Text>
+            <Text color={STYLE.warning} wrap="wrap">{`! ${x}`}</Text>
           ))}
         </Box>
       )}
@@ -173,11 +184,11 @@ function rowsPart(el: PaneElements, list: string, rows: readonly TasksRow[], emp
       {rows.length === 0 && <Text dimColor wrap="wrap">{empty ?? 'no tasks'}</Text>}
       {rows.map(r => (
         <Box flexDirection="row" columnGap={1}>
-          <Text color="claude">{r.selected ? '›' : ' '}</Text>
+          <Text color={STYLE.accent}>{r.selected ? '›' : ' '}</Text>
           <Button key={`tasks:select:${list}/${r.id}`} label={`#${r.id}`} plain onPress={() => {}} />
           <Text color={r.status.color}>{`${r.status.glyph} ${r.status.text}`.padEnd(13)}</Text>
-          {r.owner !== null ? <Text color="cyan">{r.owner}</Text> : <Text dimColor>unowned</Text>}
-          {r.blockedBy.length > 0 && <Text color="warning">{`⊘ blocked by ${r.blockedBy.map(b => `#${b}`).join(' ')}`}</Text>}
+          {r.owner !== null ? <Text color={STYLE.name}>{r.owner}</Text> : <Text dimColor>unowned</Text>}
+          {r.blockedBy.length > 0 && <Text color={STYLE.warning}>{`⊘ blocked by ${r.blockedBy.map(b => `#${b}`).join(' ')}`}</Text>}
           <Text wrap="truncate-end">{r.subject}</Text>
         </Box>
       ))}
@@ -195,18 +206,18 @@ function editorPart(el: PaneElements, list: string, ed: TasksEditor): RenderElem
       {ed.subject !== null ? (
         input(el, { key: k('subject'), label: 'Subject', value: ed.subject, submitLabel: 'keep' })
       ) : (
-        <Text color="warning">! the subject is too long to edit here</Text>
+        <Text color={STYLE.warning}>! the subject is too long to edit here</Text>
       )}
       {ed.description !== null ? (
         input(el, { key: k('description'), label: 'Description', value: ed.description, placeholder: `one line; ${LINE_MARK} marks a line break`, submitLabel: 'keep' })
       ) : (
-        <Text color="warning">! the description is too long to edit here</Text>
+        <Text color={STYLE.warning}>! the description is too long to edit here</Text>
       )}
       {ed.descriptionText !== null && <Text dimColor wrap="wrap">{ed.descriptionText}</Text>}
       {select(el, { key: k('status'), label: 'Status', value: ed.status, options: ed.statuses })}
       {select(el, { key: k('owner'), label: 'Owner', value: ed.owner, options: ed.owners })}
       {ed.links !== '' && <Text dimColor>{ed.links}</Text>}
-      {ed.changed && <Text color="warning" wrap="wrap">{`! #${ed.id} changed on disk since you began editing: [Reload] takes the file's version and drops yours`}</Text>}
+      {ed.changed && <Text color={STYLE.warning} wrap="wrap">{`! #${ed.id} changed on disk since you began editing: [Reload] takes the file's version and drops yours`}</Text>}
       {buttons(el, [
         { key: k('save'), label: 'Save', ...(ed.dirty && !ed.changed ? { primary: true } : { dim: true }) },
         { key: k('revert'), label: 'Revert', ...(ed.dirty ? {} : { dim: true }) },
@@ -424,7 +435,7 @@ export const onTasksUi: PaneUiHandlers = {
 // ---------------------------------------------------------------------------
 // The tick
 
-/** The ui tick's third step (uitick.ts): the pane's view again while it has a navigation, only when its stamp or the navigation moved (decision 16). */
+/** Tasks' tick (ui/hub.ts's litterTick, while Tasks is shown): the view again while it has a navigation, only when its stamp or the navigation moved (decision 16). */
 export async function tasksTick(p: Ports): Promise<void> {
   await restoreTasksNav(p)
   if (!tasksNavOf()) return

@@ -38,12 +38,13 @@ import { barIds, proposalRecords, verdictRecords } from '../design/finalize'
 import { session } from '../session'
 import { oneLine } from '../swarm/view'
 import { statusWord } from '../board/view'
-import { openBoard } from '../board/pane'
+import { openSection } from '../ui/hub'
+import { STYLE } from '../ui/style'
 
-// The board's opener (CD's file after CA), through one table so tier 2 can
-// stand in for it (COMMON, "Another package's module"). The mod never changes it.
+// The `litter` pane's one opener (phase 5b, WP-DA), through one table so tier
+// 2 can stand in for it (COMMON, "Another package's module"). The mod never changes it.
 export const deps = {
-  openBoard: (...a: Parameters<typeof openBoard>) => openBoard(...a),
+  openSection: (...a: Parameters<typeof openSection>) => openSection(...a),
 }
 
 /** The runs session.start and a /clear build cards for: run.find's newest (decision 8). */
@@ -312,10 +313,10 @@ export function duration(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
-/** The reason of an end that isn't done, on one line: `error` for a failure, else `warning`. */
+/** The reason of an end that isn't done, on one line: `failed` for a failure, else `warning`. */
 function reasonLine(end: RunEndBody): SwarmSpan[] | null {
   if (end.status === 'done' || !named(end.reason)) return null
-  const color = end.status === 'failed' || end.status === 'launch_failed' ? 'error' : 'warning'
+  const color = end.status === 'failed' || end.status === 'launch_failed' ? STYLE.failed : STYLE.warning
   return [{ text: oneLine(`${end.status}: ${end.reason}`, 300), color }]
 }
 
@@ -328,7 +329,7 @@ function cardOf(f: RunFacts, st: RunState, gen: Generation): CardView {
   const title: SwarmSpan[] = [
     { text: `${sw.glyph} ${oneLine(sw.text, 40)}`, color: sw.color, bold: true },
     { text: ` · litter · ${oneLine(workflow, 40)} ` },
-    { text: f.run, color: 'cyan' },
+    { text: f.run, color: STYLE.name },
   ]
   if (gen.repair) title.push({ text: ' · repair' })
   else if (gen.n > 1) title.push({ text: ` · generation ${gen.n}` })
@@ -365,7 +366,7 @@ function executeLines(json: RunJson | null, before: readonly StoredRecord[], end
   const count = total > 0 ? `${worked.filter(id => landed.has(id)).length + earlier.length}/${total} gates landed` : `${landed.size} landed`
   const head: SwarmSpan[] = [{ text: count }]
   const last = short(lands.at(-1)?.body.commit)
-  if (last) head.push({ text: ' · last land ' }, { text: last, color: 'yellow' })
+  if (last) head.push({ text: ' · last land ' }, { text: last, color: STYLE.sha })
   const out = [head]
   const stuck = end.status === 'done' ? undefined : worked.find(id => !landed.has(id))
   if (stuck) out.push(...stuckLines(before, stuck))
@@ -396,13 +397,13 @@ function stuckLines(records: readonly StoredRecord[], gate: string): SwarmSpan[]
   if (attempt === 0 && !verdict && stop === null) return []
 
   const head: SwarmSpan[] = [{ text: `${oneLine(gate, 40)}${attempt > 0 ? `, attempt ${attempt}` : ''}: ` }]
-  if (stop !== null) head.push({ text: 'its executor stopped before the attempt was judged', color: 'warning' })
-  else if (failing.length > 0) head.push({ text: `failed ${failing.join(', ')}`, color: 'warning' })
+  if (stop !== null) head.push({ text: 'its executor stopped before the attempt was judged', color: STYLE.warning })
+  else if (failing.length > 0) head.push({ text: `failed ${failing.join(', ')}`, color: STYLE.warning })
   else head.push({ text: verdict ? 'its last verdict passed every dimension' : 'no verdict recorded' })
   const out = [head]
   const gap = stop ?? (verdict && named(verdict.body.plan_gap) ? verdict.body.plan_gap : null)
-  if (gap !== null) out.push([{ text: oneLine(`plan gap: ${gap}`, 300), color: 'warning' }])
-  else if (verdict && named(verdict.body.rule_clash)) out.push([{ text: oneLine(`rule clash: ${verdict.body.rule_clash}`, 300), color: 'warning' }])
+  if (gap !== null) out.push([{ text: oneLine(`plan gap: ${gap}`, 300), color: STYLE.warning }])
+  else if (verdict && named(verdict.body.rule_clash)) out.push([{ text: oneLine(`rule clash: ${verdict.body.rule_clash}`, 300), color: STYLE.warning }])
   return out
 }
 
@@ -429,12 +430,12 @@ function designLines(json: RunJson | null, before: readonly StoredRecord[], afte
   if (end.status === 'done') {
     if (pl.outcome !== 'approved') {
       const by = typeof pl.by === 'string' ? (BY[pl.by] ?? oneLine(pl.by, 60)) : 'no outcome recorded'
-      out.push([{ text: `holding: ${by}`, color: 'warning' }])
+      out.push([{ text: `holding: ${by}`, color: STYLE.warning }])
     }
   } else if (end.status === 'needs_user') {
-    out.push([{ text: oneLine(`needs you: ${NEEDS[end.reason ?? ''] ?? end.reason ?? 'no reason recorded'}`, 300), color: 'permission' }])
+    out.push([{ text: oneLine(`needs you: ${NEEDS[end.reason ?? ''] ?? end.reason ?? 'no reason recorded'}`, 300), color: STYLE.needsYou }])
   } else if (end.status === 'halted' && end.reason === 'source-changed') {
-    out.push([{ text: 'halted: the checkout changed during a round (source-changed)', color: 'warning' }])
+    out.push([{ text: 'halted: the checkout changed during a round (source-changed)', color: STYLE.warning }])
   } else {
     const r = reasonLine(end)
     if (r) out.push(r)
@@ -456,20 +457,20 @@ function versionLine(version: string, verdict: StoredRecord | undefined, bar: re
     return [`${oneLine(id, 20)} ${kind}`]
   })
   const overall = typeof verdict.body.overall === 'string' ? oneLine(verdict.body.overall, 20) : 'no overall'
-  const out: SwarmSpan[] = [{ text: `${v} ` }, { text: overall, color: overall === 'APPROVED' ? 'success' : 'warning' }]
+  const out: SwarmSpan[] = [{ text: `${v} ` }, { text: overall, color: overall === 'APPROVED' ? STYLE.done : STYLE.warning }]
   if (ids.length === 0) out.push({ text: ' · no criterion judged' })
   else if (open.length === 0) out.push({ text: ` · ${ids.length}/${ids.length} pass` })
   else out.push({ text: ` · ${oneLine(`${open.length} open: ${open.join(', ')}`, 300)}` })
-  if (verdict.body.source_changed === true) out.push({ text: ' · source changed', color: 'warning' })
+  if (verdict.body.source_changed === true) out.push({ text: ' · source changed', color: STYLE.warning })
   return out
 }
 
 /** A plan's delivery, from the design.deliver recorded after this end (design/finalize.ts). */
 function deliveryLine(after: readonly StoredRecord[]): SwarmSpan[] {
   const rec = after.find(r => r.kind === 'design.deliver')
-  if (!rec) return [{ text: "plan.md not delivered: the delivery didn't finish", color: 'warning' }]
-  if (named(rec.body.refused)) return [{ text: oneLine(`plan.md not delivered: ${rec.body.refused}`, 300), color: 'warning' }]
-  return [{ text: 'plan.md delivered', color: 'success' }]
+  if (!rec) return [{ text: "plan.md not delivered: the delivery didn't finish", color: STYLE.warning }]
+  if (named(rec.body.refused)) return [{ text: oneLine(`plan.md not delivered: ${rec.body.refused}`, 300), color: STYLE.warning }]
+  return [{ text: 'plan.md delivered', color: STYLE.done }]
 }
 
 /** fanout: the writers done of all, and the land's commit (the halt's reason follows from reasonLine). */
@@ -487,7 +488,7 @@ function fanoutLines(json: RunJson | null, before: readonly StoredRecord[]): Swa
     if (parts.length > 0) out.push([{ text: parts.join(' · ') }])
   }
   const land = short(before.filter(r => r.kind === 'land' && r.body.gate === 'fanout').at(-1)?.body.commit)
-  if (land) out.push([{ text: 'landed ' }, { text: land, color: 'yellow' }])
+  if (land) out.push([{ text: 'landed ' }, { text: land, color: STYLE.sha }])
   return out
 }
 
@@ -511,7 +512,14 @@ export const onCardUi: { press: PortHook<CardPressHook> } = {
       p.toast(`run ${run} is gone (its run.json isn't there), so there's no board to open`)
       return { element: e.element }
     }
-    if (!(await deps.openBoard(p, run))) p.toast(`the board didn't open here; run /litter-board ${run}`)
+    const opened = await deps.openSection(p, 'runs', run, { focus: true }).then(
+      r => r.placed,
+      (err: unknown) => {
+        p.log(`card: Runs didn't open on run ${run}: ${err instanceof Error ? err.message : String(err)}`)
+        return false
+      },
+    )
+    if (!opened) p.toast(`the board didn't open here; run /litter runs ${run}`)
     return { element: e.element }
   },
 }

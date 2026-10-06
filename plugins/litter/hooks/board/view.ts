@@ -56,6 +56,7 @@ import { parseGates } from '../gates'
 import { getOptions, session } from '../session'
 import { clean, oneLine } from '../swarm/view'
 import { loadRules, proposalsOf } from '../rules/store'
+import { STYLE } from '../ui/style'
 
 // AD's store, through one table so tier 2 can stand in for it (COMMON,
 // "Another package's module"). The mod never changes it.
@@ -66,7 +67,7 @@ export const deps = {
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** The workflows `/litter-board <workflow>` takes: the newest run of it. */
+/** The workflows `/litter runs <workflow>` takes: the newest run of it. */
 const WORKFLOW_ARGS: readonly Workflow[] = ['execute', 'design', 'fanout', 'plan']
 /** A full object id, as the land record holds it; only these reach git's argv, or the clipboard (the menu's copy). */
 export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
@@ -82,7 +83,7 @@ const SECTION_MAX = 8000
 export type BoardSectionNav = { kind: 'plan' } | { kind: 'diff'; gate: string } | { kind: 'verdict'; gate: string }
 
 export type BoardNav = {
-  /** /litter-board's argument as given: a run id, a workflow, or null. */
+  /** /litter runs's argument as given: a run id, a workflow, or null. */
   arg: string | null
   /** The run shown, once resolved; null when there was none. */
   run: string | null
@@ -168,7 +169,7 @@ export function resetBoardForTests(): void {
 export type PickedRun = { run: string | null; why: string | null }
 
 /**
- * /litter-board's argument: a run id names that run; `execute` or `design`
+ * /litter runs's argument: a run id names that run; `execute` or `design`
  * (or `fanout`, `plan`) the newest run of that workflow; nothing the active
  * run (policy.json's), else the newest. Newest is run.find's order.
  */
@@ -225,30 +226,30 @@ export async function boardStamp(p: Ports, litterDir: string, run: string): Prom
 // Words, colors and glyphs (15.6)
 
 const RUN_STATUS: Record<string, { color: string; glyph: string }> = {
-  running: { color: 'background', glyph: '▸' },
-  repairing: { color: 'background', glyph: '↻' },
-  stopping: { color: 'warning', glyph: '!' },
-  pending: { color: 'inactive', glyph: '·' },
-  done: { color: 'success', glyph: '✓' },
-  halted: { color: 'warning', glyph: '⚑' },
-  needs_user: { color: 'permission', glyph: '⚑' },
-  failed: { color: 'error', glyph: '✕' },
-  launch_failed: { color: 'error', glyph: '✕' },
-  stopped: { color: 'inactive', glyph: '−' },
-  interrupted: { color: 'inactive', glyph: '−' },
-  ledger_tampered: { color: 'error', glyph: '✕' },
+  running: { color: STYLE.running, glyph: '▸' },
+  repairing: { color: STYLE.running, glyph: '↻' },
+  stopping: { color: STYLE.warning, glyph: '!' },
+  pending: { color: STYLE.idle, glyph: '·' },
+  done: { color: STYLE.done, glyph: '✓' },
+  halted: { color: STYLE.warning, glyph: '⚑' },
+  needs_user: { color: STYLE.needsYou, glyph: '⚑' },
+  failed: { color: STYLE.failed, glyph: '✕' },
+  launch_failed: { color: STYLE.failed, glyph: '✕' },
+  stopped: { color: STYLE.idle, glyph: '−' },
+  interrupted: { color: STYLE.idle, glyph: '−' },
+  ledger_tampered: { color: STYLE.failed, glyph: '✕' },
 }
 
 const GATE_STATE: Record<BoardGateState, { color: string; glyph: string }> = {
-  landed: { color: 'success', glyph: '✓' },
-  'in progress': { color: 'background', glyph: '▸' },
-  halted: { color: 'warning', glyph: '⚑' },
-  waiting: { color: 'inactive', glyph: '·' },
-  repairing: { color: 'background', glyph: '↻' },
+  landed: { color: STYLE.done, glyph: '✓' },
+  'in progress': { color: STYLE.running, glyph: '▸' },
+  halted: { color: STYLE.warning, glyph: '⚑' },
+  waiting: { color: STYLE.idle, glyph: '·' },
+  repairing: { color: STYLE.running, glyph: '↻' },
 }
 
 export function statusWord(text: string): BoardStatus {
-  const s = RUN_STATUS[text] ?? { color: 'inactive', glyph: '·' }
+  const s = RUN_STATUS[text] ?? { color: STYLE.idle, glyph: '·' }
   return { text, color: s.color, glyph: s.glyph }
 }
 
@@ -397,7 +398,7 @@ async function readText(p: Ports, path: string): Promise<string | null> {
 // The build
 
 /**
- * The view of `run` as /litter-board's argument gives it: a run id; `execute`
+ * The view of `run` as /litter runs's argument gives it: a run id; `execute`
  * or `design`, the newest run of that workflow; or null, the active run, else
  * the newest. `v` increases on every rebuild; `body.stamp` is the ledger head
  * it read. A build whose run, heads and navigation are those of the last one
@@ -428,7 +429,7 @@ const title = (...parts: SwarmSpan[]): SwarmSpan[] => [{ text: 'litter · board'
 function emptyBody(why: string, nav: BoardNav, refused: string | null): BoardBody {
   return {
     title: title(),
-    notice: refusedNotice(refused) ?? nav.notice ?? { level: 'info', text: `${why}: /litter-board <run | execute | design> opens one` },
+    notice: refusedNotice(refused) ?? nav.notice ?? { level: 'info', text: `${why}: /litter runs <run | execute | design> opens one` },
     header: null,
     gates: null,
     detail: null,
@@ -813,12 +814,12 @@ export const MATRIX_VERSIONS = 8
 const OUTSIDE_ROWS = 10
 
 const CELL: Record<string, { glyph: string; color: string }> = {
-  PASS: { glyph: '✓', color: 'success' },
-  CONDITIONAL: { glyph: '~', color: 'warning' },
-  FAIL: { glyph: '✕', color: 'error' },
+  PASS: { glyph: '✓', color: STYLE.done },
+  CONDITIONAL: { glyph: '~', color: STYLE.warning },
+  FAIL: { glyph: '✕', color: STYLE.failed },
 }
-const NOT_JUDGED: BoardMatrixCell = { text: '·', color: 'inactive' }
-const OVERALL_COLOR: Record<string, string> = { APPROVED: 'success', HOLDING: 'warning' }
+const NOT_JUDGED: BoardMatrixCell = { text: '·', color: STYLE.idle }
+const OVERALL_COLOR: Record<string, string> = { APPROVED: STYLE.done, HOLDING: STYLE.warning }
 
 /** The line under the matrix that spells its glyphs and the gap kinds' letters out. */
 export const MATRIX_LEGEND = `✓ PASS  ~ CONDITIONAL  ✕ FAIL  · not judged  ·  gap kind: ${GAP_KINDS.map(k => `${k[0]} ${k}`).join(', ')}`
@@ -864,7 +865,7 @@ function designOf(json: RunJson | null, records: readonly StoredRecord[]): Board
     const j = judged[i]
     const overall = j ? oneLine(j.body.overall, 20) || 'no overall' : 'not judged'
     const sha = shortSha(proposals.find(r => r.body.version === version)?.body.sha256)
-    return { version, overall, color: OVERALL_COLOR[overall] ?? 'inactive', sha, sourceChanged: j?.body.source_changed === true }
+    return { version, overall, color: OVERALL_COLOR[overall] ?? STYLE.idle, sha, sourceChanged: j?.body.source_changed === true }
   })
   return { versions, hidden: all.length - versions.length, rows, legend: MATRIX_LEGEND, lines }
 }
@@ -887,7 +888,7 @@ async function designPlan(p: Ports, f: RunFiles, planText: string | null): Promi
 
 // The rules
 
-const STANDING_COLOR: Record<string, string> = { accepted: 'success', 'accepted (committed)': 'success', unverified: 'warning' }
+const STANDING_COLOR: Record<string, string> = { accepted: STYLE.done, 'accepted (committed)': STYLE.done, unverified: STYLE.warning }
 
 /** `run.json.rules` as `id@v` (decision 19), each with its standing now (AD's loadRules). */
 async function ruleRows(p: Ports, litterDir: string, json: RunJson | null): Promise<BoardRuleRow[]> {
@@ -901,14 +902,14 @@ async function ruleRows(p: Ports, litterDir: string, json: RunJson | null): Prom
   }
   return used.map(u => {
     const ref = `${oneLine(u.id, 80)}@${u.version}`
-    if (loaded === null) return { ref, standing: "standing unknown: the rules couldn't be read", color: 'warning' }
+    if (loaded === null) return { ref, standing: "standing unknown: the rules couldn't be read", color: STYLE.warning }
     const found = loaded.find(r => r.doc.id === u.id)
-    if (!found) return { ref, standing: 'no longer in force', color: 'inactive' }
+    if (!found) return { ref, standing: 'no longer in force', color: STYLE.muted }
     const inForce = found.delivered
-    if (!inForce) return { ref, standing: 'unverified now', color: 'warning' }
-    if (inForce.version !== u.version) return { ref, standing: `in force now as ${ref.split('@')[0]}@${inForce.version}`, color: 'warning' }
+    if (!inForce) return { ref, standing: 'unverified now', color: STYLE.warning }
+    if (inForce.version !== u.version) return { ref, standing: `in force now as ${ref.split('@')[0]}@${inForce.version}`, color: STYLE.warning }
     const word = found.standing === 'unverified' ? 'accepted (committed)' : found.standing
-    return { ref, standing: word, color: STANDING_COLOR[word] ?? 'success' }
+    return { ref, standing: word, color: STANDING_COLOR[word] ?? STYLE.done }
   })
 }
 

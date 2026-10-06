@@ -12,6 +12,12 @@
 import type { ClientModule, ClientPointerEvent } from 'claude-code'
 import type { SwarmTreeProps, SwarmTreeRow } from '../../types/index'
 
+/**
+ * hooks/ui/style.ts's keys this module paints, written out: a Client module
+ * imports types only. tests/unit/colorguard.spec.ts checks each against STYLE.
+ */
+const COLORS = { accent: 'claude', failed: 'error' } as const
+
 type Action = 'select' | 'add' | 'attach' | 'duplicate' | 'delete' | 'up' | 'down'
 type Item = { label: string; action: Action | 'workers' | 'back' | 'close'; worker?: string; color?: string }
 type Menu = { row: number; top: number; left: number; sel: number; workers: boolean }
@@ -32,7 +38,7 @@ function itemsFor(r: SwarmTreeRow, workers: readonly string[], sub: boolean): It
   if (workers.some(w => w !== r.node)) items.push({ label: 'add worker ▸', action: 'workers' })
   items.push(
     { label: 'duplicate', action: 'duplicate' },
-    { label: 'delete', action: 'delete', color: 'error' },
+    { label: 'delete', action: 'delete', color: COLORS.failed },
     { label: 'move up', action: 'up' },
     { label: 'move down', action: 'down' },
     { label: 'close', action: 'close' },
@@ -150,7 +156,7 @@ const Tree: ClientModule<SwarmTreeProps, State> = (props, surface) => {
         return (
           <Box flexDirection="row">
             <Text color={r.markColor ?? undefined}>{r.mark ? `${r.mark} ` : '  '}</Text>
-            <Text color="claude">{isSelected ? '› ' : isLit ? '· ' : '  '}</Text>
+            <Text color={COLORS.accent}>{isSelected ? '› ' : isLit ? '· ' : '  '}</Text>
             <Text>{'  '.repeat(Math.max(0, r.depth))}</Text>
             <Text color={r.color ?? undefined} dimColor={r.dim && !isLit && !isSelected} bold={isSelected} inverse={isLit && !isSelected}>
               {r.label}

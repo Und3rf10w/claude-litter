@@ -2,12 +2,13 @@
 // engine loading the mod and every phase 5 module still CA's stub. Each new
 // hook is reached under its matcher and keeps today's drawing and answers:
 // the band draws what the plugins beneath draw, every transcript row is the
-// engine's, the two panes draw their "nothing yet" trees, every press passes
-// on; /litter-tasks and /litter-agents are registered at session.start and
-// after a /clear and answer their stub lines; and each new catch answers in
-// its event's shape. A hook is made to throw as phase3wiring.test.ts does: a
-// render through an atom it can't read or draw, every other hook through
-// `rebound` after a /clear whose new session id can't be read.
+// engine's, the `litter` pane on Tasks or Agents draws that section's
+// "nothing yet" tree (phase 5b, WP-DA), every press passes on; /litter, the
+// one command, is registered at session.start and after a /clear; and each
+// catch answers in its event's shape. A hook is made to throw as
+// phase3wiring.test.ts does: a render through an atom it can't read or draw,
+// every other hook through `rebound` after a /clear whose new session id
+// can't be read.
 
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -136,42 +137,41 @@ async function breakRebound($: Engine, sid: { value: string | null }): Promise<v
   sid.value = null
 }
 
-const PHASE5 = [
-  { name: 'litter-tasks', argumentHint: '[list]', immediate: true },
-  { name: 'litter-agents', argumentHint: '[team]', immediate: true },
-]
+/** /litter, the one command (phase 5b, WP-DA): it replaced the six pane commands. */
+const LITTER = [{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]', immediate: true }]
 
-describe('/litter-tasks and /litter-agents', () => {
-  test('are registered at session.start, after the board and rules commands, and again after a /clear', async ($, on) => {
+describe('/litter', () => {
+  test('is registered at session.start, alone, and again after a /clear', async ($, on) => {
     mock.store(on)
     mock.clock(on, { now: 1_800_000_000_000 })
     const { commands } = world(on)
+    on('ui.open', async () => ({ value: { isPlaced: true } }))
     const sid = { value: SESSION as string | null }
     sessionId(on, sid)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    expect(commands.map(c => c.name)).toEqual(['litter-swarm', 'litter-doctor', 'litter-board', 'litter-rules', 'litter-tasks', 'litter-agents'])
-    expect(commands.slice(4)).toEqual(PHASE5)
+    expect(commands).toEqual(LITTER)
 
-    // The engine's clear, then a new id; the first hook after it rebinds, which registers every command again.
+    // The engine's clear, then a new id; the first hook after it rebinds, which registers the command again.
     await clearEnds($, SESSION)
     sid.value = 'tier1-after-clear'
     const before = commands.length
-    await run($, 'litter-agents')
-    expect(commands.slice(before).filter(c => c.name === 'litter-tasks' || c.name === 'litter-agents')).toEqual(PHASE5)
+    await run($, 'litter', 'agents')
+    expect(commands.slice(before)).toEqual(LITTER)
   })
 
-  // Both commands are built: tests/tasks.test.tsx (WP-CE) and tests/agents.test.tsx (WP-CG) run them.
+  // Each section's command is built: tests/tasks.test.tsx (WP-CE) and tests/agents.test.tsx (WP-CG) run them.
 
-  test('their catches answer a line naming the command', async ($, on) => {
+  test('its catch answers a line naming what was typed', async ($, on) => {
     mock.store(on)
     on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
     on('ui.log', async () => ({ value: undefined }))
     const sid = { value: SESSION as string | null }
     const ids = sessionId(on, sid)
     await breakRebound($, sid)
-    expect(await run($, 'litter-tasks')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-tasks failed \(.*session\.id.*\)$/) }))
-    expect(await run($, 'litter-agents')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-agents failed \(.*session\.id.*\)$/) }))
-    expect(ids.calls).toBeGreaterThanOrEqual(2)
+    expect(await run($, 'litter', 'tasks')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter tasks failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter', 'agents team-a')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter agents failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter failed \(.*session\.id.*\)$/) }))
+    expect(ids.calls).toBeGreaterThanOrEqual(3)
   })
 })
 
@@ -319,38 +319,52 @@ describe('the finished-run card, with no card built', () => {
   })
 })
 
-const PANES = [
-  ['litter-tasks', 'tasksPane', 'tasks', 'litter · tasks', 'nothing to show yet: /litter-tasks opens a task list'],
-  ['litter-agents', 'agentsPane', 'agents', 'litter · agents', "nothing to show yet: /litter-agents opens this session's agents"],
+/** The `litter` pane's request id, and each section these tests show in it: its atom, view, "nothing yet" title and line, and the hub's header. */
+const LITTER_PANE = 'litter'
+const SHOWN = [
+  ['tasks', 'tasksPane', 'tasks', 'litter · tasks', 'nothing to show yet: /litter tasks opens a task list', ' · Tasks'],
+  ['agents', 'agentsPane', 'agents', 'litter · agents', "nothing to show yet: /litter agents opens this session's agents", ' · Agents'],
 ] as const
 
-describe('the tasks and agents panes, with the stubs', () => {
-  for (const [requestId, atom, view, title, empty] of PANES) {
-    test(`${requestId}: draws its "nothing yet" tree with no view, and a body's header with one, on the terminal and the desktop`, async ($, on) => {
+/** The hub's view with `section` shown, the strip drawn from nothing counted. */
+const hubOn = (section: string) => ({ view: 'hub', v: 1, section, live: [], tabs: [] })
+
+describe('the `litter` pane on Tasks and on Agents', () => {
+  for (const [section, atom, view, title, empty, head] of SHOWN) {
+    test(`${section}: draws its "nothing yet" tree with no view, and a body's header with one, under the hub's header, on the terminal and the desktop`, async ($, on) => {
       mock.store(on)
       let held: unknown = null
-      on('state.get', async (_$, e, next) => (e.key === atom && held !== null ? { value: { value: held, version: 1 } } : next(e)))
+      on('state.get', async (_$, e, next) =>
+        e.key === 'hub' ? { value: { value: hubOn(section), version: 1 } } : e.key === atom && held !== null ? { value: { value: held, version: 1 } } : next(e),
+      )
       for (const surface of ['terminal', 'desktop'] as const) {
         held = null
-        const blank = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId, props: pane(requestId) })
+        const blank = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
+        expect((await blank.find({ type: 'Text', text: head }))?.text).toBe(head)
         expect((await blank.find({ type: 'Text', text: title }))?.text).toBe(title)
         expect((await blank.find({ type: 'Text', text: empty }))?.text).toBe(empty)
         await blank.unmount()
         held = { view, v: 1, body: { title: [{ text: `${title} · built`, bold: true }], notice: { level: 'info', text: 'a notice' } } }
-        const built = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId, props: pane(requestId) })
+        const built = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
         expect((await built.find({ type: 'Text', text: `${title} · built` }))?.text).toBe(`${title} · built`)
         expect(await built.find({ type: 'Text', text: /a notice/ })).toBeDefined()
         await built.unmount()
       }
     })
 
-    test(`${requestId}: ui.render's catch passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
+    test(`${section}: ui.render's catch passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
       mock.store(on)
-      // The pane's atom holds a body whose title isn't spans: the stub's render throws on it, and its catch passes the render on.
-      on('state.get', async (_$, e, next) => (e.key === atom ? { value: { value: { view, v: 1, body: { title: 'not spans' } }, version: 1 } } : next(e)))
+      // The section's atom holds a body whose title isn't spans: the render throws on it, and its catch passes the render on.
+      on('state.get', async (_$, e, next) =>
+        e.key === 'hub'
+          ? { value: { value: hubOn(section), version: 1 } }
+          : e.key === atom
+            ? { value: { value: { view, v: 1, body: { title: 'not spans' } }, version: 1 } }
+            : next(e),
+      )
       on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
       const reached: string[] = []
-      on('ui.render', { component: 'Pane', requestId }, async (hooks, e): Promise<RenderElement> => {
+      on('ui.render', { component: 'Pane', requestId: LITTER_PANE }, async (hooks, e): Promise<RenderElement> => {
         const el = hooks.ui.resolve(e)
         const { Box, Text, Button } = el
         const children: RenderElement[] = [
@@ -377,7 +391,7 @@ describe('the tasks and agents panes, with the stubs', () => {
       const sid = { value: SESSION as string | null }
       const ids = sessionId(on, sid)
 
-      const ui = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId, props: pane(requestId) })
+      const ui = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
       expect((await ui.find({ type: 'Text', text: 'drawn below the mod' }))?.text).toBe('drawn below the mod')
       // With the rebind sound, each event's stub passes on.
       expect(await ui.press({ key: 'probe', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'probe' }))

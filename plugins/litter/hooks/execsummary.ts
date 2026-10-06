@@ -197,14 +197,14 @@ export async function executeSummary(p: Ports, ref: RunRef, json: RunJson | null
   try {
     const proposals = await deps.proposalsOf(p, ref.litterDir, { run: ref.run })
     if (proposals.length > 0) {
-      lines.push('', '## Rules proposed in this run', '', 'Proposed, not accepted, waiting in /litter-rules:', '')
+      lines.push('', '## Rules proposed in this run', '', 'Proposed, not accepted, waiting in /litter rules:', '')
       for (const x of proposals) {
         const from = [x.body.source, x.body.gate].filter((s): s is string => typeof s === 'string' && s !== '').join(', ')
         lines.push(`- ${oneLine(x.body.rule)}${from ? ` (${from})` : ''}${x.status !== 'proposed' ? `, now ${x.status}` : ''}`)
       }
     }
   } catch (err) {
-    lines.push('', '## Rules proposed in this run', '', `The proposals couldn't be read: ${oneLine(errText(err))}. /litter-rules lists them.`)
+    lines.push('', '## Rules proposed in this run', '', `The proposals couldn't be read: ${oneLine(errText(err))}. /litter rules lists them.`)
   }
   return lines
 }

@@ -448,7 +448,7 @@ describe('the block and the reservation', () => {
     const { next, calls } = engine()
     const e = spawnE(T('part-a'))
     const r = await run(e, next)
-    expect(r.deny).toBe("litter: swarm alpha's accepted rules couldn't be selected, so it starts nothing: two scopes hold P-x. /litter-rules shows them and their problems")
+    expect(r.deny).toBe("litter: swarm alpha's accepted rules couldn't be selected, so it starts nothing: two scopes hold P-x. /litter rules shows them and their problems")
     expect(calls).toEqual([])
     expect(state.reservations()).toEqual([])
     expect(existsSync(pendingPath(litterDir, e.tool_use_id))).toBe(false)

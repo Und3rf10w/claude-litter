@@ -189,7 +189,7 @@ describe('run.start: the rules in scope join the frozen bar', () => {
     }
     expect(await startDesign(w)).toEqual({
       ok: false,
-      error: "litter: the accepted rules couldn't be read into the bar (the rules ledger is tampered at seq 2); /litter-rules shows them and their problems. Launch again once it's fixed",
+      error: "litter: the accepted rules couldn't be read into the bar (the rules ledger is tampered at seq 2); /litter rules shows them and their problems. Launch again once it's fixed",
     })
     await nothingWritten(w)
   })

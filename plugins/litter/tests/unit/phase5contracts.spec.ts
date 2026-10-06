@@ -3,10 +3,10 @@
 // envVar, the four new setView targets, a send to `{ agentId }`); the spool's
 // `ask` line through the real drain, and consumeAsks' place among the
 // consumers; what still holds of each stub's behavior once its package built
-// it (CB–CG: a key not its own passes on, nothing is written unasked); the
-// board's openBoard and the swarm pane's openSwarmPane, which the band and
-// the card call; and the rebind's new steps after a /clear, through clear.ts's
-// `others`.
+// it (CB–CG: a key not its own passes on, nothing is written unasked); Runs
+// and Swarms opened through the hub's openSection (phase 5b, WP-DA), as the
+// band and the card open them; and the rebind's steps after a /clear, through
+// clear.ts's `others`.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -28,11 +28,12 @@ import { asksTick, consumeAsks, openAsks, restoreAsks } from '../../hooks/asks'
 import { bandShows, bandTick, onBandUi, resetBandForTests } from '../../hooks/band/view'
 import { cardRow, noteCards, onCardUi, restoreCards } from '../../hooks/card/view'
 import { cardOf } from '../../hooks/card/render'
-import { onTasksUi, refreshTasks, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
-import { agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
-import { BOARD_PANE, openBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
+import { onTasksUi, refreshTasks, tasksTick } from '../../hooks/tasks/pane'
+import { agentsTick, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
+import { resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests, resolveRun } from '../../hooks/board/view'
-import { openSwarmPane } from '../../hooks/swarm/panes'
+import { resetPanesForTests } from '../../hooks/swarm/panes'
+import { openSection, resetHubForTests } from '../../hooks/ui/hub'
 import { noteSessionEnd, others, rebindSettled, rebound, resetClearForTests } from '../../hooks/clear'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
@@ -211,7 +212,6 @@ describe("CA's stubs keep today's behavior", () => {
   // write nothing. The store's cases are teamstore.spec.ts's.
   test('the tasks pane: each ui handler passes a key not its own on; never opened, its tick and refresh write nothing', async () => {
     const p = nodePorts()
-    expect(TASKS_PANE).toBe('litter-tasks')
     for (const event of ['message', 'press', 'input', 'select'] as const) {
       const { next, seen } = passes<unknown>()
       const e = { element: `x:${event}`, requestId: 'r' }
@@ -227,7 +227,6 @@ describe("CA's stubs keep today's behavior", () => {
   // WP-CG built the agents pane: its command is tested in agentspane.spec.ts. What still holds of the stub's case:
   test('the agents pane: each ui handler passes on a key not its own; the tick and the refresh write nothing before it opens', async () => {
     const p = nodePorts()
-    expect(AGENTS_PANE).toBe('litter-agents')
     for (const handlers of [onAgentsUi]) {
       for (const event of ['message', 'press', 'input', 'select'] as const) {
         const { next, seen } = passes<unknown>()
@@ -254,8 +253,10 @@ describe("CA's stubs keep today's behavior", () => {
 
 // ---------------------------------------------------------------------------
 
-describe('openBoard, for the band and the card', () => {
+describe('Runs through openSection, for the band and the card', () => {
   const OLDER = '20261004-older'
+  /** The band's and the card's [Board]: Runs on the run, the keyboard asked for. */
+  const openBoard = async (p: TestPorts, run: string | null): Promise<boolean> => (await openSection(p, 'runs', run ?? '', { focus: true })).placed
   const NEWER = '20261005-newer'
   let p: TestPorts
   let litterDir: string
@@ -278,6 +279,7 @@ describe('openBoard, for the band and the card', () => {
     state.resetForTests()
     resetBoardForTests()
     resetBoardPaneForTests()
+    resetHubForTests()
     const dir = scratchDir()
     p = nodePorts({ sessionId: 's1', cwd: dir })
     p.clock.now = NOW
@@ -299,10 +301,10 @@ describe('openBoard, for the band and the card', () => {
     const view = p.views.board as BoardView
     expect(view.run).toBe(OLDER)
     expect(view.body?.header?.workflow).toBe('fanout')
-    expect(p.panes.opened).toEqual([{ id: BOARD_PANE, title: 'litter board' }])
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
   })
 
-  test('on null, opens what /litter-board with no argument opens: here the newest run', async () => {
+  test('on null, opens what /litter runs with no argument opens: here the newest run', async () => {
     await fanoutRun(OLDER)
     p.clock.now = NOW + 100 * MIN
     await fanoutRun(NEWER)
@@ -326,22 +328,29 @@ describe('openBoard, for the band and the card', () => {
     expect(session().litterDir).toBeNull()
   })
 
-  test("answers false when the pane isn't placed, and false with a log line when opening throws", async () => {
+  test("answers not placed when the pane isn't, saying so; an open that throws rejects, for the caller's catch", async () => {
     await fanoutRun(OLDER)
     p.openPane = async () => false
-    expect(await openBoard(p, OLDER)).toBe(false)
+    expect(await openSection(p, 'runs', OLDER, { focus: true })).toEqual({
+      placed: false,
+      text: `Runs shows run ${OLDER} (fanout, ${(p.views.board as BoardView).body?.header?.status.text}) (open, but this screen can't draw it now)`,
+    })
     p.openPane = async () => {
       throw new Error('ui.open refused')
     }
-    expect(await openBoard(p, OLDER)).toBe(false)
-    expect(p.logs.at(-1)).toBe(`board: it didn't open on run ${OLDER}: ui.open refused`)
+    await expect(openSection(p, 'runs', OLDER, { focus: true })).rejects.toThrow('ui.open refused')
   })
 })
 
-describe('openSwarmPane, for the band', () => {
-  test("is exported as /litter-swarm's work: a name that isn't one is answered, opening nothing", async () => {
+describe('Swarms through openSection, for the band', () => {
+  beforeEach(() => {
+    resetPanesForTests()
+    resetHubForTests()
+  })
+
+  test("is /litter swarms' work: a name that isn't one is answered, opening nothing", async () => {
     const p = nodePorts()
-    expect(await openSwarmPane(p, 'Not-A-Name')).toBe(`"Not-A-Name" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`)
+    expect(await openSection(p, 'swarms', 'Not-A-Name')).toEqual({ placed: false, text: `"Not-A-Name" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)` })
     expect(p.panes.opened).toEqual([])
   })
 })
@@ -365,15 +374,14 @@ describe('the rebind after a /clear (clear.ts)', () => {
       if (name === fail) throw new Error(`${name} broke`)
     }
     Object.assign(others, {
-      registerSwarmCommands: rec('registerSwarmCommands'),
-      registerPhase3Commands: rec('registerPhase3Commands'),
-      registerPhase5Commands: rec('registerPhase5Commands'),
+      registerLitterCommand: rec('registerLitterCommand'),
       refreshPanes: rec('refreshPanes'),
       refreshBoard: rec('refreshBoard'),
       refreshBand: rec('refreshBand'),
       refreshCards: rec('refreshCards'),
       refreshTasks: rec('refreshTasks'),
       refreshAgents: rec('refreshAgents'),
+      refreshHub: rec('refreshHub'),
     })
   }
 
@@ -392,35 +400,25 @@ describe('the rebind after a /clear (clear.ts)', () => {
     return { p, sid }
   }
 
-  test('registers /litter-tasks and /litter-agents after the other commands, then redraws the band, the cards and the two panes after the board', async () => {
+  test('registers /litter again, then redraws the swarm panes, the board, the band, the cards, the tasks and agents views, and last the `litter` pane', async () => {
     const calls: string[] = []
     fakes(calls)
     const { p, sid } = ports()
     await clearAndRebind(p, sid)
-    expect(calls).toEqual([
-      'registerSwarmCommands',
-      'registerPhase3Commands',
-      'registerPhase5Commands',
-      'refreshPanes',
-      'refreshBoard',
-      'refreshBand',
-      'refreshCards',
-      'refreshTasks',
-      'refreshAgents',
-    ])
+    expect(calls).toEqual(['registerLitterCommand', 'refreshPanes', 'refreshBoard', 'refreshBand', 'refreshCards', 'refreshTasks', 'refreshAgents', 'refreshHub'])
   })
 
   test('a step that throws is logged, and the steps after it still run', async () => {
-    for (const fail of ['registerPhase5Commands', 'refreshCards']) {
+    for (const fail of ['registerLitterCommand', 'refreshCards']) {
       state.resetForTests()
       resetClearForTests()
       const calls: string[] = []
       fakes(calls, fail)
       const { p, sid } = ports()
       await clearAndRebind(p, sid)
-      expect(calls.at(-1)).toBe('refreshAgents')
-      expect(calls).toHaveLength(9)
-      const why = fail === 'registerPhase5Commands' ? 'the tasks and agents commands' : 'the cards'
+      expect(calls.at(-1)).toBe('refreshHub')
+      expect(calls).toHaveLength(8)
+      const why = fail === 'registerLitterCommand' ? 'the litter command' : 'the cards'
       expect(p.logs).toContain(`/clear rebind: ${why} failed: ${fail} broke`)
     }
   })
