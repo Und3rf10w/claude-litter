@@ -20,6 +20,7 @@ import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
 import { blankBoardNav, boardStamp, buildBoard, deps, navOf, recordLine, resetBoardForTests, resolveRun, runStatusOf, setBoardNav, statusWord, utcAt } from '../../hooks/board/view'
 import { boardCommand, boardTick, handleBoard, onBoardUi, refreshBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
+import { resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import { resetRulesPaneForTests } from '../../hooks/rules/pane'
 import { resetRulesViewForTests } from '../../hooks/rules/paneview'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
@@ -44,7 +45,7 @@ let proposalsAsked: unknown[]
 const saved = { ...deps }
 
 const next = (async () => ({ text: 'engine' })) as never
-const command = (args = '') => ({ command: 'litter-board', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const command = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
 
 beforeEach(async () => {
   state.resetForTests()
@@ -52,6 +53,7 @@ beforeEach(async () => {
   resetBoardPaneForTests()
   resetRulesViewForTests()
   resetRulesPaneForTests()
+  resetHubForTests()
   ;({ dir, cleanup } = scratch())
   p = nodePorts({ sessionId: 's1', cwd: dir })
   p.clock.now = NOW
@@ -617,10 +619,11 @@ describe('which run, and when to rebuild', () => {
 })
 
 describe("the pane's handlers", () => {
-  test('/litter-board opens the pane on the run; a pick, [Diff], [Plan] and [Close] move the navigation', async () => {
+  test('/litter runs opens `litter` on the run; a pick, [Diff], [Plan] and [Close] move the navigation', async () => {
     await haltedRun()
-    expect(await boardCommand(p, command(EXEC), next)).toEqual({ text: `the board shows run ${EXEC} (execute, halted)` })
-    expect(p.panes.opened.map(o => o.id)).toEqual(['litter-board'])
+    expect(await boardCommand(p, command(EXEC), next)).toEqual({ text: `Runs shows run ${EXEC} (execute, halted)` })
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
+    expect(shownSection()).toBe('runs')
     expect((p.views.board as BoardView).run).toBe(EXEC)
 
     // The gate table's post, then the row's [Diff G1] with real git.
@@ -661,11 +664,15 @@ describe("the pane's handlers", () => {
     expect(navOf()?.section).toBeNull()
   })
 
-  test('[Rules] opens the rules pane', async () => {
+  test('[Rules] shows Rules in the same pane, with the keyboard', async () => {
     await haltedRun()
     await boardCommand(p, command(EXEC), next)
     await handleBoard(p, 'board:rules')
-    expect(p.panes.opened.map(o => o.id)).toEqual(['litter-board', 'litter-rules'])
+    expect(p.panes.opened).toEqual([
+      { id: 'litter', title: 'litter', focus: true },
+      { id: 'litter', title: 'litter', focus: true },
+    ])
+    expect(shownSection()).toBe('rules')
     expect(p.views.rules).toBeDefined()
   })
 
@@ -688,9 +695,9 @@ describe("the pane's handlers", () => {
     expect(shown()!.run).toBe(EXEC)
   })
 
-  test('with no litter directory, /litter-board says so and opens the pane on it', async () => {
+  test('with no litter directory, /litter runs says so and opens the pane on it', async () => {
     updateSession({ litterDir: null, litterDirError: 'not a git repository' })
-    expect(await boardCommand(p, command(''), next)).toEqual({ text: 'the board has no litter directory to read' })
+    expect(await boardCommand(p, command(''), next)).toEqual({ text: 'Runs has no litter directory to read' })
     expect((p.views.board as BoardView).body!.notice).toEqual({ level: 'error', text: 'this session has no litter directory: not a git repository' })
     updateSession({ litterDirError: null })
   })
@@ -699,7 +706,7 @@ describe("the pane's handlers", () => {
     const refused = 'litter: $.tool.register: this host cannot add tools at run time (no in-process MCP server registrar installed)'
     updateSession({ toolsRefused: refused })
     expect(await boardCommand(p, command(''), next)).toEqual({
-      text: 'the board shows nothing: $.tool.register: this host cannot add tools at run time (no in-process MCP server registrar installed)',
+      text: 'Runs shows nothing: $.tool.register: this host cannot add tools at run time (no in-process MCP server registrar installed)',
     })
     // The pane's own notice is litter's drawing, which the engine doesn't label: it keeps the refusal whole.
     expect((p.views.board as BoardView).body!.notice).toEqual({ level: 'error', text: refused })

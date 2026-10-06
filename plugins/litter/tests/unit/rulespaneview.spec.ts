@@ -22,10 +22,14 @@ import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
 import { BAN_MATCHES_NO_FILE, MATCHES_NO_FILE, blankRulesNav, deps as viewDeps, resetRulesViewForTests, rulesNavOf, rulesView } from '../../hooks/rules/paneview'
-import { deps as paneDeps, onRulesUi, openRulesPane, pressRules, refreshRulesPane, resetRulesPaneForTests, rulesCommand, rulesTick } from '../../hooks/rules/pane'
+import { deps as paneDeps, onRulesUi, pressRules, refreshRulesPane, resetRulesPaneForTests, rulesCommand, rulesTick } from '../../hooks/rules/pane'
 import { boardTick, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests } from '../../hooks/board/view'
+import { openSection, resetHubForTests, type SectionArg } from '../../hooks/ui/hub'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+
+/** The rules records' open (rule.open, rule.import): Rules on its focus, through the hub's opener. */
+const openRulesPane = async (p: TestPorts, focus: SectionArg): Promise<boolean> => (await openSection(p, 'rules', focus)).placed
 
 setDefaultTimeout(120_000)
 
@@ -64,6 +68,7 @@ beforeEach(() => {
   resetRulesPaneForTests()
   resetBoardForTests()
   resetBoardPaneForTests()
+  resetHubForTests()
   ;({ dir, cleanup } = scratch())
   p = nodePorts({ sessionId: 's1', cwd: dir })
   p.clock.now = NOW
@@ -194,7 +199,7 @@ const row = (v: RulesPaneView, key: string): RulesRow => {
   return r
 }
 const notice = () => view().body?.notice?.text ?? ''
-const command = () => ({ command: 'litter-rules', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const command = () => ({ command: 'litter', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
 
 // ---------------------------------------------------------------------------
 
@@ -222,8 +227,8 @@ describe('the Proposed tab', () => {
     expect(edit.notes).toEqual(['proposed by a gate critic in run 20261003-api at G2', 'an edit of P-tests-first@2', 'its id is assigned when you accept it'])
     expect(edit.diff).toEqual(
       expect.arrayContaining([
-        { text: '− Write the test first.', color: 'diffRemovedWord' },
-        { text: '+ Write the failing test first.', color: 'diffAddedWord' },
+        { text: '− Write the test first.', color: 'error' },
+        { text: '+ Write the failing test first.', color: 'success' },
         { text: '  type: rule', dim: true },
       ]),
     )
@@ -237,7 +242,7 @@ describe('the Proposed tab', () => {
     const hand = row(v, 'P-hand')
     expect(hand.status).toEqual({ text: 'unverified', color: 'warning', glyph: '!' })
     expect(hand.notes).toEqual(['a hand edit', 'P-hand@1 stays in force until you accept this', `file ${rulesPath('P-hand')}`])
-    expect(hand.diff).toEqual(expect.arrayContaining([{ text: '+ Changed by hand.', color: 'diffAddedWord' }]))
+    expect(hand.diff).toEqual(expect.arrayContaining([{ text: '+ Changed by hand.', color: 'success' }]))
     expect(hand.actions).toEqual(['accept'])
     expect(row(v, 'U-new').notes[1]).toBe('nothing of it is in force')
 
@@ -342,9 +347,9 @@ describe('the In force tab', () => {
 })
 
 describe('the presses reach the store once each, with what the pane showed', () => {
-  test('/litter-rules opens the pane; [Accept] on a user proposal accepts it once into user scope', async () => {
-    expect(await rulesCommand(p, command(), next)).toEqual({ text: 'the rules pane shows 8 proposed or unverified, 5 in force' })
-    expect(p.panes.opened.map(o => o.id)).toEqual(['litter-rules'])
+  test('/litter rules opens `litter` on Rules; [Accept] on a user proposal accepts it once into user scope', async () => {
+    expect(await rulesCommand(p, command(), next)).toEqual({ text: 'Rules shows 8 proposed or unverified, 5 in force' })
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
     await pressRules(p, 'rules:accept:repo:3')
     expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 3 } }, { scope: 'user' }] }])
     expect(view().body!.notice).toEqual({ level: 'ok', text: 'accepted into user scope: written to /home/you/.claude/litter/rules/user-rule.md' })

@@ -133,7 +133,7 @@ describe('skills/execute/SKILL.md', () => {
   test('a halt follows decision 5: under auto it reports the swarm; under off it offers the swarm, amend or stop, in that order; a re-split only when asked', () => {
     const end = section(EXECUTE, '## 7. When the run finishes', '')
     const took = end.slice(end.indexOf('**A gate halted, and a repair swarm took over**'))
-    expect(took).toContain('/litter-swarm `<name>` shows it. Don\'t start it yourself or offer other routes.')
+    expect(took).toContain('/litter swarms `<name>` shows it. Don\'t start it yourself or offer other routes.')
     const routes = end.slice(end.indexOf('**A gate halted, and nothing took over**'))
     expect(routes).toContain('offer with AskUserQuestion')
     const order = ["{ kind: 'repair.start', run }", 'amend that gate with /litter:amend', 'stop and leave the last attempt in the tree'].map(s => routes.indexOf(s))

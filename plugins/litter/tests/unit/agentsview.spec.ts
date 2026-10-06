@@ -250,7 +250,7 @@ describe("a team's members", () => {
     ])
     expect(b.scope).toBe('team.team-b')
     expect(b.title.map(s => s.text).join('')).toBe('litter · agents · team team-b · 3 members')
-    expect(b.title.find(s => s.text === 'team-b')?.color).toBe('cyan')
+    expect(b.title.find(s => s.text === 'team-b')?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     // A team's view keeps the composer for [Broadcast], with no row to [Send] to yet.
     expect(b.broadcast).toBe('team-b')
     expect(b.composer).toEqual({ key: 'agents:text:0', text: '', to: null })
@@ -359,7 +359,7 @@ describe('the selected agent', () => {
     expect(t.lines.length).toBe(TAIL)
     expect(t.lines.slice(-3)).toEqual([
       { text: '◆ step 40' },
-      { text: '↳ Bash npm test (+1 more)', color: 'subtle' },
+      { text: '↳ Bash npm test (+1 more)', color: 'inactive' },
       { text: '› [bold]brackets[/bold] stay', dim: true },
     ])
     const more = (await body(p, nav({ selected: 'a1', more: true }))).selected!.transcript!
@@ -394,8 +394,8 @@ describe('the selected agent', () => {
   })
 
   test('a message line: a tool with no argument, and a row with neither text nor tool, which reads as nothing', () => {
-    expect(messageLine(toolCall('TaskList', {}))).toEqual({ text: '↳ TaskList', color: 'subtle' })
-    expect(messageLine(toolCall('Edit', { file_path: { nested: true } }))).toEqual({ text: '↳ Edit {"nested":true}', color: 'subtle' })
+    expect(messageLine(toolCall('TaskList', {}))).toEqual({ text: '↳ TaskList', color: 'inactive' })
+    expect(messageLine(toolCall('Edit', { file_path: { nested: true } }))).toEqual({ text: '↳ Edit {"nested":true}', color: 'inactive' })
     expect(messageLine(result())).toBeNull()
   })
 

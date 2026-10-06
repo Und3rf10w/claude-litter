@@ -589,7 +589,7 @@ describe("the run lock's holder in a repair generation (reconcile before an acqu
     const r = (await fanoutStart(w)) as { ok: false; error: string }
     expect(r.ok).toBe(false)
     expect(r.error).toContain(`run ${h.ref.run} holds the project's run lock while its repair swarm ${SWARM} is live (generation 2)`)
-    expect(r.error).toContain(`/litter-swarm ${SWARM}`)
+    expect(r.error).toContain(`/litter swarms ${SWARM}`)
     expect(asked).toEqual([])
     expect(runState(await records(w, h.ref)).open?.n).toBe(2)
   })

@@ -317,7 +317,7 @@ describe('the record lines', () => {
 })
 
 describe('[Plan] for a design run', () => {
-  const command = { command: 'litter-board', args: RUN, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never
+  const command = { command: 'litter', args: RUN, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never
   const next = (async () => ({ text: 'engine' })) as never
   const shown = () => p.views.board as BoardView
 

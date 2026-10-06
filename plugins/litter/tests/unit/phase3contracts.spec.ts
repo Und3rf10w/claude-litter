@@ -170,7 +170,7 @@ describe('the new kinds', () => {
       for (const agentId of [undefined, 'gc']) {
         const e = asError(await call(w, { kind, run: RUN }, agentId))
         expect(e.field).toBe('kind')
-        expect(e.error).toContain('rules pane (/litter-rules)')
+        expect(e.error).toContain('rules pane (/litter rules)')
         expect(e.error).toContain('propose a rule or open one in the pane')
         expect(e.allowed).toEqual(['rule.propose', 'rule.open'])
       }
@@ -469,7 +469,7 @@ describe('run.start with a selection', () => {
     for (const workflow of ['execute', 'fanout', 'plan']) {
       const e = asError(await start(w, workflow))
       expect(e.error).toBe(
-        "litter: the accepted rules couldn't be selected for this run (two scopes hold the rule public-api); /litter-rules shows them and their problems. Launch again once it's fixed",
+        "litter: the accepted rules couldn't be selected for this run (two scopes hold the rule public-api); /litter rules shows them and their problems. Launch again once it's fixed",
       )
     }
     expect(runsIn(w)).toEqual([])

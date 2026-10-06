@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { TasksBody, TasksPaneView } from '../../types/index'
-import { onTasksUi, refreshTasks, resetTasksPaneForTests, tasksCommand, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
+import { onTasksUi, refreshTasks, resetTasksPaneForTests, tasksCommand, tasksTick } from '../../hooks/tasks/pane'
+import { LITTER_PANE as TASKS_PANE, resetHubForTests } from '../../hooks/ui/hub'
 import { EMPTIED_DONE, EMPTIED_GONE, LINE_MARK, TASKS_STORE_KEY, deps, tasksNavOf } from '../../hooks/tasks/view'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
@@ -18,10 +19,14 @@ setDefaultTimeout(60_000)
 
 const SESSION = 'sess-pane'
 const cleanups: (() => void)[] = []
-beforeEach(() => resetTasksPaneForTests())
+beforeEach(() => {
+  resetTasksPaneForTests()
+  resetHubForTests()
+})
 afterEach(() => {
   for (const c of cleanups.splice(0)) c()
   resetTasksPaneForTests()
+  resetHubForTests()
 })
 
 type Task = { id: string; subject?: string; description?: string; status?: string; owner?: string; blocks?: string[]; blockedBy?: string[] }
@@ -57,7 +62,7 @@ const team = (config: string, name: string, members: string[], lead: string | nu
   )
 }
 
-const cmd = (args = '') => ({ command: 'litter-tasks', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const cmd = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
 const never = (async () => {
   throw new Error('a tasks key never passes on')
 }) as never
@@ -81,7 +86,7 @@ async function opened(): Promise<{ p: TestPorts; config: string }> {
     { id: '4', subject: 'Archive', status: 'completed', owner: 'executor' },
   ])
   const answer = await tasksCommand(w.p, cmd('team-a'), never)
-  expect(answer).toEqual({ text: 'the tasks pane shows team-a (5 tasks)' })
+  expect(answer).toEqual({ text: 'Tasks shows team-a (5 tasks)' })
   return w
 }
 
@@ -90,7 +95,7 @@ async function opened(): Promise<{ p: TestPorts; config: string }> {
 describe('the list, the filters and the sort', () => {
   test("the command opens the pane on the list named, and the picker offers this session's list first", async () => {
     const { p } = await opened()
-    expect(p.panes.opened).toEqual([{ id: TASKS_PANE, title: 'litter tasks' }])
+    expect(p.panes.opened).toEqual([{ id: TASKS_PANE, title: 'litter', focus: true }])
     const b = body(p)
     expect(b.title.map(s => s.text).join('')).toBe('litter · tasks · team-a')
     expect(b.list).toBe('team-a')
@@ -102,7 +107,7 @@ describe('the list, the filters and the sort', () => {
 
   test("with no argument it opens this session's list; a name that isn't a list says so", async () => {
     const { p } = world()
-    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: `the tasks pane shows ${SESSION} (0 tasks)` })
+    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: `Tasks shows ${SESSION} (0 tasks)` })
     expect(body(p).empty).toBe("no tasks in this session's list yet")
     await tasksCommand(p, cmd('nope'), never)
     expect(body(p).notice).toEqual({ level: 'warning', text: "there's no task list named nope, so this session's is shown" })
@@ -389,7 +394,7 @@ describe('the tick and the navigation', () => {
   test("the config dir can't be known: the pane says why, and nothing throws", async () => {
     const { p } = world()
     p.configDirValue = null
-    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: "the tasks pane has nothing to show: the task lists can't be read: no config dir in tier 2 (set configDirValue)" })
+    expect(await tasksCommand(p, cmd(), never)).toEqual({ text: "Tasks has nothing to show: the task lists can't be read: no config dir in tier 2 (set configDirValue)" })
     expect(body(p).notice?.level).toBe('error')
   })
 })

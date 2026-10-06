@@ -133,8 +133,14 @@ export type TestPorts = Ports & {
   configDirValue: string | null
   /** Every `registerCommand` spec, in order. */
   commands: CommandSpec[]
-  /** Every `openPane` and `closePane`, in order. `openPane` answers true (placed). */
-  panes: { opened: { id: string; title: string }[]; closed: string[] }
+  /** Every `openPane` and `closePane`, in order. `openPane` answers true (placed); `focus` is there when the open asked for it (WP-DA). */
+  panes: { opened: { id: string; title: string; focus?: true }[]; closed: string[] }
+  /**
+   * What `paneOpen(id)` answers (WP-DA). Null (the default): whether `id` was
+   * opened and not closed since; `paneOpenThrows` makes it reject.
+   */
+  paneOpenValue: boolean | null
+  paneOpenThrows: boolean
   toasts: string[]
   /** Every transcript row `note` wrote, in order (WP-CK). */
   notes: string[]
@@ -380,6 +386,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
   const asked: { question: string; options: readonly string[] }[] = []
   const settingsValue: Record<string, unknown> = {}
   const clone = (v: unknown) => (v === undefined ? undefined : structuredClone(v))
+  /** The panes open now: an open adds one, a close takes it away (paneOpen's default). */
+  const openNow = new Set<string>()
   // The methods below read the fakes' fields through `p` when called, so a spec may set an answer at any time.
   const p: TestPorts = {
     fs: {
@@ -511,11 +519,19 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
       return p.configDirValue
     },
     registerCommand: async spec => void p.commands.push(spec),
-    openPane: async (id, title) => {
-      p.panes.opened.push({ id, title })
+    openPane: async (id, title, focus) => {
+      p.panes.opened.push(focus === true ? { id, title, focus: true } : { id, title })
+      openNow.add(id)
       return true
     },
-    closePane: async id => void p.panes.closed.push(id),
+    paneOpen: async id => {
+      if (p.paneOpenThrows) throw new Error('ui.panes failed in tier 2 (paneOpenThrows)')
+      return p.paneOpenValue ?? openNow.has(id)
+    },
+    closePane: async id => {
+      p.panes.closed.push(id)
+      openNow.delete(id)
+    },
     toast: text => void p.toasts.push(text),
     note: text => void p.notes.push(text),
     copy: async text => {
@@ -552,6 +568,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     configDirValue: null,
     commands: [],
     panes: { opened: [], closed: [] },
+    paneOpenValue: null,
+    paneOpenThrows: false,
     toasts: [],
     notes: [],
     copied: [],

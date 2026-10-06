@@ -780,7 +780,7 @@ describe("summary.md's Repair section", () => {
     await continueAsRepair(w.p, runDir)
     const text = await repairSummary(w.p, runDir)
     expect(text).toContain(`Repair swarm ${name} (launch ${calls.reopened[0]!.launch}) took over in generation 2, with a budget of 3 rounds and 6 agents.`)
-    expect(text).toContain(`Watch it with /litter-swarm ${name}`)
+    expect(text).toContain(`Watch it with /litter swarms ${name}`)
     expect(await repairSummary(w.p, join(w.litterDir, '20261003-none'))).toBe('')
   })
 })

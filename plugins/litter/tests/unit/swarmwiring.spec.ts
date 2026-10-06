@@ -14,11 +14,10 @@ import {
   agentOfferFailed,
   agentSpawnFailed,
   clearHoldFailed,
-  doctorCommandFailed,
+  litterCommandFailed,
   offerSwarmType,
   paneRenderFailed,
   sessionSendFailed,
-  swarmCommandFailed,
   swarmProposeFailed,
   swarmReadFailed,
   swarmSendFailed,
@@ -259,13 +258,15 @@ describe('the catches that pass on', () => {
 })
 
 describe('the commands and the tools', () => {
-  test('the swarm commands answer a one-line failure text', async () => {
-    const e = { command: 'litter-swarm', args: '', origin: { kind: 'user' }, presentation: 'text' } as never
-    expect(await swarmCommandFailed($, e, caught('no pane').next)).toEqual({ text: '/litter-swarm failed (no pane)' })
-    expect(await doctorCommandFailed($, e, caught('no pane').next)).toEqual({ text: '/litter-doctor failed (no pane)' })
+  test('/litter answers a one-line failure text, naming the section typed', async () => {
+    const e = (args: string) => ({ command: 'litter', args, origin: { kind: 'user' }, presentation: 'text' }) as never
+    expect(await litterCommandFailed($, e(''), caught('no pane').next)).toEqual({ text: '/litter failed (no pane)' })
+    expect(await litterCommandFailed($, e('swarms demo'), caught('no pane').next)).toEqual({ text: '/litter swarms failed (no pane)' })
     // An error worded for the model, as litter's and the engine's are, is shown without its `litter: `.
-    expect(await swarmCommandFailed($, e, caught("litter: there's no live swarm named demo").next)).toEqual({ text: "/litter-swarm failed (there's no live swarm named demo)" })
-    expect(await doctorCommandFailed($, e, caught('litter: $.ui.open refused').next)).toEqual({ text: '/litter-doctor failed ($.ui.open refused)' })
+    expect(await litterCommandFailed($, e('swarms demo'), caught("litter: there's no live swarm named demo").next)).toEqual({ text: "/litter swarms failed (there's no live swarm named demo)" })
+    expect(await litterCommandFailed($, e('doctor'), caught('litter: $.ui.open refused').next)).toEqual({ text: '/litter doctor failed ($.ui.open refused)' })
+    // The word typed is letters only, and short: nothing else of it is echoed.
+    expect(await litterCommandFailed($, e('[x](y)-and-a-very-long-word'), caught('no pane').next)).toEqual({ text: '/litter xyandaverylo failed (no pane)' })
   })
 
   test('each swarm tool is denied naming its hook, never passed on', async () => {
@@ -311,8 +312,8 @@ describe("register.tsx's order and its renders", () => {
       'tools',
       'swarm tools',
       'roles',
-      'swarm commands',
-      'board and rules commands',
+      // Phase 5b (WP-DA): /litter, the one command.
+      'litter command',
       'litterDir',
       'swarm state',
       'swarm pending',
@@ -329,20 +330,18 @@ describe("register.tsx's order and its renders", () => {
       'timers',
       'swarm timers',
       'pane timer',
-      'board timer',
-      // Phase 5 (WP-CA): its commands, the asks and the cards back, then the ui tick.
-      'phase 5 commands',
+      // Phase 5 (WP-CA): the asks and the cards back, then the ui tick (which took the board's timer, WP-DA).
       'asks',
       'cards',
       'ui timer',
     ])
   })
 
-  test("neither pane's ui.render awaits rebound: a rebind writes $.state, which a render can't", () => {
-    for (const pane of ['litter-swarm', 'litter-doctor']) {
-      const body = hookBody(`on('ui.render', { component: 'Pane', requestId: '${pane}' }`)
-      expect({ pane, rebound: body.includes('rebound(') }).toEqual({ pane, rebound: false })
-    }
+  test("the `litter` pane's ui.render doesn't await rebound: a rebind writes $.state, which a render can't", () => {
+    const body = hookBody(`on('ui.render', { component: 'Pane', requestId: 'litter' }`)
+    expect(body.includes('rebound(')).toBe(false)
+    // One pane: no render for the old pane ids is left.
+    for (const old of ['litter-swarm', 'litter-doctor', 'litter-board', 'litter-rules', 'litter-tasks', 'litter-agents']) expect(source.includes(`requestId: '${old}'`)).toBe(false)
     // Every other hook but session.start and session.end still does.
     const others = [...source.matchAll(/on\('([a-z.]+)'[^\n]*\n([\s\S]*?)\}\)\.catch\(/g)].filter(
       m => !['session.start', 'session.end', 'ui.render'].includes(m[1]!),

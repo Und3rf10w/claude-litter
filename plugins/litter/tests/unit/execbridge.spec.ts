@@ -481,7 +481,7 @@ describe("summary.md's Repair section for an execute run", () => {
     await continueAsRepair(w.p, x.runDir)
     const text = await repairSummary(w.p, x.runDir)
     expect(text).toContain(`A plan-template swarm can't take this on: gate G2's critic names a rule clash, which only you can settle ("${CLASH}").`)
-    expect(text).toContain('Instead, edit the rule or add an exception in /litter-rules, or change the plan\'s lines with /litter:amend G2, then continue the run.')
+    expect(text).toContain('Instead, edit the rule or add an exception in /litter rules, or change the plan\'s lines with /litter:amend G2, then continue the run.')
     expect(text).not.toContain('/litter:swarm repair')
     expect(summary(x)).toContain(`- rule_clash: ${CLASH}`)
     const r = (await recordRepairStart(ctxOf(), { kind: 'repair.start', run: RUN })) as { ok: boolean; error?: string }

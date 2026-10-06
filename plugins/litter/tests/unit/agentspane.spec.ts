@@ -1,5 +1,5 @@
 // Tier 2: the agents pane's actions (WP-CG; COMMON decisions 5, 6, 16):
-// /litter-agents opening on this session or a team; a send to `{ agentId }`,
+// /litter agents opening on this session or a team; a send to `{ agentId }`,
 // to a name, and to another team's member through CE's appendInbox (a `deps`
 // fake: its body is CA's stub before the merge); a refused send, an empty
 // message, a broadcast with one refusal; [Stop] armed, expired after 5 s on
@@ -11,18 +11,23 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { ListedAgent, ToolCallResult } from '../../hooks/ports'
 import type { InboxEntry, TeamInfo, WriteResult } from '../../hooks/uitypes'
 import type { AgentsBody, AgentsPaneView } from '../../types/index'
-import { AGENTS_PANE, agentsCommand, agentsTick, onAgentsUi, refreshAgents, resetAgentsPaneForTests } from '../../hooks/agents/pane'
+import { agentsCommand, agentsTick, onAgentsUi, refreshAgents, resetAgentsPaneForTests } from '../../hooks/agents/pane'
 import { AGENTS_STORE_KEY, agentsNavOf, deps, rowArg, scopeOf } from '../../hooks/agents/view'
+import { LITTER_PANE, resetHubForTests } from '../../hooks/ui/hub'
 import { nodePorts, type TestPorts } from './support/node-ports'
 
 const SESSION = 'test-session'
 const NOW = Date.parse('2026-10-05T15:00:00Z')
 const saved = { ...deps }
 
-beforeEach(() => resetAgentsPaneForTests())
+beforeEach(() => {
+  resetAgentsPaneForTests()
+  resetHubForTests()
+})
 afterEach(() => {
   Object.assign(deps, saved)
   resetAgentsPaneForTests()
+  resetHubForTests()
 })
 
 const agent = (id: string, over: Partial<ListedAgent> = {}): ListedAgent => ({ id, description: `task ${id}`, type: 'general-purpose', status: 'running', ...over })
@@ -65,14 +70,14 @@ function ports(agents: ListedAgent[] = []): TestPorts {
   return p
 }
 
-const cmd = (args = '') => ({ command: 'litter-agents', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } }) as never
+const cmd = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } }) as never
 const never = (async () => {
   throw new Error('the command answers, never passing on')
 }) as never
 const passOn = (async (e: unknown) => ({ passed: e })) as never
 
 const ev = (element: string, over: Record<string, unknown> = {}) =>
-  ({ plugin: 'litter', element, component: 'Pane', requestId: AGENTS_PANE, surface: 'terminal', ...over }) as never
+  ({ plugin: 'litter', element, component: 'Pane', requestId: LITTER_PANE, surface: 'terminal', ...over }) as never
 const press = (p: TestPorts, element: string) => onAgentsUi.press(p, ev(element), passOn)
 const type = (p: TestPorts, value: string, kind: 'change' | 'submit' = 'change') => onAgentsUi.input(p, ev(`agents:text:${agentsNavOf()?.gen ?? 0}`, { kind, value }), passOn)
 const pick = (p: TestPorts, value: string) => onAgentsUi.select(p, ev('agents:scope', { value }), passOn)
@@ -87,19 +92,19 @@ async function open(p: TestPorts, args = ''): Promise<string> {
   return r.text
 }
 
-describe('/litter-agents', () => {
+describe('/litter agents', () => {
   test("opens on this session's agents, then on the team named; a name that's no team shows this session, saying so", async () => {
     fakeStore({ teams: [team('team-b', ['team-lead', 'writer'])] })
     const p = ports([agent('a1', { name: 'reviewer' }), agent('a2')])
-    expect(await open(p)).toBe("the agents pane shows this session's 2 agents")
-    expect(p.panes.opened).toEqual([{ id: 'litter-agents', title: 'litter agents' }])
+    expect(await open(p)).toBe("Agents shows this session's 2 agents")
+    expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
     expect(body(p).scope).toBe(S)
     expect(body(p).rows.map(r => r.key)).toEqual(['a1', 'a2'])
 
-    expect(await open(p, 'team-b')).toBe("the agents pane shows team team-b's 2 members")
+    expect(await open(p, 'team-b')).toBe("Agents shows team team-b's 2 members")
     expect(body(p).scope).toBe(T('team-b'))
 
-    expect(await open(p, 'nope')).toBe("the agents pane shows this session's 2 agents")
+    expect(await open(p, 'nope')).toBe("Agents shows this session's 2 agents")
     expect(body(p).notice).toEqual({ level: 'warning', text: "there's no team named nope, so this session's agents are shown: the picker lists the teams" })
   })
 
@@ -377,9 +382,9 @@ describe('stale presses and the picker', () => {
     expect(agentsNavOf()!.selected).toBeNull()
 
     await press(p, `agents:send:${rowArg(T('team-b'), 'writer')}`)
-    expect(p.toasts.at(-1)).toBe("that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
+    expect(p.toasts.at(-1)).toBe("that was for team team-b, and Agents shows this session's agents now, so it was ignored")
     await press(p, `agents:broadcast:${T('team-b')}`)
-    expect(p.toasts.at(-1)).toBe("that was for team team-b, and the agents pane shows this session's agents now, so it was ignored")
+    expect(p.toasts.at(-1)).toBe("that was for team team-b, and Agents shows this session's agents now, so it was ignored")
     await press(p, `agents:stop:${rowArg(S, 'a9')}`)
     expect(p.toasts.at(-1)).toBe("a9 isn't listed any more, so that was ignored")
     expect(p.sent).toEqual([])
@@ -390,7 +395,7 @@ describe('stale presses and the picker', () => {
     fakeStore()
     const p = ports([agent('a1')])
     expect(await press(p, `agents:send:${rowArg(S, 'a1')}`)).toEqual({ element: `agents:send:${rowArg(S, 'a1')}` })
-    expect(p.toasts).toEqual(["the agents pane isn't open in this session, so that was ignored: /litter-agents opens it"])
+    expect(p.toasts).toEqual(["Agents isn't open in this session, so that was ignored: /litter agents opens it"])
     expect(p.sent).toEqual([])
   })
 

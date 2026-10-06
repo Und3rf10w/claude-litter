@@ -42,7 +42,7 @@ let landed: string
 const saved = { ...deps }
 
 const next = (async () => ({ text: 'engine' })) as never
-const command = (args = '') => ({ command: 'litter-board', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
+const command = (args = '') => ({ command: 'litter', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
 
 beforeEach(async () => {
   state.resetForTests()

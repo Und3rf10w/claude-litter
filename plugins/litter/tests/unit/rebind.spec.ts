@@ -201,7 +201,7 @@ function fakes(calls: Call[]): void {
       calls.push({ name: 'briefTextFor', args: [litterDir, name, revision, node] })
       return `brief of ${node} at ${revision}`
     },
-    registerSwarmCommands: async () => void calls.push({ name: 'registerSwarmCommands', args: [] }),
+    registerLitterCommand: async () => void calls.push({ name: 'registerLitterCommand', args: [] }),
     refreshPanes: async (p: Ports) => {
       // After the gate opens: a hook would answer at once.
       let gateOpen = true
@@ -307,7 +307,7 @@ describe('the rebind after a /clear', () => {
       [w.litterDir, 'alpha', 2, 'part-a'],
       [w.litterDir, 'alpha', 2, 'fixer'],
     ])
-    expect(calls.filter(c => c.name === 'registerSwarmCommands')).toHaveLength(1)
+    expect(calls.filter(c => c.name === 'registerLitterCommand')).toHaveLength(1)
 
     // policy.json names the new session, and so does this session's swarm entry (the generation kept); another session's is left.
     const policy = (await readPolicy(w.p, w.litterDir))!
