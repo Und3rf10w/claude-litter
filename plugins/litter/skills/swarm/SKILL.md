@@ -34,7 +34,7 @@ This covers a description from the user, and a builder request naming the swarm 
 
 1. Call `mcp__litter__swarm_read` with the name. It returns the launch the user confirmed: the authority, and the orchestrators to spawn, each with `subagent_type`, `description` and `task`.
 2. Spawn every orchestrator in one message with the Agent tool: its `subagent_type` and `description`, with its `task` as the prompt. Leave `name`, `isolation` and `model` unset; the mod sets each node's directory and model. If a spawn is refused, show the reason; don't retry it another way.
-3. Tell the user briefly which orchestrators started, and that `/litter-swarm` shows the tree. End your turn.
+3. Tell the user briefly which orchestrators started, and that `/litter swarms` shows the tree. End your turn.
 
 A repair swarm starts the same way, from that line or from litter's message asking you to.
 

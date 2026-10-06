@@ -1,4 +1,5 @@
-// The rules pane, `litter-rules` (plan 16.3, 16.8): the only place a rule is
+// The rules pane, the `litter` pane's Rules section (plan 16.3, 16.8; phase
+// 5b, WP-DA): the only place a rule is
 // accepted, dismissed or retired. Its buttons are the only path to store.ts's
 // acceptRule, dismissRule and retireRule (COMMON, "Only you accept"). Keys
 // are `rules:<action>[:<arg>]`. Owner: phase 3, package AF.
@@ -11,7 +12,9 @@
 
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
-import type { CommandRunHook, PaneElements, PaneRender, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { BodyContext } from '../ui/chrome'
+import type { Loaded } from '../ui/hub'
 import type { ProposalRef, RuleScope, RuleType } from '../records/rules'
 import type { RulesBody, RulesPaneView, RulesRow, RulesTab, SwarmNotice } from '../../types/index'
 import type { AcceptOpts, AcceptWhat } from './store'
@@ -23,6 +26,8 @@ import { primaryOf } from '../lifecycle'
 import { interactive } from '../swarm/state'
 import { button, buttons, header, input, section, select, tableFor } from '../swarm/builder'
 import { clean, oneLine } from '../swarm/view'
+import { STYLE } from '../ui/style'
+import { openSection } from '../ui/hub'
 import { acceptRule, dismissRule, narrowPaths, previewAccept, retireRule } from './store'
 import {
   MATCHES_NO_FILE,
@@ -38,8 +43,6 @@ import {
   scopeChoices,
   setRulesNav,
 } from './paneview'
-
-export const RULES_PANE = 'litter-rules'
 
 // AD's acting functions, through one table so tier 2 can stand in for them
 // (COMMON, "Another package's module"). The mod never changes it.
@@ -113,21 +116,18 @@ async function drawRules(p: Ports): Promise<RulesPaneView | null> {
   n.pending = built.view.body?.pending ?? null
   n.editing = built.view.body?.editing ?? null
   await p.setView('rules', built.view)
+  lastCounts = built.view.body?.counts ?? null
   lastStamp = await rulesStamp(p, litterDir)
   await saveRulesNav(p)
   return built.view
 }
 
-/** command.run on `litter-rules`: opens the `litter-rules` pane on the Proposed tab, answering a one-line `text`. */
-export const rulesCommand: PortHook<CommandRunHook> = async (p, e, next) => {
-  await restoreRulesNav(p)
-  setRulesNav({ ...blankRulesNav('proposed'), held: rulesNavOf()?.held ?? {} })
-  const view = await drawRules(p)
-  const placed = await p.openPane(RULES_PANE, 'litter rules')
-  const c = view?.body?.counts
-  const what = session().litterDir && c ? `shows ${c.proposed} proposed or unverified, ${c.inForce} in force` : 'has no litter directory to read'
-  return { text: `the rules pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
-}
+/** The last build's counts, for the hub's strip and Home (WP-DA); null before one. */
+let lastCounts: { proposed: number; inForce: number } | null = null
+export const rulesCounts = (): { proposed: number; inForce: number } | null => (lastCounts ? { ...lastCounts } : null)
+
+/** `/litter rules` (ui/hub.ts's litterCommand): shows Rules on the Proposed tab in the `litter` pane. */
+export const rulesCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'rules', '', { focus: true })).text })
 
 const validFocus = (focus: { id?: unknown; proposal?: unknown } | null): RulesNav['focus'] => {
   if (!focus) return null
@@ -139,37 +139,39 @@ const validFocus = (focus: { id?: unknown; proposal?: unknown } | null): RulesNa
 }
 
 /**
- * Opens the rules pane focused on a rule id or a proposal (null: the Proposed
- * tab), from the board's [Rules] and AD's rule.open and rule.import. Answers
- * whether the pane was placed; a caller whose open was refused says "run
- * /litter-rules". A proposal that is, or is in, an import batch focuses the
- * batch. Never throws.
+ * Rules' load (openSection): focused on a rule id or a proposal, or for null
+ * the Proposed tab (`/litter rules`, the board's [Rules]); AD's rule.open and
+ * rule.import pass the focus. A proposal that is, or is in, an import batch
+ * focuses the batch. Answers the reply's line.
  */
-export async function openRulesPane(p: Ports, focus: { id?: string; proposal?: ProposalRef } | null): Promise<boolean> {
-  try {
-    await restoreRulesNav(p)
-    const f = validFocus(focus)
-    const litterDir = session().litterDir
-    let tab: RulesTab = 'proposed'
-    if (f?.id && litterDir) {
-      // A rule in force opens on its own tab; an unverified file on the Proposed one.
-      try {
-        const found = (await viewDeps.loadRules(p, litterDir)).rules.find(r => r.doc.id === f.id)
-        if (found && found.standing !== 'unverified' && found.delivered) tab = 'in-force'
-      } catch (err) {
-        p.log(`rules pane: the rules couldn't be loaded to place ${f.id}: ${errText(err)}`)
-      }
+export async function loadRules(p: Ports, focus: { id?: string; proposal?: ProposalRef } | null): Promise<Loaded> {
+  await restoreRulesNav(p)
+  const f = validFocus(focus)
+  const litterDir = session().litterDir
+  let tab: RulesTab = 'proposed'
+  if (f?.id && litterDir) {
+    // A rule in force opens on its own tab; an unverified file on the Proposed one.
+    try {
+      const found = (await viewDeps.loadRules(p, litterDir)).rules.find(r => r.doc.id === f.id)
+      if (found && found.standing !== 'unverified' && found.delivered) tab = 'in-force'
+    } catch (err) {
+      p.log(`rules pane: the rules couldn't be loaded to place ${f.id}: ${errText(err)}`)
     }
-    setRulesNav({ ...blankRulesNav(tab, f), held: rulesNavOf()?.held ?? {} })
-    await drawRules(p)
-    return await p.openPane(RULES_PANE, 'litter rules')
-  } catch (err) {
-    p.log(`rules pane: it didn't open: ${errText(err)}`)
-    return false
   }
+  setRulesNav({ ...blankRulesNav(tab, f), held: rulesNavOf()?.held ?? {} })
+  const view = await drawRules(p)
+  const c = view?.body?.counts
+  return { text: litterDir && c ? `Rules shows ${c.proposed} proposed or unverified, ${c.inForce} in force` : 'Rules has no litter directory to read' }
 }
 
-/** The board's tick: the pane's view again when a rules ledger moved (a critic's proposal, a step taken elsewhere). */
+/** Rules from the strip or Home: the tab it showed, drawn again, else the Proposed tab. */
+export async function resumeRules(p: Ports): Promise<void> {
+  await restoreRulesNav(p)
+  if (rulesNavOf()) await drawRules(p)
+  else await loadRules(p, null)
+}
+
+/** Rules' tick (ui/hub.ts's litterTick, while Rules is shown): the view again when a rules ledger moved (a critic's proposal, a step taken elsewhere). */
 export async function rulesTick(p: Ports): Promise<void> {
   await restoreRulesNav(p)
   const litterDir = session().litterDir
@@ -186,21 +188,22 @@ export async function refreshRulesPane(p: Ports): Promise<void> {
 
 export function resetRulesPaneForTests(): void {
   lastStamp = ''
+  lastCounts = null
 }
 
 // ---------------------------------------------------------------------------
 // The render
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-rules' }` calls it with the rulesPane atom. A pure renderer. */
-export function renderRulesPane(view: RulesPaneView | null, resolved: PaneElements, e: PaneRender): RenderElement {
-  const el = tableFor(resolved, e.surface)
+/** Rules' body renderer (ui/pane.tsx calls it with the rulesPane atom under the hub's chrome). Pure. */
+export function renderRulesPane(view: RulesPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
+  const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
   if (!view || !body) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · rules</Text>
-        <Text dimColor>nothing to show yet: /litter-rules opens the rules pane</Text>
+        <Text dimColor>nothing to show yet: /litter rules opens the rules</Text>
       </Box>
     )
   }
@@ -225,7 +228,7 @@ export function renderRulesPane(view: RulesPaneView | null, resolved: PaneElemen
         <Box flexDirection="column">
           {section(el, 'Problems')}
           {(body.problems ?? []).map(x => (
-            <Text color="warning" wrap="wrap">{`! ${x}`}</Text>
+            <Text color={STYLE.warning} wrap="wrap">{`! ${x}`}</Text>
           ))}
         </Box>
       )}
@@ -245,7 +248,7 @@ function batchPart(el: PaneElements, body: RulesBody, rows: readonly RulesRow[])
       {b.instances.map(i => (
         <Box flexDirection="column" marginTop={1}>
           <Box flexDirection="row" columnGap={1}>
-            <Text color={i.archived ? 'inactive' : 'success'}>{i.archived ? '− archived' : '✓ live'}</Text>
+            <Text color={i.archived ? STYLE.idle : STYLE.done}>{i.archived ? '− archived' : '✓ live'}</Text>
             <Text bold>{i.id}</Text>
             {i.date && <Text dimColor>{i.date}</Text>}
           </Box>
@@ -256,7 +259,7 @@ function batchPart(el: PaneElements, body: RulesBody, rows: readonly RulesRow[])
       {rows.filter(r => !instanceOf(r)).map(r => rowPart(el, body, r))}
       {preview && (
         <Box flexDirection="column">
-          {section(el, 'The files [Confirm accept] writes', { text: preview.path, color: 'blue' })}
+          {section(el, 'The files [Confirm accept] writes', { text: preview.path, color: STYLE.path })}
           {fileText(el, preview.text)}
         </Box>
       )}
@@ -300,7 +303,7 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row" columnGap={1}>
-        <Text color="claude">{focused ? '›' : ' '}</Text>
+        <Text color={STYLE.accent}>{focused ? '›' : ' '}</Text>
         {r.checked !== undefined && <Button key={`rules:check:${r.key}`} label={r.checked ? '[x]' : '[ ]'} plain onPress={() => {}} />}
         <Text color={r.status.color}>{`${r.status.glyph} ${r.status.text}`}</Text>
         <Text bold>{name}</Text>
@@ -310,12 +313,12 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
       {r.when !== '' && <Text wrap="wrap">{`  when: ${r.when}`}</Text>}
       <Text wrap="wrap">{`  ${r.rule}`}</Text>
       {r.paths.length > 0 ? (
-        <Text color="blue" wrap="wrap">{`  ${r.type === 'ban' ? 'protects' : 'paths'}: ${r.paths.join(', ')}`}</Text>
+        <Text color={STYLE.path} wrap="wrap">{`  ${r.type === 'ban' ? 'protects' : 'paths'}: ${r.paths.join(', ')}`}</Text>
       ) : (
-        <Text color="warning">{`  ${r.kind === 'accepted' ? 'no paths: applies everywhere' : NO_PATHS}`}</Text>
+        <Text color={STYLE.warning}>{`  ${r.kind === 'accepted' ? 'no paths: applies everywhere' : NO_PATHS}`}</Text>
       )}
       {notes.map(n => (
-        <Text color={flag(n) ? 'warning' : undefined} dimColor={!flag(n)} wrap="wrap">{`  ${flag(n) ? '! ' : ''}${n}`}</Text>
+        <Text color={flag(n) ? STYLE.warning : undefined} dimColor={!flag(n)} wrap="wrap">{`  ${flag(n) ? '! ' : ''}${n}`}</Text>
       ))}
       {r.diff && (
         <Box flexDirection="column">
@@ -336,14 +339,14 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
             placeholder: editing.type === 'ban' ? 'globs, comma-separated: what it protects' : 'globs, comma-separated; empty for every gate',
             submitLabel: 'Set',
           })}
-          {editing.error && <Text color="error" wrap="wrap">{`  ✕ ${editing.error}`}</Text>}
+          {editing.error && <Text color={STYLE.failed} wrap="wrap">{`  ✕ ${editing.error}`}</Text>}
           {select(el, { key: `rules:type:${r.key}`, label: 'Type', value: editing.type, options: TYPES.map(t => ({ value: t, label: t })) })}
           {buttons(el, [{ key: `rules:edit-done:${r.key}`, label: 'Done' }])}
         </Box>
       )}
       {pending?.kind === 'preview' && (
         <Box flexDirection="column">
-          {section(el, 'The file [Confirm accept] writes', { text: pending.path, color: 'blue' })}
+          {section(el, 'The file [Confirm accept] writes', { text: pending.path, color: STYLE.path })}
           {fileText(el, pending.text)}
           {buttons(el, [
             { key: `rules:confirm:${r.key}`, label: 'Confirm accept', primary: true },
@@ -353,7 +356,7 @@ function rowPart(el: PaneElements, body: RulesBody, r: RulesRow): RenderElement 
       )}
       {pending?.kind === 'retire' && (
         <Box flexDirection="column">
-          <Text color="warning" wrap="wrap">{`  ! retire ${name}? Its file moves to .history, and no later run gets it`}</Text>
+          <Text color={STYLE.warning} wrap="wrap">{`  ! retire ${name}? Its file moves to .history, and no later run gets it`}</Text>
           {buttons(el, [
             { key: `rules:confirm-retire:${r.key}`, label: 'Confirm retire', primary: true },
             { key: `rules:cancel:${r.key}`, label: 'Cancel' },

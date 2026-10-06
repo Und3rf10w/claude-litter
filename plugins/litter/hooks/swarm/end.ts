@@ -95,7 +95,7 @@ const SLOW_GIT_MS = 600_000
 const TASK_GONE = /is not running|No task found/i
 
 const KEPT_UNSETTLED =
-  "the swarm was ended without settling ([End, keep everything]), so nothing was removed; /litter-swarm offers the cleanup once nothing uses it"
+  "the swarm was ended without settling ([End, keep everything]), so nothing was removed; /litter swarms offers the cleanup once nothing uses it"
 
 const zero = (): TokenCount => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, turns: 0 })
 const inside = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir}/`)
@@ -464,7 +464,7 @@ async function settleTick(p: Ports, name: string, w: Wait): Promise<void> {
         `swarm ${name}: not settled after 2 minutes: ${plural(open.nodes.length, 'node')} running, ${plural(open.calls.length, 'call')} in flight, ` +
           `${plural(open.shells.length, 'shell')}, ${plural(open.reservations, 'reservation')}`,
       )
-      p.toast(`swarm ${name} hasn't settled after 2 minutes; /litter-swarm ${name} shows what's still open`)
+      p.toast(`swarm ${name} hasn't settled after 2 minutes; /litter swarms ${name} shows what's still open`)
     }
   } catch (err) {
     const text = errText(err)
@@ -1090,7 +1090,7 @@ async function decide(
  * --porcelain --ignored` shows nothing but the ignored paths its setup left,
  * and nothing uses it (no node or child running there, no shell unconfirmed,
  * no spawn reserved there). An `existing` worktree is never removed. K calls
- * this for a failed launch too; /litter-swarm offers it again later. When the
+ * this for a failed launch too; /litter swarms offers it again later. When the
  * launch has ended and an outcome changed, summary.md is written again.
  */
 export async function cleanupLaunch(p: Ports, swarm: string, launch: string): Promise<void> {

@@ -30,6 +30,7 @@ import type {
 } from '../../types/index'
 import { clean, oneLine } from '../swarm/view'
 import { countTasks, readTasks, sanitize, taskLists, tasksStamp, teams, updateTask } from '../team/store'
+import { STYLE } from '../ui/style'
 
 // The store, through one table so tier 2 can stand in for it. The mod never changes it.
 export const deps = {
@@ -56,11 +57,11 @@ const ROW_SUBJECT = 160
 
 /** 15.6: a glyph and a word beside each theme key. */
 export const STATUS: Record<string, BoardStatus> = {
-  pending: { text: 'pending', color: 'inactive', glyph: '·' },
-  in_progress: { text: 'in progress', color: 'background', glyph: '▸' },
-  completed: { text: 'completed', color: 'success', glyph: '✓' },
+  pending: { text: 'pending', color: STYLE.idle, glyph: '·' },
+  in_progress: { text: 'in progress', color: STYLE.running, glyph: '▸' },
+  completed: { text: 'completed', color: STYLE.done, glyph: '✓' },
 }
-const UNKNOWN_STATUS: BoardStatus = { text: 'unknown', color: 'warning', glyph: '!' }
+const UNKNOWN_STATUS: BoardStatus = { text: 'unknown', color: STYLE.warning, glyph: '!' }
 /** The status sort: the work under way first, then what's waiting, then what's done. */
 const STATUS_ORDER: Record<string, number> = { in_progress: 0, pending: 1, completed: 2 }
 
@@ -306,7 +307,7 @@ function listFor(lists: readonly TaskListRef[], n: TasksNav): TaskListRef | null
   return lists.find(l => l.mine) ?? lists[0] ?? null
 }
 
-/** A `/litter-tasks <list>` argument: a list's name, its folder name, or its team's; null for none that matches. */
+/** A `/litter tasks <list>` argument: a list's name, its folder name, or its team's; null for none that matches. */
 export function listNamed(lists: readonly TaskListRef[], arg: string): TaskListRef | null {
   return lists.find(l => l.name === arg) ?? lists.find(l => sanitize(l.name) === sanitize(arg)) ?? lists.find(l => l.team === arg) ?? null
 }

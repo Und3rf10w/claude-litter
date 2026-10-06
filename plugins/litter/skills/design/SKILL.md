@@ -18,7 +18,7 @@ $ARGUMENTS
 
 ## 1. Preflight
 
-If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and explain that the mod isn't running or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter-doctor` says which, when the mod is loaded. Don't run the design another way. Then record `{ kind: 'run.find' }`, and read litter's files only through the absolute `litterDir` and `runDir` paths it returns.
+If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and explain that the mod isn't running or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter doctor` says which, when the mod is loaded. Don't run the design another way. Then record `{ kind: 'run.find' }`, and read litter's files only through the absolute `litterDir` and `runDir` paths it returns.
 
 The mod refuses to launch in bypass-permissions or accept-edits mode. If that happens, tell the user to switch to auto or default mode with shift+tab and launch again, and that switching to either mode during the run halts it.
 
@@ -64,7 +64,7 @@ Tell the user that the run works on the checkout as it is now, uncommitted chang
 
 ## 6. While it runs
 
-Tell the user in two or three lines what launched and that /litter-board shows the bar and the versions as they arrive. Then end your turn. The completion notification will come to you, so don't poll, re-read run files or guess at results. If the user asks you to stop the run, call TaskStop with the task id from the launch result; the mod records the stop.
+Tell the user in two or three lines what launched and that /litter runs shows the bar and the versions as they arrive. Then end your turn. The completion notification will come to you, so don't poll, re-read run files or guess at results. If the user asks you to stop the run, call TaskStop with the task id from the launch result; the mod records the stop.
 
 ## 7. When the run finishes
 

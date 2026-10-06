@@ -41,6 +41,7 @@ import { matches } from './match'
 import { primaryOf } from '../lifecycle'
 import { interactive } from '../swarm/state'
 import { clean, oneLine } from '../swarm/view'
+import { STYLE } from '../ui/style'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -184,10 +185,10 @@ export function resetRulesViewForTests(): void {
 // Words, colors and glyphs (15.6: a word on every status)
 
 export const STATUS: Record<'proposed' | 'unverified' | 'accepted' | 'accepted (committed)', BoardStatus> = {
-  proposed: { text: 'proposed', color: 'permission', glyph: '⚑' },
-  unverified: { text: 'unverified', color: 'warning', glyph: '!' },
-  accepted: { text: 'accepted', color: 'success', glyph: '✓' },
-  'accepted (committed)': { text: 'accepted (committed)', color: 'success', glyph: '✓' },
+  proposed: { text: 'proposed', color: STYLE.needsYou, glyph: '⚑' },
+  unverified: { text: 'unverified', color: STYLE.warning, glyph: '!' },
+  accepted: { text: 'accepted', color: STYLE.done, glyph: '✓' },
+  'accepted (committed)': { text: 'accepted (committed)', color: STYLE.done, glyph: '✓' },
 }
 
 export const NO_PATHS = 'no paths: applies to every gate'
@@ -240,10 +241,10 @@ export function diffSpans(before: readonly string[], after: readonly string[]): 
       i++
       j++
     } else if (j < b.length && (i >= a.length || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) {
-      out.push({ text: `+ ${b[j]}`, color: 'diffAddedWord' })
+      out.push({ text: `+ ${b[j]}`, color: STYLE.added })
       j++
     } else {
-      out.push({ text: `− ${a[i]}`, color: 'diffRemovedWord' })
+      out.push({ text: `− ${a[i]}`, color: STYLE.removed })
       i++
     }
   }

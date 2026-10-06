@@ -1,7 +1,8 @@
-// WP-N: the swarm pane's draw, every view (start, builder, proposal, browser,
-// goal history, recovery card, unsettled report, read-only): a pure render
-// function of the view in $.state, the surface's resolved elements, and the
-// ui.render input. It never sees `$` or the ports.
+// WP-N: the Swarms section's draw (the `litter` pane, phase 5b), every view
+// (start, builder, proposal, browser, goal history, recovery card, unsettled
+// report, read-only): a pure body renderer of the view in $.state, the hub's
+// element table, and the body's context (ui/chrome.tsx). It never sees `$`
+// or the ports.
 //
 // This file draws the live views (15.6's mockup): the browser and its
 // read-only form (with a repair swarm's budget row, 2b-2), the goal history,
@@ -11,20 +12,22 @@
 // Contract owner: phase 2b-1, package N.
 
 import type { RenderElement } from 'claude-code'
-import type { PaneElements, PaneRender } from '../hooktypes'
+import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
+import type { BodyContext } from '../ui/chrome'
+import { STYLE } from '../ui/style'
 import { button, buttons, header, input, line, renderBuilder, renderProposal, renderStart, section, select, tableFor } from './builder'
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-swarm' }` calls it with the swarmPane atom. */
-export function renderSwarmPane(view: SwarmPaneView | null, resolved: PaneElements, e: PaneRender): RenderElement {
+/** Swarms' body renderer (ui/pane.tsx calls it with the swarmPane atom under the hub's chrome). */
+export function renderSwarmPane(view: SwarmPaneView | null, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
   const { Box, Text } = el
   if (!view) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · swarm</Text>
-        <Text dimColor>nothing to show yet: /litter-swarm opens the builder or a live swarm</Text>
+        <Text dimColor>nothing to show yet: /litter swarms opens the builder or a live swarm</Text>
       </Box>
     )
   }
@@ -73,15 +76,15 @@ function nodeRow(el: PaneElements, view: SwarmBrowserView, r: SwarmNodeRow): Ren
         {r.color && <Text color={r.color}>●</Text>}
         <Text color={r.statusColor}>{status}</Text>
         {stats !== '' && <Text dimColor>{stats}</Text>}
-        {r.flagged && <Text color="warning">! flagged</Text>}
+        {r.flagged && <Text color={STYLE.warning}>! flagged</Text>}
       </Box>
       {r.question !== null && (
-        <Text color="permission" wrap="wrap">{`${indent(r.depth + 1)} ⚑ waiting on you: ${r.question}`}</Text>
+        <Text color={STYLE.needsYou} wrap="wrap">{`${indent(r.depth + 1)} ⚑ waiting on you: ${r.question}`}</Text>
       )}
       {r.report !== '' && <Text dimColor wrap="truncate-end">{`${indent(r.depth + 1)} last report: ${r.report}`}</Text>}
       {r.queued.map(q => (
         <Box flexDirection="row" columnGap={1}>
-          <Text color="warning" wrap="truncate-end">{`${indent(r.depth + 1)} queued: ${q.text}`}</Text>
+          <Text color={STYLE.warning} wrap="truncate-end">{`${indent(r.depth + 1)} queued: ${q.text}`}</Text>
           {!view.readOnly && button(el, { key: `swarm:browser:cancel:${view.swarm}/${q.id}`, label: 'Cancel' })}
         </Box>
       ))}
@@ -137,7 +140,7 @@ function budgetRow(el: PaneElements, b: SwarmBudgetRow): RenderElement {
         ))}
       </Box>
       {b.note !== null && (
-        <Text color="warning" wrap="wrap">
+        <Text color={STYLE.warning} wrap="wrap">
           {`! ${b.note}`}
         </Text>
       )}
@@ -145,7 +148,7 @@ function budgetRow(el: PaneElements, b: SwarmBudgetRow): RenderElement {
   )
 }
 
-function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender): RenderElement {
+function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: BodyContext): RenderElement {
   const { Box, Text } = el
   const s = view.swarm
   const sel = view.rows.find(r => r.agentId !== null && r.agentId === view.selected) ?? null
@@ -156,7 +159,7 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender):
       {header(el, view.title, view.notice)}
       {view.owner && (
         <Box flexDirection="column">
-          <Text color={view.lost ? 'error' : 'inactive'} wrap="wrap">
+          <Text color={view.lost ? STYLE.failed : STYLE.muted} wrap="wrap">
             {view.lost ? `this session lost it: ${view.owner.text}` : `read-only: ${view.owner.text}`}
           </Text>
           {view.owner.why !== null && <Text dimColor wrap="wrap">{view.owner.why}</Text>}
@@ -164,16 +167,16 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender):
         </Box>
       )}
       {view.budget && budgetRow(el, view.budget)}
-      {section(el, 'Summary', sum ? { text: `generated ${sum.age}${sum.stale ? ', older than the latest event' : ''}`, color: sum.stale ? 'warning' : 'subtle' } : undefined)}
+      {section(el, 'Summary', sum ? { text: `generated ${sum.age}${sum.stale ? ', older than the latest event' : ''}`, color: sum.stale ? STYLE.warning : STYLE.muted } : undefined)}
       {sum ? (
         <Box flexDirection="column">
           <Text wrap="wrap">{`Goal now: ${sum.goal}`}</Text>
           {sum.progress.map(x => (
             <Text wrap="wrap">{`· ${x}`}</Text>
           ))}
-          {sum.waiting.length > 0 && <Text color="permission">Waiting on you</Text>}
+          {sum.waiting.length > 0 && <Text color={STYLE.needsYou}>Waiting on you</Text>}
           {sum.waiting.map(x => (
-            <Text color="permission" wrap="wrap">{`⚑ ${x}`}</Text>
+            <Text color={STYLE.needsYou} wrap="wrap">{`⚑ ${x}`}</Text>
           ))}
         </Box>
       ) : (
@@ -181,7 +184,7 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: PaneRender):
       )}
       {view.flags.map(f => (
         <Box flexDirection="column">
-          <Text color="warning" wrap="wrap">{`! ${f.text}`}</Text>
+          <Text color={STYLE.warning} wrap="wrap">{`! ${f.text}`}</Text>
           {live &&
             buttons(el, [
               { key: `swarm:browser:ack:${s}/${f.seq}`, label: 'That was me' },

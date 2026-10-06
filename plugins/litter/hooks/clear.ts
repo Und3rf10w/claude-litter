@@ -25,9 +25,10 @@ import { appendLaunchRecord } from './records/swarm'
 import { registerSwarmTools } from './swarm/tools'
 import { nodeTypeSpec } from './swarm/launch'
 import { briefTextFor } from './swarm/store'
-import { registerSwarmCommands, refreshPanes } from './swarm/panes'
-import { refreshBoard, registerPhase3Commands } from './board/pane'
-import { registerPhase5Commands } from './uicommands'
+import { refreshPanes } from './swarm/panes'
+import { refreshBoard } from './board/pane'
+import { registerLitterCommand } from './uicommands'
+import { refreshHub } from './ui/hub'
 import { refreshBand } from './band/view'
 import { refreshCards } from './card/view'
 import { refreshTasks } from './tasks/pane'
@@ -74,7 +75,6 @@ export const TICK_MS = 2000
 export const others = {
   nodeTypeSpec: (...a: Parameters<typeof nodeTypeSpec>) => nodeTypeSpec(...a),
   briefTextFor: (...a: Parameters<typeof briefTextFor>) => briefTextFor(...a),
-  registerSwarmCommands: (p: Ports) => registerSwarmCommands(p),
   refreshPanes: (p: Ports) => refreshPanes(p),
   patchSwarmPolicy: (...a: Parameters<typeof patchSwarmPolicy>) => patchSwarmPolicy(...a),
   rebindOwnership: (...a: Parameters<typeof rebindOwnership>) => rebindOwnership(...a),
@@ -83,15 +83,16 @@ export const others = {
   ownedSwarm: (...a: Parameters<typeof ownedSwarm>) => ownedSwarm(...a),
   typesAccepted: (...a: Parameters<typeof typesAccepted>) => typesAccepted(...a),
   refreshReadOnly: (...a: Parameters<typeof refreshReadOnly>) => refreshReadOnly(...a),
-  // Phase 3 (AF): /litter-board and /litter-rules, and the board's view.
-  registerPhase3Commands: (p: Ports) => registerPhase3Commands(p),
+  // Phase 3 (AF): the board's view (and the rules').
   refreshBoard: (p: Ports) => refreshBoard(p),
-  // Phase 5 (WP-CA): /litter-tasks and /litter-agents, and the band's, the cards' and the two panes' views (CB, CC, CE, CG).
-  registerPhase5Commands: (p: Ports) => registerPhase5Commands(p),
+  // Phase 5 (WP-CA): the band's, the cards' and the tasks and agents views (CB, CC, CE, CG).
   refreshBand: (p: Ports) => refreshBand(p),
   refreshCards: (p: Ports) => refreshCards(p),
   refreshTasks: (p: Ports) => refreshTasks(p),
   refreshAgents: (p: Ports) => refreshAgents(p),
+  // Phase 5b (WP-DA): /litter, the one command, and the `litter` pane's own view.
+  registerLitterCommand: (p: Ports) => registerLitterCommand(p),
+  refreshHub: (p: Ports) => refreshHub(p),
 }
 const defaults = { ...others }
 
@@ -372,9 +373,7 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
     await step(p, 'the record tool', async () => updateSession({ toolsRefused: await registerRecordTool(p) }))
     await step(p, 'the swarm tools', async () => updateSession({ swarmToolsRefused: await registerSwarmTools(p) }))
     if (litterDir) for (const s of owned) if (stillLive(s)) await registerTypes(p, litterDir, s)
-    await step(p, 'the swarm commands', () => others.registerSwarmCommands(p))
-    await step(p, 'the board and rules commands', () => others.registerPhase3Commands(p))
-    await step(p, 'the tasks and agents commands', () => others.registerPhase5Commands(p))
+    await step(p, 'the litter command', () => others.registerLitterCommand(p))
     if (!litterDir) return
 
     // policy.json's session, and each owned swarm's entry (never one End removed: patchSwarmPolicy leaves a missing entry alone).
@@ -422,8 +421,10 @@ async function rebind(p: Ports, from: string, to: string): Promise<void> {
 }
 
 /**
- * After the gate opens: the panes' views, since $.state was wiped (N; the
- * board, AF, from its ledger; phase 5's band, cards, tasks and agents panes).
+ * After the gate opens: the views, since $.state was wiped (N's swarm and
+ * doctor; the board and the rules, AF, from their ledgers; phase 5's band,
+ * cards, tasks and agents), then the `litter` pane's own (WP-DA), last, so
+ * its strip counts what they drew.
  */
 async function redraw(p: Ports): Promise<void> {
   await step(p, 'the panes', () => others.refreshPanes(p))
@@ -432,6 +433,7 @@ async function redraw(p: Ports): Promise<void> {
   await step(p, 'the cards', () => others.refreshCards(p))
   await step(p, 'the tasks pane', () => others.refreshTasks(p))
   await step(p, 'the agents pane', () => others.refreshAgents(p))
+  await step(p, 'the litter pane', () => others.refreshHub(p))
 }
 
 /** Resolves once the rebind in flight, and the redraw after it, are done (tests). */

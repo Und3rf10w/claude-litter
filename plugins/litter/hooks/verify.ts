@@ -62,7 +62,7 @@ export const roleOf = (caller: Caller): string | null => caller.agentType?.repla
  */
 export async function loadRun(ctx: RecordCtx, input: Record<string, unknown>): Promise<RunFacts | RecordError> {
   if (ctx.litterDir === null) {
-    return fail("litter: this session has no litter directory (see /litter-doctor); start the run from the project's checkout")
+    return fail("litter: this session has no litter directory (see /litter doctor); start the run from the project's checkout")
   }
   const run = input.run
   if (typeof run !== 'string' || !RUN_ID.test(run)) return fail("litter: 'run' must be a run id like 20261002-my-run", 'run')

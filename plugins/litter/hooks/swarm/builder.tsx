@@ -12,7 +12,8 @@
 // Contract owner: phase 2b-1, package N.
 
 import type { RenderElement } from 'claude-code'
-import type { PaneElements, PaneRender } from '../hooktypes'
+import type { PaneElements } from '../hooktypes'
+import type { BodyContext } from '../ui/chrome'
 import type { SwarmPaneView } from '../ports'
 import type {
   SwarmBadge,
@@ -26,6 +27,8 @@ import type {
   SwarmTreeProps,
   SwarmTreeRow,
 } from '../../types/index'
+import { NOTICE_STYLE, STYLE } from '../ui/style'
+import { BADGE_COLOR } from './view'
 
 // ---------------------------------------------------------------------------
 // Shared pieces
@@ -50,15 +53,8 @@ export function tableFor(el: PaneElements, surface: string): PaneElements {
   return t as unknown as PaneElements
 }
 
-/** Who enforces a field, strongest to weakest (15.6's table). */
-const BADGE_COLOR: Record<SwarmBadge, string> = { engine: 'success', litter: 'ide', prompt: 'inactive', '—': 'subtle' }
-
-const NOTICE: Record<SwarmNotice['level'], { glyph: string; color: string }> = {
-  ok: { glyph: '✓', color: 'success' },
-  info: { glyph: '·', color: 'subtle' },
-  warning: { glyph: '!', color: 'warning' },
-  error: { glyph: '✕', color: 'error' },
-}
+/** A notice's glyph and color: ui/style.ts's, one per level. */
+const NOTICE: Record<SwarmNotice['level'], { glyph: string; color: string }> = NOTICE_STYLE
 
 /** The pane's header, left-aligned (the top-right cell is the engine's ×), and the last action's outcome. */
 export function header(el: PaneElements, title: readonly SwarmSpan[], notice: SwarmNotice | null): RenderElement {
@@ -308,7 +304,7 @@ function briefPanel(el: PaneElements, view: SwarmBuilderView): RenderElement | n
   if (!b) return null
   return (
     <Box flexDirection="column">
-      {section(el, `Brief · ${b.node}`, b.differs ? { text: '(unsaved)', color: 'gray' } : undefined)}
+      {section(el, `Brief · ${b.node}`, b.differs ? { text: '(unsaved)', color: STYLE.draft } : undefined)}
       {b.markdown === '' ? <Text dimColor>no brief yet: only the generic node prompt</Text> : <Markdown text={b.markdown} />}
       {b.more && <Text dimColor>…</Text>}
       <Box flexDirection="row" columnGap={1}>
@@ -323,7 +319,7 @@ function strip(el: PaneElements, view: SwarmBuilderView): RenderElement {
   const { Box, Text } = el
   return (
     <Box flexDirection="column">
-      {section(el, 'Checks', view.checking ? { text: 'checking…', color: 'subtle' } : undefined)}
+      {section(el, 'Checks', view.checking ? { text: 'checking…', color: STYLE.muted } : undefined)}
       {view.strip.length === 0 && !view.checking && <Text dimColor>nothing to report</Text>}
       {view.strip.map(r => (
         <Text color={r.color} wrap="wrap">
@@ -374,17 +370,17 @@ function saveAsForm(el: PaneElements, view: SwarmBuilderView): RenderElement | n
   )
 }
 
-export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: PaneRender): RenderElement {
+export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
   const { Box, Text } = el
   if (view.view !== 'builder') return <Text dimColor>litter: not the builder</Text>
   const s = view.swarm
-  const wide = e.props.bodyColumns >= 110
+  const wide = e.bodyColumns >= 110
   if (view.blocked) {
     return (
       <Box flexDirection="column">
         {header(el, view.title, view.notice)}
-        <Text color="error" wrap="wrap">{`✕ ${view.blocked}`}</Text>
+        <Text color={STYLE.failed} wrap="wrap">{`✕ ${view.blocked}`}</Text>
         {buttons(el, [{ key: `swarm:builder:back:${s}`, label: 'Back' }])}
       </Box>
     )
@@ -407,7 +403,7 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Pa
         buttons(el, view.proposals.map(n => ({ key: `swarm:builder:proposal:${s}/${n}`, label: `Lead's proposal ${n}`, primary: true })))}
       {view.unreadable.map(u => (
         <Box flexDirection="row" columnGap={1}>
-          <Text color="error" wrap="wrap">{`✕ the lead's proposal ${u.n} can't be read: ${u.error}`}</Text>
+          <Text color={STYLE.failed} wrap="wrap">{`✕ the lead's proposal ${u.n} can't be read: ${u.error}`}</Text>
           {button(el, { key: `swarm:builder:reject:${s}/${u.n}`, label: 'Reject' })}
         </Box>
       ))}
@@ -446,14 +442,14 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Pa
 const SCOPE_ORDER = { builtin: 0, user: 1, project: 2 } as const
 const SCOPE_LABEL = { builtin: 'built-in', user: 'yours', project: 'this project' } as const
 
-export function renderStart(view: SwarmStartView, resolved: PaneElements, e: PaneRender): RenderElement {
+export function renderStart(view: SwarmStartView, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
   const { Box, Text } = el
   if (view.blocked) {
     return (
       <Box flexDirection="column">
         {header(el, view.title, view.notice)}
-        <Text color="error" wrap="wrap">{`✕ ${view.blocked}`}</Text>
+        <Text color={STYLE.failed} wrap="wrap">{`✕ ${view.blocked}`}</Text>
       </Box>
     )
   }
@@ -491,7 +487,7 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Pan
             </Box>
           ))}
           {t.errors.map(x => (
-            <Text color="error" wrap="wrap">{`✕ ${x}`}</Text>
+            <Text color={STYLE.failed} wrap="wrap">{`✕ ${x}`}</Text>
           ))}
           {buttons(el, [
             { key: 'swarm:start:use-template', label: 'Use template', primary: true },
@@ -506,7 +502,7 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Pan
         <Box flexDirection="row" columnGap={1}>
           {button(el, { key: `swarm:start:open:${s.name}`, label: s.name })}
           <Text dimColor>{`rev ${s.revision} · ${s.nodes} node${s.nodes === 1 ? '' : 's'}`}</Text>
-          {s.live && <Text color="background">live</Text>}
+          {s.live && <Text color={STYLE.running}>live</Text>}
           <Text wrap="truncate-end">{s.goal}</Text>
         </Box>
       ))}
@@ -517,7 +513,7 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Pan
 // ---------------------------------------------------------------------------
 // A proposal
 
-export function renderProposal(view: SwarmProposalView, resolved: PaneElements, e: PaneRender): RenderElement {
+export function renderProposal(view: SwarmProposalView, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
   const { Box, Text } = el
   const k = (action: string, rest = '') => `swarm:proposal:${action}:${view.swarm}/${view.n}${rest === '' ? '' : `/${rest}`}`
@@ -526,7 +522,7 @@ export function renderProposal(view: SwarmProposalView, resolved: PaneElements, 
     <Box flexDirection="column">
       {header(el, view.title, view.notice)}
       <Text dimColor>{view.counts}</Text>
-      {view.decided && <Text color="subtle">{`decided: ${view.decided}`}</Text>}
+      {view.decided && <Text color={STYLE.muted}>{`decided: ${view.decided}`}</Text>}
       <Box marginTop={1}>{staticTree(el, view.tree)}</Box>
       {section(el, 'Changes')}
       {view.changes.length === 0 && <Text dimColor>no field changes</Text>}
@@ -543,7 +539,7 @@ export function renderProposal(view: SwarmProposalView, resolved: PaneElements, 
           {c.reason !== null && <Text dimColor wrap="wrap">{`    lead: ${c.reason}`}</Text>}
           {c.conflict && (
             <Box flexDirection="column">
-              <Text color="warning" wrap="wrap">{`    ! you changed it too: yours ${c.yours ?? ''}`}</Text>
+              <Text color={STYLE.warning} wrap="wrap">{`    ! you changed it too: yours ${c.yours ?? ''}`}</Text>
               {open &&
                 buttons(el, [
                   { key: k('keep', String(c.index)), label: c.picked ? 'Keep yours' : '✓ Keeping yours' },
@@ -561,7 +557,7 @@ export function renderProposal(view: SwarmProposalView, resolved: PaneElements, 
             <Text color={b.color}>{`${b.glyph} brief`}</Text>
             <Text>{b.node}</Text>
             {b.withNode && <Text dimColor>with its node</Text>}
-            {b.conflict && <Text color="warning">! you edited it too</Text>}
+            {b.conflict && <Text color={STYLE.warning}>! you edited it too</Text>}
             {button(el, { key: k('diff', b.node), label: b.open ? 'Hide diff' : 'Diff' })}
           </Box>
           {b.reason !== null && <Text dimColor wrap="wrap">{`    lead: ${b.reason}`}</Text>}

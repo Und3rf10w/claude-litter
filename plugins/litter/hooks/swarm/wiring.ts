@@ -120,13 +120,18 @@ export const agentOfferFailed: AgentOfferCatch = async ($, e, next) => next(e)
 /** command.run `clear`'s catch: the clear goes ahead. */
 export const clearHoldFailed: CommandRunCatch = async ($, e, next) => next(e)
 
-/** command.run `litter-swarm`'s catch: a line the person reads, so no `litter: ` (the engine names the plugin first). */
-export const swarmCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-swarm failed (${unprefixed(why(next))})` })
+/**
+ * command.run `litter`'s catch (phase 5b, WP-DA; it replaces the six pane
+ * commands'): a line the person reads, naming what was typed, so no
+ * `litter: ` (the engine names the plugin first).
+ */
+export const litterCommandFailed: CommandRunCatch = async ($, e, next) => {
+  const word = (e.args ?? '').trim().split(/\s+/)[0]?.replace(/[^A-Za-z]/g, '').slice(0, 12) ?? ''
+  const typed = `/litter${word === '' ? '' : ` ${word}`}`
+  return { text: `${typed} failed (${unprefixed(why(next))})` }
+}
 
-/** command.run `litter-doctor`'s catch, the same. */
-export const doctorCommandFailed: CommandRunCatch = async ($, e, next) => ({ text: `/litter-doctor failed (${unprefixed(why(next))})` })
-
-/** ui.render's catch for both panes: the engine draws its own. */
+/** ui.render's catch for the pane: the engine draws its own. */
 export const paneRenderFailed: UiRenderCatch = async ($, e, next) => next(e)
 
 /** The panes' ui.message, ui.press, ui.input and ui.select catches: pass on. */

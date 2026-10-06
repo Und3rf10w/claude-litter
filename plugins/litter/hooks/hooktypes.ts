@@ -49,7 +49,7 @@ export type TurnStartCatch = CatchHandler<TurnStartHook>
 /** Every model request of every loop; `e.agentId` names a subagent's. A stream: its catch is a generator too. */
 export type TurnStepHook = Hook<'turn.step'>
 export type TurnStepCatch = CatchHandler<TurnStepHook>
-/** Matched on `command` in register.tsx (`clear`, `litter-swarm`, `litter-doctor`). */
+/** Matched on `command` in register.tsx (`clear`, `litter`). */
 export type CommandRunHook = Hook<'command.run'>
 export type CommandRunCatch = CatchHandler<CommandRunHook>
 /** `e.agent` is the type as the engine serves it, `litter:sw-<swarm>-<node>` for a node's. */
@@ -68,7 +68,12 @@ export type UiInputHook = Hook<'ui.input'>
 export type UiInputCatch = CatchHandler<UiInputHook>
 export type UiSelectHook = Hook<'ui.select'>
 export type UiSelectCatch = CatchHandler<UiSelectHook>
-/** One pane's `ui.*` handlers, as the board and the rules pane export them (phase 3, AF); register.tsx matches each on the pane's `requestId`. */
+/**
+ * One section's `ui.*` handlers, as the board and the rules pane export them
+ * (phase 3, AF). Phase 5b (WP-DA): register.tsx matches the hub's
+ * (ui/hub.ts, onLitterUi) on `requestId: 'litter'`, and the hub routes each
+ * key to its section's.
+ */
 export type PaneUiHandlers = {
   message: PortHook<UiMessageHook>
   press: PortHook<UiPressHook>
@@ -83,7 +88,7 @@ export type SwarmReadCatch = CatchHandler<SwarmReadHook>
 export type SwarmSendHook = MatchedHook<'tool.call', { readonly tool: 'mcp__litter__swarm_send' }>
 export type SwarmSendCatch = CatchHandler<SwarmSendHook>
 
-/** A pane's `ui.render` input, as N's renderers take it (`e.surface`, `e.viewport`, `e.requestId`). */
+/** The `litter` pane's `ui.render` input (ui/pane.tsx); its section bodies get a BodyContext from it (ui/chrome.tsx). */
 export type PaneRender = Parameters<UiRenderHook>[1]
 /** What `$.ui.resolve(e)` answers for a pane's render: the surface's element table (`Box`, `Text`, `Button`, …). */
 export type PaneElements = Elements[RenderSurface]

@@ -6,6 +6,10 @@
 // their owners: the board (CD), the band (CB), the cards (CC), the tasks pane
 // (CE) and the agents pane (CG). An owner edits only between its two banners;
 // every line outside them is CA's.
+//
+// Phase 5b (WP-DA) folds the six panes into one, `litter`, a section each:
+// the views below are the sections' bodies, and the hub section at the end
+// is the pane's own. Every `color` is a theme key from hooks/ui/style.ts.
 
 // ---------------------------------------------------------------------------
 // The swarm panes (package N; plan 15.5, 15.6, 15.7): the one thing in
@@ -353,7 +357,7 @@ export type SwarmUnsettledView = SwarmViewCommon & {
   reservations: number
 }
 
-/** The `litter-swarm` pane's view: one of the seven. */
+/** The Swarms section's view (the `litter` pane, phase 5b): one of the seven. */
 export type SwarmPaneView =
   | SwarmStartView
   | SwarmBuilderView
@@ -392,7 +396,7 @@ export type DoctorPaneBody = {
 }
 
 /**
- * The `litter-doctor` pane's view. It has one view, so `view` is always
+ * The Doctor section's view (the `litter` pane). It has one view, so `view` is always
  * `doctor`, and `body` is absent until its first check is in.
  */
 export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
@@ -564,7 +568,7 @@ export type BoardBody = {
 }
 
 /**
- * The `litter-board` pane's view. `run` is the run shown, null before one is
+ * The Runs section's view, the board (the `litter` pane). `run` is the run shown, null before one is
  * picked; `body` is absent until the first build is in.
  */
 export type BoardView = { view: 'board'; v: number; run: string | null; body?: BoardBody }
@@ -634,7 +638,7 @@ export type RulesBody = {
   editing: { key: string; paths: string; type: string; error: string | null } | null
 }
 
-/** The `litter-rules` pane's view; `body` is absent until the first build is in. */
+/** The Rules section's view (the `litter` pane); `body` is absent until the first build is in. */
 export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: RulesBody }
 
 // ===== begin band section (owner: WP-CB) =====
@@ -747,7 +751,7 @@ export type TasksBody = {
   problems: string[]
   editor: TasksEditor | null
 }
-/** The `litter-tasks` pane's view; `body` is absent until the first build is in. */
+/** The Tasks section's view (the `litter` pane); `body` is absent until the first build is in. */
 export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
 // ===== end tasks section (owner: WP-CE) =====
 
@@ -814,9 +818,39 @@ export type AgentsBody = {
   /** What couldn't be read: the agent list, the teams, an inbox, the team named. */
   problems: string[]
 }
-/** The `litter-agents` pane's view; `body` is absent until the first build is in. */
+/** The Agents section's view (the `litter` pane); `body` is absent until the first build is in. */
 export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
 // ===== end agents section (owner: WP-CG) =====
+
+// ===== begin hub section (owner: WP-DA) =====
+// ---------------------------------------------------------------------------
+// The one pane, `litter` (phase 5b): a header, the section strip, and the
+// shown section's body. Built by hooks/ui/hub.ts, drawn by hooks/ui/pane.tsx
+// through each section's body renderer. Each section keeps its own view
+// above; this holds only what the hub draws itself.
+
+/** The pane's sections, in the strip's order (hotkeys 1–7). */
+export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'doctor'
+
+/** One section in the strip and on Home. */
+export type HubTab = {
+  section: HubSection
+  label: string
+  /**
+   * What the strip draws beside the label: the band's active runs, the live
+   * swarms, the proposed rules, the open tasks, the running agents. Null when
+   * there's nothing to count, or the section hasn't been read yet.
+   */
+  count: number | null
+  /** Something there waits on you: `⚑` beside it. */
+  needsYou: boolean
+  /** One line for Home: the count in words, or what the section holds. */
+  summary: string
+}
+
+/** The hub's view: the section shown, the header's live line, and the strip. */
+export type HubView = { view: 'hub'; v: number; section: HubSection; live: SwarmSpan[]; tabs: HubTab[] }
+// ===== end hub section (owner: WP-DA) =====
 
 declare module 'claude-code' {
   interface PluginState {
@@ -830,6 +864,8 @@ declare module 'claude-code' {
       cards: CardsView | null
       tasksPane: TasksPaneView | null
       agentsPane: AgentsPaneView | null
+      // Phase 5b (WP-DA): the one pane's own view.
+      hub: HubView | null
     }
   }
 }

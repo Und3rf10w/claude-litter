@@ -1,32 +1,35 @@
-// WP-N: the doctor pane's draw (15.7): J's rows with their severity glyphs,
-// each value's process and sources, the snippet, and [Copy], [Ask lead to add
-// it], [Recheck] and [Test]. A pure render function.
+// WP-N: the Doctor section's draw (15.7; the `litter` pane, phase 5b): J's
+// rows with their severity glyphs, each value's process and sources, the
+// snippet, and [Copy], [Ask lead to add it], [Recheck] and [Test]. A pure
+// body renderer.
 //
 // Contract owner: phase 2b-1, package N.
 
 import type { RenderElement } from 'claude-code'
-import type { PaneElements, PaneRender } from '../hooktypes'
+import type { PaneElements } from '../hooktypes'
 import type { DoctorPaneView } from '../ports'
+import type { BodyContext } from '../ui/chrome'
+import { STYLE } from '../ui/style'
 import { buttons, header, section } from './builder'
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter-doctor' }` calls it with the doctorPane atom. */
-export function renderDoctorPane(view: DoctorPaneView | null, el: PaneElements, e: PaneRender): RenderElement {
+/** Doctor's body renderer (ui/pane.tsx calls it with the doctorPane atom under the hub's chrome). */
+export function renderDoctorPane(view: DoctorPaneView | null, el: PaneElements, ctx: BodyContext): RenderElement {
   const { Box, Code, Text } = el
   const body = view?.body
   if (!body) {
     return (
       <Box flexDirection="column">
         <Text bold>litter · doctor</Text>
-        <Text dimColor>nothing checked yet: /litter-doctor runs the check</Text>
+        <Text dimColor>nothing checked yet: /litter doctor runs the check</Text>
       </Box>
     )
   }
   const tally =
     body.errors + body.warnings === 0
-      ? { text: 'nothing falls short', color: 'success' }
+      ? { text: 'nothing falls short', color: STYLE.done }
       : {
           text: `${body.errors} error${body.errors === 1 ? '' : 's'}, ${body.warnings} warning${body.warnings === 1 ? '' : 's'}`,
-          color: body.errors > 0 ? 'error' : 'warning',
+          color: body.errors > 0 ? STYLE.failed : STYLE.warning,
         }
   return (
     <Box flexDirection="column">
@@ -47,7 +50,7 @@ export function renderDoctorPane(view: DoctorPaneView | null, el: PaneElements, 
       ))}
       {body.snippet !== null && (
         <Box flexDirection="column">
-          {section(el, 'Add to your user settings', { text: body.settingsPath, color: 'blue' })}
+          {section(el, 'Add to your user settings', { text: body.settingsPath, color: STYLE.path })}
           <Code source={body.snippet} language="json" />
         </Box>
       )}

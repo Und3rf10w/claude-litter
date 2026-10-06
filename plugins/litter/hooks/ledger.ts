@@ -211,7 +211,7 @@ export async function dispatchRecord(
   const lower = given.trim().toLowerCase()
   if ((USER_ONLY_KINDS as readonly string[]).includes(lower)) {
     return fail(
-      `litter: '${lower}' is the user's alone, in the rules pane (/litter-rules); a tool call can only propose a rule or open one in the pane`,
+      `litter: '${lower}' is the user's alone, in the rules pane (/litter rules); a tool call can only propose a rule or open one in the pane`,
       'kind',
       ['rule.propose', 'rule.open'],
     )
