@@ -302,7 +302,7 @@ describe('[Stop]', () => {
     expect(agentsNavOf()!.armed).toBeNull()
   })
 
-  test("a teammate is stopped by its address, as TaskStop takes it (the d.ts: teammateId, not id); a refusal is the notice's error", async () => {
+  test("a teammate is stopped by its bare name, which TaskStop matches in 2.1.289 and 2.1.290 (name@team no longer does); a refusal is the notice's error", async () => {
     fakeStore({ teams: [team('team-a', ['team-lead', 'reviewer'], { leadSessionId: SESSION })] })
     const p = ports([agent('a1', { teammateId: 'reviewer@team-a', name: 'reviewer', status: 'waiting' })])
     p.toolAnswer = () => ({ deny: 'TaskStop is denied by a policy hook' }) as never
@@ -310,13 +310,21 @@ describe('[Stop]', () => {
     const key = `agents:stop:${rowArg(T('team-a'), 'reviewer')}`
     await press(p, key)
     await press(p, key)
-    expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'reviewer@team-a' } }])
+    expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'reviewer' } }])
     expect(body(p).notice).toEqual({ level: 'error', text: "reviewer wasn't stopped: TaskStop is denied by a policy hook" })
 
-    p.toolAnswer = () => ({ result: 'x', text: 'Task reviewer@team-a is not running (status: completed)', isError: true }) as never
+    // The same teammate from this session's view: the same task_id.
+    p.toolCalls.length = 0
+    await pick(p, S)
+    await press(p, `agents:stop:${rowArg(S, 'a1')}`)
+    await press(p, `agents:stop:${rowArg(S, 'a1')}`)
+    expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'reviewer' } }])
+    await pick(p, T('team-a'))
+
+    p.toolAnswer = () => ({ result: 'x', text: 'Task reviewer is not running (status: completed)', isError: true }) as never
     await press(p, key)
     await press(p, key)
-    expect(body(p).notice?.text).toBe("reviewer wasn't stopped: Task reviewer@team-a is not running (status: completed)")
+    expect(body(p).notice?.text).toBe("reviewer wasn't stopped: Task reviewer is not running (status: completed)")
 
     p.toolAnswer = () => {
       throw new Error('no tool named TaskStop')

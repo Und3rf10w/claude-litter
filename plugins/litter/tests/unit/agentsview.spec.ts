@@ -170,6 +170,35 @@ describe("this session's agents", () => {
     expect(s.reads.sort()).toEqual(['team-a/fixer', 'team-a/reviewer'])
   })
 
+  test("TaskStop's task_id: a subagent's id, a teammate's bare name (2.1.290 no longer matches name@team), none unless running or waiting", async () => {
+    fakeStore({ teams: [team('team-a', ['team-lead', 'reviewer'], { leadSessionId: SESSION })] })
+    const p = ports([
+      agent('a1', { status: 'running' }),
+      agent('a2', { status: 'waiting', teammateId: 'reviewer@team-a', name: 'reviewer', type: 'teammate' }),
+      // A name with an `@` of its own: split at the last one, as addressOf reads an address.
+      agent('a3', { status: 'running', teammateId: 'ops@east@team-b', name: 'ops@east' }),
+      // A teammateId that isn't `<name>@<team>`: its id.
+      agent('a4', { status: 'running', teammateId: 'loner' }),
+      agent('a5', { status: 'idle', teammateId: 'fixer@team-a', name: 'fixer' }),
+      agent('a6', { status: 'completed' }),
+    ])
+    const f = await gather(p, nav())
+    expect(f.rows.map(r => [r.key, r.stopId])).toEqual([
+      ['a1', 'a1'],
+      ['a2', 'reviewer'],
+      ['a3', 'ops@east'],
+      ['a4', 'a4'],
+      ['a5', null],
+      ['a6', null],
+    ])
+    // The team's view of the same teammate stops it the same way.
+    const t = await gather(p, nav({ team: 'team-a' }))
+    expect(t.rows.map(r => [r.key, r.stopId])).toEqual([
+      ['team-lead', null],
+      ['reviewer', 'reviewer'],
+    ])
+  })
+
   test("a teammate whose team has no config reads no inbox; a team's unreadable inbox is a problem, not a count", async () => {
     const s = fakeStore({ teams: [team('team-a', ['team-lead', 'reviewer'])], inboxes: { 'team-a/reviewer': new Error('EACCES: permission denied') } })
     const p = ports([agent('a1', { teammateId: 'reviewer@team-a', name: 'reviewer' }), agent('a2', { teammateId: 'ghost@gone', name: 'ghost' })])
@@ -241,7 +270,7 @@ describe("a team's members", () => {
     expect(f.led).toBe(true)
     expect(f.rows.map(r => [r.key, r.status.text, r.via, r.stopId])).toEqual([
       ['team-lead', 'this session', null, null],
-      ['reviewer', 'running', { kind: 'agent', agentId: 'a1' }, 'reviewer@team-a'],
+      ['reviewer', 'running', { kind: 'agent', agentId: 'a1' }, 'reviewer'],
       ['idler', 'not in this session', { kind: 'name', name: 'idler' }, null],
     ])
     const b = await body(p, n)

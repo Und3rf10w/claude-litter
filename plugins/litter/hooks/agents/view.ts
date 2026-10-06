@@ -259,7 +259,7 @@ export type RowFacts = {
   inbox: { team: string; agent: string } | null
   /** Null: nothing here sends to it. */
   via: SendVia | null
-  /** TaskStop's `task_id` (a teammate's address, else its id: the d.ts, AgentInfo.teammateId), while it's this session's and running or waiting. */
+  /** TaskStop's `task_id` (stopIdOf: a teammate's bare name, else its id), while it's this session's and running or waiting. */
   stopId: string | null
 }
 
@@ -289,6 +289,15 @@ function addressOf(id: string | undefined): { name: string; team: string } | nul
 const labelOf = (a: ListedAgent): string => oneLine(a.name || a.description || a.type || a.id, 40) || 'agent'
 const stoppable = (a: ListedAgent): boolean => a.status === 'running' || a.status === 'waiting'
 
+/**
+ * TaskStop's `task_id` for one of this session's agents (decision 6; WP-CH):
+ * a teammate's bare name, its `teammateId` before the `@`, which TaskStop
+ * matches in 2.1.289 and 2.1.290 alike (2.1.290 gives a teammate one id and
+ * no longer matches `<name>@<team>`); any other agent's id, and a teammate's
+ * whose `teammateId` isn't an address.
+ */
+const stopIdOf = (a: ListedAgent): string => addressOf(a.teammateId)?.name ?? a.id
+
 /** This session's agents, in the engine's order; a teammate's inbox is its team's file for its name. */
 function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo[]): RowFacts[] {
   const seen = new Set<string>()
@@ -306,7 +315,7 @@ function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo
       listed: a,
       inbox: addr && team ? { team: team.name, agent: addr.name } : null,
       via: { kind: 'agent', agentId: a.id },
-      stopId: stoppable(a) ? (a.teammateId ?? a.id) : null,
+      stopId: stoppable(a) ? stopIdOf(a) : null,
     })
   }
   return rows
@@ -343,7 +352,7 @@ function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean):
       listed: a,
       inbox: { team: team.name, agent: m.name },
       via,
-      stopId: a && stoppable(a) ? (a.teammateId ?? a.id) : null,
+      stopId: a && stoppable(a) ? stopIdOf(a) : null,
     })
   }
   return rows
