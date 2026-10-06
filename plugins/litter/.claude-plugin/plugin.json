@@ -103,6 +103,14 @@
       "multiple": true,
       "title": "Commit trailers",
       "description": "Optional. Lines litter adds to every commit it makes, one Key: value each, e.g. the attribution your organization requires. litter can't read the session's own attribution settings."
+    },
+    "bandEndedMinutes": {
+      "type": "number",
+      "title": "Ended run's row (minutes)",
+      "description": "How many minutes a litter run that ended keeps its row in the band above the prompt; 0 removes the row as soon as the run ends.",
+      "default": 10,
+      "min": 0,
+      "max": 1440
     }
   }
 }

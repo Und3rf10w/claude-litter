@@ -3,7 +3,8 @@
 // policy.json written beside them. Each workflow's row (execute on its first
 // gate, on a retry, critiquing, landing; design before and after a verdict;
 // fanout integrating; plan; a repair generation), an ended run's row inside
-// and past 10 minutes, a live swarm's counts, the open asks (CF's, through
+// and past 10 minutes, and past the bandEndedMinutes option's 1 and 0
+// (WP-CH), a live swarm's counts, the open asks (CF's, through
 // `deps`), [Hide] and its $.store mirror, the write check, the failure paths
 // (a missing litter directory, an unreadable policy.json or ledger), the
 // presses, and the fitting the render draws from (fitRows, fitSpans).
@@ -17,7 +18,7 @@ import type { AskEntry } from '../../hooks/uitypes'
 import type { BandRow, BandView, SwarmSpan } from '../../types/index'
 import { appendRecord } from '../../hooks/ledgercore'
 import { ledgerDir, policyPath, runDir, runJsonPath } from '../../hooks/layout'
-import { updateSession } from '../../hooks/session'
+import { setOptions, updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
 import {
@@ -76,6 +77,7 @@ afterEach(() => {
   resetBandForTests()
   state.resetForTests()
   updateSession({ litterDir: null })
+  setOptions(undefined)
   cleanup()
 })
 
@@ -297,6 +299,37 @@ describe('a run that ended', () => {
     writePolicy(null)
     await bandTick(p)
     expect(texts()).toEqual([`✕ litter · fanout ${FAN} · failed · 0/1 tasks · 1m`])
+  })
+
+  test('a 1-minute bandEndedMinutes keeps the row at 30 s and drops it at 61 s, by the fake clock', async () => {
+    setOptions({ bandEndedMinutes: 1 })
+    await executeRun()
+    await bandTick(p)
+    await record(EXEC, [end(1, 'failed')])
+    writePolicy(null)
+    p.clock.now = NOW + 30_000
+    await bandTick(p)
+    expect(texts()).toEqual([`✕ litter · execute ${EXEC} · failed · <1m`])
+    p.clock.now = NOW + 61_000
+    await bandTick(p)
+    expect(band()!.rows).toEqual([])
+  })
+
+  test('a bandEndedMinutes of 0 keeps no ended row: the open run has its row, and nothing once it ends', async () => {
+    setOptions({ bandEndedMinutes: 0 })
+    await executeRun()
+    await bandTick(p)
+    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · <1m`])
+    await record(EXEC, [end(1, 'done')])
+    writePolicy(null)
+    await bandTick(p)
+    expect(band()!.rows).toEqual([])
+    // A module's first build (a reload) seeds the run from its ledger, and still draws no ended row.
+    resetBandForTests()
+    deps.openAsks = () => asks
+    p.views = {}
+    await bandTick(p)
+    expect(p.views).toEqual({})
   })
 
   test("a new module finds a run that just ended from the ledgers that moved last", async () => {
