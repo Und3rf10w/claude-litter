@@ -2,7 +2,8 @@
 # Appends one compact line per hook input to tool-log.jsonl beside the scratch
 # repo ($CLAUDE_PROJECT_DIR/..), results cut to 4000 characters. A command hook
 # runs in-process for every agent, so it sees each call's real cwd. It never
-# decides anything: no output, exit 0.
+# decides anything: no output, exit 0. A PermissionRequest line is a dialog
+# the engine was about to show (ui-ask.sh).
 #
 # With $LITTER_TIER4_GUARD set, a litter agent's live PreToolUse for `pwd` is
 # also replayed through that guard.sh as `git commit` and `git push`, the
@@ -11,7 +12,7 @@
 dir=${CLAUDE_PROJECT_DIR:?}/..
 in=$(cat)
 printf '%s\n' "$in" | jq -c '{ev: .hook_event_name, tool: .tool_name, agent_id: (.agent_id // null), agent_type: (.agent_type // null),
-        cwd: .cwd, mode: (.permission_mode // null), input: .tool_input,
+        session: (.session_id // null), cwd: .cwd, mode: (.permission_mode // null), input: .tool_input,
         result: ((.tool_response // .error // null) | if . == null then null else (tojson | .[0:4000]) end)}' >>"$dir/tool-log.jsonl" 2>/dev/null
 
 guard=${LITTER_TIER4_GUARD:-}

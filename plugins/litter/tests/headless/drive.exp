@@ -9,9 +9,16 @@
 #   sendsh <sh command>         run the command; if it exits 0 with output, type
 #                               its first line, then Enter; otherwise send nothing
 #   key <name>...               press keys, a second apart: enter, tab, esc,
-#                               down, up, left, right, space, shift-tab, ctrl-x
-#                               (ctrl-x then tab focuses a pane; esc goes back
-#                               to the prompt)
+#                               down, up, left, right, space, shift-tab, ctrl-x,
+#                               ctrl-o, backspace (ctrl-x then tab focuses a
+#                               pane; esc goes back to the prompt)
+#   type <text>                 type the text, with no Enter
+#   click <sh command>          run the command; if it exits 0 and its first
+#                               line is "<column> <row>" (1-based), click the
+#                               left button there: an SGR mouse report, press
+#                               then release, as a terminal sends it (the
+#                               engine turns SGR mouse reporting on). ui.sh at
+#                               prints where a text is on the screen
 #   press <secs> <every> <name> <sh command>
 #                               run the command; while it exits non-zero, press
 #                               the key and run it again <every> seconds later,
@@ -80,7 +87,7 @@ proc pump {secs} {
   }
 }
 array set keys [list enter "\r" tab "\t" esc "\x1b" down "\x1b\[B" up "\x1b\[A" left "\x1b\[D" right "\x1b\[C" \
-  space " " shift-tab "\x1b\[Z" ctrl-x "\x18"]
+  space " " shift-tab "\x1b\[Z" ctrl-x "\x18" ctrl-o "\x0f" backspace "\x7f"]
 set f [open $steps]
 set lines [split [read $f] "\n"]
 close $f
@@ -100,6 +107,20 @@ foreach line $lines {
     }
     sleep { set end [expr {[clock seconds] + $arg}]; while {[clock seconds] < $end} { pump 1 } }
     send { send -- $arg; sleep 1; send "\r"; pump 1 }
+    type { send -- $arg; pump 1 }
+    click {
+      set at {}
+      if {![catch {exec sh -c $arg} out]} { set at [string trim [lindex [split $out "\n"] 0]] }
+      if {[regexp {^([1-9][0-9]*) ([1-9][0-9]*)$} $at -> x y]} {
+        puts "drive: click at column $x, row $y"
+        send -- "\x1b\[<0;$x;${y}M"
+        pump 1
+        send -- "\x1b\[<0;$x;${y}m"
+        pump 1
+      } else {
+        puts "drive: click: nothing to click"
+      }
+    }
     sendsh {
       if {![catch {exec sh -c $arg} out]} {
         set out [lindex [split $out "\n"] 0]
