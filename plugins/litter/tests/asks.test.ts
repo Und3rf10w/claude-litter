@@ -6,7 +6,10 @@
 // engine's; and an `ask` line the test spools, after guard.sh's call start
 // for the same agent, tool and detail, is drained at session.start into an
 // open ask, which sends its notice for the paired call and is mirrored to
-// $.store. hooks.json's entry is tier 3's (ask.test.sh, case_wired).
+// $.store. Its transcript row (WP-CK) goes through $.ui.log at the ui tick,
+// for an ask the drain timer opens, never for one session.start replays, and
+// the band draws no row for it. hooks.json's entry is tier 3's (ask.test.sh,
+// case_wired).
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
@@ -128,5 +131,52 @@ describe('the permission ask line', () => {
     expect(mirror?.asks.map(a => [a.agentId, a.toolUseId])).toEqual([['a1', 'toolu_9']])
     // The drain took the spool apart.
     expect(files.has(`${LITTER}/hooks/spool/${SESSION}.jsonl`)).toBe(false)
+  })
+
+  test("the transcript row (WP-CK): none for an ask session.start replays; one for an ask the drain timer opens, at the ui tick, never twice", async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on, { now: NOW })
+    const files = world(on)
+    // $.ui.log's transcript rows, apart from the debug log's lines.
+    const rows: string[] = []
+    on('ui.log', async (_$, e) => {
+      if (e.to !== 'debug') rows.push(e.text)
+      return { value: undefined }
+    })
+    on('ui.notice', async () => ({ value: undefined }))
+    // Beneath the band: the engine's own, which draws nothing.
+    on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'engine', ref: 0 }))
+    const spool = `${LITTER}/hooks/spool/${SESSION}.jsonl`
+    const lines = (ts: number, toolUseId: string, detail: string) => [
+      { v: 1, ev: 'call', ts, session_id: SESSION, agent_id: 'a1', agent_type: 'litter:executor', tool: 'Bash', tool_use_id: toolUseId, phase: 'start', detail },
+      { v: 1, ev: 'ask', ts, session_id: SESSION, agent_id: 'a1', agent_type: 'litter:executor', tool: 'Bash', detail, mode: 'default' },
+    ]
+    const write = (ls: unknown[]) => files.set(spool, `${ls.map(l => JSON.stringify(l)).join('\n')}\n`)
+    // A run is active, so the drain timer drains (policy.ts, tick); the spool holds an ask from before this module.
+    files.set(`${LITTER}/hooks/active`, '')
+    write(lines(NOW / 1000 - 5, 'toolu_1', 'npm install left-pad'))
+
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    expect(files.has(spool)).toBe(false)
+    for (let i = 0; i < 3; i++) await clock.advance(2_000)
+    expect(rows).toEqual([])
+
+    // A new ask, spooled while the session runs: the drain timer opens it, the ui tick writes its row.
+    write(lines(NOW / 1000 + 6, 'toolu_2', 'pwd'))
+    for (let i = 0; i < 4 && rows.length === 0; i++) await clock.advance(2_000)
+    expect(files.has(spool)).toBe(false)
+    expect(rows).toEqual(['⚑ asking · executor wants Bash: pwd · authorized: writes in the checkout'])
+    for (let i = 0; i < 3; i++) await clock.advance(2_000)
+    expect(rows).toHaveLength(1)
+
+    // The ask is still open, and the band draws no row for it.
+    const band = await $.ui.mount({
+      plugin: 'litter',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 95, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+    })
+    expect(await band.find({ type: 'Text', text: /asking/ })).toBeUndefined()
   })
 })

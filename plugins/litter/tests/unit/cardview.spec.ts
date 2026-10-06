@@ -625,10 +625,11 @@ describe('cardRow', () => {
   const rowE = (props: Record<string, unknown>) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'msg-1', props }) as unknown as CardRender
   const task = { id: 't-exec', status: 'completed' }
 
-  test('only a notification row with a task id that is not expanded', () => {
+  test('only a notification row with a task id, expanded or not (WP-CK: an expanded one draws the card above the engine row)', () => {
     expect(cardRow(rowE({ text: 'fix the parser', origin: { kind: 'composer' }, isExpanded: false }))).toBe(false)
+    expect(cardRow(rowE({ text: 'fix the parser', origin: { kind: 'composer' }, isExpanded: true }))).toBe(false)
     expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task }))).toBe(true)
-    expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: true, task }))).toBe(false)
+    expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: true, task }))).toBe(true)
     expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false }))).toBe(false)
     expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task: { status: 'completed' } }))).toBe(false)
     expect(cardRow(rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: '' } }))).toBe(false)

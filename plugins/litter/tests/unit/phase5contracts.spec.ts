@@ -27,7 +27,7 @@ import * as state from '../../hooks/swarm/state'
 import { asksTick, consumeAsks, openAsks, restoreAsks } from '../../hooks/asks'
 import { bandShows, bandTick, onBandUi, resetBandForTests } from '../../hooks/band/view'
 import { cardRow, noteCards, onCardUi, restoreCards } from '../../hooks/card/view'
-import { renderCard } from '../../hooks/card/render'
+import { cardOf } from '../../hooks/card/render'
 import { onTasksUi, refreshTasks, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
 import { agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
 import { BOARD_PANE, openBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
@@ -196,7 +196,7 @@ describe("CA's stubs keep today's behavior", () => {
     const p = nodePorts()
     const notification = rowE({ text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'task-1', status: 'completed' } })
     expect(cardRow(rowE({ text: 'hi', origin: { kind: 'composer' }, isExpanded: false }))).toBe(false)
-    expect(renderCard(null, {} as never, notification)).toBeNull()
+    expect(cardOf(null, notification)).toBeNull()
     await noteCards(p, { text: '<task-notification></task-notification>', origin: { kind: 'task-notification' } } as never)
     await restoreCards(p)
     const { next, seen } = passes<unknown>()

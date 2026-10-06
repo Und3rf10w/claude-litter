@@ -6,7 +6,8 @@
 // nothing beneath (the engine's own band, which draws nothing) litter's rows
 // alone; under a survey, only what's beneath. Each row is one line: every Text
 // truncates, the spans are cut at a narrow band and the buttons kept, none with
-// a hotkey; past maxRows the asks fold into `+<k> more`. A view the render
+// a hotkey; past maxRows the swarms fold into `+<k> more` (the band has no ask
+// rows since WP-CK: tests/asks.test.ts checks none is drawn). A view the render
 // can't draw passes to what's beneath (the render's catch), and [Hide]'s press
 // answers `{ element }`. These are the cases WP-CB's brief names for a tier-2
 // bandrender.spec.ts, here at tier 1 since tier 2 has no JSX (COMMON, "Tests").
@@ -38,11 +39,14 @@ const runRow = {
     { key: `band:hide:run:${RUN}:1:open`, label: 'Hide' },
   ],
 }
-const askRow = (n: number) => ({
-  key: `ask:a${n}`,
-  kind: 'ask',
-  spans: [{ text: '⚑ asking', color: 'permission' }, { text: ' · ' }, { text: 'G2 executor', color: 'cyan' }, { text: ` wants Bash: npm install pkg-${n}` }],
-  buttons: [],
+const swarmRow = (n: number) => ({
+  key: `swarm:s${n}:20261005-093000`,
+  kind: 'swarm',
+  spans: [{ text: '▸', color: 'background' }, { text: ' litter · swarm ' }, { text: `s${n}`, color: 'cyan' }, { text: ' · ' }, { text: '1 waiting', color: 'warning' }],
+  buttons: [
+    { key: `band:browser:s${n}`, label: 'Browser' },
+    { key: `band:hide:swarm:s${n}:20261005-093000`, label: 'Hide' },
+  ],
 })
 const ONE_ROW = { view: 'band', v: 3, rows: [runRow] } as BandView
 
@@ -104,7 +108,7 @@ describe('the band', () => {
 
   test('every Text of a row truncates, the colors are kept, and no Button has a hotkey', async ($, on) => {
     mock.store(on)
-    bandAtom(on, { view: 'band', v: 4, rows: [runRow, askRow(1)] })
+    bandAtom(on, { view: 'band', v: 4, rows: [runRow, swarmRow(1)] })
     bandBeneath(on)
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: BAND })
     const root = (await ui.drawn()) as unknown as Node
@@ -114,13 +118,11 @@ describe('the band', () => {
     expect(texts.every(t => t.props?.wrap === 'truncate-end')).toBe(true)
     expect(texts.find(t => shownText(t) === RUN)?.props?.color).toBe('cyan')
     expect(texts.find(t => shownText(t) === 'retry 2')?.props?.color).toBe('warning')
-    expect(texts.find(t => shownText(t) === '⚑ asking')?.props?.color).toBe('permission')
+    expect(texts.find(t => shownText(t) === '1 waiting')?.props?.color).toBe('warning')
     expect(texts.find(t => shownText(t) === '14m')?.props?.dimColor).toBe(true)
     const buttons = ours.filter(n => n.type === 'Button')
-    expect(buttons.map(b => b.props?.key)).toEqual([`band:board:${RUN}`, `band:hide:run:${RUN}:1:open`])
+    expect(buttons.map(b => b.props?.key)).toEqual([`band:board:${RUN}`, `band:hide:run:${RUN}:1:open`, 'band:browser:s1', 'band:hide:swarm:s1:20261005-093000'])
     expect(buttons.every(b => b.props?.hotkey === undefined)).toBe(true)
-    // The ask's row has no buttons.
-    expect(walk(root.children?.[1]).filter(n => n.type === 'Button')).toEqual([])
   })
 
   test('at a narrow band the spans are cut and the buttons kept', async ($, on) => {
@@ -147,17 +149,13 @@ describe('the band', () => {
     }
   })
 
-  test('past maxRows the asks fold into the `+<k> more` row', async ($, on) => {
+  test('past maxRows the swarms fold into the `+<k> more` row', async ($, on) => {
     mock.store(on)
-    bandAtom(on, { view: 'band', v: 5, rows: [runRow, askRow(1), askRow(2), askRow(3)], asking: 3 })
+    bandAtom(on, { view: 'band', v: 5, rows: [runRow, swarmRow(1), swarmRow(2), swarmRow(3)] })
     engineBeneath(on)
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, maxRows: 3 } })
     const root = (await ui.drawn()) as unknown as Node
-    expect((root.children ?? []).map(shownText)).toEqual([
-      `▸ litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m`,
-      '⚑ asking · G2 executor wants Bash: npm install pkg-1',
-      '+2 more asking',
-    ])
+    expect((root.children ?? []).map(shownText)).toEqual([`▸ litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m`, '▸ litter · swarm s1 · 1 waiting', '+2 more swarms'])
   })
 
   test('a survey holds the band: only what is beneath is drawn', async ($, on) => {

@@ -3,10 +3,12 @@
 // whose detail matches (by tool alone for a file tool), and closes at that
 // call's end or deny, the agent's stop, a later call after a rejection, or 15
 // minutes; `authorized` says what each role's launch let it do; the notice
-// goes once its tool_use_id is known and once on the next tick; the band is
-// refreshed on every change; the mirror comes back for its own session only.
-// Lines go straight to consumeAsks, as the drain hands them; one case goes
-// through the real drain.
+// goes once its tool_use_id is known and once on the next tick; the
+// transcript row (WP-CK) goes once per ask, at the first tick that sees it,
+// never for an ask closed before that tick nor for one replayed at
+// session.start or kept across a /clear; the mirror comes back for its own
+// session only. Lines go straight to consumeAsks, as the drain hands them;
+// one case goes through the real drain.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -20,10 +22,10 @@ import {
   ASKS_STORE_KEY,
   CALLS_PER_AGENT,
   MIRROR_FRESH_MS,
+  askLine,
   askText,
   asksTick,
   consumeAsks,
-  deps,
   openAsks,
   resetAsksForTests,
   restoreAsks,
@@ -39,7 +41,6 @@ const SESSION = 'test-session'
 let p: TestPorts
 let dir: string
 let ctx: SpoolCtx
-let refreshed: number
 let cleanup: () => void
 
 beforeEach(() => {
@@ -50,10 +51,6 @@ beforeEach(() => {
   p = nodePorts()
   p.clock.now = NOW
   ctx = { p, litterDir: dir, sessionId: SESSION }
-  refreshed = 0
-  deps.refreshBand = async () => {
-    refreshed++
-  }
 })
 
 afterEach(() => {
@@ -149,7 +146,6 @@ describe('pairing', () => {
     expect(only().toolUseId).toBeNull()
     resetAsksForTests()
     p.storeMap.clear()
-    deps.refreshBand = async () => {}
     for (let i = 0; i <= CALLS_PER_AGENT; i++) await feed(start('a1', 'Bash', `toolu_${i}`, i === 0 ? 'first' : 'later'))
     await feed(ask('a1', 'Bash', 'first'))
     expect(only().toolUseId).toBeNull()
@@ -165,7 +161,6 @@ describe('pairing', () => {
     ])
     // A crash between delivery and the spool's removal: the drain hands the line over again.
     resetAsksForTests()
-    deps.refreshBand = async () => {}
     await feed(ask('a1', 'Bash', 'make'))
     expect(openAsks()).toEqual(both)
   })
@@ -180,18 +175,16 @@ describe('pairing', () => {
 })
 
 describe('closing', () => {
-  test("its call's end closes it, a failed end too, and the band is refreshed", async () => {
+  test("its call's end closes it, a failed end too; another call's end closes nothing", async () => {
     await feed(start('a1', 'Bash', 'toolu_1', 'make'), start('a1', 'Bash', 'toolu_2', 'ls'))
     await feed(ask('a1', 'Bash', 'make'), ask('a1', 'Bash', 'ls'))
     expect(openAsks()).toHaveLength(2)
-    refreshed = 0
     await feed(end('a1', 'toolu_9'))
-    expect(refreshed).toBe(0)
+    expect(openAsks()).toHaveLength(2)
     await feed(end('a1', 'toolu_1'))
     expect(openAsks().map(e => e.toolUseId)).toEqual(['toolu_2'])
     await feed(end('a1', 'toolu_2', TS, true))
     expect(openAsks()).toEqual([])
-    expect(refreshed).toBe(2)
   })
 
   test('a deny of its call closes it, with or without the agent named', async () => {
@@ -215,23 +208,19 @@ describe('closing', () => {
     await feed(start('a1', 'Read', 'toolu_2', undefined, TS), start('a1', 'Grep', 'toolu_3', undefined, TS + 1))
     await feed(start('a2', 'Bash', 'toolu_4', 'make', TS + 30))
     expect(only().toolUseId).toBe('toolu_1')
-    refreshed = 0
     // After you rejected it, the model's next call.
     await feed(start('a1', 'Bash', 'toolu_5', 'make', TS + 20))
     expect(openAsks()).toEqual([])
-    expect(refreshed).toBe(1)
   })
 
-  test('15 minutes open: the tick closes it as stale, logs it and refreshes the band; an ask line that old is never opened', async () => {
+  test('15 minutes open: the tick closes it as stale and logs it; an ask line that old is never opened', async () => {
     await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
     p.clock.now = NOW + ASK_STALE_MS
     await asksTick(p)
     expect(openAsks()).toHaveLength(1)
-    refreshed = 0
     p.clock.now = NOW + ASK_STALE_MS + 1
     await asksTick(p)
     expect(openAsks()).toEqual([])
-    expect(refreshed).toBe(1)
     expect(p.logs.filter(l => l.includes('closed as stale'))).toHaveLength(1)
     await feed(ask('a1', 'Bash', 'make', TS))
     expect(openAsks()).toEqual([])
@@ -350,20 +339,104 @@ describe('the notice', () => {
   })
 })
 
-describe('the band', () => {
-  test('refreshed after every open and close, not after a call that changes no ask; its failure is logged', async () => {
-    await feed(start('a1', 'Bash', 'toolu_1', 'make'))
-    expect(refreshed).toBe(0)
-    await feed(ask('a1', 'Bash', 'make'))
-    expect(refreshed).toBe(1)
-    await feed(start('a2', 'Bash', 'toolu_2', 'ls'), end('a2', 'toolu_2'), stop('a2'))
-    expect(refreshed).toBe(1)
-    deps.refreshBand = async () => {
-      throw new Error('no band')
-    }
-    await feed(end('a1', 'toolu_1'))
+describe('the transcript row (WP-CK)', () => {
+  const LINE = '⚑ asking · G2 executor wants Bash: npm install left-pad · authorized: verify npm test · Files lib/** tests/**'
+  /** What an executor with no run.json read was authorized, as every row of an unknown agent here ends. */
+  const CHECKOUT = ' · authorized: writes in the checkout'
+
+  test("one per ask, at the first tick that sees it, in the band row's words with no `litter: `; never again, across ticks and a later pairing", async () => {
+    executeRun()
+    known('a1', 'litter:executor', RUN)
+    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
+    await feed(start('a1', 'Bash', 'toolu_1', 'npm install left-pad'), ask('a1', 'Bash', 'npm install left-pad'))
+    // The drain opens it; the tick writes the row.
+    expect(p.notes).toEqual([])
+    await asksTick(p)
+    expect(p.notes).toEqual([LINE])
+    expect(p.notes[0]).toBe(askLine(only()))
+    expect(p.notes[0]).not.toStartWith('litter: ')
+    await asksTick(p)
+    p.clock.now = NOW + 10_000
+    await asksTick(p)
+    expect(p.notes).toEqual([LINE])
+  })
+
+  test('paired or not, each ask gets its row; two alike in one second are two rows; the asks after get theirs at the next tick', async () => {
+    await feed(ask('a1', 'Bash', 'npm install'), start('a2', 'Bash', 'toolu_1', 'make'), start('a2', 'Bash', 'toolu_2', 'make'))
+    await feed(ask('a2', 'Bash', 'make'), ask('a2', 'Bash', 'make'))
+    expect(openAsks().map(e => e.toolUseId)).toEqual(['toolu_1', 'toolu_2', null])
+    await asksTick(p)
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: npm install${CHECKOUT}`, `⚑ asking · executor wants Bash: make${CHECKOUT}`, `⚑ asking · executor wants Bash: make${CHECKOUT}`])
+    await feed(ask('a3', 'Write', '/repo/x', TS + 5))
+    await asksTick(p)
+    await asksTick(p)
+    expect(p.notes).toHaveLength(4)
+    expect(p.notes[3]).toBe(`⚑ asking · executor wants Write: /repo/x${CHECKOUT}`)
+  })
+
+  test('none for an ask closed before its first tick: its end, its deny or its stop in the same drain', async () => {
+    await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'), end('a1', 'toolu_1'))
+    await feed(start('a2', 'Bash', 'toolu_2', 'make'), ask('a2', 'Bash', 'make'), deny('a2', 'toolu_2'))
+    await feed(ask('a3', 'Bash', 'make'), stop('a3'))
+    await asksTick(p)
     expect(openAsks()).toEqual([])
-    expect(p.logs.some(l => l.includes("the band wasn't refreshed") && l.includes('no band'))).toBe(true)
+    expect(p.notes).toEqual([])
+  })
+
+  test('none on a replay at session.start: the asks the mirror brings back, whether their row was written or not, and the asks its drain opens', async () => {
+    // A row written, then a reload: the mirror brings it back, and no second row.
+    await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
+    await asksTick(p)
+    expect(p.notes).toHaveLength(1)
+    resetAsksForTests()
+    p.clock.now = NOW + 5_000
+    await restoreAsks(p)
+    await asksTick(p)
+    expect(openAsks()).toHaveLength(1)
+    expect(p.notes).toHaveLength(1)
+    // An ask opened just before a reload, its row not written yet: the mirror's, so none.
+    await feed(ask('a2', 'Bash', 'ls', TS + 5))
+    resetAsksForTests()
+    p.clock.now = NOW + 6_000
+    await restoreAsks(p)
+    await asksTick(p)
+    expect(openAsks().map(e => e.agentId)).toEqual(['a2', 'a1'])
+    expect(p.notes).toHaveLength(1)
+    // A resume: lines the earlier process spooled, drained at session.start before restoreAsks.
+    resetAsksForTests()
+    p.storeMap.clear()
+    await feed(start('a3', 'Bash', 'toolu_3', 'pwd', TS + 6), ask('a3', 'Bash', 'pwd', TS + 6))
+    await restoreAsks(p)
+    await asksTick(p)
+    expect(openAsks().map(e => e.agentId)).toEqual(['a3'])
+    expect(p.notes).toHaveLength(1)
+    // One that opens after session.start gets its row.
+    await feed(ask('a4', 'Bash', 'id', TS + 7))
+    await asksTick(p)
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: make${CHECKOUT}`, `⚑ asking · executor wants Bash: id${CHECKOUT}`])
+  })
+
+  test('none again after a /clear: the session id moves, the module keeps what it wrote; a new ask gets its own', async () => {
+    await feed(ask('a1', 'Bash', 'make'))
+    await asksTick(p)
+    p.sessionId = async () => 'cleared-session'
+    await asksTick(p)
+    await feed(ask('a1', 'Bash', 'make', TS + 1))
+    await asksTick(p)
+    await asksTick(p)
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: make${CHECKOUT}`, `⚑ asking · executor wants Bash: make${CHECKOUT}`])
+    expect(openAsks()).toHaveLength(2)
+  })
+
+  test('a row that throws is logged once and not tried again; the notices still go', async () => {
+    p.note = () => {
+      throw new Error('no transcript')
+    }
+    await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
+    await asksTick(p)
+    await asksTick(p)
+    expect(p.logs.filter(l => l.includes("its transcript row wasn't written: no transcript"))).toHaveLength(1)
+    expect(p.notices).toHaveLength(2)
   })
 })
 
@@ -388,14 +461,9 @@ describe('the mirror', () => {
     const before = openAsks()
     // A reload: module memory gone, the store kept.
     resetAsksForTests()
-    deps.refreshBand = async () => {
-      refreshed++
-    }
-    refreshed = 0
     p.clock.now = NOW + 5_000
     await restoreAsks(p)
     expect(openAsks()).toEqual(before)
-    expect(refreshed).toBe(1)
     await feed(ask('a2', 'Bash', 'ls', TS + 5))
     expect(openAsks().map(e => e.toolUseId)).toEqual(['toolu_2', 'toolu_1'])
     // The notices carried over: a1's ask had both before the reload, a2's new one gets its second at the tick, and that's all.
@@ -408,7 +476,6 @@ describe('the mirror', () => {
   test("the drain's lines at session.start apply after the mirror: an end drained first still closes a restored ask", async () => {
     await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
     resetAsksForTests()
-    deps.refreshBand = async () => {}
     await feed(end('a1', 'toolu_1'))
     await restoreAsks(p)
     expect(openAsks()).toEqual([])
@@ -462,12 +529,14 @@ describe('the mirror', () => {
 })
 
 describe('through the real drain', () => {
-  test("guard.sh's call start, then ask.sh's line, in one spool file: one paired ask", async () => {
+  test("guard.sh's call start, then ask.sh's line, in one spool file: one paired ask, and its row at the tick", async () => {
     mkdirSync(spoolDir(dir), { recursive: true })
     const lines = [start('a1', 'Bash', 'toolu_1', 'npm install left-pad'), ask('a1', 'Bash', 'npm install left-pad')]
     writeFileSync(spoolPath(dir, SESSION), `${lines.map(l => JSON.stringify(l)).join('\n')}\n`)
     expect(await drainSpool(ctx, [consumeAsks])).toEqual({ lines: 2, bad: 0 })
     expect(only()).toEqual(expect.objectContaining({ toolUseId: 'toolu_1', detail: 'npm install left-pad' }))
-    expect(refreshed).toBe(1)
+    expect(p.notes).toEqual([])
+    await asksTick(p)
+    expect(p.notes).toEqual(['⚑ asking · executor wants Bash: npm install left-pad · authorized: writes in the checkout'])
   })
 })

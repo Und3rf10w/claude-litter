@@ -1,12 +1,16 @@
 // The band above the prompt (phase 5; COMMON step 1, decision 7; plan 11,
 // "Band"): a row per active run, one for the newest run that ended in the
-// last 10 minutes (the bandEndedMinutes option, WP-CH), a row per live
-// swarm, then a row per open permission ask (CF's), built into the `band`
-// atom by the ui tick and drawn by render.tsx. Keys are
-// `band:<action>[:<arg>]`. Owner: WP-CB.
+// last 10 minutes (the bandEndedMinutes option, WP-CH), and a row per live
+// swarm, built into the `band` atom by the ui tick and drawn by render.tsx.
+// Keys are `band:<action>[:<arg>]`. Owner: WP-CB.
+//
+// No ask rows (WP-CK; COMMON decision 1, revised): on 2.1.290 the band sits
+// in the prompt area, which isn't drawn while a permission dialog is up, so
+// an ask showed here only once answered. asks.ts writes each ask's line to
+// the transcript instead.
 //
 // A quiet tick is cheap: policy.json's stat, each tracked run's ledger head
-// in $.store, and module memory (the live swarms, the open asks). A run's
+// in $.store, and module memory (the live swarms). A run's
 // ledger is read again only when its head moved or the minute changed, and
 // the view is written only when its rows changed: the elapsed time is in
 // whole minutes, so a quiet run rewrites the band once a minute at most.
@@ -18,7 +22,7 @@
 // $.store under BAND_STORE_KEY with the session id and read back only by the
 // session that wrote them, as the board's navigation is (board/view.ts).
 //
-// Every text from a ledger, run.json, a swarm or an ask is cleaned and cut
+// Every text from a ledger, run.json or a swarm is cleaned and cut
 // (swarm/view.ts, oneLine): a record holds model text.
 
 import type { Ports } from '../ports'
@@ -27,7 +31,6 @@ import type { BandButton, BandRow, BandView, SwarmSpan } from '../../types/index
 import type { StoredRecord } from '../records/core'
 import type { RunJson } from '../records/run'
 import type { LiveSwarm } from '../swarm/types'
-import type { AskEntry } from '../uitypes'
 import { headKey } from '../ledgercore'
 import { PROPOSAL_VERSION, RUN_ID, SWARM_NAME, ledgerDir, policyPath, runDir } from '../layout'
 import { FANOUT_GATE } from '../records/fanout'
@@ -37,15 +40,13 @@ import { getOptions, session } from '../session'
 import { runStatusOf, statusWord } from '../board/view'
 import { openBoard } from '../board/pane'
 import { openSwarmPane } from '../swarm/panes'
-import { openAsks } from '../asks'
 import { bindings, liveSwarms, openQuestions, status as admissionStatus } from '../swarm/state'
 import { oneLine, unprefixed } from '../swarm/view'
 
 // The other packages' modules the band calls, through one table so tier 2
-// can stand in for them (COMMON, "Another package's module"): CF's open asks,
-// CD's board and N's swarm pane. The mod never changes it.
+// can stand in for them (COMMON, "Another package's module"): CD's board and
+// N's swarm pane. The mod never changes it.
 export const deps = {
-  openAsks: (): AskEntry[] => openAsks(),
   openBoard: (p: Ports, run: string): Promise<boolean> => openBoard(p, run),
   openSwarmPane: (p: Ports, name: string): Promise<string> => openSwarmPane(p, name),
 }
@@ -58,8 +59,6 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
  * BAND_ENDED_MINUTES.default. The bandEndedMinutes option sets it, read at each build.
  */
 export const ENDED_MS = 10 * 60_000
-/** Open asks drawn a row each, newest first; the rest fold into `+<k> more asking`. */
-export const ASK_ROWS = 3
 /** The $.store key [Hide]'s keys are mirrored under, with the session that wrote them. */
 export const BAND_STORE_KEY = 'litter.band.hidden'
 /** litter's name, as register.tsx's atoms carry it: only its own buttons are the band's to answer. */
@@ -341,30 +340,9 @@ function swarmRow(s: LiveSwarm, now: number): BandRow {
   }
 }
 
-/** Who is asking: `<gate> <role>` for a run agent, `<node> in swarm <name>` for a node, else the agent type. */
-function whoOf(a: AskEntry): string {
-  if (a.swarm && a.node) return `${oneLine(a.node, 24)} in swarm ${oneLine(a.swarm, 24)}`
-  if (a.run && a.role) return oneLine(a.gate ? `${a.gate} ${a.role}` : a.role, 48)
-  return oneLine(a.agentType || 'an agent', 48)
-}
-
-function askRow(a: AskEntry): BandRow {
-  const detail = oneLine(a.detail, 120)
-  const authorized = oneLine(a.authorized, 200)
-  const spans: SwarmSpan[] = [
-    { text: '⚑ asking', color: 'permission' },
-    SEP,
-    { text: whoOf(a), color: 'cyan' },
-    { text: ` wants ${oneLine(a.tool, 40)}${detail ? `: ${detail}` : ''}` },
-  ]
-  if (authorized) spans.push(SEP, { text: `authorized: ${authorized}`, dim: true })
-  return { key: `ask:${oneLine(a.key, 120)}`, kind: 'ask', spans, buttons: [] }
-}
-
-/** The row the band folds what it can't fit into: the asks first, then the swarms (decision 7). */
-export function moreRow(n: { swarms?: number; asks?: number }): BandRow {
-  const parts = [n.swarms ? `+${n.swarms} more ${n.swarms === 1 ? 'swarm' : 'swarms'}` : '', n.asks ? `+${n.asks} more asking` : ''].filter(Boolean)
-  return { key: 'more', kind: 'more', spans: [n.asks ? { text: parts.join(' · '), color: 'permission' } : { text: parts.join(' · '), dim: true }], buttons: [] }
+/** The row the band folds the swarms it can't fit into (decision 7). */
+export function moreRow(swarms: number): BandRow {
+  return { key: 'more', kind: 'more', spans: [{ text: `+${swarms} more ${swarms === 1 ? 'swarm' : 'swarms'}`, dim: true }], buttons: [] }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,24 +399,19 @@ export function fitSpans(spans: readonly SwarmSpan[], room: number): SwarmSpan[]
 }
 
 /**
- * At most `maxRows` rows: the runs' rows always, then the swarms, then the
- * asks, and one `+<k> more` row for what's left. Past `maxRows` runs (a band
- * a row or two high), the runs alone.
+ * At most `maxRows` rows: the runs' rows always, then the swarms, and one
+ * `+<k> more` row for the swarms left. Past `maxRows` runs (a band a row or
+ * two high), the runs alone.
  */
 export function fitRows(view: BandView, maxRows: number): BandRow[] {
   const rows = view.rows
   if (!Number.isFinite(maxRows) || rows.length <= maxRows) return rows
   const budget = Math.max(1, Math.floor(maxRows))
-  const runs = rows.filter(r => r.kind !== 'swarm' && r.kind !== 'ask' && r.kind !== 'more')
+  const runs = rows.filter(r => r.kind !== 'swarm' && r.kind !== 'more')
   if (runs.length >= budget) return runs.slice(0, budget)
   const swarms = rows.filter(r => r.kind === 'swarm')
-  const asks = rows.filter(r => r.kind === 'ask')
-  let room = budget - runs.length - 1
-  const shownSwarms = swarms.slice(0, room)
-  room -= shownSwarms.length
-  const shownAsks = asks.slice(0, room)
-  const asking = Math.max(view.asking ?? 0, asks.length)
-  return [...runs, ...shownSwarms, ...shownAsks, moreRow({ swarms: swarms.length - shownSwarms.length, asks: asking - shownAsks.length })]
+  const shown = swarms.slice(0, budget - runs.length - 1)
+  return [...runs, ...shown, moreRow(swarms.length - shown.length)]
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +433,7 @@ let hidden: string[] = []
 let restored = false
 let viewSeq = 0
 let current: BandView | null = null
-const EMPTY = JSON.stringify({ rows: [], asking: 0 })
+const EMPTY = JSON.stringify({ rows: [] })
 let currentJson = EMPTY
 /** Problems already in the debug log, by what they're about: each is said once until it clears. */
 const logged = new Set<string>()
@@ -631,29 +604,13 @@ function swarmRows(p: Ports, now: number): BandRow[] {
   }
 }
 
-function askRows(p: Ports): { rows: BandRow[]; total: number } {
-  let asks: AskEntry[]
-  try {
-    asks = [...deps.openAsks()].sort((a, b) => b.since - a.since)
-    logged.delete('asks')
-  } catch (err) {
-    logOnce(p, 'asks', `band: the open asks can't be read: ${errText(err)}`)
-    return { rows: [], total: 0 }
-  }
-  const rows = asks.slice(0, ASK_ROWS).map(askRow)
-  if (asks.length > ASK_ROWS) rows.push(moreRow({ asks: asks.length - ASK_ROWS }))
-  return { rows, total: asks.length }
-}
-
-/** The rows in their order (decision 7): the runs, the swarms, then the asks; a row [Hide] hid is left out. */
-async function build(p: Ports): Promise<{ rows: BandRow[]; asking: number }> {
+/** The rows in their order (decision 7): the runs, then the swarms; a row [Hide] hid is left out. */
+async function build(p: Ports): Promise<{ rows: BandRow[] }> {
   await restoreHidden(p)
   const now = await p.now()
   const litterDir = session().litterDir
   const runs = litterDir ? await runRows(p, litterDir, now) : []
-  const shown = [...runs, ...swarmRows(p, now)].filter(r => !hidden.includes(r.key))
-  const asks = askRows(p)
-  return { rows: [...shown, ...asks.rows], asking: asks.total }
+  return { rows: [...runs, ...swarmRows(p, now)].filter(r => !hidden.includes(r.key)) }
 }
 
 /** Builds the view; true when its rows changed, and with them its `v`. */

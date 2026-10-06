@@ -8,8 +8,9 @@
 // Three checks: `unprefixed`, the helper for a line the model reads too; a
 // scan of hooks/**/*.ts{,x} through the TypeScript parser, for a string
 // starting `litter: ` anywhere in the arguments of a toast, log, logOnce,
-// status or notice call or in a `text:` value (a ternary's branches and a
-// call written over several lines included); and every pane command's reply
+// status, notice or note call (p.note, the ask line's transcript row, WP-CK)
+// or in a `text:` value (a ternary's branches and a call written over
+// several lines included); and every pane command's reply
 // and /clear's hold, which helpers and constants build where the scan can't
 // follow them.
 
@@ -41,8 +42,12 @@ const PREFIX = 'litter: '
 
 /** Calls whose arguments the person reads, under any receiver: `p.toast`, `p.log`, `$.ui.log`, the band's `logOnce`. */
 const ANY_CALLEE = new Set(['toast', 'log', 'logOnce'])
-/** As a method only (`$.ui.status`, `$.ui.notice`, `p.notice`): the panes' own `notice(…)` is drawn in the pane, which the engine doesn't label. */
-const METHOD_CALLEE = new Set(['status', 'notice'])
+/**
+ * As a method only (`$.ui.status`, `$.ui.notice`, `p.notice`, and `p.note`, the
+ * ask line's transcript row, WP-CK): the panes' own `notice(…)` is drawn in
+ * the pane, which the engine doesn't label.
+ */
+const METHOD_CALLEE = new Set(['status', 'notice', 'note'])
 
 type Hit = { line: number; text: string }
 
@@ -114,8 +119,9 @@ describe('the scan of hooks/', () => {
       "return { deny: 'litter: the model reads this' }",
       "throw new Error('litter: and this')",
       "p.toast(`swarm alpha: litter: in the middle`)",
+      "p.note(`litter: nine ${z}`)",
     ].join('\n')
-    expect(scan('sample.ts', sample).hits.map(h => h.line)).toEqual([1, 3, 5, 6, 7, 8, 9, 10])
+    expect(scan('sample.ts', sample).hits.map(h => h.line)).toEqual([1, 3, 5, 6, 7, 8, 9, 10, 15])
   })
 
   test('no toast, log line, status, notice or `text:` in hooks/ starts with `litter: `', () => {

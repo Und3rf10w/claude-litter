@@ -1,16 +1,19 @@
 // Tier 2: the card's render (hooks/card/render.tsx; WP-CC, COMMON decisions
 // 8, 11, 12) with a table of plain constructors in place of the engine's:
 // the title, the lines and [Board] in order, at most 6 rows, every Text set
-// to truncate, the spans' colors carried as given; and null, so the engine
-// draws its own row, with no card, no view, an expanded row, or a task id
-// that's only a key of Object's prototype. The render calls the table's
-// constructors rather than JSX, which is what lets tier 2 draw it; tier 1
-// (tests/card.test.tsx) draws it through the engine.
+// to truncate, the spans' colors carried as given; with the engine's own row
+// (an expanded row's, WP-CK), the card above it in one column. cardOf: the
+// row's card, expanded or not, and null, so the engine draws its own row,
+// with no card, no view, or a task id that's only a key of Object's
+// prototype. The render calls the table's constructors rather than JSX,
+// which is what lets tier 2 draw it; tier 1 (tests/card.test.tsx) draws it
+// through the engine.
 
 import { describe, expect, test } from 'bun:test'
+import type { RenderElement } from 'claude-code'
 import type { CardElements, CardRender } from '../../hooks/hooktypes'
 import type { CardView, CardsView } from '../../types/index'
-import { CARD_ROWS, renderCard } from '../../hooks/card/render'
+import { CARD_ROWS, cardOf, renderCard } from '../../hooks/card/render'
 
 type Node = { type: string; props: Record<string, unknown> }
 
@@ -49,9 +52,12 @@ function nodes(n: unknown): Node[] {
 }
 const textOf = (n: Node): string => nodes(n).flatMap(x => (typeof x.props.children === 'string' ? [x.props.children] : [])).join('')
 
+/** The engine's own drawing of the row, as next(e) answers it. */
+const ENGINE = { type: 'engine', ref: 0 } as RenderElement
+
 describe('renderCard', () => {
   test('draws the title, the lines and [Board] in a column, each text row one Text of its spans', () => {
-    const tree = renderCard(view(), table, rowE(NOTIFICATION)) as unknown as Node
+    const tree = renderCard(card(), table, null) as unknown as Node
     expect(tree.type).toBe('Box')
     expect(tree.props.flexDirection).toBe('column')
     const rows = tree.props.children as Node[]
@@ -76,33 +82,52 @@ describe('renderCard', () => {
   })
 
   test('every Text is set to truncate, so no row wraps', () => {
-    const texts = nodes(renderCard(view(), table, rowE(NOTIFICATION))).filter(n => n.type === 'Text')
+    const texts = nodes(renderCard(card(), table, null)).filter(n => n.type === 'Text')
     expect(texts.length).toBeGreaterThan(5)
     for (const t of texts) expect(t.props.wrap).toBe('truncate')
   })
 
   test('at most 6 rows: lines past four are left out with [Board], past five without it', () => {
     const many = Array.from({ length: 9 }, (_, i) => [{ text: `line ${i}` }])
-    const withButton = (renderCard(view(card({ lines: many })), table, rowE(NOTIFICATION)) as unknown as Node).props.children as Node[]
+    const withButton = (renderCard(card({ lines: many }), table, null) as unknown as Node).props.children as Node[]
     expect(withButton).toHaveLength(CARD_ROWS)
     expect(withButton.slice(1, 5).map(textOf)).toEqual(['line 0', 'line 1', 'line 2', 'line 3'])
     expect(withButton[5]!.type).toBe('Box')
-    const noButton = (renderCard(view(card({ lines: many, buttons: [] })), table, rowE(NOTIFICATION)) as unknown as Node).props.children as Node[]
+    const noButton = (renderCard(card({ lines: many, buttons: [] }), table, null) as unknown as Node).props.children as Node[]
     expect(noButton).toHaveLength(CARD_ROWS)
     expect(noButton.every(r => r.type === 'Text')).toBe(true)
   })
 
   test("a card with no lines is its title and [Board]", () => {
-    const rows = (renderCard(view(card({ lines: [] })), table, rowE(NOTIFICATION)) as unknown as Node).props.children as Node[]
+    const rows = (renderCard(card({ lines: [] }), table, null) as unknown as Node).props.children as Node[]
     expect(rows.map(r => r.type)).toEqual(['Text', 'Box'])
   })
 
-  test("null, so the engine draws its own row: no view, no card for the task, an expanded row, no task id, a prototype key", () => {
-    expect(renderCard(null, table, rowE(NOTIFICATION))).toBeNull()
-    expect(renderCard(view(), table, rowE({ ...NOTIFICATION, task: { id: 't-other' } }))).toBeNull()
-    expect(renderCard(view(), table, rowE({ ...NOTIFICATION, isExpanded: true }))).toBeNull()
-    expect(renderCard(view(), table, rowE({ ...NOTIFICATION, task: { status: 'completed' } }))).toBeNull()
-    expect(renderCard(view(), table, rowE({ ...NOTIFICATION, task: { id: 'constructor' } }))).toBeNull()
-    expect(renderCard(view(), table, rowE({ ...NOTIFICATION, task: { id: 'toString' } }))).toBeNull()
+  test("with the engine's own row (expanded: ctrl+o or verbose), the card above it in one column, the row kept as given", () => {
+    const tree = renderCard(card(), table, ENGINE) as unknown as Node
+    expect(tree.type).toBe('Box')
+    expect(tree.props.flexDirection).toBe('column')
+    const [drawn, below, ...rest] = tree.props.children as Node[]
+    expect(rest).toEqual([])
+    expect(below).toBe(ENGINE as unknown as Node)
+    // The card itself is the compact one, whole.
+    expect(drawn).toEqual(renderCard(card(), table, null) as unknown as Node)
+    expect((drawn!.props.children as Node[]).map(textOf)[0]).toBe('⚑ halted · litter · execute 20261005-exec · 14m 2s')
+  })
+})
+
+describe('cardOf', () => {
+  test("the row's card, expanded or not", () => {
+    expect(cardOf(view(), rowE(NOTIFICATION))).toEqual(card())
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, isExpanded: true }))).toEqual(card())
+  })
+
+  test("null, so the engine draws its own row: no view, no card for the task, no task id, a prototype key", () => {
+    expect(cardOf(null, rowE(NOTIFICATION))).toBeNull()
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, task: { id: 't-other' } }))).toBeNull()
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, isExpanded: true, task: { id: 't-other' } }))).toBeNull()
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, task: { status: 'completed' } }))).toBeNull()
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, task: { id: 'constructor' } }))).toBeNull()
+    expect(cardOf(view(), rowE({ ...NOTIFICATION, task: { id: 'toString' } }))).toBeNull()
   })
 })

@@ -2,9 +2,19 @@
 // `ask` spool lines, each paired with guard.sh's `call` start for the same
 // agent, tool and detail (which gives the tool_use_id), and kept open until
 // that call's `call` end or `deny`, the agent's stop, or a later call start
-// from the same agent. The band (CB) draws openAsks(); each ask also gets
-// p.notice twice at most, for a later engine that draws it under permission
-// prompts. Owner: WP-CF.
+// from the same agent. When the ui tick first sees an ask it writes one
+// transcript row for it (p.note; COMMON decision 1, revised by WP-CK); each
+// ask also gets p.notice twice at most, for a later engine that draws it
+// under permission prompts. Owner: WP-CF.
+//
+// Why the transcript, not the band: on 2.1.290 the band is mounted in the
+// prompt area (cli_formatted_2.1.290.js:1436199), which isn't drawn while a
+// dialog hides the prompt (`visible` is `!vP() && …`, :1477851; vP :1454610),
+// so a band row showed an ask only after it was answered. The transcript
+// stays drawn above the dialog. The row is written once per ask, paired or
+// not: never for an ask a drain opened and closed before the tick saw it, nor
+// for one session.start brings back (the mirror's, or its drain's: a reload
+// or a resume replays them, and their rows, if any, were written already).
 //
 // What 2.1.289 gives (cli_formatted_2.1.289.js):
 //  - PreToolUse runs before the permission check (:454056), so a call's start
@@ -38,7 +48,6 @@ import { ROLE_POLICIES, isRoleName } from './roles'
 import { shellQuote } from './quote'
 import { oneLine } from './swarm/view'
 import { binding } from './swarm/state'
-import { refreshBand } from './band/view'
 
 /** An ask open this long is stale: closed, and logged (WP-CF). An ask line this old when drained isn't opened. */
 export const ASK_STALE_MS = 15 * 60_000
@@ -65,19 +74,17 @@ const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
 /** A workflow agent's label, as the list shows it (execute.js: `write:G2#1`, `critic:G2#1`, `adversary:G2#1`). */
 const GATE_LABEL = /^(?:write|critic|adversary):(G[0-9]+)#/
 
-/** CB's refresh, called after any open or close; a spec replaces it. */
-export const deps = {
-  refreshBand: (p: Ports) => refreshBand(p),
-}
-const defaults = { ...deps }
-
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const ms = (ts: number): number => Math.round(ts * 1000)
 
 /** A call guard.sh spooled a start for and nothing closed yet. `at` in ms. */
 type OpenCall = { toolUseId: string; tool: string; detail: string; at: number }
-/** An open ask, with what this module keeps beside it: the line's ts (seconds), its detail as spooled, and the notices sent. */
-type Held = AskEntry & { askTs: number; rawDetail: string; noticed: number }
+/**
+ * An open ask, with what this module keeps beside it: the line's ts (seconds),
+ * its detail as spooled, the notices sent, and whether its transcript row is
+ * written (or never will be: one session.start brought back).
+ */
+type Held = AskEntry & { askTs: number; rawDetail: string; noticed: number; noted: boolean }
 type Mirror = { v: 1; session: string; at: number; asks: Held[]; calls: Record<string, OpenCall[]> }
 
 const callsByAgent = new Map<string, OpenCall[]>()
@@ -95,7 +102,7 @@ let lastSave = 0
 // ---------------------------------------------------------------------------
 // The words
 
-/** Who asks, in the band's words: `G2 executor`, `node fixer of swarm review`. */
+/** Who asks: `G2 executor`, `node fixer of swarm review`, `a child of node fixer of swarm review`. */
 export function askWho(e: AskEntry): string {
   if (e.node !== null) {
     const child = e.agentType !== null && !e.agentType.startsWith('litter:sw-')
@@ -105,13 +112,17 @@ export function askWho(e: AskEntry): string {
   return e.gate !== null ? `${e.gate} ${role}` : role
 }
 
-/** One ask in words, what follows the band's `⚑ asking ·`, and the notice's text after the same mark. */
+/** One ask in words: who, the tool and its detail, and what the launch authorized; what follows `⚑ asking · `. */
 export function askText(e: AskEntry): string {
   const what = e.detail !== '' ? `${e.tool}: ${e.detail}` : e.tool
   return `${askWho(e)} wants ${what}${e.authorized !== '' ? ` · authorized: ${e.authorized}` : ''}`
 }
 
-const noticeText = (e: AskEntry): string => `⚑ asking · ${askText(e)}`
+/**
+ * The ask's line, in the words the band's ask row had: its transcript row's
+ * text and its notice's. No `litter: `: the engine puts the plugin's name first.
+ */
+export const askLine = (e: AskEntry): string => `⚑ asking · ${askText(e)}`
 
 // ---------------------------------------------------------------------------
 // What the launch authorized
@@ -261,14 +272,17 @@ function pairFor(agentId: string, tool: string, detail: string): OpenCall | null
 function sendNotice(p: Ports, e: Held): void {
   if (e.toolUseId === null || e.noticed >= 2) return
   e.noticed++
-  if (!p.notice(e.toolUseId, noticeText(e))) p.log(`ask of agent ${e.agentId}: $.ui.notice threw for ${e.toolUseId}`)
+  if (!p.notice(e.toolUseId, askLine(e))) p.log(`ask of agent ${e.agentId}: $.ui.notice threw for ${e.toolUseId}`)
 }
 
-async function refresh(p: Ports): Promise<void> {
+/** The ask's one transcript row, the first time the tick sees it; a throw is logged, and the row isn't tried again. */
+function sendNote(p: Ports, e: Held): void {
+  if (e.noted) return
+  e.noted = true
   try {
-    await deps.refreshBand(p)
+    p.note(askLine(e))
   } catch (err) {
-    p.log(`the band wasn't refreshed after an ask changed: ${errText(err)}`)
+    p.log(`ask of agent ${e.agentId}: its transcript row wasn't written: ${errText(err)}`)
   }
 }
 
@@ -308,6 +322,7 @@ async function openAsk(ctx: SpoolCtx, line: Extract<SpoolLine, { ev: 'ask' }>): 
     askTs: line.ts,
     rawDetail: detail,
     noticed: 0,
+    noted: false,
   }
   held.set(key, entry)
   sendNotice(p, entry)
@@ -351,6 +366,8 @@ function asHeld(x: unknown): Held | null {
     askTs: e.askTs,
     rawDetail: typeof e.rawDetail === 'string' ? e.rawDetail : (e.detail as string),
     noticed: Math.min(2, Math.max(0, e.noticed)),
+    // Brought back by a reload or a resume: its row, if any, is the earlier module's.
+    noted: true,
   }
 }
 
@@ -423,7 +440,9 @@ function ensureRestored(p: Ports): Promise<void> {
  * ends, `deny`, `stop` and `ask` lines. An ask pairs with the newest open
  * call of its agent and tool whose detail matches; it closes at its call's
  * end or deny, its agent's stop, or a call of that agent starting SIBLING_S
- * or more after it. The band is refreshed after every open or close.
+ * or more after it. The mirror is saved after every open or close; the
+ * transcript row waits for the tick, so an ask one drain opens and closes
+ * gets none.
  */
 export const consumeAsks: SpoolConsumer = async (ctx, line) => {
   if (line.ev !== 'ask' && line.ev !== 'call' && line.ev !== 'deny' && line.ev !== 'stop') return
@@ -450,12 +469,10 @@ export const consumeAsks: SpoolConsumer = async (ctx, line) => {
   } else {
     changed = await openAsk(ctx, line)
   }
-  if (!changed) return
-  await save(p)
-  await refresh(p)
+  if (changed) await save(p)
 }
 
-/** The asks open now, newest first, for the band (module memory; restoreAsks fills it after a reload). */
+/** The asks open now, newest first (module memory; restoreAsks fills it after a reload). */
 export function openAsks(): AskEntry[] {
   return [...held.values()]
     .reverse()
@@ -477,18 +494,23 @@ export function openAsks(): AskEntry[] {
     }))
 }
 
-/** session.start: this session's open asks and calls back after a reload (the drain before it restores them first, when it has lines). */
+/**
+ * session.start, after its drain: this session's open asks and calls back
+ * after a reload (the drain restores them first, when it has lines). Every
+ * ask held now is a replay, the mirror's or one the drain opened from lines
+ * an earlier module or process spooled, so none gets a transcript row.
+ */
 export async function restoreAsks(p: Ports): Promise<void> {
-  const before = held.size
   await ensureRestored(p)
-  if (held.size !== before) await refresh(p)
+  for (const e of held.values()) e.noted = true
 }
 
 /**
- * The ui tick's second step (uitick.ts): an ask open over 15 minutes is
- * closed and logged as stale, calls that old are forgotten, an ask noticed
- * once gets its second notice, and the mirror is written when a call changed
- * or, while an ask is open, every HEARTBEAT_MS.
+ * The ui tick's step after the cards' (uitick.ts): an ask open over 15
+ * minutes is closed and logged as stale, calls that old are forgotten, an ask
+ * the tick sees for the first time gets its transcript row, one noticed once
+ * gets its second notice, and the mirror is written when a call changed or,
+ * while an ask is open, every HEARTBEAT_MS.
  */
 export async function asksTick(p: Ports): Promise<void> {
   await ensureRestored(p)
@@ -508,12 +530,13 @@ export async function asksTick(p: Ports): Promise<void> {
     else callsByAgent.set(id, left)
     dirty = true
   }
+  // In the order they opened, so the rows read as the asks came.
+  for (const e of held.values()) sendNote(p, e)
   for (const e of held.values()) if (e.noticed === 1) sendNotice(p, e)
   if (closed > 0 || dirty || (held.size > 0 && now - lastSave >= HEARTBEAT_MS)) await save(p)
-  if (closed > 0) await refresh(p)
 }
 
-/** A fresh module's memory, for tests: nothing open, nothing restored, the real refresh back in `deps`. */
+/** A fresh module's memory, for tests: nothing open, nothing restored. */
 export function resetAsksForTests(): void {
   callsByAgent.clear()
   held.clear()
@@ -523,5 +546,4 @@ export function resetAsksForTests(): void {
   again = false
   dirty = false
   lastSave = 0
-  Object.assign(deps, defaults)
 }

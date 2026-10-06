@@ -5,7 +5,7 @@
 // Contract owner: phase 5, WP-CA. A field that's missing is a contract
 // change: say so in your report.
 
-/** An open permission ask of a litter agent or node (CF builds them, CB draws them; COMMON decision 1). */
+/** An open permission ask of a litter agent or node (CF builds them, and writes each one's transcript row; COMMON decision 1). */
 export type AskEntry = {
   /** Stable: the spool line's agent and timestamp. */
   key: string
