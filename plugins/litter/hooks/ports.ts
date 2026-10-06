@@ -228,6 +228,13 @@ export interface Ports {
   closePane(id: string): Promise<void>
   /** `$.ui.toast(text)`: a few seconds over the transcript's corner, after the `litter: ` the engine puts first (so the text has none). */
   toast(text: string): void
+  /**
+   * `$.ui.log(text)` to the transcript (WP-CK): one dim row of its own, drawn
+   * like a system notice after the `litter: ` the engine puts first (so the
+   * text has none), and never sent to the model. The transcript stays drawn
+   * above a permission dialog, where the band isn't (2.1.290).
+   */
+  note(text: string): void
   /** `$.ui.copy({ text })`: whether the clipboard took it. */
   copy(text: string): Promise<boolean>
   /** Writes a view into `$.state` (the atoms in register.tsx); the write redraws what reads it. */

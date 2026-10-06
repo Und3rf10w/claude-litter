@@ -640,10 +640,10 @@ export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: Ru
 // ===== begin band section (owner: WP-CB) =====
 // ---------------------------------------------------------------------------
 // The band above the prompt (phase 5; COMMON decisions 7, 11, 12): a row per
-// active run and live swarm, then a row per open permission ask. Built by
-// hooks/band/view.ts, drawn by hooks/band/render.tsx under the rows of the
-// plugins beneath. Texts are cleaned and cut; colors are theme keys with a
-// word or glyph beside each.
+// active run and live swarm. Built by hooks/band/view.ts, drawn by
+// hooks/band/render.tsx above the tree of the plugins beneath. Texts are
+// cleaned and cut; colors are theme keys with a word or glyph beside each.
+// It draws no ask rows (WP-CK): the permission ask line is a transcript row.
 
 /**
  * One of a row's buttons: its key (`band:<action>[:<arg>]`), its label, and
@@ -653,21 +653,17 @@ export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: Ru
 export type BandButton = { key: string; label: string; hotkey?: string }
 /**
  * What a row is, so the render knows what to fold into the `+<k> more` row
- * when the band has fewer rows than the view: the asks go first, then the
- * swarms. A row without a kind is kept whole, as a run's is.
+ * when the band has fewer rows than the view: the swarms. A row without a
+ * kind is kept whole, as a run's is.
  */
-export type BandRowKind = 'run' | 'ended' | 'swarm' | 'ask' | 'more'
+export type BandRowKind = 'run' | 'ended' | 'swarm' | 'more'
 /**
  * One row: its key (the run's or the swarm's with its state, which [Hide]
- * names; or the ask's), its text as spans, and its buttons.
+ * names), its text as spans, and its buttons.
  */
 export type BandRow = { key: string; kind?: BandRowKind; spans: SwarmSpan[]; buttons: BandButton[] }
-/**
- * The band's view; with no rows the band draws nothing of litter's. `asking`
- * is how many asks are open, shown or folded into the `+<k> more asking` row
- * (absent: none).
- */
-export type BandView = { view: 'band'; v: number; rows: BandRow[]; asking?: number }
+/** The band's view; with no rows the band draws nothing of litter's. */
+export type BandView = { view: 'band'; v: number; rows: BandRow[] }
 // ===== end band section (owner: WP-CB) =====
 
 // ===== begin cards section (owner: WP-CC) =====

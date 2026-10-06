@@ -225,6 +225,8 @@ function enginePorts($: EngineInterface): Ports {
     openPane: async (id, title) => (await $.ui.open({ id, title })).isPlaced,
     closePane: id => $.ui.close({ id }),
     toast: text => $.ui.toast(text),
+    // `to` left out: the transcript (the d.ts's default).
+    note: text => $.ui.log(text),
     copy: async text => (await $.ui.copy({ text })).isCopied,
     setView: async (pane, view) => {
       if (pane === 'swarm') await update($, swarmPane, () => view as SwarmPaneView | null)

@@ -136,6 +136,8 @@ export type TestPorts = Ports & {
   /** Every `openPane` and `closePane`, in order. `openPane` answers true (placed). */
   panes: { opened: { id: string; title: string }[]; closed: string[] }
   toasts: string[]
+  /** Every transcript row `note` wrote, in order (WP-CK). */
+  notes: string[]
   copied: string[]
   /** The last view `setView` wrote, by pane. */
   views: Partial<Record<PaneName, PaneView | null>>
@@ -515,6 +517,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     },
     closePane: async id => void p.panes.closed.push(id),
     toast: text => void p.toasts.push(text),
+    note: text => void p.notes.push(text),
     copy: async text => {
       p.copied.push(text)
       return true
@@ -550,6 +553,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     commands: [],
     panes: { opened: [], closed: [] },
     toasts: [],
+    notes: [],
     copied: [],
     views: {},
     registeredAgents: [],

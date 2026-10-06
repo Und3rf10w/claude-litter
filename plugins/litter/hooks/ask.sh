@@ -3,7 +3,8 @@
 # any agent, a subagent included (phase 5; COMMON decision 1). For the call of
 # a litter run agent, a swarm node or a node's child it spools one `ask` line
 # (hookfiles.ts, SpoolLine), which the mod pairs with guard.sh's `call` start
-# for the same agent, tool and detail (asks.ts), and the band draws. Owner: WP-CF.
+# for the same agent, tool and detail (asks.ts), and shows as one transcript
+# row (WP-CK). Owner: WP-CF.
 #
 # It never decides: it prints nothing on stdout or stderr and exits 0 on every
 # path, a failure included (lib.sh or jq missing, bad input, a spool it can't

@@ -4,25 +4,26 @@
 // gate, on a retry, critiquing, landing; design before and after a verdict;
 // fanout integrating; plan; a repair generation), an ended run's row inside
 // and past 10 minutes, and past the bandEndedMinutes option's 1 and 0
-// (WP-CH), a live swarm's counts, the open asks (CF's, through
-// `deps`), [Hide] and its $.store mirror, the write check, the failure paths
-// (a missing litter directory, an unreadable policy.json or ledger), the
-// presses, and the fitting the render draws from (fitRows, fitSpans).
+// (WP-CH), a live swarm's counts, no row for an open ask (WP-CK: the ask
+// line is a transcript row now), [Hide] and its $.store mirror, the write
+// check, the failure paths (a missing litter directory, an unreadable
+// policy.json or ledger), the presses, and the fitting the render draws from
+// (fitRows, fitSpans).
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BandPressHook } from '../../hooks/hooktypes'
+import type { SpoolLine } from '../../hooks/hookfiles'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
-import type { AskEntry } from '../../hooks/uitypes'
 import type { BandRow, BandView, SwarmSpan } from '../../types/index'
 import { appendRecord } from '../../hooks/ledgercore'
 import { ledgerDir, policyPath, runDir, runJsonPath } from '../../hooks/layout'
 import { setOptions, updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
+import { asksTick, consumeAsks, openAsks, resetAsksForTests } from '../../hooks/asks'
 import {
-  ASK_ROWS,
   BAND_STORE_KEY,
   ENDED_MS,
   bandShows,
@@ -56,12 +57,12 @@ let p: TestPorts
 let dir: string
 let litterDir: string
 let cleanup: () => void
-let asks: AskEntry[]
 let boards: string[]
 let browsers: string[]
 
 beforeEach(() => {
   resetBandForTests()
+  resetAsksForTests()
   state.resetForTests()
   ;({ dir, cleanup } = scratch())
   p = nodePorts({ sessionId: 's1', cwd: dir })
@@ -69,16 +70,15 @@ beforeEach(() => {
   litterDir = join(dir, '.claude', 'litter')
   mkdirSync(join(litterDir, 'hooks'), { recursive: true })
   updateSession({ litterDir })
-  asks = []
   boards = []
   browsers = []
-  deps.openAsks = () => asks
   deps.openBoard = async (_p, run) => (boards.push(run), true)
   deps.openSwarmPane = async (_p, name) => (browsers.push(name), `the swarm pane shows swarm ${name}`)
 })
 
 afterEach(() => {
   resetBandForTests()
+  resetAsksForTests()
   resetPanesForTests()
   state.resetForTests()
   updateSession({ litterDir: null })
@@ -331,7 +331,6 @@ describe('a run that ended', () => {
     expect(band()!.rows).toEqual([])
     // A module's first build (a reload) seeds the run from its ledger, and still draws no ended row.
     resetBandForTests()
-    deps.openAsks = () => asks
     p.views = {}
     await bandTick(p)
     expect(p.views).toEqual({})
@@ -421,63 +420,30 @@ describe('a live swarm', () => {
   })
 })
 
-describe('the open asks', () => {
-  const ask = (n: number, over: Partial<AskEntry> = {}): AskEntry => ({
-    key: `a${n}`,
-    agentId: `agent-${n}`,
-    agentType: 'litter:executor',
-    tool: 'Bash',
-    detail: `npm install pkg-${n}`,
-    toolUseId: null,
-    run: EXEC,
-    role: 'executor',
-    gate: 'G2',
-    swarm: null,
-    node: null,
-    authorized: 'verify npm test, Files lib/** tests/**',
-    since: NOW + n,
-    ...over,
-  })
+describe('an open ask (WP-CK)', () => {
+  /** guard.sh's call start, then ask.sh's line for it, as the drain hands them over. */
+  const askLines = (agent: string, detail: string, toolUseId: string): SpoolLine[] => [
+    { v: 1, ev: 'call', ts: NOW / 1000, session_id: 's1', agent_id: agent, agent_type: 'litter:executor', tool: 'Bash', tool_use_id: toolUseId, phase: 'start', detail } as SpoolLine,
+    { v: 1, ev: 'ask', ts: NOW / 1000, session_id: 's1', agent_id: agent, agent_type: 'litter:executor', tool: 'Bash', detail, mode: 'default' } as SpoolLine,
+  ]
 
-  test('newest first, at most three, then a `+k more asking` row; who is asking, by kind', async () => {
-    asks = [
-      ask(1),
-      ask(2, { run: null, role: null, gate: null, swarm: 'review', node: 'fixer', agentType: 'litter:sw-review-fixer' }),
-      ask(3, { run: null, role: null, gate: null, agentType: 'general-purpose', authorized: '' }),
-      ask(4, { detail: '' }),
-      ask(5, { detail: 'rm -rf \u001b[31mbuild\u001b[0m\nand more' }),
-    ]
+  test('has no row in the band, alone or beside a run and a swarm: its line is the transcript row asks.ts writes', async () => {
+    for (const line of [...askLines('a1', 'pwd', 'toolu_1'), ...askLines('a2', 'npm install', 'toolu_2')]) await consumeAsks({ p, litterDir, sessionId: 's1' }, line)
+    expect(openAsks()).toHaveLength(2)
     await bandTick(p)
-    const rows = band()!.rows
-    expect(rows.map(text)).toEqual([
-      '⚑ asking · G2 executor wants Bash: rm -rf build and more · authorized: verify npm test, Files lib/** tests/**',
-      '⚑ asking · G2 executor wants Bash · authorized: verify npm test, Files lib/** tests/**',
-      '⚑ asking · general-purpose wants Bash: npm install pkg-3',
-      '+2 more asking',
-    ])
-    expect(rows.slice(0, ASK_ROWS).every(r => r.kind === 'ask' && r.buttons.length === 0)).toBe(true)
-    expect(rows[0]!.spans[0]).toEqual({ text: '⚑ asking', color: 'permission' })
-    expect(rows[3]!.kind).toBe('more')
-    expect(band()!.asking).toBe(5)
-    // The node's ask, once the newer ones close.
-    asks = [ask(1), ask(2, { run: null, role: null, gate: null, swarm: 'review', node: 'fixer' })]
-    await bandTick(p)
-    expect(texts()[0]).toBe('⚑ asking · fixer in swarm review wants Bash: npm install pkg-2 · authorized: verify npm test, Files lib/** tests/**')
-  })
-
-  test('come after the runs and the swarms; an openAsks that throws gives none and one log line', async () => {
+    // Nothing but the asks: no band at all.
+    expect(band()).toBeNull()
     await executeRun()
     liveSwarm('review')
-    asks = [ask(1)]
     await bandTick(p)
-    expect(band()!.rows.map(r => r.kind)).toEqual(['run', 'swarm', 'ask'])
-    deps.openAsks = () => {
-      throw new Error('not ready')
-    }
-    await bandTick(p)
+    await asksTick(p)
     await bandTick(p)
     expect(band()!.rows.map(r => r.kind)).toEqual(['run', 'swarm'])
-    expect(p.logs.filter(l => l.includes('open asks'))).toEqual(["band: the open asks can't be read: not ready"])
+    expect(texts().some(t => t.includes('asking'))).toBe(false)
+    expect(p.notes).toEqual([
+      '⚑ asking · executor wants Bash: pwd · authorized: writes in the checkout',
+      '⚑ asking · executor wants Bash: npm install · authorized: writes in the checkout',
+    ])
   })
 })
 
@@ -490,7 +456,6 @@ describe('[Hide]', () => {
     expect(p.storeMap.get(BAND_STORE_KEY)).toEqual({ v: 1, session: 's1', hidden: [`run:${EXEC}:1:open`] })
     // A module reset (a hot reload) reads it back for the same session.
     resetBandForTests()
-    deps.openAsks = () => asks
     await refreshBand(p)
     expect(band()!.rows).toEqual([])
     expect(hiddenKeys()).toEqual([`run:${EXEC}:1:open`])
@@ -577,7 +542,6 @@ describe('the failure paths', () => {
     await executeRun()
     writeFileSync(policyPath(litterDir), '{ not json')
     resetBandForTests()
-    deps.openAsks = () => asks
     p.clock.now = NOW + 20 * MIN
     await bandTick(p)
     await bandTick(p)
@@ -598,7 +562,7 @@ describe('the failure paths', () => {
     expect(p.logs[0]).toStartWith(`band: run ${EXEC}'s ledger can't be read, so it has no row: `)
   })
 
-  test('no litter directory resolved: the swarms and the asks still draw', async () => {
+  test('no litter directory resolved: the swarms still draw', async () => {
     updateSession({ litterDir: null })
     liveSwarm('review')
     await bandTick(p)
@@ -698,18 +662,18 @@ describe('bandShows, and the fitting the render draws', () => {
     expect(bandShows({ view: 'band', v: 2, rows: [] }, props())).toBe(false)
   })
 
-  test('fitRows: the asks fold first, then the swarms; the runs are kept', () => {
-    const rows = [row('run:a', 'run'), row('run:b', 'ended'), row('swarm:x', 'swarm'), row('swarm:y', 'swarm'), row('ask:1', 'ask'), row('ask:2', 'ask'), row('ask:3', 'ask'), { ...row('more', 'more'), spans: [{ text: '+2 more asking' }] }]
-    const view: BandView = { view: 'band', v: 1, rows, asking: 5 }
+  test('fitRows: the swarms fold into one `+k more` row; the runs are kept', () => {
+    const rows = [row('run:a', 'run'), row('run:b', 'ended'), row('swarm:x', 'swarm'), row('swarm:y', 'swarm'), row('swarm:z', 'swarm')]
+    const view: BandView = { view: 'band', v: 1, rows }
     expect(fitRows(view, 10)).toBe(rows)
-    expect(fitRows(view, 6).map(r => r.key)).toEqual(['run:a', 'run:b', 'swarm:x', 'swarm:y', 'ask:1', 'more'])
-    expect(text(fitRows(view, 6).at(-1))).toBe('+4 more asking')
-    expect(fitRows(view, 4).map(text)).toEqual(['run:a', 'run:b', 'swarm:x', '+1 more swarm · +5 more asking'])
-    expect(fitRows(view, 3).map(text)).toEqual(['run:a', 'run:b', '+2 more swarms · +5 more asking'])
+    expect(fitRows(view, 5)).toBe(rows)
+    expect(fitRows(view, 4).map(text)).toEqual(['run:a', 'run:b', 'swarm:x', '+2 more swarms'])
+    expect(fitRows(view, 4).at(-1)).toEqual({ key: 'more', kind: 'more', spans: [{ text: '+2 more swarms', dim: true }], buttons: [] })
+    expect(fitRows(view, 3).map(text)).toEqual(['run:a', 'run:b', '+3 more swarms'])
     expect(fitRows(view, 2).map(text)).toEqual(['run:a', 'run:b'])
     expect(fitRows(view, 1).map(text)).toEqual(['run:a'])
     // A kindless row is kept whole, as a run's.
-    expect(fitRows({ view: 'band', v: 1, rows: [row('k', undefined), row('ask:1', 'ask'), row('ask:2', 'ask')], asking: 2 }, 2).map(text)).toEqual(['k', '+2 more asking'])
+    expect(fitRows({ view: 'band', v: 1, rows: [row('k', undefined), row('swarm:x', 'swarm'), row('swarm:y', 'swarm')] }, 2).map(text)).toEqual(['k', '+2 more swarms'])
   })
 
   test('fitSpans: the text cut to the room the buttons leave, never the buttons', () => {
