@@ -1,6 +1,7 @@
 // Tier 2: the swarm hooks' catches and the agent.offer handler
 // (hooks/swarm/wiring.ts; WP-C §10), called directly with a fake `next`: a
-// node's event is refused in its event's own shape, anyone else's passes on.
+// node's event is refused in its event's own shape, anyone else's passes on,
+// and none is refused once its hook had called `next` (WP-CH, `next.called`).
 // And two checks of register.tsx's source: session.start's order, and the
 // renders that don't rebind.
 
@@ -34,15 +35,18 @@ const $ = {} as never
 /** What the fake `next` answers: the event passed on. Typed as never so it stands for any event's result. */
 const PASSED = { passed: true } as never
 
-/** A catch's `next`: records what it was called with, and carries the failure. */
-function caught(message: string | undefined = 'boom') {
+/**
+ * A catch's `next`: records what it was called with, and carries the failure
+ * and `called`, whether the failed hook had called its own `next` already.
+ */
+function caught(message: string | undefined = 'boom', called = false) {
   const calls: unknown[] = []
   const next = Object.assign(
     async (e: unknown) => {
       calls.push(e)
       return PASSED
     },
-    { error: { kind: 'throw', message, budget: 1000 }, called: false },
+    { error: { kind: 'throw', message, budget: 1000 }, called },
   )
   return { next: next as never, calls }
 }
@@ -126,6 +130,14 @@ describe('agent.spawn', () => {
     const lead = caught()
     expect(await agentSpawnFailed($, spawn('Explore'), lead.next)).toBe(PASSED)
   })
+
+  test('once the hook had called next the subagent has started: every spawn gets what that call settled to, never a deny', async () => {
+    for (const e of [spawn('litter:sw-alpha-fixer'), spawn('Explore', 'node-1'), spawn('litter:executor'), spawn('Explore')]) {
+      const { next, calls } = caught('ran past its budget', true)
+      expect(await agentSpawnFailed($, e, next)).toBe(PASSED)
+      expect(calls).toEqual([e])
+    }
+  })
 })
 
 describe('session.send', () => {
@@ -166,6 +178,18 @@ describe('session.send', () => {
       expect(calls.length).toBe(1)
     }
   })
+
+  test("once the hook had called next the message was sent: a node's send gets that send's answer, never isDelivered false", async () => {
+    for (const e of [
+      { to: 'main', text: 'hi', origin: { kind: 'model' }, agentId: 'node-1' },
+      { to: 'node-1', text: 'hi', origin: { kind: 'model' } },
+      { to: 'teammate', text: 'hi', origin: { kind: 'model' }, agentId: 'other' },
+    ]) {
+      const { next, calls } = caught('gate', true)
+      expect(await sessionSendFailed($, e as never, next)).toBe(PASSED)
+      expect(calls).toEqual([e])
+    }
+  })
 })
 
 describe('turn.step', () => {
@@ -177,7 +201,7 @@ describe('turn.step', () => {
       chunks.push(r.value)
     }
   }
-  const stepNext = (message = 'boom') => {
+  const stepNext = (message = 'boom', wasCalled = false) => {
     let called = 0
     const next = Object.assign(
       async function* () {
@@ -185,7 +209,7 @@ describe('turn.step', () => {
         yield { kind: 'text', index: 0, text: 'from the model' }
         return { turnId: 't', index: 0, answer: 'from the model', toolUses: [], stopReason: 'end_turn', usage: null }
       },
-      { error: { kind: 'timeout', message, budget: 1000 }, called: false },
+      { error: { kind: 'timeout', message, budget: 1000 }, called: wasCalled },
     )
     return { next: next as never, count: () => called }
   }
@@ -209,6 +233,15 @@ describe('turn.step', () => {
       expect(out.chunks).toEqual([{ kind: 'text', index: 0, text: 'from the model' }])
       expect(out.result).toEqual(expect.objectContaining({ answer: 'from the model' }))
       expect(count()).toBe(1)
+    }
+  })
+
+  test('once the hook had called next the request was sent: nothing is yielded, nothing beneath runs again, and that call stands', async () => {
+    for (const agentId of ['node-1', undefined, 'other']) {
+      const { next, count } = stepNext('the stream beneath failed', true)
+      const out = await run(turnStepFailed($, { turnId: 't', index: 0, model: 'm', messageCount: 1, ...(agentId ? { agentId } : {}) } as never, next) as never)
+      expect({ agentId, ...out }).toEqual({ agentId, chunks: [], result: undefined })
+      expect(count()).toBe(0)
     }
   })
 })

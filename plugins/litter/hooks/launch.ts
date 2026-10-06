@@ -203,7 +203,7 @@ async function freshLaunch(p: Ports, e: E, next: Next, litterDir: string, workfl
   try {
     r = await next({ ...e, args: loaded.json.args })
   } catch (err) {
-    // The catch answers; the launch stays pending, and turn.complete ends it.
+    // The catch passes this rejection on (next was called); the launch stays pending, and turn.complete ends it.
     await patchRunPolicy(p, litterDir, ref.run, x => ({ ...x, launching: false })).catch(() => false)
     throw err
   }
@@ -293,9 +293,13 @@ async function resumeRun(p: Ports, e: E, next: Next, litterDir: string, workflow
 
 /**
  * Its catch: refuses a `litter:` name, any `scriptPath`, `script` with `name`
- * or `scriptPath`, and any `wf_` resume; passes everything else on.
+ * or `scriptPath`, and any `wf_` resume; passes everything else on. Once the
+ * hook had called `next` the launch has run, and a deny would undo nothing,
+ * only tell the model a running workflow was refused (the 2.1.290 d.ts,
+ * Caught): then `next(e)`, which gives what that call settled to (WP-CH).
  */
 export const workflowCheckFailed: WorkflowCatch = async ($, e, next) => {
+  if (next.called) return next(e)
   const name = e.name ?? ''
   const litter =
     name.startsWith('litter:') ||

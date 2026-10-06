@@ -404,6 +404,24 @@ describe("the Workflow hook's catch", () => {
     expect(await c({ name: 'deepwork:run' })).toEqual({ result: 'engine' })
     expect(await c({ resumeFromRunId: 'r-123' })).toEqual({ result: 'engine' })
   })
+
+  // WP-CH: a deny then would undo nothing, and tell the model a running workflow was refused.
+  test('once the hook had called next the launch has run: every call gets what that launch settled to, never a deny', async () => {
+    for (const f of [{ name: 'litter:execute-run' }, { scriptPath: '/x.js' }, { resumeFromRunId: 'wf_abc123' }, { name: 'deepwork:run' }]) {
+      const calls: unknown[] = []
+      const next = Object.assign(async (e: unknown) => (calls.push(e), { result: { taskId: 't1', runId: 'wf_1' } }), {
+        error: { kind: 'timeout', message: 'ran past its budget', budget: 1000 },
+        called: true,
+      })
+      expect(await workflowCheckFailed({} as never, wf(f), next as never)).toEqual({ result: { taskId: 't1', runId: 'wf_1' } })
+      expect(calls).toEqual([wf(f)])
+    }
+  })
+
+  test('a launch whose next rejected: the catch passes the rejection on, as the engine replays it', async () => {
+    const next = Object.assign(async () => Promise.reject(new Error('the Workflow tool threw')), { error: { kind: 'throw', message: 'x', budget: 1000 }, called: true })
+    await expect(workflowCheckFailed({} as never, wf({ name: 'litter:execute-run' }), next as never)).rejects.toThrow('the Workflow tool threw')
+  })
 })
 
 describe("the workflows' names", () => {
