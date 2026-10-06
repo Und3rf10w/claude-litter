@@ -16,8 +16,9 @@
 // in the ledgers that changed since they were last read, newest first and a
 // few at a time, so a notification of anything else costs a listing and one
 // stat per run. A notification that arrives before its generation's end
-// (a killed run still settling) waits, and is looked at again at each
-// prompt.submit until the end is there.
+// (a killed run still settling) waits, and is looked at again until the end
+// is there: on the ui tick once its run's ledger moved (cardsTick, WP-CH),
+// and at each prompt.submit.
 
 import type { Ports } from '../ports'
 import type { CardPressHook, CardRender, PortHook, PromptSubmitHook } from '../hooktypes'
@@ -107,7 +108,35 @@ export async function noteCards(p: Ports, e: Parameters<PromptSubmitHook>[1]): P
   const litterDir = session().litterDir
   if (!litterDir) return
   const noted = e.origin?.kind === 'task-notification' && e.text.includes('<task-notification>') ? parseNotifications(e.text).map(n => n.taskId) : []
-  const asked = [...new Set([...noted, ...waiting])]
+  await settleCards(p, litterDir, [...new Set([...noted, ...waiting])])
+}
+
+/**
+ * The ui tick's step after the band's (uitick.ts; WP-CH): each notification
+ * still waiting for its generation's end, looked at again once its run's
+ * ledger moved since it was last read, so the card appears when the end is
+ * recorded, with no prompt.submit. Nothing waiting: nothing read. Never throws.
+ */
+export async function cardsTick(p: Ports): Promise<void> {
+  if (waiting.size === 0) return
+  try {
+    const litterDir = session().litterDir
+    if (!litterDir) return
+    const moved: string[] = []
+    for (const taskId of [...waiting]) {
+      const run = runOfTask.get(taskId)
+      // One stat a tick: a ledger that hasn't changed can't hold the end yet.
+      if (run !== undefined && readMtime.get(run) === (await ledgerMtime(p, litterDir, run))) continue
+      moved.push(taskId)
+    }
+    await settleCards(p, litterDir, moved)
+  } catch (err) {
+    p.log(`card: the tick failed: ${errText(err)}`)
+  }
+}
+
+/** The cards of these tasks whose generation has ended, written with the others' (noteCards, cardsTick). */
+async function settleCards(p: Ports, litterDir: string, asked: readonly string[]): Promise<void> {
   if (asked.length === 0) return
   const found = new Map<string, CardView>()
   for (const taskId of asked) {
@@ -120,8 +149,12 @@ export async function noteCards(p: Ports, e: Parameters<PromptSubmitHook>[1]): P
     }
   }
   if (found.size === 0) return
-  // After a hot reload the other rows' cards come back first, so the write doesn't drop them.
-  if (cards === null) cards = await buildRecent(p, litterDir)
+  // After a hot reload the other rows' cards come back first, so the write doesn't drop them;
+  // the tick and a prompt.submit can both get here, and the first to build keeps its map.
+  if (cards === null) {
+    const recent = await buildRecent(p, litterDir)
+    cards ??= recent
+  }
   for (const [taskId, card] of found) {
     cards.delete(taskId)
     cards.set(taskId, card)
