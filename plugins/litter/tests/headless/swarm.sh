@@ -6,7 +6,7 @@
 #   sh tests/headless/swarm.sh trio   # three orchestrators, each in its own worktree with a checker under it
 #
 # The swarm is saved first through J's store (fixtures/swarm-save.ts). Then the
-# session opens it with /litter-swarm, presses [Launch] from the keyboard
+# session opens it with /litter swarms, presses [Launch] from the keyboard
 # (ctrl+x tab focuses the pane, where [Launch] holds the focus), confirms the
 # ask, and sends the start line Launch put in the prompt box. Each part adds
 # and commits its own file and has a checker confirm it. Two parts also try
@@ -89,7 +89,7 @@ cat >|"$H_DIR/steps.txt" <<EOF
 # The first prompt records the session's mode (watch.sh), which Launch's health check reads.
 until [ -f $LD/hooks/mode ]
 sleep 5
-send /litter-swarm trio
+send /litter swarms trio
 sleep 8
 # [Launch] holds the pane's focus: ctrl+x tab, then Enter presses it, and Enter again takes the ask's first option, Launch.
 key ctrl-x tab

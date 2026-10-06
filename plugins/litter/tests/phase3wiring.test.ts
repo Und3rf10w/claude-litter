@@ -1,11 +1,13 @@
 // Tier 1: phase 3's wiring in register.tsx and clear.ts (WP-AA), with the
-// engine loading the mod. /litter-board and /litter-rules are registered at
-// session.start and again after a /clear; each new hook's catch answers in
-// its event's shape; setView writes the board's and the rules pane's atoms;
-// and the doctor's trailers row, from the option. A hook is made to throw
-// beneath AF's handlers: a render through an atom
-// whose body the renderer can't draw, every other hook through `rebound`
-// after a /clear whose new session id can't be read.
+// engine loading the mod; since phase 5b (WP-DA) the board and the rules pane
+// are the `litter` pane's Runs and Rules sections, and /litter runs and
+// /litter rules open them. /litter is registered at session.start and again
+// after a /clear; each hook's catch answers in its event's shape; setView
+// writes the board's and the rules pane's atoms and the hub's, which the
+// pane draws; and the doctor's trailers row, from the option. A hook is made
+// to throw beneath AF's handlers: a render through an atom whose body the
+// renderer can't draw, every other hook through `rebound` after a /clear
+// whose new session id can't be read.
 
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -113,47 +115,59 @@ function sessionId(on: On, sid: { value: string | null }): { calls: number } {
 /** The engine's clear as the mod sees it: session.end `clear` for the session that ends. */
 const clearEnds = ($: Engine, from: string) => $.session.end({ reason: 'clear', sessionId: from, resume: { id: from } })
 
-const PHASE3 = [{ name: 'litter-board', argumentHint: '[run | execute | design]' }, { name: 'litter-rules' }]
+/** The `litter` pane's request id (phase 5b, WP-DA): the board is its Runs section, the rules pane its Rules. */
+const LITTER_PANE = 'litter'
+const mountLitter = ($: Engine, surface: 'terminal' | 'desktop') =>
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
+/** The hub's view with `section` shown, the strip drawn from nothing counted. */
+const hubOn = (section: string) => ({ view: 'hub', v: 1, section, live: [], tabs: [] })
 
-describe('/litter-board and /litter-rules', () => {
-  test('are registered at session.start, after the swarm commands, and again after a /clear', async ($, on) => {
+describe('/litter runs and /litter rules', () => {
+  test('/litter is registered at session.start, in place of /litter-board and /litter-rules, and again after a /clear', async ($, on) => {
     mock.store(on)
     mock.clock(on, { now: 1_800_000_000_000 })
     const { commands } = world(on)
+    on('ui.open', async () => ({ value: { isPlaced: true } }))
     const sid = { value: SESSION as string | null }
     sessionId(on, sid)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    // Phase 5's two follow (phase5wiring.test.tsx).
-    expect(commands.slice(0, 4)).toEqual([{ name: 'litter-swarm', argumentHint: '[name]' }, { name: 'litter-doctor' }, ...PHASE3])
+    expect(commands.map(c => c.name)).toEqual(['litter'])
 
     // The engine's clear: session.end `clear`, then a new id, and no session.start.
     await clearEnds($, SESSION)
     sid.value = 'tier1-after-clear'
     const before = commands.length
-    // The first hook after it rebinds, which registers every command again.
-    await run($, 'litter-rules')
-    expect(commands.slice(before).filter(c => c.name === 'litter-board' || c.name === 'litter-rules')).toEqual(PHASE3)
+    // The first hook after it rebinds, which registers the command again.
+    await run($, 'litter', 'rules')
+    expect(commands.slice(before).map(c => c.name)).toEqual(['litter'])
   })
 
-  test("setView writes the board's and the rules pane's atoms, which their panes draw", async ($, on) => {
+  test("setView writes the board's and the rules pane's atoms and the hub's, which the `litter` pane draws", async ($, on) => {
     mock.store(on)
     on('ui.open', async () => ({ value: { isPlaced: true } }))
+    on('ui.log', async () => ({ value: undefined }))
     const writes = stateWrites(on)
-    // No session.start, so there's no litter directory: each pane draws that.
-    expect((await run($, 'litter-board')).text).toBe('the board has no litter directory to read')
-    expect((await run($, 'litter-rules')).text).toBe('the rules pane has no litter directory to read')
-    expect(writes.map(w => w.key)).toEqual(['board', 'rulesPane'])
-    expect(writes[0]!.value).toEqual(expect.objectContaining({ view: 'board', v: 0, run: null }))
-    expect(writes[1]!.value).toEqual(expect.objectContaining({ view: 'rules', v: 0, tab: 'proposed' }))
-    const board = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'Pane', requestId: 'litter-board', props: pane('litter board') })
+    // No session.start, so there's no litter directory: each section draws that.
+    expect((await run($, 'litter', 'runs')).text).toBe('Runs has no litter directory to read')
+    const board = await mountLitter($, 'terminal')
+    expect((await board.find({ type: 'Text', text: ' · Runs' }))?.text).toBe(' · Runs')
     expect((await board.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
-    const rules = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
+    await board.unmount()
+    expect((await run($, 'litter', 'rules')).text).toBe('Rules has no litter directory to read')
+    const rules = await mountLitter($, 'desktop')
+    expect((await rules.find({ type: 'Text', text: ' · Rules' }))?.text).toBe(' · Rules')
     expect((await rules.find({ type: 'Text', text: 'litter · rules' }))?.text).toBe('litter · rules')
+    // Each section's view, then the hub's naming it.
+    expect(writes.map(w => w.key)).toEqual(['board', 'hub', 'rulesPane', 'hub'])
+    expect(writes[0]!.value).toEqual(expect.objectContaining({ view: 'board', v: 0, run: null }))
+    expect(writes[1]!.value).toEqual(expect.objectContaining({ view: 'hub', section: 'runs' }))
+    expect(writes[2]!.value).toEqual(expect.objectContaining({ view: 'rules', v: 0, tab: 'proposed' }))
+    expect(writes[3]!.value).toEqual(expect.objectContaining({ view: 'hub', section: 'rules' }))
   })
 })
 
 describe("each new hook's catch answers in its event's shape", () => {
-  test('command.run: a line naming the command', async ($, on) => {
+  test('command.run: a line naming what was typed', async ($, on) => {
     mock.store(on)
     on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
     on('ui.log', async () => ({ value: undefined }))
@@ -162,25 +176,26 @@ describe("each new hook's catch answers in its event's shape", () => {
     await clearEnds($, SESSION)
     sid.value = null
     // The engine skips the throwing session.id hook, and nothing beneath it answers: `rebound` throws either way.
-    expect(await run($, 'litter-board')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-board failed \(.*session\.id.*\)$/) }))
-    expect(await run($, 'litter-rules')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-rules failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter', 'runs execute')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter runs failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter', 'rules')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter rules failed \(.*session\.id.*\)$/) }))
     expect(ids.calls).toBeGreaterThanOrEqual(2)
   })
 
-  for (const [requestId, atom] of [
-    ['litter-board', 'board'],
-    ['litter-rules', 'rulesPane'],
+  for (const [section, atom] of [
+    ['runs', 'board'],
+    ['rules', 'rulesPane'],
   ] as const) {
-    test(`${requestId}: ui.render passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
+    test(`litter on ${section}: ui.render passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
       mock.store(on)
-      // The pane's atom holds a body whose title isn't spans: the mod's render throws on it, and its catch passes the render on.
+      // The section's atom holds a body whose title isn't spans: the mod's render throws on it, and its catch passes the render on.
       on('state.get', async (_$, e, next) => {
+        if (e.key === 'hub') return { value: { value: hubOn(section), version: 1 } }
         if (e.key === atom) return { value: { value: { view: atom === 'board' ? 'board' : 'rules', v: 1, body: { title: 'not spans' } }, version: 1 } }
         return next(e)
       })
       on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
       const reached: string[] = []
-      on('ui.render', { component: 'Pane', requestId }, async (hooks, e): Promise<RenderElement> => {
+      on('ui.render', { component: 'Pane', requestId: LITTER_PANE }, async (hooks, e): Promise<RenderElement> => {
         const el = hooks.ui.resolve(e)
         const { Box, Text, Button } = el
         const children: RenderElement[] = [
@@ -207,7 +222,7 @@ describe("each new hook's catch answers in its event's shape", () => {
       const sid = { value: SESSION as string | null }
       const ids = sessionId(on, sid)
 
-      const ui = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId, props: pane(requestId) })
+      const ui = await mountLitter($, 'desktop')
       expect((await ui.find({ type: 'Text', text: 'drawn below the mod' }))?.text).toBe('drawn below the mod')
 
       // A /clear whose new id can't be read: every hook's `rebound` throws, and each catch passes on.
@@ -227,15 +242,17 @@ describe("each new hook's catch answers in its event's shape", () => {
   // Only the plugin's own tree loads its Client modules, and only its own hooks hear their posts, so
   // the board draws the gate table itself here and the post settles on core's `{}` once the catch
   // passes it on. The rules pane has no Client yet, so its ui.message can't be raised at this tier.
-  test('litter-board: ui.message from the gate table passes on', async ($, on) => {
+  test('litter on runs: ui.message from the gate table passes on', async ($, on) => {
     mock.store(on)
     const view = { view: 'board', v: 1, run: 'r', body: { title: [{ text: 'litter · board' }], gates: { run: 'r', rows: [], selected: null } } }
-    on('state.get', async (_$, e, next) => (e.key === 'board' ? { value: { value: view, version: 1 } } : next(e)))
+    on('state.get', async (_$, e, next) =>
+      e.key === 'hub' ? { value: { value: hubOn('runs'), version: 1 } } : e.key === 'board' ? { value: { value: view, version: 1 } } : next(e),
+    )
     on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
     const sid = { value: SESSION as string | null }
     const ids = sessionId(on, sid)
 
-    const ui = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'Pane', requestId: 'litter-board', props: pane('litter-board') })
+    const ui = await mountLitter($, 'desktop')
     expect((await ui.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
 
     await clearEnds($, SESSION)
@@ -259,7 +276,7 @@ describe("the doctor's trailers row", () => {
     world(on)
     const writes = stateWrites(on)
     on('ui.open', async () => ({ value: { isPlaced: true } }))
-    await run($, 'litter-doctor')
+    await run($, 'litter', 'doctor')
     expect(trailersRow(writes)).toEqual(
       expect.objectContaining({
         title: 'Commit trailers',
@@ -278,7 +295,7 @@ describe("the doctor's trailers row", () => {
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     const dropped = logs.filter(l => l.includes("the trailers option's lines"))
     expect(dropped).toEqual([`the trailers option's lines that aren't one Key: value each were dropped: "not a trailer"`])
-    await run($, 'litter-doctor')
+    await run($, 'litter', 'doctor')
     expect(trailersRow(writes)).toEqual(
       expect.objectContaining({ title: 'Commit trailers', detail: 'litter adds 1 line from the trailers option to each commit it lands' }),
     )

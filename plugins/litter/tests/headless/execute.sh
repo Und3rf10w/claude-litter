@@ -2,7 +2,7 @@
 # Tier 4: phase 3's execute runs (WP-T4's T4-4, T4-3 and T4-1), on the real
 # workflows/execute.js.
 #
-#   sh tests/headless/execute.sh basic         # a two-gate plan lands gate by gate, headless; /litter-board then shows both landed
+#   sh tests/headless/execute.sh basic         # a two-gate plan lands gate by gate, headless; /litter runs then shows both landed
 #   sh tests/headless/execute.sh bridge auto   # G2 halts on a gap the plan's contract settles; a plan-template swarm lands G2 and G3
 #   sh tests/headless/execute.sh bridge off    # the same halt under repair: off stops, keeps the attempt and offers the routes
 #   sh tests/headless/execute.sh compare [both|litter|deepwork]   # T4-1, by hand only: one plan run beside deepwork EXECUTE
@@ -12,7 +12,7 @@
 # two-gate plan.md, each gate adding one function and its test. One headless
 # session records run.start (repair: off) and launches litter:execute-run with
 # its args, as land.sh does, with the verify and trailers options set. Then
-# an interactive session types /litter-board <run>, and its screen must show
+# an interactive session types /litter runs <run>, and its screen must show
 # both gates landed.
 #
 # bridge: fixtures/execute-bridge: lib/greet.sh, tests/expected.txt holding
@@ -343,7 +343,7 @@ If a step is refused, note the refusal verbatim and stop."
     cat >|"$H_DIR/board-steps.txt" <<EOF
 until [ -f $LD/hooks/mode ]
 sleep 10
-send /litter-board $BRUN
+send /litter runs $BRUN
 sleep 15
 exit
 EOF
@@ -430,7 +430,7 @@ EOF
   h_expect "run.json's rules are []" c_no_rules
   h_expect "no worktree was left behind" c_no_worktree
   h_expect "the lock is released" c_lock_free
-  h_expect "/litter-board <run> shows both gates landed" c_board
+  h_expect "/litter runs <run> shows both gates landed" c_board
   h_done
   exit
 fi

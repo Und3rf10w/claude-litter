@@ -7,7 +7,7 @@
 # The session runs with CLAUDE_CODE_ENABLE_TODO_TOOLS=1, so its model has the
 # task tools, and with agent teams on, so its own list is its implicit team's
 # (session-<first 8 of its id>, whose one member is team-lead). The model
-# makes a task with TaskCreate. /litter-tasks opens that list; a click on the
+# makes a task with TaskCreate. /litter tasks opens that list; a click on the
 # task's row opens its editor, the Status and Owner selects are picked from
 # the keyboard (a click opens a Select, the arrows move, Enter picks), and
 # [ Save ] saves through TaskUpdate, since the list is this session's own.
@@ -16,7 +16,7 @@
 #
 # Then a team list this session doesn't lead: a team made for the case in the
 # config dir (teams/<team>/config.json with members alpha and beta, and
-# tasks/<team>/1.json). /litter-tasks <team>, the same editor, and [ Save ]
+# tasks/<team>/1.json). /litter tasks <team>, the same editor, and [ Save ]
 # writes the file directly (hooks/teamfile.sh, under the engine's lock): the
 # file holds the new status and owner and nothing else changed, and no lock
 # or temporary file is left. The case's team and list are removed at the end.
@@ -70,7 +70,7 @@ $(h_tool_steps "$H_DIR/debug.txt")
 # The model's task.
 wait 300 jq -e 'select(.ev == "PostToolUse" and .tool == "TaskCreate")' $LOG >/dev/null 2>&1
 sleep 10
-send /litter-tasks
+send /litter tasks
 wait 30 $UI shows $H_DIR '#1 · pending'
 sleep 2
 until $UI mark $H_DIR own-list
@@ -98,7 +98,7 @@ send Call TaskGet for task 1, then TaskList, then reply with task 1's status and
 wait 300 jq -e 'select(.ev == "PostToolUse" and .tool == "TaskList")' $LOG >/dev/null 2>&1
 sleep 15
 # The case's team list: a direct write.
-send /litter-tasks $TEAM
+send /litter tasks $TEAM
 wait 30 $UI shows $H_DIR '#1 · pending'
 sleep 2
 until $UI mark $H_DIR team-list

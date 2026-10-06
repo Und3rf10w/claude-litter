@@ -1,15 +1,16 @@
-// Tier 1: /litter-tasks and the tasks pane as the engine runs and draws them
-// (WP-CE; COMMON decisions 4, 15, 16). The config dir is /cfg, its files a
-// map behind $.fs, and teamfile.sh a process.run hook that records its argv
-// and stdin: the command opens the pane on a team's list and writes its view;
-// the render draws the rows, the filters, the editor's fields and buttons on
-// the terminal and the desktop, and buttons in place of Selects on mobile;
-// a row's press, a pick and [Save] answer in their events' shapes, and the
-// save runs teamfile.sh with the patch.
+// Tier 1: /litter tasks and the Tasks section of the `litter` pane as the
+// engine runs and draws them (WP-CE, phase 5b's WP-DA; COMMON decisions 4,
+// 15, 16). The config dir is /cfg, its files a map behind $.fs, and
+// teamfile.sh a process.run hook that records its argv and stdin: the command
+// opens `litter` on a team's list, asking for the keyboard, and writes its
+// view; the render draws the rows, the filters, the editor's fields and
+// buttons on the terminal and the desktop, and buttons in place of Selects on
+// mobile; a row's press, a pick and [Save] answer in their events' shapes, and
+// the save runs teamfile.sh with the patch.
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
-import type { TasksPaneView } from '../types/index'
+import type { HubView, TasksPaneView } from '../types/index'
 
 const SESSION = 'tier1-session'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -17,18 +18,21 @@ const SURFACES = ['terminal', 'desktop'] as const
 const pane = (title: string) =>
   ({ title, isFocused: false, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} }) as const
 
+/** The hub's view with Tasks shown: the strip's tabs drawn from nothing counted. */
+const HUB: HubView = { view: 'hub', v: 1, section: 'tasks', live: [], tabs: [] }
+
 const task = (id: string, over: Record<string, unknown> = {}) =>
   JSON.stringify({ id, subject: `task ${id}`, description: '', status: 'pending', blocks: [], blockedBy: [], ...over }, null, 2)
 
 /** $.fs over a map under /cfg, teamfile.sh as a hook that answers ok, and the rest a session needs. */
-function world(on: On): { files: Map<string, string>; ran: { argv: readonly string[]; stdin: string | undefined }[]; opened: string[] } {
+function world(on: On): { files: Map<string, string>; ran: { argv: readonly string[]; stdin: string | undefined }[]; opened: { id: string; focus: boolean }[] } {
   const files = new Map<string, string>([
     ['/cfg/teams/team-a/config.json', JSON.stringify({ name: 'team-a', leadSessionId: 'someone-else', members: [{ name: 'researcher', agentId: 'r@team-a' }] })],
     ['/cfg/tasks/team-a/1.json', task('1', { status: 'completed', subject: 'Plan it', owner: 'researcher' })],
     ['/cfg/tasks/team-a/3.json', task('3', { status: 'in_progress', subject: 'Check it', blockedBy: ['1', '2'] })],
   ])
   const ran: { argv: readonly string[]; stdin: string | undefined }[] = []
-  const opened: string[] = []
+  const opened: { id: string; focus: boolean }[] = []
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
   on('fs.exists', async (_$, e) => ({ value: files.has(e.path) || isDir(e.path) }))
   on('fs.read', async (_$, e) => {
@@ -51,7 +55,7 @@ function world(on: On): { files: Map<string, string>; ran: { argv: readonly stri
   })
   on('tool.list', async () => ({ value: [] }))
   on('ui.open', async (_$, e) => {
-    opened.push(e.id)
+    opened.push({ id: e.id, focus: e.focus === true })
     return { value: { isPlaced: true } }
   })
   on('ui.toast', async () => ({ value: undefined }))
@@ -61,10 +65,17 @@ function world(on: On): { files: Map<string, string>; ran: { argv: readonly stri
   return { files, ran, opened }
 }
 
-const run = ($: Engine, args = '') => $.command.run({ command: 'litter-tasks', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+/** `/litter tasks [list]`. */
+const run = ($: Engine, args = '') => $.command.run({ command: 'litter', args: `tasks ${args}`.trim(), origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
 
 const mountTasks = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S) =>
-  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-tasks', props: pane('litter tasks') })
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter') })
+
+/** $.state as a reload left it: the hub on Tasks, and Tasks' view. */
+const seeded = (on: On) =>
+  on('state.get', async (_$, e, next) =>
+    e.key === 'tasksPane' ? { value: { value: VIEW, version: 1 } } : e.key === 'hub' ? { value: { value: HUB, version: 1 } } : next(e),
+  )
 
 /** A built view, as view.ts writes it: team-a's two tasks, #3 selected and edited. */
 const VIEW: TasksPaneView = {
@@ -112,13 +123,15 @@ const VIEW: TasksPaneView = {
   },
 }
 
-describe('/litter-tasks', () => {
-  test("opens the pane on the list named and writes its view: the team's tasks, read through $.fs", async ($, on) => {
+describe('/litter tasks', () => {
+  test("opens `litter` on the list named, with the keyboard, and writes its view: the team's tasks, read through $.fs", async ($, on) => {
     mock.store(on)
     const w = world(on)
-    expect(await run($, 'team-a')).toEqual(expect.objectContaining({ text: 'the tasks pane shows team-a (2 tasks)' }))
-    expect(w.opened).toEqual(['litter-tasks'])
+    expect(await run($, 'team-a')).toEqual(expect.objectContaining({ text: 'Tasks shows team-a (2 tasks)' }))
+    expect(w.opened).toEqual([{ id: 'litter', focus: true }])
     const ui = await mountTasks($, 'terminal')
+    // The hub's header names the section; Tasks' own title follows in the body.
+    expect(await ui.find({ type: 'Text', text: ' · Tasks' })).toBeDefined()
     expect((await ui.find({ type: 'Button', key: 'tasks:select:team-a/3' }))?.text).toBe('#3')
     expect(await ui.find({ type: 'Text', text: /⊘ blocked by #2/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'tasks:filter:all' })).toBeDefined()
@@ -129,7 +142,7 @@ describe('the render', () => {
   for (const surface of SURFACES) {
     test(`draws the rows, the filters and the editor for a view, on the ${surface}`, async ($, on) => {
       mock.store(on)
-      on('state.get', async (_$, e, next) => (e.key === 'tasksPane' ? { value: { value: VIEW, version: 1 } } : next(e)))
+      seeded(on)
       const ui = await mountTasks($, surface)
       expect(await ui.find({ type: 'Text', text: 'litter · tasks' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /written directly: no hooks ran/ })).toBeDefined()
@@ -154,7 +167,7 @@ describe('the render', () => {
 
   test('on mobile, with no Select, the lists and the sort are buttons', async ($, on) => {
     mock.store(on)
-    on('state.get', async (_$, e, next) => (e.key === 'tasksPane' ? { value: { value: VIEW, version: 1 } } : next(e)))
+    seeded(on)
     const ui = await mountTasks($, 'mobile')
     expect(await ui.find({ type: 'Button', key: 'tasks:pick:team-a' })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'tasks:sort:subject' })).toBeDefined()

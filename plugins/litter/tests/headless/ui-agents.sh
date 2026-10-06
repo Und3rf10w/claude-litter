@@ -15,14 +15,14 @@
 # The model spawns two teammates, alpha and beta, each told to answer any
 # message with a SendMessage to team-lead quoting it, and one background
 # agent (run_in_background, description "sleeper") that sleeps. Then:
-#  - /litter-agents; a click on alpha's row, a message typed in the
+#  - /litter agents; a click on alpha's row, a message typed in the
 #    composer and Enter: alpha gets it, and quotes it back (its SendMessage
 #    in the tool log);
-#  - /litter-agents <team>, for a team made for the case that this session
+#  - /litter agents <team>, for a team made for the case that this session
 #    doesn't lead (teams/<team>/config.json, members m1 and m2), the
 #    composer's text and [ Broadcast to <team> ]: each member's inbox file
 #    holds the message, from user (hooks/teamfile.sh's locked append);
-#  - /litter-agents, a click on the sleeper's row, and [ Stop ] twice: the
+#  - /litter agents, a click on the sleeper's row, and [ Stop ] twice: the
 #    first arms it, the second stops it through TaskStop.
 # The case's team is removed at the end.
 #
@@ -72,7 +72,7 @@ $(h_tool_steps "$H_DIR/debug.txt")
 # The teammates and the sleeper.
 wait 600 $agents3
 sleep 20
-send /litter-agents
+send /litter agents
 wait 30 $UI shows $H_DIR '$PANE · this session · [0-9]+ agents'
 sleep 3
 until $UI mark $H_DIR session
@@ -93,7 +93,7 @@ sleep 5
 # A broadcast to the case's team.
 key esc
 sleep 2
-send /litter-agents $TEAM
+send /litter agents $TEAM
 wait 30 $UI shows $H_DIR 'Broadcast to $TEAM'
 sleep 2
 until $UI mark $H_DIR team
@@ -108,7 +108,7 @@ until $UI mark $H_DIR cast
 # [ Stop ] twice on the sleeper.
 key esc
 sleep 2
-send /litter-agents
+send /litter agents
 wait 30 $UI shows $H_DIR '$PANE · this session · [0-9]+ agents'
 sleep 2
 click $UI at $H_DIR 'sleeper' '$PANE'

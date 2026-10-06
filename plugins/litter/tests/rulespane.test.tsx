@@ -1,8 +1,9 @@
 // Tier 1: the rules pane as the engine draws it and dispatches its presses
-// (WP-AF; plan 16.3, 16.8, 12:1566). The views are fed to register.tsx's
-// render through a state.get hook beneath, and the pane's navigation (what
-// each row showed, what a press waits on) is seeded in $.store as a reload
-// finds it. The plugin's module state isn't the test's, so AD's store can't
+// (WP-AF; plan 16.3, 16.8, 12:1566), as the Rules section of the one
+// `litter` pane (phase 5b, WP-DA). The views (the hub's, on Rules, and the
+// rules') are fed to register.tsx's render through a state.get hook beneath,
+// and the pane's navigation (what each row showed, what a press waits on) and
+// the section shown are seeded in $.store as a reload finds them. The plugin's module state isn't the test's, so AD's store can't
 // be swapped here: the pane logs each store call before making it, and the
 // tests count those lines (rulespaneview.spec.ts fakes the store through
 // `deps` and runs the same flows end to end). Each press is one step, since
@@ -10,7 +11,7 @@
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
-import type { RulesPaneView, RulesRow } from '../types/index'
+import type { HubView, RulesPaneView, RulesRow } from '../types/index'
 
 const SESSION = 'tier1-session'
 const LITTER = '/repo/.claude/litter'
@@ -92,8 +93,14 @@ const NAV = {
   shown: SHOWN,
 }
 
-/** The navigation as a reload finds it in $.store, written by this session. */
-const navStore = (over: Record<string, unknown> = {}) => ({ 'litter.rules.pane': { v: 1, session: SESSION, nav: { ...NAV, ...over } } })
+/** The navigation as a reload finds it in $.store, written by this session, with the hub's section shown: Rules. */
+const navStore = (over: Record<string, unknown> = {}) => ({
+  'litter.rules.pane': { v: 1, session: SESSION, nav: { ...NAV, ...over } },
+  'litter.hub': { v: 1, session: SESSION, section: 'rules' },
+})
+
+/** The hub's view on Rules (no tabs yet: the render draws every section, uncounted). */
+const HUB: HubView = { view: 'hub', v: 1, section: 'rules', live: [], tabs: [] }
 
 const importRow = (key: string, instance: string, checked: boolean): RulesRow =>
   proposalRow(key, {
@@ -183,10 +190,12 @@ const IN_FORCE: RulesPaneView = {
   },
 }
 
-/** The views the pane's atom holds, answered beneath register.tsx's read; what the pane writes still lands beneath. */
+/** The views the pane's atoms hold (the rules' and the hub's), answered beneath register.tsx's read; what the pane writes still lands beneath. */
 function views(on: On, view: RulesPaneView): { written: RulesPaneView[] } {
   const seen = { written: [] as RulesPaneView[] }
-  on('state.get', async (_$, e, next) => (e.key === 'rulesPane' ? { value: { value: view, version: 0 } } : next(e)))
+  on('state.get', async (_$, e, next) =>
+    e.key === 'rulesPane' ? { value: { value: view, version: 0 } } : e.key === 'hub' ? { value: { value: HUB, version: 0 } } : next(e),
+  )
   on('state.set', async (_$, e, next) => {
     if (e.key === 'rulesPane') seen.written.push(e.value as RulesPaneView)
     return next(e)
@@ -195,12 +204,12 @@ function views(on: On, view: RulesPaneView): { written: RulesPaneView[] } {
 }
 
 /** $.fs from a map and git as a plain checkout at /repo answers it, so session.start resolves the litter directory. */
-function world(on: On): { files: Map<string, string>; logs: string[]; toasts: string[]; filled: string[]; opened: string[] } {
+function world(on: On): { files: Map<string, string>; logs: string[]; toasts: string[]; filled: string[]; opened: { id: string; focus: boolean }[] } {
   const files = new Map<string, string>()
   const logs: string[] = []
   const toasts: string[] = []
   const filled: string[] = []
-  const opened: string[] = []
+  const opened: { id: string; focus: boolean }[] = []
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
   const ran = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('fs.exists', async (_$, e) => ({ value: files.has(e.path) || isDir(e.path) }))
@@ -255,7 +264,7 @@ function world(on: On): { files: Map<string, string>; logs: string[]; toasts: st
     return { value: undefined }
   })
   on('ui.open', async (_$, e) => {
-    opened.push(e.id)
+    opened.push({ id: e.id, focus: e.focus === true })
     return { value: { isPlaced: true } }
   })
   on('prompt.fill', async (_$, e) => {
@@ -281,7 +290,7 @@ async function start($: Engine, on: On, opts: { nav?: Record<string, unknown>; v
 }
 
 const mountRules = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S) =>
-  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter-rules', props: pane('litter rules') })
+  $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter') })
 
 /** The store calls the pane logged, in order (`rules pane: <fn> …`). */
 const storeCalls = (logs: readonly string[]) =>
@@ -293,6 +302,10 @@ describe('the rules pane draws both tabs', () => {
     test(`the Proposed tab, an import batch grouped by instance, on the ${surface}`, async ($, on) => {
       await start($, on)
       const ui = await mountRules($, surface)
+      // The hub's chrome: `litter · Rules`, and the strip with Rules shown (the other sections are Buttons).
+      expect(await ui.find({ type: 'Text', text: ' · Rules' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'litter:section:home' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'litter:section:rules' })).toBeUndefined()
       expect(await ui.find({ type: 'Button', key: 'rules:tab:proposed' })).toBeDefined()
       expect((await ui.find({ type: 'Button', key: 'rules:tab:in-force' }))?.text).toBe('In force (1)')
       expect(await ui.find({ type: 'Text', text: 'Import from deepwork' })).toBeDefined()
@@ -503,7 +516,7 @@ describe('no other hook reaches acceptRule, dismissRule or retireRule (12:1566)'
       await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: `t-${input.kind}`, ...input })
       await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: `t-${input.kind}-agent`, agentId: 'a1', ...input })
     }
-    // The timers: the drain, the swarm ticks and the board's, which redraws the rules pane.
+    // The timers: the drain, the swarm ticks and the ui tick, whose `litter` step redraws Rules, the section shown.
     await s.clock.advance(10_000)
     // A field and a pick on the pane's keys.
     const ui = await mountRules($, 'terminal')
@@ -514,15 +527,16 @@ describe('no other hook reaches acceptRule, dismissRule or retireRule (12:1566)'
   })
 })
 
-describe('/litter-rules', () => {
-  test('opens the pane on the Proposed tab and answers a line', async ($, on) => {
+describe('/litter rules', () => {
+  test('opens `litter` on Rules, on the Proposed tab, with the keyboard, and answers a line', async ($, on) => {
     mock.store(on)
     const w = world(on)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
-    const r = await $.command.run({ command: 'litter-rules', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-    expect(r.text).toBe('the rules pane shows 0 proposed or unverified, 0 in force')
-    expect(w.opened).toEqual(['litter-rules'])
+    const r = await $.command.run({ command: 'litter', args: 'rules', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    expect(r.text).toBe('Rules shows 0 proposed or unverified, 0 in force')
+    expect(w.opened).toEqual([{ id: 'litter', focus: true }])
     const ui = await mountRules($, 'desktop')
+    expect(await ui.find({ type: 'Text', text: ' · Rules' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'nothing proposed' })).toBeDefined()
   })
 })
