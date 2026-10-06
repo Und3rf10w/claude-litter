@@ -2,16 +2,15 @@
 // packages' stubs in place: the new nodePorts fakes (notice, toolNames,
 // envVar, the four new setView targets, a send to `{ agentId }`); the spool's
 // `ask` line through the real drain, and consumeAsks' place among the
-// consumers; that every stub keeps today's behavior (no band, no card, the
-// panes' stub lines, the store's empty reads and refused writes); the
+// consumers; what still holds of each stub's behavior once its package built
+// it (CB–CG: a key not its own passes on, nothing is written unasked); the
 // board's openBoard and the swarm pane's openSwarmPane, which the band and
 // the card call; and the rebind's new steps after a /clear, through clear.ts's
 // `others`.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RenderElement } from 'claude-code'
 import type { SpoolConsumer, SpoolLine } from '../../hooks/hookfiles'
 import type { BandRender, CardRender } from '../../hooks/hooktypes'
 import type { Ports } from '../../hooks/ports'
@@ -26,13 +25,11 @@ import { MOD } from '../../hooks/verify'
 import { session, updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { asksTick, consumeAsks, openAsks, restoreAsks } from '../../hooks/asks'
-import { bandShows, bandTick, onBandUi, refreshBand, resetBandForTests } from '../../hooks/band/view'
-import { renderBand } from '../../hooks/band/render'
+import { bandShows, bandTick, onBandUi, resetBandForTests } from '../../hooks/band/view'
 import { cardRow, noteCards, onCardUi, restoreCards } from '../../hooks/card/view'
 import { renderCard } from '../../hooks/card/render'
-import { onTasksUi, refreshTasks, tasksCommand, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
-import { agentsCommand, agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
-import { appendInbox, readInbox, readTasks, taskLists, teams, updateTask } from '../../hooks/team/store'
+import { onTasksUi, refreshTasks, tasksTick, TASKS_PANE } from '../../hooks/tasks/pane'
+import { agentsTick, AGENTS_PANE, onAgentsUi, refreshAgents } from '../../hooks/agents/pane'
 import { BOARD_PANE, openBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests, resolveRun } from '../../hooks/board/view'
 import { openSwarmPane } from '../../hooks/swarm/panes'
@@ -227,14 +224,10 @@ describe("CA's stubs keep today's behavior", () => {
     expect(p.views).toEqual({})
   })
 
-  test("the agents pane: its command answers its stub's line and opens nothing; each ui handler passes on", async () => {
+  // WP-CG built the agents pane: its command is tested in agentspane.spec.ts. What still holds of the stub's case:
+  test('the agents pane: each ui handler passes on a key not its own; the tick and the refresh write nothing before it opens', async () => {
     const p = nodePorts()
-    const cmd = (command: string) => ({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as never
-    const never = (async () => {
-      throw new Error('a command stub answers, never passing on')
-    }) as never
-    expect(await agentsCommand(p, cmd('litter-agents'), never)).toEqual({ text: "litter: the agents pane isn't built yet (WP-CG)" })
-    expect([TASKS_PANE, AGENTS_PANE]).toEqual(['litter-tasks', 'litter-agents'])
+    expect(AGENTS_PANE).toBe('litter-agents')
     for (const handlers of [onAgentsUi]) {
       for (const event of ['message', 'press', 'input', 'select'] as const) {
         const { next, seen } = passes<unknown>()

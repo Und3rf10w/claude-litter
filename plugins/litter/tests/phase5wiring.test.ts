@@ -160,19 +160,7 @@ describe('/litter-tasks and /litter-agents', () => {
     expect(commands.slice(before).filter(c => c.name === 'litter-tasks' || c.name === 'litter-agents')).toEqual(PHASE5)
   })
 
-  test("each answers its stub's line, opening nothing and writing nothing", async ($, on) => {
-    mock.store(on)
-    const opened: string[] = []
-    on('ui.open', async (_$, e) => {
-      opened.push(e.id)
-      return { value: { isPlaced: true } }
-    })
-    const seen = stateSeen(on)
-    // /litter-tasks is built (WP-CE): tests/tasks.test.tsx runs it.
-    expect((await run($, 'litter-agents')).text).toBe("litter: the agents pane isn't built yet (WP-CG)")
-    expect(opened).toEqual([])
-    expect(seen.writes).toEqual([])
-  })
+  // Both commands are built: tests/tasks.test.tsx (WP-CE) and tests/agents.test.tsx (WP-CG) run them.
 
   test('their catches answer a line naming the command', async ($, on) => {
     mock.store(on)

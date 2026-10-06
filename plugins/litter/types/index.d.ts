@@ -758,10 +758,66 @@ export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
 // ===== begin agents section (owner: WP-CG) =====
 // ---------------------------------------------------------------------------
 // The agents pane (phase 5; COMMON decisions 5, 6, 16): agents, their
-// inboxes and transcripts, a composer and [Stop]. Built and drawn by
-// hooks/agents/.
+// inboxes and transcripts, a composer and [Stop]. Built by
+// hooks/agents/view.ts, drawn by hooks/agents/pane.tsx. Texts are cleaned and
+// cut; colors are theme keys with a word or glyph beside each.
 
-export type AgentsBody = { title: SwarmSpan[]; notice: SwarmNotice | null }
+/** A status as drawn: its word, and the glyph and color beside it (15.6); `dim` for a member not in this session. */
+export type AgentsStatus = { text: string; glyph: string; color: string; dim?: boolean }
+
+/** One row: an agent of this session (keyed by its id) or a member of the team shown (keyed by its name). */
+export type AgentsRow = {
+  key: string
+  /** Its name, else its description (an agent of this session), cleaned and cut. */
+  name: string
+  /** Its agent type, or '' when the team's config names none. */
+  type: string
+  status: AgentsStatus
+  /** Entries in its inbox, all unread (the engine drops one once it's delivered); null when it has no inbox or it couldn't be read. */
+  unread: number | null
+}
+
+/** One pending inbox entry: who it's from, when, and its text in at most 3 lines. */
+export type AgentsInboxEntry = { from: string; at: string; lines: string[] }
+
+/** The selected row's inbox, transcript, composer target and [Stop]. */
+export type AgentsSelected = {
+  key: string
+  name: string
+  /** Null when it has no inbox (it isn't a team's member). */
+  inbox: { entries: AgentsInboxEntry[]; hidden: number; error: string | null } | null
+  /** Null for a member not in this session: its transcript is its own session's. */
+  transcript: { readable: boolean; lines: SwarmSpan[]; total: number; more: boolean } | null
+  /** How [Send] reaches it, in words; null when nothing here sends to it (this session's own lead). */
+  sendNote: string | null
+  /** [Stop], for this session's agents that are running or waiting; `armed` while a second press stops it (decision 6). */
+  stop: { armed: boolean } | null
+}
+
+export type AgentsBody = {
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+  /** The picker's value: `session`, or `team.<name, URI-encoded>`. Every key of the view carries it. */
+  scope: string
+  /** This session first, then each team, newest first, with its member count. */
+  options: SwarmOption[]
+  rows: AgentsRow[]
+  /** Rows past the cap, not shown. */
+  hiddenRows: number
+  selected: AgentsSelected | null
+  /**
+   * The composer's Input: its key (`agents:text:<generation>`, a new one when
+   * the pane clears or restores the field) and the text it's drawn holding;
+   * the person's typing is kept in the pane's navigation, not here. `to` is
+   * the selected row's name when [Send] reaches it, else null (a team's view
+   * keeps the composer for [Broadcast]). Null when there's nothing to send to.
+   */
+  composer: { key: string; text: string; to: string | null } | null
+  /** The team shown, for [Broadcast to <team>]; null for this session. */
+  broadcast: string | null
+  /** What couldn't be read: the agent list, the teams, an inbox, the team named. */
+  problems: string[]
+}
 /** The `litter-agents` pane's view; `body` is absent until the first build is in. */
 export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
 // ===== end agents section (owner: WP-CG) =====
