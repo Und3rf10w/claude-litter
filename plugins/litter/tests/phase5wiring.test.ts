@@ -217,15 +217,8 @@ describe('the band, with the stub', () => {
     expect(seen.writes).toEqual([])
   })
 
-  test("a view with rows in the atom still draws only what's beneath: the stub shows no band", async ($, on) => {
-    mock.store(on)
-    const view = { view: 'band', v: 3, rows: [{ key: 'run:20261005-retry', spans: [{ text: '▸ litter · execute 20261005-retry' }], buttons: [{ key: 'band:board:20261005-retry', label: 'Board' }] }] }
-    on('state.get', async (_$, e, next) => (e.key === 'band' ? { value: { value: view, version: 1 } } : next(e)))
-    bandBeneath(on, [])
-    const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: BAND })
-    expect(await ui.find({ type: 'Text', text: /litter · execute/ })).toBeUndefined()
-    expect((await ui.find({ type: 'Text', text: 'drawn beneath litter' }))?.text).toBe('drawn beneath litter')
-  })
+  // WP-CB dropped "a view with rows in the atom still draws only what's beneath: the stub shows no band":
+  // the band now draws that view's rows over what's beneath (tests/band.test.tsx).
 
   // Whether the read rejects (the catch passes on) or the engine skips the throwing hook (no view,
   // the render passes on), what's beneath is drawn. With the stub nothing else can throw, so the

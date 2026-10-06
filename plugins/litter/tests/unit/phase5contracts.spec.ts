@@ -26,7 +26,7 @@ import { MOD } from '../../hooks/verify'
 import { session, updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { asksTick, consumeAsks, openAsks, restoreAsks } from '../../hooks/asks'
-import { bandShows, bandTick, onBandUi, refreshBand } from '../../hooks/band/view'
+import { bandShows, bandTick, onBandUi, refreshBand, resetBandForTests } from '../../hooks/band/view'
 import { renderBand } from '../../hooks/band/render'
 import { cardRow, noteCards, onCardUi, restoreCards } from '../../hooks/card/view'
 import { renderCard } from '../../hooks/card/render'
@@ -176,17 +176,18 @@ const bandE = { surface: 'terminal', component: 'AbovePrompt', requestId: 'above
 const rowE = (props: Record<string, unknown>) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'msg-1', props }) as unknown as CardRender
 
 describe("CA's stubs keep today's behavior", () => {
-  test('the band: never shown, `below` drawn as it came, its tick and refresh write nothing, a press passes on', async () => {
+  // Narrowed by WP-CB, which built the band (bandview.spec.ts and band.test.tsx cover it): what still holds of the stub's.
+  test("the band: no view is never shown, a tick with nothing to show writes nothing, another plugin's press passes on", async () => {
+    // The band now keeps module memory and reads the session's litter dir and the swarms, which other
+    // files' ticks (uitick, clear) leave behind in a full run: start it with nothing to show.
+    resetBandForTests()
+    state.resetForTests()
+    updateSession({ litterDir: null })
     const p = nodePorts()
-    const view: BandView = { view: 'band', v: 1, rows: [{ key: 'run:r', spans: [{ text: '▸' }], buttons: [] }] }
     expect(bandShows(null, bandE)).toBe(false)
-    expect(bandShows(view, bandE)).toBe(false)
-    const below = { type: 'Text', props: { children: ['beneath'] } } as unknown as RenderElement
-    expect(renderBand(view, {} as never, bandE, below)).toBe(below)
     await bandTick(p)
-    await refreshBand(p)
     const { next, seen } = passes<unknown>()
-    const e = { plugin: 'litter', element: 'band:board:r', component: 'AbovePrompt', requestId: 'above-prompt', surface: 'terminal' }
+    const e = { plugin: 'another-plugin', element: 'band:board:r', component: 'AbovePrompt', requestId: 'above-prompt', surface: 'terminal' }
     expect(await onBandUi.press(p, e as never, next as never)).toEqual({ passed: e } as never)
     expect(seen).toEqual([e])
     expect(p.views).toEqual({})
