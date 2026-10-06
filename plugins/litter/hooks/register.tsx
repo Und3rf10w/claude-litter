@@ -97,7 +97,7 @@ import { restoreAsks } from './asks'
 import { bandShows, onBandUi } from './band/view'
 import { renderBand } from './band/render'
 import { cardRow, noteCards, onCardUi, restoreCards } from './card/view'
-import { renderCard } from './card/render'
+import { cardOf, renderCard } from './card/render'
 import { onTasksUi, renderTasksPane, tasksCommand } from './tasks/pane'
 import { agentsCommand, onAgentsUi, renderAgentsPane } from './agents/pane'
 import { unprefixed } from './swarm/view'
@@ -639,10 +639,14 @@ export const register: Register = (on, options) => {
   }).catch(bandRenderFailed)
 
   // The finished-run card (CC). It runs for every message row, so its first
-  // check is synchronous and cheap; a row with no card is the engine's.
+  // check is synchronous and cheap; a row with no card is the engine's. An
+  // expanded row (ctrl+o, or `verbose`) draws the card above the engine's
+  // own, so both show (decision 8, revised by WP-CK).
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (!cardRow(e)) return next(e)
-    return renderCard(await read($, cards), $.ui.resolve(e), e) ?? next(e)
+    const card = cardOf(await read($, cards), e)
+    if (card === null) return next(e)
+    return renderCard(card, $.ui.resolve(e), e.props.isExpanded ? await next(e) : null)
   }).catch(cardRenderFailed)
 
   // Their presses: any plugin's button in the band or a row; keys not `band:` or `card:` pass on.

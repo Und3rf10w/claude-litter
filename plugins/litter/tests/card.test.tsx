@@ -1,10 +1,12 @@
 // Tier 1: the finished-run card as the engine draws it (WP-CC; COMMON
 // decision 8). A task-notification row whose task has a card in the `cards`
-// atom draws the card on every surface, and the engine's row otherwise: an
-// expanded row (ctrl+o), a typed prompt, a task with no card, a card the
-// render can't draw (its catch passes on). Then, end to end: a recorded run
-// in a checkout at /repo, session.start's restore, the row drawn as its card
-// and [Board] opening the board, the press answered `{ element }`.
+// atom draws the card alone on every surface; expanded (ctrl+o, or verbose,
+// where every row is: WP-CK), the card above the engine's own row, both
+// whole; and the engine's row alone otherwise: a typed prompt, a task with no
+// card, a card the render can't draw (its catch passes on). Then, end to
+// end: a recorded run in a checkout at /repo, session.start's restore, the
+// row drawn as its card, compact and expanded, and [Board] opening the board,
+// the press answered `{ element }`.
 
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -51,6 +53,11 @@ function rowBeneath(on: On, reached: string[]): void {
 /** The cards atom holds `view`. */
 const cardsHeld = (on: On, view: unknown) => on('state.get', async (_$, e, next) => (e.key === 'cards' ? { value: { value: view, version: 1 } } : next(e)))
 
+type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+/** A drawn element's text, its children's joined. */
+const shownText = (n: unknown): string =>
+  typeof n === 'string' ? n : n !== null && typeof n === 'object' ? ((n as Node).children ?? []).map(shownText).join('') : ''
+
 describe('the card in a row', () => {
   test('a notification row with a card draws the card in place of the engine’s, on every surface', async ($, on) => {
     mock.store(on)
@@ -67,14 +74,38 @@ describe('the card in a row', () => {
     }
   })
 
-  test("the same row expanded (ctrl+o), a typed prompt, and a task with no card are the engine's", async ($, on) => {
+  test("the same row expanded (ctrl+o, or verbose) draws the card above the engine's own row, both whole, on every surface", async ($, on) => {
+    mock.store(on)
+    cardsHeld(on, CARDS)
+    const reached: string[] = []
+    rowBeneath(on, reached)
+    for (const surface of ROW_SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'litter', surface, component: 'UserMessage', props: row({ ...NOTIFICATION, isExpanded: true }) })
+      const root = (await ui.drawn()) as unknown as Node
+      expect(root.type).toBe('Box')
+      expect(root.props?.flexDirection).toBe('column')
+      expect(root.children).toHaveLength(2)
+      const [card, engine] = root.children as Node[]
+      // The card first: its title, its two lines and [Board]; then the engine's row with its own button.
+      expect((card!.children as Node[]).slice(0, 3).map(shownText)).toEqual([`⚑ halted · litter · execute ${RUN} · 14m 2s`, '1/3 gates landed · last land 1111111', 'halted: G2: out of attempts'])
+      expect(card!.children).toHaveLength(4)
+      expect(shownText(engine)).toBe(`engine: ${NOTIFICATION.text}`)
+      expect((await ui.findAll({ type: 'Button' })).map(b => b.props.label)).toEqual(['Board', 'Other'])
+      expect(await ui.press({ key: 'other', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'other' }))
+      await ui.unmount()
+    }
+    expect(reached).toEqual(ROW_SURFACES.map(() => 'other'))
+  })
+
+  test("a typed prompt, and a task with no card, compact or expanded, are the engine's", async ($, on) => {
     mock.store(on)
     cardsHeld(on, CARDS)
     rowBeneath(on, [])
     const rows = [
-      [row({ ...NOTIFICATION, isExpanded: true }), `engine: ${NOTIFICATION.text}`],
       [row(), 'engine: fix the parser'],
+      [row({ isExpanded: true }), 'engine: fix the parser'],
       [row({ ...NOTIFICATION, task: { id: 'b-shell-7', status: 'completed' } }), `engine: ${NOTIFICATION.text}`],
+      [row({ ...NOTIFICATION, isExpanded: true, task: { id: 'b-shell-7', status: 'completed' } }), `engine: ${NOTIFICATION.text}`],
     ] as const
     for (const surface of ROW_SURFACES) {
       for (const [props, text] of rows) {
@@ -255,6 +286,8 @@ describe('a recorded run, end to end', () => {
     mock.store(on)
     mock.clock(on, { now: NOW + 10 * 60_000 })
     const { files, opened, cardsWritten } = world(on)
+    // The engine's row beneath, which only the expanded row below draws.
+    rowBeneath(on, [])
     await recordRun(files)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     expect(cardsWritten).toHaveLength(1)
@@ -265,6 +298,12 @@ describe('a recorded run, end to end', () => {
     expect(await ui.find({ type: 'Text', text: '2/2 gates landed · last land 2222222' })).toBeDefined()
     expect(await ui.press({ key: `card:board:${RUN}`, plugin: 'litter' })).toEqual(expect.objectContaining({ element: `card:board:${RUN}` }))
     expect(opened).toEqual(['litter-board'])
+    await ui.unmount()
+
+    // Under verbose every row is expanded: the card is still drawn, above the engine's own row.
+    const verbose = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'UserMessage', props: row({ ...NOTIFICATION, isExpanded: true }) })
+    expect(await verbose.find({ type: 'Text', text: `✓ done · litter · execute ${RUN} · 3m 0s` })).toBeDefined()
+    expect(await verbose.find({ type: 'Text', text: `engine: ${NOTIFICATION.text}` })).toBeDefined()
   })
 
   test("a run still open at session.start gets its card at its notification's prompt.submit, and the row draws it", async ($, on) => {

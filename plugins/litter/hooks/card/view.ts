@@ -86,13 +86,14 @@ export function resetCardsForTests(): void {
 
 /**
  * Whether this row may be a card: a task notification's
- * (`origin.kind === 'task-notification'`, with a `task.id`) and not expanded.
- * Runs for every message row before anything else, so it's synchronous and
- * cheap; false passes the render on.
+ * (`origin.kind === 'task-notification'`, with a `task.id`), expanded or not
+ * (an expanded row draws the card above the engine's own: render.tsx). Runs
+ * for every message row before anything else, so it's synchronous and cheap;
+ * false passes the render on.
  */
 export function cardRow(e: CardRender): boolean {
-  const { origin, task, isExpanded } = e.props
-  return origin?.kind === 'task-notification' && typeof task?.id === 'string' && task.id !== '' && isExpanded === false
+  const { origin, task } = e.props
+  return origin?.kind === 'task-notification' && typeof task?.id === 'string' && task.id !== ''
 }
 
 // ---------------------------------------------------------------------------
