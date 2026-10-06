@@ -337,7 +337,7 @@ describe('launchSwarm: a launch', () => {
     w.p.fillAnswer = () => false
     await launched()
     expect(liveSwarm('alpha')).not.toBeNull()
-    expect(w.p.toasts).toEqual(['litter: swarm alpha is live; send /litter:swarm start alpha to start it'])
+    expect(w.p.toasts).toEqual(['swarm alpha is live; send /litter:swarm start alpha to start it'])
   })
 
   test("a second Launch is refused while it's live, and while its ref exists in another session", async () => {

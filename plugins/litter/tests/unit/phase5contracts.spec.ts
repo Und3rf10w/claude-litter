@@ -341,7 +341,7 @@ describe('openBoard, for the band and the card', () => {
 describe('openSwarmPane, for the band', () => {
   test("is exported as /litter-swarm's work: a name that isn't one is answered, opening nothing", async () => {
     const p = nodePorts()
-    expect(await openSwarmPane(p, 'Not-A-Name')).toBe(`litter: "Not-A-Name" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`)
+    expect(await openSwarmPane(p, 'Not-A-Name')).toBe(`"Not-A-Name" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`)
     expect(p.panes.opened).toEqual([])
   })
 })

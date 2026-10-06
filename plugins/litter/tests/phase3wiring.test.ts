@@ -140,8 +140,8 @@ describe('/litter-board and /litter-rules', () => {
     on('ui.open', async () => ({ value: { isPlaced: true } }))
     const writes = stateWrites(on)
     // No session.start, so there's no litter directory: each pane draws that.
-    expect((await run($, 'litter-board')).text).toBe('litter: the board has no litter directory to read')
-    expect((await run($, 'litter-rules')).text).toBe('litter: the rules pane has no litter directory to read')
+    expect((await run($, 'litter-board')).text).toBe('the board has no litter directory to read')
+    expect((await run($, 'litter-rules')).text).toBe('the rules pane has no litter directory to read')
     expect(writes.map(w => w.key)).toEqual(['board', 'rulesPane'])
     expect(writes[0]!.value).toEqual(expect.objectContaining({ view: 'board', v: 0, run: null }))
     expect(writes[1]!.value).toEqual(expect.objectContaining({ view: 'rules', v: 0, tab: 'proposed' }))
@@ -162,8 +162,8 @@ describe("each new hook's catch answers in its event's shape", () => {
     await clearEnds($, SESSION)
     sid.value = null
     // The engine skips the throwing session.id hook, and nothing beneath it answers: `rebound` throws either way.
-    expect(await run($, 'litter-board')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^litter: \/litter-board failed \(.*session\.id.*\)$/) }))
-    expect(await run($, 'litter-rules')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^litter: \/litter-rules failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter-board')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-board failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter-rules')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-rules failed \(.*session\.id.*\)$/) }))
     expect(ids.calls).toBeGreaterThanOrEqual(2)
   })
 
@@ -277,7 +277,7 @@ describe("the doctor's trailers row", () => {
     on('ui.open', async () => ({ value: { isPlaced: true } }))
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     const dropped = logs.filter(l => l.includes("the trailers option's lines"))
-    expect(dropped).toEqual([`litter: the trailers option's lines that aren't one Key: value each were dropped: "not a trailer"`])
+    expect(dropped).toEqual([`the trailers option's lines that aren't one Key: value each were dropped: "not a trailer"`])
     await run($, 'litter-doctor')
     expect(trailersRow(writes)).toEqual(
       expect.objectContaining({ title: 'Commit trailers', detail: 'litter adds 1 line from the trailers option to each commit it lands' }),

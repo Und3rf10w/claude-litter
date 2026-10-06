@@ -649,11 +649,11 @@ describe('the [Board] press', () => {
   test("a run that's gone toasts that, and a board that isn't placed says what to run", async () => {
     expect(await onCardUi.press(p, press('card:board:20261004-gone'), passOn)).toEqual({ element: 'card:board:20261004-gone' })
     expect(boards).toEqual([])
-    expect(p.toasts).toEqual(["litter: run 20261004-gone is gone (its run.json isn't there), so there's no board to open"])
+    expect(p.toasts).toEqual(["run 20261004-gone is gone (its run.json isn't there), so there's no board to open"])
     await executeDone('20261005-exec', 't-exec')
     boardAnswer = false
     await onCardUi.press(p, press('card:board:20261005-exec'), passOn)
-    expect(p.toasts.at(-1)).toBe("litter: the board didn't open here; run /litter-board 20261005-exec")
+    expect(p.toasts.at(-1)).toBe("the board didn't open here; run /litter-board 20261005-exec")
   })
 
   test("a card key that isn't a run's is answered and does nothing; any other key passes on", async () => {

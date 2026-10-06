@@ -59,8 +59,8 @@ import {
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** Cancel's answer, and the hold's where nobody can answer the ask (15.4). */
-export const CLEAR_HELD = "litter: /clear held; the swarm browser shows when they're idle"
+/** Cancel's answer, and the hold's where nobody can answer the ask (15.4); the engine names litter before it. */
+export const CLEAR_HELD = "/clear held; the swarm browser shows when they're idle"
 export const CLEAR_OPTIONS = ['Cancel', 'Clear anyway'] as const
 /** The swarm timers' tick: a changed session id starts the rebind, and the summary runs from it. */
 export const TICK_MS = 2000

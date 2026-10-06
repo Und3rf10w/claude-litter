@@ -97,7 +97,7 @@ describe('the beat', () => {
     expect(ownerLost('alpha')).toBe(true)
     expect(ownedSwarm('alpha')).toBeNull()
     expect(w.p.timers.size).toBe(0)
-    expect(w.p.toasts).toContain('litter: swarm alpha was handed to another session; this session no longer acts on it')
+    expect(w.p.toasts).toContain('swarm alpha was handed to another session; this session no longer acts on it')
     expect(await policyText(w)).toBe(before.policy)
     expect(await Promise.all(bound.map(b => w.p.fs.read(agentPolicyPath(w.litterDir, b.agentId))))).toEqual(before.nodes)
     expect(leases()).toEqual(before.leases)

@@ -829,7 +829,7 @@ export async function fillStart(p: Ports, plan: Pick<LaunchPlan, 'name' | 'saved
   const filled = await p.fillPrompt(text).catch(() => false)
   if (!filled) {
     p.log(`swarm ${name}: the prompt box didn't take the start line`)
-    p.toast(`litter: swarm ${name} is live; send /litter:swarm start ${name} to start it`)
+    p.toast(`swarm ${name} is live; send /litter:swarm start ${name} to start it`)
   }
   return filled
 }

@@ -600,7 +600,8 @@ describe('the browser', () => {
     setNav(blankNav('browser', SWARM))
     await handle(p, 'swarm:browser:stop:demo/w1', {})
     expect(nav()?.notice?.level).toBe('error')
-    expect(p.toasts.at(-1)).toContain('Stop node failed')
+    // The owner's error is worded for the model; the toast, which the engine labels litter's, drops its `litter: `.
+    expect(p.toasts.at(-1)).toBe('Stop node failed: stopNode is not built yet (WP-P)')
   })
 
   test('read-only: no composer, the owner, and [Take over] when K says a handover is possible', async () => {
@@ -835,14 +836,14 @@ describe('the commands and the doctor', () => {
   })
 
   test('/litter-swarm: the start screen with nothing live, the browser of a live one, a builder by name; each opens the pane', async () => {
-    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'litter: the swarm pane shows the start screen' })
+    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'the swarm pane shows the start screen' })
     expect(p.panes.opened).toEqual([{ id: 'litter-swarm', title: 'litter swarm' }])
     expect((p.views.swarm as SwarmStartView).view).toBe('start')
-    expect(await swarmCommand(p, e('litter-swarm', 'demo'), next)).toEqual({ text: 'litter: the swarm pane shows the builder for demo' })
+    expect(await swarmCommand(p, e('litter-swarm', 'demo'), next)).toEqual({ text: 'the swarm pane shows the builder for demo' })
     goLive()
-    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'litter: the swarm pane shows demo, live' })
+    expect(await swarmCommand(p, e('litter-swarm'), next)).toEqual({ text: 'the swarm pane shows demo, live' })
     expect(await swarmCommand(p, e('litter-swarm', 'Not A Name'), next)).toEqual({
-      text: 'litter: "Not" isn\'t a swarm name (a-z, 0-9 and -, up to 24, not starting with -)',
+      text: '"Not" isn\'t a swarm name (a-z, 0-9 and -, up to 24, not starting with -)',
     })
   })
 
@@ -865,7 +866,7 @@ describe('the commands and the doctor', () => {
     })
     setNav(blankNav('builder', SWARM))
     const r = await doctorCommand(p, e('litter-doctor'), next)
-    expect(r).toEqual({ text: 'litter: the doctor pane checks demo: 1 error, 0 warnings' })
+    expect(r).toEqual({ text: 'the doctor pane checks demo: 1 error, 0 warnings' })
     expect(p.panes.opened.at(-1)).toEqual({ id: 'litter-doctor', title: 'litter doctor' })
     const body = (p.views.doctor as { body?: { rows: { glyph: string; values: string[] }[]; snippet: string | null } }).body!
     expect(body.rows[0]?.glyph).toBe('✕')

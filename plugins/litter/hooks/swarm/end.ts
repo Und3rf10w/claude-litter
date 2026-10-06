@@ -58,6 +58,7 @@ import * as state from './state'
 import { heldBy, patchNodePolicies, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from './guard'
 import { confirmOwnership, releaseOwnership, stopOwnerBeat } from './owner'
 import { noteSummaryTrigger, noteSwarmEnding, plainText } from './summary'
+import { unprefixed } from './view'
 
 /**
  * The other packages' functions this module and observe.ts call (M's policy
@@ -463,7 +464,7 @@ async function settleTick(p: Ports, name: string, w: Wait): Promise<void> {
         `swarm ${name}: not settled after 2 minutes: ${plural(open.nodes.length, 'node')} running, ${plural(open.calls.length, 'call')} in flight, ` +
           `${plural(open.shells.length, 'shell')}, ${plural(open.reservations, 'reservation')}`,
       )
-      p.toast(`litter: swarm ${name} hasn't settled after 2 minutes; /litter-swarm ${name} shows what's still open`)
+      p.toast(`swarm ${name} hasn't settled after 2 minutes; /litter-swarm ${name} shows what's still open`)
     }
   } catch (err) {
     const text = errText(err)
@@ -576,7 +577,7 @@ async function finish(p: Ports, litterDir: string, name: string, settled: boolea
       noteSwarmEnding(name, s.launch)
       const why = `its launch ledger is broken at record ${broken.seq} (${broken.reason}), so it holds no swarm.end, and no worktree was removed`
       p.log(`swarm ${name}: ended, but ${why}`)
-      p.toast(`litter: swarm ${name} has ended, but ${why}; summary.md lists what's left`)
+      p.toast(`swarm ${name} has ended, but ${why}; summary.md lists what's left`)
     }
     const step = async (what: string, work: () => Promise<void> | void) => {
       try {
@@ -626,7 +627,7 @@ async function endGeneration(p: Ports, litterDir: string, s: LiveSwarm, settled:
     if (!out.recorded) p.log(`swarm ${s.name}: ${gen} had ended already (${out.end.status})`)
   } catch (err) {
     p.log(`swarm ${s.name}: at its end, closing ${gen} failed: ${errText(err)}`)
-    p.toast(`litter: repair swarm ${s.name} has ended, but ${gen} wasn't closed (${errText(err)}); its lock stays until the next session start reconciles it`)
+    p.toast(`repair swarm ${s.name} has ended, but ${gen} wasn't closed (${unprefixed(errText(err))}); its lock stays until the next session start reconciles it`)
   }
 }
 

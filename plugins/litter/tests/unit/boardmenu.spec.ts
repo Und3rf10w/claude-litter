@@ -204,7 +204,7 @@ describe('replay', () => {
     await run()
     expect(await post({ run: EXEC, action: 'replay', gate: 'G2' })).toEqual({})
     expect(p.filled).toEqual(['/litter:amend G2 '])
-    expect(p.toasts.at(-1)).toBe('litter: /litter:amend G2 is in the prompt box: add the change and press Enter')
+    expect(p.toasts.at(-1)).toBe('/litter:amend G2 is in the prompt box: add the change and press Enter')
     expect(await press('board:replay:G1')).toEqual({ element: 'board:replay:G1' })
     expect(p.filled).toEqual(['/litter:amend G2 ', '/litter:amend G1 '])
     expect(p.submitted).toEqual([])
@@ -214,12 +214,12 @@ describe('replay', () => {
     await run()
     p.fillAnswer = () => false
     await post({ run: EXEC, action: 'replay', gate: 'G2' })
-    expect(p.toasts.at(-1)).toBe("litter: the prompt box didn't take it: type /litter:amend G2 <change>")
+    expect(p.toasts.at(-1)).toBe("the prompt box didn't take it: type /litter:amend G2 <change>")
     p.fillPrompt = async () => {
       throw new Error('no composer')
     }
     await press('board:replay:G2')
-    expect(p.toasts.at(-1)).toBe("litter: the prompt box didn't take it: type /litter:amend G2 <change>")
+    expect(p.toasts.at(-1)).toBe("the prompt box didn't take it: type /litter:amend G2 <change>")
     expect(p.logs.some(l => l.includes('no composer'))).toBe(true)
   })
 
@@ -228,7 +228,7 @@ describe('replay', () => {
     await post({ run: EXEC, action: 'replay', gate: 'G2' })
     await press('board:replay:G1')
     expect(p.filled).toEqual([])
-    expect(p.toasts.at(-1)).toBe(`litter: run ${EXEC} is running, so it can't be replayed yet: wait for it to end, then use /litter:amend G1`)
+    expect(p.toasts.at(-1)).toBe(`run ${EXEC} is running, so it can't be replayed yet: wait for it to end, then use /litter:amend G1`)
   })
 })
 
@@ -259,14 +259,14 @@ describe('the critic note', () => {
     await handleBoard(p, 'board:select:G2')
     await press('board:note:G2')
     // The row has no note now (verdictPath checks the file), so the press is refused.
-    expect(p.toasts.at(-1)).toBe("litter: G2 has no critic note yet, so there's nothing to open")
+    expect(p.toasts.at(-1)).toBe("G2 has no critic note yet, so there's nothing to open")
   })
 
   test('refused on a row with no verdict file', async () => {
     await run()
     await post({ run: EXEC, action: 'note', gate: 'G1' })
     expect(navOf()?.section).toBeNull()
-    expect(p.toasts.at(-1)).toBe("litter: G1 has no critic note yet, so there's nothing to open")
+    expect(p.toasts.at(-1)).toBe("G1 has no critic note yet, so there's nothing to open")
   })
 })
 
@@ -275,7 +275,7 @@ describe('copy', () => {
     await run()
     await post({ run: EXEC, action: 'copy', gate: 'G1' })
     expect(p.copied).toEqual([landed])
-    expect(p.toasts.at(-1)).toBe(`litter: copied ${landed.slice(0, 7)} (G1)`)
+    expect(p.toasts.at(-1)).toBe(`copied ${landed.slice(0, 7)} (G1)`)
     await press('board:copy:G1')
     expect(p.copied).toEqual([landed, landed])
   })
@@ -291,13 +291,13 @@ describe('copy', () => {
     expect(rowOf('G1')).toEqual(expect.objectContaining({ earlier: first, oid: landed, actions: ['copy'] }))
     await post({ run: cont, action: 'copy', gate: 'G1' })
     expect(p.copied).toEqual([landed])
-    expect(p.toasts.at(-1)).toBe(`litter: copied ${landed.slice(0, 7)} (G1)`)
+    expect(p.toasts.at(-1)).toBe(`copied ${landed.slice(0, 7)} (G1)`)
   })
 
   test('a short or malformed commit id is refused, never copied', async () => {
     await run({ commit: landed.slice(0, 12) })
     await post({ run: EXEC, action: 'copy', gate: 'G1' })
-    expect(p.toasts.at(-1)).toBe("litter: G1's land doesn't record a full commit id, so nothing was copied")
+    expect(p.toasts.at(-1)).toBe("G1's land doesn't record a full commit id, so nothing was copied")
 
     const cont = '20261003-bad'
     await record(cont, [start(cont), launch])
@@ -315,12 +315,12 @@ describe('copy', () => {
       return false
     }
     await post({ run: EXEC, action: 'copy', gate: 'G1' })
-    expect(p.toasts.at(-1)).toBe(`litter: ${landed.slice(0, 7)} (G1) wasn't copied: this screen's clipboard refused it`)
+    expect(p.toasts.at(-1)).toBe(`${landed.slice(0, 7)} (G1) wasn't copied: this screen's clipboard refused it`)
     p.copy = async () => {
       throw new Error('no surface')
     }
     await press('board:copy:G1')
-    expect(p.toasts.at(-1)).toBe(`litter: ${landed.slice(0, 7)} (G1) wasn't copied: this screen's clipboard refused it`)
+    expect(p.toasts.at(-1)).toBe(`${landed.slice(0, 7)} (G1) wasn't copied: this screen's clipboard refused it`)
   })
 })
 
@@ -337,9 +337,9 @@ describe('refusals', () => {
   test("an action the row hasn't got is refused with a toast, never acted on", async () => {
     await run()
     await post({ run: EXEC, action: 'copy', gate: 'G2' })
-    expect(p.toasts.at(-1)).toBe("litter: G2 hasn't landed, so there's no commit to copy")
+    expect(p.toasts.at(-1)).toBe("G2 hasn't landed, so there's no commit to copy")
     await press('board:copy:G9')
-    expect(p.toasts.at(-1)).toBe("litter: G9 isn't a gate of the run the board shows, so that was ignored")
+    expect(p.toasts.at(-1)).toBe("G9 isn't a gate of the run the board shows, so that was ignored")
     expect(p.copied).toEqual([])
   })
 

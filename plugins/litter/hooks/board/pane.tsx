@@ -31,7 +31,7 @@ import type {
 } from '../../types/index'
 import { session } from '../session'
 import { buttons, header, section, tableFor } from '../swarm/builder'
-import { oneLine } from '../swarm/view'
+import { oneLine, unprefixed } from '../swarm/view'
 import { OID, blankBoardNav, boardNavRev, buildBoard, navOf, restoreBoardNav, saveBoardNav, setBoardNav } from './view'
 import { openRulesPane, refreshRulesPane, rulesTick } from '../rules/pane'
 
@@ -108,14 +108,15 @@ export const boardCommand: PortHook<CommandRunHook> = async (p, e, next) => {
     setBoardNav(blankBoardNav(arg))
     await drawNoDirectory(p)
     const placed = await p.openPane(BOARD_PANE, 'litter board')
-    return { text: `litter: the board has no litter directory to read${placed ? '' : " (open, but this screen can't draw it now)"}` }
+    return { text: `the board has no litter directory to read${placed ? '' : " (open, but this screen can't draw it now)"}` }
   }
   setBoardNav(blankBoardNav(arg))
   const view = await drawBoard(p, litterDir)
   const placed = await p.openPane(BOARD_PANE, 'litter board')
   const head = view?.body?.header
-  const what = view?.run && head ? `run ${view.run} (${head.workflow}, ${head.status.text})` : `nothing: ${view?.body?.notice?.text ?? 'no run'}`
-  return { text: `litter: the board shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  // The notice can be the record tool's refusal, as the engine worded it (`litter: $.tool.register: …`).
+  const what = view?.run && head ? `run ${view.run} (${head.workflow}, ${head.status.text})` : `nothing: ${unprefixed(view?.body?.notice?.text ?? 'no run')}`
+  return { text: `the board shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
 }
 
 /** The board when this session has no litter directory: why, and nothing else. */
@@ -412,11 +413,11 @@ export async function handleBoard(p: Ports, key: string, from: { run?: string } 
   const n = navOf()
   const litterDir = session().litterDir
   if (!n || !litterDir) {
-    p.toast('litter: the board was closed, so that was ignored')
+    p.toast('the board was closed, so that was ignored')
     return
   }
   if (from.run !== undefined && from.run !== n.run) {
-    p.toast(`litter: that was for run ${oneLine(from.run, 60)}, and the board shows ${n.run ?? 'no run'} now, so it was ignored`)
+    p.toast(`that was for run ${oneLine(from.run, 60)}, and the board shows ${n.run ?? 'no run'} now, so it was ignored`)
     await drawBoard(p, litterDir)
     return
   }
@@ -436,7 +437,7 @@ export async function handleBoard(p: Ports, key: string, from: { run?: string } 
       const view = await drawBoard(p, litterDir)
       const row = view?.body?.gates?.rows.find(r => r.id === gate)
       if (!row || !(Array.isArray(row.actions) && row.actions.includes(action))) {
-        p.toast(`litter: ${notAvailable(action, gate, view, row)}`)
+        p.toast(notAvailable(action, gate, view, row))
         return
       }
       if (action === 'replay') return replay(p, gate)
@@ -488,13 +489,13 @@ async function replay(p: Ports, gate: string): Promise<void> {
     p.log(`board: the prompt box refused ${text.trim()}: ${errText(err)}`)
   }
   p.log(`board: replay ${gate}: ${filled ? 'filled' : 'refused'}`)
-  p.toast(filled ? `litter: /litter:amend ${gate} is in the prompt box: add the change and press Enter` : `litter: the prompt box didn't take it: type /litter:amend ${gate} <change>`)
+  p.toast(filled ? `/litter:amend ${gate} is in the prompt box: add the change and press Enter` : `the prompt box didn't take it: type /litter:amend ${gate} <change>`)
 }
 
 /** Copy: the land's full commit id, checked as one first; the toast says what was copied, or that it wasn't. */
 async function copyCommit(p: Ports, gate: string, oid: string | null): Promise<void> {
   if (oid === null || !OID.test(oid)) {
-    p.toast(`litter: ${gate}'s land doesn't record a full commit id, so nothing was copied`)
+    p.toast(`${gate}'s land doesn't record a full commit id, so nothing was copied`)
     return
   }
   let copied = false
@@ -503,7 +504,7 @@ async function copyCommit(p: Ports, gate: string, oid: string | null): Promise<v
   } catch (err) {
     p.log(`board: the copy of ${gate}'s commit failed: ${errText(err)}`)
   }
-  p.toast(copied ? `litter: copied ${oid.slice(0, 7)} (${gate})` : `litter: ${oid.slice(0, 7)} (${gate}) wasn't copied: this screen's clipboard refused it`)
+  p.toast(copied ? `copied ${oid.slice(0, 7)} (${gate})` : `${oid.slice(0, 7)} (${gate}) wasn't copied: this screen's clipboard refused it`)
 }
 
 /** Every action handleBoard knows, so a Client's post can carry any of them. */

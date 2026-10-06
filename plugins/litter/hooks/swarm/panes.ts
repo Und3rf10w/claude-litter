@@ -77,6 +77,7 @@ import {
   stripOf,
   swarmView,
   templateOf,
+  unprefixed,
 } from './view'
 
 export const SWARM_PANE = 'litter-swarm'
@@ -120,7 +121,7 @@ export async function openSwarmPane(p: Ports, arg: string): Promise<string> {
   await restoreNav(p)
   const name = arg.split(/\s+/)[0] ?? ''
   if (name !== '' && !SWARM_NAME.test(name)) {
-    return `litter: "${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`
+    return `"${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)`
   }
   let n: SwarmNav
   // The swarm's undecided proposals, from J's spec ledger: module memory is empty after a reload.
@@ -140,7 +141,7 @@ export async function openSwarmPane(p: Ports, arg: string): Promise<string> {
   const placed = await p.openPane(SWARM_PANE, 'litter swarm')
   const shows = nav()
   const what = shows ? describeNav(shows) : 'nothing'
-  return `litter: the swarm pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}`
+  return `the swarm pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}`
 }
 
 const describeNav = (n: SwarmNav): string => {
@@ -172,7 +173,7 @@ async function openDoctorPane(p: Ports, swarm?: string | null): Promise<string> 
   const placed = await p.openPane(DOCTOR_PANE, 'litter doctor')
   const body = view?.body
   const counts = body ? `: ${body.errors} error${body.errors === 1 ? '' : 's'}, ${body.warnings} warning${body.warnings === 1 ? '' : 's'}` : ''
-  return `litter: the doctor pane checks ${which ? which : 'this session, with no swarm spec'}${counts}${placed ? '' : " (open, but this screen can't draw it now)"}`
+  return `the doctor pane checks ${which ? which : 'this session, with no swarm spec'}${counts}${placed ? '' : " (open, but this screen can't draw it now)"}`
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +303,7 @@ async function proposalArrived(p: Ports, name: string, num: number): Promise<voi
     setNav(await proposalNav(p, name, num))
     return
   }
-  p.toast(`litter: the lead proposed changes to ${name}: /litter-swarm ${name} shows them`)
+  p.toast(`the lead proposed changes to ${name}: /litter-swarm ${name} shows them`)
 }
 
 /**
@@ -411,7 +412,7 @@ export async function handle(p: Ports, key: string, input: Input): Promise<void>
   await restoreNav(p)
   const why = stalePress(nav(), k, doctorNavigation() !== null)
   if (why) {
-    p.toast(`litter: ${why}, so it was ignored`)
+    p.toast(`${why}, so it was ignored`)
     p.log(`swarm pane: stale ${key}: ${why}`)
     await refreshPanes(p)
     return
@@ -421,7 +422,7 @@ export async function handle(p: Ports, key: string, input: Input): Promise<void>
       await doctorAction(p, k)
     } catch (err) {
       p.log(`swarm pane: ${key} failed: ${errText(err)}`)
-      p.toast(`litter: that failed: ${oneLine(errText(err), 100)}`)
+      p.toast(`that failed: ${oneLine(unprefixed(errText(err)), 100)}`)
     }
     return
   }
@@ -465,7 +466,7 @@ function notice(level: SwarmNotice['level'], text: string): void {
 /** An owner's failure: on the pane, and as a toast in case the pane isn't drawn. */
 function failed(p: Ports, what: string, error: string): void {
   notice('error', `${what} failed: ${error}`)
-  p.toast(`litter: ${what} failed: ${oneLine(error, 100)}`)
+  p.toast(`${what} failed: ${oneLine(unprefixed(error), 100)}`)
 }
 
 function go(view: SwarmNav['view'], swarm: string | null, patch: Partial<SwarmNav> = {}): void {
@@ -479,7 +480,7 @@ function submitLater(p: Ports, text: string, what: string): void {
       () => p.log(`swarm pane: ${what} reached the lead`),
       (err: unknown) => {
         p.log(`swarm pane: ${what} wasn't submitted: ${errText(err)}`)
-        p.toast(`litter: ${what} didn't reach the lead: ${oneLine(errText(err), 100)}`)
+        p.toast(`${what} didn't reach the lead: ${oneLine(unprefixed(errText(err)), 100)}`)
       },
     )
   })
@@ -1434,7 +1435,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string,
   }
   const selected = composerTarget(name, n.selected)
   if (selected && shown !== '' && instanceAddress(selected) !== shown) {
-    p.toast('litter: the To changed since that was drawn, so it was ignored')
+    p.toast('the To changed since that was drawn, so it was ignored')
     return true
   }
   const address = shown !== '' ? shown : selected ? instanceAddress(selected) : null

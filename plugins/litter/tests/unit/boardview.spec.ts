@@ -619,7 +619,7 @@ describe('which run, and when to rebuild', () => {
 describe("the pane's handlers", () => {
   test('/litter-board opens the pane on the run; a pick, [Diff], [Plan] and [Close] move the navigation', async () => {
     await haltedRun()
-    expect(await boardCommand(p, command(EXEC), next)).toEqual({ text: `litter: the board shows run ${EXEC} (execute, halted)` })
+    expect(await boardCommand(p, command(EXEC), next)).toEqual({ text: `the board shows run ${EXEC} (execute, halted)` })
     expect(p.panes.opened.map(o => o.id)).toEqual(['litter-board'])
     expect((p.views.board as BoardView).run).toBe(EXEC)
 
@@ -690,8 +690,18 @@ describe("the pane's handlers", () => {
 
   test('with no litter directory, /litter-board says so and opens the pane on it', async () => {
     updateSession({ litterDir: null, litterDirError: 'not a git repository' })
-    expect(await boardCommand(p, command(''), next)).toEqual({ text: 'litter: the board has no litter directory to read' })
+    expect(await boardCommand(p, command(''), next)).toEqual({ text: 'the board has no litter directory to read' })
     expect((p.views.board as BoardView).body!.notice).toEqual({ level: 'error', text: 'this session has no litter directory: not a git repository' })
     updateSession({ litterDirError: null })
+  })
+
+  test("with no run and the record tool refused, the reply carries the engine's refusal without its `litter: `", async () => {
+    const refused = 'litter: $.tool.register: this host cannot add tools at run time (no in-process MCP server registrar installed)'
+    updateSession({ toolsRefused: refused })
+    expect(await boardCommand(p, command(''), next)).toEqual({
+      text: 'the board shows nothing: $.tool.register: this host cannot add tools at run time (no in-process MCP server registrar installed)',
+    })
+    // The pane's own notice is litter's drawing, which the engine doesn't label: it keeps the refusal whole.
+    expect((p.views.board as BoardView).body!.notice).toEqual({ level: 'error', text: refused })
   })
 })

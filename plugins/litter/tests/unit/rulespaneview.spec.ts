@@ -343,7 +343,7 @@ describe('the In force tab', () => {
 
 describe('the presses reach the store once each, with what the pane showed', () => {
   test('/litter-rules opens the pane; [Accept] on a user proposal accepts it once into user scope', async () => {
-    expect(await rulesCommand(p, command(), next)).toEqual({ text: 'litter: the rules pane shows 8 proposed or unverified, 5 in force' })
+    expect(await rulesCommand(p, command(), next)).toEqual({ text: 'the rules pane shows 8 proposed or unverified, 5 in force' })
     expect(p.panes.opened.map(o => o.id)).toEqual(['litter-rules'])
     await pressRules(p, 'rules:accept:repo:3')
     expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 3 } }, { scope: 'user' }] }])
@@ -362,7 +362,7 @@ describe('the presses reach the store once each, with what the pane showed', () 
     expect(view().body!.pending).toBeNull()
     await pressRules(p, 'rules:confirm:repo:4')
     expect(acting().length).toBe(1)
-    expect(p.toasts.at(-1)).toBe('litter: there was no file waiting to be confirmed, so that was ignored')
+    expect(p.toasts.at(-1)).toBe('there was no file waiting to be confirmed, so that was ignored')
   })
 
   test('[Cancel] drops the preview, and nothing is written', async () => {
@@ -501,7 +501,7 @@ describe('the presses reach the store once each, with what the pane showed', () 
     await pressRules(p, 'rules:retire:repo:3')
     await pressRules(p, 'rules:tab:everything')
     expect(view().tab).toBe('proposed')
-    expect(p.toasts.filter(t => t === "litter: that rule isn't shown any more, so it was ignored").length).toBe(3)
+    expect(p.toasts.filter(t => t === "that rule isn't shown any more, so it was ignored").length).toBe(3)
     state.setInteractive(false)
     await pressRules(p, 'rules:accept:repo:3')
     expect(notice()).toBe("this session isn't interactive, so nothing can be accepted here (16.3)")

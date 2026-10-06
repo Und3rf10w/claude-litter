@@ -108,7 +108,7 @@ export const agentsCommand: PortHook<CommandRunHook> = async (p, e, next) => {
   const placed = await p.openPane(AGENTS_PANE, 'litter agents')
   const count = facts?.rows.length ?? 0
   const what = team === null ? `this session's ${plural(count, 'agent')}` : `team ${oneLine(team, 60)}'s ${plural(count, 'member')}`
-  return { text: `litter: the agents pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `the agents pane shows ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +312,7 @@ function say(level: SwarmNotice['level'], text: string): void {
 }
 
 const staleToast = (p: Ports, was: string, now: string): void =>
-  p.toast(`litter: that was for ${scopeWords(was)}, and the agents pane shows ${scopeWords(now)} now, so it was ignored`)
+  p.toast(`that was for ${scopeWords(was)}, and the agents pane shows ${scopeWords(now)} now, so it was ignored`)
 
 /**
  * The row a press names, read again: only while the pane still shows the
@@ -331,7 +331,7 @@ async function rowFor(p: Ports, arg: string): Promise<RowFacts | null> {
   const facts = await gather(p, n)
   const row = facts.rows.find(r => r.key === a.key) ?? null
   if (!row) {
-    p.toast(`litter: ${oneLine(a.key, 40)} isn't listed any more, so that was ignored`)
+    p.toast(`${oneLine(a.key, 40)} isn't listed any more, so that was ignored`)
     const cur = agentsNavOf()!
     if (cur.selected === a.key) setAgentsNav({ ...cur, selected: null, more: false, armed: null })
   }
@@ -459,7 +459,7 @@ export async function pressAgents(p: Ports, key: string): Promise<void> {
   await restoreAgentsNav(p)
   const cur = agentsNavOf()
   if (!cur) {
-    p.toast("litter: the agents pane isn't open in this session, so that was ignored: /litter-agents opens it")
+    p.toast("the agents pane isn't open in this session, so that was ignored: /litter-agents opens it")
     return
   }
   // A new action's outcome replaces the last one's.

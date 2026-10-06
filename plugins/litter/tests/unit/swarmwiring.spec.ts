@@ -261,8 +261,11 @@ describe('the catches that pass on', () => {
 describe('the commands and the tools', () => {
   test('the swarm commands answer a one-line failure text', async () => {
     const e = { command: 'litter-swarm', args: '', origin: { kind: 'user' }, presentation: 'text' } as never
-    expect(await swarmCommandFailed($, e, caught('no pane').next)).toEqual({ text: 'litter: /litter-swarm failed (no pane)' })
-    expect(await doctorCommandFailed($, e, caught('no pane').next)).toEqual({ text: 'litter: /litter-doctor failed (no pane)' })
+    expect(await swarmCommandFailed($, e, caught('no pane').next)).toEqual({ text: '/litter-swarm failed (no pane)' })
+    expect(await doctorCommandFailed($, e, caught('no pane').next)).toEqual({ text: '/litter-doctor failed (no pane)' })
+    // An error worded for the model, as litter's and the engine's are, is shown without its `litter: `.
+    expect(await swarmCommandFailed($, e, caught("litter: there's no live swarm named demo").next)).toEqual({ text: "/litter-swarm failed (there's no live swarm named demo)" })
+    expect(await doctorCommandFailed($, e, caught('litter: $.ui.open refused').next)).toEqual({ text: '/litter-doctor failed ($.ui.open refused)' })
   })
 
   test('each swarm tool is denied naming its hook, never passed on', async () => {

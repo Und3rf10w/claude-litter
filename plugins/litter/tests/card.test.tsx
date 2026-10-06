@@ -121,7 +121,7 @@ describe('the card in a row', () => {
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'UserMessage', props: row(NOTIFICATION) })
     expect(await ui.press({ key: `card:board:${RUN}`, plugin: 'test' })).toEqual(expect.objectContaining({ element: `card:board:${RUN}` }))
     // No session.start resolved a litter directory: the run is gone as far as this session can tell.
-    expect(toasts).toEqual([`litter: run ${RUN} is gone (its run.json isn't there), so there's no board to open`])
+    expect(toasts).toEqual([`run ${RUN} is gone (its run.json isn't there), so there's no board to open`])
     expect(opened).toEqual([])
     expect(await ui.press({ key: 'other', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'other' }))
     expect(reached).toEqual(['other'])

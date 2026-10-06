@@ -331,15 +331,18 @@ describe('the call is idempotent from this side', () => {
   })
 
   test("a failing call is logged and toasted (the run's lock stays until a restart reconciles it); the swarm's end stands", async () => {
+    // Worded for the model, as lifecycle.ts's errors are: the log keeps it whole, the toast drops the `litter: `.
     endGen = async () => {
-      throw new Error('the run lock is not this run')
+      throw new Error(`litter: run ${RUN} has no repair generation to end`)
     }
     await live()
     await runLedger()
     await endSettled()
     expect(endCalls().length).toBe(1)
-    expect(p.logs.some(l => l.includes(`closing run ${RUN}'s generation 2 failed: the run lock is not this run`))).toBe(true)
-    expect(p.toasts).toEqual([expect.stringContaining(`repair swarm ${NAME} has ended, but run ${RUN}'s generation 2 wasn't closed`)])
+    expect(p.logs.some(l => l.includes(`closing run ${RUN}'s generation 2 failed: litter: run ${RUN} has no repair generation to end`))).toBe(true)
+    expect(p.toasts).toEqual([
+      `repair swarm ${NAME} has ended, but run ${RUN}'s generation 2 wasn't closed (run ${RUN} has no repair generation to end); its lock stays until the next session start reconciles it`,
+    ])
     expect(state.liveSwarm(NAME)).toBeNull()
     expect(calls.map(c => c[0])).toContain('releaseOwnership')
     await runAfters(p)

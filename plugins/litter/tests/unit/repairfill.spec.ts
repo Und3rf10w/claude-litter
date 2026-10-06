@@ -38,7 +38,7 @@ const abortedTurn = { ...leadTurn, isAborted: true, reason: 'aborted' } as unkno
 const subagentTurn = { ...leadTurn, agentId: 'agent-7' } as unknown as Parameters<typeof repairTurnComplete>[1]
 const pendingAfters = (p: TestPorts): number => p.afters.filter(a => a.state === 'pending').length
 
-const refused = (swarm: string) => `litter: repair swarm ${swarm} didn't start on the lead's turn (its start may have been refused)`
+const refused = (swarm: string) => `repair swarm ${swarm} didn't start on the lead's turn (its start may have been refused)`
 const pressEnter = (swarm: string) => `${refused(swarm)}; press Enter to start it, or /litter:swarm end ${swarm} to stop it`
 const sendLine = (swarm: string) => `${refused(swarm)}; send /litter:swarm start ${swarm} to start it, or /litter:swarm end ${swarm} to stop it`
 const waitingForEnter = (swarm: string) => `it's waiting for your Enter on /litter:swarm start ${swarm}, which litter put in your prompt box, or /litter:swarm end ${swarm} to stop it.`

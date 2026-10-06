@@ -116,7 +116,7 @@ describe('/litter-tasks', () => {
   test("opens the pane on the list named and writes its view: the team's tasks, read through $.fs", async ($, on) => {
     mock.store(on)
     const w = world(on)
-    expect(await run($, 'team-a')).toEqual(expect.objectContaining({ text: 'litter: the tasks pane shows team-a (2 tasks)' }))
+    expect(await run($, 'team-a')).toEqual(expect.objectContaining({ text: 'the tasks pane shows team-a (2 tasks)' }))
     expect(w.opened).toEqual(['litter-tasks'])
     const ui = await mountTasks($, 'terminal')
     expect((await ui.find({ type: 'Button', key: 'tasks:select:team-a/3' }))?.text).toBe('#3')

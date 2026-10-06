@@ -362,7 +362,7 @@ describe('the board, from a recorded ledger', () => {
     test(`an execute run with one landed gate and one halted, on the ${surface}`, async ($, on) => {
       const w = await start($, on)
       const r = await run($, 'litter-board', EXEC)
-      expect(r.text).toBe(`litter: the board shows run ${EXEC} (execute, halted)`)
+      expect(r.text).toBe(`the board shows run ${EXEC} (execute, halted)`)
       expect(w.opened).toEqual(['litter-board'])
       const ui = await mountBoard($, surface)
       // The header, left-aligned: status, workflow, branch, base, when.
@@ -396,7 +396,7 @@ describe('the board, from a recorded ledger', () => {
 
     test(`a gate whose executor stopped on a plan gap after a verdict: halted, the gap the executor's, the dimensions the verdict's attempt's, on the ${surface}`, async ($, on) => {
       await start($, on)
-      expect((await run($, 'litter-board', STOP)).text).toBe(`litter: the board shows run ${STOP} (execute, halted)`)
+      expect((await run($, 'litter-board', STOP)).text).toBe(`the board shows run ${STOP} (execute, halted)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Text', text: '⚑ halted', in: 'board-gates' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '2/3', in: 'board-gates' })).toBeDefined()
@@ -410,7 +410,7 @@ describe('the board, from a recorded ledger', () => {
     test(`a fanout gets its header and its last records, on the ${surface}`, async ($, on) => {
       await start($, on)
       const r = await run($, 'litter-board', FAN)
-      expect(r.text).toBe(`litter: the board shows run ${FAN} (fanout, done)`)
+      expect(r.text).toBe(`the board shows run ${FAN} (fanout, done)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Text', text: '✓ done' })).toBeDefined()
       expect(await ui.find({ type: 'Client' })).toBeUndefined()
@@ -480,7 +480,7 @@ describe('the board, from a recorded ledger', () => {
 
   test('with no run named, the newest execute run; a name that is neither a run nor a workflow is said so', async ($, on) => {
     await start($, on)
-    expect((await run($, 'litter-board', 'execute')).text).toBe(`litter: the board shows run ${EXEC} (execute, halted)`)
+    expect((await run($, 'litter-board', 'execute')).text).toBe(`the board shows run ${EXEC} (execute, halted)`)
     const bad = await run($, 'litter-board', 'nonsense')
     expect(bad.text).toContain(`"nonsense" isn't a run id`)
   })
@@ -503,7 +503,7 @@ describe("the gate table's menu (phase 5)", () => {
     const toast = w.nextToast()
     await ui.key({ key: 'down', in: 'board-gates' })
     await ui.key({ key: 'return', in: 'board-gates' })
-    expect(await toast).toBe('litter: copied bbbbbbb (G1)')
+    expect(await toast).toBe('copied bbbbbbb (G1)')
     expect(w.copied).toEqual([LANDED])
     expect(await ui.find({ type: 'Text', text: 'copy commit', in: 'board-gates' })).toBeUndefined()
   })
@@ -521,7 +521,7 @@ describe("the gate table's menu (phase 5)", () => {
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
     const toast = w.nextToast()
     await ui.key({ key: 'return', in: 'board-gates' })
-    expect(await toast).toBe('litter: /litter:amend G2 is in the prompt box: add the change and press Enter')
+    expect(await toast).toBe('/litter:amend G2 is in the prompt box: add the change and press Enter')
     expect(w.filled).toEqual(['/litter:amend G2 '])
 
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: 'board-gates' })
@@ -559,7 +559,7 @@ describe('the design view (phase 5)', () => {
   for (const surface of [...SURFACES, 'vscode'] as const) {
     test(`the bar × version matrix above the records, its legend and version lines, and [Plan] on the latest proposal, on the ${surface}`, async ($, on) => {
       await start($, on)
-      expect((await run($, 'litter-board', DESIGN)).text).toBe(`litter: the board shows run ${DESIGN} (design, done)`)
+      expect((await run($, 'litter-board', DESIGN)).text).toBe(`the board shows run ${DESIGN} (design, done)`)
       const ui = await mountBoard($, surface)
       expect(await ui.find({ type: 'Client' })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: 'Bar × versions' })).toBeDefined()

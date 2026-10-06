@@ -169,8 +169,8 @@ describe('/litter-tasks and /litter-agents', () => {
     const sid = { value: SESSION as string | null }
     const ids = sessionId(on, sid)
     await breakRebound($, sid)
-    expect(await run($, 'litter-tasks')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^litter: \/litter-tasks failed \(.*session\.id.*\)$/) }))
-    expect(await run($, 'litter-agents')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^litter: \/litter-agents failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter-tasks')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-tasks failed \(.*session\.id.*\)$/) }))
+    expect(await run($, 'litter-agents')).toEqual(expect.objectContaining({ text: expect.stringMatching(/^\/litter-agents failed \(.*session\.id.*\)$/) }))
     expect(ids.calls).toBeGreaterThanOrEqual(2)
   })
 })

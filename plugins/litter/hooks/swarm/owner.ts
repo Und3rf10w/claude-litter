@@ -271,7 +271,7 @@ function standDown(p: Ports, h: Held, now: string | null): void {
   h.timer = null
   patchLiveSwarm(h.name, { lost: true })
   p.log(`swarm ${h.name}: ${h.ref} now names ${now ?? 'nothing'}, not ${h.oid}; this session stands down and touches nothing of it`)
-  p.toast(`litter: swarm ${h.name} was handed to another session; this session no longer acts on it`)
+  p.toast(`swarm ${h.name} was handed to another session; this session no longer acts on it`)
 }
 
 /**

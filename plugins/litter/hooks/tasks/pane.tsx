@@ -96,7 +96,7 @@ export const tasksCommand: PortHook<CommandRunHook> = async (p, e, next) => {
     b?.list && b.listName !== null
       ? `shows ${oneLine(b.listName, 80)} (${b.counts.all} task${b.counts.all === 1 ? '' : 's'})`
       : `has nothing to show: ${b?.notice?.text ?? b?.empty ?? 'no task list'}`
-  return { text: `litter: the tasks pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
+  return { text: `the tasks pane ${what}${placed ? '' : " (open, but this screen can't draw it now)"}` }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ function target(p: Ports, arg: string, quiet = false): { listKey: string; id: st
   const task = m && s && s.key === m[1] ? s.tasks.find(t => t.id === m[2]) : undefined
   if (m && task) return { listKey: m[1]!, id: m[2]!, task }
   if (!quiet) {
-    p.toast("litter: that was drawn for another list, or for a task that's gone, so it was ignored")
+    p.toast("that was drawn for another list, or for a task that's gone, so it was ignored")
     say('warning', "that was drawn for another list, or for a task that's gone, so the press was ignored")
   }
   return null
@@ -280,7 +280,7 @@ export async function pressTasks(p: Ports, key: string): Promise<void> {
   await restoreTasksNav(p)
   const cur = tasksNavOf()
   if (!cur) {
-    p.toast('litter: the tasks pane was closed, so that was ignored')
+    p.toast('the tasks pane was closed, so that was ignored')
     return
   }
   // After a hot reload nothing was drawn by this module yet: build first, so the press is checked against what's there.
@@ -334,7 +334,7 @@ function pickList(p: Ports, name: string): void {
   const l = s?.lists.find(x => x.name === name)
   const n = tasksNavOf()!
   if (!l) {
-    p.toast("litter: that list isn't offered any more, so it was ignored")
+    p.toast("that list isn't offered any more, so it was ignored")
     return say('warning', "that list isn't offered any more, so the pick was ignored")
   }
   if (s && l.dir === s.list.dir) return

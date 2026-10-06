@@ -615,7 +615,7 @@ describe('S14: undecided proposals come back from the spec ledger', () => {
     state.takeProposals()
     resetViewForTests()
     setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY) })
-    expect(await swarmCommand(p, command(SWARM), next)).toEqual({ text: "litter: the swarm pane shows the lead's proposal 1 for alpha" })
+    expect(await swarmCommand(p, command(SWARM), next)).toEqual({ text: "the swarm pane shows the lead's proposal 1 for alpha" })
     expect(shown<SwarmProposalView>().view).toBe('proposal')
   })
 })

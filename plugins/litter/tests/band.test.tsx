@@ -205,7 +205,7 @@ describe("the band's presses", () => {
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: BAND })
     // The atom was fed here, not built by this module's tick: the band shows no row of its own, so the press is stale.
     expect(await ui.press({ key: `band:hide:run:${RUN}:1:open` })).toEqual({ element: `band:hide:run:${RUN}:1:open` })
-    expect(toasts).toEqual([`litter: the band doesn't show run ${RUN} now, so that was ignored`])
+    expect(toasts).toEqual([`the band doesn't show run ${RUN} now, so that was ignored`])
     // Another plugin's buttons, a `band:` key among them, pass on to their own handlers.
     expect(await ui.press({ key: 'band:board:20261005-retry', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'band:board:20261005-retry' }))
     expect(await ui.press({ key: 'other', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'other' }))

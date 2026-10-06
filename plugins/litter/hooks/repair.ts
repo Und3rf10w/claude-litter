@@ -1210,7 +1210,7 @@ async function submitStart(p: Ports, entry: PendingStart): Promise<void> {
     await savePending(p, entry.litterDir)
   } catch (err) {
     p.log(`repair swarm ${entry.swarm}: its start wasn't submitted: ${errText(err)}`)
-    p.toast(`litter: repair swarm ${entry.swarm} is live; send /litter:swarm start ${entry.swarm} to start it`)
+    p.toast(`repair swarm ${entry.swarm} is live; send /litter:swarm start ${entry.swarm} to start it`)
   } finally {
     scheduled.delete(key)
   }
@@ -1240,7 +1240,7 @@ async function fillStartLine(p: Ports, entry: PendingStart): Promise<void> {
     const inBox = await p.fillPrompt([line, ...authority].join('\n')).catch(() => false)
     now.inBox = inBox
     await savePending(p, now.litterDir)
-    const why = `litter: repair swarm ${now.swarm} didn't start on the lead's turn (its start may have been refused)`
+    const why = `repair swarm ${now.swarm} didn't start on the lead's turn (its start may have been refused)`
     if (inBox) p.toast(`${why}; press Enter to start it, or /litter:swarm end ${now.swarm} to stop it`)
     else {
       p.log(`repair swarm ${now.swarm}: the prompt box didn't take its start line`)
