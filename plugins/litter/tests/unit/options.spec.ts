@@ -4,7 +4,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { normalizeOptions, REPAIR_AGENTS, REPAIR_ROUNDS } from '../../hooks/options'
+import { BAND_ENDED_MINUTES, normalizeOptions, REPAIR_AGENTS, REPAIR_ROUNDS } from '../../hooks/options'
+import { ENDED_MS } from '../../hooks/band/view'
 
 const manifest = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', '.claude-plugin', 'plugin.json'), 'utf8')) as {
   userConfig: Record<string, { type: string; default?: unknown; min?: number; max?: number; options?: string[]; title?: string; description?: string }>
@@ -82,5 +83,38 @@ describe('the widen option', () => {
     for (const v of [undefined, '', 'ask', 'yes', 1, null]) expect(normalizeOptions({ widen: v }).widen).toBe('ask')
     expect(normalizeOptions(undefined).widen).toBe(manifest.userConfig.widen!.default as 'ask')
     expect(manifest.userConfig.widen).toEqual(expect.objectContaining({ type: 'string', default: 'ask', options: ['ask', 'critic'] }))
+  })
+})
+
+// WP-CH: how long a run that ended keeps its row in the band.
+describe('the bandEndedMinutes option', () => {
+  test('unset and "": 10, the band\'s ENDED_MS in minutes', () => {
+    for (const raw of [undefined, {}, { bandEndedMinutes: '' }]) expect(normalizeOptions(raw).bandEndedMinutes).toBe(10)
+    expect(ENDED_MS).toBe(BAND_ENDED_MINUTES.default * 60_000)
+  })
+
+  test('a value in range is taken, from a number or its string, 0 included; a fraction rounds down', () => {
+    expect(normalizeOptions({ bandEndedMinutes: 1 }).bandEndedMinutes).toBe(1)
+    expect(normalizeOptions({ bandEndedMinutes: 0 }).bandEndedMinutes).toBe(0)
+    expect(normalizeOptions({ bandEndedMinutes: '30' }).bandEndedMinutes).toBe(30)
+    expect(normalizeOptions({ bandEndedMinutes: 1440 }).bandEndedMinutes).toBe(1440)
+    expect(normalizeOptions({ bandEndedMinutes: 2.9 }).bandEndedMinutes).toBe(2)
+  })
+
+  test('out of range is clamped to the nearer end, never the default', () => {
+    expect(normalizeOptions({ bandEndedMinutes: -5 }).bandEndedMinutes).toBe(0)
+    expect(normalizeOptions({ bandEndedMinutes: 1441 }).bandEndedMinutes).toBe(1440)
+    expect(normalizeOptions({ bandEndedMinutes: '1e9' }).bandEndedMinutes).toBe(1440)
+  })
+
+  test("what isn't a number is the default", () => {
+    for (const v of ['ten', 'NaN', NaN, Infinity, true, null, [], {}]) expect({ v, m: normalizeOptions({ bandEndedMinutes: v }).bandEndedMinutes }).toEqual({ v, m: 10 })
+  })
+
+  test('the manifest declares it with the same default and range, a title and a description', () => {
+    const f = manifest.userConfig.bandEndedMinutes
+    expect(f).toEqual(expect.objectContaining({ type: 'number', default: BAND_ENDED_MINUTES.default, min: BAND_ENDED_MINUTES.min, max: BAND_ENDED_MINUTES.max }))
+    expect(f?.title).toBeTruthy()
+    expect(f?.description).toBeTruthy()
   })
 })

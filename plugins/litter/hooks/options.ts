@@ -3,7 +3,7 @@
 // unset"), so every "" becomes undefined here and nowhere else.
 //
 // Contract owner: phase 1a; the repair options are phase 2b-2's (package V),
-// `trailers` phase 3's (package AA), `widen` WP-AO's.
+// `trailers` phase 3's (package AA), `widen` WP-AO's, `bandEndedMinutes` WP-CH's.
 
 export type RepairMode = 'auto' | 'off'
 
@@ -42,6 +42,8 @@ export type LitterOptions = {
   trailers: readonly string[]
   /** The option's lines that weren't `Key: value` lines, dropped; session.start logs them once. */
   trailersDropped: readonly string[]
+  /** How many minutes a run that ended keeps its row in the band (COMMON decision 7); 0 is no ended row. */
+  bandEndedMinutes: number
 }
 
 /**
@@ -62,6 +64,8 @@ export function attribution(json: object): string[] {
 /** Section 10's defaults and ranges for the repair budget; run.start holds an override to the same ranges. */
 export const REPAIR_ROUNDS = { default: 3, min: 1, max: 10 } as const
 export const REPAIR_AGENTS = { default: 6, min: 1, max: 50 } as const
+/** The band's ended-run window in minutes (WP-CH): decision 7's 10 by default, up to a day. */
+export const BAND_ENDED_MINUTES = { default: 10, min: 0, max: 1440 } as const
 
 const argv = (v: unknown): readonly string[] | undefined => {
   if (v === undefined || v === null || v === '') return undefined
@@ -123,6 +127,7 @@ export function normalizeOptions(raw: Readonly<Record<string, unknown>> | undefi
     widen: widenMode(o.widen),
     trailers: trailers.kept,
     trailersDropped: trailers.dropped,
+    bandEndedMinutes: within(o.bandEndedMinutes, BAND_ENDED_MINUTES),
   }
   const verify = argv(o.verify)
   const goalCheck = argv(o.goalCheck)

@@ -1,8 +1,9 @@
 // The band above the prompt (phase 5; COMMON step 1, decision 7; plan 11,
 // "Band"): a row per active run, one for the newest run that ended in the
-// last 10 minutes, a row per live swarm, then a row per open permission ask
-// (CF's), built into the `band` atom by the ui tick and drawn by render.tsx.
-// Keys are `band:<action>[:<arg>]`. Owner: WP-CB.
+// last 10 minutes (the bandEndedMinutes option, WP-CH), a row per live
+// swarm, then a row per open permission ask (CF's), built into the `band`
+// atom by the ui tick and drawn by render.tsx. Keys are
+// `band:<action>[:<arg>]`. Owner: WP-CB.
 //
 // A quiet tick is cheap: policy.json's stat, each tracked run's ledger head
 // in $.store, and module memory (the live swarms, the open asks). A run's
@@ -10,9 +11,9 @@
 // the view is written only when its rows changed: the elapsed time is in
 // whole minutes, so a quiet run rewrites the band once a minute at most.
 //
-// The runs it tracks: policy.json's run, and each run seen there until 10
-// minutes after it ended; and, at a module's first build (a reload, a new
-// session), the three runs whose ledgers moved last, so a run that has just
+// The runs it tracks: policy.json's run, and each run seen there until that
+// window has passed since it ended; and, at a module's first build (a reload,
+// a new session), the three runs whose ledgers moved last, so a run that has just
 // ended keeps its row. [Hide]'s keys live in module memory, mirrored in
 // $.store under BAND_STORE_KEY with the session id and read back only by the
 // session that wrote them, as the board's navigation is (board/view.ts).
@@ -32,7 +33,7 @@ import { PROPOSAL_VERSION, RUN_ID, SWARM_NAME, ledgerDir, policyPath, runDir } f
 import { FANOUT_GATE } from '../records/fanout'
 import { readPolicy } from '../policy'
 import { loadRun, runState } from '../lifecycle'
-import { session } from '../session'
+import { getOptions, session } from '../session'
 import { runStatusOf, statusWord } from '../board/view'
 import { openBoard } from '../board/pane'
 import { openSwarmPane } from '../swarm/panes'
@@ -52,7 +53,10 @@ const defaults = { ...deps }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** How long a run that ended keeps its row (decision 7). */
+/**
+ * How long a run that ended keeps its row by default (decision 7):
+ * BAND_ENDED_MINUTES.default. The bandEndedMinutes option sets it, read at each build.
+ */
 export const ENDED_MS = 10 * 60_000
 /** Open asks drawn a row each, newest first; the rest fold into `+<k> more asking`. */
 export const ASK_ROWS = 3
@@ -592,11 +596,13 @@ async function runRows(p: Ports, litterDir: string, now: number): Promise<BandRo
   const active = t.active
   if (active) t.runs.add(active.run)
   const minute = Math.floor(now / MIN)
+  // The option's minutes, 0 to a day (options.ts); 0 keeps no ended row at all.
+  const endedMs = getOptions().bandEndedMinutes * MIN
   const all: RunFacts[] = []
   for (const run of [...t.runs]) {
     const f = await runFacts(p, t, run, minute)
-    // Kept while it's the active run, its generation is open, or it ended in the last 10 minutes.
-    const keep = run === active?.run || (f !== null && (f.open || (f.endedAt !== null && now - f.endedAt < ENDED_MS)))
+    // Kept while it's the active run, its generation is open, or it ended inside the window.
+    const keep = run === active?.run || (f !== null && (f.open || (f.endedAt !== null && now - f.endedAt < endedMs)))
     if (!keep) {
       t.runs.delete(run)
       t.facts.delete(run)
@@ -608,7 +614,7 @@ async function runRows(p: Ports, litterDir: string, now: number): Promise<BandRo
   const open = all.filter(f => f.open).sort((a, b) => isActive(b) - isActive(a) || (b.openedAt ?? 0) - (a.openedAt ?? 0))
   for (const f of open) rows.push(activeRow(f, f.run === active?.run ? active.inflight : null, now))
   // One ended row at most: the newest end.
-  const ended = all.filter(f => !f.open && f.endedAt !== null && now - f.endedAt < ENDED_MS).sort((a, b) => b.endedAt! - a.endedAt!)[0]
+  const ended = all.filter(f => !f.open && f.endedAt !== null && now - f.endedAt < endedMs).sort((a, b) => b.endedAt! - a.endedAt!)[0]
   if (ended) rows.push(endedRow(ended))
   return rows
 }

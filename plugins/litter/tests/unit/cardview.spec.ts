@@ -2,7 +2,8 @@
 // 8) from ledgers the real ledgercore writes under a scratch litter folder:
 // a card for each way a run ends (execute done and halted, design approved
 // and holding, fanout done, a workflow that failed); a notification that
-// isn't litter's, one before its run's end and the end after it; the restore
+// isn't litter's, one before its run's end and the end after it, at the
+// next prompt.submit or on the ui tick (cardsTick, WP-CH); the restore
 // of the 20 newest of 25 runs with a repair and a resumed generation, each
 // ledger read once; an unreadable and a tampered ledger; no write when
 // nothing changed, and the refresh's write anyway; a hot reload; cardRow;
@@ -17,7 +18,7 @@ import { appendRecord } from '../../hooks/ledgercore'
 import { ledgerDir, runDir, runJsonPath } from '../../hooks/layout'
 import { updateSession } from '../../hooks/session'
 import { MOD } from '../../hooks/verify'
-import { CARD_RUNS, cardRow, deps, duration, noteCards, onCardUi, refreshCards, resetCardsForTests, restoreCards } from '../../hooks/card/view'
+import { CARD_RUNS, cardRow, cardsTick, deps, duration, noteCards, onCardUi, refreshCards, resetCardsForTests, restoreCards } from '../../hooks/card/view'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 setDefaultTimeout(120_000)
@@ -179,6 +180,17 @@ const cardOf = (taskId: string): CardView => {
   return c
 }
 const span = (card: CardView, text: string): SwarmSpan | undefined => [card.title, ...card.lines].flat().find(s => s.text === text)
+
+/** Every path the fs port reads, lists, stats or checks from now on, in order. */
+function spyFs(): string[] {
+  const touched: string[] = []
+  const { read, list, stat, exists } = p.fs
+  p.fs.read = async path => (touched.push(path), read(path))
+  p.fs.list = async path => (touched.push(path), list(path))
+  p.fs.stat = async (path, options) => (touched.push(path), stat(path, options))
+  p.fs.exists = async path => (touched.push(path), exists(path))
+  return touched
+}
 
 // ---------------------------------------------------------------------------
 
@@ -415,6 +427,62 @@ describe('which notifications get a card', () => {
     // Built once: the next prompt reads nothing more and writes nothing.
     await noteCards(p, submit('and another', 'composer'))
     expect(writes).toHaveLength(1)
+  })
+
+  test("one before its run's end waits; once the end is recorded, cardsTick writes the card with no prompt.submit", async () => {
+    const run = '20261005-late'
+    await record(run, [start('execute', run), launch('t-late'), verify('l1', 'G1', 1, true)])
+    writeRunJson(run, 'execute', { gates: GATES })
+    await noteCards(p, submit(notice('t-late', 'killed')))
+    expect(writes).toEqual([])
+    // Its ledger hasn't moved: the tick stats it and reads nothing more.
+    const touched = spyFs()
+    await cardsTick(p)
+    expect(touched).toEqual([ledgerDir(runDir(litterDir, run))])
+    expect(writes).toEqual([])
+    await record(run, [{ kind: 'run.stopping', body: { taskId: 't-late', generation: 1 } }, end('t-late', 1, 'stopped', 'stopped')])
+    await cardsTick(p)
+    expect(writes).toHaveLength(1)
+    expect(cardOf('t-late').title[0]).toEqual({ text: '− stopped', color: 'inactive', bold: true })
+    expect(linesOf(cardOf('t-late'))).toEqual(['0/3 gates landed', 'G1, attempt 1: no verdict recorded', 'stopped: stopped'])
+    // Built: nothing waits now, so the next tick and the next prompt read nothing and write nothing.
+    touched.length = 0
+    await cardsTick(p)
+    expect(touched).toEqual([])
+    await noteCards(p, submit('next prompt', 'composer'))
+    expect(writes).toHaveLength(1)
+  })
+
+  test("cardsTick with nothing waiting reads nothing, a notification that isn't litter's included", async () => {
+    await executeDone('20261005-exec', 't-exec')
+    await noteCards(p, submit(notice('b-shell-7')))
+    const touched = spyFs()
+    await cardsTick(p)
+    expect(touched).toEqual([])
+    expect(writes).toEqual([])
+    expect(p.logs).toEqual([])
+  })
+
+  test("a waiting run's ledger that turns unreadable: one log line, the engine's row kept, and it waits no more", async () => {
+    const run = '20261005-gone'
+    await record(run, [start('execute', run), launch('t-gone')])
+    writeRunJson(run, 'execute', { gates: GATES })
+    await noteCards(p, submit(notice('t-gone', 'killed')))
+    const ledger = ledgerDir(runDir(litterDir, run))
+    const file = join(ledger, readdirSync(ledger).sort()[1]!)
+    chmodSync(file, 0o000)
+    try {
+      // A stray file moves the folder's mtime, so the tick reads the ledger again.
+      writeFileSync(join(ledger, 'stray.tmp'), '')
+      await cardsTick(p)
+      expect(p.logs).toEqual([expect.stringMatching(/^card: task t-gone keeps the engine's row: /)])
+      expect(writes).toEqual([])
+      const touched = spyFs()
+      await cardsTick(p)
+      expect(touched).toEqual([])
+    } finally {
+      chmodSync(file, 0o644)
+    }
   })
 
   test('the same notification again writes nothing', async () => {

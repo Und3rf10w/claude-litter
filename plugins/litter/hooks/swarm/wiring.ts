@@ -10,6 +10,12 @@
 // swarm ended, counts as a node (end.ts's kept files, also read synchronously),
 // as admission refuses it (admit.ts, endedSwarmOf).
 //
+// None refuses once its hook had called `next` (`next.called`, the 2.1.290
+// d.ts's Caught; WP-CH): what runs beneath (the spawn, the delivery, the model
+// request) has run, so a refusal would undo nothing and only misreport it.
+// Each then answers `next(e)`, what that call settled to, or for turn.step
+// lets it stand.
+//
 // Contract owner: phase 2b-1, package C.
 
 import type {
@@ -50,9 +56,11 @@ const isFormer = (agentId: string | undefined): boolean => agentId !== undefined
  * agent.spawn's catch: a spawn of a swarm type, or by a bound node or child,
  * is denied; everything else gets the role block's catch's answer
  * (launch.ts's spawnBlockFailed, through its `$`-free half), which refuses a
- * main-thread spawn of a litter type and passes the rest on.
+ * main-thread spawn of a litter type and passes the rest on. After the hook's
+ * `next`, the subagent has started (the d.ts, AgentSpawnResult): its result.
  */
 export const agentSpawnFailed: SpawnCatch = async ($, e, next) => {
+  if (next.called) return next(e)
   if (e.subagentType.startsWith(SWARM_TYPE_PREFIX) || isBound(e.parentAgentId)) {
     return { deny: `litter guard failed: agent.spawn (${why(next)}); refusing` }
   }
@@ -73,8 +81,10 @@ const knownNonNode = (to: string): boolean => to === 'main'
  * of this session's still runs, neither is one whose `to` isn't a known
  * non-node (a name, or a `from` address, could be one of theirs). It passes
  * on only with none of those, or to a known non-node from an unbound sender.
+ * After the hook's `next` the message was sent: that send's answer.
  */
 export const sessionSendFailed: SessionSendCatch = async ($, e, next) => {
+  if (next.called) return next(e)
   const ownedLive = liveSwarms().some(s => !s.readOnly) || keepsOwn()
   if (isBound(e.agentId) || isBound(e.to) || isFormer(e.to) || (ownedLive && !knownNonNode(e.to))) {
     return { isDelivered: false, reason: `litter guard failed: session.send (${why(next)})` }
@@ -86,9 +96,13 @@ export const sessionSendFailed: SessionSendCatch = async ($, e, next) => {
  * turn.step's catch, a generator like the hook: a bound node's step, or a
  * former node's, gets the refusal stream and the whole TurnStepResult
  * (without it the engine sends the request anyway, 15.9 item 15); any other
- * loop's passes on.
+ * loop's passes on. After the hook's `next` (admitStep calls it only for a
+ * step it admitted) the request was sent and its chunks shown: it returns
+ * nothing, so that call's stream and result stand (the d.ts, StreamHookBody),
+ * and a request that failed beneath fails as the engine's, not as litter's.
  */
 export const turnStepFailed: TurnStepCatch = async function* ($, e, next) {
+  if (next.called) return
   if (!isBound(e.agentId) && !isFormer(e.agentId)) return yield* next(e)
   const answer = `litter guard failed: turn.step (${why(next)}); ending this turn`
   yield { kind: 'text', index: 0, text: answer }
