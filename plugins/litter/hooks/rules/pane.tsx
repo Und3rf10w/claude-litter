@@ -28,6 +28,7 @@ import type { RulesBatch, RulesBody, RulesPaneView, RulesRow, RulesTab, SwarmNot
 import type { AcceptOpts, AcceptWhat } from './store'
 import type { RulesNav, ShownRow } from './paneview'
 import { session } from '../session'
+import { serial } from '../fsx'
 import { headKey } from '../ledgercore'
 import { repoRulesLedgerDir, userRulesLedgerDir } from '../layout'
 import { primaryOf } from '../lifecycle'
@@ -73,6 +74,23 @@ const TYPES: readonly RuleType[] = ['rule', 'ban']
 const RULE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 /** Under the engine's 10000-character bound for Code. */
 const PREVIEW_MAX = 9000
+
+// ---------------------------------------------------------------------------
+// One step at a time
+
+/**
+ * Rules' steps run one at a time, each once the one before it has finished
+ * and written its view: a press, a field, a pick, the tick, an open, a
+ * resume, a refresh. The engine dispatches a list's post (a click on a row, a
+ * menu pick) and a Button's press as separate events, so a press could
+ * otherwise run while a click's pick is still being drawn: each step reads
+ * the navigation at its start and writes it back after its awaits, so the
+ * later one would overwrite the earlier one's change, and the slower build
+ * would land its view over the newer one. No step starts another (a nested
+ * one would wait on itself); each calls drawRules or loadNow directly.
+ */
+const STEPS = 'rules-pane:steps'
+const inTurn = <T,>(work: () => Promise<T>): Promise<T> => serial(STEPS, work)
 
 // ---------------------------------------------------------------------------
 // Drawing
@@ -153,9 +171,13 @@ const validFocus = (focus: { id?: unknown; proposal?: unknown } | null): RulesNa
  * Rules' load (openSection): focused on a rule id or a proposal, or for null
  * the Proposed tab (`/litter rules`, the board's [Rules]); AD's rule.open and
  * rule.import pass the focus. A proposal that is, or is in, an import batch
- * focuses the batch. Answers the reply's line.
+ * focuses the batch. Answers the reply's line. A step (inTurn).
  */
-export async function loadRules(p: Ports, focus: { id?: string; proposal?: ProposalRef } | null): Promise<Loaded> {
+export function loadRules(p: Ports, focus: { id?: string; proposal?: ProposalRef } | null): Promise<Loaded> {
+  return inTurn(() => loadNow(p, focus))
+}
+
+async function loadNow(p: Ports, focus: { id?: string; proposal?: ProposalRef } | null): Promise<Loaded> {
   await restoreRulesNav(p)
   const f = validFocus(focus)
   const litterDir = session().litterDir
@@ -175,26 +197,32 @@ export async function loadRules(p: Ports, focus: { id?: string; proposal?: Propo
   return { text: litterDir && c ? `Rules shows ${c.proposed} proposed or unverified, ${c.inForce} in force` : 'Rules has no litter directory to read' }
 }
 
-/** Rules from the strip or Home: the tab it showed, drawn again, else the Proposed tab. */
-export async function resumeRules(p: Ports): Promise<void> {
-  await restoreRulesNav(p)
-  if (rulesNavOf()) await drawRules(p)
-  else await loadRules(p, null)
+/** Rules from the strip or Home: the tab it showed, drawn again, else the Proposed tab. A step. */
+export function resumeRules(p: Ports): Promise<void> {
+  return inTurn(async () => {
+    await restoreRulesNav(p)
+    if (rulesNavOf()) await drawRules(p)
+    else await loadNow(p, null)
+  })
 }
 
-/** Rules' tick (ui/hub.ts's litterTick, while Rules is shown): the view again when a rules ledger moved (a critic's proposal, a step taken elsewhere). */
-export async function rulesTick(p: Ports): Promise<void> {
-  await restoreRulesNav(p)
-  const litterDir = session().litterDir
-  if (!rulesNavOf() || !litterDir) return
-  if ((await rulesStamp(p, litterDir)) === lastStamp) return
-  await drawRules(p)
+/** Rules' tick (ui/hub.ts's litterTick, while Rules is shown): the view again when a rules ledger moved (a critic's proposal, a step taken elsewhere). A step. */
+export function rulesTick(p: Ports): Promise<void> {
+  return inTurn(async () => {
+    await restoreRulesNav(p)
+    const litterDir = session().litterDir
+    if (!rulesNavOf() || !litterDir) return
+    if ((await rulesStamp(p, litterDir)) === lastStamp) return
+    await drawRules(p)
+  })
 }
 
-/** After a /clear ($.state wiped): the pane's view again, if it was open. */
-export async function refreshRulesPane(p: Ports): Promise<void> {
-  await restoreRulesNav(p)
-  if (rulesNavOf()) await drawRules(p)
+/** After a /clear ($.state wiped): the pane's view again, if it was open. A step. */
+export function refreshRulesPane(p: Ports): Promise<void> {
+  return inTurn(async () => {
+    await restoreRulesNav(p)
+    if (rulesNavOf()) await drawRules(p)
+  })
 }
 
 export function resetRulesPaneForTests(): void {
@@ -1371,8 +1399,12 @@ async function navigate(p: Ports, n: RulesNav, k: RulesKey): Promise<boolean> {
   return true
 }
 
-/** One press: the stale check, the action, then the redraw. The only path to acceptRule, dismissRule and retireRule. */
-export async function pressRules(p: Ports, key: string): Promise<void> {
+/** One press: the stale check, the action, then the redraw. The only path to acceptRule, dismissRule and retireRule. A step. */
+export function pressRules(p: Ports, key: string): Promise<void> {
+  return inTurn(() => pressNow(p, key))
+}
+
+async function pressNow(p: Ports, key: string): Promise<void> {
   const k = parseKey(key)
   if (!k) return
   await restoreRulesNav(p)
@@ -1448,8 +1480,12 @@ export async function pressRules(p: Ports, key: string): Promise<void> {
   await drawRules(p)
 }
 
-/** A field: the paths [Edit…] holds for a proposal, checked by AD's narrowPaths on Enter. */
-async function inputRules(p: Ports, key: string, value: string, kind: 'change' | 'submit' | undefined): Promise<void> {
+/** A field: the paths [Edit…] holds for a proposal, checked by AD's narrowPaths on Enter. A step. */
+function inputRules(p: Ports, key: string, value: string, kind: 'change' | 'submit' | undefined): Promise<void> {
+  return inTurn(() => inputNow(p, key, value, kind))
+}
+
+async function inputNow(p: Ports, key: string, value: string, kind: 'change' | 'submit' | undefined): Promise<void> {
   const k = parseKey(key)
   if (!k || k.action !== 'paths') return
   await restoreRulesNav(p)
@@ -1481,16 +1517,18 @@ async function inputRules(p: Ports, key: string, value: string, kind: 'change' |
   await drawRules(p)
 }
 
-/** A pick: a proposal's scope, or the type [Edit…] holds. Never accepts. */
-async function selectRules(p: Ports, key: string, value: string): Promise<void> {
-  const k = parseKey(key)
-  if (!k) return
-  await restoreRulesNav(p)
-  const n = rulesNavOf()
-  if (!n) return
-  if (k.action === 'scope') pickScope(p, n, k.arg, value)
-  else if (k.action !== 'type' || !pickType(n, k.arg, value)) return
-  await drawRules(p)
+/** A pick: a proposal's scope, or the type [Edit…] holds. Never accepts. A step. */
+function selectRules(p: Ports, key: string, value: string): Promise<void> {
+  return inTurn(async () => {
+    const k = parseKey(key)
+    if (!k) return
+    await restoreRulesNav(p)
+    const n = rulesNavOf()
+    if (!n) return
+    if (k.action === 'scope') pickScope(p, n, k.arg, value)
+    else if (k.action !== 'type' || !pickType(n, k.arg, value)) return
+    await drawRules(p)
+  })
 }
 
 /**
