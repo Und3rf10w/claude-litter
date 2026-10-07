@@ -8,6 +8,10 @@
 // title; only teams that run (the registry through `deps.sessions`), the
 // ended ones counted, an ended team shown on purpose; and the engine's
 // wrapped messages as words, on each tag, unknown markup and a cut message.
+// And a live swarm's nodes, through a fake binding and launch ledger: named
+// by their node with their swarm beside, and the selected one's messages
+// from the ledger in the inbox's place, bounded, read again only when the
+// head moves, and what couldn't be read in words.
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { ListedAgent, SessionMessage } from '../../hooks/ports'
@@ -16,11 +20,13 @@ import type { AgentsBody } from '../../types/index'
 import { clockAt } from '../../hooks/swarm/view'
 import type { RunningSession, TeamRecord } from '../../hooks/team/store'
 import {
+  AGENTS_MESSAGES,
   ENDED,
   INBOX_SHOWN,
   MAX_ROWS,
   NOT_HERE,
   LINES_KEPT,
+  SAID_CELLS,
   blankAgentsNav,
   buildAgents,
   deps,
@@ -29,16 +35,26 @@ import {
   factsStamp,
   gather,
   lineText,
+  messageFirst,
   messageLine,
+  nodeName,
   parseRowArg,
+  resetAgentsNavForTests,
   rowArg,
+  saidOf,
   scopeOf,
   statusOf,
   teamActive,
   teamEnded,
   teamOfScope,
+  whenOf,
   type AgentsNav,
 } from '../../hooks/agents/view'
+import { agentsTops, rosterSpec } from '../../hooks/agents/pane'
+import type { NodeBinding } from '../../hooks/swarm/types'
+import type { StoredRecord } from '../../hooks/records/core'
+import { headKey } from '../../hooks/ledgercore'
+import { launchDir } from '../../hooks/layout'
 import { nodePorts, type TestPorts } from './support/node-ports'
 
 const SESSION = 'test-session'
@@ -318,6 +334,7 @@ describe("a team's members", () => {
       transcript: null,
       sendNote: 'appended to its inbox in team team-b: it reads it at its next turn',
       stop: null,
+      swarm: null,
     })
     expect(b.composer).toEqual({ key: 'agents:text:0', text: '', to: 'writer' })
   })
@@ -467,7 +484,7 @@ describe('the selected agent', () => {
 })
 
 /** A registry entry as store.ts reads it. */
-const running = (sessionId: string, cwd = '/work'): RunningSession => ({ pid: 100, sessionId, cwd, startedAt: NOW - 3_600_000, status: null })
+const running = (sessionId: string, cwd = '/work', over: Partial<RunningSession> = {}): RunningSession => ({ pid: 100, sessionId, cwd, startedAt: NOW - 3_600_000, status: null, kind: 'interactive', jobId: null, ...over })
 
 describe('only teams that run (WP-DF §0)', () => {
   test('teamActive: a member this session lists, a team it leads, or its lead in the registry; null when the registry is unread', () => {
@@ -481,6 +498,34 @@ describe('only teams that run (WP-DF §0)', () => {
     // Leading it, or listing a member, needs no registry.
     expect(teamActive({ ...t, leadSessionId: SESSION }, SESSION, [], null)).toBe(true)
     expect(teamActive(t, SESSION, [agent('a1', { teammateId: 'reviewer@team-a' })], null)).toBe(true)
+    // This session's own team as store.ts's ownTeam tells it (a background job's first team).
+    expect(teamActive(t, SESSION, [], [], 'team-a')).toBe(true)
+  })
+
+  test("a background job's first team (2.1.292): its registry entry's jobId makes it this session's, running and led here, as the tasks pane's list", async () => {
+    fakeStore({
+      teams: [
+        team('session-c75f5ddb', ['team-lead', 'helper'], { leadSessionId: 'c75f5ddb-d20f-4000-8000-000000000000' }),
+        team('session-aaaa1111', ['team-lead'], { leadSessionId: 'aaaa1111-0000-4000-8000-000000000000' }),
+      ],
+      sessions: [running(SESSION, '/work', { pid: 79989, kind: 'bg', jobId: 'c75f5ddb' })],
+    })
+    const p = ports()
+    const n = nav({ team: 'session-c75f5ddb' })
+    const f = await gather(p, n)
+    expect(f.led).toBe(true)
+    expect(f.activity).toEqual({ 'session-c75f5ddb': true, 'session-aaaa1111': false })
+    const b = await body(p, n)
+    expect(b.ended).toBeNull()
+    expect(b.head).toEqual({ team: 'session-c75f5ddb', note: '2 members · led by this session' })
+    // The lead member is this session; the other is sent to by name.
+    expect(f.rows.map(r => [r.key, r.status.text, r.via?.kind ?? null])).toEqual([
+      ['team-lead', 'this session', null],
+      ['helper', 'not in this session', 'name'],
+    ])
+    // No jobId: the job's team is another session's, and ended.
+    fakeStore({ teams: [team('session-c75f5ddb', ['team-lead'], { leadSessionId: 'c75f5ddb-d20f-4000-8000-000000000000' })], sessions: [running(SESSION)] })
+    expect((await gather(p, n)).led).toBe(false)
   })
 
   test("the picker: this session, then the teams that run; the ended ones counted and left out, [Show all] lists them; one shown or named stays", async () => {
@@ -663,5 +708,225 @@ describe('keys and the stamp', () => {
     expect(fourth).not.toBe(third)
     ;(s.teams as TeamInfo[])[0]!.mtimeMs = 2
     expect(await stamp()).not.toBe(fourth)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A live swarm's nodes (WP-DF, the user's "aren't these members of a team?")
+
+const SWARM = 'codex-litter-devl'
+const LAUNCH = '20261007-010203'
+const LITTER_DIR = '/repo/.claude/litter'
+
+/** A node's binding as swarm/state.ts holds it. */
+const bound = (agentId: string, node: string, over: Partial<NodeBinding> = {}): NodeBinding => ({
+  agentId,
+  swarm: SWARM,
+  launch: LAUNCH,
+  node,
+  n: 1,
+  kind: 'orchestrator',
+  of: null,
+  parent: null,
+  type: `litter:sw-${SWARM}-${node}`,
+  cwd: '/repo',
+  branch: null,
+  token: `token-${agentId}`,
+  revision: 1,
+  generation: 1,
+  boundAt: NOW,
+  adopted: false,
+  ...over,
+})
+
+/** A moment `minutes` before NOW as the view draws it (the zone's clock, and its day when it isn't today's). */
+const ago = (minutes: number): string => whenOf(new Date(NOW - minutes * 60_000).toISOString(), NOW)
+
+/** One `message` record of the launch ledger, at `100 - seq` minutes before NOW. */
+const message = (seq: number, from: string, to: string, text: string, agentId = to === 'lead' ? from : to): StoredRecord => ({
+  v: 1,
+  seq,
+  kind: 'swarm.event',
+  run: `swarm-${SWARM}-${LAUNCH}`,
+  at: NOW - (100 - seq) * 60_000,
+  by: { source: 'mod' },
+  prev: null,
+  body: { kind: 'message', node: 'x', agentId, from, to, route: 'direct', delivery: 'interject', text },
+})
+
+/** The swarms' live state and the launch ledger, as a spec sets them; answers the ledger reads made, `<swarm>/<launch>`. */
+function fakeSwarm(bs: readonly NodeBinding[], ledger: StoredRecord[] | Error, over: { launch?: string | null; litterDir?: string | null; tampered?: { seq: number; reason: string } } = {}): string[] {
+  const reads: string[] = []
+  deps.binding = id => bs.find(b => b.agentId === id) ?? null
+  deps.bindings = swarm => bs.filter(b => b.swarm === swarm)
+  deps.launchOf = () => ('launch' in over ? (over.launch ?? null) : LAUNCH)
+  deps.litterDir = () => ('litterDir' in over ? (over.litterDir ?? null) : LITTER_DIR)
+  deps.launchLedger = async (_p, _dir, name, launch) => {
+    reads.push(`${name}/${launch}`)
+    if (ledger instanceof Error) throw ledger
+    return { records: structuredClone(ledger), head: { seq: ledger.length, sha: 'sha' }, tampered: over.tampered ?? null, brokenTail: null }
+  }
+  return reads
+}
+
+/** port (the orchestrator), two instances of fixer, a child port started, and an agent no swarm binds. */
+const NODES = [bound('a-port', 'port'), bound('a-fix1', 'fixer', { kind: 'worker', n: 1, parent: 'a-port' }), bound('a-fix2', 'fixer', { kind: 'worker', n: 2, parent: 'a-port' }), bound('a-kid', 'port', { kind: 'child', n: 0, of: 'a-port', parent: 'a-port', token: null })]
+const LISTED = [
+  agent('a-port', { description: `swarm ${SWARM}: port`, type: `litter:sw-${SWARM}-port` }),
+  agent('a-fix1', { description: 'Fix the parser and its tests, then report', type: `litter:sw-${SWARM}-fixer` }),
+  agent('a-fix2', { description: 'Fix the lexer', type: `litter:sw-${SWARM}-fixer`, status: 'completed' }),
+  agent('a-kid', { description: 'look things up', type: 'Explore' }),
+  agent('a-help', { description: 'helper', type: 'general-purpose' }),
+]
+
+describe("a live swarm's nodes", () => {
+  afterEach(() => resetAgentsNavForTests())
+
+  test('each is named by its node, as the Swarms browser names it, with its swarm and the engine description beside; any other agent as before', async () => {
+    fakeStore()
+    fakeSwarm(NODES, [])
+    const b = await body(ports(LISTED), nav())
+    expect(b.rows.map(r => [r.name, r.type, r.swarm])).toEqual([
+      // The lead's own description only repeats the swarm and the node: it's left out.
+      ['port', 'orchestrator', { name: SWARM, said: '' }],
+      ['fixer #1', 'worker', { name: SWARM, said: 'Fix the parser and its tests, t…' }],
+      ['fixer #2', 'worker', { name: SWARM, said: 'Fix the lexer' }],
+      ['look things up (child)', 'child', { name: SWARM, said: '' }],
+      ['helper', 'general-purpose', null],
+    ])
+    expect(b.rows[1]!.swarm!.said.length).toBe(SAID_CELLS)
+    // Its words are beside its name, so they aren't its description too.
+    expect(b.rows.map(r => r.description)).toEqual(['', '', '', '', ''])
+    expect(nodeName(NODES[0]!, NODES)).toBe('port')
+    expect(nodeName(NODES[1]!, [NODES[1]!])).toBe('fixer')
+    expect(saidOf(LISTED[1]!, NODES[1]!, 'fixer #1')).toBe('Fix the parser and its tests, t…')
+
+    // The roster: `· swarm <swarm>` and the words muted after the name, the words dropping first, then the type, then the swarm.
+    const spec = rosterSpec(b, 8)
+    expect(spec.items[1]!.cells).toEqual([
+      { text: `· swarm ${SWARM}`, color: 'inactive' },
+      { text: 'Fix the parser and its tests, t…', color: 'inactive' },
+      { text: 'worker', color: 'inactive' },
+      { text: '▸ running', color: 'background' },
+      { text: '', color: 'warning' },
+    ])
+    expect(spec.items[4]!.cells!.slice(0, 2).map(c => c.text)).toEqual(['', ''])
+    expect(spec.columns).toEqual([{ drop: 1 }, { drop: 3 }, { drop: 2 }, { drop: 0 }, { drop: 0 }])
+    // With no node listed, the roster's columns are as they were.
+    fakeSwarm([], [])
+    const plain = await body(ports(LISTED.slice(4)), nav())
+    expect(plain.rows[0]!.swarm).toBeNull()
+    expect(rosterSpec(plain, 8).columns).toEqual([{ drop: 1 }, { drop: 0 }, { drop: 0 }])
+  })
+
+  test("the selected node's messages, from its launch ledger: to and from it, each end by name, the message's own first line; no inbox", async () => {
+    fakeStore()
+    const reads = fakeSwarm(NODES, [
+      message(1, 'lead', 'a-fix1', 'From the lead:\n\nFix the parser first\nthen the lexer'),
+      message(2, 'a-port', 'a-fix2', 'not to fixer #1'),
+      message(3, 'a-fix1', 'lead', 'done with the parser'),
+      { ...message(4, 'a-fix1', 'lead', 'x'), body: { kind: 'report', node: 'fixer', agentId: 'a-fix1', text: 'a report, not a message' } },
+      message(5, 'user', 'a-fix1', 'hello\nand more'),
+      message(6, 'plugin:audit', 'a-fix1', 'From the audit plugin:\n\nlook at G3'),
+      message(7, 'a-port', 'a-fix1', `For your worker fixer (a-fix1), from port (a-port):\n\nretry G2\n\nPass it on with SendMessage, or answer it yourself.`),
+      message(8, 'a-gone', 'a-fix1', 'from an agent no longer bound'),
+    ])
+    const p = ports(LISTED)
+    const b = await body(p, nav({ selected: 'a-fix1' }))
+    const sel = b.selected!
+    expect(sel.inbox).toBeNull()
+    expect(sel.swarm).toEqual({
+      name: SWARM,
+      node: 'fixer #1',
+      messages: [
+        { from: 'lead', to: 'fixer #1', at: ago(99), line: 'Fix the parser first' },
+        { from: 'fixer #1', to: 'lead', at: ago(97), line: 'done with the parser' },
+        { from: 'you', to: 'fixer #1', at: ago(95), line: 'hello' },
+        { from: 'audit plugin', to: 'fixer #1', at: ago(94), line: 'look at G3' },
+        { from: 'port', to: 'fixer #1', at: ago(93), line: 'retry G2' },
+        { from: 'a-gone', to: 'fixer #1', at: ago(92), line: 'from an agent no longer bound' },
+      ],
+      hidden: 0,
+      error: null,
+    })
+    expect(b.problems).toEqual([])
+    // The live swarm's launch is the one read.
+    expect(reads).toEqual([`${SWARM}/${LAUNCH}`])
+    // The messages are what the tick compares too.
+    const before = factsStamp(await gather(p, nav({ selected: 'a-fix1' })))
+    fakeSwarm(NODES, [message(1, 'lead', 'a-fix1', 'one'), message(2, 'lead', 'a-fix1', 'two')])
+    expect(factsStamp(await gather(p, nav({ selected: 'a-fix1' })))).not.toBe(before)
+    // An agent no swarm binds has neither.
+    const plain = await body(p, nav({ selected: 'a-help' }))
+    expect(plain.selected!.swarm).toBeNull()
+    expect(plain.selected!.inbox).toBeNull()
+  })
+
+  test('bounded: the newest AGENTS_MESSAGES, the rest counted; the ledger read again only when its head moved', async () => {
+    fakeStore()
+    const many = Array.from({ length: AGENTS_MESSAGES + 5 }, (_, i) => message(i + 1, 'lead', 'a-fix1', `note ${i + 1}`))
+    const reads = fakeSwarm(NODES, many)
+    const p = ports(LISTED)
+    p.storeMap.set(headKey(launchDir(LITTER_DIR, SWARM, LAUNCH)), { seq: many.length, sha: 'sha' })
+    const n = nav({ selected: 'a-fix1' })
+    const sel = (await body(p, n)).selected!.swarm!
+    expect(sel.messages).toHaveLength(AGENTS_MESSAGES)
+    expect(sel.hidden).toBe(5)
+    expect(sel.messages[0]!.line).toBe('note 6')
+    expect(sel.messages.at(-1)!.line).toBe(`note ${AGENTS_MESSAGES + 5}`)
+    await body(p, n)
+    expect(reads).toHaveLength(1)
+    p.storeMap.set(headKey(launchDir(LITTER_DIR, SWARM, LAUNCH)), { seq: many.length + 1, sha: 'sha2' })
+    await body(p, n)
+    expect(reads).toHaveLength(2)
+    // The launch is the binding's when the swarm's state doesn't say.
+    resetAgentsNavForTests()
+    const fromBinding = fakeSwarm([bound('a-fix1', 'fixer', { kind: 'worker', launch: '20261006-000000' })], [], { launch: null })
+    await body(ports(LISTED), n)
+    expect(fromBinding).toEqual([`${SWARM}/20261006-000000`])
+  })
+
+  test("no messages yet; and what couldn't be read, in words: the ledger, a broken link, no litter directory", async () => {
+    fakeStore()
+    fakeSwarm(NODES, [])
+    const n = nav({ selected: 'a-fix1' })
+    expect((await body(ports(LISTED), n)).selected!.swarm).toEqual({ name: SWARM, node: 'fixer #1', messages: [], hidden: 0, error: null })
+
+    fakeSwarm(NODES, new Error('EACCES: permission denied'))
+    const unreadable = await body(ports(LISTED), n)
+    expect(unreadable.selected!.swarm!.error).toBe("the launch ledger couldn't be read: EACCES: permission denied")
+    expect(unreadable.problems).toEqual(["fixer #1's messages: the launch ledger couldn't be read: EACCES: permission denied"])
+
+    resetAgentsNavForTests()
+    fakeSwarm(NODES, [message(1, 'lead', 'a-fix1', 'before'), message(2, 'lead', 'a-fix1', 'after the break')], { tampered: { seq: 2, reason: 'prev mismatch' } })
+    const broken = (await body(ports(LISTED), n)).selected!.swarm!
+    expect(broken.messages.map(m => m.line)).toEqual(['before'])
+    expect(broken.error).toBe('the launch ledger is broken at record 2 (prev mismatch), so its messages stop there')
+
+    fakeSwarm(NODES, [], { litterDir: null })
+    expect((await body(ports(LISTED), n)).selected!.swarm!.error).toBe("this session has no litter directory, so the launch ledger can't be read")
+  })
+
+  test("the plan and the wheel's tops count the messages and the line under them, at 100 and 60 columns", async () => {
+    fakeStore()
+    fakeSwarm(NODES, [message(1, 'lead', 'a-fix1', 'one'), message(2, 'a-fix1', 'lead', 'two'), message(3, 'user', 'a-fix1', 'three')])
+    const p = ports(LISTED)
+    p.transcripts = { 'a-fix1': Array.from({ length: 50 }, (_, i) => say(`m${i}`)) }
+    const b = await body(p, nav({ selected: 'a-fix1' }))
+    for (const columns of [100, 60]) {
+      const tops = agentsTops(b, { surface: 'terminal', bodyColumns: columns, placement: 'dock', rows: 40, focused: null, lists: {} })
+      // Under the roster: [Stop], the Messages heading, its three, "see /litter swarms …", the transcript's heading.
+      expect(tops.lines!.top).toBe(tops.roster!.top + tops.roster!.height + 1 + 1 + 3 + 1 + 1)
+      expect(tops.lines!.top + tops.lines!.height).toBeLessThanOrEqual(40)
+    }
+  })
+
+  test("a message's own first line: past litter's framing line, else its first", () => {
+    expect(messageFirst('From the lead:\n\nship it')).toBe('ship it')
+    expect(messageFirst('For your orchestrator port (a1), from you:\n\nstop\n\nPass it on.')).toBe('stop')
+    expect(messageFirst('From here on: be careful')).toBe('From here on: be careful')
+    expect(messageFirst('From the lead:')).toBe('From the lead:')
+    expect(messageFirst('\n\n  plain  \nsecond')).toBe('plain')
+    expect(messageFirst('')).toBe('')
   })
 })

@@ -151,7 +151,7 @@ describe('/litter agents', () => {
 })
 
 describe('only teams that run (WP-DF §0)', () => {
-  const running = (sessionId: string): RunningSession => ({ pid: 1, sessionId, cwd: '/work', startedAt: NOW, status: null })
+  const running = (sessionId: string): RunningSession => ({ pid: 1, sessionId, cwd: '/work', startedAt: NOW, status: null, kind: 'interactive', jobId: null })
 
   test("Agents with no team reopens a remembered team while it runs; one that ended isn't, and the notice says so once", async () => {
     fakeStore({ teams: [team('team-b', ['team-lead', 'writer'], { leadSessionId: 'sid-b', leadCwd: '/work/b', createdAt: NOW - 60_000 })] })

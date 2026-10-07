@@ -3,12 +3,15 @@
 // config dir, never the real ~/.claude/: the entries that parse, in pid
 // order; a file that isn't one skipped; "can't tell" (null) for a missing or
 // unlistable folder, a config dir that can't be named, and a registry past
-// its cap; and the team's fields only when its config has them.
+// its cap; and the team's fields only when its config has them. And a
+// background job's own list (the user's 2.1.292 report): its entry's jobId
+// names the team its first session id made; no jobId, or none that matches,
+// leaves the session id's list, never another session's team.
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { REGISTRY_FILES, runningSessions, teams } from '../../hooks/team/store'
+import { REGISTRY_FILES, ownTeam, runningSessions, taskLists, teams } from '../../hooks/team/store'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 const cleanups: (() => void)[] = []
@@ -37,9 +40,14 @@ describe('runningSessions', () => {
     const { p, config } = world()
     entry(config, 4012, { sessionId: 'sid-b', cwd: '/work/b', startedAt: 1_800_000_000_000, status: 'busy' })
     entry(config, 312, { sessionId: 'sid-a', cwd: '/work/a', startedAt: 1_800_000_001_000 })
+    entry(config, 79989, { sessionId: 'sid-job', kind: 'bg', jobId: 'c75f5ddb' })
+    entry(config, 79990, { sessionId: 'sid-odd', kind: 'bg', jobId: '../x' })
     expect(await runningSessions(p)).toEqual([
-      { pid: 312, sessionId: 'sid-a', cwd: '/work/a', startedAt: 1_800_000_001_000, status: null },
-      { pid: 4012, sessionId: 'sid-b', cwd: '/work/b', startedAt: 1_800_000_000_000, status: 'busy' },
+      { pid: 312, sessionId: 'sid-a', cwd: '/work/a', startedAt: 1_800_000_001_000, status: null, kind: 'interactive', jobId: null },
+      { pid: 4012, sessionId: 'sid-b', cwd: '/work/b', startedAt: 1_800_000_000_000, status: 'busy', kind: 'interactive', jobId: null },
+      // A background job's id, when it's a name's segment.
+      { pid: 79989, sessionId: 'sid-job', cwd: null, startedAt: null, status: null, kind: 'bg', jobId: 'c75f5ddb' },
+      { pid: 79990, sessionId: 'sid-odd', cwd: null, startedAt: null, status: null, kind: 'bg', jobId: null },
     ])
   })
 
@@ -70,8 +78,8 @@ describe('runningSessions', () => {
   })
 })
 
-describe("a team's createdAt and lead folder", () => {
-  test("the lead member's cwd by leadAgentId, else the member named team-lead; absent when the config has neither", async () => {
+describe("a team's createdAt, lead folder and lead name", () => {
+  test("the lead member's cwd and name by leadAgentId, else the member named team-lead; absent when the config has neither", async () => {
     const { p, config } = world()
     const write = (dir: string, body: Record<string, unknown>) => {
       mkdirSync(join(config, 'teams', dir), { recursive: true })
@@ -91,8 +99,68 @@ describe("a team's createdAt and lead folder", () => {
     write('bare', { name: 'bare', createdAt: 'yesterday', members: [{ name: 'team-lead' }] })
     const got = await teams(p)
     const of = (name: string) => got.find(t => t.name === name)!
-    expect([of('by-id').createdAt, of('by-id').leadCwd]).toEqual([1_800_000_000_000, '/work/boss'])
-    expect([of('by-name').createdAt, of('by-name').leadCwd]).toEqual([undefined, '/work/lead'])
+    expect([of('by-id').createdAt, of('by-id').leadCwd, of('by-id').leadName]).toEqual([1_800_000_000_000, '/work/boss', 'boss'])
+    expect([of('by-name').createdAt, of('by-name').leadCwd, of('by-name').leadName]).toEqual([undefined, '/work/lead', 'team-lead'])
     expect('createdAt' in of('bare') || 'leadCwd' in of('bare')).toBe(false)
+    // The lead's name comes with its member, cwd or not (the tasks picker names it).
+    expect(of('bare').leadName).toBe('team-lead')
+  })
+})
+
+describe("a background job's own list (2.1.292: the user's machine)", () => {
+  const JOB = 'c75f5ddb'
+  /** A team's config, and a task in its list, so a list with tasks is there to be picked wrongly. */
+  const teamWithTask = (config: string, name: string, leadSessionId: string | null): void => {
+    mkdirSync(join(config, 'teams', name), { recursive: true })
+    writeFileSync(join(config, 'teams', name, 'config.json'), JSON.stringify({ name, ...(leadSessionId !== null ? { leadSessionId } : {}), members: [{ name: 'team-lead' }] }))
+    mkdirSync(join(config, 'tasks', name), { recursive: true })
+    writeFileSync(join(config, 'tasks', name, '1.json'), JSON.stringify({ id: '1', subject: 'x', description: '', status: 'pending', blocks: [], blockedBy: [] }))
+  }
+  const mine = async (p: TestPorts) => (await taskLists(p)).filter(l => l.mine).map(l => [l.name, l.kind])
+
+  test("its registry entry's jobId names its team: the one whose leadSessionId is the job's first id", async () => {
+    const { p, config } = world()
+    // Ours: kind bg, a jobId, a session id no team names its lead.
+    entry(config, 79989, { sessionId: 'sess-1', kind: 'bg', jobId: JOB })
+    // The interactive session that parked it, and another session's team with tasks.
+    entry(config, 79165, { sessionId: 'sid-parent', parkedJobId: JOB })
+    teamWithTask(config, `session-${JOB}`, `${JOB}-d20f-4000-8000-000000000000`)
+    teamWithTask(config, 'session-aaaa1111', 'aaaa1111-0000-4000-8000-000000000000')
+    expect(await mine(p)).toEqual([[`session-${JOB}`, 'team']])
+    const lists = await taskLists(p)
+    expect(lists[0]!.name).toBe(`session-${JOB}`)
+    // Agents tells the same team (ownTeam, pure): this session's, so it runs and is led here.
+    const all = await teams(p)
+    expect(ownTeam(all, 'sess-1', await runningSessions(p))?.name).toBe(`session-${JOB}`)
+  })
+
+  test('failing that, the team named session-<jobId>; a team this session leads comes first', async () => {
+    const { p, config } = world()
+    entry(config, 79989, { sessionId: 'sess-1', kind: 'bg', jobId: JOB })
+    teamWithTask(config, `session-${JOB}`, null)
+    expect(await mine(p)).toEqual([[`session-${JOB}`, 'team']])
+    teamWithTask(config, 'led-here', 'sess-1')
+    expect(await mine(p)).toEqual([['led-here', 'team']])
+  })
+
+  test('no jobId: unchanged, the session id names the list, though a session team with tasks is there', async () => {
+    const { p, config } = world()
+    entry(config, 79165, { sessionId: 'sess-1' })
+    teamWithTask(config, `session-${JOB}`, `${JOB}-d20f-4000-8000-000000000000`)
+    expect(await mine(p)).toEqual([['sess-1', 'session']])
+    // No registry at all: the same.
+    const bare = world()
+    teamWithTask(bare.config, `session-${JOB}`, `${JOB}-d20f-4000-8000-000000000000`)
+    expect(await mine(bare.p)).toEqual([['sess-1', 'session']])
+  })
+
+  test("a jobId no team matches: the session id's list, never another team with tasks", async () => {
+    const { p, config } = world()
+    entry(config, 79989, { sessionId: 'sess-1', kind: 'bg', jobId: JOB })
+    teamWithTask(config, 'session-aaaa1111', 'aaaa1111-0000-4000-8000-000000000000')
+    // A leadSessionId that only starts with the job's id, with no `-` after it, isn't the job's.
+    teamWithTask(config, 'near-miss', `${JOB}ffff-0000`)
+    expect(await mine(p)).toEqual([['sess-1', 'session']])
+    expect(ownTeam(await teams(p), 'sess-1', null)).toBeNull()
   })
 })

@@ -312,21 +312,23 @@ describe('the list: the template picker', () => {
   })
 })
 
+/** The Tasks picker's rows drawn (phase 5b, WP-DF: the chrome's list, a Button a row), by the list each picks. */
+const listsDrawn = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined }[]> }) =>
+  (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(k => k.startsWith('tasks:pick:')).map(k => k.slice('tasks:pick:'.length))
+
 describe('the Tasks picker', () => {
   test('leaves out the empty session teams, but for the one named, and says how many', async ($, on) => {
     world(on, TEAMS)
     expect((await run($, 'tasks team-a')).text).toBe('Tasks shows team-a (2 tasks)')
     const ui = await mount($, { bodyColumns: 100 })
-    const picker = await ui.find({ type: 'Select', key: 'tasks:list' })
-    const options = (picker?.props.options ?? []) as { value: string }[]
-    expect(options.map(o => o.value)).toEqual([SESSION, 'team-a'])
+    expect(await listsDrawn(ui)).toEqual([SESSION, 'team-a'])
     expect((await ui.find({ type: 'Text', text: '13 empty session teams hidden' }))?.props.color).toBe('inactive')
+    expect((await ui.find({ type: 'Button', key: 'tasks:empty:show' }))?.text).toBe('Show all')
     // One named is kept, empty or not.
     expect((await run($, 'tasks session-a1b2c304')).text).toMatch(/^Tasks shows session-a1b2c304/)
     await ui.redraw()
-    const after = ((await ui.find({ type: 'Select', key: 'tasks:list' }))?.props.options ?? []) as { value: string }[]
     // The teams in their store's order, by name.
-    expect(after.map(o => o.value)).toEqual([SESSION, 'session-a1b2c304', 'team-a'])
+    expect(await listsDrawn(ui)).toEqual([SESSION, 'session-a1b2c304', 'team-a'])
     expect(await ui.find({ type: 'Text', text: '12 empty session teams hidden' })).toBeDefined()
   })
 })
@@ -364,12 +366,32 @@ const PICKER: Record<number, [string, string][]> = {
     ['  ↓ 2 more', 'default dim'],
   ],
 }
-const TASKS_PICKER: [string, string][] = [
-  ['List: team-a · team · 2 tasks ▾', 'default'],
-  ['13 empty session teams hidden', 'inactive'],
-  ['[ › All 2 ] [ Pending 1 ] [ In progress 0 ] [ Completed 1 ]', 'claude, default'],
-  ['Sort by: id ▾', 'default'],
-]
+/**
+ * The Tasks picker from its heading to the sort under the tasks' heading
+ * (phase 5b, WP-DF): a row a list, its open count and kind beside it and
+ * its description beside those, cut to the body; the hidden lists' line
+ * and its [Show all].
+ */
+const TASKS_PICKER: Record<number, [string, string][]> = {
+  100: [
+    [`Lists ${'─'.repeat(83)} 2 lists ──`, 'suggestion bold, subtle, inactive, subtle'],
+    ['  tier1-list 0 open this session no tasks · /cfg/tasks/tier1-list', 'default, inactive, subtle'],
+    ['› team-a     1 open team         2 tasks, 1 open · no members · /cfg/tasks/team-a', 'claude, default, inactive, subtle'],
+    ['13 empty session teams hidden [ Show all ]', 'inactive, default dim'],
+    [`Tasks ${'─'.repeat(94)}`, 'suggestion bold, subtle'],
+    ['[ All 2 ] [ Pending 1 ] [ In progress 0 ] [ Completed 1 ]', 'claude, default dim'],
+    ['Sort by: id ▾', 'default'],
+  ],
+  60: [
+    [`Lists ${'─'.repeat(43)} 2 lists ──`, 'suggestion bold, subtle, inactive, subtle'],
+    ['  tier1-list 0 open this session no tasks · /cfg/tasks/tier…', 'default, inactive, subtle'],
+    ['› team-a     1 open team         2 tasks, 1 open · no membe…', 'claude, default, inactive, subtle'],
+    ['13 empty session teams hidden [ Show all ]', 'inactive, default dim'],
+    [`Tasks ${'─'.repeat(54)}`, 'suggestion bold, subtle'],
+    ['[ All 2 ] [ Pending 1 ] [ In progress 0 ] [ Completed 1 ]', 'claude, default dim'],
+    ['Sort by: id ▾', 'default'],
+  ],
+}
 
 describe('the drawings', () => {
   for (const columns of [100, 60]) {
@@ -387,8 +409,9 @@ describe('the drawings', () => {
       await run($, 'tasks team-a')
       const ui = await mount($, { bodyColumns: columns })
       const rows = drawWithColors(await ui.drawn(), columns)
-      const from = rowOf(rows, 'List: ')
-      expect(rows.slice(from, from + TASKS_PICKER.length)).toEqual(golden(columns, TASKS_PICKER))
+      const from = rows.findIndex(r => r.startsWith('Lists '))
+      const to = rows.findIndex((r, i) => i > from && r.startsWith('Sort by: '))
+      expect(rows.slice(from, to + 1)).toEqual(golden(columns, TASKS_PICKER[columns]!))
     })
   }
 })

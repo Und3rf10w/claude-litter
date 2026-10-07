@@ -247,7 +247,7 @@ describe('the render', () => {
       await pressRow(ui, w, surface, 0, 'agents:select:session/a1')
       expect(await ui.find({ type: 'Text', text: 'Inbox · ' })).toBeDefined()
       expect((await ui.find({ type: 'Text', text: 'reviewer' }))?.props.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
-      expect(await ui.find({ type: 'Text', text: "no inbox: only a team's members have one" })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: "no inbox: it isn't in a team" })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'Transcript · ' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '5 lines' })).toBeDefined()
       // The engine's wrapped message in words, the sender in the name color.
@@ -438,7 +438,7 @@ describe('the transcript window', () => {
     expect((await ui.find({ type: 'Button', key: 'agents:lines:down' }))?.text).toMatch(/^↓ \d+ newer$/)
   })
 
-  test("on the terminal the footer is one muted line, and a wheel tick over the transcript moves it (the hub routes ui.scroll to Agents once hub.ts forwards it)", async ($, on) => {
+  test("on the terminal the transcript's footer is one muted line, no Buttons: the wheel moves it (tier 2's onAgentsScroll; the hub routes ui.scroll to Agents once hub.ts forwards it)", async ($, on) => {
     const long = Array.from({ length: 60 }, (_, i) => ({ role: 'assistant', text: `step ${i + 1}`, toolUses: [] }))
     const w = world(on, {}, { a1: long })
     await run($, 'agents')
@@ -485,7 +485,7 @@ const SESSION_ROWS = (columns: number): [string, string][] => [
   [columns >= 100 ? '  right-click a row for its actions' : '  › from checker: G3 too, please', 'inactive'],
   ['[ Stop ]', 'default dim'],
   [ruled('Inbox · reviewer', columns, 'unread only'), NAMED],
-  ["no inbox: only a team's members have one", 'inactive'],
+  ["no inbox: it isn't in a team", 'inactive'],
   [ruled('Transcript · reviewer', columns, '5 lines'), NAMED],
   ['› from team-lead: review the parser in compile.ts', 'inactive, cyan_FOR_SUBAGENTS_ONLY, inactive'],
   ['◆ found the bug in compile.ts', 'default'],
