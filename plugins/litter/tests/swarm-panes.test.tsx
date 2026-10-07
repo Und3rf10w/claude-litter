@@ -223,9 +223,15 @@ const BROWSER: SwarmBrowserView = {
   lost: false,
   owner: null,
   budget: null,
-  summary: { goal: 'parser first', progress: ['tokenizer done'], waiting: ['which branch'], age: '1m ago', stale: true },
+  summary: {
+    goal: 'parser first',
+    progress: [[{ text: 'tokenizer done' }]],
+    blocked: [[{ text: 'fixer', color: 'cyan_FOR_SUBAGENTS_ONLY' }, { text: ': the lexer review', color: 'inactive' }, { text: ' (may have moved on)', color: 'inactive' }]],
+    age: '1m ago',
+    stale: true,
+  },
   rows: [
-    { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, tokens: '', report: '', queued: [], question: null, flagged: false },
+    { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', queued: [], question: null, questionTo: null, flagged: false },
     {
       key: 'o1',
       agentId: 'o1',
@@ -240,10 +246,12 @@ const BROWSER: SwarmBrowserView = {
       running: true,
       tool: 'Bash',
       turns: 3,
+      steps: null,
       tokens: '2k',
       report: '',
       queued: [],
       question: 'which branch?',
+      questionTo: 'the lead',
       flagged: false,
     },
     {
@@ -260,10 +268,12 @@ const BROWSER: SwarmBrowserView = {
       running: true,
       tool: 'Edit',
       turns: 1,
+      steps: 12,
       tokens: '800',
       report: 'fixed the tokenizer',
       queued: [{ id: 'q1', text: 'also the lexer' }],
       question: null,
+      questionTo: null,
       flagged: true,
     },
     {
@@ -280,10 +290,12 @@ const BROWSER: SwarmBrowserView = {
       running: false,
       tool: '',
       turns: 4,
+      steps: null,
       tokens: '3k',
       report: 'read the grammar',
       queued: [],
       question: null,
+      questionTo: null,
       flagged: false,
     },
   ],
@@ -325,6 +337,7 @@ const BROWSER: SwarmBrowserView = {
   },
   selected: 'w1',
   proposals: [],
+  confirmEnd: false,
 }
 
 /** A repair swarm (2b-2): its run in the header, its budget row with a part used up, and its gate and budget events. */
@@ -814,10 +827,18 @@ describe('a press reaches its owner', () => {
       expect(seen.logs).toContain('swarm pane: stopNode demo w1 soft')
     })
 
-    test(`[End swarm] reaches endSwarm, on the ${surface}`, async ($, on) => {
+    // WP-DG: End swarm asks first; [Confirm end] reaches endSwarm.
+    test(`[End swarm] asks first, and ends nothing, on the ${surface}`, async ($, on) => {
       const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo' })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:browser:end:demo' })
+      expect(seen.logs).not.toContain('swarm pane: endSwarm demo request')
+    })
+
+    test(`[Confirm end] reaches endSwarm, on the ${surface}`, async ($, on) => {
+      const seen = await start($, on, { ...BROWSER, confirmEnd: true }, { view: 'browser', swarm: 'demo', confirmEnd: true })
+      const ui = await mountSwarm($, surface)
+      await ui.press({ key: 'swarm:browser:end-confirm:demo' })
       expect(seen.logs).toContain('swarm pane: endSwarm demo request')
     })
   }
@@ -1031,7 +1052,8 @@ describe('the browser', () => {
     views(on, BROWSER)
     const ui = await mountAt($, 100, 'dock', 'vscode')
     const rows = drawText(await ui.drawn(), 100)
-    const asks = rows.findIndex(r => r.startsWith('⚑ part-a asks: which branch?'))
+    // WP-DG: whom it asked, so you know you can answer in the lead's session or here.
+    const asks = rows.findIndex(r => r.startsWith('⚑ part-a asks the lead: which branch?'))
     const agents = rows.findIndex(r => r.startsWith('Agents '))
     expect(asks).toBeGreaterThan(0)
     expect(asks).toBeLessThan(agents)
@@ -1182,6 +1204,124 @@ describe('the browser', () => {
     expect(await ui.find({ type: 'Button', key: 'swarm:browser:ack:demo/7' })).toBeDefined()
   })
 
+  // WP-DG: the user's "This needs to be easier to read" (a summary like their screenshot's), and "Why is it telling me that it's waiting on me here?".
+  const NAME = 'cyan_FOR_SUBAGENTS_ONLY'
+  const SUMMARY: NonNullable<SwarmBrowserView['summary']> = {
+    goal: 'Port the Codex research into DESIGN.md, with the probe results',
+    progress: [
+      [{ text: 'codex-researcher #1 and #3', color: NAME }, { text: ': ' }, { text: 'finished', color: 'success' }, { text: ' research on hooks and the app-server protocol' }],
+      [{ text: 'codex-prober #1', color: NAME }, { text: ': ' }, { text: 'probing', color: 'background' }, { text: " the app-server's resume path" }],
+      [{ text: 'port', color: NAME }, { text: ': ' }, { text: 'waiting', color: 'warning' }, { text: " on codex-prober #1's results before DESIGN.md's last section" }],
+      [{ text: 'Note: the lead asked for one design doc' }],
+    ],
+    blocked: [[{ text: 'port', color: NAME }, { text: ": codex-prober #1's probe results, to finish DESIGN.md", color: 'inactive' }]],
+    age: '1m ago',
+    stale: false,
+  }
+  const STALE: NonNullable<SwarmBrowserView['summary']> = {
+    ...SUMMARY,
+    age: '6m ago',
+    stale: true,
+    blocked: SUMMARY.blocked.map(l => [...l, { text: ' (may have moved on)', color: 'inactive' }]),
+  }
+  /** A drawWithColors row: its text padded to the width, then the colors it paints. */
+  const painted = (width: number, text: string, colors: string) => `${text.padEnd(width)}  | ${colors}`
+  const LINE = (more: string) => `subtle, ${NAME}, default, ${more}, default`
+  /** The summary as drawn, from its goal to the row before the composer's heading: at 100 columns each line one row, at 60 a wrapped row under its text. */
+  const SUMMARY_DRAWN = (stale: boolean): Record<number, string[]> => {
+    const moved = stale ? ' (may have moved on)' : ''
+    return {
+      100: [
+        painted(100, 'Goal now Port the Codex research into DESIGN.md, with the probe results', 'inactive, default'),
+        '',
+        painted(100, 'Progress · codex-researcher #1 and #3: finished research on hooks and the app-server protocol', `inactive, ${LINE('success')}`),
+        painted(100, "         · codex-prober #1: probing the app-server's resume path", LINE('background')),
+        painted(100, "         · port: waiting on codex-prober #1's results before DESIGN.md's last section", LINE('warning')),
+        painted(100, '         · Note: the lead asked for one design doc', 'subtle, default'),
+        '',
+        painted(100, `Blocked  · port: codex-prober #1's probe results, to finish DESIGN.md${moved}`, `inactive, subtle, ${NAME}, inactive`),
+        '',
+      ],
+      60: [
+        painted(60, 'Goal now Port the Codex research into DESIGN.md, with the', 'inactive, default'),
+        painted(60, '         probe results', 'default'),
+        '',
+        painted(60, 'Progress · codex-researcher #1 and #3: finished research on', `inactive, ${LINE('success')}`),
+        painted(60, '           hooks and the app-server protocol', 'default'),
+        painted(60, "         · codex-prober #1: probing the app-server's resume", LINE('background')),
+        painted(60, '           path', 'default'),
+        painted(60, "         · port: waiting on codex-prober #1's results before", LINE('warning')),
+        painted(60, "           DESIGN.md's last section", 'default'),
+        painted(60, '         · Note: the lead asked for one design doc', 'subtle, default'),
+        '',
+        painted(60, "Blocked  · port: codex-prober #1's probe results, to finish", `inactive, subtle, ${NAME}, inactive`),
+        painted(60, `           DESIGN.md${moved}`, 'inactive'),
+        '',
+      ],
+    }
+  }
+  for (const columns of [100, 60]) {
+    for (const [name, sum] of [['fresh', SUMMARY], ['stale', STALE]] as const) {
+      test(`the summary, ${name}, at ${columns} columns: a row per line, · in its column, a wrapped row under its text; members in the name color; Blocked muted, no ⚑`, async ($, on) => {
+        mock.store(on)
+        views(on, { ...BROWSER, summary: sum, rows: BROWSER.rows.map(r => ({ ...r, question: null, questionTo: null })), flags: [] })
+        const ui = await mountAt($, columns)
+        const rows = drawWithColors(await ui.drawn(), columns)
+        const heading = rows.findIndex(r => r.startsWith('Summary '))
+        expect(rows[heading]).toEndWith(sum.stale ? '| suggestion bold, subtle, warning, subtle' : '| suggestion bold, subtle, inactive, subtle')
+        const drawn = rows.slice(heading + 1, rows.findIndex(r => r.startsWith('Message ')))
+        expect(drawn).toEqual(SUMMARY_DRAWN(sum.stale)[columns]!)
+        // What the model wrote never raises ⚑: no needs-you line, and none in the summary.
+        expect(rows.some(r => r.startsWith('⚑'))).toBe(false)
+        expect(drawn.some(r => r.includes('⚑') || r.includes('permission'))).toBe(false)
+      })
+    }
+  }
+  test("with nothing blocked: `Blocked  nothing`, muted", async ($, on) => {
+    mock.store(on)
+    views(on, { ...BROWSER, summary: { ...SUMMARY, blocked: [] } })
+    const ui = await mountAt($, 100)
+    const rows = drawWithColors(await ui.drawn(), 100)
+    expect(rows).toContain(painted(100, 'Blocked  nothing', 'inactive'))
+  })
+
+  for (const columns of [100, 60]) {
+    test(`[End swarm] pressed, at ${columns} columns: what ending does as a warning, then [Confirm end] and [Cancel], neither primary; no [End swarm]`, async ($, on) => {
+      mock.store(on)
+      views(on, { ...BROWSER, confirmEnd: true })
+      const ui = await mountAt($, columns)
+      const confirm = await ui.find({ type: 'Button', key: 'swarm:browser:end-confirm:demo' })
+      expect(confirm?.props.label).toBe('Confirm end')
+      expect(confirm?.props.variant).not.toBe('primary')
+      expect((await ui.find({ type: 'Button', key: 'swarm:browser:end-cancel:demo' }))?.props.variant).not.toBe('primary')
+      expect(await ui.find({ key: 'swarm:browser:end:demo' })).toBeUndefined()
+      // [Send] stays the one primary.
+      expect((await ui.findAll({ type: 'Button' })).filter(b => b.props.variant === 'primary').map(b => b.key)).toEqual(['swarm:browser:send:demo/fixer#1'])
+      const rows = drawWithColors(await ui.drawn(), columns)
+      const at = rows.findIndex(r => r.startsWith('[ History ]'))
+      expect(rows[at + 1]).toStartWith('! End demo? Every node is asked to stop')
+      expect(rows.find(r => r.startsWith('[ Confirm end ] [ Cancel ]'))).toBeDefined()
+    })
+  }
+
+  for (const columns of [100, 60]) {
+    test(`the roster's running row, focused, at ${columns} columns: \`turn n+1 · m requests · tokens\`; a finished one's \`n turns\``, async ($, on) => {
+      mock.store(on)
+      // The hub keeps the element the ring is on (ui/hub.ts's focus): the roster draws that row's description.
+      on('state.get', async (_$, e, next) => {
+        if (e.key === 'hub') return { value: { value: { view: 'hub', v: 1, section: 'swarms', live: [], tabs: [], focus: 'swarm:browser:select:demo/w1' }, version: 0 } }
+        if (e.key === 'swarmPane') return { value: { value: BROWSER, version: 0 } }
+        return next(e)
+      })
+      const ui = await mountAt($, columns, 'dock', 'vscode')
+      const rows = drawWithColors(await ui.drawn(), columns)
+      const fixer = rows.findIndex(r => r.startsWith('›   fixer'))
+      // Beside the row from 100 columns, under it (muted, wrapping) at 60.
+      expect(rows.slice(fixer, fixer + 3).join('\n')).toContain('turn 2 · 12 requests · 800 tokens')
+      expect(rows.find(r => r.includes('turn 2 · 12 requests'))).toMatch(/\| .*inactive$/)
+    })
+  }
+
   test('inline: the roster first, the summary one line, no events', async ($, on) => {
     mock.store(on)
     views(on, BROWSER)
@@ -1255,7 +1395,7 @@ describe('what needs you is the first thing in the body (the user\'s "It says it
     const rows = drawText(await ui.drawn(), 100)
     const first = rows.findIndex(r => r.startsWith('demo · ▸ live'))
     expect(rows[first + 1]).toBe(`⚑ the lead's proposal 6 waits on you [ Review ]`)
-    expect(rows[first + 2]).toMatch(/^⚑ part-a asks: which branch\? \[ Answer \]/)
+    expect(rows[first + 2]).toMatch(/^⚑ part-a asks the lead: which branch\? \[ Answer \]/)
     expect(rows.findIndex(r => r.startsWith('Agents '))).toBeGreaterThan(first + 2)
     expect((await ui.find({ type: 'Text', text: "⚑ the lead's proposal 6 waits on you" }))?.props.color).toBe('permission')
     // Not a second primary: [Send] stays the one.
@@ -1309,6 +1449,7 @@ describe('what needs you is the first thing in the body (the user\'s "It says it
     const rows = drawText(await ui.drawn(), 100)
     const nav = rows.findIndex(r => r.startsWith('Home '))
     expect(rows[nav + 2]).toBe(`⚑ nightly: the lead's proposal 6 waits on you [ Review ]`)
+    // A question recorded before WP-DG has no `to`: `asks:` alone.
     expect(rows[nav + 3]).toBe('⚑ nightly: part-a asks: which branch? [ Answer ]')
     expect(rows.findIndex(r => r.includes('Name:'))).toBeGreaterThan(nav + 3)
   })

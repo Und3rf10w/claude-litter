@@ -498,7 +498,16 @@ export type NodeReport = { text: string; via: 'handback' | 'answer' | 'message';
 export type TokenCount = { input: number; output: number; cacheRead: number; cacheCreation: number; turns: number }
 
 /** A question a node asked its parent or the lead (L), open until answered. */
-export type Question = { swarm: string; agentId: string; node: string; text: string; at: number; closedAt: number | null }
+export type Question = {
+  swarm: string
+  agentId: string
+  node: string
+  text: string
+  at: number
+  closedAt: number | null
+  /** Where it went (WP-DG): `lead`, or the parent node's id. Absent in a question kept before WP-DG. */
+  to?: string
+}
 
 /** A command the /clear killed, for the next `<swarm>` block's "Cut short by the clear" line (O). */
 export type ClearKill = {
@@ -560,11 +569,16 @@ export type SettleProgress = {
   reservations: number
 }
 
-/** O's generated summary (15.6, "The summary"): display-only, three parts. */
+/**
+ * O's generated summary (15.6, "The summary"): display-only, three parts.
+ * `blocked` (WP-DG) was `waitingOnYou`: which members wait on something, and
+ * on what. The model can't tell what waits on the person, so nothing here is
+ * a ⚑; a summary kept or recorded before reads its `Waiting on you` as this.
+ */
 export type SwarmSummary = {
   goalNow: string
   progress: string[]
-  waitingOnYou: string[]
+  blocked: string[]
   at: number
   /** A newer event exists than the ones it summarised. */
   stale: boolean

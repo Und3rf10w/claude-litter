@@ -859,6 +859,9 @@ export function startListTop(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyC
 /** `2, 5 and 6`. */
 const andList = (ns: readonly number[]): string => (ns.length < 2 ? ns.join('') : `${ns.slice(0, -1).join(', ')} and ${ns[ns.length - 1]}`)
 
+/** Who a question went to, as its row says it (WP-DG): `port asks the lead:`, `fixer asks part-a:`, or `asks:` when not recorded. Pure. */
+export const asksWhom = (who: string, to: string | null | undefined): string => `${who} asks${to ? ` ${to}` : ''}:`
+
 /**
  * The start screen's needs-you lines (WP-DD, "wherever ⚑ is raised, the
  * section shows it"), first in its body: for each saved swarm that needs
@@ -879,7 +882,7 @@ export function startNeeds(view: Pick<SwarmStartView, 'needsYou'>): { text: stri
     const q = x.questions[0]
     if (q) {
       const more = x.questions.length > 1 ? ` (+${x.questions.length - 1} more)` : ''
-      out.push({ text: `${x.swarm}: ${q.who} asks: ${q.text}${more}`, action: { key: open, label: 'Answer' } })
+      out.push({ text: `${x.swarm}: ${asksWhom(q.who, q.to)} ${q.text}${more}`, action: { key: open, label: 'Answer' } })
     }
   }
   return out

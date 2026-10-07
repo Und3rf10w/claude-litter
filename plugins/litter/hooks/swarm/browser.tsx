@@ -21,12 +21,12 @@
 import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
-import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
+import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmSpan, SwarmUnsettledView } from '../../types/index'
 import { empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
 import { list, listPlace, type ListAction, type ListSpec } from '../ui/list'
 import { MARK, STYLE } from '../ui/style'
 import { cells } from '../band/view'
-import { actionRow, choose, drawsClient, headed, needsRow, needsRowCount, noticeRow, renderBuilder, renderProposal, renderStart, tableFor, titleRow } from './builder'
+import { actionRow, asksWhom, choose, drawsClient, headed, needsRow, needsRowCount, noticeRow, renderBuilder, renderProposal, renderStart, tableFor, titleRow } from './builder'
 
 /**
  * The keys a view adds to the keys line, before the hub's: the builder's
@@ -90,9 +90,20 @@ export const rosterId = (swarm: string): string => `swarm:browser:roster:${swarm
 export const stoppable = (view: Pick<SwarmBrowserView, 'readOnly' | 'lost'>, r: Pick<SwarmNodeRow, 'agentId' | 'running'>): boolean =>
   r.agentId !== null && r.running && !view.readOnly && !view.lost
 
+/**
+ * A roster row's turns (WP-DG: a subagent's whole task is one turn, so a
+ * running node read `0 turns`): while a turn is under way, `turn <n+1> · <m>
+ * request(s)`; otherwise `<n> turn(s)`. Empty for the lead. Pure.
+ */
+export function turnsText(r: Pick<SwarmNodeRow, 'turns' | 'steps'>): string {
+  if (r.turns === null) return ''
+  if (r.steps !== null && r.steps !== undefined) return `turn ${r.turns + 1} · ${r.steps} request${r.steps === 1 ? '' : 's'}`
+  return `${r.turns} turn${r.turns === 1 ? '' : 's'}`
+}
+
 /** A roster row's description, beside or under it once it's focused: its turns, tokens and last report. Pure. */
-export function rosterDescription(r: Pick<SwarmNodeRow, 'turns' | 'tokens' | 'report'>): string {
-  return [r.turns !== null && `${r.turns} turn${r.turns === 1 ? '' : 's'}`, r.tokens !== '' && `${r.tokens} tokens`, r.report !== '' && `last report: ${r.report}`]
+export function rosterDescription(r: Pick<SwarmNodeRow, 'turns' | 'steps' | 'tokens' | 'report'>): string {
+  return [turnsText(r), r.tokens !== '' && `${r.tokens} tokens`, r.report !== '' && `last report: ${r.report}`]
     .filter((x): x is string => typeof x === 'string' && x !== '')
     .join(' · ')
 }
@@ -160,8 +171,10 @@ export const reviewKey = (swarm: string, n: number): string => `swarm:browser:bu
  * What needs you, the first thing under the first line (the user's "It says
  * it needs me, but where", 2026-10-07: wherever the hub raises ⚑ the section
  * shows why): each current proposal of the lead's with [Review], then each
- * open question, who asks and its first line, with [Answer] (it selects the
- * asker, so the composer goes to it). Pure.
+ * open question, who asks, whom (WP-DG: "How do I know who I need to reply
+ * to?", so you know you can answer in the lead's session or here) and its
+ * first line, with [Answer] (it selects the asker, so the composer goes to
+ * it). Only these, from the swarm's state: never the summary's text. Pure.
  */
 export function browserNeeds(view: SwarmBrowserView): { text: string; action: Action | null }[] {
   const s = view.swarm
@@ -171,7 +184,7 @@ export function browserNeeds(view: SwarmBrowserView): { text: string; action: Ac
     ...view.rows
       .filter(r => r.question !== null)
       .map(r => ({
-        text: `${r.name} asks: ${r.question}`,
+        text: `${asksWhom(r.name, r.questionTo)} ${r.question}`,
         action: live && r.agentId !== null && r.agentId !== view.selected ? { key: `swarm:browser:select:${s}/${r.agentId}`, label: 'Answer' } : null,
       })),
   ]
@@ -406,14 +419,57 @@ function roster(el: PaneElements, view: SwarmBrowserView, e: BodyContext, column
   )
 }
 
-/** The summary under its heading, its age beside it (a warning when it's older than the latest event); one line when compact. */
+/** The summary's label column ("Goal now", "Progress", "Blocked"): its widest label. */
+const SUMMARY_LABEL = 8
+
+/**
+ * One of the summary's parts: its label muted in the label column, then its
+ * lines, each `·` faint in a fixed cell and its spans wrapping beside it, so
+ * a wrapped row hangs under the text, not the bullet. Pure.
+ */
+function summaryPart(el: PaneElements, label: string, lines: readonly SwarmSpan[][], top: boolean): RenderElement {
+  const { Box, Text } = el
+  return (
+    <Box flexDirection="row" columnGap={1} {...(top ? { marginTop: 1 } : {})}>
+      <Box flexShrink={0} width={SUMMARY_LABEL} minWidth={SUMMARY_LABEL}>
+        <Text color={STYLE.muted}>{label}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {lines.map(l => (
+          <Box flexDirection="row">
+            <Box flexShrink={0} width={2} minWidth={2}>
+              <Text color={STYLE.faint}>·</Text>
+            </Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text wrap="wrap">
+                {l.map(s => (
+                  <Text color={s.color ?? (s.dim ? STYLE.muted : undefined)} bold={s.bold}>
+                    {s.text}
+                  </Text>
+                ))}
+              </Text>
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
+/**
+ * The summary under its heading, its age beside it (a warning when it's
+ * older than the latest event); one line when compact. The goal, the
+ * progress and what's blocked each a part, an empty row between them (the
+ * user, 2026-10-07: "This needs to be easier to read"). Model text, so no ⚑
+ * here: what needs you is above the roster, from the swarm's own state.
+ */
 function summary(el: PaneElements, view: SwarmBrowserView, compact: boolean, columns: number): RenderElement {
   const { Box, Text } = el
   const sum = view.summary
   if (compact) {
     return (
       <Box flexDirection="row" columnGap={1} marginTop={1}>
-        <Box flexShrink={0} minWidth={8}>
+        <Box flexShrink={0} minWidth={SUMMARY_LABEL}>
           <Text color={STYLE.muted}>Goal now</Text>
         </Box>
         <Text wrap="truncate-end">{sum ? sum.goal : 'no summary yet'}</Text>
@@ -427,15 +483,24 @@ function summary(el: PaneElements, view: SwarmBrowserView, compact: boolean, col
       {sum ? (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            <Box flexShrink={0} minWidth={8}>
+            <Box flexShrink={0} width={SUMMARY_LABEL} minWidth={SUMMARY_LABEL}>
               <Text color={STYLE.muted}>Goal now</Text>
             </Box>
-            <Text wrap="wrap">{sum.goal}</Text>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text wrap="wrap">{sum.goal}</Text>
+            </Box>
           </Box>
-          {sum.progress.map(x => (
-            <Text wrap="wrap">{`· ${x}`}</Text>
-          ))}
-          {sum.waiting.map(x => notice(el, 'needsYou', `waiting on you: ${x}`))}
+          {sum.progress.length > 0 && summaryPart(el, 'Progress', sum.progress, true)}
+          {sum.blocked.length > 0 ? (
+            summaryPart(el, 'Blocked', sum.blocked, true)
+          ) : (
+            <Box flexDirection="row" columnGap={1} marginTop={1}>
+              <Box flexShrink={0} width={SUMMARY_LABEL} minWidth={SUMMARY_LABEL}>
+                <Text color={STYLE.muted}>Blocked</Text>
+              </Box>
+              <Text color={STYLE.muted}>nothing</Text>
+            </Box>
+          )}
         </Box>
       ) : (
         <Text color={STYLE.muted}>no summary yet: litter writes one as the swarm reports</Text>
@@ -550,17 +615,37 @@ function events(el: PaneElements, view: SwarmBrowserView, columns: number): Rend
   )
 }
 
+/** [End swarm]'s confirm step's actions (WP-DG): [Confirm end] is never the primary, so Enter on the pane's default never ends a swarm. Pure. */
+export function endConfirmActions(swarm: string): Action[] {
+  return [
+    { key: `swarm:browser:end-confirm:${swarm}`, label: 'Confirm end' },
+    { key: `swarm:browser:end-cancel:${swarm}`, label: 'Cancel' },
+  ]
+}
+
+/** The confirm row, in [End swarm]'s place while it waits: what ending does, then [Confirm end] and [Cancel]. */
+function endConfirm(el: PaneElements, view: SwarmBrowserView, columns: number): RenderElement | null {
+  const { Box } = el
+  if (!view.confirmEnd) return null
+  return (
+    <Box flexDirection="column">
+      {notice(el, 'warning', `End ${view.swarm}? Every node is asked to stop at its next step, then litter cleans up.`)}
+      {actionRow(el, endConfirmActions(view.swarm), columns)}
+    </Box>
+  )
+}
+
 function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: BodyContext): RenderElement {
   const { Box } = el
   const s = view.swarm
   const live = !view.readOnly && !view.lost
   const columns = e.bodyColumns
   const compact = compactBrowser(e)
-  // End swarm asks every node to stop and then cleans up (a request, not a hard stop): swarm/panes.ts gives it no confirm step yet.
+  // End swarm asks every node to stop and then cleans up (a request, not a hard stop); it asks you first (WP-DG).
   const toolbar: Action[] = [
     { key: `swarm:browser:history:${s}`, label: 'History' },
     { key: `swarm:browser:builder:${s}`, label: 'Builder' },
-    ...(live && view.state === 'live' ? [{ key: `swarm:browser:end:${s}`, label: 'End swarm' }] : []),
+    ...(live && view.state === 'live' && !view.confirmEnd ? [{ key: `swarm:browser:end:${s}`, label: 'End swarm' }] : []),
   ]
   // What's above the transcript keeps to browserTranscriptTop's rows.
   return (
@@ -574,6 +659,7 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: BodyContext)
       {summary(el, view, compact, columns)}
       {composer(el, view, e, columns)}
       <Box marginTop={1}>{actionRow(el, toolbar, columns)}</Box>
+      {endConfirm(el, view, columns)}
       {!compact && events(el, view, columns)}
     </Box>
   )

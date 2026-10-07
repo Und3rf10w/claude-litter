@@ -358,6 +358,28 @@ describe("a node's messages", () => {
     expect(block).toContain('part-a  orchestrator  running  last report: Part A is done.')
   })
 
+  // WP-DG: "How do I know who I need to reply to?" A question says where it went: the lead, or the parent node.
+  test("a question records where it went: an orchestrator's and a worker's to main went to the lead, a worker's to its parent to that node", async () => {
+    await put(o1(), true)
+    await put(w(1), true)
+    await put(w(2), true)
+    const { next } = sendNext()
+    // w1's first: a message delivered to a node closes that node's open question.
+    await send(sendE('o1', 'Do I keep the old API?', 'w1'), next)
+    await send(sendE('main', 'Which branch do I base on?', 'o1'), next)
+    await send(sendE('main', 'May I bump the lockfile?', 'w2'), next)
+    expect(state.openQuestions('alpha').map(q => [q.agentId, q.to])).toEqual([
+      ['w1', 'part-a'],
+      ['o1', 'lead'],
+      ['w2', 'lead'],
+    ])
+    expect((await events()).filter(e => e.kind === 'question').map(e => [e.agentId, e.to])).toEqual([
+      ['w1', 'part-a'],
+      ['o1', 'lead'],
+      ['w2', 'lead'],
+    ])
+  })
+
   test("while the swarm is ending, a node's send passes only to its parent", async () => {
     await put(o1(), true)
     await put(o2(), true)
