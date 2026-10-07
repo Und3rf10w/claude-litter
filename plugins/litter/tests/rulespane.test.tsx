@@ -562,7 +562,8 @@ describe('the two tabs, at 100 and 60 columns, docked and inline', () => {
     await start($, on)
     const ui = await mountRules($, 'terminal', { bodyColumns: 100, bodyRows: 30, isFocused: true })
     const tree = await ui.drawn()
-    const clipped = findNode(tree, n => n.type === 'Box' && n.props?.overflow === 'hidden' && n.props?.height === bodyBudget(30))
+    // Rules' two key hints and the hub's wrap the keys line to two rows at 100 columns; the second comes off the body's (pane.tsx's keysOverflow).
+    const clipped = findNode(tree, n => n.type === 'Box' && n.props?.overflow === 'hidden' && n.props?.height === bodyBudget(30) - 1)
     expect(clipped).not.toBeNull()
     expect(await ui.find({ type: 'Text', text: 'j/k' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'right-click' })).toBeDefined()
