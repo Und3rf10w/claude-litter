@@ -237,6 +237,8 @@ export const sections: Record<HubSection, Section> = {
       press: (p, e, next) => onRulesUi.press(p, e, next),
       input: (p, e, next) => onRulesUi.input(p, e, next),
       select: (p, e, next) => onRulesUi.select(p, e, next),
+      // The wheel reaches Rules once it handles one (WP-DE); until then it passes on, and the pane scrolls.
+      scroll: (p, e, next) => (onRulesUi.scroll ? onRulesUi.scroll(p, e, next) : next(e)),
     },
     tick: p => rulesTick(p),
   },
