@@ -43,22 +43,32 @@
 // in-pane list's Client posts `{ list, press }` (a row's click, a menu
 // pick), pressed on the list's section as its Button would be, or
 // `{ list, offset, max }` (its keys past the window's edge).
+//
+// Home (WP-DB). writeHub also builds Home's part of the hub's view from the
+// same module memory the strip counts from (the band's lines, the live
+// swarms' open questions and proposals, the rules' and tasks' last builds,
+// the agent list), so no file is read for it (homeview.ts words it). Home's
+// [Open] is `home:open:<section>[:<arg>]`: with an item (a run, a swarm) it
+// loads the section on it as `/litter <section> <arg>` would, in the pane
+// that's open.
 
 import type { Ports } from '../ports'
 import type { CommandRunHook, PaneUiHandlers, PortHook, UiPressHook } from '../hooktypes'
-import type { HubSection, HubTab, HubView, SwarmSpan } from '../../types/index'
+import type { HomeView, HubSection, HubTab, HubView, SwarmSpan } from '../../types/index'
 import type { ProposalRef } from '../records/rules'
 import { agentLive } from '../ports'
 import { MARK, STYLE } from './style'
 import { STRIP_PREFIX } from './chrome'
+import { homeOf, homeTarget, needsWords, type HomeFacts } from './homeview'
 import { GATES_KEY, boardCommand, boardTick, loadBoard, onBoardUi, resumeBoard } from '../board/pane'
 import { loadRules, onRulesUi, resumeRules, rulesCommand, rulesCounts, rulesTick } from '../rules/pane'
 import { TREE_KEY, doctorCommand, loadDoctor, loadSwarm, onUiInput, onUiMessage, onUiPress, onUiScroll, onUiSelect, resumeDoctor, resumeSwarm, swarmCommand } from '../swarm/panes'
 import { loadTasks, onTasksUi, resumeTasks, tasksCommand, tasksTick } from '../tasks/pane'
 import { agentsCommand, agentsTick, loadAgents, onAgentsUi, resumeAgents } from '../agents/pane'
-import { bandCounts } from '../band/view'
+import { bandCounts, bandLines } from '../band/view'
+import { getOptions } from '../session'
 import { liveSwarms, openQuestions } from '../swarm/state'
-import { pendingProposals } from '../swarm/view'
+import { nav, oneLine, pendingProposals, unprefixed, type SwarmNav } from '../swarm/view'
 import { shownOf as tasksShown } from '../tasks/view'
 
 export const LITTER_PANE = 'litter'
@@ -106,13 +116,82 @@ const swarmUi: PaneUiHandlers = {
   select: (p, e, next) => onUiSelect(p, e, next),
 }
 
-/** Home's: `home:open:<section>` shows that section; Home has no fields. */
+/**
+ * A lead proposal's [Open] on Home: Swarms loaded on its swarm, then stepped
+ * to the proposal view through Swarms' own keys, as a person would press
+ * them: the browser's [Builder], then the builder's `Lead's proposal N`. A
+ * swarm that isn't live lands on its first proposal already. A proposal
+ * decided since Home was drawn leaves Swarms where the load put it, and says
+ * so; a recovery card waiting (the swarm's own need, shown before anything)
+ * stays shown.
+ */
+async function openProposal(p: Ports, swarm: string, num: number, e: PressArg, next: PressNext): Promise<void> {
+  await showSection(p, 'swarms', swarm)
+  if (shown !== 'swarms') return
+  const at = (view: string, which: number | null = num): boolean => {
+    const n = deps.swarmNav()
+    return n !== null && n.swarm === swarm && n.view === view && (view !== 'proposal' || which === null || n.proposal === which)
+  }
+  if (at('proposal')) return
+  if (!deps.pendingProposals(swarm).includes(num)) {
+    p.toast(`the lead's proposal ${num} for ${swarm} was decided already`)
+    return
+  }
+  const press = (element: string) => sections.swarms.ui.press(p, { ...e, element }, next)
+  // The swarm's first proposal, when it isn't live: back to the builder, where each has its button.
+  if (at('proposal', null)) await press(`swarm:proposal:back:${swarm}/${deps.swarmNav()?.proposal ?? 0}`)
+  if (at('browser')) await press(`swarm:browser:builder:${swarm}`)
+  if (at('builder')) await press(`swarm:builder:proposal:${swarm}/${num}`)
+  if (!at('proposal')) p.log(`litter pane: Home's proposal ${num} for ${swarm} opened Swarms on its ${deps.swarmNav()?.view ?? 'nothing'}`)
+}
+
+/**
+ * The strip's Swarms with its ⚑ (WP-DB, the user's live look 2026-10-07):
+ * the tab opens on what the ⚑ stands for, the first thing Home lists under
+ * needs you for a swarm (a question: its swarm's browser; else a proposal:
+ * the proposal view), unless Swarms kept a view that shows it already.
+ * Answers whether it opened Swarms; false (nothing waits, or a read failed,
+ * logged) leaves the strip to show what Swarms kept.
+ */
+async function openSwarmsNeed(p: Ports, e: PressArg, next: PressNext): Promise<boolean> {
+  let need: { swarm: string; proposal?: number } | null = null
+  try {
+    const swarms = deps.liveSwarms()
+    const asked = swarms.find(s => deps.openQuestions(s.name).length > 0)
+    if (asked) need = { swarm: asked.name }
+    else
+      for (const s of swarms) {
+        const first = deps.pendingProposals(s.name)[0]
+        if (first !== undefined) {
+          need = { swarm: s.name, proposal: first }
+          break
+        }
+      }
+  } catch (err) {
+    p.log(`litter pane: what Swarms' ⚑ stands for wasn't read: ${errText(err)}`)
+    return false
+  }
+  if (need === null) return false
+  const n = deps.swarmNav()
+  if (n !== null && n.swarm === need.swarm && (need.proposal === undefined ? n.view === 'browser' : n.view === 'proposal' && n.proposal === need.proposal)) return false
+  if (need.proposal === undefined) await showSection(p, 'swarms', need.swarm)
+  else await openProposal(p, need.swarm, need.proposal, e, next)
+  return shown === 'swarms'
+}
+
+/**
+ * Home's: `home:open:<section>` shows that section from what it kept, and
+ * `home:open:<section>:<arg>` loads it on that item (a run's board, a
+ * swarm's browser), as its command would; `home:open:swarms:<swarm>/<n>`
+ * opens the lead's proposal n. Home has no fields.
+ */
 const homeUi: PaneUiHandlers = {
   message: async (p, e, next) => next(e),
   press: async (p, e, next) => {
     if (!e.element.startsWith('home:')) return next(e)
-    const id = sectionNamed(e.element.slice('home:open:'.length))
-    if (e.element.startsWith('home:open:') && id !== null && id !== 'home') await showSection(p, id)
+    const to = homeTarget(e.element)
+    if (to !== null && to.proposal !== undefined && to.arg !== undefined) await openProposal(p, to.arg, to.proposal, e, next)
+    else if (to !== null) await showSection(p, to.section, to.arg)
     return { element: e.element }
   },
   input: async (p, e, next) => (e.element.startsWith('home:') ? { element: e.element, value: e.value } : next(e)),
@@ -123,7 +202,7 @@ const homeUi: PaneUiHandlers = {
 export const sections: Record<HubSection, Section> = {
   home: {
     owns: key => key.startsWith('home:'),
-    load: async p => ({ text: `Home shows ${liveWords(await countsNow(p))}` }),
+    load: async p => ({ text: `Home shows ${liveWords(await factsNow(p))}` }),
     resume: noop,
     ui: homeUi,
     tick: noop,
@@ -198,9 +277,15 @@ export const sections: Record<HubSection, Section> = {
 /** What the hub reads beside the sections, through one table for tier 2. */
 export const deps = {
   bandCounts: () => bandCounts(),
+  /** The band's last build, for Home (WP-DB). */
+  bandLines: () => bandLines(),
+  /** The window Home's ended runs cover: the band's. */
+  endedMinutes: () => getOptions().bandEndedMinutes,
   liveSwarms: () => liveSwarms(),
   openQuestions: (name: string) => openQuestions(name),
   pendingProposals: (name: string) => pendingProposals(name),
+  /** What Swarms shows now (its view and swarm), for Home's proposal [Open]. */
+  swarmNav: (): Pick<SwarmNav, 'view' | 'swarm' | 'proposal'> | null => nav(),
   rulesCounts: () => rulesCounts(),
   tasksShown: () => tasksShown(),
   /** `/litter <section> …`: each section's own command, which calls openSection. */
@@ -277,7 +362,7 @@ export function resetHubForTests(): void {
 // ---------------------------------------------------------------------------
 // The counts and the hub's view
 
-/** What the strip and Home count, from module memory and the agent list: no file is read. */
+/** What the strip counts, from module memory and the agent list: no file is read. */
 export type HubCounts = {
   /** The band's active runs. */
   runs: number
@@ -292,8 +377,11 @@ export type HubCounts = {
   agents: number | null
 }
 
-/** The counts now. Each read that fails counts nothing, logged. */
-export async function countsNow(p: Ports): Promise<HubCounts> {
+/** One reading of module memory: the strip's counts, and Home's facts (WP-DB). */
+export type HubFacts = { counts: HubCounts; home: HomeFacts }
+
+/** The facts now, each read once. Each read that fails counts nothing, logged. */
+export async function factsNow(p: Ports): Promise<HubFacts> {
   const safe = <T>(what: string, fn: () => T, none: T): T => {
     try {
       return fn()
@@ -303,71 +391,98 @@ export async function countsNow(p: Ports): Promise<HubCounts> {
     }
   }
   const swarms = safe('the live swarms', () => deps.liveSwarms(), [])
+  const questions = safe('the open questions', () => swarms.flatMap(s => deps.openQuestions(s.name).map(q => ({ swarm: s.name, node: q.node, text: q.text }))), [])
+  const proposals = safe('the proposals', () => swarms.flatMap(s => deps.pendingProposals(s.name).map(n => ({ swarm: s.name, n }))), [])
   const shownTasks = safe('the tasks', () => deps.tasksShown(), null)
+  const rules = safe('the rules', () => deps.rulesCounts(), null)
   let agents: number | null = null
   try {
     agents = (await p.listAgents()).filter(a => agentLive(a.status)).length
   } catch (err) {
     p.log(`litter pane: the agents couldn't be counted: ${errText(err)}`)
   }
+  const tasks = shownTasks ? shownTasks.tasks.filter(t => t.status !== 'completed').length : null
+  const list = shownTasks?.list ? (shownTasks.list.mine ? "this session's list" : shownTasks.list.name) : 'the list shown'
   return {
-    runs: safe('the runs', () => deps.bandCounts().runs, 0),
-    swarms: swarms.length,
-    swarmsNeedYou: safe('the swarms that need you', () => swarms.some(s => deps.openQuestions(s.name).length > 0 || deps.pendingProposals(s.name).length > 0), false),
-    rules: safe('the rules', () => deps.rulesCounts(), null),
-    tasks: shownTasks ? shownTasks.tasks.filter(t => t.status !== 'completed').length : null,
-    agents,
+    counts: { runs: safe('the runs', () => deps.bandCounts().runs, 0), swarms: swarms.length, swarmsNeedYou: questions.length > 0 || proposals.length > 0, rules, tasks, agents },
+    home: {
+      lines: safe('the band', () => [...deps.bandLines()], []),
+      questions,
+      proposals,
+      rules,
+      tasks: tasks !== null ? { open: tasks, list } : null,
+      agents,
+      endedMinutes: safe("the band's window", () => deps.endedMinutes(), 10),
+    },
   }
 }
 
+/** The strip's counts now. */
+export const countsNow = async (p: Ports): Promise<HubCounts> => (await factsNow(p)).counts
+
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`
 
-/** The strip's tabs, with Home's line for each. Pure. */
+/** The strip's tabs. Pure. */
 export function tabsOf(c: HubCounts): HubTab[] {
-  const tab = (section: HubSection, count: number | null, needsYou: boolean, summary: string): HubTab => ({ section, label: LABEL[section], count, needsYou, summary })
+  const tab = (section: HubSection, count: number | null, needsYou: boolean): HubTab => ({ section, label: LABEL[section], count, needsYou })
   return [
-    tab('home', null, false, 'what needs you, and what runs'),
-    tab('runs', c.runs, false, c.runs > 0 ? `${plural(c.runs, 'active run')}` : 'no active run: the board shows the newest'),
-    tab('swarms', c.swarms, c.swarmsNeedYou, c.swarms > 0 ? `${plural(c.swarms, 'live swarm')}${c.swarmsNeedYou ? `, ${MARK.needsYou.glyph} one waits on you` : ''}` : 'no live swarm: build one here'),
-    tab('rules', c.rules?.proposed ?? null, (c.rules?.proposed ?? 0) > 0, c.rules ? `${c.rules.proposed} proposed or unverified, ${c.rules.inForce} in force` : 'proposals to accept, and the rules in force'),
-    tab('tasks', c.tasks, false, c.tasks !== null ? plural(c.tasks, 'open task') : "this session's task list, and the teams'"),
-    tab('agents', c.agents, false, c.agents !== null ? `${c.agents} running` : 'agents, their inboxes and transcripts'),
-    tab('doctor', null, false, "what a swarm needs of this session's settings and limits"),
+    tab('home', null, false),
+    tab('runs', c.runs, false),
+    tab('swarms', c.swarms, c.swarmsNeedYou),
+    tab('rules', c.rules?.proposed ?? null, (c.rules?.proposed ?? 0) > 0),
+    tab('tasks', c.tasks, false),
+    tab('agents', c.agents, false),
+    tab('doctor', null, false),
   ]
 }
 
-/** The header's live line: what runs, then what needs you, each with its glyph and word. Pure. */
-export function liveOf(c: HubCounts, tabs: readonly HubTab[]): SwarmSpan[] {
+/**
+ * The header's live line (WP-DB): what runs (`▸ running: 1 run, 2 swarms`),
+ * then what needs you, by what it is (`⚑ needs you: 1 question, 2 rules`),
+ * each after its glyph and word in its color. Pure.
+ */
+export function liveOf(c: HubCounts, needs: readonly string[]): SwarmSpan[] {
   const out: SwarmSpan[] = []
-  const running = [c.runs > 0 ? plural(c.runs, 'run') : null, c.swarms > 0 ? `${plural(c.swarms, 'swarm')} live` : null].filter((x): x is string => x !== null)
-  if (running.length > 0) out.push({ text: `${MARK.running.glyph} `, color: STYLE.running }, { text: running.join(' · ') })
+  const running = [c.runs > 0 ? plural(c.runs, 'run') : null, c.swarms > 0 ? plural(c.swarms, 'swarm') : null].filter((x): x is string => x !== null)
+  if (running.length > 0) out.push({ text: `${MARK.running.glyph} ${MARK.running.word}: `, color: STYLE.running }, { text: running.join(', ') })
   else out.push({ text: 'nothing running', color: STYLE.muted })
-  const waiting = tabs.filter(t => t.needsYou).map(t => t.label)
-  if (waiting.length > 0) out.push({ text: ' · ', color: STYLE.faint }, { text: `${MARK.needsYou.glyph} ${MARK.needsYou.word}: ${waiting.join(', ')}`, color: STYLE.needsYou })
+  if (needs.length > 0) out.push({ text: ' · ', color: STYLE.faint }, { text: `${MARK.needsYou.glyph} ${MARK.needsYou.word}: ${needs.join(', ')}`, color: STYLE.needsYou })
   return out
 }
 
 /** The live line in words, for a reply. */
-const liveWords = (c: HubCounts): string => {
+const liveWords = (f: HubFacts): string => {
+  const c = f.counts
   const parts = [c.runs > 0 ? plural(c.runs, 'active run') : null, c.swarms > 0 ? plural(c.swarms, 'live swarm') : null].filter((x): x is string => x !== null)
-  return parts.length > 0 ? parts.join(', ') : 'nothing running'
+  const needs = needsWords(f.home)
+  return `${parts.length > 0 ? parts.join(', ') : 'nothing running'}${needs.length > 0 ? `; needs you: ${needs.join(', ')}` : ''}`
 }
 
-/** The strip and the live line as last counted, so a ring or a list that moves writes the hub without counting again. */
-let counted: { live: SwarmSpan[]; tabs: HubTab[] } | null = null
+/** What the hub draws as last counted: the live line, the strip and Home, so a ring or a list that moves writes the hub without counting again. */
+type Counted = { live: SwarmSpan[]; tabs: HubTab[]; home: HomeView | undefined }
+let counted: Counted | null = null
+
+/** Home's view from its facts; a fact it can't word leaves Home unwritten this time, logged. */
+function homeNow(p: Ports, f: HomeFacts): HomeView | undefined {
+  try {
+    return homeOf(f)
+  } catch (err) {
+    p.log(`litter pane: Home couldn't be built: ${errText(err)}`)
+    return undefined
+  }
+}
 
 /** Builds the hub's view and writes it when it changed (or always, with `force`: $.state was wiped). */
 export async function writeHub(p: Ports, force = false): Promise<HubView> {
-  const c = await countsNow(p)
-  const tabs = tabsOf(c)
-  counted = { live: liveOf(c, tabs), tabs }
+  const f = await factsNow(p)
+  counted = { live: liveOf(f.counts, needsWords(f.home)), tabs: tabsOf(f.counts), home: homeNow(p, f.home) }
   return putHub(p, counted, force)
 }
 
-async function putHub(p: Ports, strip: { live: SwarmSpan[]; tabs: HubTab[] }, force: boolean): Promise<HubView> {
-  const { live, tabs } = strip
-  const json = JSON.stringify({ section: shown, live, tabs, focus, lists })
-  const view: HubView = { view: 'hub', v: viewSeq, section: shown, live, tabs, focus, lists: { ...lists } }
+async function putHub(p: Ports, strip: Counted, force: boolean): Promise<HubView> {
+  const { live, tabs, home } = strip
+  const json = JSON.stringify({ section: shown, live, tabs, home, focus, lists })
+  const view: HubView = { view: 'hub', v: viewSeq, section: shown, live, tabs, focus, lists: { ...lists }, ...(home ? { home } : {}) }
   if (!force && json === lastJson) return view
   view.v = ++viewSeq
   await p.setView('hub', view)
@@ -440,10 +555,22 @@ export async function openSection(p: Ports, id: HubSection, arg?: SectionArg, op
   return { placed, text: placed ? text : `${text} (open, but this screen can't draw it now)` }
 }
 
-/** The strip's and Home's switch: the section from what it kept, in the pane that's open. */
-export async function showSection(p: Ports, id: HubSection): Promise<void> {
+/**
+ * The strip's and Home's switch, in the pane that's open: the section from
+ * what it kept, or with `arg` (Home's [Open] on a run or a swarm) loaded on
+ * it as openSection loads it. A refused argument (a run that's gone) keeps
+ * the section shown and says why in a toast.
+ */
+export async function showSection(p: Ports, id: HubSection, arg?: SectionArg): Promise<void> {
   await restoreHub(p)
-  await sections[id].resume(p)
+  if (arg === undefined) await sections[id].resume(p)
+  else {
+    const loaded = await sections[id].load(p, arg)
+    if (loaded.refused) {
+      p.toast(oneLine(unprefixed(loaded.text), 200))
+      return
+    }
+  }
   await setShown(p, id)
 }
 
@@ -486,6 +613,7 @@ function stale(p: Ports, owner: HubSection): void {
 }
 
 type PressArg = Parameters<PortHook<UiPressHook>>[1]
+type PressNext = Parameters<PortHook<UiPressHook>>[2]
 
 /** What an in-pane list's Client posted (ui/listmenu.tsx), checked: data from code, so only these two shapes, of this list's own section. */
 type ListPost = { press: string } | { offset: number; max: number }
@@ -527,7 +655,7 @@ export const onLitterUi: Required<PaneUiHandlers> = {
     await restoreHub(p)
     if (e.element.startsWith(STRIP_PREFIX)) {
       const id = sectionNamed(e.element.slice(STRIP_PREFIX.length))
-      if (id !== null && id !== shown) await showSection(p, id)
+      if (id !== null && id !== shown && !(id === 'swarms' && (await openSwarmsNeed(p, e, next)))) await showSection(p, id)
       return { element: e.element }
     }
     const owner = ownerOf(e.element)

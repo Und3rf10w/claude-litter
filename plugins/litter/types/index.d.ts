@@ -834,7 +834,7 @@ export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
 /** The pane's sections, in the strip's order (hotkeys 1–7). */
 export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'doctor'
 
-/** One section in the strip and on Home. */
+/** One section in the strip. */
 export type HubTab = {
   section: HubSection
   label: string
@@ -846,15 +846,46 @@ export type HubTab = {
   count: number | null
   /** Something there waits on you: `⚑` beside it. */
   needsYou: boolean
-  /** One line for Home: the count in words, or what the section holds. */
-  summary: string
+}
+
+/**
+ * One row of Home (WP-DB): its mark (a state's glyph and word, in its key),
+ * what it is in words (cleaned and cut; for a run or a swarm, the band's own
+ * words without `litter · `), and its [Open]'s key.
+ */
+export type HomeRow = {
+  /** `home:open:<section>[:<arg>]` (a lead proposal's: `home:open:swarms:<swarm>/<n>`), `#<n>` after it where two rows open the same place. */
+  open: string
+  mark: { glyph: string; word: string; color: string }
+  spans: SwarmSpan[]
+}
+
+/** One of Home's lines for another section: its label, what it has to say, and its [Open]'s key. */
+export type HomeLine = { open: string; label: string; text: string }
+
+/**
+ * Home's part of the hub's view (WP-DB), from module memory as the strip's
+ * counts are: what needs you, one row for each thing that waits (a node's
+ * open question, a lead proposal, the rules proposed or unverified, a run
+ * that ended wanting a decision), its [Open] landing on it; what runs
+ * (the band's open runs and live swarms), what ended inside the band's
+ * window, and a line for each other section with something to say.
+ */
+export type HomeView = {
+  needsYou: HomeRow[]
+  running: HomeRow[]
+  ended: HomeRow[]
+  /** The window `ended` covers: the bandEndedMinutes option. */
+  endedMinutes: number
+  others: HomeLine[]
 }
 
 /**
  * The hub's view: the section shown, the header's live line, and the strip.
  * WP-DA2: `focus`, the element the pane's ring is on (ui.focus), and `lists`,
  * each in-pane list's window offset by the list's id (ui.scroll); both
- * absent before the first of either.
+ * absent before the first of either. WP-DB: `home`, Home's rows; absent
+ * before the first write of a hub that has them.
  */
 export type HubView = {
   view: 'hub'
@@ -864,6 +895,7 @@ export type HubView = {
   tabs: HubTab[]
   focus?: string | null
   lists?: Record<string, number>
+  home?: HomeView
 }
 
 /** One row of an in-pane list's Client (hooks/ui/listmenu.tsx): laid out by hooks/ui/list.tsx, plain JSON. */
