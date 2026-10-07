@@ -428,7 +428,19 @@ describe('a failure releases everything it took', () => {
     expect(existsSync(pendingPath(litterDir, e.tool_use_id))).toBe(false)
   })
 
-  test('an agent that started but could not be bound is stopped, and the spawn denied', async () => {
+  test("next() answering neither an agent nor a deny goes up as it is (a deny of litter's own would fail the hook, 2.1.292), its place given back", async () => {
+    const a = await orchestrator()
+    const e = spawnE(T('scout'), a)
+    // Not a result the types allow: the defence against an engine that answers one.
+    const r = await run(e, engine({ answer: () => ({}) as never }).next)
+    expect(r).toEqual({} as never)
+    expect(state.reservations()).toEqual([])
+    expect(state.countFor('alpha', a, 'scout')).toBe(0)
+    expect(existsSync(pendingPath(litterDir, e.tool_use_id))).toBe(false)
+  })
+
+  // 2.1.292 fails a hook that denies after its next() answered without a deny: the start goes up as next() gave it.
+  test('an agent that started but could not be bound is stopped, and its start answered as next() gave it, the log saying why', async () => {
     const a = await orchestrator()
     // agents/ can't take a file: the policy write fails.
     const agents = join(litterDir, 'hooks', 'agents')
@@ -436,8 +448,9 @@ describe('a failure releases everything it took', () => {
     try {
       p.toolAnswer = async () => ({ result: 'stopped' }) as never
       const r = await run(spawnE(T('scout'), a), engine().next)
-      expect(r.deny).toStartWith("litter: scout started as agent-2 but couldn't be bound (")
-      expect(r.deny).toEndWith('), so litter stopped it')
+      expect(r.deny).toBeUndefined()
+      expect(r.agentId).toBe('agent-2')
+      expect(p.logs.at(-1)).toMatch(/^swarm alpha: scout started as agent-2 but couldn't be bound \(.*\), so litter stopped it$/)
       expect(p.toolCalls).toEqual([{ tool: 'TaskStop', input: { task_id: 'agent-2' } }])
       expect(state.binding('agent-2')).toBeNull()
       expect(state.countFor('alpha', a, 'scout')).toBe(0)

@@ -536,7 +536,12 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
   }
   if (r.deny !== undefined) return undo(r.deny, true)
   const agentId = r.agentId
-  if (agentId === undefined) return undo('the engine started no agent')
+  // A deny of litter's own after next() answered without one fails the hook (2.1.292: "a deny after its next() was
+  // answered"), so what next() answered goes up as it is, its place given back.
+  if (agentId === undefined) {
+    await undo('the engine started no agent')
+    return r
+  }
 
   // Started: its place is its own now, before anything else awaits.
   state.promote(key, agentId)
@@ -588,7 +593,10 @@ async function startPlanned(p: Ports, litterDir: string, plan: Plan, e: Spawn, n
     await patchNodePolicy(p, litterDir, agentId, { admitted: false }).catch(() => {})
     await remove(p, marker).catch(() => {})
     await p.callTool('TaskStop', { task_id: agentId }).catch(x => p.log(`swarm ${s.name}: ${agentId} wasn't stopped: ${errText(x)}`))
-    return deny(`${plan.node.id} started as ${agentId} but couldn't be bound (${errText(err)}), so litter stopped it`)
+    // It started, so the answer is the start next() gave (a deny now fails the hook, 2.1.292): its parent sees it
+    // end, stopped; the log says why.
+    p.log(`swarm ${s.name}: ${plan.node.id} started as ${agentId} but couldn't be bound (${errText(err)}), so litter stopped it`)
+    return r
   }
   await remove(p, marker).catch(err => p.log(`swarm ${s.name}: the pending marker ${marker} wasn't removed: ${errText(err)}`))
   return r
