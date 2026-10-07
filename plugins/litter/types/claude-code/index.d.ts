@@ -1,4 +1,4 @@
-// Written by Claude Code 2.1.292.
+// Written by Claude Code 2.1.293.
 // Claude Code function hooks: the plugin API's TypeScript declarations.
 //
 // EARLY ACCESS: this surface may change between releases without notice.
@@ -3014,7 +3014,7 @@ declare module 'claude-code' {
            * again is replaced. Rejects until the session binds, at `session.start`.
            *
            * @param tool `name`, `description` (what the model reads), `inputSchema`
-           *             (a JSON schema object; default `{ type: "object" }`)
+           *             (default `{ type: "object" }`), `isDeferred` (ToolSpec)
            * @returns `{ tool }`, the registered tool's full name
            *          `mcp__<plugin>__<name>`
            * @example
@@ -6907,7 +6907,7 @@ declare module 'claude-code' {
       /**
        * The argument of `$.tool.register(spec)`.
        */
-      'tool.register': Required<ToolSpec>;
+      'tool.register': RegisteredToolSpec;
       /**
        * The argument of `$.command.list()`.
        */
@@ -9242,6 +9242,17 @@ declare module 'claude-code' {
    * on("tool.call", ($, e, next) => e.tool === "Bash" ? { deny: "no" } : next(e))
    */
   export type Register = (on: On, options: PluginOptions) => unknown;
+
+  /**
+   * A ToolSpec as `$.tool.register` hands it on: the input schema filled in,
+   * `isDeferred` as the plugin gave it.
+   */
+  export type RegisteredToolSpec = {
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+      isDeferred?: ToolDeferral;
+  };
 
   /**
    * What `on(...)` returns for a hook of type `F`: the registration, which
@@ -12840,7 +12851,8 @@ declare module 'claude-code' {
        * schema loads when the model asks for it by name); absent for one listed.
        *
        * By the engine's rule an MCP server's tool, or one that asks to be,
-       * unless a rule keeps it in front.
+       * unless a rule keeps it in front (a plugin's `$.tool.register` tool
+       * whose spec says `isDeferred: false` is kept in front).
        */
       isDeferred?: true;
       /**
@@ -13016,6 +13028,14 @@ declare module 'claude-code' {
        * required }`); default `{ type: "object" }`.
        */
       inputSchema?: Record<string, unknown>;
+      /**
+       * Where the tool waits: `false` puts its schema in the prompt's tool list,
+       * `true` behind ToolSearch.
+       *
+       * Left out, the engine's rule places it: behind ToolSearch, as it places
+       * an MCP server's tool. A `tool.describe` hook's answer is read first.
+       */
+      isDeferred?: ToolDeferral;
   };
 
   /**
@@ -14718,6 +14738,7 @@ declare module 'claude-code/testing' {
   import type { RenderSurface } from 'claude-code';
   import type { RenderViewport } from 'claude-code';
   import type { ResultOf } from 'claude-code';
+  import type { SessionAppendInput } from 'claude-code';
   import type { StreamingEventName } from 'claude-code';
   import type { Tier } from 'claude-code';
   import type { UiInputArgument } from 'claude-code';
@@ -15289,14 +15310,26 @@ declare module 'claude-code/testing' {
        * @param variables the environment the plugins read
        */
       env: (on: On, variables: Readonly<Record<string, string>>) => void;
+      /**
+       * Records what is appended to the session's conversations: each row the
+       * kit stored for a plugin's `$.session.append`, or for the test's own.
+       *
+       * The kit answers the call with or without this, a plugin's row minted or
+       * refused as a session's is, no loop looked for. This is the test's
+       * `session.append` hook: one more needs a matcher (`{ door }`).
+       *
+       * @param on the test's `on`
+       * @returns the session: the rows appended so far
+       */
+      session: (on: On) => MockSession;
   };
 
   /**
    * The world beneath the plugins, mocked noun by noun: `mock.clock`,
-   * `mock.store` and `mock.env`.
+   * `mock.store`, `mock.env` and `mock.session`.
    *
    * Each registers hooks of the test's on the `on` it is handed, visible where
-   * the test calls it, and answers its noun from memory.
+   * the test calls it, and answers its noun from memory or records it.
    */
   export const mock: Mock;
 
@@ -15355,6 +15388,23 @@ declare module 'claude-code/testing' {
    */
   export type MockClockOptions = {
       now?: number;
+  };
+
+  /**
+   * The session `mock.session` hands back: what was appended to its
+   * conversations while the test ran.
+   */
+  export type MockSession = {
+      /**
+       * The rows stored so far, oldest first, each as the event carried it:
+       * `message` as stored, `door`, `origin`, `uuid` and `agentId`.
+       *
+       * A plugin's own row has the door `note`, the plugin as `origin` and a
+       * fresh `uuid`; a row a hook above refused, or the kit, is left out.
+       *
+       * @returns the rows
+       */
+      appended: () => readonly SessionAppendInput[];
   };
 
   /**
@@ -15718,9 +15768,9 @@ declare module 'claude-code/testing' {
    * A test: the engine's `$`, and `on`, a plugin's registrar, whose hooks sit
    * beneath every plugin; beneath them the bottom hook throws, naming its event.
    *
-   * The plugins load at the test's first call on `$`, so a test registers its
-   * hooks before it, as a module registers its own in `register()`. A check
-   * that fails in one of them, or an answer its site refuses, fails the test.
+   * A test registers its hooks before its first call on `$`, which loads the
+   * plugins. Beneath `$.state`, a render's `$.ui.invalidate` and `session.append`
+   * the kit answers. A check that fails in a hook, or a refused answer, fails it.
    */
   export type TestBody = ($: Engine, on: On) => unknown;
 
@@ -16646,6 +16696,8 @@ declare module 'claude-code' {
       prompt: string
       worktreePath?: string
       worktreeBranch?: string
+      /** @internal False when the calling agent cannot continue this agent with a follow-up message (it holds no messaging tool); absent means it can. */
+      canContinueAgent?: boolean
     } | {
       status: "async_launched"
       isAsync?: true
@@ -16663,6 +16715,8 @@ declare module 'claude-code' {
       outputFile: string
       /** Whether the calling agent has Read/Bash tools to check progress */
       canReadOutputFile?: boolean
+      /** @internal False when the calling agent cannot continue this agent with a follow-up message (it holds no messaging tool); absent means it can. */
+      canContinueAgent?: boolean
       /** @internal True when this unisolated write-capable agent was launched into a working directory where another one is already running and a worktree could have been made here (drives a model-facing note; not a stable consumer field) */
       sharesCwd?: boolean
     } | {
@@ -16930,6 +16984,12 @@ declare module 'claude-code' {
         }[]
         types_more?: boolean
         dashboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+        }
+        motion_type?: {
           title: string
           type_url: string
           description?: string
@@ -17733,6 +17793,12 @@ declare module 'claude-code' {
           description?: string
           tier?: string
         }
+        motion_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+        }
         types_unavailable?: boolean
         types_ruled?: boolean
         types_ambiguous?: boolean
@@ -18531,6 +18597,12 @@ declare module 'claude-code' {
           description?: string
           tier?: string
         }
+        motion_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+        }
         types_unavailable?: boolean
         types_ruled?: boolean
         types_ambiguous?: boolean
@@ -19324,6 +19396,12 @@ declare module 'claude-code' {
         }[]
         types_more?: boolean
         dashboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+        }
+        motion_type?: {
           title: string
           type_url: string
           description?: string
