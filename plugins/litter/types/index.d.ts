@@ -409,7 +409,9 @@ export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
 // design runs the bar × version matrix (decision 10) above their last
 // records; fanout and plan runs a header and their last records. Texts are
 // cleaned and cut, and colors are theme keys with a word or glyph beside
-// each, as in the swarm panes.
+// each, as in the swarm panes. Phase 5b (WP-DC): what needs you above the
+// table, each gate's reason and actions as Buttons with one primary, and
+// the empty state's next step.
 
 /** A status as drawn: its word, and the color and glyph beside it (15.6). */
 export type BoardStatus = { text: string; color: string; glyph: string }
@@ -454,6 +456,8 @@ export type BoardGateRow = {
   glyph: string
   /** Counted from the gate's verifies; 0 before the first. */
   attempt: number
+  /** The try the table shows (WP-DC): a gate in progress is on the one after a rejected attempt, and on its first before any verify; else `attempt`. */
+  attemptNow: number
   maxAttempts: number
   /** The last verdict's failing dimensions (`plan_adherence`…), empty when it passed or there is none. */
   failing: string[]
@@ -469,19 +473,27 @@ export type BoardGateRow = {
   actions: BoardGateAction[]
 }
 
+/** One cell of the gate table as the render laid it out (hooks/board/pane.tsx, gateLayout): its text padded to its column, the gap after it included, and its theme key. */
+export type BoardGateCell = { text: string; color?: string }
+
+/** The gate table laid out at the width it's drawn at: each row's cells (the id, the state, the try, the commit, the failing dimensions, the title: those that fit), and the line under the rows. */
+export type BoardGateLayout = { cells: BoardGateCell[][]; hint: string }
+
 /** The props of the gate table's Client (hooks/board/gates.tsx): plain JSON. */
 export type BoardGatesProps = {
   /** The run it draws, posted back with each pick so a stale one is caught. */
   run: string
   rows: BoardGateRow[]
   selected: string | null
+  /** Added by the render (the view has no width): the rows as the Client draws them. Absent, the module draws each row's id, state and title. */
+  layout?: BoardGateLayout
 }
 
 /** The selected gate's detail. */
 export type BoardGateDetail = {
   gate: string
-  /** The last verdict's dimensions, in VERDICT's order; empty before a verdict. */
-  dimensions: { name: string; pass: boolean; evidence: string; gaps: string[] }[]
+  /** The last verdict's dimensions, in VERDICT's order, each with its word (`plan adherence`); empty before a verdict. */
+  dimensions: { name: string; word: string; pass: boolean; evidence: string; gaps: string[] }[]
   /** The attempt the last verdict judged (the verify it cites); null before a verdict, or when the ledger doesn't say. */
   verdictAttempt: number | null
   /** The last verify: its id, how it ended (howEnded's words), and its log folder, absolute. */
@@ -496,13 +508,38 @@ export type BoardGateDetail = {
   gapBy: { who: 'critic' | 'executor'; attempt: number | null } | null
   /** The last verdict's `rule_clash`, or '' when it names none (or predates it), or the executor stopped after it. */
   ruleClash: string
+  /** Why the gate stands where it does, in plain words: "halted: the critic named a plan gap on attempt 2". */
+  reason: string
+  /**
+   * The gate's actions as the detail's Buttons (decision 9; the menu is a
+   * shortcut, not the only way): `board:<action>:<gate>`, each only where its
+   * row has it, the state's one primary first (a halted gate's critic note, an
+   * ended run's landed gate's copy), then the others in that order.
+   */
+  actions: BoardButton[]
+  /** [More] was pressed: the evidence and the gaps drawn whole, not cut to a line. */
+  more: boolean
 }
 
 /** A rule version the run delivered (`run.json.rules`), with its standing now (AD's loadRules). */
 export type BoardRuleRow = { ref: string; standing: string; color: string }
 
-/** One of the run's proposals, marked "proposed, not accepted". */
-export type BoardProposalRow = { text: string; source: string; gate: string | null; label: string }
+/** One of the run's proposals, marked "proposed, not accepted"; `waiting` while that's so, which the needs-you line counts. */
+export type BoardProposalRow = { text: string; source: string; gate: string | null; label: string; waiting: boolean }
+
+/**
+ * A line above the table (WP-DC): what needs you (`needs-you`, drawn with
+ * `⚑`: a halt on a gate, a plan gap or a rule clash, a run that halted or
+ * needs you, a proposal of this run waiting), or what runs on its own within
+ * its budget (`activity`, drawn with `↻`: a gate being retried, a repair swarm).
+ */
+export type BoardAttention = { kind: 'needs-you' | 'activity'; text: string }
+
+/** A next step an empty board names: the command in the link color, then what it does. */
+export type BoardNextStep = { command: string; does: string }
+
+/** No run to show: why, the next steps as commands, and the newest run of any workflow for [Open], when there is one. */
+export type BoardEmpty = { what: string; next: BoardNextStep[]; newest: { run: string; workflow: string } | null }
 
 /** One record of a fanout, plan or design run: its kind and a short summary. */
 export type BoardRecordRow = { seq: number; kind: string; text: string }
@@ -543,14 +580,16 @@ export type BoardSection = {
   text: string
 }
 
-/** One of the board's buttons. */
-export type BoardButton = { key: string; label: string }
+/** One of the board's buttons; `primary` for the view's one main action. */
+export type BoardButton = { key: string; label: string; primary?: boolean }
 
 export type BoardBody = {
-  title: SwarmSpan[]
+  /** An exception (a refused record tool, an unreadable run.json) or the last action's outcome; drawn above everything. */
   notice: SwarmNotice | null
   /** Null when there is no run to show. */
   header: BoardHeader | null
+  /** What needs you, then what runs on its own, in that order; drawn before the table. */
+  attention: BoardAttention[]
   /** Execute only. */
   gates: BoardGatesProps | null
   detail: BoardGateDetail | null
@@ -561,8 +600,10 @@ export type BoardBody = {
   rules: BoardRuleRow[]
   proposals: BoardProposalRow[]
   section: BoardSection | null
-  /** [Plan], [Diff G<n>] and [Rules], those that apply. The selected gate's actions are drawn from its row, under a static table. */
+  /** The run's material, all secondary: [Plan], [Diff G<n>] (the selected landed gate's), [Rules] and [Close], those that apply. The gate's own actions are the detail's. */
   buttons: BoardButton[]
+  /** Set when there is no run to show (`header` null). */
+  empty: BoardEmpty | null
   /** The run's ledger head the view was built from, so a rebuild with nothing new is skipped. */
   stamp: string
 }

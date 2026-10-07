@@ -4,6 +4,10 @@
 // Owner: phase 3, package AF. Phase 5 (package CD; COMMON decisions 9 and
 // 10): each gate row's menu items and full commit id, a design run's bar ×
 // version matrix and its records' lines, and the critic note section.
+// Phase 5b (WP-DC): what needs you (a halt, a waiting proposal) and what runs
+// on its own (a retry within its attempts, a repair swarm), each gate's
+// reason in plain words, its actions with the state's one primary, the
+// dimensions' words, and an empty board's next step.
 //
 // The navigation (the run shown, the selected row, the open section) lives
 // in module memory and is mirrored in $.store (BOARD_STORE_KEY), as the
@@ -23,9 +27,11 @@ import type { DesignCriterion, DesignVerdictBody } from '../records/design'
 import type { RunState } from '../lifecycle'
 import type { FoundRun } from '../litterdir'
 import type {
+  BoardAttention,
   BoardBody,
   BoardButton,
   BoardDesign,
+  BoardEmpty,
   BoardGateAction,
   BoardGateDetail,
   BoardGateRow,
@@ -33,6 +39,7 @@ import type {
   BoardHeader,
   BoardMatrixCell,
   BoardMatrixRow,
+  BoardNextStep,
   BoardProposalRow,
   BoardRecordRow,
   BoardRuleRow,
@@ -41,7 +48,6 @@ import type {
   BoardVersionLine,
   BoardView,
   SwarmNotice,
-  SwarmSpan,
 } from '../../types/index'
 import { headKey, readLedger } from '../ledgercore'
 import { RUN_ID, UNKNOWN_ID, planPath, proposalPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
@@ -91,6 +97,8 @@ export type BoardNav = {
   selected: string | null
   section: BoardSectionNav | null
   notice: SwarmNotice | null
+  /** The selected gate's [More]: its evidence and gaps whole. A pick of another gate folds them again. */
+  more: boolean
 }
 
 /** The $.store key the navigation is mirrored under, read back only by the session that wrote it. */
@@ -102,7 +110,7 @@ let boardNav: BoardNav | null = null
 let restored = false
 let rev = 0
 
-export const blankBoardNav = (arg: string | null): BoardNav => ({ arg, run: null, selected: null, section: null, notice: null })
+export const blankBoardNav = (arg: string | null): BoardNav => ({ arg, run: null, selected: null, section: null, notice: null, more: false })
 
 /** The board's navigation, or null while it was never opened in this session. */
 export const navOf = (): BoardNav | null => boardNav
@@ -130,6 +138,7 @@ export async function restoreBoardNav(p: Ports): Promise<void> {
       section:
         n.section && (n.section.kind === 'plan' || ((n.section.kind === 'diff' || n.section.kind === 'verdict') && typeof n.section.gate === 'string')) ? n.section : null,
       notice: null,
+      more: n.more === true,
     }
     rev++
   } catch (err) {
@@ -297,6 +306,22 @@ async function loadRunFiles(p: Ports, litterDir: string, run: string): Promise<R
 
 const DIMENSIONS = ['plan_adherence', 'tests_green', 'no_regressions', 'rules'] as const
 
+/** A dimension's short word, for a row: "plan ✕ tests ✕", not `PA TG` (COMMON-5B, "plain words over codes"). */
+export const DIM_WORD: Record<string, string> = { plan_adherence: 'plan', tests_green: 'tests', no_regressions: 'regressions', rules: 'rules' }
+/** A dimension spelled out, for the detail. */
+export const DIM_NAME: Record<string, string> = { plan_adherence: 'plan adherence', tests_green: 'tests green', no_regressions: 'no regressions', rules: 'rules' }
+
+const wordOf = (d: string): string => DIM_WORD[d] ?? oneLine(d, 24)
+
+/** The failing dimensions as the table's cell reads them: `plan ✕ tests ✕`, or '' when none failed. */
+export const failingWords = (failing: readonly string[]): string => failing.map(d => `${wordOf(d)} ✕`).join(' ')
+
+/** Dimensions as a list in words: `plan adherence and tests green`. */
+const spelled = (failing: readonly string[]): string => {
+  const words = failing.map(d => DIM_NAME[d] ?? oneLine(d, 24))
+  return words.length <= 1 ? (words[0] ?? '') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
+}
+
 /** A verdict with execute's four dimensions, from execute.js's critic or a plan-template swarm's (gate and attempt beside them). */
 type GateVerdict = { rec: StoredRecord; body: GateVerdictBody; gate: string | null; attempt: number | null }
 
@@ -409,9 +434,10 @@ export async function buildBoard(p: Ports, litterDir: string, run: string | null
   const picked = await resolveRun(p, litterDir, run)
   const refused = session().toolsRefused
   if (picked.run === null) {
-    const key = `none|${picked.why}|${rev}|${refused}`
+    const newest = await newestRun(p, litterDir)
+    const key = `none|${picked.why}|${rev}|${refused}|${newest?.run ?? ''}`
     if (cached?.key === key) return cached.view
-    const view: BoardView = { view: 'board', v: ++viewSeq, run: null, body: emptyBody(picked.why ?? 'no run to show', nav, refused) }
+    const view: BoardView = { view: 'board', v: ++viewSeq, run: null, body: emptyBody(picked.why ?? 'no run to show', run, newest, nav, refused) }
     cached = { key, view }
     return view
   }
@@ -424,13 +450,51 @@ export async function buildBoard(p: Ports, litterDir: string, run: string | null
   return view
 }
 
-const title = (...parts: SwarmSpan[]): SwarmSpan[] => [{ text: 'litter · board', bold: true }, ...parts]
+/** The newest run of any workflow (run.find's order), for an empty board's [Open]; null when there's none or the list fails. */
+async function newestRun(p: Ports, litterDir: string): Promise<{ run: string; workflow: string } | null> {
+  try {
+    const first = (await listRuns(p, litterDir))[0]
+    return first && typeof first.run === 'string' && RUN_ID.test(first.run) ? { run: first.run, workflow: oneLine(first.workflow ?? 'run', 16) } : null
+  } catch (err) {
+    p.log(`board: the runs couldn't be listed: ${errText(err)}`)
+    return null
+  }
+}
 
-function emptyBody(why: string, nav: BoardNav, refused: string | null): BoardBody {
+/** The workflows a skill starts, for an empty board's next step (a plan run comes from /litter:execute). */
+const STARTS: Record<string, BoardNextStep> = {
+  execute: { command: '/litter:execute', does: 'implements a plan, gate by gate' },
+  design: { command: '/litter:design', does: 'designs one against a written bar' },
+  fanout: { command: '/litter:fanout', does: 'runs independent tasks side by side' },
+  plan: { command: '/litter:execute', does: 'plans a goal into gates, then implements them' },
+}
+
+/** The newest run of each workflow the board is mostly opened on. */
+const SHOW_NEWEST: readonly BoardNextStep[] = [
+  { command: '/litter runs execute', does: 'shows the newest execute run' },
+  { command: '/litter runs design', does: 'shows the newest design run' },
+]
+
+/**
+ * No run to show (decision 21; COMMON-5B, "empty states name the next step"):
+ * with no run at all, the skills that start one (`/litter runs execute`
+ * would only show this again); with none of the workflow asked for, the
+ * skill that starts that one; else (a run id that isn't there, an argument
+ * that's neither) `/litter runs execute` and `design`. The newest run of any
+ * workflow gets [Open] when there is one.
+ */
+export function emptyOf(why: string, arg: string | null, newest: { run: string; workflow: string } | null): BoardEmpty {
+  const a = (arg ?? '').trim()
+  if (newest === null) return { what: why, next: [STARTS.execute!, STARTS.design!], newest: null }
+  const start = (WORKFLOW_ARGS as readonly string[]).includes(a) ? STARTS[a] : undefined
+  return { what: why, next: start ? [start] : [...SHOW_NEWEST], newest }
+}
+
+function emptyBody(why: string, arg: string | null, newest: { run: string; workflow: string } | null, nav: BoardNav, refused: string | null): BoardBody {
   return {
-    title: title(),
-    notice: refusedNotice(refused) ?? nav.notice ?? { level: 'info', text: `${why}: /litter runs <run | execute | design> opens one` },
+    notice: refusedNotice(refused) ?? nav.notice,
     header: null,
+    attention: [],
     gates: null,
     detail: null,
     design: null,
@@ -438,7 +502,8 @@ function emptyBody(why: string, nav: BoardNav, refused: string | null): BoardBod
     rules: [],
     proposals: [],
     section: null,
-    buttons: [{ key: 'board:rules', label: 'Rules' }],
+    buttons: [],
+    empty: emptyOf(why, arg, newest),
     stamp: '',
   }
 }
@@ -459,12 +524,19 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   let design: BoardDesign | null = null
   let records: BoardRecordRow[] = []
   let selectedRow: BoardGateRow | null = null
+  const attention: BoardAttention[] = []
+  const gateCtx: GateContext = { ended: st.open === null && st.ended, open: st.open !== null, repairSwarm: header.repairSwarm, more: nav.more }
   if (workflow === 'execute') {
     const table = await gateRows(p, litterDir, f, st, planText)
     const selected = table.rows.some(r => r.id === nav.selected) ? nav.selected! : defaultSelection(table.rows)
     gates = { run, rows: table.rows, selected }
     selectedRow = table.rows.find(r => r.id === selected) ?? null
-    detail = selected ? detailOf(table.facts.get(selected) ?? null, selected) : null
+    detail = selectedRow ? detailOf(table.facts.get(selectedRow.id) ?? null, selectedRow, gateCtx) : null
+    // The halted gate needs you whichever row is selected; a gate retried within its attempts is activity, not a decision.
+    for (const row of table.rows) {
+      if (row.state === 'halted') attention.push({ kind: 'needs-you', text: haltLine(row, detailOf(table.facts.get(row.id) ?? null, row, gateCtx)) })
+      else if (row.state === 'in progress' && row.attemptNow > 1) attention.push({ kind: 'activity', text: `repairing ${row.id}, try ${row.attemptNow} of ${row.maxAttempts}` })
+    }
   } else if (workflow === 'design') {
     design = designOf(f.json, f.records)
     records = recordRows(f.records, recordContext(f.json))
@@ -482,11 +554,23 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   buttons.push({ key: 'board:rules', label: 'Rules' })
   if (section) buttons.push({ key: 'board:close', label: 'Close' })
 
+  // A run that halted or needs you with no gate to name (a design, a fanout, a plan run): its end's reason.
+  const status = header.status.text
+  if (!attention.some(a => a.kind === 'needs-you') && (status === 'halted' || status === 'needs_user')) {
+    const reason = oneLine(st.latest?.end?.reason ?? st.launchEnd?.reason ?? '', 200)
+    attention.push({ kind: 'needs-you', text: `the run ${status === 'halted' ? 'halted' : 'needs you'}${reason ? `: ${reason}` : ''}` })
+  }
+  const waiting = proposals.filter(x => x.waiting).length
+  if (waiting > 0) attention.push({ kind: 'needs-you', text: `${waiting} rule${waiting === 1 ? '' : 's'} proposed in this run wait${waiting === 1 ? 's' : ''} for you in Rules` })
+  if (header.repairSwarm !== null) attention.push({ kind: 'activity', text: `repairing with swarm ${header.repairSwarm}, generation ${header.generation}` })
+  // What needs you first, then what runs on its own.
+  attention.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'needs-you' ? -1 : 1))
+
   const notice = refusedNotice(refused) ?? nav.notice ?? (f.json ? null : { level: 'warning' as const, text: `run.json of ${run} can't be read; the header is from the ledger` })
   return {
-    title: title({ text: ` · ${run}` }),
     notice,
     header,
+    attention,
     gates,
     detail,
     design,
@@ -495,6 +579,7 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
     proposals,
     section,
     buttons,
+    empty: null,
     stamp,
   }
 }
@@ -561,12 +646,14 @@ async function gateRows(
     rowFacts.set(l.id, { verifies: mf?.verifies.get(l.id) ?? [], verdict, stop: null, runDir: mDir })
     const file = await verdictPath(p, mDir, verdict)
     const oid = OID.test(l.commit) ? l.commit : null
+    const attempt = attemptOf(mf?.verifies.get(l.id))
     earlierRows.set(l.id, {
       id: l.id,
       title: oneLine(titleOf(l.id, ''), 120),
       state: 'landed',
       ...GATE_STATE.landed,
-      attempt: attemptOf(mf?.verifies.get(l.id)),
+      attempt,
+      attemptNow: attempt,
       maxAttempts: m && typeof m.json.args?.maxAttempts === 'number' ? (m.json.args.maxAttempts as number) : maxAttempts,
       failing: failingOf(verdict),
       verdictFile: file,
@@ -593,15 +680,18 @@ async function gateRows(
     rowFacts.set(g.id, { verifies, verdict, stop, runDir: f.dir })
     const file = await verdictPath(p, f.dir, verdict)
     const oid = land && OID.test(land.commit) ? land.commit : null
+    // The stop's attempt is one past its verifies' (output.ts, gateResultAt): the attempt it stopped on.
+    const attempt = Math.max(attemptOf(verifies), stop?.attempt ?? 0)
+    const failing = failingOf(verdict)
     workedRows.set(g.id, {
       id: g.id,
       title: oneLine(titleOf(g.id, g.title), 120),
       state,
       ...GATE_STATE[state],
-      // The stop's attempt is one past its verifies' (output.ts, gateResultAt): the attempt it stopped on.
-      attempt: Math.max(attemptOf(verifies), stop?.attempt ?? 0),
+      attempt,
+      attemptNow: state === 'in progress' ? tryOf(attempt, maxAttempts, failing, verdict) : attempt,
       maxAttempts,
-      failing: failingOf(verdict),
+      failing,
       verdictFile: file,
       commit: land ? shortSha(land.commit) || null : null,
       oid,
@@ -652,18 +742,89 @@ function defaultSelection(rows: readonly BoardGateRow[]): string | null {
   return (rows.find(r => r.state !== 'landed') ?? rows.at(-1))?.id ?? null
 }
 
-function detailOf(facts: RowFacts | null, gate: string): BoardGateDetail {
+/** What a gate's reason and actions read beside its facts: the run ended, a generation is open, its repair swarm, [More]. */
+type GateContext = { ended: boolean; open: boolean; repairSwarm: string | null; more: boolean }
+
+/**
+ * The attempt a gate in progress is on: one past its last verify once the
+ * verdict on that attempt rejected it, else that attempt (at least the
+ * first), as the band counts it (band/view.ts, attemptOf).
+ */
+function tryOf(attempt: number, maxAttempts: number, failing: readonly string[], verdict: GateVerdict | undefined): number {
+  return Math.min(maxAttempts, rejected(attempt, failing, verdict) ? attempt + 1 : Math.max(1, attempt))
+}
+
+/** The verdict on the gate's latest attempt rejected it. */
+const rejected = (attempt: number, failing: readonly string[], verdict: GateVerdict | undefined): boolean => verdict !== undefined && failing.length > 0 && verdict.attempt === attempt
+const sentBack = (row: BoardGateRow, verdict: GateVerdict | undefined): boolean => rejected(row.attempt, row.failing, verdict)
+
+const on = (attempt: number | null): string => (attempt !== null && attempt > 0 ? ` on attempt ${attempt}` : '')
+
+/** A halted gate's needs-you line: what stopped it, in one line. */
+function haltLine(row: BoardGateRow, d: BoardGateDetail): string {
+  if (d.planGap !== '') return `${row.id} halted on a plan gap${d.gapBy?.who === 'executor' ? ' the executor named' : ''}: ${oneLine(d.planGap, 300)}`
+  if (d.ruleClash !== '') return `${row.id} halted on a rule clash: ${oneLine(d.ruleClash, 300)}`
+  if (row.failing.length > 0) return `${row.id} halted: attempt ${row.attempt} of ${row.maxAttempts} failed ${spelled(row.failing)}`
+  return `${row.id} halted${on(row.attempt)}`
+}
+
+/** Why a gate stands where it does, in plain words (report.md item 2). */
+function reasonOf(row: BoardGateRow, d: Omit<BoardGateDetail, 'reason' | 'actions' | 'more'>, ctx: GateContext, verdict: GateVerdict | undefined): string {
+  const of = `of ${row.maxAttempts}`
+  switch (row.state) {
+    case 'landed':
+      if (row.earlier !== null) return `landed${row.commit ? ` ${row.commit}` : ''} in ${row.earlier}`
+      return `landed${row.commit ? ` ${row.commit}` : ''}${row.attempt > 0 ? ` on attempt ${row.attempt} ${of}` : ''}`
+    case 'halted':
+      if (d.planGap !== '') return d.gapBy?.who === 'executor' ? `halted: the executor stopped on a plan gap${on(d.gapBy.attempt)}` : `halted: the critic named a plan gap${on(d.gapBy?.attempt ?? null)}`
+      if (d.ruleClash !== '') return `halted: the critic named a rule clash${on(d.verdictAttempt)}`
+      if (row.failing.length > 0) return `halted: attempt ${row.attempt} ${of} failed ${spelled(row.failing)}`
+      return row.attempt > 0 ? `halted on attempt ${row.attempt} ${of}` : 'halted before its first attempt was verified'
+    case 'in progress': {
+      if (sentBack(row, verdict)) {
+        const failed = `the critic sent attempt ${row.attempt} back (${spelled(row.failing)})`
+        return row.attempt < row.maxAttempts ? `${failed}, so attempt ${row.attempt + 1} ${of} is under way` : `${failed}, the last of its ${row.maxAttempts}`
+      }
+      if (row.attempt === 0) return `attempt 1 ${of} under way, not verified yet`
+      return verdict !== undefined && verdict.attempt === row.attempt ? `attempt ${row.attempt} ${of} passed the critic, landing` : `attempt ${row.attempt} ${of} verified, waiting for the critic`
+    }
+    case 'repairing':
+      return ctx.repairSwarm !== null ? `the repair swarm ${ctx.repairSwarm} is working on it` : 'a repair swarm is working on it'
+    case 'waiting':
+      return ctx.open ? 'waiting for the gates before it' : 'not reached: the run ended before it'
+  }
+}
+
+/** The detail's labels for a gate's actions. */
+const ACTION_WORD: Record<BoardGateAction, string> = { note: 'Critic note', copy: 'Copy commit', replay: 'Replay with /litter:amend' }
+
+/**
+ * A gate's actions as Buttons, each only where its row has it: the state's
+ * one primary first (a halted gate's critic note; an ended run's landed
+ * gate's copy; else none), then the critic note, copy and replay.
+ */
+export function gateButtons(row: BoardGateRow, ended: boolean): BoardButton[] {
+  const has = (a: BoardGateAction) => row.actions.includes(a)
+  const primary: BoardGateAction | null = row.state === 'halted' && has('note') ? 'note' : ended && row.state === 'landed' && has('copy') ? 'copy' : null
+  const order: BoardGateAction[] = ['note', 'copy', 'replay']
+  const list = [...(primary ? [primary] : []), ...order.filter(a => a !== primary && has(a))]
+  return list.map(a => ({ key: `board:${a}:${row.id}`, label: ACTION_WORD[a], ...(a === primary ? { primary: true } : {}) }))
+}
+
+function detailOf(facts: RowFacts | null, row: BoardGateRow, ctx: GateContext): BoardGateDetail {
+  const gate = row.id
   const v = facts?.verdict
   const last = facts?.verifies.at(-1)
   const stop = facts?.stop ?? null
   const judged = v && Number.isSafeInteger(v.attempt) && (v.attempt as number) > 0 ? (v.attempt as number) : null
   // The executor's stop after the last verdict wins, as it does for the bridge and the summary.
   const planGap = stop ? clean(stop.gap, 600) : v ? clean(v.body.plan_gap, 600) : ''
-  return {
+  const known: Omit<BoardGateDetail, 'reason' | 'actions' | 'more'> = {
     gate,
     dimensions: v
       ? DIMENSIONS.map(name => ({
           name,
+          word: DIM_NAME[name]!,
           pass: v.body[name].pass,
           evidence: clean(v.body[name].evidence, 600),
           gaps: (Array.isArray(v.body[name].gaps) ? v.body[name].gaps : []).slice(0, 10).map(g => oneLine(g, 300)),
@@ -676,6 +837,7 @@ function detailOf(facts: RowFacts | null, gate: string): BoardGateDetail {
     // Absent from a verdict recorded before it (WP-AH); a blank one names none, and a later executor stop replaces it.
     ruleClash: v && !stop ? clean(v.body.rule_clash, 600).trim() : '',
   }
+  return { ...known, reason: reasonOf(row, known, ctx, v), actions: gateButtons(row, ctx.ended), more: ctx.more }
 }
 
 // The other workflows: a record list
@@ -942,6 +1104,7 @@ async function proposalRows(p: Ports, litterDir: string, run: string, records: r
       source: oneLine(x.body.source, 40),
       gate: typeof x.body.gate === 'string' ? oneLine(x.body.gate, 32) : null,
       label: PROPOSAL_LABEL[x.status] ?? 'proposed, not accepted',
+      waiting: x.status === 'proposed',
     })
   }
   for (const r of records) {
@@ -951,6 +1114,8 @@ async function proposalRows(p: Ports, litterDir: string, run: string, records: r
       source: oneLine(typeof r.body.source === 'string' ? r.body.source : 'agent', 40),
       gate: typeof r.body.gate === 'string' ? oneLine(r.body.gate, 32) : null,
       label: 'proposed, not accepted',
+      // Not in a rules ledger, so Rules can't accept it: history, not something waiting on you.
+      waiting: false,
     })
   }
   return rows
