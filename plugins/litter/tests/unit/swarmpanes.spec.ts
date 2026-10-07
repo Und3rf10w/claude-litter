@@ -967,6 +967,26 @@ describe("WP-DD: the transcript's lines", () => {
     ])
     expect(toolLine({ tool: 'Edit', input: {}, isError: true, text: 'no match\nat line 3' }).at(-1)).toEqual({ text: ' ✕ no match', color: 'error' })
   })
+
+  test("the engine's own ToolUseSummary (`tool`, no `name`, no `text`) through the browser's transcript: `↳ Bash cd /x && grep -rn foo .`", async () => {
+    await saveRev1()
+    goLive()
+    p.transcripts.w1 = [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'u1', tool: 'Bash', input: { command: 'cd /x && grep -rn foo .' } }] }] as never
+    setNav({ ...blankNav('browser', SWARM), transcript: 'w1' })
+    await paneTick(p)
+    const t = shown<SwarmBrowserView>().transcript!
+    expect(t.readable).toBe(true)
+    // As WP-DF's Agents messageLine: ↳ faint, the tool bold in the label color, its argument muted; no outcome yet, said so.
+    expect(t.lines).toEqual([
+      [
+        { text: '  ↳ ', color: 'subtle' },
+        { text: 'Bash', color: 'text', bold: true },
+        { text: ' cd /x && grep -rn foo .', color: 'inactive' },
+        { text: ' · no outcome recorded', color: 'inactive' },
+      ],
+    ])
+    expect(t.lines[0]!.map(s => s.text).join('').trim()).toMatch(/^↳ Bash cd \/x && grep -rn foo \./)
+  })
 })
 
 describe('WP-DD: the primary per state, the start list top, Doctor', () => {

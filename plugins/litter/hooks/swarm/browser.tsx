@@ -12,11 +12,11 @@
 // Contract owner: phase 2b-1, package N.
 //
 // Phase 5b (WP-DD): each view's first line is its swarm's name and state
-// (builder.tsx's titleRow), under the hub's `litter · Swarms`; exceptions
-// (ownership, a question, a used-up budget, flags) come first, then the
-// roster as the chrome's list, the summary, the composer, the actions, and
-// the events last. Inline or on a short pane the roster leads and the
-// summary is one line.
+// (builder.tsx's titleRow), under the hub's `litter · Swarms`; what needs you
+// (the lead's current proposals, the open questions) comes right under it,
+// then the exceptions (ownership, a used-up budget, flags), the roster as the
+// chrome's list, the summary, the composer, the actions, and the events last.
+// Inline or on a short pane the roster leads and the summary is one line.
 
 import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'

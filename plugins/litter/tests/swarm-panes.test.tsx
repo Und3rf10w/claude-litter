@@ -1108,6 +1108,20 @@ describe('the browser', () => {
     expect((await ui.find({ type: 'Text', text: /^ · no outcome recorded$/ }))?.props.color).toBe('inactive')
   })
 
+  test("the engine's ToolUseSummary, as view.ts's toolLine writes it (tier 2 builds it through the browser's transcript), draws `↳ Bash cd /x && grep -rn foo .`", async ($, on) => {
+    mock.store(on)
+    const line = [
+      { text: '  ↳ ', color: 'subtle' },
+      { text: 'Bash', color: 'text', bold: true },
+      { text: ' cd /x && grep -rn foo .', color: 'inactive' },
+      { text: ' · no outcome recorded', color: 'inactive' },
+    ]
+    views(on, { ...BROWSER, transcript: { ...BROWSER.transcript!, lines: [line] } })
+    const ui = await mountAt($, 100)
+    const rows = drawText(await ui.drawn(), 100)
+    expect(rows.find(r => r.includes('↳ Bash'))).toMatch(/^│ {3}↳ Bash cd \/x && grep -rn foo \. · no outcome recorded +│$/)
+  })
+
   test('a long transcript is a window at its newest lines, `↑ n earlier` muted under it', async ($, on) => {
     mock.store(on)
     const lines = Array.from({ length: 40 }, (_, i) => [{ text: `◆ ` , color: 'claude' }, { text: `line ${i + 1}` }])
