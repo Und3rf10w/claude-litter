@@ -12,10 +12,14 @@
 // session owns, taken back whole at session.start from its ledger, its
 // ownership ref and the $.store mirror, with a node the agent list shows
 // `waiting`, so it's parked at a full cap. The parked cases in detail are
-// tier 2 (tests/unit/admit.spec.ts).
+// tier 2 (tests/unit/admit.spec.ts). The same world shows a node's step going
+// on with the model and effort set for it (WP-DI), and a message from the
+// browser via a busy lead as a row in its conversation (2.1.293's
+// mock.session); their cases in detail are tune.spec.ts and messages.spec.ts.
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { SwarmBrowserView } from '../types/index'
 
 const SPAWN = {
   tool_use_id: 'tu-admit',
@@ -438,5 +442,113 @@ describe('a parked node keeps its place (WP-AJ)', () => {
     const again = await $.agent.spawn({ ...SPAWN, tool_use_id: 'tu-running', subagentType: 'Explore', parentAgentId: 'ag-1' })
     expect(again).toEqual({ deny: 'litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce); wait for one to finish' })
     expect(spawned).toEqual([])
+  })
+})
+
+/** Drains a step's stream; answers its result. */
+async function drain(s: AsyncGenerator<unknown, unknown>): Promise<unknown> {
+  for (;;) {
+    const r = await s.next()
+    if (r.done) return r.value
+  }
+}
+
+/** The recovered swarm's lead node running, the fixer done: what the agent list says in the tests below. */
+const LISTED = {
+  value: [
+    { id: 'ag-1', description: 'the lead node', type: TYPES.lead, status: 'running' as const },
+    { id: 'ag-f1', description: 'a fixer', type: TYPES.fixer, parentId: 'ag-1', status: 'completed' as const },
+  ],
+}
+
+/** The browser as the pane draws it, enough for [Send] to lead #1: the real view is tier 2's; the press reaches the real send. */
+const BROWSER: SwarmBrowserView = {
+  view: 'browser',
+  v: 1,
+  title: [{ text: 'alpha' }],
+  notice: null,
+  swarm: 'alpha',
+  launch: LAUNCH,
+  state: 'live',
+  readOnly: false,
+  lost: false,
+  owner: null,
+  budget: null,
+  summary: null,
+  rows: [],
+  flags: [],
+  events: [],
+  composer: { to: 'ag-1', address: 'lead#1', targets: [{ value: 'ag-1', label: 'lead' }], text: 'split the PR', route: 'lead', routes: [{ value: 'lead', label: 'Via lead' }] },
+  transcript: null,
+  tune: null,
+  selected: 'ag-1',
+  proposals: [],
+  confirmEnd: false,
+}
+
+describe("a node's model and effort, and a message through the lead (WP-DI, 2.1.293)", () => {
+  // The user's live look (2026-10-07): "right click here and see the model and effort level ... bonus points for adjustment".
+  test("a node's request goes on with the model and effort set for it, as the engine's step sees them", { timeoutMs: 20_000 }, async ($, on) => {
+    const part = PART[`litter.swarm.state.${LITTER}.alpha`]
+    mock.store(on, { [`litter.swarm.state.${LITTER}.alpha`]: { ...part, tuned: { 'ag-1': { model: 'claude-sonnet-5-5', effort: 'low' } } } })
+    mock.clock(on, { now: 5_000 })
+    world(on, { files: await ownedLedger(), owner: BLOB })
+    on('agent.list', async () => LISTED)
+    const seen: { model: string; effort?: unknown }[] = []
+    on('turn.step', async function* (_$, e) {
+      seen.push({ model: e.model, effort: e.effort })
+      yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    await drain($.turn.step({ turnId: 'turn-1', index: 0, model: 'claude-opus-5-5[1m]', effort: 'xhigh', messageCount: 3, agentId: 'ag-1' }))
+    // The lead's own step is the session's, untouched.
+    await drain($.turn.step({ turnId: 'turn-main', index: 0, model: 'claude-opus-5-5[1m]', effort: 'xhigh', messageCount: 3 }))
+    expect(seen).toEqual([
+      { model: 'claude-sonnet-5-5', effort: 'low' },
+      { model: 'claude-opus-5-5[1m]', effort: 'xhigh' },
+    ])
+  })
+
+  // The user, 2026-10-07: "get rid of the ability to queue messages and interject only". A busy lead reads it now.
+  test("the browser's message via a busy lead is a user row in the lead's conversation (mock.session)", { timeoutMs: 20_000 }, async ($, on) => {
+    mock.store(on, {
+      ...PART,
+      [`litter.swarm.composer.${LITTER}.alpha`]: { route: 'lead' },
+      'litter.hub': { v: 1, session: 'tier1-session', section: 'swarms' },
+      'litter.swarm.pane': {
+        v: 1,
+        session: 'tier1-session',
+        swarm: { view: 'browser', swarm: 'alpha', selected: 'ag-1', inputs: { 'swarm:browser:text:alpha': 'split the PR' } },
+        doctor: null,
+      },
+    })
+    const session = mock.session(on)
+    mock.clock(on, { now: 5_000 })
+    world(on, { files: await ownedLedger(), owner: BLOB })
+    on('agent.list', async () => LISTED)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    on('state.get', async (_$, e, next) => {
+      if (e.key === 'hub') return { value: { value: { view: 'hub', v: 1, section: 'swarms', live: [], tabs: [] }, version: 0 } }
+      if (e.key === 'swarmPane') return { value: { value: BROWSER, version: 0 } }
+      return next(e)
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    // The lead's turn under way: it reads the row in this turn.
+    await $.turn.start({ text: 'carry on', turnId: 'turn-lead' })
+    const ui = await $.ui.mount({
+      plugin: 'litter',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'litter',
+      props: { title: 'litter', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    })
+    await ui.press({ key: 'swarm:browser:send:alpha/lead#1' })
+    const rows = session.appended()
+    expect(rows.length).toBe(1)
+    const content = (rows[0]!.message as { type: string; content: { type: string; text: string }[] })
+    expect(content.type).toBe('user')
+    expect(content.content).toEqual([{ type: 'text', text: expect.stringContaining('for lead in swarm alpha, through you, to deliver now') }])
+    expect(content.content[0]!.text).toEndWith('<message>\nsplit the PR\n</message>')
   })
 })
