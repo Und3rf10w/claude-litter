@@ -37,7 +37,11 @@ export type SwarmOption = { value: string; label: string }
 export type SwarmViewCommon = {
   /** Bumped by every write of the view. */
   v: number
-  /** The header, left-aligned: the pane's top-right cell is the engine's ×. */
+  /**
+   * The body's first line (phase 5b, WP-DD): the swarm's name in the name
+   * color, then what the view shows and its state, muted or in a state's
+   * color with its word. The hub's header already says `litter · Swarms`.
+   */
   title: SwarmSpan[]
   notice: SwarmNotice | null
 }
@@ -64,6 +68,13 @@ export type SwarmTemplateForm = {
 }
 export type SwarmListRow = { name: string; goal: string; revision: number; nodes: number; live: boolean }
 
+/**
+ * A saved swarm that needs you (WP-DD, "wherever ⚑ is raised, the section
+ * shows it"): its current proposals (superseded ones aren't), and a live
+ * one's open questions, who asks and the first line.
+ */
+export type SwarmNeedsYou = { swarm: string; live: boolean; proposals: number[]; questions: { who: string; text: string }[] }
+
 export type SwarmStartView = SwarmViewCommon & {
   view: 'start'
   /** Why nothing here can act (no litter directory), or null. */
@@ -73,6 +84,8 @@ export type SwarmStartView = SwarmViewCommon & {
   templates: SwarmTemplateRow[]
   template: SwarmTemplateForm | null
   swarms: SwarmListRow[]
+  /** The saved swarms that need you: the banner above everything. */
+  needsYou: SwarmNeedsYou[]
 }
 
 // The builder (15.5).
@@ -115,6 +128,9 @@ export type SwarmTreeProps = {
 /** Who enforces a field (15.3): `—` is an unset authority field, which nothing checks. */
 export type SwarmBadge = 'engine' | 'litter' | 'prompt' | '—'
 
+/** The inspector's groups, in its order (WP-DD): the swarm's own fields on the lead's row, a node's under the other five. */
+export type SwarmFieldGroup = 'swarm' | 'execution' | 'limits' | 'tools' | 'paths' | 'authority'
+
 /** One inspector field: a Select (its first option "not set"), an Input, or text shown only. */
 export type SwarmField = {
   /** The element's key, `swarm:builder:<action>:<swarm>/<node>/<field>`. */
@@ -128,6 +144,8 @@ export type SwarmField = {
   /** What applies while it's unset ("not set: the parent's model"), or what's wrong with the value typed. */
   note: string | null
   noteColor: string | null
+  /** The heading it's drawn under. */
+  group: SwarmFieldGroup
 }
 
 export type SwarmInspector = { title: string; fields: SwarmField[] }
@@ -157,6 +175,8 @@ export type SwarmBuilderView = SwarmViewCommon & {
   live: boolean
   /** Why the draft can't be edited (the store can't be read), or null. */
   blocked: string | null
+  /** The draft's goal, whole, for its own wrapping row ('' when it has none). */
+  goal: string
   tree: SwarmTreeProps
   inspector: SwarmInspector
   brief: SwarmBriefPanel | null
@@ -166,10 +186,16 @@ export type SwarmBuilderView = SwarmViewCommon & {
   checking: boolean
   askLead: string
   saveAs: SwarmSaveAsForm | null
-  /** The lead's staged proposals not yet decided, by number. */
+  /** The lead's current proposals (staged, not decided, not superseded), by number. */
   proposals: number[]
   /** Those of them J can't read (a staged brief changed, its base revision gone): why, and [Reject]. */
   unreadable: { n: number; error: string }[]
+  /**
+   * Undecided proposals a later decided proposal or a later revision
+   * superseded (J's proposalStanding): "Older proposals", muted, each with
+   * [Reject], and [Reject all older]. They don't need you.
+   */
+  superseded: number[]
 }
 
 // A lead's proposal (15.5, "Asking the lead").
@@ -178,12 +204,16 @@ export type SwarmChangeRow = {
   index: number
   glyph: string
   color: string
+  /** The change in words, first (WP-DD): "Add surveyor · orchestrator · delegates to reader ≤2". */
+  words: string
+  /** The raw path and value, behind [Technical diff]. */
   path: string
   text: string
   reason: string | null
   conflict: boolean
-  /** Your value, when it's a conflict. */
+  /** Your value, when it's a conflict: as JSON, and in words. */
   yours: string | null
+  yoursWords: string | null
   picked: boolean
 }
 
@@ -218,6 +248,8 @@ export type SwarmProposalView = SwarmViewCommon & {
   /** Its decision, once made ("accepted all", …), else null. */
   decided: string | null
   picked: number
+  /** [Technical diff] is open: each change's raw path and value under its words. */
+  technical: boolean
 }
 
 // The browser (15.6).
@@ -229,11 +261,15 @@ export type SwarmNodeRow = {
   agentId: string | null
   depth: number
   name: string
+  /** `lead`, `orchestrator`, `worker` or `child`. */
+  role: string
   color: string | null
   dim: boolean
   status: string
   statusGlyph: string
   statusColor: string
+  /** It's alive (running, held, settling or starting): only then are Stop and Hard stop offered. */
+  running: boolean
   /** The call in flight, or ''. */
   tool: string
   turns: number | null
@@ -269,7 +305,12 @@ export type SwarmComposer = {
   offerQueue: boolean
 }
 
-export type SwarmTranscript = { agentId: string; name: string; readable: boolean; lines: SwarmSpan[] }
+/**
+ * An agent's transcript tail, read-only: each line a row of spans (a message's
+ * first line, a tool call's name, path and outcome where the transcript holds
+ * them, "no outcome recorded" where it doesn't).
+ */
+export type SwarmTranscript = { agentId: string; name: string; readable: boolean; lines: SwarmSpan[][] }
 
 /** Who owns a read-only swarm, and whether [Take over] can be offered. */
 export type SwarmOwnerPanel = { text: string; canTakeOver: boolean; why: string | null }
@@ -313,6 +354,8 @@ export type SwarmBrowserView = SwarmViewCommon & {
   transcript: SwarmTranscript | null
   /** The selected agentId. */
   selected: string | null
+  /** The lead's current proposals for this swarm: the needs-you banner's, each with [Review]. */
+  proposals: number[]
 }
 
 export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }
@@ -373,6 +416,8 @@ export type DoctorRowView = {
   id: string
   glyph: string
   color: string
+  /** The severity in a word, beside the glyph: `fails`, `warning`, `note`, `ok`. */
+  word: string
   title: string
   detail: string
   /** The need, this process's value and each settings source's, one line each. */

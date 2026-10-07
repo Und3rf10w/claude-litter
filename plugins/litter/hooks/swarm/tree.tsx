@@ -8,15 +8,19 @@
 // TREE_ACTIONS; the hooks module edits the draft and draws the tree again.
 //
 // Contract owner: phase 2b-1, package N.
+//
+// Phase 5b (WP-DD): its rows read as the chrome's list rows (ui/list.tsx,
+// ui/listmenu.tsx): `›` in the accent beside the selected row, which is bold
+// in the label color on the one background (SELECTED_BG); the row under the
+// pointer (or the keys) inverse; the detail muted. It links ui/style.ts, as
+// listmenu.tsx does (that file imports nothing).
 
 import type { ClientModule, ClientPointerEvent } from 'claude-code'
 import type { SwarmTreeProps, SwarmTreeRow } from '../../types/index'
+import { SELECTED_BG, SELECTED_MARK, STYLE } from '../ui/style'
 
-/**
- * hooks/ui/style.ts's keys this module paints, written out: a Client module
- * imports types only. tests/unit/colorguard.spec.ts checks each against STYLE.
- */
-const COLORS = { accent: 'claude', failed: 'error' } as const
+/** hooks/ui/style.ts's roles this module paints. */
+const COLORS = { accent: STYLE.accent, failed: STYLE.failed, muted: STYLE.muted, label: STYLE.label } as const
 
 type Action = 'select' | 'add' | 'attach' | 'duplicate' | 'delete' | 'up' | 'down'
 type Item = { label: string; action: Action | 'workers' | 'back' | 'close'; worker?: string; color?: string }
@@ -149,25 +153,31 @@ const Tree: ClientModule<SwarmTreeProps, State> = (props, surface) => {
 
   return (
     <Box flexDirection="column" minHeight={Math.max(rows.length, menuBottom)}>
-      {rows.length === 0 && <Text dimColor>no nodes</Text>}
+      {rows.length === 0 && <Text color={COLORS.muted}>no nodes</Text>}
       {rows.map((r, i) => {
         const isSelected = r.id === props.selected
         const isLit = i === lit
         return (
           <Box flexDirection="row">
-            <Text color={r.markColor ?? undefined}>{r.mark ? `${r.mark} ` : '  '}</Text>
-            <Text color={COLORS.accent}>{isSelected ? '› ' : isLit ? '· ' : '  '}</Text>
+            <Text color={r.markColor ?? undefined}>{r.mark ? r.mark : ' '}</Text>
+            <Text color={COLORS.accent}>{isSelected ? ` ${SELECTED_MARK} ` : '   '}</Text>
             <Text>{'  '.repeat(Math.max(0, r.depth))}</Text>
-            <Text color={r.color ?? undefined} dimColor={r.dim && !isLit && !isSelected} bold={isSelected} inverse={isLit && !isSelected}>
-              {r.label}
-            </Text>
-            {r.detail !== '' && <Text dimColor wrap="truncate-end">{`  ${r.detail}`}</Text>}
+            {isSelected ? (
+              <Text color={COLORS.label} backgroundColor={SELECTED_BG} bold>
+                {r.label}
+              </Text>
+            ) : (
+              <Text color={r.color ?? undefined} dimColor={r.dim && !isLit} inverse={isLit}>
+                {r.label}
+              </Text>
+            )}
+            {r.detail !== '' && <Text color={COLORS.muted} wrap="truncate-end">{`  ${r.detail}`}</Text>}
           </Box>
         )
       })}
       {menu !== null && target !== undefined && (
-        <Box position="absolute" top={menu.top} left={menu.left} width={MENU_W} flexDirection="column" borderStyle="round" borderColor="claude">
-          <Text dimColor>{` ${menu.workers ? 'add worker' : target.label}`.slice(0, MENU_W - 2).padEnd(MENU_W - 2)}</Text>
+        <Box position="absolute" top={menu.top} left={menu.left} width={MENU_W} flexDirection="column" borderStyle="round" borderColor={COLORS.accent}>
+          <Text color={COLORS.muted}>{` ${menu.workers ? 'add worker' : target.label}`.slice(0, MENU_W - 2).padEnd(MENU_W - 2)}</Text>
           {items.map((it, i) => (
             <Text color={it.color} inverse={i === menu.sel}>
               {` ${it.label}`.slice(0, MENU_W - 2).padEnd(MENU_W - 2)}

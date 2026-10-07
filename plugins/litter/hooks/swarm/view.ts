@@ -30,9 +30,12 @@ import type {
   SwarmComposer,
   SwarmEventRow,
   SwarmField,
+  SwarmFieldGroup,
   SwarmFlagRow,
   SwarmHistoryView,
   SwarmInspector,
+  SwarmListRow,
+  SwarmNeedsYou,
   SwarmNodeRow,
   SwarmNotice,
   SwarmOption,
@@ -70,7 +73,7 @@ import { headKey } from '../ledgercore'
 import { launchDir, swarmBriefPath, swarmDir, swarmProposalDir } from '../layout'
 import { repoOf } from '../lifecycle'
 import { readLaunchLedger } from '../records/swarm'
-import { IDENTITY, STYLE } from '../ui/style'
+import { IDENTITY, MARK, STYLE } from '../ui/style'
 import {
   binding,
   bindings,
@@ -93,6 +96,7 @@ import {
   acceptProposal,
   clearDraft,
   listSwarms,
+  proposalStanding,
   readDraft,
   readProposal,
   readSaved,
@@ -130,6 +134,7 @@ export type Owners = {
   acceptProposal: typeof acceptProposal
   rejectProposal: typeof rejectProposal
   undecidedProposals: typeof undecidedProposals
+  proposalStanding: typeof proposalStanding
   listTemplates: typeof listTemplates
   loadTemplate: typeof loadTemplate
   instantiate: typeof instantiate
@@ -165,6 +170,7 @@ export function owners(): Owners {
     acceptProposal,
     rejectProposal,
     undecidedProposals,
+    proposalStanding,
     listTemplates,
     loadTemplate,
     instantiate,
@@ -342,6 +348,10 @@ const strips = new Map<string, StripCheck>()
 const proposals = new Map<string, number[]>()
 /** The swarms whose list came from the spec ledger in this module's life. */
 const seeded = new Set<string>()
+/** Undecided proposals a later decision or revision superseded, by swarm (J's proposalStanding): the builder's older ones, never a ⚑. */
+const superseded = new Map<string, number[]>()
+/** The spec ledger's head seq each swarm's lists were read at: a draw reads them again once it moved (freshProposals). */
+const seededAt = new Map<string, number>()
 /** Proposals J couldn't read, with why, by `<swarm>/<n>`: the builder offers [Reject] for each. */
 const unreadable = new Map<string, string>()
 
@@ -400,26 +410,63 @@ export function dropProposal(name: string, n: number): void {
   unreadable.delete(`${name}/${n}`)
 }
 
-/** The swarm's staged proposals this session has been told of and not decided. */
-export const pendingProposals = (name: string): number[] => proposals.get(name) ?? []
+/**
+ * The swarm's current proposals: staged, not decided, and not superseded (a
+ * later proposal decided, or a revision saved since). What needs you: the
+ * hub's ⚑ and count, the browser's banner and the builder's [Review].
+ */
+export const pendingProposals = (name: string): number[] => {
+  const older = superseded.get(name) ?? []
+  return (proposals.get(name) ?? []).filter(n => !older.includes(n))
+}
+
+/** The swarm's undecided proposals that later decisions or revisions superseded, oldest first: the builder's "Older proposals". */
+export const supersededProposals = (name: string): number[] => superseded.get(name) ?? []
 
 /**
  * The swarm's undecided proposals from J's spec ledger, in place of what
- * module memory holds: after a reload, or a decision in another session. A
- * failed read leaves the list as it was.
+ * module memory holds: after a reload, or a decision in another session.
+ * Those a later decision or revision superseded (J's proposalStanding) are
+ * kept apart, as older. A failed read leaves the lists as they were.
  */
 export async function seedProposals(p: Ports, name: string): Promise<void> {
   const litterDir = session().litterDir
   if (!litterDir) return
   seeded.add(name)
   try {
-    const list = await owners().undecidedProposals(p, litterDir, name)
-    if (list.length === 0) proposals.delete(name)
-    else proposals.set(name, [...list])
-    for (const key of [...unreadable.keys()]) if (key.startsWith(`${name}/`) && !list.includes(Number(key.slice(name.length + 1)))) unreadable.delete(key)
+    const o = owners()
+    const head = await headSeq(p, swarmDir(litterDir, name))
+    const list = await o.undecidedProposals(p, litterDir, name)
+    const older = new Set((await o.proposalStanding(p, litterDir, name)).superseded)
+    const current = list.filter(n => !older.has(n))
+    const old = list.filter(n => older.has(n))
+    if (current.length === 0) proposals.delete(name)
+    else proposals.set(name, current)
+    if (old.length === 0) superseded.delete(name)
+    else superseded.set(name, old)
+    seededAt.set(name, head)
+    for (const key of [...unreadable.keys()]) if (key.startsWith(`${name}/`) && !current.includes(Number(key.slice(name.length + 1)))) unreadable.delete(key)
   } catch (err) {
     p.log(`swarm pane: the proposals of ${name} weren't read from its ledger: ${errText(err)}`)
   }
+}
+
+/**
+ * The swarm's proposal lists read again when its spec ledger moved since
+ * they were (a decision, a revision, a proposal staged): each Swarms view
+ * calls it before it says what needs you, so a proposal superseded in this
+ * session stops counting by the next draw.
+ */
+export async function freshProposals(p: Ports, name: string): Promise<void> {
+  const litterDir = session().litterDir
+  if (!litterDir || name === '') return
+  let head: number
+  try {
+    head = await headSeq(p, swarmDir(litterDir, name))
+  } catch {
+    return
+  }
+  if (seededAt.get(name) !== head) await seedProposals(p, name)
 }
 
 /** Whether this module's list for the swarm came from the ledger yet. */
@@ -462,6 +509,8 @@ export function resetViewForTests(): void {
   dismissedCards.clear()
   proposals.clear()
   seeded.clear()
+  superseded.clear()
+  seededAt.clear()
   unreadable.clear()
   fromTemplate.clear()
   viewSeq = 0
@@ -993,24 +1042,74 @@ const noteFor = (unset: boolean, def: { unset: string }, invalid: string | undef
       ? { note: `not set: ${def.unset}`, noteColor: COLOR.idle }
       : { note: null, noteColor: null }
 
+/**
+ * Each node field's heading in the inspector (WP-DD; the review's "group
+ * execution, limits, tools, paths, and authority"): what it runs as, how
+ * much of it runs, its tools, where it works, and what it may do to the repo.
+ */
+const GROUP_OF: Readonly<Record<string, SwarmFieldGroup>> = {
+  kind: 'execution',
+  task: 'execution',
+  model: 'execution',
+  'model.id': 'execution',
+  effort: 'execution',
+  permissionMode: 'execution',
+  report: 'execution',
+  maxTurns: 'limits',
+  spawns: 'limits',
+  serial: 'limits',
+  spawnOther: 'limits',
+  'tools.allow': 'tools',
+  'tools.deny': 'tools',
+  'bash.deny': 'tools',
+  worktree: 'paths',
+  'worktree.existing': 'paths',
+  'worktree.new.from': 'paths',
+  'worktree.new.branch': 'paths',
+  paths: 'paths',
+  verdicts: 'authority',
+}
+const groupOf = (path: string): SwarmFieldGroup => (path.startsWith('authority.') ? 'authority' : (GROUP_OF[path] ?? 'execution'))
+
 function inspectorFor(swarm: string, spec: SwarmSpec, target: RowTarget, inputs: Record<string, string>, ctx: FieldCtx): SwarmInspector {
   if (target.kind === 'lead') {
     const fields: SwarmField[] = [
-      { key: fieldKey(swarm, LEAD_ROW, 'name'), label: 'Name', kind: 'text', value: clean(spec.name, 40), options: [], placeholder: '', badge: null, note: null, noteColor: null },
+      { key: fieldKey(swarm, LEAD_ROW, 'name'), label: 'Name', kind: 'text', value: clean(spec.name, 40), options: [], placeholder: '', badge: null, note: null, noteColor: null, group: 'swarm' },
     ]
     for (const f of SWARM_FIELDS) {
       const key = fieldKey(swarm, LEAD_ROW, f.path)
       const raw = f.path === 'goal' ? spec.goal : spec.limits?.maxAgentsAtOnce
       const value = inputs[key] ?? (raw === undefined || raw === null ? '' : String(raw))
       const unset = raw === undefined || raw === ''
-      fields.push({ key, label: f.label, kind: 'input', value: clean(value, 2000), options: [], placeholder: f.placeholder, badge: f.badge, ...noteFor(unset, f, invalidInputs.get(key)) })
+      fields.push({
+        key,
+        label: f.label,
+        kind: 'input',
+        value: clean(value, 2000),
+        options: [],
+        placeholder: f.placeholder,
+        badge: f.badge,
+        ...noteFor(unset, f, invalidInputs.get(key)),
+        group: f.path === 'goal' ? 'swarm' : 'limits',
+      })
     }
     return { title: 'the swarm (the lead is this session)', fields }
   }
   const node = target.node
   const id = node.id
   const fields: SwarmField[] = [
-    { key: fieldKey(swarm, id, 'kind'), label: 'Kind', kind: 'text', value: node.kind === 'orchestrator' ? 'orchestrator (its parent is the lead)' : `worker${target.parent ? ` under ${target.parent.id}` : ''}`, options: [], placeholder: '', badge: null, note: null, noteColor: null },
+    {
+      key: fieldKey(swarm, id, 'kind'),
+      label: 'Kind',
+      kind: 'text',
+      value: node.kind === 'orchestrator' ? 'orchestrator (its parent is the lead)' : `worker${target.parent ? ` under ${target.parent.id}` : ''}`,
+      options: [],
+      placeholder: '',
+      badge: null,
+      note: null,
+      noteColor: null,
+      group: 'execution',
+    },
   ]
   for (const f of NODE_FIELDS) {
     if (f.only && f.only !== node.kind) continue
@@ -1030,6 +1129,7 @@ function inspectorFor(swarm: string, spec: SwarmSpec, target: RowTarget, inputs:
       placeholder: f.placeholder ?? '',
       badge,
       ...noteFor(unset && f.path !== 'model.id', f, invalidInputs.get(key)),
+      group: groupOf(f.path),
     })
     if (f.path === 'worktree') fields.push(...spawnFields(swarm, spec, node, inputs))
   }
@@ -1053,6 +1153,7 @@ function spawnFields(swarm: string, spec: SwarmSpec, node: SwarmNode, inputs: Re
       badge: 'litter',
       note: invalid ?? null,
       noteColor: invalid ? COLOR.failed : null,
+      group: 'limits',
     })
   }
   const others = workerIds(spec).filter(w => w !== node.id && !Object.hasOwn(spawns, w))
@@ -1066,6 +1167,7 @@ function spawnFields(swarm: string, spec: SwarmSpec, node: SwarmNode, inputs: Re
     badge: 'litter',
     note: Object.keys(spawns).length === 0 ? 'not set: it may spawn no swarm types' : null,
     noteColor: Object.keys(spawns).length === 0 ? COLOR.idle : null,
+    group: 'limits',
   })
   return out
 }
@@ -1204,8 +1306,13 @@ export async function ledgerStamp(p: Ports): Promise<string> {
 // ---------------------------------------------------------------------------
 // The start screen
 
-function title(...parts: SwarmSpan[]): SwarmSpan[] {
-  return [{ text: 'litter · ', bold: true }, ...parts]
+/**
+ * A view's first line (WP-DD): the swarm's name bold in the name color, then
+ * what the view shows, muted unless a part names its own color (a state's,
+ * beside its word). No `litter · `: the hub's header says it.
+ */
+function title(name: string | null, ...parts: SwarmSpan[]): SwarmSpan[] {
+  return [...(name ? [{ text: clean(name, 24), color: STYLE.name, bold: true }] : []), ...parts.map(s => (s.color ? s : { ...s, color: STYLE.muted }))]
 }
 
 export const templateId = (t: { scope: string; name: string }) => `${t.scope}:${t.name}`
@@ -1239,13 +1346,14 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
   const base = {
     view: 'start' as const,
     v: nextV(),
-    title: title({ text: 'new swarm', bold: true }),
+    // Not drawn: the start screen's headings say what it is.
+    title: title(null, { text: 'new swarm' }),
     notice: n.notice,
     name: clean(n.inputs['swarm:start:name'] ?? '', 24),
     ask: clean(n.inputs['swarm:start:ask'] ?? '', 2000),
   }
   if (!litterDir) {
-    return { ...base, blocked: `no litter directory: ${session().litterDirError ?? 'session.start found none'}`, templates: [], template: null, swarms: [] }
+    return { ...base, blocked: `no litter directory: ${session().litterDirError ?? 'session.start found none'}`, templates: [], template: null, swarms: [], needsYou: [] }
   }
   const o = owners()
   const problems: string[] = []
@@ -1293,7 +1401,25 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
     templates: listings.map(t => ({ id: templateId(t), name: clean(t.name, 60), description: oneLine(listedAs(t), 120), scope: t.scope })),
     template,
     swarms,
+    needsYou: await needsYouOf(p, swarms),
   }
+}
+
+/**
+ * The saved swarms that need you, for the start screen's banner (WP-DD,
+ * "wherever ⚑ is raised, the section shows it"): each one's current
+ * proposals, and the open questions of a live one, who asks and the first
+ * line. Superseded proposals aren't here.
+ */
+async function needsYouOf(p: Ports, swarms: readonly SwarmListRow[]): Promise<SwarmNeedsYou[]> {
+  const out: SwarmNeedsYou[] = []
+  for (const s of swarms) {
+    await freshProposals(p, s.name)
+    const questions = s.live ? openQuestions(s.name).map(q => ({ who: clean(q.node, 40), text: firstLine(q.text, 120) })) : []
+    const current = pendingProposals(s.name)
+    if (current.length > 0 || questions.length > 0) out.push({ swarm: s.name, live: s.live, proposals: [...current], questions })
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,13 +1433,14 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
   const blocked = (why: string): SwarmBuilderView => ({
     view: 'builder',
     v: nextV(),
-    title: title({ text: 'swarm builder · ', bold: true }, { text: clean(name, 24), bold: true }),
+    title: title(name, { text: ' · builder' }),
     notice: n.notice,
     swarm: name,
     base: 0,
     unsaved: false,
     live: live !== null && !live.readOnly,
     blocked: why,
+    goal: '',
     tree: empty,
     inspector: { title: '', fields: [] },
     brief: null,
@@ -1323,8 +1450,10 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     saveAs: null,
     proposals: [],
     unreadable: [],
+    superseded: [],
   })
   if (!litterDir) return blocked(`no litter directory: ${session().litterDirError ?? 'session.start found none'}`)
+  await freshProposals(p, name)
   let draft: Draft
   try {
     draft = await loadDraft(p, litterDir, name)
@@ -1345,10 +1474,10 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     view: 'builder',
     v: nextV(),
     title: title(
-      { text: 'swarm builder · ', bold: true },
-      { text: clean(name, 24), bold: true },
-      unsaved ? { text: ' (unsaved)', color: COLOR.draft } : { text: ` · rev ${draft.base}`, color: COLOR.draft },
-      ...(live && !live.readOnly ? [{ text: ' · live', color: COLOR.running }] : []),
+      name,
+      { text: ' · builder' },
+      unsaved ? { text: draft.base > 0 ? ` (unsaved) · over rev ${draft.base}` : ' (unsaved)', color: COLOR.draft } : { text: ` · rev ${draft.base}` },
+      ...(live && !live.readOnly ? [{ text: ` · ${MARK.running.glyph} live`, color: COLOR.running }] : []),
     ),
     notice: n.notice,
     swarm: name,
@@ -1356,6 +1485,7 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     unsaved,
     live: live !== null && !live.readOnly,
     blocked: null,
+    goal: clean(typeof spec.goal === 'string' ? spec.goal : '', 2000),
     // The Client draws each worker id as a menu label: cleaned, as every label is.
     tree: { swarm: name, rows, selected, editable: true, workers: workerIds(spec).map(w => clean(w, 40)) },
     inspector: inspectorFor(name, spec, target, n.inputs, { models }),
@@ -1369,6 +1499,7 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
       const error = unreadable.get(`${name}/${x}`)
       return error === undefined ? [] : [{ n: x, error: oneLine(error, 300) }]
     }),
+    superseded: [...supersededProposals(name)],
   }
 }
 
@@ -1574,11 +1705,13 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
       index,
       glyph,
       color,
+      words: changeWords(c),
       path: oneLine(c.path, 80),
       text,
       reason: c.reason === null ? null : oneLine(c.reason, 200),
       conflict: c.conflict,
       yours: c.conflict ? short(c.yours, 60) : null,
+      yoursWords: c.conflict ? valueWords(fieldOf(c), c.yours) : null,
       picked: picked.has(index),
     }
   })
@@ -1622,11 +1755,7 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
   return {
     view: 'proposal',
     v: nextV(),
-    title: title(
-      { text: 'swarm builder · ', bold: true },
-      { text: clean(name, 24), bold: true },
-      { text: ` · lead's proposal (rev ${pv.baseRevision} → ${savedRev + 1})`, color: COLOR.draft },
-    ),
+    title: title(name, { text: ` · the lead's proposal ${pv.n}` }, { text: ` · rev ${pv.baseRevision} → ${savedRev + 1}` }),
     notice: n.notice,
     swarm: name,
     n: pv.n,
@@ -1638,7 +1767,92 @@ async function buildProposal(p: Ports, n: SwarmNav): Promise<SwarmProposalView |
     counts,
     decided: pv.decided === null ? null : pv.decided === 'all' ? 'accepted all' : pv.decided === 'some' ? 'accepted some' : 'rejected',
     picked: changes.filter(x => x.picked).length + briefs.filter(x => x.picked && !x.withNode).length,
+    technical: n.diff === TECHNICAL_DIFF,
   }
+}
+
+/**
+ * [Technical diff]'s arg to the proposal's `diff` press (WP-DD): it opens in
+ * the navigation's `diff`, as a brief's diff does, so one of them is open at a
+ * time. No node id starts with `#` (NODE_ID), so no brief takes it.
+ */
+export const TECHNICAL_DIFF = '#technical'
+
+/** A change's field under its node (`model`, `authority.commit`, `spawns.reviewer`), or a spec field's path (`goal`). */
+const fieldOf = (c: { path: string; node?: string }): string =>
+  c.node !== undefined && c.path.startsWith(`nodes.${c.node}.`) ? c.path.slice(`nodes.${c.node}.`.length) : c.path
+
+/** A field's name in a change line: the inspector's label, lower-cased. */
+function fieldWords(field: string): string {
+  if (field === 'goal') return 'the goal'
+  if (field === 'limits.maxAgentsAtOnce') return 'max agents at once'
+  if (field === 'brief') return 'brief file'
+  const def = NODE_FIELDS.find(f => f.path === field)
+  return def ? def.label.trim().toLowerCase() : oneLine(field, 60)
+}
+
+/**
+ * A spec value in words, for a change line: a Select field's value by its
+ * option's label (`allowed`, `own branch`), a worktree by what it is, a list
+ * joined, text as written. Model and agent text, so cleaned and cut.
+ */
+export function valueWords(field: string, value: unknown): string {
+  if (value === undefined) return 'not set'
+  if (field === 'worktree' && isObj(value)) {
+    if ('existing' in value) return `existing ${oneLine(value.existing, 60)}`
+    const fresh: Record<string, unknown> = isObj(value.new) ? value.new : {}
+    return `new from ${oneLine(fresh.from, 30) || 'HEAD'} on ${oneLine(fresh.branch, 40) || 'a branch not named yet'}`
+  }
+  const def = NODE_FIELDS.find(f => f.path === field)
+  if (def?.kind === 'select' && def.options) {
+    try {
+      const probe = withPath({ id: 'x', kind: 'worker' }, field, value)
+      const v = def.get(probe)
+      const label = def.options(probe, { models: [] }).find(o => o.value === v && v !== '')?.label
+      if (label) return oneLine(label, 60)
+    } catch {
+      // As written, then.
+    }
+  }
+  if (typeof value === 'string') return value.trim() === '' ? 'empty' : oneLine(value, 80)
+  if (typeof value === 'boolean') return value ? 'yes' : 'no'
+  if (Array.isArray(value) && value.every(x => typeof x === 'string')) return value.length === 0 ? 'none' : oneLine(value.join(', '), 80)
+  return short(value, 80)
+}
+
+/**
+ * A proposal's change in words (WP-DD; the review's "Add surveyor /
+ * orchestrator / delegates to reader ≤2"): a node added with its kind, what
+ * it delegates to and its model; a node removed; a delegation; else
+ * `Set|Change|Unset <node> · <field> · <value>`. The raw path and value
+ * stay on the row for [Technical diff].
+ */
+export function changeWords(c: { path: string; node?: string; kind: 'added' | 'removed' | 'changed'; before?: unknown; after?: unknown }): string {
+  const node = c.node === undefined ? undefined : oneLine(c.node, 40)
+  if (node !== undefined && c.path === `nodes.${c.node}`) {
+    const n = c.kind === 'removed' ? c.before : c.after
+    const kind = isObj(n) && (n.kind === 'orchestrator' || n.kind === 'worker') ? n.kind : 'node'
+    if (c.kind === 'removed') return `Remove ${node} · ${kind}`
+    const parts = [`Add ${node}`, kind]
+    const spawns = isObj(n) && isObj(n.spawns) ? Object.entries(n.spawns) : []
+    if (spawns.length > 0) {
+      const named = spawns.slice(0, 4).map(([w, k]) => `${oneLine(w, 32)} ≤${oneLine(k, 6)}`)
+      parts.push(`delegates to ${named.join(', ')}${spawns.length > 4 ? ` and ${spawns.length - 4} more` : ''}`)
+    }
+    if (isObj(n) && typeof n.model === 'string' && n.model !== '') parts.push(oneLine(n.model, 40))
+    return parts.join(' · ')
+  }
+  const field = fieldOf(c)
+  const delegate = /^spawns\.(.+)$/.exec(field)
+  if (node !== undefined && delegate) {
+    const w = oneLine(delegate[1], 32)
+    if (c.kind === 'removed') return `${node} no longer delegates to ${w}`
+    return `${node} delegates to ${w} ≤${oneLine(c.after, 6)}${c.kind === 'changed' ? ` (was ≤${oneLine(c.before, 6)})` : ''}`
+  }
+  const what = node !== undefined ? `${node} · ${fieldWords(field)}` : fieldWords(field)
+  if (c.kind === 'added') return `Set ${what} · ${valueWords(field, c.after)}`
+  if (c.kind === 'removed') return `Unset ${what} · was ${valueWords(field, c.before)}`
+  return `Change ${what} · ${valueWords(field, c.before)} → ${valueWords(field, c.after)}`
 }
 
 /** The proposal's node-level changes (`nodes.<id>`, a node added or removed), by node: each one's change index. */
@@ -1742,9 +1956,11 @@ function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: 
       agentId: null,
       depth: 0,
       name: 'lead',
+      role: 'lead',
       color: null,
       dim: false,
       ...(leadBusy() ? { status: 'running', statusGlyph: '', statusColor: COLOR.running } : { status: 'idle', statusGlyph: '', statusColor: COLOR.idle }),
+      running: leadBusy(),
       tool: '',
       turns: null,
       tokens: '',
@@ -1770,11 +1986,14 @@ function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: 
       agentId: b.agentId,
       depth,
       name: clean(instanceName(b, all, listedAgent), 40),
+      role: b.kind,
       color: myColor,
       dim: b.kind !== 'orchestrator',
       status: st.word,
-      statusGlyph: st.glyph,
+      // A glyph beside every color (WP-DD): running and starting are ▸, between turns and the like ·.
+      statusGlyph: st.glyph || (st.color === COLOR.running ? MARK.running.glyph : MARK.idle.glyph),
       statusColor: st.color,
+      running: st.running,
       tool: call ? oneLine(call.tool, 40) : '',
       turns: t.turns,
       tokens: fmtTokens(sumTokens(t)),
@@ -1978,7 +2197,94 @@ export function openFlags(records: readonly StoredRecord[], all: readonly NodeBi
   return out.slice(-6)
 }
 
-const TRANSCRIPT_ROWS = 12
+/** The messages read for the transcript: the last ones. */
+const TRANSCRIPT_ROWS = 120
+/** The transcript's lines the view holds at most, the last ones; the browser draws a window over them (browser.tsx's transcriptWindow). */
+export const TRANSCRIPT_LINES = 200
+/** A message's tool calls drawn at most, one line each; the last says how many more. */
+const TOOLS_SHOWN = 6
+
+/** An engine-wrapped message (`<teammate-message teammate_id="…" …>…</teammate-message>`, a task notification, …): its tag, attributes and body. */
+const WRAPPED = /^<([a-z][a-z0-9-]*)((?:\s+[a-z_][a-z0-9_-]*="[^"]*")*)\s*>([\s\S]*?)<\/\1>/i
+const ATTR = /([a-z_][a-z0-9_-]*)="([^"]*)"/gi
+
+/**
+ * A message's text as the person reads it (WP-DD, as WP-DF's Agents section
+ * reads one): a message the engine wrapped in a tag is `from <name>: <first
+ * line>` (the sender from `teammate_id`, `from` or `name`), or `<tag>: <first
+ * line>` when the tag names no one; the body's own tags are dropped. Any
+ * other text is its first line. Model and agent text, so cleaned and cut.
+ */
+export function messageText(text: unknown): string {
+  const s = clean(text, 4000).trim()
+  const m = WRAPPED.exec(s)
+  if (!m) return firstLine(s, 200)
+  const attrs = new Map([...m[2]!.matchAll(ATTR)].map(a => [a[1]!.toLowerCase(), a[2]!]))
+  const who = attrs.get('teammate_id') ?? attrs.get('from') ?? attrs.get('name') ?? null
+  const body = firstLine(m[3]!.replace(/<[^>]*>/g, ' '), 160) || '(empty)'
+  const more = s.slice(m[0].length).trim() !== '' ? ' (+ more)' : ''
+  return who ? `from ${oneLine(who, 40)}: ${body}${more}` : `${oneLine(m[1], 40)}: ${body}${more}`
+}
+
+/**
+ * What a tool call worked on, its first argument where its input names one:
+ * a path (in the path color), else a command, pattern or address (muted),
+ * else its first text field's; null for none.
+ */
+export function toolTarget(input: unknown): SwarmSpan | null {
+  if (!isObj(input)) return null
+  for (const k of ['file_path', 'notebook_path', 'path']) if (typeof input[k] === 'string' && input[k] !== '') return { text: oneLine(input[k], 80), color: STYLE.path }
+  for (const k of ['command', 'pattern', 'url', 'query', 'description', 'prompt']) if (typeof input[k] === 'string' && input[k] !== '') return { text: firstLine(input[k], 60), color: STYLE.muted }
+  const first = Object.values(input).find((v): v is string => typeof v === 'string' && v.trim() !== '')
+  return first === undefined ? null : { text: firstLine(first, 60), color: STYLE.muted }
+}
+
+/**
+ * One tool call's line, in spans (the user's ask, 2026-10-07, as WP-DF's
+ * Agents transcript draws it): `↳` faint, the tool's name bold in the label
+ * color (as the engine draws a tool's name), its first argument muted (a
+ * path in the path color), `(+n more)` faint when the message made more
+ * calls than are drawn; then its outcome as the transcript holds it (`✓
+ * done`, `✕` and the error's first line), or "no outcome recorded" while it
+ * has none (in flight, or a transcript that stores none): never an outcome
+ * it doesn't hold.
+ */
+export function toolLine(t: unknown, more = 0): SwarmSpan[] {
+  const u = isObj(t) ? t : {}
+  const name = oneLine(u.tool ?? u.name ?? 'a tool', 40) || 'a tool'
+  const target = toolTarget(u.input)
+  const outcome: SwarmSpan =
+    u.isError === true
+      ? { text: ` ${MARK.failed.glyph} ${firstLine(u.text, 60) || 'error'}`, color: COLOR.failed }
+      : typeof u.text === 'string'
+        ? { text: ` ${MARK.done.glyph} done`, color: COLOR.done }
+        : { text: ' · no outcome recorded', color: STYLE.muted }
+  return [
+    { text: '  ↳ ', color: STYLE.faint },
+    { text: name, color: STYLE.label, bold: true },
+    ...(target ? [{ ...target, text: ` ${target.text}` }] : []),
+    ...(more > 0 ? [{ text: ` (+${more} more)`, color: STYLE.faint }] : []),
+    outcome,
+  ]
+}
+
+/**
+ * A message's line in spans: `◆` for the agent's own, `›` muted for what it
+ * was sent; a message the engine wrapped in a tag reads `from <name>: <first
+ * line>`, the name in the name color (messageText's words). Null for none.
+ */
+export function messageSpans(role: string, text: unknown): SwarmSpan[] | null {
+  const words = messageText(text)
+  if (words === '') return null
+  const mine = role === 'assistant'
+  const lead: SwarmSpan = mine ? { text: '◆ ', color: STYLE.accent } : { text: '› ', color: STYLE.muted }
+  const body = (s: string): SwarmSpan => (mine ? { text: s } : { text: s, color: STYLE.muted })
+  const from = /^from (.+?): /.exec(words)
+  if (from && WRAPPED.test(clean(text, 4000).trim())) {
+    return [lead, body('from '), { text: from[1]!, color: STYLE.name }, body(words.slice(from[0].length - 2))]
+  }
+  return [lead, body(words)]
+}
 
 async function transcriptOf(p: Ports, agentId: string, name: string): Promise<SwarmBrowserView['transcript']> {
   let rows
@@ -1988,14 +2294,15 @@ async function transcriptOf(p: Ports, agentId: string, name: string): Promise<Sw
     rows = null
   }
   if (rows === null) return { agentId, name, readable: false, lines: [] }
-  const lines: SwarmSpan[] = []
+  const lines: SwarmSpan[][] = []
   for (const m of rows.slice(-TRANSCRIPT_ROWS)) {
-    const tools = m.toolUses.map(t => oneLine((t as { name?: unknown }).name ?? 'tool', 24)).join(', ')
-    const text = firstLine(m.text, 200)
-    if (text !== '') lines.push({ text: `${m.role === 'assistant' ? '◆' : '›'} ${text}`, ...(m.role === 'user' ? { dim: true } : {}) })
-    if (tools !== '') lines.push({ text: `  ↳ ${tools}`, color: COLOR.subtle })
+    const said = messageSpans(m.role, m.text)
+    if (said) lines.push(said)
+    const uses = Array.isArray(m.toolUses) ? m.toolUses : []
+    const shown = uses.slice(0, TOOLS_SHOWN)
+    shown.forEach((t, i) => lines.push(toolLine(t, i === shown.length - 1 ? uses.length - shown.length : 0)))
   }
-  return { agentId, name, readable: true, lines }
+  return { agentId, name, readable: true, lines: lines.slice(-TRANSCRIPT_LINES) }
 }
 
 async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | SwarmBuilderView> {
@@ -2003,6 +2310,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   const s = liveSwarm(name)
   const litterDir = sessionDir()
   if (!s || !litterDir) return buildBuilder(p, { ...n, view: 'builder', notice: n.notice ?? { text: `${name} isn't live`, level: 'info' } })
+  await freshProposals(p, name)
   const now = await p.now()
   let listedArr: ListedAgent[] = []
   try {
@@ -2073,14 +2381,15 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     view: 'browser',
     v: nextV(),
     title: title(
-      { text: 'swarm ', bold: true },
-      { text: clean(name, 24), bold: true },
-      { text: ` · ${s.state === 'stopping' ? 'stopping' : 'live'} ${span(now - s.startedAt)}`, color: s.state === 'stopping' ? COLOR.waiting : COLOR.running },
+      name,
+      s.state === 'stopping'
+        ? { text: ` · ${MARK.warning.glyph} stopping ${span(now - s.startedAt)}`, color: COLOR.waiting }
+        : { text: ` · ${MARK.running.glyph} live ${span(now - s.startedAt)}`, color: COLOR.running },
       { text: ` · ${all.length} agent${all.length === 1 ? '' : 's'} · ${fmtTokens(sumTokens(total))} tokens` },
       // A repair swarm says which run it repairs (2b-2).
       ...(s.run ? [{ text: ` · repairs run ${oneLine(s.run.run, 40)}` }] : []),
-      ...(s.readOnly ? [{ text: ' · read-only', color: COLOR.idle }] : []),
-      ...(s.lost ? [{ text: ' · lost to another session', color: COLOR.failed }] : []),
+      ...(s.readOnly ? [{ text: ' · read-only' }] : []),
+      ...(s.lost ? [{ text: ` · ${MARK.failed.glyph} lost to another session`, color: COLOR.failed }] : []),
     ),
     notice,
     swarm: name,
@@ -2097,6 +2406,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     composer,
     transcript: tr ? await transcriptOf(p, tr, trName) : null,
     selected,
+    proposals: [...pendingProposals(name)],
   }
 }
 
@@ -2244,7 +2554,7 @@ async function buildHistory(p: Ports, n: SwarmNav): Promise<SwarmHistoryView | S
   return {
     view: 'history',
     v: nextV(),
-    title: title({ text: 'swarm ', bold: true }, { text: clean(name, 24), bold: true }, { text: ' · goal history', color: COLOR.subtle }),
+    title: title(name, { text: ' · goal history' }),
     notice: n.notice,
     swarm: name,
     entries,
@@ -2363,7 +2673,7 @@ async function buildRecovery(p: Ports, n: SwarmNav): Promise<SwarmRecoveryView |
   return {
     view: 'recovery',
     v: nextV(),
-    title: title({ text: 'swarm ', bold: true }, { text: clean(name, 24), bold: true }, { text: ' · recreated after a restart', color: COLOR.waiting }),
+    title: title(name, { text: ` · ${MARK.warning.glyph} recreated after a restart`, color: COLOR.waiting }),
     notice: n.notice,
     swarm: name,
     launch: card.launch,
@@ -2393,7 +2703,7 @@ async function buildUnsettled(p: Ports, n: SwarmNav): Promise<SwarmUnsettledView
   return {
     view: 'unsettled',
     v: nextV(),
-    title: title({ text: 'swarm ', bold: true }, { text: clean(name, 24), bold: true }, { text: ` · hasn't settled after ${span(now - progress.since)}`, color: COLOR.waiting }),
+    title: title(name, { text: ` · ${MARK.warning.glyph} hasn't settled after ${span(now - progress.since)}`, color: COLOR.waiting }),
     notice: n.notice,
     swarm: name,
     since: clockAt(progress.since),
@@ -2432,13 +2742,22 @@ export async function swarmView(p: Ports): Promise<SwarmPaneView | null> {
 
 const SOURCE_LABEL: Record<string, string> = { user: 'your user settings', project: 'project settings', local: 'local settings', policy: 'managed policy' }
 
+/** A check's severity in a word, beside its glyph (WP-DD): what it says of the check. */
+const SEVERITY_WORD: Record<HealthReport['rows'][number]['severity'], string> = { error: 'fails', warning: 'warning', info: 'note', ok: 'ok' }
+
 function doctorRow(r: HealthReport['rows'][number]): DoctorRowView {
   const values: string[] = []
   const v = r.values
   if (v?.need !== undefined) values.push(`needs ${v.need}`)
   if (v && ('process' in v || v.sources)) values.push(`this process: ${v.process === undefined ? 'not set' : oneLine(v.process, 40)}`)
   for (const [src, val] of Object.entries(v?.sources ?? {})) values.push(`${SOURCE_LABEL[src] ?? src}: ${oneLine(val, 40)}`)
-  return { id: oneLine(r.id, 40), ...SEVERITY[r.severity], title: oneLine(r.title, 120), detail: clean(r.detail, 600), values }
+  return { id: oneLine(r.id, 40), ...SEVERITY[r.severity], word: SEVERITY_WORD[r.severity] ?? 'note', title: oneLine(r.title, 120), detail: clean(r.detail, 600), values }
+}
+
+/** The doctor's rows, a failing check first (WP-DD): the errors, then the warnings, then the rest in J's order. */
+export function failingFirst(rows: readonly DoctorRowView[]): DoctorRowView[] {
+  const rank = (r: DoctorRowView) => (r.glyph === SEVERITY.error.glyph ? 0 : r.glyph === SEVERITY.warning.glyph ? 1 : 2)
+  return [...rows].sort((a, b) => rank(a) - rank(b))
 }
 
 /** [Test]'s row in J's report. */
@@ -2462,7 +2781,7 @@ export async function doctorView(p: Ports, opts: { test?: boolean } = {}): Promi
   }
   const body: DoctorPaneBody = {
     swarm: d.swarm,
-    title: title({ text: 'doctor', bold: true }, ...(d.swarm ? [{ text: ` · ${clean(d.swarm, 24)}`, bold: true }] : [{ text: ' · no swarm', color: COLOR.subtle }])),
+    title: d.swarm ? title(d.swarm, { text: " · its spec against this session's settings" }) : title(null, { text: "this session's settings, with no swarm's spec" }),
     notice: d.notice,
     rows: [],
     errors: 0,
@@ -2480,10 +2799,12 @@ export async function doctorView(p: Ports, opts: { test?: boolean } = {}): Promi
     body.warnings = report.warnings
     const kept = d.tested
     if (!opts.test && kept && !body.rows.some(r => r.id === kept.id)) {
-      body.rows.push(kept)
+      // A row kept from before WP-DD has no word yet.
+      body.rows.push({ ...kept, word: kept.word ?? (kept.glyph === SEVERITY.error.glyph ? 'fails' : kept.glyph === SEVERITY.warning.glyph ? 'warning' : 'ok') })
       if (kept.glyph === SEVERITY.error.glyph) body.errors++
       else if (kept.glyph === SEVERITY.warning.glyph) body.warnings++
     }
+    body.rows = failingFirst(body.rows)
     body.snippet = report.snippet ? clean(JSON.stringify(report.snippet, null, 2), 4000) : null
   } catch (err) {
     body.notice = { text: oneLine(`the health check didn't run: ${errText(err)}`, 300), level: 'error' }
