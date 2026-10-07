@@ -618,35 +618,45 @@ export type BoardView = { view: 'board'; v: number; run: string | null; body?: B
 // ---------------------------------------------------------------------------
 // The rules pane (phase 3, AF; plan 16.3, 16.8): the only place a rule is
 // accepted, dismissed or retired. Built by hooks/rules/paneview.ts from AD's
-// store.
+// store. Phase 5b (WP-DE): the rows are an in-pane list, the focused row's
+// description beside or under it, and what [Accept] writes on one line.
 
 export type RulesTab = 'proposed' | 'in-force'
 
 /** One row: a proposal, an unverified rule file, or a rule in force. */
 export type RulesRow = {
-  /** The row's element key: a proposal's `<store>:<seq>`, a file's rule id. */
+  /** The row's own key: a proposal's `<store>:<seq>`, a file's rule id. Its elements are `rules:<action>:<key>`. */
   key: string
   kind: 'proposal' | 'unverified' | 'accepted'
   /** Null for a proposal, which gets its id at [Accept]. */
   id: string | null
   version: number | null
+  /** A proposal's own or picked scope (an edit's is its rule's); null: none yet. */
   scope: string | null
   type: string
-  /** Its word, color and glyph: `proposed`, `unverified`, `accepted`, `accepted (committed)`. */
+  /** Its word, color and glyph: `proposed` or `unverified` (needs you), `in force` or `in force (committed)` (done). */
   status: BoardStatus
   when: string
   rule: string
-  /** Empty: "no paths: applies to every gate". */
+  /** Empty: the description's no-paths warning (paneview.ts's NO_PATHS, NO_PATHS_IN_FORCE, a ban's BAN_NO_PATHS). */
   paths: string[]
-  /** "local L-… overrides U-…", "matches no file", an unverified file's reason, a proposal's run and gate. */
+  /** Where it came from, in words: a proposal's source, why a file reads as unverified, how a rule in force was accepted. */
+  origin: string
+  /** "local L-… overrides U-…", "matches no file", what stays in force, a proposal's id to come. */
   notes: string[]
-  /** An edit proposal's diff against the version in force. */
+  /** An edit's diff against the version in force. */
   diff: SwarmSpan[] | null
   source: string | null
   /** The buttons it has: `accept`, `edit`, `dismiss`, `retire`. */
   actions: string[]
   /** In an import batch: whether it's checked. */
   checked?: boolean
+  /** In an import batch: the deepwork instance it came from (the batch's `instances[].id`). */
+  instance?: string
+  /** A proposal that edits a rule: the `id@version` it edits. Its scope is that rule's, so it has no scope to pick. */
+  edits?: string
+  /** What [Accept] does, as one line: the file it writes and who gets the rule. Absent where there's no [Accept]. */
+  consequence?: SwarmSpan[]
 }
 
 /** A focused import batch (16.8; decision 3). */
@@ -656,6 +666,8 @@ export type RulesBatch = {
   instances: { id: string; goal: string; date: string | null; archived: boolean }[]
   /** The row keys it preselected. */
   preselected: string[]
+  /** What [Accept selected] (or, with its preview open, [Confirm accept]) writes for the checked rows, as one line. Absent where nothing can be accepted. */
+  consequence?: SwarmSpan[]
 }
 
 /** What a press is waiting on: a scope to accept into, a project file to confirm, or a retire to confirm. */
@@ -665,13 +677,14 @@ export type RulesPending =
   | { kind: 'retire'; key: string }
 
 export type RulesBody = {
-  title: SwarmSpan[]
   notice: SwarmNotice | null
   counts: { proposed: number; inForce: number }
   rows: RulesRow[]
   batch: RulesBatch | null
-  /** The focused row's key, or null. */
+  /** The row picked (a press on it, [next], [previous]), else the one the pane was opened on, else the first: its description and its actions are drawn. Null with no rows. */
   focus: string | null
+  /** What [More] opened, taking the body: a row's whole description (its key), or `problems`; null when nothing is. */
+  more: string | null
   /** loadRules' problems, shown on the In force tab. */
   problems: string[]
   pending: RulesPending | null

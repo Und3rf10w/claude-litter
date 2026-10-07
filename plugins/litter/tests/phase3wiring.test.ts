@@ -157,7 +157,8 @@ describe('/litter runs and /litter rules', () => {
     expect((await run($, 'litter', 'rules')).text).toBe('Rules has no litter directory to read')
     const rules = await mountLitter($, 'desktop')
     expect((await rules.find({ type: 'Text', text: ' · Rules' }))?.text).toBe(' · Rules')
-    expect((await rules.find({ type: 'Text', text: 'litter · rules' }))?.text).toBe('litter · rules')
+    // Rules has no title of its own (WP-DE): the hub's header names it, and the body says why it's empty.
+    expect((await rules.find({ type: 'Text', text: 'this session has no litter directory' }))?.text).toContain("this session has no litter directory, so the rules can't be read")
     // Each section's view, then the hub's naming it.
     expect(writes.map(w => w.key)).toEqual(['board', 'hub', 'rulesPane', 'hub'])
     expect(writes[0]!.value).toEqual(expect.objectContaining({ view: 'board', v: 0, run: null }))
