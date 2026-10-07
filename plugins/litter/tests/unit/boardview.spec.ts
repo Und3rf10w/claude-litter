@@ -18,7 +18,23 @@ import { ledgerDir, planPath, runDir, runJsonPath, verdictFile, verifyLogDir } f
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
-import { blankBoardNav, boardStamp, buildBoard, deps, navOf, recordLine, resetBoardForTests, resolveRun, runStatusOf, setBoardNav, statusWord, utcAt } from '../../hooks/board/view'
+import {
+  DIM_NAME,
+  blankBoardNav,
+  boardStamp,
+  buildBoard,
+  deps,
+  emptyOf,
+  failingWords,
+  navOf,
+  recordLine,
+  resetBoardForTests,
+  resolveRun,
+  runStatusOf,
+  setBoardNav,
+  statusWord,
+  utcAt,
+} from '../../hooks/board/view'
 import { boardCommand, boardTick, handleBoard, onBoardUi, refreshBoard, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import { resetRulesPaneForTests } from '../../hooks/rules/pane'
@@ -261,7 +277,9 @@ describe('the execute gate table', () => {
     await haltedRun()
     const view = await buildBoard(p, litterDir, EXEC)
     expect(view.run).toBe(EXEC)
-    expect(view.body?.title).toEqual([{ text: 'litter · board', bold: true }, { text: ` · ${EXEC}` }])
+    // The halted gate needs you, in one line above the table (WP-DC); the ledger's own proposals don't wait in Rules.
+    expect(view.body!.attention).toEqual([{ kind: 'needs-you', text: 'G2 halted on a plan gap: the plan never says how long to wait between tries' }])
+    expect(view.body!.empty).toBeNull()
 
     const head = view.body!.header!
     expect(head.workflow).toBe('execute')
@@ -281,6 +299,7 @@ describe('the execute gate table', () => {
       color: 'success',
       glyph: '✓',
       attempt: 1,
+      attemptNow: 1,
       maxAttempts: 3,
       failing: [],
       verdictFile: null,
@@ -315,6 +334,11 @@ describe('the execute gate table', () => {
     expect(d.gapBy).toEqual({ who: 'critic', attempt: 2 })
     // A verdict recorded before rule_clash names none.
     expect(d.ruleClash).toBe('')
+    // In plain words: the dimensions spelled out, the reason, and the actions as Buttons; a halted gate with no critic note has no primary.
+    expect(d.dimensions.map(x => x.word)).toEqual(['plan adherence', 'tests green', 'no regressions', 'rules'])
+    expect(d.reason).toBe('halted: the critic named a plan gap on attempt 2')
+    expect(d.actions).toEqual([{ key: 'board:replay:G2', label: 'Replay with /litter:amend' }])
+    expect(d.more).toBe(false)
     // An execute run lists no records: the table is its view.
     expect(view.body!.records).toEqual([])
     expect(view.body!.buttons.map(b => b.key)).toEqual(['board:plan', 'board:rules'])
@@ -366,7 +390,19 @@ describe('the execute gate table', () => {
       const view = await board('20261003-stop', [result('G2', 1, 'blocked', GAP), end(1, 'halted', `G2 plan gap: ${GAP}`)])
       expect(rowOf(view, 'G2')).toEqual(expect.objectContaining({ state: 'halted', color: 'warning', glyph: '⚑', attempt: 1, failing: [], verdictFile: null }))
       expect(view.body!.gates!.selected).toBe('G2')
-      expect(view.body!.detail).toEqual({ gate: 'G2', dimensions: [], verdictAttempt: null, verify: null, planGap: GAP, gapBy: { who: 'executor', attempt: 1 }, ruleClash: '' })
+      expect(view.body!.detail).toEqual({
+        gate: 'G2',
+        dimensions: [],
+        verdictAttempt: null,
+        verify: null,
+        planGap: GAP,
+        gapBy: { who: 'executor', attempt: 1 },
+        ruleClash: '',
+        reason: 'halted: the executor stopped on a plan gap on attempt 1',
+        actions: [{ key: 'board:replay:G2', label: 'Replay with /litter:amend' }],
+        more: false,
+      })
+      expect(view.body!.attention).toEqual([{ kind: 'needs-you', text: `G2 halted on a plan gap the executor named: ${GAP}` }])
     })
 
     test("after the gate's last verdict it wins for the gap, and the verdict's clash; before it, the verdict's stand", async () => {
@@ -539,9 +575,14 @@ describe("the run's facts beside the table", () => {
     ])
     expect(proposalsAsked).toEqual([{ run: EXEC }])
     // The store's proposal, then the run ledger's older one; the critic's own line is the store's, not twice.
+    // Only the store's proposal waits for you: Rules can accept it, and not the run ledger's older line.
     expect(view.body!.proposals).toEqual([
-      { text: 'Every retry waits with backoff', source: 'critic', gate: 'G2', label: 'proposed, not accepted' },
-      { text: 'Name each retry', source: 'agent', gate: null, label: 'proposed, not accepted' },
+      { text: 'Every retry waits with backoff', source: 'critic', gate: 'G2', label: 'proposed, not accepted', waiting: true },
+      { text: 'Name each retry', source: 'agent', gate: null, label: 'proposed, not accepted', waiting: false },
+    ])
+    expect(view.body!.attention.map(a => [a.kind, a.text])).toEqual([
+      ['needs-you', 'G2 halted on a plan gap: the plan never says how long to wait between tries'],
+      ['needs-you', '1 rule proposed in this run waits for you in Rules'],
     ])
   })
 
@@ -575,6 +616,155 @@ describe("the run's facts beside the table", () => {
     await haltedRun()
     updateSession({ toolsRefused: 'managed policy refuses the litter MCP server' })
     expect((await buildBoard(p, litterDir, EXEC)).body!.notice).toEqual({ level: 'error', text: 'managed policy refuses the litter MCP server' })
+  })
+})
+
+describe('in plain words: the reason, what needs you, the one primary (WP-DC)', () => {
+  const detail = (view: BoardView) => view.body!.detail!
+  const pick = async (run: string, gate: string) => {
+    setBoardNav({ ...blankBoardNav(run), run, selected: gate })
+    return buildBoard(p, litterDir, run)
+  }
+
+  test('a gate sent back is retried, which is activity: "repairing G2, try 2 of 3", and its reason says why', async () => {
+    const run = '20261003-retry'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+    await record(run, [
+      verify('v-g1', 'G1', 1, true),
+      verdict('v-g1'),
+      land('G1', 'v-g1', landed, base),
+      verify('v-g2', 'G2', 1, false),
+      verdict('v-g2', { plan_adherence: dim(false, 'no backoff'), tests_green: dim(false, 'exit 1') }),
+    ])
+    const view = await buildBoard(p, litterDir, run)
+    // One attempt verified and sent back: the table shows the try it's on.
+    expect(rowOf(view, 'G2')).toEqual(expect.objectContaining({ state: 'in progress', attempt: 1, attemptNow: 2, failing: ['plan_adherence', 'tests_green'] }))
+    expect(view.body!.attention).toEqual([{ kind: 'activity', text: 'repairing G2, try 2 of 3' }])
+    expect(detail(view).reason).toBe('the critic sent attempt 1 back (plan adherence and tests green), so attempt 2 of 3 is under way')
+    // Going: no replay, and no primary.
+    expect(detail(view).actions).toEqual([])
+    const g1 = await pick(run, 'G1')
+    expect(detail(g1).reason).toBe(`landed ${landed.slice(0, 7)} on attempt 1 of 3`)
+    expect(detail(g1).actions).toEqual([{ key: 'board:copy:G1', label: 'Copy commit' }])
+  })
+
+  test('a first attempt under way, one verified and waiting for the critic, one that passed it; a gate waiting', async () => {
+    const run = '20261003-first'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+    let view = await buildBoard(p, litterDir, run)
+    expect(detail(view).reason).toBe('attempt 1 of 3 under way, not verified yet')
+    // Before its first verify a gate in progress is on its first try; one waiting is on none.
+    expect([rowOf(view, 'G1').attempt, rowOf(view, 'G1').attemptNow, rowOf(view, 'G2').attemptNow]).toEqual([0, 1, 0])
+    // A first attempt isn't a retry: nothing to say above the table.
+    expect(view.body!.attention).toEqual([])
+    expect(detail(await pick(run, 'G2')).reason).toBe('waiting for the gates before it')
+    await record(run, [verify('v-g1', 'G1', 1, true)])
+    expect(detail(await pick(run, 'G1')).reason).toBe('attempt 1 of 3 verified, waiting for the critic')
+    await record(run, [verdict('v-g1')])
+    view = await pick(run, 'G1')
+    expect(detail(view).reason).toBe('attempt 1 of 3 passed the critic, landing')
+    expect(view.body!.attention).toEqual([])
+  })
+
+  test('out of attempts: the halted gate needs you, its failing dimensions spelled out', async () => {
+    const run = '20261003-out'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: [{ id: 'G1', title: 'Parse the header' }], maxAttempts: 3 })
+    await record(run, [verify('v1', 'G1', 1, false), verify('v2', 'G1', 2, false), verify('v3', 'G1', 3, false), verdict('v3', { tests_green: dim(false, 'exit 1') }), end(1, 'failed', 'G1: out of attempts')])
+    const view = await buildBoard(p, litterDir, run)
+    expect(view.body!.attention).toEqual([{ kind: 'needs-you', text: 'G1 halted: attempt 3 of 3 failed tests green' }])
+    expect(detail(view).reason).toBe('halted: attempt 3 of 3 failed tests green')
+  })
+
+  test('a rule clash halts the gate on it; with its critic note, the note is the one primary', async () => {
+    const run = '20261003-clash'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+    await record(run, [verify('v-g1', 'G1', 1, true), verdict('v-g1'), land('G1', 'v-g1', landed, base), verify('v-g2', 'G2', 1, true), verdict('v-g2', { rule_clash: 'P-a and P-b clash' }), end(1, 'halted', 'G2: a rule clash')])
+    await p.fs.write(verdictFile(runDir(litterDir, run), 'G2', 1), '# G2, attempt 1\n')
+    const view = await buildBoard(p, litterDir, run)
+    expect(view.body!.attention).toEqual([{ kind: 'needs-you', text: 'G2 halted on a rule clash: P-a and P-b clash' }])
+    expect(detail(view).reason).toBe('halted: the critic named a rule clash on attempt 1')
+    expect(detail(view).actions).toEqual([
+      { key: 'board:note:G2', label: 'Critic note', primary: true },
+      { key: 'board:replay:G2', label: 'Replay with /litter:amend' },
+    ])
+    // The landed gate of the ended run: Copy commit, the primary.
+    expect(detail(await pick(run, 'G1')).actions).toEqual([
+      { key: 'board:copy:G1', label: 'Copy commit', primary: true },
+      { key: 'board:replay:G1', label: 'Replay with /litter:amend' },
+    ])
+  })
+
+  test('a repair generation: the swarm working is activity, the gate it repairs says so, and nothing is replayed', async () => {
+    const run = '20261003-fix'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 3 })
+    await record(run, [
+      verify('v-g1', 'G1', 1, true),
+      verdict('v-g1'),
+      land('G1', 'v-g1', landed, base),
+      verify('v-g2', 'G2', 1, false),
+      end(1, 'halted', 'G2: a plan gap'),
+      { kind: 'run.repair', body: { generation: 2, swarm: 'repair-0a1b2c', launch: '20261003-120000', budget: { rounds: 3 } } },
+    ])
+    const view = await buildBoard(p, litterDir, run)
+    expect(view.body!.attention).toEqual([{ kind: 'activity', text: 'repairing with swarm repair-0a1b2c, generation 2' }])
+    expect(detail(view).reason).toBe('the repair swarm repair-0a1b2c is working on it')
+    expect(detail(view).actions).toEqual([])
+    expect(detail(await pick(run, 'G1')).actions.map(a => a.key)).toEqual(['board:copy:G1'])
+  })
+
+  test('a run that ended done: every gate landed, the last selected, Copy commit its primary; nothing needs you', async () => {
+    const run = '20261003-done'
+    await record(run, [start('execute', run), launch()])
+    writeRunJson(run, 'execute', { gates: [GATES[0]], maxAttempts: 3 })
+    await record(run, [verify('v-g1', 'G1', 1, true), verdict('v-g1'), land('G1', 'v-g1', landed, base), end(1, 'done')])
+    const view = await buildBoard(p, litterDir, run)
+    expect(view.body!.header!.status.text).toBe('done')
+    expect(view.body!.attention).toEqual([])
+    expect(view.body!.gates!.selected).toBe('G1')
+    expect(detail(view).actions[0]).toEqual({ key: 'board:copy:G1', label: 'Copy commit', primary: true })
+  })
+
+  test('a run that needs you with no gate to name: its end\'s reason', async () => {
+    const run = '20261003-plan'
+    await record(run, [start('plan', run), launch(), end(1, 'needs_user', 'a question')])
+    writeRunJson(run, 'plan', {})
+    expect((await buildBoard(p, litterDir, run)).body!.attention).toEqual([{ kind: 'needs-you', text: 'the run needs you: a question' }])
+  })
+
+  test('no run: the next step as a command, and the newest run to open', async () => {
+    let view = await buildBoard(p, litterDir, null)
+    expect(view.run).toBeNull()
+    expect(view.body!.notice).toBeNull()
+    expect(view.body!.empty).toEqual({
+      what: 'no litter run yet',
+      next: [
+        { command: '/litter:execute', does: 'implements a plan, gate by gate' },
+        { command: '/litter:design', does: 'designs one against a written bar' },
+      ],
+      newest: null,
+    })
+    await record(FAN, [start('fanout', FAN), launch()])
+    writeRunJson(FAN, 'fanout', {})
+    setBoardNav(blankBoardNav('design'))
+    view = await buildBoard(p, litterDir, 'design')
+    expect(view.body!.empty).toEqual({ what: 'no design run yet', next: [{ command: '/litter:design', does: 'designs one against a written bar' }], newest: { run: FAN, workflow: 'fanout' } })
+    // A run id that isn't there: the newest of each workflow the board is mostly opened on.
+    expect(emptyOf("there's no run 20990101-none", '20990101-none', { run: FAN, workflow: 'fanout' }).next).toEqual([
+      { command: '/litter runs execute', does: 'shows the newest execute run' },
+      { command: '/litter runs design', does: 'shows the newest design run' },
+    ])
+  })
+
+  test('the dimensions in words: the row\'s "plan ✕ tests ✕", the detail\'s spelled out', () => {
+    expect(failingWords(['plan_adherence', 'tests_green'])).toBe('plan ✕ tests ✕')
+    expect(failingWords(['no_regressions', 'rules', 'something_new'])).toBe('regressions ✕ rules ✕ something_new ✕')
+    expect(failingWords([])).toBe('')
+    expect(Object.values(DIM_NAME)).toEqual(['plan adherence', 'tests green', 'no regressions', 'rules'])
   })
 })
 
@@ -674,6 +864,38 @@ describe("the pane's handlers", () => {
     ])
     expect(shownSection()).toBe('rules')
     expect(p.views.rules).toBeDefined()
+  })
+
+  test("[More] opens the selected gate's evidence whole and [Less] cuts it again; a pick folds it; another gate's [More] picks it", async () => {
+    await haltedRun()
+    await boardCommand(p, command(EXEC), next)
+    const more = () => (p.views.board as BoardView).body!.detail!.more
+    expect(more()).toBe(false)
+    expect(await onBoardUi.press(p, { element: 'board:more:G2' } as never, next)).toEqual({ element: 'board:more:G2' })
+    expect([navOf()?.more, more()]).toEqual([true, true])
+    await handleBoard(p, 'board:more:G2')
+    expect(more()).toBe(false)
+    await handleBoard(p, 'board:more:G2')
+    await handleBoard(p, 'board:select:G1')
+    expect([navOf()?.selected, more()]).toEqual(['G1', false])
+    await handleBoard(p, 'board:more:G2')
+    expect([navOf()?.selected, more()]).toEqual(['G2', true])
+    // Not a gate id: nothing moves.
+    await handleBoard(p, 'board:more:G2 --x')
+    expect(more()).toBe(true)
+  })
+
+  test("an empty board's [Open] shows the run it names; an argument that isn't a run id is dropped", async () => {
+    await haltedRun()
+    await boardCommand(p, command('design'), next)
+    const shown = () => p.views.board as BoardView
+    expect(shown().run).toBeNull()
+    expect(shown().body!.empty!.newest).toEqual({ run: EXEC, workflow: 'execute' })
+    await handleBoard(p, 'board:open:../x')
+    expect(shown().run).toBeNull()
+    await onBoardUi.press(p, { element: `board:open:${EXEC}` } as never, next)
+    expect(shown().run).toBe(EXEC)
+    expect(navOf()).toEqual(expect.objectContaining({ arg: EXEC, run: EXEC, selected: null, section: null }))
   })
 
   test('the tick writes only a view that changed; after a /clear, refreshBoard writes it again', async () => {

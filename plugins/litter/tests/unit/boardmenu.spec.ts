@@ -20,7 +20,7 @@ import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
 import { deps, navOf, resetBoardForTests, restoreBoardNav } from '../../hooks/board/view'
-import { boardCommand, handleBoard, onBoardUi, resetBoardPaneForTests } from '../../hooks/board/pane'
+import { boardCommand, gateLayout, handleBoard, onBoardUi, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetRulesPaneForTests } from '../../hooks/rules/pane'
 import { resetRulesViewForTests } from '../../hooks/rules/paneview'
 import Gates from '../../hooks/board/gates'
@@ -324,6 +324,41 @@ describe('copy', () => {
   })
 })
 
+describe("the selected gate's Buttons (WP-DC)", () => {
+  test('the menu\'s items as Buttons, keyed as the static ones; the one primary per state; each press does what its item does', async () => {
+    const file = await run()
+    // G2 halted: its critic note is the primary, then replay.
+    let d = shown().body!.detail!
+    expect(d.gate).toBe('G2')
+    expect(d.actions).toEqual([
+      { key: 'board:note:G2', label: 'Critic note', primary: true },
+      { key: 'board:replay:G2', label: 'Replay with /litter:amend' },
+    ])
+    await press('board:note:G2')
+    expect(shown().body!.section).toEqual(expect.objectContaining({ kind: 'verdict', path: file }))
+    await press('board:replay:G2')
+    expect(p.filled).toEqual(['/litter:amend G2 '])
+
+    // G1 landed, the run ended: Copy commit is the primary.
+    await handleBoard(p, 'board:select:G1')
+    d = shown().body!.detail!
+    expect(d.actions).toEqual([
+      { key: 'board:copy:G1', label: 'Copy commit', primary: true },
+      { key: 'board:replay:G1', label: 'Replay with /litter:amend' },
+    ])
+    await press('board:copy:G1')
+    expect(p.copied).toEqual([landed])
+  })
+
+  test('a run still going: no replay, and no primary, for the gate in progress or the landed one', async () => {
+    await run({ ended: false })
+    expect(shown().body!.gates!.rows.map(r => r.state)).toEqual(['landed', 'in progress'])
+    expect(shown().body!.detail!.actions).toEqual([{ key: 'board:note:G2', label: 'Critic note' }])
+    await handleBoard(p, 'board:select:G1')
+    expect(shown().body!.detail!.actions).toEqual([{ key: 'board:copy:G1', label: 'Copy commit' }])
+  })
+})
+
 describe('refusals', () => {
   test('a post drawn for another run is ignored with a toast', async () => {
     await run()
@@ -404,6 +439,7 @@ const gateRow = (id: string, actions: BoardGateRow['actions']): BoardGateRow => 
   color: 'success',
   glyph: '✓',
   attempt: 1,
+  attemptNow: 1,
   maxAttempts: 3,
   failing: [],
   verdictFile: null,
@@ -460,6 +496,7 @@ function mount(props: BoardGatesProps, size = { columns: 100, rows: 12 }) {
       return m ? { top: m.props.top as number, left: m.props.left as number } : null
     },
     texts: () => texts(tree),
+    tree: () => tree,
   }
 }
 
@@ -469,33 +506,33 @@ describe('the gate table Client (gates.tsx)', () => {
   test("a right-click on a row opens its menu, with only that row's items", () => {
     const ui = mount(PROPS)
     expect(ui.menu()).toBeNull()
-    // The header is the first row; G1 is the next.
-    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
+    // No header row (WP-DC: the pane's heading is above the Client): G1 is the first row.
+    ui.pointer({ type: 'down', x: 4, y: 0, button: 'right' })
     expect(ui.menu()).toEqual(['G1', 'replay with /litter:amend', 'copy commit', 'close'])
     expect(ui.posts).toEqual([])
     // A right-click on G2's row, the second one: the menu closes, and the next opens G2's.
-    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
     expect(ui.menu()).toBeNull()
-    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
     expect(ui.menu()).toEqual(['G2', 'replay with /litter:amend', 'open critic note', 'close'])
   })
 
   test('a row with no action opens no menu', () => {
     const ui = mount(PROPS)
-    ui.pointer({ type: 'down', x: 4, y: 3, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
     expect(ui.menu()).toBeNull()
     expect(ui.posts).toEqual([])
   })
 
   test('↑↓ and Enter pick an item, which posts { run, action, gate } and closes the menu', () => {
     const ui = mount(PROPS)
-    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 0, button: 'right' })
     ui.key('down')
     ui.key('return')
     expect(ui.posts).toEqual([{ run: EXEC, action: 'copy', gate: 'G1' }])
     expect(ui.menu()).toBeNull()
     // Up wraps to the last item, close, which posts nothing.
-    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 0, button: 'right' })
     ui.key('up')
     ui.key('return')
     expect(ui.posts).toHaveLength(1)
@@ -504,26 +541,26 @@ describe('the gate table Client (gates.tsx)', () => {
 
   test('a click on an item picks it; a click outside closes the menu and picks nothing', () => {
     const ui = mount(PROPS)
-    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
     const at = ui.menuAt()!
     // The frame's top border and the title, then the items: the note is the second.
     ui.pointer({ type: 'down', x: at.left + 3, y: at.top + 3, button: 'left' })
     expect(ui.posts).toEqual([{ run: EXEC, action: 'note', gate: 'G2' }])
     expect(ui.menu()).toBeNull()
 
-    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
     ui.pointer({ type: 'down', x: 99, y: 0, button: 'left' })
     expect(ui.menu()).toBeNull()
     expect(ui.posts).toHaveLength(1)
     // Left closes it from the keyboard too.
-    ui.pointer({ type: 'down', x: 4, y: 2, button: 'right' })
+    ui.pointer({ type: 'down', x: 4, y: 1, button: 'right' })
     ui.key('left')
     expect(ui.menu()).toBeNull()
   })
 
   test('→ opens the hovered row\'s menu from the keyboard; a click on a row still posts select', () => {
     const ui = mount(PROPS)
-    ui.pointer({ type: 'down', x: 4, y: 1, button: 'left' })
+    ui.pointer({ type: 'down', x: 4, y: 0, button: 'left' })
     expect(ui.posts).toEqual([{ run: EXEC, action: 'select', gate: 'G1' }])
     ui.key('right')
     expect(ui.menu()).toEqual(['G1', 'replay with /litter:amend', 'copy commit', 'close'])
@@ -533,18 +570,38 @@ describe('the gate table Client (gates.tsx)', () => {
 
   test('near the bottom row, the menu opens upwards so it stays inside the region', () => {
     const ui = mount(PROPS, { columns: 40, rows: 6 })
-    // G2, the second gate, is at y 2 of 6, and its menu is 3 + 3 rows: it opens from the top.
-    ui.pointer({ type: 'down', x: 30, y: 2, button: 'right' })
+    // G2, the second gate, is at y 1 of 6, and its menu is 3 + 3 rows: it opens from the top.
+    ui.pointer({ type: 'down', x: 30, y: 1, button: 'right' })
     expect(ui.menuAt()).toEqual({ top: 0, left: 10 })
     // With room below, it opens at the row: 40 columns wide, 30 for the menu, so it shifts left.
     const tall = mount(PROPS, { columns: 40, rows: 12 })
-    tall.pointer({ type: 'down', x: 30, y: 2, button: 'right' })
-    expect(tall.menuAt()).toEqual({ top: 2, left: 10 })
+    tall.pointer({ type: 'down', x: 30, y: 1, button: 'right' })
+    expect(tall.menuAt()).toEqual({ top: 1, left: 10 })
   })
 
-  test('the table draws the rows and the hint, with or without a menu', () => {
-    const ui = mount(PROPS)
-    expect(ui.texts().join('\n')).toContain('right-click or → for its actions')
-    expect(ui.texts().filter(t => t.startsWith('G'))).toEqual(['G1    ', 'G2    ', 'G3    '])
+  test("the table draws the hooks' layout and its hint; with none, each row's id, state and title", () => {
+    const laid = mount({ ...PROPS, layout: gateLayout(PROPS.rows, 60) })
+    expect(laid.texts().join('\n')).toContain('click a gate, ↑↓ enter, → or right-click for actions')
+    // The selection mark, then the layout's cells as they are: each padded with its gap, the last trimmed.
+    expect(laid.texts().slice(0, 5)).toEqual([' ', 'G1 ', '✓ landed ', 'try 1/3 ', 'gate G1'])
+    const bare = mount(PROPS)
+    expect(bare.texts().filter(t => t.startsWith('G'))).toEqual(['G1 ', 'G2 ', 'G3 '])
+    expect(bare.texts().join('\n')).toContain('right-click a gate for actions')
+  })
+
+  test('the selected row has the mark and is bold; the row under the pointer is inverse, in its own colors', () => {
+    const ui = mount({ ...PROPS, layout: gateLayout(PROPS.rows, 60) })
+    const rowsOf = () => (ui.tree() as El).children.flat().filter(isEl).filter(e => e.type === 'Box' && e.props.flexDirection === 'row')
+    const cellsOf = (row: El) => find(row.children, e => e.type === 'Box')!.children.flat().filter(isEl)
+    expect(rowsOf().map(r => textOf(r.children[0]))).toEqual([' ', '›', ' '])
+    expect(cellsOf(rowsOf()[1]!).every(c => c.props.bold === true)).toBe(true)
+    expect(cellsOf(rowsOf()[0]!).some(c => c.props.bold === true)).toBe(false)
+    // The state keeps its color until the row is lit.
+    expect(cellsOf(rowsOf()[0]!)[1]!.props.color).toBe('success')
+    ui.pointer({ type: 'move', x: 4, y: 0 })
+    expect(cellsOf(rowsOf()[0]!).every(c => c.props.inverse === true && c.props.color === undefined)).toBe(true)
+    // The selected row is never lit: its mark and bold say it.
+    ui.pointer({ type: 'move', x: 4, y: 1 })
+    expect(cellsOf(rowsOf()[1]!).some(c => c.props.inverse === true)).toBe(false)
   })
 })

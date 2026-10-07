@@ -317,7 +317,8 @@ describe('Runs through openSection, for the band and the card', () => {
     expect(await openBoard(p, '20990101-none')).toBe(true)
     const view = p.views.board as BoardView
     expect(view.run).toBeNull()
-    expect(view.body?.notice?.text).toContain("there's no run 20990101-none")
+    // WP-DC: the why is the empty state's, beside its next step.
+    expect(view.body?.empty?.what).toContain("there's no run 20990101-none")
   })
 
   test('with no litter directory, the board says so', async () => {
