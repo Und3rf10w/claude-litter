@@ -145,31 +145,58 @@ const tick = ($: Engine, row: number, by: number, column = 4) =>
 /** The ring moving onto `element`, as the person's Tab or click does. */
 const focus = ($: Engine, element: string) => $.ui.focus({ component: 'Pane', requestId: 'litter', plugin: 'litter', element, origin: { kind: 'person' } })
 
+/**
+ * Home's view in the `hub` atom (WP-DB: Home draws its groups under headings
+ * once the hub has written its part): a question under Needs you, a run under
+ * Recently ended with its window as the heading's note, and Doctor. Registered
+ * before world()'s store, so it wraps it; the store's version is kept.
+ */
+function holdHome(on: On): void {
+  const mark = (glyph: string, word: string, color: string) => ({ glyph, word, color })
+  const home = {
+    needsYou: [{ open: 'home:open:swarms:review', mark: mark('⚑', 'needs you', 'permission'), spans: [{ text: 'swarm ' }, { text: 'review', color: 'cyan_FOR_SUBAGENTS_ONLY' }, { text: ' · reviewer asks: tabs?' }] }],
+    running: [],
+    ended: [{ open: 'home:open:runs:20261005-x', mark: mark('✓', 'done', 'success'), spans: [{ text: 'execute ' }, { text: '20261005-x', color: 'cyan_FOR_SUBAGENTS_ONLY' }] }],
+    endedMinutes: 10,
+    others: [{ open: 'home:open:doctor', label: 'Doctor', text: 'checks' }],
+  }
+  const view = { view: 'hub', v: 1, section: 'home', live: [], tabs: [], focus: null, lists: {}, home }
+  on('state.get', async (_$, e, next) => {
+    const real = await next(e)
+    return e.key === 'hub' ? { value: { value: view, version: (real as { value?: { version?: number } }).value?.version ?? 0 } } : real
+  })
+}
+
 describe('the heading', () => {
   test('Home at 100 columns: the title, then a faint rule to the body\'s edge, on one row', async ($, on) => {
+    holdHome(on)
     world(on)
     const ui = await mount($, { bodyColumns: 100 })
-    const title = await ui.find({ type: 'Text', text: 'Sections' })
+    const title = await ui.find({ type: 'Text', text: 'Needs you' })
     expect(title?.props).toEqual(expect.objectContaining({ bold: true, color: 'suggestion' }))
     const rule = (await ui.findAll({ type: 'Text', text: /^─+$/ }))[0]
     expect(rule?.props.color).toBe('subtle')
-    // `Sections`, a gap, the rule: 100 cells.
-    expect(rule?.text.length).toBe(100 - 'Sections'.length - 1)
+    // `Needs you`, a gap, the rule: 100 cells.
+    expect(rule?.text.length).toBe(100 - 'Needs you'.length - 1)
     const rows = drawText(await ui.drawn(), 100)
-    expect(rows[rowOf(rows, 'Sections')]).toBe(`Sections ${'─'.repeat(91)}`)
+    expect(rows[rowOf(rows, 'Needs you')]).toBe(`Needs you ${'─'.repeat(90)}`)
   })
 
   test('Home narrow: a short rule still, the title cut first; and the note before the rule\'s end when it fits', async ($, on) => {
+    holdHome(on)
     world(on)
     const tiny = await mount($, { bodyColumns: 10 })
     const rows = drawText(await tiny.drawn(), 10)
-    expect(rows).toContain('Secti… ───')
+    expect(rows).toContain('Needs… ───')
     await tiny.unmount()
-    // 40 columns and 12 rows: four sections don't fit, so the note.
-    const narrow = await mount($, { bodyColumns: 40, bodyRows: 12 })
-    const at40 = drawText(await narrow.drawn(), 40)
-    expect(at40).toContain(`Sections ${'─'.repeat(6)} 4 more below the fold ──`)
-    expect((await narrow.find({ type: 'Text', text: '4 more below the fold' }))?.props.color).toBe('inactive')
+    // 50 columns: Recently ended's note, the window it covers; at 40 the rule would be too short for it, so no note.
+    const narrow = await mount($, { bodyColumns: 50 })
+    const at50 = drawText(await narrow.drawn(), 50)
+    expect(at50).toContain(`Recently ended ${'─'.repeat(12)} the last 10 minutes ──`)
+    expect((await narrow.find({ type: 'Text', text: 'the last 10 minutes' }))?.props.color).toBe('inactive')
+    await narrow.unmount()
+    const at40 = drawText(await (await mount($, { bodyColumns: 40 })).drawn(), 40)
+    expect(at40).toContain(`Recently ended ${'─'.repeat(25)}`)
   })
 
   test("the builder's section() is the chrome's heading: its rule fills the row by flex", async ($, on) => {
