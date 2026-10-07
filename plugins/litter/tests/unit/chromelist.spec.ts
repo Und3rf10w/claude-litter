@@ -377,7 +377,7 @@ describe("the list's Client props (list.tsx)", () => {
 // The section meta (WP-DA2, 1): a section that declares it fits
 
 const none: SectionMeta<never> = { fits: false, keys: () => [] }
-const TABLE: MetaTable = { runs: { fits: true, keys: () => [{ key: 'g', word: 'gates' }] }, swarms: none, rules: none, tasks: none, agents: none, doctor: none }
+const TABLE: MetaTable = { runs: { fits: true, keys: () => [{ key: 'g', word: 'gates' }] }, swarms: none, rules: none, tasks: none, agents: none, stats: none, doctor: none }
 
 describe('the section meta', () => {
   test('a section that fits is clipped to its rows in the dock; inline, or with no row count, it is drawn whole', () => {

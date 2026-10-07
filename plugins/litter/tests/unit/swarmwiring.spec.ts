@@ -335,6 +335,8 @@ describe("register.tsx's order and its renders", () => {
       'swarm pending',
       'swarms',
       'the gate opens',
+      // WP-DH: the swarms' spend counts from the session's total, first after the gate.
+      'swarm spend',
       'worktree.json',
       // WP-AQ: litterDir's .gitignore, once worktree.json has made the folder.
       '.gitignore',

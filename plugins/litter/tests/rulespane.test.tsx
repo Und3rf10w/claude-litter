@@ -577,7 +577,7 @@ const rowOf = (rows: readonly string[], part: string) => rows.findIndex(r => r.i
 function bodyRows(rows: readonly string[]): string[] {
   const from = rows.findIndex(r => /(^|\s)› [⚑✓] (Proposed|In force) \d/.test(r))
   expect(from).toBeGreaterThanOrEqual(0)
-  const keys = rows.findIndex((r, i) => i > from && /^(ctrl\+x tab gives the pane the keys|j\/k |right-click |1–7 )/.test(r))
+  const keys = rows.findIndex((r, i) => i > from && /^(ctrl\+x tab gives the pane the keys|j\/k |right-click |1–8 )/.test(r))
   const body = rows.slice(from, keys < 0 ? undefined : keys)
   while (body.length > 0 && body[body.length - 1]!.trim() === '') body.pop()
   return body

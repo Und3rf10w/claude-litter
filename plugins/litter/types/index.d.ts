@@ -1044,8 +1044,8 @@ export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
 // through each section's body renderer. Each section keeps its own view
 // above; this holds only what the hub draws itself.
 
-/** The pane's sections, in the strip's order (hotkeys 1–7). */
-export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'doctor'
+/** The pane's sections, in the strip's order (hotkeys 1–8). */
+export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'stats' | 'doctor'
 
 /** One section in the strip. */
 export type HubTab = {
@@ -1144,6 +1144,64 @@ export type ListClientProps = {
 }
 // ===== end hub section (owner: WP-DA) =====
 
+// ===== begin stats section (owner: WP-DH) =====
+// ---------------------------------------------------------------------------
+// Stats (phase 5b, WP-DH): what this session has spent, its context and its
+// rate limits, then each swarm's spend since launch and its tokens, the
+// lead's and each node's. Built by hooks/stats/view.ts, drawn by
+// hooks/stats/pane.tsx. Every figure is in words already (fmtTokens, `$1.23`).
+
+/** Tokens in words: uncached input, cache reads, cache writes, output, each `fmtTokens`'d; `turns` finished. */
+export type StatsTokens = { input: string; cacheRead: string; cacheWrite: string; output: string; turns: number }
+
+/** One row of a swarm's table: the lead's (its turns while the swarm was live), or a node's. */
+export type StatsRow = {
+  key: string
+  name: string
+  /** Its name's color: an orchestrator's own, the lead's; null for the name color. */
+  color: string | null
+  /** Its status glyph and color (▸ running); null for none. */
+  mark: { glyph: string; color: string } | null
+  tokens: StatsTokens
+}
+
+/** One live swarm. */
+export type StatsSwarm = {
+  name: string
+  /** `▸ live 2h 14m`, and its color. */
+  state: { text: string; color: string }
+  /** `$8.10`, or null before the first reading (the host keeps no cost ledger, or none was read yet). */
+  spend: string | null
+  /** What the spend counts, muted. */
+  spendNote: string
+  /** The lead's and every node's together. */
+  tokens: StatsTokens
+  /** The lead first, then its nodes in the tree's order. */
+  rows: StatsRow[]
+  /** Rows past the cap, not shown. */
+  hiddenRows: number
+}
+
+/** One rate-limit window: `5-hour`, `7-day`, `spend limit`; `used` as `23%`; `resets` in words or null; its color by how full. */
+export type StatsLimit = { label: string; used: string; resets: string | null; color: string }
+
+export type StatsBody = {
+  session: {
+    /** `$12.34`, or null where the host keeps no cost ledger. */
+    spend: string | null
+    /** `45k of 200k tokens · 22%`, or null before the first response. */
+    context: string | null
+    limits: StatsLimit[]
+  }
+  swarms: StatsSwarm[]
+  /** What couldn't be read. */
+  problems: string[]
+}
+
+/** The Stats section's view (the `litter` pane); `body` is absent until the first build is in. */
+export type StatsPaneView = { view: 'stats'; v: number; body?: StatsBody }
+// ===== end stats section (owner: WP-DH) =====
+
 declare module 'claude-code' {
   interface PluginState {
     litter: {
@@ -1158,6 +1216,8 @@ declare module 'claude-code' {
       agentsPane: AgentsPaneView | null
       // Phase 5b (WP-DA): the one pane's own view.
       hub: HubView | null
+      // Phase 5b (WP-DH): the Stats section.
+      statsPane: StatsPaneView | null
     }
   }
 }

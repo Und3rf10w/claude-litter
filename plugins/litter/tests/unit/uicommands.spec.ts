@@ -14,8 +14,8 @@ describe('registerLitterCommand', () => {
     expect(p.commands).toEqual([
       {
         name: 'litter',
-        description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents or Doctor",
-        argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]',
+        description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents, Stats or Doctor",
+        argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]',
         immediate: true,
       },
     ])

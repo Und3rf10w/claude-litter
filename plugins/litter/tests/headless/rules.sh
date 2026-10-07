@@ -89,12 +89,12 @@ sleep 15
 # prompt that draws a field would take it first). Tab walks the ring, the
 # pane's Button, Input and Select elements in tree order, the first Tab
 # landing on the first. The `litter` pane draws its section strip first (phase
-# 5b, WP-DA): with Rules shown, the other six sections' Buttons (Home, Runs,
-# Swarms, Tasks, Agents, Doctor) take the ring's first six places, so every
-# count below is the Rules body's place plus 6. Enter presses the held
+# 5b, WP-DA): with Rules shown, the other seven sections' Buttons (Home, Runs,
+# Swarms, Tasks, Agents, Stats, Doctor) take the ring's first seven places, so every
+# count below is the Rules body's place plus 7. Enter presses the held
 # button (space isn't bound); a held field takes typing, and its Enter sets
 # it, the field still held; esc gives the keyboard back. The strip's digit
-# hotkeys (1–7, while the pane holds the keyboard) never meet these presses,
+# hotkeys (1–8, while the pane holds the keyboard) never meet these presses,
 # which type no digit. The pane holds an element by its place in the
 # ring, so a press that changes the tree leaves that place on another
 # element: each press below starts again from ctrl-x tab, after a few
@@ -103,52 +103,17 @@ sleep 15
 # together.
 #
 # Rules (WP-DE): after the strip, its tab strip (the other tab, one Button:
-# place 7); the rows are lists drawn as Clients, no Tab stop, beside the
+# place 8); the rows are lists drawn as Clients, no Tab stop, beside the
 # picked row's detail. The left column's Buttons come first (the batch's
-# [Accept selected], 8), then the detail's: [previous] [next] (9, 10), each
-# scope but the picked one (an import's is project: user 11, local 12), the
+# [Accept selected], 9), then the detail's: [previous] [next] (10, 11), each
+# scope but the picked one (an import's is project: user 12, local 13), the
 # editor while it's open, then the row's [Accept] [Edit…] [Dismiss] and its
 # [Uncheck] or [Check]. Only the picked row's buttons are drawn, so `j`
 # ([next]'s hotkey while the pane holds the keyboard) picks the next row
 # first; a click on the row would too.
 #
 # Step 2: narrow the flag ban to a/** and accept it in project scope.
-# KEYS: ctrl-x tab into the pane; j picks live1's flag row ("$G_FLAG"), the second; then its [Edit…] (14 Tabs).
-key ctrl-x tab
-type j
-sleep 3
-key esc
-sleep 2
-key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
-sleep 3
-key esc
-sleep 2
-# KEYS: in its Paths field (13 Tabs), type a/** and set it (send a/**); then press [Done], two Tabs on.
-key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab
-send a/**
-sleep 3
-key tab tab enter
-sleep 3
-key esc
-sleep 2
-# KEYS: press that row's own [Accept], not the batch's [Accept selected] (which would also accept the preselected user guardrail); pick project if it asks the scope.
-# (An import is a project proposal already, so it doesn't ask: the file takes the body, [Confirm accept] and [Cancel] above it.) 13 Tabs.
-key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab enter
-sleep 5
-key esc
-sleep 2
-# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept], the first after the tab (8 Tabs).
-key ctrl-x tab
-key tab tab tab tab tab tab tab tab enter
-wait 120 ls $RL/*-rule.accept.json
-sleep 3
-key esc
-sleep 2
-# Step 3: dismiss the orchestrator proposal; the others stay pending.
-# KEYS: the first row is picked again; j picks the orchestrator row ("$G_ORCH"), then its [Dismiss] (15 Tabs).
+# KEYS: ctrl-x tab into the pane; j picks live1's flag row ("$G_FLAG"), the second; then its [Edit…] (15 Tabs).
 key ctrl-x tab
 type j
 sleep 3
@@ -156,6 +121,41 @@ key esc
 sleep 2
 key ctrl-x tab
 key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+sleep 3
+key esc
+sleep 2
+# KEYS: in its Paths field (14 Tabs), type a/** and set it (send a/**); then press [Done], two Tabs on.
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab
+send a/**
+sleep 3
+key tab tab enter
+sleep 3
+key esc
+sleep 2
+# KEYS: press that row's own [Accept], not the batch's [Accept selected] (which would also accept the preselected user guardrail); pick project if it asks the scope.
+# (An import is a project proposal already, so it doesn't ask: the file takes the body, [Confirm accept] and [Cancel] above it.) 14 Tabs.
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+sleep 5
+key esc
+sleep 2
+# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept], the first after the tab (9 Tabs).
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab enter
+wait 120 ls $RL/*-rule.accept.json
+sleep 3
+key esc
+sleep 2
+# Step 3: dismiss the orchestrator proposal; the others stay pending.
+# KEYS: the first row is picked again; j picks the orchestrator row ("$G_ORCH"), then its [Dismiss] (16 Tabs).
+key ctrl-x tab
+type j
+sleep 3
+key esc
+sleep 2
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.dismiss.json
 key esc
 sleep 2
@@ -164,9 +164,9 @@ until wc -c <$H_DIR/tty.txt >|$H_DIR/rules-mark
 send /litter rules
 sleep 10
 # KEYS: ctrl-x tab into the pane; press the [✓ In force 1] tab.
-# (/litter rules opens on the Proposed tab with no batch: the ring starts with the strip's six, then the other tab: 7 Tabs.)
+# (/litter rules opens on the Proposed tab with no batch: the ring starts with the strip's seven, then the other tab: 8 Tabs.)
 key ctrl-x tab
-key tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab enter
 sleep 10
 key esc
 sleep 2

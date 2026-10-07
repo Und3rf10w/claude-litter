@@ -1950,8 +1950,8 @@ const KIND_ORDER: Record<BindingKind, number> = { orchestrator: 0, worker: 1, ch
 export const questionTo = (q: Pick<Question, 'to'> | null): string | null =>
   !q || typeof q.to !== 'string' || q.to === '' ? null : q.to === 'lead' ? 'the lead' : clean(q.to, 40)
 
-/** The tree rows of a live swarm: the lead, then each orchestrator instance and what it spawned, in spec order. */
-function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: Set<string>): SwarmNodeRow[] {
+/** The tree rows of a live swarm: the lead, then each orchestrator instance and what it spawned, in spec order. Stats lists its nodes by them too (WP-DH). */
+export function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: Set<string>): SwarmNodeRow[] {
   const s = liveSwarm(name)
   const all = bindings(name)
   const order = new Map((s?.spec.nodes ?? []).map((x, i) => [x.id, i]))

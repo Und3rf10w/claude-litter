@@ -138,7 +138,7 @@ async function breakRebound($: Engine, sid: { value: string | null }): Promise<v
 }
 
 /** /litter, the one command (phase 5b, WP-DA): it replaced the six pane commands. */
-const LITTER = [{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]', immediate: true }]
+const LITTER = [{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]', immediate: true }]
 
 describe('/litter', () => {
   test('is registered at session.start, alone, and again after a /clear', async ($, on) => {

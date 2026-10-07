@@ -186,6 +186,7 @@ const TABS = [
   { section: 'rules', label: 'Rules', count: 2, needsYou: true },
   { section: 'tasks', label: 'Tasks', count: 3, needsYou: false },
   { section: 'agents', label: 'Agents', count: 2, needsYou: false },
+  { section: 'stats', label: 'Stats', count: null, needsYou: false },
   { section: 'doctor', label: 'Doctor', count: null, needsYou: false },
 ]
 const LIVE = [
@@ -246,10 +247,17 @@ async function haltedRun(files: Map<string, string>): Promise<void> {
 const golden = (columns: number, rows: readonly (readonly [string, string])[]): string[] => rows.map(([text, colors]) => (colors === '' ? text : `${text.padEnd(columns)}  | ${colors}`))
 const filled = (rows: readonly string[]): string[] => rows.filter(r => r.trim() !== '')
 
-const HEAD_QUIET: [string, string][] = [
+const QUIET_TABS = 'text bold, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle'
+// Eight tabs (WP-DH): at 60 columns Doctor goes to the strip's second row.
+const HEAD_QUIET = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   ['nothing running', 'inactive'],
-  ['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Doctor', 'text bold, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default'],
+  ...(c >= 100
+    ? ([['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Stats │ Doctor', `${QUIET_TABS}, default`]] as [string, string][])
+    : ([
+        ['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Stats │', QUIET_TABS],
+        ['Doctor', 'default'],
+      ] as [string, string][])),
 ]
 // Each tab's count muted after its label, its ⚑ in the needs-you color, a faint │ after every tab but the last.
 const BUSY_TABS = 'text bold, subtle, default, inactive, subtle, default, inactive, permission, subtle, default, inactive, permission, subtle, default, inactive, subtle'
@@ -258,17 +266,17 @@ const HEAD_BUSY = (c: number): [string, string][] => [
   // One line, cut to the pane (chrome's spansLine).
   [cut('▸ running: 1 run, 1 swarm · ⚑ needs you: 1 question, 1 proposal, 2 rules', c), 'background, default, subtle, permission'],
   ...(c >= 100
-    ? ([['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │ Agents 2 │ Doctor', `${BUSY_TABS}, default, inactive, subtle, default`]] as [string, string][])
+    ? ([['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │ Agents 2 │ Stats │ Doctor', `${BUSY_TABS}, default, inactive, subtle, default, subtle, default`]] as [string, string][])
     : ([
         ['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │', BUSY_TABS],
-        ['Agents 2 │ Doctor', 'default, inactive, subtle, default'],
+        ['Agents 2 │ Stats │ Doctor', 'default, inactive, subtle, default, subtle, default'],
       ] as [string, string][])),
 ]
 const KEYS = (c: number): [string, string][] =>
   c >= 100
-    ? [['1–7 section · tab next · enter press · esc back to the prompt', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive']]
+    ? [['1–8 section · tab next · enter press · esc back to the prompt', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive']]
     : [
-        ['1–7 section · tab next · enter press', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive'],
+        ['1–8 section · tab next · enter press', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive'],
         [' · esc back to the prompt', 'subtle, suggestion bold, inactive'],
       ]
 const rule = (title: string, c: number, note?: string): string => (note ? `${title} ${'─'.repeat(c - title.length - note.length - 5)} ${note} ──` : `${title} ${'─'.repeat(c - title.length - 1)}`)
@@ -326,22 +334,13 @@ const BUSY_BODY = (c: number): [string, string][] => [
 
 /**
  * MANY at 14 rows: no headings, needs you and running whole; at 100 the
- * ended runs counted and the others named on one line; at 60 (the strip and
- * the keys line take two rows each) those lines go too, left to the strip.
+ * ended runs counted (the others' line goes: focused, eight tabs with their
+ * digits are 102 cells, so the strip takes two rows, though tests/drawing.ts
+ * draws no digit and so one); at 60 (the strip and the keys line take two
+ * rows each) the ended line goes too, left to the strip.
  */
 const MANY_14: Record<number, [string, string][]> = {
-  100: [
-    ...HEAD_BUSY(100),
-    ROW.question(100),
-    ROW.proposal(100),
-    ROW.rules(100),
-    ROW.exec(100),
-    ROW.swarm(100),
-    ROW.fan(100),
-    ['3 ended in the last 10 minutes', 'inactive'],
-    ['Tasks, Agents, Doctor', 'inactive'],
-    ...KEYS(100),
-  ],
+  100: [...HEAD_BUSY(100), ROW.question(100), ROW.proposal(100), ROW.rules(100), ROW.exec(100), ROW.swarm(100), ROW.fan(100), ['3 ended in the last 10 minutes', 'inactive'], ...KEYS(100)],
   60: [...HEAD_BUSY(60), ROW.question(60), ROW.proposal(60), ROW.rules(60), ROW.exec(60), ROW.swarm(60), ROW.fan(60), ...KEYS(60)],
 }
 
@@ -351,7 +350,7 @@ describe('Home with nothing running and nothing waiting', () => {
       await start($, on)
       expect((await run($, '')).text).toBe('Home shows nothing running')
       const ui = await mount($, { bodyColumns: c })
-      expect(filled(drawWithColors(await ui.drawn(), c))).toEqual(golden(c, [...HEAD_QUIET, ...QUIET_BODY(c), ...KEYS(c)]))
+      expect(filled(drawWithColors(await ui.drawn(), c))).toEqual(golden(c, [...HEAD_QUIET(c), ...QUIET_BODY(c), ...KEYS(c)]))
       // No section with nothing to say: no Tasks, Agents or Runs line, and no 0.
       expect((await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('home:'))).toEqual(['home:open:swarms', 'home:open:doctor'])
       // Nothing needs you and nothing runs: no primary.
@@ -367,8 +366,9 @@ describe('Home with a run, a swarm and a waiting question', () => {
       const dock = await mount($, { bodyColumns: c })
       const drawn = drawWithColors(await dock.drawn(), c)
       expect(filled(drawn)).toEqual(golden(c, [...HEAD_BUSY(c), ...BUSY_BODY(c), ...KEYS(c)]))
-      // Docked, the keys line is at the pane's foot.
-      expect(drawn).toHaveLength(40)
+      // Docked, the keys line is at the pane's foot. At 100 the strip is planned two rows (its digits, which
+      // tests/drawing.ts doesn't draw, take it to 102 cells), so the drawing here is a row short of the pane.
+      expect(drawn).toHaveLength(c >= 100 ? 39 : 40)
       await dock.unmount()
       const inline = await mount($, { bodyColumns: c, placement: 'inline' })
       expect(filled(drawWithColors(await inline.drawn(), c))).toEqual(filled(drawn))
@@ -396,8 +396,9 @@ describe('Home with more rows than fit', () => {
         const ui = await mount($, { bodyColumns: c, bodyRows: 14, placement })
         const rows = drawWithColors(await ui.drawn(), c)
         expect({ placement, rows: filled(rows) }).toEqual({ placement, rows: golden(c, MANY_14[c]!) })
-        // The 14 rows whole: the gap under the strip and the one above the keys line are the blank ones.
-        expect({ placement, height: rows.length }).toEqual({ placement, height: 14 })
+        // The 14 rows whole: the gap under the strip and the one above the keys line are the blank ones (at 100 a
+        // row short, the strip's second row being its digits', which tests/drawing.ts doesn't draw).
+        expect({ placement, height: rows.length }).toEqual({ placement, height: c >= 100 ? 13 : 14 })
         await ui.unmount()
       }
     })

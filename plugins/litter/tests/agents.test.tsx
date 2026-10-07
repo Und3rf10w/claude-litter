@@ -506,8 +506,13 @@ const SESSION_ROWS = (columns: number): [string, string][] => [
 
 const TEAM_ROWS = (columns: number): [string, string][] => [
   [ruled('team team-b', columns, '3 members'), NAMED],
-  ['Show [ this session ] [ team-b ]', 'inactive, default dim, claude'],
-  ['3 ended teams hidden [ Show all ]', 'inactive, default dim'],
+  // At 60 columns the strip takes two rows (eight tabs, WP-DH), so in 30 the picker folds to its one line.
+  ...(columns >= 100
+    ? ([
+        ['Show [ this session ] [ team-b ]', 'inactive, default dim, claude'],
+        ['3 ended teams hidden [ Show all ]', 'inactive, default dim'],
+      ] as [string, string][])
+    : ([['Show team-b · 1 other, 3 ended hidden [ Change ]', 'inactive, cyan_FOR_SUBAGENTS_ONLY, inactive, default dim']] as [string, string][])),
   ['  team-lead team-lead       not in this session', 'default, inactive'],
   ['› writer    general-purpose not in this session ✉ 2', 'claude, default bold, inactive bold, warning bold'],
   ['  checker   Explore         not in this session', 'default, inactive'],

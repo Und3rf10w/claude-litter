@@ -20,17 +20,18 @@ import type {
   ModelCompleteResult,
   SessionMessage,
   SessionSendResult,
+  SessionUsage,
   ToolCallResult,
   ToolSpec,
 } from 'claude-code'
-import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
+import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
 
 /** One row of `$.agent.list()` (the d.ts's AgentInfo; policy.ts has an AgentInfo of its own). */
 export type ListedAgent = AgentInfo
-export type { AgentStatus, CommandSpec, ModelCompleteRequest, ModelCompleteResult, SessionMessage, SessionSendResult, ToolCallResult }
+export type { AgentStatus, CommandSpec, ModelCompleteRequest, ModelCompleteResult, SessionMessage, SessionSendResult, SessionUsage, ToolCallResult }
 
 /**
  * Whether a listed agent is still alive, so its place, its policy file and
@@ -62,14 +63,14 @@ export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
  * tasks pane and agents pane (WP-CA). The band and the cards aren't panes,
  * but setView writes them the same way.
  */
-export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents' | 'hub'
-export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SwarmPaneView, TasksPaneView }
+export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents' | 'stats' | 'hub'
+export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView }
 /**
  * Any of those views; each view's `view` field names it, and setView writes it
- * to its atom. Phase 5b (WP-DA): the six pane views are the `litter` pane's
- * sections, and `hub` is the pane's own (ui/hub.ts).
+ * to its atom. Phase 5b (WP-DA): the pane views are the `litter` pane's
+ * sections (Stats is WP-DH's), and `hub` is the pane's own (ui/hub.ts).
  */
-export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView | HubView
+export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView | StatsPaneView | HubView
 
 /**
  * Whom `send` addresses (the d.ts's SessionSendAddress, less `{ sessionId }`):
@@ -272,4 +273,14 @@ export interface Ports {
   toolNames(): Promise<string[]>
   /** `$.env.get` for the one name the tasks pane reads (COMMON decision 15); undefined when unset. */
   envVar(name: 'CLAUDE_CODE_TASK_LIST_ID'): Promise<string | undefined>
+
+  // Phase 5b (WP-DH).
+
+  /**
+   * `$.session.usage()` with no breakdown (so it sends nothing): the status
+   * line's figures. `cost` is the session's whole spend, the process's cost
+   * ledger, every agent's responses included; absent where the host keeps
+   * none. Figures the engine hasn't got are left out, never zeroed.
+   */
+  usage(): Promise<SessionUsage>
 }

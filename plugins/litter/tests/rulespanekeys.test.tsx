@@ -96,7 +96,7 @@ async function ringOf(ui: Drawn): Promise<Ring> {
 const tabsTo = (ring: Ring, key: string): number => ring.findIndex(r => r.split(' ')[1] === key) + 1
 
 /** The `litter` pane's strip with Rules shown: each other section a Button, in the strip's order (the shown tab is Text). */
-const STRIP: Ring = ['home Home', 'runs Runs', 'swarms Swarms', 'tasks Tasks', 'agents Agents', 'doctor Doctor'].map(s => `Button litter:section:${s}`)
+const STRIP: Ring = ['home Home', 'runs Runs', 'swarms Swarms', 'tasks Tasks', 'agents Agents', 'stats Stats', 'doctor Doctor'].map(s => `Button litter:section:${s}`)
 /**
  * The ring's head (WP-DE): the strip, then Rules' tab strip, where the shown
  * tab is Text and the other one Button with its count. The lists are Clients,
@@ -142,7 +142,7 @@ async function started($: Engine, on: On): Promise<Map<string, string>> {
  * Paths field takes `send a/**` instead. Before [Edit…] and [Dismiss] it
  * types `j` once: [next], so the row is the picked one, whose buttons are drawn.
  */
-const RULES_SH = { edit: 14, paths: 13, done: 15, accept: 13, confirm: 8, dismiss: 15, inForce: 7 }
+const RULES_SH = { edit: 15, paths: 14, done: 16, accept: 14, confirm: 9, dismiss: 16, inForce: 8 }
 
 
 describe("rules.sh's key presses (T4-2)", () => {

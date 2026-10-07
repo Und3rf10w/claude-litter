@@ -35,6 +35,7 @@ import type {
   SpawnStream,
   Stat,
   SwarmPaneView,
+  StatsPaneView,
   TasksPaneView,
 } from './ports'
 import type { HubSection } from '../types/index'
@@ -52,7 +53,9 @@ import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
 import { outsideWorkflow, roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 import { holdClear, noteSessionEnd, rebound, startSwarmTimers } from './clear'
-import { attach, binding, notePromptOrigin, setInteractive, setRecordedSession, withGateClosed } from './swarm/state'
+import { addLeadTokens, attach, binding, notePromptOrigin, setInteractive, setRecordedSession, withGateClosed } from './swarm/state'
+import { measureSpend, noteUsage } from './stats/spend'
+import { statsMeasured } from './stats/pane'
 import { registerSwarmTools } from './swarm/tools'
 import { clearPending } from './swarm/guard'
 import { recoverSwarms } from './swarm/recover'
@@ -109,6 +112,8 @@ const tasksPane = atom({ plugin: 'litter', key: 'tasksPane' } as const, null)
 const agentsPane = atom({ plugin: 'litter', key: 'agentsPane' } as const, null)
 /** Phase 5b's (WP-DA): the `litter` pane's own view, its section and strip (ui/hub.ts). */
 const hub = atom({ plugin: 'litter', key: 'hub' } as const, null)
+/** Phase 5b's (WP-DH): the Stats section. */
+const statsPane = atom({ plugin: 'litter', key: 'statsPane' } as const, null)
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -119,6 +124,7 @@ async function sectionView($: EngineInterface, section: HubSection): Promise<Sec
   if (section === 'rules') return read($, rulesPane)
   if (section === 'tasks') return read($, tasksPane)
   if (section === 'agents') return read($, agentsPane)
+  if (section === 'stats') return read($, statsPane)
   if (section === 'doctor') return read($, doctorPane)
   return null
 }
@@ -231,6 +237,7 @@ function enginePorts($: EngineInterface): Ports {
       else if (pane === 'cards') await update($, cards, () => view as CardsView | null)
       else if (pane === 'tasks') await update($, tasksPane, () => view as TasksPaneView | null)
       else if (pane === 'hub') await update($, hub, () => view as HubView | null)
+      else if (pane === 'stats') await update($, statsPane, () => view as StatsPaneView | null)
       else await update($, agentsPane, () => view as AgentsPaneView | null)
     },
 
@@ -246,6 +253,9 @@ function enginePorts($: EngineInterface): Ports {
     },
     toolNames: async () => (await $.tool.list()).map(t => t.name),
     envVar: async name => (name === 'CLAUDE_CODE_TASK_LIST_ID' ? $.env.get('CLAUDE_CODE_TASK_LIST_ID') : undefined),
+
+    // Phase 5b (WP-DH).
+    usage: () => $.session.usage(),
   }
 }
 
@@ -337,6 +347,9 @@ export const register: Register = (on, options) => {
       }
       openGateNow()
       if (litterDir) {
+        // First after the gate, before the session spends more: a restart whose cost ledger began again is told
+        // apart from one that went on (WP-DH).
+        await step(p, 'swarm spend', async () => void (await measureSpend(p)))
         await step(p, 'worktree.json', () => startWorktreePolicy(p, litterDir))
         await step(p, '.gitignore', () => writeGitignore(p, litterDir))
         await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
@@ -482,9 +495,21 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined && e.isAborted) await interrupted(p, e.agentId)
     await apart(p, 'turn.complete settle', () => settleNode(p, e))
     if (e.agentId !== undefined && binding(e.agentId) !== null) await apart(p, 'turn.complete observe', () => observeNodeTurn(p, e))
+    // The lead's turn counts for each live swarm's Stats (WP-DH).
+    if (e.agentId === undefined) addLeadTokens(e.usage)
     // The repair swarm's start, scheduled once the notification turn that started it ends (2b-2, X).
     await apart(p, 'turn.complete repair', () => repairTurnComplete(p, e))
     return onTurnComplete(p, e, next)
+  }).catch(($, e, next) => next(e))
+
+  // The session's figures moved (as a turn ends, the lead's or an agent's): each live swarm's spend follows its total,
+  // and Stats redraws when it's shown (WP-DH).
+  on('session.measure', async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    if (e.changed.includes('cost')) await apart(p, 'session.measure spend', () => noteUsage(p, e))
+    await apart(p, 'session.measure stats', () => statsMeasured(p, e))
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   // Hides the types of a swarm that isn't live and owned here.

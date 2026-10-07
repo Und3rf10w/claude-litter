@@ -85,6 +85,7 @@ import { checkHealth } from './doctor'
 import { readDraft, readRevision, readSaved } from './store'
 import { heldBy, writeSwarmPolicy } from './guard'
 import { cleanupLaunch, worktreesLeft } from './end'
+import { measureSpend } from '../stats/spend'
 import { waitBudget } from './admit'
 
 /**
@@ -803,6 +804,8 @@ export async function goLive(p: Ports, plan: LaunchPlan, live: GoLive): Promise<
     }
     putLiveSwarm(s)
     isLive = true
+    // Its spend counts from the session's total now (WP-DH).
+    await measureSpend(p)
     const entry: SwarmEntry = {
       launch: launchId,
       state: 'live',

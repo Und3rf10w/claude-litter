@@ -1509,7 +1509,7 @@ describe('the commands', () => {
     on('session.id', async () => ({ value: SESSION }))
     on('ui.log', async () => ({ value: undefined }))
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-    expect(commands).toEqual([{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]' }])
+    expect(commands).toEqual([{ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]' }])
   })
 
   test('/litter swarms answers with a line and opens `litter` on Swarms, with the keyboard', async ($, on) => {

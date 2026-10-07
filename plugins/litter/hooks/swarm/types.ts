@@ -497,6 +497,18 @@ export type NodeReport = { text: string; via: 'handback' | 'answer' | 'message';
 /** Summed from each turn.complete's `e.usage` (P). */
 export type TokenCount = { input: number; output: number; cacheRead: number; cacheCreation: number; turns: number }
 
+/**
+ * A swarm's spend (WP-DH): how far the session's cost total (`$.session.usage`)
+ * grew while the swarm was live here, every agent's responses and the lead's
+ * included, since the engine prices no agent alone. `base` and `seen`: the
+ * total in `session` when the count began there and when it was last read;
+ * `carried`: what earlier totals grew (a /clear's new session, a takeover, a
+ * restart whose ledger began again). Spent: carried + seen - base. `since`:
+ * when the count began, in `p.now()`'s milliseconds (its launch, or the first
+ * reading of a swarm launched before litter counted).
+ */
+export type SwarmSpend = { session: string; base: number; seen: number; carried: number; since: number }
+
 /** A question a node asked its parent or the lead (L), open until answered. */
 export type Question = {
   swarm: string

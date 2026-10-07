@@ -40,6 +40,7 @@ import type {
   Reservation,
   InflightCall,
   Shell,
+  SwarmSpend,
   TokenCount,
   TurnUsage,
   WriteScope,
@@ -138,6 +139,10 @@ export type SwarmPart = {
   spawned?: string[]
   /** 2b-2: the verify ids its verdicts cited, in round order (round n is entry n - 1). Absent in an older part. */
   rounds?: string[]
+  /** WP-DH: the session's spend while it was live; absent in an older part, or before the first reading. */
+  spend?: SwarmSpend
+  /** WP-DH: the lead's tokens, its turns that ended while the swarm was live. Absent in an older part. */
+  lead?: TokenCount
 }
 
 /** The $.store key of one swarm's part. */
@@ -172,6 +177,8 @@ let gate = 0
 let proposals: { name: string; n: number }[] = []
 const spawnedBy = new Map<string, Set<string>>()
 const roundsBy = new Map<string, string[]>()
+const spendBy = new Map<string, SwarmSpend>()
+const leadBy = new Map<string, TokenCount>()
 let interactiveFlag: boolean | null = null
 let ver = 0
 
@@ -310,6 +317,8 @@ function partOf(name: string, s: LiveSwarm): SwarmPart {
     refused: byAgent(refused),
     spawned: [...(spawnedBy.get(name) ?? [])],
     rounds: [...(roundsBy.get(name) ?? [])],
+    ...(spendBy.has(name) ? { spend: { ...spendBy.get(name)! } } : {}),
+    ...(leadBy.has(name) ? { lead: { ...leadBy.get(name)! } } : {}),
   }
 }
 
@@ -365,8 +374,28 @@ export async function loadSwarm(p: Ports, litterDir: string, name: string): Prom
   for (const [id, turns] of Object.entries(part.refused ?? {})) refused.set(id, [...turns])
   spawnedBy.set(name, new Set(Array.isArray(part.spawned) ? part.spawned.filter(k => typeof k === 'string') : []))
   roundsBy.set(name, Array.isArray(part.rounds) ? part.rounds.filter(v => typeof v === 'string') : [])
+  const spend = spendOfPart(part.spend)
+  if (spend) spendBy.set(name, spend)
+  const leadCount = tokensOfPart(part.lead)
+  if (leadCount) leadBy.set(name, leadCount)
   ver++
   return s
+}
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+
+/** A part's spend, when every figure is one. */
+function spendOfPart(v: unknown): SwarmSpend | null {
+  if (!isRecord(v) || typeof v.session !== 'string') return null
+  const { base, seen, carried, since } = v
+  return isCount(base) && isCount(seen) && isCount(carried) && isCount(since) ? { session: v.session, base, seen, carried, since } : null
+}
+
+/** A part's token count, when every figure is one. */
+function tokensOfPart(v: unknown): TokenCount | null {
+  if (!isRecord(v)) return null
+  const { input, output, cacheRead, cacheCreation, turns } = v
+  return isCount(input) && isCount(output) && isCount(cacheRead) && isCount(cacheCreation) && isCount(turns) ? { input, output, cacheRead, cacheCreation, turns } : null
 }
 
 /** Drops everything held for one swarm, in memory only. */
@@ -393,6 +422,8 @@ function forget(name: string): void {
   directBySwarm.delete(name)
   spawnedBy.delete(name)
   roundsBy.delete(name)
+  spendBy.delete(name)
+  leadBy.delete(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +862,52 @@ export function tokens(agentIdOrSwarm: string): TokenCount {
 }
 
 /**
+ * A lead turn's usage (a main-loop turn.complete's `e.usage`), counted for
+ * every swarm owned here that's live as it ends (WP-DH). An interrupted turn
+ * has none, and counts as a turn.
+ */
+export function addLeadTokens(usage: TurnUsage | null | undefined): void {
+  for (const s of swarms.values()) {
+    if (!mirrored(s)) continue
+    const t = leadBy.get(s.name) ?? { ...ZERO }
+    leadBy.set(s.name, withUsage(t, usage, t.turns + 1))
+    changed(s.name)
+  }
+}
+
+/** The lead's tokens while the swarm was live (addLeadTokens). */
+export const leadTokens = (swarm: string): TokenCount => ({ ...(leadBy.get(swarm) ?? ZERO) })
+
+/**
+ * The session's cost total as just read (`$.session.usage().cost.usd`) at
+ * `at`, for every swarm owned here (WP-DH): one with no spend yet starts
+ * counting from it; one counted in another session (a /clear, a takeover),
+ * or whose total went back (a restart whose ledger began again), carries
+ * what it had and counts on from here. Only a change is a write.
+ */
+export function noteSpend(session: string, total: number, at: number): void {
+  if (!isCount(total)) return
+  for (const s of swarms.values()) {
+    if (!mirrored(s)) continue
+    const cur = spendBy.get(s.name)
+    const next: SwarmSpend = !cur
+      ? { session, base: total, seen: total, carried: 0, since: at }
+      : cur.session !== session || total < cur.seen
+        ? { session, base: total, seen: total, carried: cur.carried + cur.seen - cur.base, since: cur.since }
+        : { ...cur, seen: total }
+    if (cur && cur.session === next.session && cur.base === next.base && cur.seen === next.seen && cur.carried === next.carried) continue
+    spendBy.set(s.name, next)
+    changed(s.name)
+  }
+}
+
+/** What the session spent while the swarm was live, in US dollars, and since when; null before its first reading. */
+export function spent(swarm: string): { usd: number; since: number } | null {
+  const s = spendBy.get(swarm)
+  return s ? { usd: s.carried + s.seen - s.base, since: s.since } : null
+}
+
+/**
  * A bound agent's question, open until closeQuestion, its text cut to 4 KiB.
  * Null for an agent no binding knows. `at` is when it was asked (the caller's
  * `p.now()`): C added it, since WP-P's brief omits it. `to` is where it
@@ -1138,6 +1215,8 @@ export function resetForTests(): void {
   proposals = []
   spawnedBy.clear()
   roundsBy.clear()
+  spendBy.clear()
+  leadBy.clear()
   interactiveFlag = null
   ver = 0
   ports = null

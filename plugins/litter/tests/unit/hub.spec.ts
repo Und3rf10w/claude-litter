@@ -126,6 +126,7 @@ beforeEach(() => {
   sections.rules = standIn('rules', k => k.startsWith('rules:'))
   sections.tasks = standIn('tasks', k => k.startsWith('tasks:'))
   sections.agents = standIn('agents', k => k.startsWith('agents:'))
+  sections.stats = standIn('stats', k => k.startsWith('stats:'))
   sections.doctor = standIn('doctor', k => k.startsWith('swarm:doctor:'))
   quietDeps()
 })
@@ -375,7 +376,7 @@ describe('openSection, the one opener', () => {
 describe('/litter [section] [arg]', () => {
   test('registers one command, with the sections as its hint', async () => {
     await registerLitterCommand(p)
-    expect(p.commands).toEqual([expect.objectContaining({ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | doctor] [arg]', immediate: true })])
+    expect(p.commands).toEqual([expect.objectContaining({ name: 'litter', argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]', immediate: true })])
   })
 
   test("bare, it opens Home; a section's word hands that section the rest, as its command", async () => {
@@ -463,11 +464,12 @@ describe('the tick', () => {
 describe('the counts', () => {
   const counts = (over: Partial<HubCounts> = {}): HubCounts => ({ runs: 0, swarms: 0, swarmsNeedYou: false, rules: null, tasks: null, agents: null, ...over })
 
-  test('seven tabs in the strip order, a count where there is one, a needs-you mark where something waits', () => {
+  test('eight tabs in the strip order, a count where there is one, a needs-you mark where something waits', () => {
     const tabs = tabsOf(counts({ runs: 2, swarms: 1, swarmsNeedYou: true, rules: { proposed: 3, inForce: 4 }, tasks: 5, agents: 1 }))
     expect(tabs.map(t => t.section)).toEqual([...SECTIONS])
-    expect(tabs.map(t => t.count)).toEqual([null, 2, 1, 3, 5, 1, null])
-    expect(tabs.map(t => t.needsYou)).toEqual([false, false, true, true, false, false, false])
+    expect(SECTIONS).toEqual(['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'stats', 'doctor'])
+    expect(tabs.map(t => t.count)).toEqual([null, 2, 1, 3, 5, 1, null, null])
+    expect(tabs.map(t => t.needsYou)).toEqual([false, false, true, true, false, false, false, false])
     // WP-DB: the tab has no summary of its own; Home says what each section has.
     expect(Object.keys(tabs[1]!).sort()).toEqual(['count', 'label', 'needsYou', 'section'])
   })
@@ -496,7 +498,7 @@ describe('the counts', () => {
     p.agents = [{ status: 'running' }, { status: 'completed' }, { status: 'waiting' }] as never
     await openSection(p, 'home', '')
     const tabs = hubView().tabs
-    expect(tabs.map(t => t.count)).toEqual([null, 0, 2, null, 2, 2, null])
+    expect(tabs.map(t => t.count)).toEqual([null, 0, 2, null, 2, 2, null, null])
     expect(tabs.find(t => t.section === 'swarms')?.needsYou).toBe(true)
     expect(p.logs).toContain("litter pane: the runs couldn't be counted: band broke")
   })
@@ -698,7 +700,7 @@ describe("Home's part of the hub's view (WP-DB)", () => {
 
 describe('the chrome layout', () => {
   test('the keys line (WP-DB): one row at 100 columns, two at 60, so the body gets one row fewer; one row unfocused', () => {
-    // `1–7 section · tab next · enter press · esc back to the prompt` is 61 cells.
+    // `1–8 section · tab next · enter press · esc back to the prompt` is 61 cells.
     expect(keysOverflow(HUB_KEYS, true, 100)).toBe(0)
     expect(keysOverflow(HUB_KEYS, true, 61)).toBe(0)
     expect(keysOverflow(HUB_KEYS, true, 60)).toBe(1)

@@ -199,7 +199,7 @@ export function stripWidths(tabs: readonly HubTab[], shown: HubSection, isFocuse
 
 /**
  * The strip: each section a plain Button keyed `litter:section:<id>`, with
- * hotkey 1–7 while the pane is focused (a Pane's hotkeys never reach the
+ * hotkey 1–8 while the pane is focused (a Pane's hotkeys never reach the
  * composer). The shown one is bold text with `›`, not a Button: pressing it
  * would do nothing. Sections use letters for their own hotkeys, never digits.
  * A tab's count is muted beside its label and its `⚑` in the needs-you color

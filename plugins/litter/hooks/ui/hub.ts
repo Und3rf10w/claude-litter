@@ -1,5 +1,5 @@
-// The `litter` pane's hub (phase 5b, WP-DA): the one pane, its seven
-// sections, `/litter [section] [arg]`, the one opener, the router, and the
+// The `litter` pane's hub (phase 5b, WP-DA): the one pane, its eight
+// sections (Stats is WP-DH's), `/litter [section] [arg]`, the one opener, the router, and the
 // tick. The pane shows one section at a time; each keeps its own view, atom
 // and handlers as before, and the hub holds only which is shown and what its
 // strip counts (the `hub` atom).
@@ -14,12 +14,13 @@
 //   rules:                   Rules
 //   tasks:                   Tasks
 //   agents:                  Agents
+//   stats:                   Stats
 // The hub answers its own keys. A key of the shown section goes to that
 // section's handler; a key of another section is stale (drawn before a
 // switch): it's ignored with a toast and answered in its event's shape; a key
 // no section owns goes to the shown section's handler, which passes it on. A
 // new section takes a prefix no other has, and its Buttons use letters for
-// hotkeys: the strip holds 1–7.
+// hotkeys: the strip holds 1–8.
 //
 // The one opener. openSection(p, id, arg?) is how anything shows a section:
 // `/litter`, the band's and the card's buttons, the board's [Rules], the
@@ -65,6 +66,7 @@ import { loadRules, onRulesUi, resumeRules, rulesCommand, rulesCounts, rulesTick
 import { TREE_KEY, doctorCommand, loadDoctor, loadSwarm, onUiInput, onUiMessage, onUiPress, onUiScroll, onUiSelect, resumeDoctor, resumeSwarm, swarmCommand } from '../swarm/panes'
 import { loadTasks, onTasksUi, resumeTasks, tasksCommand, tasksTick } from '../tasks/pane'
 import { agentsCommand, agentsTick, loadAgents, onAgentsUi, resumeAgents } from '../agents/pane'
+import { loadStats, onStatsUi, resumeStats, statsCommand, statsTick } from '../stats/pane'
 import { bandCounts, bandLines } from '../band/view'
 import { getOptions } from '../session'
 import { liveSwarms, openQuestions } from '../swarm/state'
@@ -74,8 +76,8 @@ import { shownOf as tasksShown } from '../tasks/view'
 export const LITTER_PANE = 'litter'
 export const LITTER_TITLE = 'litter'
 
-/** The sections, in the strip's order: hotkeys 1–7. */
-export const SECTIONS: readonly HubSection[] = ['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'doctor']
+/** The sections, in the strip's order: hotkeys 1–8. */
+export const SECTIONS: readonly HubSection[] = ['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'stats', 'doctor']
 export const LABEL: Record<HubSection, string> = {
   home: 'Home',
   runs: 'Runs',
@@ -83,6 +85,7 @@ export const LABEL: Record<HubSection, string> = {
   rules: 'Rules',
   tasks: 'Tasks',
   agents: 'Agents',
+  stats: 'Stats',
   doctor: 'Doctor',
 }
 
@@ -268,6 +271,18 @@ export const sections: Record<HubSection, Section> = {
     },
     tick: p => agentsTick(p),
   },
+  stats: {
+    owns: key => key.startsWith('stats:'),
+    load: p => loadStats(p),
+    resume: p => resumeStats(p),
+    ui: {
+      message: (p, e, next) => onStatsUi.message(p, e, next),
+      press: (p, e, next) => onStatsUi.press(p, e, next),
+      input: (p, e, next) => onStatsUi.input(p, e, next),
+      select: (p, e, next) => onStatsUi.select(p, e, next),
+    },
+    tick: p => statsTick(p),
+  },
   doctor: {
     owns: key => key.startsWith('swarm:doctor:'),
     load: (p, arg) => loadDoctor(p, asText(arg)),
@@ -300,6 +315,7 @@ export const deps = {
     rules: ((p, e, next) => rulesCommand(p, e, next)) as PortHook<CommandRunHook>,
     tasks: ((p, e, next) => tasksCommand(p, e, next)) as PortHook<CommandRunHook>,
     agents: ((p, e, next) => agentsCommand(p, e, next)) as PortHook<CommandRunHook>,
+    stats: ((p, e, next) => statsCommand(p, e, next)) as PortHook<CommandRunHook>,
     doctor: ((p, e, next) => doctorCommand(p, e, next)) as PortHook<CommandRunHook>,
   } satisfies Record<HubSection, PortHook<CommandRunHook>>,
 }
@@ -436,6 +452,7 @@ export function tabsOf(c: HubCounts): HubTab[] {
     tab('rules', c.rules?.proposed ?? null, (c.rules?.proposed ?? 0) > 0),
     tab('tasks', c.tasks, false),
     tab('agents', c.agents, false),
+    tab('stats', null, false),
     tab('doctor', null, false),
   ]
 }
@@ -581,10 +598,10 @@ export async function showSection(p: Ports, id: HubSection, arg?: SectionArg): P
 // ---------------------------------------------------------------------------
 // `/litter [section] [arg]`
 
-export const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | doctor [swarm]]'
-export const ARGUMENT_HINT = '[home | runs | swarms | rules | tasks | agents | doctor] [arg]'
+export const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | stats | doctor [swarm]]'
+export const ARGUMENT_HINT = '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]'
 /** How many words after the section each takes (tasks and agents take a name that may have spaces; swarms a node after its name, `fixer#2` or `fixer #2`). */
-const MAX_WORDS: Record<HubSection, number> = { home: 0, runs: 1, swarms: 3, rules: 0, tasks: Number.POSITIVE_INFINITY, agents: Number.POSITIVE_INFINITY, doctor: 1 }
+const MAX_WORDS: Record<HubSection, number> = { home: 0, runs: 1, swarms: 3, rules: 0, tasks: Number.POSITIVE_INFINITY, agents: Number.POSITIVE_INFINITY, stats: 0, doctor: 1 }
 
 /**
  * command.run on `litter`. Bare, Home: what needs you first, and every

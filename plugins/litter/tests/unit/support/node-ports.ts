@@ -26,6 +26,7 @@ import type {
   SendTo,
   SessionMessage,
   SessionSendResult,
+  SessionUsage,
   SettingsSourceName,
   SpawnChunk,
   SpawnEnd,
@@ -164,6 +165,11 @@ export type TestPorts = Ports & {
   toolNamesValue: string[]
   /** What `envVar` answers, by name; a name left out is unset. */
   envValues: Partial<Record<'CLAUDE_CODE_TASK_LIST_ID', string>>
+
+  // Phase 5b (WP-DH).
+
+  /** What `usage` answers (a copy): no response yet, no limits, nothing spent, by default; null makes it reject. */
+  usageValue: SessionUsage | null
 }
 
 /**
@@ -547,6 +553,10 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     },
     toolNames: async () => [...p.toolNamesValue],
     envVar: async name => p.envValues[name],
+    usage: async () => {
+      if (p.usageValue === null) throw new Error('no usage in tier 2 (usageValue is null)')
+      return structuredClone(p.usageValue)
+    },
     agents: [],
     sent: [],
     appended: [],
@@ -580,6 +590,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
     noticeAnswer: true,
     toolNamesValue: [],
     envValues: {},
+    usageValue: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } },
   }
   return p
 }

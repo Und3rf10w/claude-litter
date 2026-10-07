@@ -14,7 +14,7 @@
 
 import type { RenderElement } from 'claude-code'
 import type { PaneElements, PaneRender } from '../hooktypes'
-import type { AgentsPaneView, BoardView, DoctorPaneView, HubSection, HubTab, HubView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../../types/index'
+import type { AgentsPaneView, BoardView, DoctorPaneView, HubSection, HubTab, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../../types/index'
 import { tableFor } from '../swarm/builder'
 import { renderBoardPane, runsSection } from '../board/pane'
 import { renderSwarmPane, swarmsSection } from '../swarm/browser'
@@ -22,6 +22,7 @@ import { doctorSection, renderDoctorPane } from '../swarm/doctorpane'
 import { renderRulesPane, rulesSection } from '../rules/pane'
 import { renderTasksPane, tasksSection } from '../tasks/pane'
 import { agentsSection, renderAgentsPane } from '../agents/pane'
+import { renderStatsPane, statsSection } from '../stats/pane'
 import { header, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint, type SectionMeta } from './chrome'
 import { cells } from '../band/view'
 import { noteDrawn } from './drawn'
@@ -29,14 +30,14 @@ import { renderHome } from './home'
 import { LABEL, SECTIONS, tabsOf } from './hub'
 
 /** The shown section's view, whichever it is: register.tsx reads the one atom the hub's section names. */
-export type SectionView = BoardView | SwarmPaneView | RulesPaneView | TasksPaneView | AgentsPaneView | DoctorPaneView
+export type SectionView = BoardView | SwarmPaneView | RulesPaneView | TasksPaneView | AgentsPaneView | StatsPaneView | DoctorPaneView
 
 /** Which section the hub's view shows; Home before the first write. */
 export const sectionShown = (hub: HubView | null): HubSection => (hub && (SECTIONS as readonly string[]).includes(hub.section) ? hub.section : 'home')
 
 /** The keys line while the pane has the keyboard. */
 export const HUB_KEYS: readonly KeyHint[] = [
-  { key: '1–7', word: 'section' },
+  { key: '1–8', word: 'section' },
   { key: 'tab', word: 'next' },
   { key: 'enter', word: 'press' },
   { key: 'esc', word: 'back to the prompt' },
@@ -50,6 +51,7 @@ const META = {
   rules: rulesSection,
   tasks: tasksSection,
   agents: agentsSection,
+  stats: statsSection,
   doctor: doctorSection,
 } satisfies MetaTable
 
@@ -132,6 +134,8 @@ function body(shown: HubSection, hub: HubView | null, view: SectionView | null, 
       return renderTasksPane(view as TasksPaneView | null, el, ctx)
     case 'agents':
       return renderAgentsPane(view as AgentsPaneView | null, el, ctx)
+    case 'stats':
+      return renderStatsPane(view as StatsPaneView | null, el, ctx)
     case 'doctor':
       return renderDoctorPane(view as DoctorPaneView | null, el, ctx)
   }

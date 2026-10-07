@@ -3,7 +3,7 @@
 // reach the engine unanswered; `/litter [section] [arg]` answers a line,
 // opens `litter` asking for the keyboard and shows that section, and anything
 // else is the usage line; the strip draws the shown section as text and the
-// others as plain Buttons, with hotkeys 1–7 only while the pane is focused; a
+// others as plain Buttons, with hotkeys 1–8 only while the pane is focused; a
 // strip press, Home's [Open] and the builder's [Doctor] show their section in
 // the same pane; a key of a section that isn't shown is ignored with a toast;
 // and the pane draws in the dock and inline, wide and narrow, Home keeping to
@@ -19,10 +19,10 @@ const SESSION = 'tier1-litter'
 const NOW = 1_800_000_000_000
 /** The machine is busy: a test that runs several commands gets room. */
 const SLOW = { timeoutMs: 30_000 }
-const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | doctor [swarm]]'
-const HINT = '[home | runs | swarms | rules | tasks | agents | doctor] [arg]'
+const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | stats | doctor [swarm]]'
+const HINT = '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]'
 const OLD = ['litter-board', 'litter-rules', 'litter-swarm', 'litter-doctor', 'litter-tasks', 'litter-agents']
-const STRIP = ['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'doctor'] as const
+const STRIP = ['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'stats', 'doctor'] as const
 
 type Placement = 'dock' | 'inline'
 const pane = (over: { isFocused?: boolean; bodyColumns?: number; bodyRows?: number; placement?: Placement } = {}) =>
@@ -139,7 +139,7 @@ async function start($: Engine, on: On): Promise<World> {
   return w
 }
 
-const LABEL: Record<(typeof STRIP)[number], string> = { home: 'Home', runs: 'Runs', swarms: 'Swarms', rules: 'Rules', tasks: 'Tasks', agents: 'Agents', doctor: 'Doctor' }
+const LABEL: Record<(typeof STRIP)[number], string> = { home: 'Home', runs: 'Runs', swarms: 'Swarms', rules: 'Rules', tasks: 'Tasks', agents: 'Agents', stats: 'Stats', doctor: 'Doctor' }
 
 describe('/litter, the one command', () => {
   test('session.start registers /litter alone, its sections as the hint', async ($, on) => {
@@ -155,7 +155,7 @@ describe('/litter, the one command', () => {
 
   test('bare and with each section: a reply line, `litter` opened with the keyboard, and that section drawn', SLOW, async ($, on) => {
     const w = await start($, on)
-    for (const [args, id] of [['', 'home'], ['runs', 'runs'], ['swarms', 'swarms'], ['rules', 'rules'], ['tasks', 'tasks'], ['agents', 'agents'], ['doctor', 'doctor'], ['home', 'home']] as const) {
+    for (const [args, id] of [['', 'home'], ['runs', 'runs'], ['swarms', 'swarms'], ['rules', 'rules'], ['tasks', 'tasks'], ['agents', 'agents'], ['stats', 'stats'], ['doctor', 'doctor'], ['home', 'home']] as const) {
       const r = await run($, 'litter', args)
       expect({ args, line: r.text?.startsWith(`${LABEL[id]} `) }).toEqual({ args, line: true })
       expect(r.text?.startsWith('litter: ')).toBe(false)
@@ -169,7 +169,7 @@ describe('/litter, the one command', () => {
 
   test('anything else is the one-line usage, and opens nothing', SLOW, async ($, on) => {
     const w = await start($, on)
-    for (const args of ['board', 'nonsense', 'runs a b', 'rules extra', 'home now']) expect((await run($, 'litter', args)).text).toBe(USAGE)
+    for (const args of ['board', 'nonsense', 'runs a b', 'rules extra', 'stats extra', 'home now']) expect((await run($, 'litter', args)).text).toBe(USAGE)
     expect(w.opened).toEqual([])
   })
 })
@@ -198,7 +198,7 @@ describe('the strip and the keys line', () => {
       STRIP.map((s, i) => [`litter:section:${s}`, String(i + 1)] as const).filter(([k]) => k !== 'litter:section:tasks'),
     )
     expect(await ui.find({ type: 'Text', text: '› 5: Tasks' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '1–7' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '1–8' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'ctrl+x tab' })).toBeUndefined()
   })
 
@@ -268,7 +268,7 @@ describe('inline and narrow', () => {
       await run($, 'litter', '')
       const ui = await mount($, 'terminal', { placement, bodyColumns: 40, bodyRows: 12 })
       expect(await ui.find({ type: 'Text', text: 'litter' })).toBeDefined()
-      expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('litter:section:'))).toHaveLength(6)
+      expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('litter:section:'))).toHaveLength(7)
       // 2 header rows, 2 strip rows, a gap and 2 keys rows leave 5 (WP-DB): the quiet line, the next step on two,
       // and the other sections folded into one line of their names (each line would take two rows, with its [Open]).
       expect(await ui.find({ type: 'Text', text: 'Nothing needs you, and nothing runs.' })).toBeDefined()
