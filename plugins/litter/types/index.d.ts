@@ -1117,6 +1117,8 @@ export type ListClientRow = {
   key: string
   /** The label and its columns, padded to the list's widths. */
   text: string
+  /** `text` cell by cell, each in its own color (the cell's, or muted when dim): joined, they are `text`. */
+  spans: { text: string; color?: string; bold?: boolean }[]
   description: string
   selected: boolean
   /** The right-click menu: each presses its `key`. */

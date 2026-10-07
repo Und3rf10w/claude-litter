@@ -249,14 +249,29 @@ function footer(el: PaneElements, spec: ListSpec, place: ListPlace): RenderEleme
 // ---------------------------------------------------------------------------
 // The Client form (the terminal and the desktop, with a menu)
 
-/** The Client's props: the window's rows as plain data, laid out here, so the module only draws and posts. */
+/** A cell's color as the list draws it: its own, else muted when dim, else the text's. */
+const cellColor = (c: Cell | undefined): string | undefined => c?.color ?? (c?.dim ? STYLE.muted : undefined)
+
+/**
+ * The Client's props: the window's rows as plain data, laid out here, so the
+ * module only draws and posts. Each row's cells keep their colors as spans
+ * (the user's live look, 2026-10-07: a swarm's roster drew its status and
+ * role in one color), the cell between two a plain space.
+ */
 export function clientProps(spec: ListSpec, place: ListPlace, ctx: BodyContext): ListClientProps {
   const { shown, widths } = place.planned
   const rows: ListClientRow[] = spec.items.slice(place.window.start, place.window.end).map(item => {
     const all = rowCells(item)
+    const texts = shown.map(i => fitCell(all[i]?.text ?? '', widths[i]!))
+    const spans = shown.flatMap((i, n) => {
+      const color = cellColor(all[i])
+      const span = { text: texts[n]!, ...(color ? { color } : {}), ...(all[i]?.bold ? { bold: true } : {}) }
+      return n === 0 ? [span] : [{ text: ' ' }, span]
+    })
     return {
       key: item.key,
-      text: shown.map(i => fitCell(all[i]?.text ?? '', widths[i]!)).join(' '),
+      text: texts.join(' '),
+      spans,
       description: item.description ?? '',
       selected: item.selected === true,
       actions: (item.actions ?? []).map(a => ({ key: a.key, label: a.label, ...(a.color ? { color: a.color } : {}) })),

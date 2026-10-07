@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ClientKeyEvent, ClientPointerEvent } from 'claude-code'
 import type { ListClientProps } from '../../types/index'
 import { MIN_RULE, headingPlan, spanRows, textRows, type BodyContext, type SectionMeta } from '../../hooks/ui/chrome'
-import { DESCRIPTION_MIN, listHit, listPlace, listWindow, pageOf, scrolled, type ListItem, type ListSpec } from '../../hooks/ui/list'
+import { DESCRIPTION_MIN, clientProps, listHit, listPlace, listWindow, pageOf, scrolled, type ListItem, type ListSpec } from '../../hooks/ui/list'
 import { MENU_CHROME, MENU_W, menuHit, menuKey, menuLine, placeMenu } from '../../hooks/ui/menu'
 import { HUB_KEYS, bodyBox, fitsOf, keysLineOf, keysOf, type MetaTable } from '../../hooks/ui/pane'
 import ListMenu from '../../hooks/ui/listmenu'
@@ -197,9 +197,17 @@ function find(node: unknown, pred: (e: El) => boolean): El | null {
 const PROPS: ListClientProps = {
   list: 't:list',
   rows: [
-    { key: 't:row:0', text: 'alpha  built-in', description: 'the first', selected: false, actions: [{ key: 't:row:0:use', label: 'use' }, { key: 't:row:0:copy', label: 'copy' }] },
-    { key: 't:row:1', text: 'beta   yours', description: 'the second', selected: true, actions: [] },
-    { key: 't:row:2', text: 'gamma  yours', description: '', selected: false, actions: [{ key: 't:row:2:use', label: 'use' }] },
+    {
+      key: 't:row:0',
+      text: 'alpha  built-in',
+      spans: [{ text: 'alpha ' }, { text: ' ' }, { text: 'built-in', color: 'inactive' }],
+      description: 'the first',
+      selected: false,
+      actions: [{ key: 't:row:0:use', label: 'use' }, { key: 't:row:0:copy', label: 'copy' }],
+    },
+    { key: 't:row:1', text: 'beta   yours', spans: [{ text: 'beta  ' }, { text: ' ' }, { text: 'yours', color: 'success', bold: true }], description: 'the second', selected: true, actions: [] },
+    // No spans (props from an older draw): its text alone.
+    { key: 't:row:2', text: 'gamma  yours', spans: [], description: '', selected: false, actions: [{ key: 't:row:2:use', label: 'use' }] },
   ],
   above: 0,
   below: 2,
@@ -315,6 +323,53 @@ describe("the list's Client (listmenu.tsx)", () => {
     narrow.pointer({ type: 'move', x: 3, y: 0 })
     expect(narrow.texts()).not.toContain('the second')
     expect(narrow.texts().at(-1)).toBe('the first')
+  })
+
+  // The user's live look (2026-10-07): a swarm's roster drew every cell, its status and role, in one color.
+  test('each cell in its own color, the selected row bold; the lit row one inverse bar in the text color; a row with no spans its text', () => {
+    const ui = mount(PROPS)
+    const cell = (text: string) => find(ui.tree(), e => e.type === 'Text' && textOf(e) === text)?.props
+    expect(cell('alpha ')).toEqual(expect.objectContaining({ color: undefined, bold: false, inverse: false }))
+    expect(cell('built-in')).toEqual(expect.objectContaining({ color: 'inactive', bold: false, inverse: false }))
+    expect(cell('yours')).toEqual(expect.objectContaining({ color: 'success', bold: true, inverse: false }))
+    expect(cell('beta  ')).toEqual(expect.objectContaining({ bold: true }))
+    expect(cell('gamma  yours')).toEqual(expect.objectContaining({ color: undefined, inverse: false }))
+    ui.pointer({ type: 'move', x: 3, y: 0 })
+    expect(cell('alpha ')).toEqual(expect.objectContaining({ color: undefined, inverse: true }))
+    expect(cell('built-in')).toEqual(expect.objectContaining({ color: undefined, inverse: true }))
+    // The selected row isn't inverted when lit: its mark says it.
+    ui.pointer({ type: 'move', x: 3, y: 1 })
+    expect(cell('yours')).toEqual(expect.objectContaining({ color: 'success', inverse: false }))
+  })
+})
+
+describe("the list's Client props (list.tsx)", () => {
+  test("each row's spans are its shown cells padded to the widths, a plain space between, in each cell's color (muted when dim)", () => {
+    const spec: ListSpec = {
+      id: 't:list',
+      rows: 3,
+      items: [
+        { key: 'a', label: 'alpha', cells: [{ text: '▸ running', color: 'background' }, { text: 'worker', dim: true }, { text: 'x', bold: true }] },
+        { key: 'b', label: 'be', cells: [{ text: '− gone', color: 'inactive' }, { text: 'child', color: 'text' }, { text: '' }] },
+      ],
+      columns: [{ drop: 0 }, { drop: 1 }, { drop: 2 }],
+    }
+    const ctx = { bodyColumns: 80, bodyRows: 10, rows: 10, surface: 'terminal', isFocused: false, focused: null, lists: {}, placement: 'dock' } as unknown as BodyContext
+    const props = clientProps(spec, listPlace(spec, ctx), ctx)
+    const [a, b] = props.rows
+    expect(a!.spans.map(s => s.text).join('')).toBe(a!.text)
+    expect(b!.spans.map(s => s.text).join('')).toBe(b!.text)
+    expect(a!.spans.filter(s => s.text !== ' ')).toEqual([
+      { text: 'alpha' },
+      { text: '▸ running', color: 'background' },
+      { text: 'worker', color: 'inactive' },
+      { text: 'x', bold: true },
+    ])
+    expect(b!.spans.filter(s => s.text.trim() !== '').map(s => [s.text.trim(), s.color])).toEqual([
+      ['be', undefined],
+      ['− gone', 'inactive'],
+      ['child', 'text'],
+    ])
   })
 })
 

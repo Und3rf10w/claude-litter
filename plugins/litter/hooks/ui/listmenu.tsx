@@ -1,7 +1,8 @@
 // An in-pane list's rows as a Client surface module (phase 5b, WP-DA2), on
 // the terminal and the desktop, for a list whose items have a right-click
-// menu (ui/list.tsx draws it with `module="./listmenu.tsx"`). The pointer
-// lights a row and lifts its description from faint to muted; a click
+// menu (ui/list.tsx draws it with `module="./listmenu.tsx"`). Each row's
+// cells are drawn in their own colors (the row's `spans`). The pointer
+// lights a row, one inverse bar, and lifts its description from faint to muted; a click
 // presses the row; a right-click (or →, once a click gave it the keyboard)
 // opens the row's menu over the rows, the gate table's (board/gates.tsx,
 // through ui/menu.ts): ↑↓ and Enter pick, a click outside or a second
@@ -33,6 +34,9 @@ function itemsFor(r: ListClientRow | undefined): Item[] {
   if (actions.length === 0) return []
   return [...actions.map(a => ({ key: a.key, label: a.label, ...(a.color ? { color: a.color } : {}) })), { key: null, label: 'close' }]
 }
+
+/** A row's cells, each in its color; a row with none (props from an older draw) its text alone. */
+const spansOf = (r: ListClientRow): ListClientRow['spans'] => (Array.isArray(r.spans) && r.spans.length > 0 ? r.spans : [{ text: typeof r.text === 'string' ? r.text : '' }])
 
 const ListMenu: ClientModule<ListClientProps, State> = (props, surface) => {
   const { Box, Text } = surface.elements
@@ -124,9 +128,17 @@ const ListMenu: ClientModule<ListClientProps, State> = (props, surface) => {
       {rows.map((r, i) => (
         <Box flexDirection="row" columnGap={1}>
           <Text color={STYLE.accent}>{r.selected ? SELECTED_MARK : ' '}</Text>
-          <Text bold={r.selected} inverse={i === shown && !r.selected}>
-            {r.text}
-          </Text>
+          <Box flexDirection="row">
+            {spansOf(r).map(s => {
+              // The lit row one inverse bar in the text's color, not a cell's.
+              const lit = i === shown && !r.selected
+              return (
+                <Text color={lit ? undefined : s.color} bold={r.selected || s.bold === true} inverse={lit}>
+                  {s.text}
+                </Text>
+              )
+            })}
+          </Box>
           {props.beside && r.description !== '' ? (
             <Text color={i === shown || r.key === props.focused ? STYLE.muted : STYLE.faint} wrap="truncate-end">
               {r.description}

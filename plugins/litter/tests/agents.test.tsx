@@ -191,6 +191,9 @@ async function menuPick(ui: Ui, w: World, index: number, down: number): Promise<
   await next
 }
 
+/** The roster's Client drawn as lines, each trimmed: a row reads as one line, though each of its cells is a Text in its color. */
+const rosterLines = async (ui: { drawn: Ui['drawn'] }, columns = 120): Promise<string[]> => drawText(await ui.drawn({ in: 'agents:roster' }), columns).map(r => r.trim())
+
 /** The pane drawn as rows, the roster's Client in place with its own drawing (tests/drawing.ts draws a Client as its key). */
 async function drawn(ui: Ui, columns: number, colors = false): Promise<string[]> {
   const draw = colors ? drawWithColors : drawText
@@ -225,18 +228,19 @@ describe('the render', () => {
       expect(await ui.find({ type: 'Text', text: ' · Agents' })).toBeDefined()
       expect((await ui.find({ type: 'Text', text: 'this session' }))?.props).toEqual(expect.objectContaining({ bold: true, color: 'suggestion' }))
       expect((await ui.find({ type: 'Text', text: '2 agents · 1 running' }))?.props.color).toBe('inactive')
+      // The rows: the list's Client, with its right-click menu, where one is drawn, else Buttons; either way each cell in its own color.
+      const at: { in?: string } = clientRoster(surface) ? { in: 'agents:roster' } : {}
       if (clientRoster(surface)) {
-        // The rows are the list's Client, with its right-click menu.
-        expect(await ui.find({ type: 'Text', text: /^reviewer +general-purpose +▸ running/, in: 'agents:roster' })).toBeDefined()
-        expect(await ui.find({ type: 'Text', text: /^fix G2 +Explore +✓ completed/, in: 'agents:roster' })).toBeDefined()
+        expect(await rosterLines(ui)).toContainEqual(expect.stringMatching(/^reviewer +general-purpose +▸ running/))
+        expect(await rosterLines(ui)).toContainEqual(expect.stringMatching(/^fix G2 +Explore +✓ completed/))
       } else {
         // A label is padded to its column (the list's planColumns).
         expect((await ui.find({ type: 'Button', key: 'agents:select:session/a1' }))?.text.trimEnd()).toBe('reviewer')
         expect((await ui.find({ type: 'Button', key: 'agents:select:session/a2' }))?.text.trimEnd()).toBe('fix G2')
-        expect((await ui.find({ type: 'Text', text: '▸ running' }))?.props.color).toBe('background')
-        expect((await ui.find({ type: 'Text', text: '✓ completed' }))?.props.color).toBe('success')
-        expect((await ui.find({ type: 'Text', text: 'Explore' }))?.props.color).toBe('inactive')
       }
+      expect((await ui.find({ type: 'Text', text: /^▸ running *$/, ...at }))?.props.color).toBe('background')
+      expect((await ui.find({ type: 'Text', text: /^✓ completed *$/, ...at }))?.props.color).toBe('success')
+      expect((await ui.find({ type: 'Text', text: /^Explore *$/, ...at }))?.props.color).toBe('inactive')
       // This session is the only choice and no team was left out: no picker, and no Select anywhere.
       expect(await ui.find({ type: 'Button', key: 'agents:scope:session' })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: 'Show' })).toBeUndefined()
@@ -365,7 +369,7 @@ describe("a team's view", () => {
     expect(await ui.find({ type: 'Text', text: 'team ' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: 'team-b' }))?.props.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     expect(await ui.find({ type: 'Text', text: '3 members' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^writer +general-purpose +not in this session +✉ 2/, in: 'agents:roster' })).toBeDefined()
+    expect(await rosterLines(ui)).toContainEqual(expect.stringMatching(/^writer +general-purpose +not in this session +✉ 2/))
     // With no row selected, the composer broadcasts.
     expect((await ui.find({ type: 'Input' }))?.props.label).toBe('To every member of team-b')
     expect(await ui.find({ type: 'Button', key: 'agents:broadcast:team.team-b' })).toBeDefined()
@@ -476,12 +480,15 @@ const framed = (text: string, columns: number): [string, string][] => [
  * session's agents with reviewer selected (its transcript the engine's
  * wrapped messages in words, its tools in two colors), and team-b with
  * writer's unread mail. The roster is the list's Client, drawn by its
- * module (ui/listmenu.tsx), which flattens a row's cells into one text.
+ * module (ui/listmenu.tsx), each cell in its color: the type muted, the
+ * status in its own.
  */
 const SESSION_ROWS = (columns: number): [string, string][] => [
   [ruled('this session', columns, '2 agents · 1 running'), HEADING],
-  columns >= 100 ? ['› reviewer general-purpose ▸ running    › from checker: G3 too, please', 'claude, default bold, inactive'] : ['› reviewer general-purpose ▸ running', 'claude, default bold'],
-  ['  fix G2   Explore         ✓ completed', 'default'],
+  columns >= 100
+    ? ['› reviewer general-purpose ▸ running    › from checker: G3 too, please', 'claude, default bold, inactive bold, background bold, inactive']
+    : ['› reviewer general-purpose ▸ running', 'claude, default bold, inactive bold, background bold'],
+  ['  fix G2   Explore         ✓ completed', 'default, inactive, success'],
   [columns >= 100 ? '  right-click a row for its actions' : '  › from checker: G3 too, please', 'inactive'],
   ['[ Stop ]', 'default dim'],
   [ruled('Inbox · reviewer', columns, 'unread only'), NAMED],
@@ -501,9 +508,9 @@ const TEAM_ROWS = (columns: number): [string, string][] => [
   [ruled('team team-b', columns, '3 members'), NAMED],
   ['Show [ this session ] [ team-b ]', 'inactive, default dim, claude'],
   ['3 ended teams hidden [ Show all ]', 'inactive, default dim'],
-  ['  team-lead team-lead       not in this session', 'default'],
-  ['› writer    general-purpose not in this session ✉ 2', 'claude, default bold'],
-  ['  checker   Explore         not in this session', 'default'],
+  ['  team-lead team-lead       not in this session', 'default, inactive'],
+  ['› writer    general-purpose not in this session ✉ 2', 'claude, default bold, inactive bold, warning bold'],
+  ['  checker   Explore         not in this session', 'default, inactive'],
   ['  right-click a row for its actions', 'inactive'],
   [ruled('Inbox · writer', columns, 'unread only'), NAMED],
   ['team-lead · HH:MM · the spec moved: see G2', 'cyan_FOR_SUBAGENTS_ONLY, inactive, default'],

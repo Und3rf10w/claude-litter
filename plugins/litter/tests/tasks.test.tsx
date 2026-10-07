@@ -179,6 +179,9 @@ async function menuPick(ui: Ui, w: World, index: number, down: number): Promise<
   await next
 }
 
+/** The tasks' Client drawn as lines, each trimmed: a row reads as one line, though each of its cells is a Text in its color. */
+const clientLines = async (ui: { drawn: Ui['drawn'] }, columns = 120): Promise<string[]> => drawText(await ui.drawn({ in: 'tasks:rows' }), columns).map(r => r.trim())
+
 /** The pane drawn as rows, the tasks' Client in place with its own drawing (tests/drawing.ts draws a Client as its key). */
 async function drawn(ui: Ui, columns: number, colors = false): Promise<string[]> {
   const draw = colors ? drawWithColors : drawText
@@ -228,17 +231,16 @@ describe('the render', () => {
         expect(await ui.find({ type: 'Button', key: 'tasks:sort:subject' })).toBeDefined()
         expect((await ui.find({ type: 'Button', key: 'tasks:sort:id' }))?.props.label).toBe('› id')
       } else expect((await ui.find({ type: 'Select', key: 'tasks:sort' }))?.props).toEqual(expect.objectContaining({ label: 'Sort by', value: 'id' }))
+      // The rows: the list's Client, with its right-click menu, where one is drawn, else Buttons; either way each cell in its own color.
+      const at: { in?: string } = clientRows(surface) ? { in: 'tasks:rows' } : {}
       if (clientRows(surface)) {
-        // The rows are the list's Client, with its right-click menu.
-        expect(await ui.find({ type: 'Text', text: /^#1 +✓ completed +researcher +Plan it *$/, in: 'tasks:rows' })).toBeDefined()
-        expect(await ui.find({ type: 'Text', text: /^#3 +▸ in progress +writer +⊘ blocked by #2 +Check the parser *$/, in: 'tasks:rows' })).toBeDefined()
-      } else {
-        expect((await ui.find({ type: 'Button', key: 'tasks:select:team-a/1' }))?.text).toBe('#1')
-        expect((await ui.find({ type: 'Text', text: /^▸ in progress *$/ }))?.props.color).toBe('background')
-        expect((await ui.find({ type: 'Text', text: /^writer *$/ }))?.props.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
-        expect((await ui.find({ type: 'Text', text: /^unowned *$/ }))?.props.color).toBe('inactive')
-        expect((await ui.find({ type: 'Text', text: /^⊘ blocked by #2 *$/ }))?.props.color).toBe('warning')
-      }
+        expect(await clientLines(ui)).toContainEqual(expect.stringMatching(/^#1 +✓ completed +researcher +Plan it$/))
+        expect(await clientLines(ui)).toContainEqual(expect.stringMatching(/^#3 +▸ in progress +writer +⊘ blocked by #2 +Check the parser/))
+      } else expect((await ui.find({ type: 'Button', key: 'tasks:select:team-a/1' }))?.text).toBe('#1')
+      expect((await ui.find({ type: 'Text', text: /^▸ in progress *$/, ...at }))?.props.color).toBe('background')
+      expect((await ui.find({ type: 'Text', text: /^writer *$/, ...at }))?.props.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
+      expect((await ui.find({ type: 'Text', text: /^unowned *$/, ...at }))?.props.color).toBe('inactive')
+      expect((await ui.find({ type: 'Text', text: /^⊘ blocked by #2 *$/, ...at }))?.props.color).toBe('warning')
       // Nothing selected: no editor.
       expect(await ui.find({ type: 'Button', key: 'tasks:save:team-a/3' })).toBeUndefined()
 
@@ -348,7 +350,7 @@ describe('a view as a reload left it, the editor open', () => {
       expect((await ui.find({ type: 'Text', text: '! not read: #5: not JSON' }))?.props.color).toBe('warning')
       expect((await ui.find({ type: 'Text', text: '13 empty session teams hidden' }))?.props.color).toBe('inactive')
       expect((await ui.find({ type: 'Button', key: 'tasks:empty:show' }))?.props.label).toBe('Show all')
-      expect(await ui.find({ type: 'Text', text: /^#3 +▸ in progress +unowned +⊘ blocked by #2 +Check it *$/, in: 'tasks:rows' })).toBeDefined()
+      expect(await clientLines(ui)).toContainEqual(expect.stringMatching(/^(› )?#3 +▸ in progress +unowned +⊘ blocked by #2 +Check it( |$)/))
       expect((await ui.find({ type: 'Input', key: 'tasks:subject:team-a/3' }))?.props.value).toBe('Check it twice')
       expect((await ui.find({ type: 'Input', key: 'tasks:description:team-a/3' }))?.props.value).toBe('one⏎two')
       expect((await ui.find({ type: 'Text', text: 'one\ntwo' }))?.props.color).toBe('inactive')
@@ -555,9 +557,8 @@ const HOW = 'saves by a direct write: no hooks run, no assignment message'
  * The drawings in WP-DF's report, each row's colors beside it. The picker
  * is the chrome's list (Buttons: it has no menu), each row's description
  * beside it, faint but for the focused one's; the tasks are its Client,
- * drawn by its module (ui/listmenu.tsx), which flattens a row's cells into
- * one text, so their colors (the status's, the owner's, the blocked line's)
- * are drawn on the desktop and in the fallback, not here.
+ * drawn by its module (ui/listmenu.tsx), each cell in its color (the
+ * status's, the owner's, the blocked line's).
  */
 const TEAM_ROWS = (columns: number): [string, string][] => [
   [ruled('team team-a', columns, '3 tasks · 2 open'), NAMED],
@@ -579,16 +580,19 @@ const TEAM_ROWS = (columns: number): [string, string][] => [
   ['Sort by: id ▾', 'default'],
   ...(columns >= 100
     ? ([
-        ['  #1 ✓ completed   researcher                 Plan it', 'default'],
-        ['  #2 · pending     unowned                    Draft the user guide the install page first then the …', 'default, subtle'],
-        ['› #3 ▸ in progress writer     ⊘ blocked by #2 Check the parser     blocks #4 · blocked by #1 #2', 'claude, default bold, inactive'],
+        ['  #1 ✓ completed   researcher                 Plan it', 'default, success, cyan_FOR_SUBAGENTS_ONLY, default'],
+        ['  #2 · pending     unowned                    Draft the user guide the install page first then the …', 'default, inactive, default, subtle'],
+        [
+          '› #3 ▸ in progress writer     ⊘ blocked by #2 Check the parser     blocks #4 · blocked by #1 #2',
+          'claude, default bold, background bold, cyan_FOR_SUBAGENTS_ONLY bold, warning bold, default bold, inactive',
+        ],
         ['  right-click a row for its actions', 'inactive'],
       ] as [string, string][])
     : ([
         // Under SUBJECT_MIN beside the owner: its column goes; the lit row's description is the Client's line.
-        ['  #1 ✓ completed                   Plan it', 'default'],
-        ['  #2 · pending                     Draft the user guide', 'default'],
-        ['› #3 ▸ in progress ⊘ blocked by #2 Check the parser', 'claude, default bold'],
+        ['  #1 ✓ completed                   Plan it', 'default, success, default'],
+        ['  #2 · pending                     Draft the user guide', 'default, inactive, default'],
+        ['› #3 ▸ in progress ⊘ blocked by #2 Check the parser', 'claude, default bold, background bold, warning bold, default bold'],
         ['  blocks #4 · blocked by #1 #2', 'inactive'],
       ] as [string, string][])),
   [ruled('Task #3', columns, 'blocks #4 · blocked by #1 #2'), HEADING],
@@ -608,14 +612,14 @@ const INLINE_ROWS = (columns: number): [string, string][] => [
   ['Sort by: id ▾', 'default'],
   ...(columns >= 100
     ? ([
-        ['  #1 ✓ completed   researcher                 Plan it', 'default'],
-        ['  #2 · pending     unowned                    Draft the user guide the install page first then the …', 'default, subtle'],
-        ['  #3 ▸ in progress writer     ⊘ blocked by #2 Check the parser     blocks #4 · blocked by #1 #2', 'default, subtle'],
+        ['  #1 ✓ completed   researcher                 Plan it', 'default, success, cyan_FOR_SUBAGENTS_ONLY, default'],
+        ['  #2 · pending     unowned                    Draft the user guide the install page first then the …', 'default, inactive, default, subtle'],
+        ['  #3 ▸ in progress writer     ⊘ blocked by #2 Check the parser     blocks #4 · blocked by #1 #2', 'default, background, cyan_FOR_SUBAGENTS_ONLY, warning, default, subtle'],
       ] as [string, string][])
     : ([
-        ['  #1 ✓ completed                   Plan it', 'default'],
-        ['  #2 · pending                     Draft the user guide', 'default'],
-        ['  #3 ▸ in progress ⊘ blocked by #2 Check the parser', 'default'],
+        ['  #1 ✓ completed                   Plan it', 'default, success, default'],
+        ['  #2 · pending                     Draft the user guide', 'default, inactive, default'],
+        ['  #3 ▸ in progress ⊘ blocked by #2 Check the parser', 'default, background, warning, default'],
       ] as [string, string][])),
   ['  right-click a row for its actions', 'inactive'],
 ]

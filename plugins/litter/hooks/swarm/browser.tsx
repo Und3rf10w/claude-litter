@@ -124,8 +124,10 @@ export function rosterActions(view: SwarmBrowserView, r: SwarmNodeRow): ListActi
 }
 
 /**
- * The roster as the chrome's list: each agent its indent and name, its role
- * muted, its status (glyph, word, color), the call in flight and its flags;
+ * The roster as the chrome's list: each agent its indent and name, its status
+ * (glyph, word, color), its role in the label color (the user's live look,
+ * 2026-10-07: muted, a gone row's status and role read as one), its flags
+ * and the call in flight;
  * its turns, tokens and last report the focused row's description. The lead
  * is the heading's note. Every row is drawn (see swarmsSection's `fits`).
  * The right-click menu is given where the rows are a Client; elsewhere the
@@ -144,7 +146,7 @@ export function rosterList(view: SwarmBrowserView, client: boolean): ListSpec {
         label: `${indent(r.depth - 1)}${r.name}`,
         cells: [
           { text: `${r.statusGlyph ? `${r.statusGlyph} ` : ''}${r.status}`, color: r.statusColor },
-          { text: r.role, color: STYLE.muted },
+          { text: r.role, color: STYLE.label },
           { text: flags, color: STYLE.warning },
           { text: r.tool === '' ? '' : `${MARK.running.glyph} ${r.tool}`, color: STYLE.muted },
         ],

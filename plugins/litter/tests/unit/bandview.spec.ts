@@ -511,7 +511,8 @@ describe('the lines Home reads (WP-DB)', () => {
     await writeHub(p)
     const hub = p.views.hub as HubView
     const words = (rows: { spans: SwarmSpan[] }[]) => rows.map(r => r.spans.map(s => s.text).join(''))
-    expect(hub.home!.needsYou.map(r => r.open)).toEqual(['home:open:swarms:review', `home:open:runs:${EXEC}`])
+    // The question's [Open] lands on the node that asks.
+    expect(hub.home!.needsYou.map(r => r.open)).toEqual(['home:open:swarms:review a4', `home:open:runs:${EXEC}`])
     expect(words(hub.home!.needsYou)).toEqual(['fixer asks: which file?', `execute ${EXEC} · halted at G2 · <1m`])
     expect(words(hub.home!.running)).toEqual(['swarm review · 0 running · ⚑ 1 waiting · 24m'])
     expect(hub.home!.running[0]!.mark).toEqual({ glyph: '▸', word: 'live', color: 'background' })

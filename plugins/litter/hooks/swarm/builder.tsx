@@ -2,16 +2,16 @@
 // module, the inspector's fields with their enforcement badges, the briefs,
 // the status strip and the buttons. A pure render function; browser.tsx's
 // renderSwarmPane calls it for the builder view. The start screen and a
-// proposal are drawn here too, and the pieces every pane shares (the header,
-// the notice, buttons and fields), which the other sections still import
-// while they move to the chrome (phase 5b).
+// proposal are drawn here too, and `tableFor`, the surface's elements, which
+// every section takes.
 //
 // Phase 5b (WP-DD): the Swarms bodies are drawn with the chrome
 // (ui/chrome.tsx, ui/list.tsx): `heading` for every heading, `field` for
 // every Input, `list` for the template picker and the saved swarms, one
 // primary action per view with the rest dim, packed by width. The pieces
-// below the shared ones (titleRow, choose, actionRow) are this package's
-// own, for its bodies alone.
+// below (titleRow, choose, actionRow) are this package's own, for its bodies
+// alone. The old shared header, line, section, buttons, input and select
+// went once every section drew with the chrome.
 //
 // Every element's handler is a no-op: the panes' ui.press, ui.input and
 // ui.select hooks (panes.ts) answer each key without passing it on. Text in a
@@ -81,127 +81,12 @@ export function tableFor(el: PaneElements, surface: string): PaneElements {
   return t as unknown as PaneElements
 }
 
-/** A notice's glyph and color: ui/style.ts's, one per level. */
-const NOTICE: Record<SwarmNotice['level'], { glyph: string; color: string }> = NOTICE_STYLE
-
-/** The pane's header, left-aligned (the top-right cell is the engine's ×), and the last action's outcome. */
-export function header(el: PaneElements, title: readonly SwarmSpan[], notice: SwarmNotice | null): RenderElement {
-  const { Box, Text } = el
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="row" flexWrap="wrap">
-        {title.map(s => (
-          <Text color={s.color} dimColor={s.dim} bold={s.bold}>
-            {s.text}
-          </Text>
-        ))}
-      </Box>
-      {notice && (
-        <Text color={NOTICE[notice.level].color} wrap="wrap">
-          {`${NOTICE[notice.level].glyph} ${notice.text}`}
-        </Text>
-      )}
-    </Box>
-  )
-}
-
-/** A line of spans. */
-export function line(el: PaneElements, spans: readonly SwarmSpan[]): RenderElement {
-  const { Box, Text } = el
-  return (
-    <Box flexDirection="row">
-      {spans.map(s => (
-        <Text color={s.color} dimColor={s.dim} bold={s.bold} wrap="truncate-end">
-          {s.text}
-        </Text>
-      ))}
-    </Box>
-  )
-}
-
-/**
- * A section's heading, a row below what's above it: the chrome's (WP-DA2),
- * its rule filling what the row has left, the aside its note (muted, or in
- * the aside's own color).
- */
-export function section(el: PaneElements, label: string, aside?: SwarmSpan): RenderElement {
-  const { Box } = el
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      {heading(el, label, undefined, aside ? { text: aside.text, ...(aside.color ? { color: aside.color } : {}) } : null)}
-    </Box>
-  )
-}
-
-/** `autoFocus`: the pane's focus ring starts here when it takes the keyboard (ctrl+x tab), so Enter presses it. */
-export type ButtonSpec = { key: string; label: string; primary?: boolean; dim?: boolean; hotkey?: string; autoFocus?: boolean }
-
-export function button(el: PaneElements, b: ButtonSpec): RenderElement {
-  const { Button } = el
-  return (
-    <Button
-      key={b.key}
-      label={b.label}
-      {...(b.primary ? { variant: 'primary' as const } : {})}
-      {...(b.dim ? { dimColor: true } : {})}
-      {...(b.hotkey ? { hotkey: b.hotkey } : {})}
-      {...(b.autoFocus ? { autoFocus: true as const } : {})}
-      onPress={noop}
-    />
-  )
-}
-
-/** A row of buttons, wrapping on a narrow pane. */
-export function buttons(el: PaneElements, list: readonly (ButtonSpec | null | false)[]): RenderElement {
-  const { Box } = el
-  return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-      {list.filter((b): b is ButtonSpec => !!b).map(b => button(el, b))}
-    </Box>
-  )
-}
-
 /** A Select's options with its value among them (a value no option has is refused), never empty. */
 export function optionsWith(options: readonly SwarmOption[], value: string): SwarmOption[] {
   const out = options.length > 0 ? [...options] : [{ value, label: value || 'not set' }]
   if (!out.some(o => o.value === value)) out.push({ value, label: `${value} (not offered)` })
   const seen = new Set<string>()
   return out.filter(o => (seen.has(o.value) ? false : (seen.add(o.value), true)))
-}
-
-/** An Input where the surface draws one, else the value as text (the mobile app has no fields). */
-export function input(
-  el: PaneElements,
-  f: { key: string; label: string; value: string; placeholder?: string; submitLabel?: string },
-): RenderElement {
-  const { Text } = el
-  if ('Input' in el) {
-    const { Input } = el
-    return (
-      <Input
-        key={f.key}
-        label={f.label}
-        value={f.value}
-        {...(f.placeholder ? { placeholder: f.placeholder } : {})}
-        {...(f.submitLabel ? { submitLabel: f.submitLabel } : {})}
-        onInput={noop}
-        onSubmit={noop}
-      />
-    )
-  }
-  return <Text wrap="wrap">{`${f.label}${f.label ? ': ' : ''}${f.value || f.placeholder || ''}`}</Text>
-}
-
-/** A Select where the surface draws one, else the value's label as text. */
-export function select(el: PaneElements, f: { key: string; label: string; value: string; options: readonly SwarmOption[] }): RenderElement {
-  const { Text } = el
-  const options = optionsWith(f.options, f.value)
-  if ('Select' in el) {
-    const { Select } = el
-    return <Select key={f.key} label={f.label} options={options} value={f.value} onSelect={noop} />
-  }
-  const shown = options.find(o => o.value === f.value)?.label ?? f.value
-  return <Text>{`${f.label}${f.label ? ': ' : ''}${shown}`}</Text>
 }
 
 const hasFields = (el: PaneElements): boolean => 'Input' in el && 'Select' in el
@@ -851,7 +736,7 @@ export function templateListCtx<C extends Pick<BodyContext, 'bodyColumns'>>(view
  */
 export function startListTop(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface'>): number {
   const needs = startNeeds(view).reduce((n, x) => n + needsRowCount(x.text, x.action.label, ctx.bodyColumns), 0)
-  const notice = view.notice ? textRows(`${NOTICE[view.notice.level].glyph} ${view.notice.text}`, ctx.bodyColumns) : 0
+  const notice = view.notice ? textRows(`${NOTICE_STYLE[view.notice.level].glyph} ${view.notice.text}`, ctx.bodyColumns) : 0
   const headed = 2
   return needs + notice + fieldRows(ctx.surface, true) + headed + fieldRows(ctx.surface, true) + headed
 }
