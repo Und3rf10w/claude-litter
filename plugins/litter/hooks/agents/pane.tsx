@@ -22,7 +22,7 @@ import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../
 import type { AgentsBody, AgentsPaneView, AgentsRow, AgentsSelected, SwarmNotice, SwarmOption } from '../../types/index'
 import type { TeamInfo } from '../uitypes'
 import type { AgentsFacts, RowFacts } from './view'
-import type { BodyContext } from '../ui/chrome'
+import type { BodyContext, SectionMeta } from '../ui/chrome'
 import type { Loaded } from '../ui/hub'
 import { button, buttons, header, input, line, section, select, tableFor } from '../swarm/builder'
 import { clean, oneLine } from '../swarm/view'
@@ -125,6 +125,9 @@ export async function resumeAgents(p: Ports): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // The render
+
+/** Agents to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
+export const agentsSection: SectionMeta<AgentsPaneView> = { fits: false, keys: () => [] }
 
 /** Agents' body renderer (ui/pane.tsx calls it with the agentsPane atom under the hub's chrome). Pure. */
 export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {

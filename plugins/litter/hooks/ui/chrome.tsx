@@ -50,6 +50,15 @@ export type BodyContext = {
 export type BodyRenderer<V> = (view: V | null, el: PaneElements, ctx: BodyContext) => RenderElement
 
 /**
+ * What a section tells the hub beside its body, exported by the section's own
+ * module so each section package edits only its own files (phase 5b): `fits`,
+ * once the body keeps to `ctx.rows` (the hub then clips it there in the dock,
+ * so the keys line stays at the pane's foot); `keys`, the section's own keys
+ * for the keys line, drawn before the hub's. Pure.
+ */
+export type SectionMeta<V> = { fits: boolean; keys: (view: V | null) => readonly KeyHint[] }
+
+/**
  * The table with its Text drawing a dim Text that names no color in `muted`
  * (the theme's `inactive`), not the terminal's faint attribute. Buttons keep
  * their own `dimColor`: the engine draws a dim Button at full strength under

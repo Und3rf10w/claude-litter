@@ -8,9 +8,12 @@
 import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { DoctorPaneView } from '../ports'
-import type { BodyContext } from '../ui/chrome'
+import type { BodyContext, SectionMeta } from '../ui/chrome'
 import { STYLE } from '../ui/style'
 import { buttons, header, section } from './builder'
+
+/** Doctor to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
+export const doctorSection: SectionMeta<DoctorPaneView> = { fits: false, keys: () => [] }
 
 /** Doctor's body renderer (ui/pane.tsx calls it with the doctorPane atom under the hub's chrome). */
 export function renderDoctorPane(view: DoctorPaneView | null, el: PaneElements, ctx: BodyContext): RenderElement {

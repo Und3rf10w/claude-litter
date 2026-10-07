@@ -13,7 +13,7 @@
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
 import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
-import type { BodyContext } from '../ui/chrome'
+import type { BodyContext, SectionMeta } from '../ui/chrome'
 import type { Loaded } from '../ui/hub'
 import type { ProposalRef, RuleScope, RuleType } from '../records/rules'
 import type { RulesBody, RulesPaneView, RulesRow, RulesTab, SwarmNotice } from '../../types/index'
@@ -193,6 +193,9 @@ export function resetRulesPaneForTests(): void {
 
 // ---------------------------------------------------------------------------
 // The render
+
+/** Rules to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
+export const rulesSection: SectionMeta<RulesPaneView> = { fits: false, keys: () => [] }
 
 /** Rules' body renderer (ui/pane.tsx calls it with the rulesPane atom under the hub's chrome). Pure. */
 export function renderRulesPane(view: RulesPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {

@@ -5,8 +5,9 @@
 //
 // Every body gets the themed table (chrome.tsx: a dim Text is muted) and a
 // BodyContext. Home fits its rows, so the keys line sits at the pane's foot;
-// the other bodies are today's, drawn whole until their packages fit them to
-// `ctx.rows` (the keys line then follows the body, reached by scrolling).
+// each other section says in its own module (its SectionMeta) whether its
+// body fits `ctx.rows` yet, and which keys it adds to the keys line. One that
+// doesn't fit is drawn whole (the keys line follows it, reached by scrolling).
 //
 // `h` and `Fragment` are the environment's JSX factory, so no name here takes them.
 
@@ -14,13 +15,13 @@ import type { RenderElement } from 'claude-code'
 import type { PaneElements, PaneRender } from '../hooktypes'
 import type { AgentsPaneView, BoardView, DoctorPaneView, HubSection, HubTab, HubView, RulesPaneView, SwarmPaneView, TasksPaneView } from '../../types/index'
 import { tableFor } from '../swarm/builder'
-import { renderBoardPane } from '../board/pane'
-import { renderSwarmPane } from '../swarm/browser'
-import { renderDoctorPane } from '../swarm/doctorpane'
-import { renderRulesPane } from '../rules/pane'
-import { renderTasksPane } from '../tasks/pane'
-import { renderAgentsPane } from '../agents/pane'
-import { actions, header, heading, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint } from './chrome'
+import { renderBoardPane, runsSection } from '../board/pane'
+import { renderSwarmPane, swarmsSection } from '../swarm/browser'
+import { doctorSection, renderDoctorPane } from '../swarm/doctorpane'
+import { renderRulesPane, rulesSection } from '../rules/pane'
+import { renderTasksPane, tasksSection } from '../tasks/pane'
+import { agentsSection, renderAgentsPane } from '../agents/pane'
+import { actions, header, heading, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint, type SectionMeta } from './chrome'
 import { LABEL, SECTIONS, tabsOf } from './hub'
 import { STYLE } from './style'
 
@@ -38,8 +39,21 @@ export const HUB_KEYS: readonly KeyHint[] = [
   { key: 'esc', word: 'back to the prompt' },
 ]
 
-/** Sections whose body fits `ctx.rows` (the hub clips them to it in the dock). */
-const FITS: ReadonlySet<HubSection> = new Set<HubSection>(['home'])
+/** Each section but Home, as its own module declares it (chrome.tsx's SectionMeta). Home fits and has no keys of its own. */
+const META = {
+  runs: runsSection,
+  swarms: swarmsSection,
+  rules: rulesSection,
+  tasks: tasksSection,
+  agents: agentsSection,
+  doctor: doctorSection,
+} satisfies Record<Exclude<HubSection, 'home'>, SectionMeta<never>>
+
+/** Whether the shown section's body fits `ctx.rows` (the hub clips it there in the dock). */
+const fitsOf = (shown: HubSection): boolean => shown === 'home' || META[shown].fits
+
+/** The shown section's own keys, drawn before the hub's. */
+const keysOf = (shown: HubSection, view: SectionView | null): readonly KeyHint[] => (shown === 'home' ? [] : META[shown].keys(view as never))
 
 /** The tabs before the hub's first write: every section, nothing counted. */
 const blankTabs = (): HubTab[] => tabsOf({ runs: 0, swarms: 0, swarmsNeedYou: false, rules: null, tasks: null, agents: null })
@@ -54,7 +68,7 @@ export function renderLitterPane(hub: HubView | null, view: SectionView | null, 
   const keys = e.surface === 'terminal'
   const layout = plan({ bodyColumns, bodyRows: scroll.bodyRows, context: false, strip: stripWidths(tabs, shown, isFocused), keys })
   const ctx: BodyContext = { surface: e.surface, bodyColumns, isFocused, placement, scroll, rows: layout.bodyRows }
-  const clip = FITS.has(shown) && placement === 'dock' && Number.isFinite(layout.bodyRows)
+  const clip = fitsOf(shown) && placement === 'dock' && Number.isFinite(layout.bodyRows)
   return (
     <Box flexDirection="column">
       {header(el, { section: LABEL[shown], live: hub?.live ?? [] }, bodyColumns)}
@@ -62,7 +76,7 @@ export function renderLitterPane(hub: HubView | null, view: SectionView | null, 
       <Box flexDirection="column" marginTop={1} {...(clip ? { height: layout.bodyRows, overflow: 'hidden' as const } : {})}>
         {body(shown, tabs, view, el, ctx)}
       </Box>
-      {keys ? keysLine(el, HUB_KEYS, isFocused) : null}
+      {keys ? keysLine(el, [...keysOf(shown, view), ...HUB_KEYS], isFocused) : null}
     </Box>
   )
 }

@@ -15,9 +15,12 @@ import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
-import type { BodyContext } from '../ui/chrome'
+import type { BodyContext, SectionMeta } from '../ui/chrome'
 import { STYLE } from '../ui/style'
 import { button, buttons, header, input, line, renderBuilder, renderProposal, renderStart, section, select, tableFor } from './builder'
+
+/** Swarms to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
+export const swarmsSection: SectionMeta<SwarmPaneView> = { fits: false, keys: () => [] }
 
 /** Swarms' body renderer (ui/pane.tsx calls it with the swarmPane atom under the hub's chrome). */
 export function renderSwarmPane(view: SwarmPaneView | null, resolved: PaneElements, e: BodyContext): RenderElement {

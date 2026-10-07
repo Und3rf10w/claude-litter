@@ -19,7 +19,7 @@ import type { Ports } from '../ports'
 import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
 import type { TaskPatch } from '../uitypes'
 import type { SwarmNotice, TasksBody, TasksEditor, TasksFilter, TasksPaneView, TasksRow, TasksSort } from '../../types/index'
-import type { BodyContext } from '../ui/chrome'
+import type { BodyContext, SectionMeta } from '../ui/chrome'
 import type { Loaded } from '../ui/hub'
 import { button, buttons, header, input, section, select, tableFor } from '../swarm/builder'
 import { oneLine } from '../swarm/view'
@@ -112,6 +112,9 @@ export async function resumeTasks(p: Ports): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // The render
+
+/** Tasks to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
+export const tasksSection: SectionMeta<TasksPaneView> = { fits: false, keys: () => [] }
 
 /** Tasks' body renderer (ui/pane.tsx calls it with the tasksPane atom under the hub's chrome). Pure. */
 export function renderTasksPane(view: TasksPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
