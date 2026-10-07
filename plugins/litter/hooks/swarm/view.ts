@@ -34,6 +34,8 @@ import type {
   SwarmFlagRow,
   SwarmHistoryView,
   SwarmInspector,
+  SwarmListRow,
+  SwarmNeedsYou,
   SwarmNodeRow,
   SwarmNotice,
   SwarmOption,
@@ -94,6 +96,7 @@ import {
   acceptProposal,
   clearDraft,
   listSwarms,
+  proposalStanding,
   readDraft,
   readProposal,
   readSaved,
@@ -131,6 +134,7 @@ export type Owners = {
   acceptProposal: typeof acceptProposal
   rejectProposal: typeof rejectProposal
   undecidedProposals: typeof undecidedProposals
+  proposalStanding: typeof proposalStanding
   listTemplates: typeof listTemplates
   loadTemplate: typeof loadTemplate
   instantiate: typeof instantiate
@@ -166,6 +170,7 @@ export function owners(): Owners {
     acceptProposal,
     rejectProposal,
     undecidedProposals,
+    proposalStanding,
     listTemplates,
     loadTemplate,
     instantiate,
@@ -343,6 +348,10 @@ const strips = new Map<string, StripCheck>()
 const proposals = new Map<string, number[]>()
 /** The swarms whose list came from the spec ledger in this module's life. */
 const seeded = new Set<string>()
+/** Undecided proposals a later decision or revision superseded, by swarm (J's proposalStanding): the builder's older ones, never a ⚑. */
+const superseded = new Map<string, number[]>()
+/** The spec ledger's head seq each swarm's lists were read at: a draw reads them again once it moved (freshProposals). */
+const seededAt = new Map<string, number>()
 /** Proposals J couldn't read, with why, by `<swarm>/<n>`: the builder offers [Reject] for each. */
 const unreadable = new Map<string, string>()
 
@@ -401,26 +410,63 @@ export function dropProposal(name: string, n: number): void {
   unreadable.delete(`${name}/${n}`)
 }
 
-/** The swarm's staged proposals this session has been told of and not decided. */
-export const pendingProposals = (name: string): number[] => proposals.get(name) ?? []
+/**
+ * The swarm's current proposals: staged, not decided, and not superseded (a
+ * later proposal decided, or a revision saved since). What needs you: the
+ * hub's ⚑ and count, the browser's banner and the builder's [Review].
+ */
+export const pendingProposals = (name: string): number[] => {
+  const older = superseded.get(name) ?? []
+  return (proposals.get(name) ?? []).filter(n => !older.includes(n))
+}
+
+/** The swarm's undecided proposals that later decisions or revisions superseded, oldest first: the builder's "Older proposals". */
+export const supersededProposals = (name: string): number[] => superseded.get(name) ?? []
 
 /**
  * The swarm's undecided proposals from J's spec ledger, in place of what
- * module memory holds: after a reload, or a decision in another session. A
- * failed read leaves the list as it was.
+ * module memory holds: after a reload, or a decision in another session.
+ * Those a later decision or revision superseded (J's proposalStanding) are
+ * kept apart, as older. A failed read leaves the lists as they were.
  */
 export async function seedProposals(p: Ports, name: string): Promise<void> {
   const litterDir = session().litterDir
   if (!litterDir) return
   seeded.add(name)
   try {
-    const list = await owners().undecidedProposals(p, litterDir, name)
-    if (list.length === 0) proposals.delete(name)
-    else proposals.set(name, [...list])
-    for (const key of [...unreadable.keys()]) if (key.startsWith(`${name}/`) && !list.includes(Number(key.slice(name.length + 1)))) unreadable.delete(key)
+    const o = owners()
+    const head = await headSeq(p, swarmDir(litterDir, name))
+    const list = await o.undecidedProposals(p, litterDir, name)
+    const older = new Set((await o.proposalStanding(p, litterDir, name)).superseded)
+    const current = list.filter(n => !older.has(n))
+    const old = list.filter(n => older.has(n))
+    if (current.length === 0) proposals.delete(name)
+    else proposals.set(name, current)
+    if (old.length === 0) superseded.delete(name)
+    else superseded.set(name, old)
+    seededAt.set(name, head)
+    for (const key of [...unreadable.keys()]) if (key.startsWith(`${name}/`) && !current.includes(Number(key.slice(name.length + 1)))) unreadable.delete(key)
   } catch (err) {
     p.log(`swarm pane: the proposals of ${name} weren't read from its ledger: ${errText(err)}`)
   }
+}
+
+/**
+ * The swarm's proposal lists read again when its spec ledger moved since
+ * they were (a decision, a revision, a proposal staged): each Swarms view
+ * calls it before it says what needs you, so a proposal superseded in this
+ * session stops counting by the next draw.
+ */
+export async function freshProposals(p: Ports, name: string): Promise<void> {
+  const litterDir = session().litterDir
+  if (!litterDir || name === '') return
+  let head: number
+  try {
+    head = await headSeq(p, swarmDir(litterDir, name))
+  } catch {
+    return
+  }
+  if (seededAt.get(name) !== head) await seedProposals(p, name)
 }
 
 /** Whether this module's list for the swarm came from the ledger yet. */
@@ -463,6 +509,8 @@ export function resetViewForTests(): void {
   dismissedCards.clear()
   proposals.clear()
   seeded.clear()
+  superseded.clear()
+  seededAt.clear()
   unreadable.clear()
   fromTemplate.clear()
   viewSeq = 0
@@ -1305,7 +1353,7 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
     ask: clean(n.inputs['swarm:start:ask'] ?? '', 2000),
   }
   if (!litterDir) {
-    return { ...base, blocked: `no litter directory: ${session().litterDirError ?? 'session.start found none'}`, templates: [], template: null, swarms: [] }
+    return { ...base, blocked: `no litter directory: ${session().litterDirError ?? 'session.start found none'}`, templates: [], template: null, swarms: [], needsYou: [] }
   }
   const o = owners()
   const problems: string[] = []
@@ -1353,7 +1401,25 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
     templates: listings.map(t => ({ id: templateId(t), name: clean(t.name, 60), description: oneLine(listedAs(t), 120), scope: t.scope })),
     template,
     swarms,
+    needsYou: await needsYouOf(p, swarms),
   }
+}
+
+/**
+ * The saved swarms that need you, for the start screen's banner (WP-DD,
+ * "wherever ⚑ is raised, the section shows it"): each one's current
+ * proposals, and the open questions of a live one, who asks and the first
+ * line. Superseded proposals aren't here.
+ */
+async function needsYouOf(p: Ports, swarms: readonly SwarmListRow[]): Promise<SwarmNeedsYou[]> {
+  const out: SwarmNeedsYou[] = []
+  for (const s of swarms) {
+    await freshProposals(p, s.name)
+    const questions = s.live ? openQuestions(s.name).map(q => ({ who: clean(q.node, 40), text: firstLine(q.text, 120) })) : []
+    const current = pendingProposals(s.name)
+    if (current.length > 0 || questions.length > 0) out.push({ swarm: s.name, live: s.live, proposals: [...current], questions })
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1384,8 +1450,10 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
     saveAs: null,
     proposals: [],
     unreadable: [],
+    superseded: [],
   })
   if (!litterDir) return blocked(`no litter directory: ${session().litterDirError ?? 'session.start found none'}`)
+  await freshProposals(p, name)
   let draft: Draft
   try {
     draft = await loadDraft(p, litterDir, name)
@@ -1431,6 +1499,7 @@ async function buildBuilder(p: Ports, n: SwarmNav): Promise<SwarmBuilderView> {
       const error = unreadable.get(`${name}/${x}`)
       return error === undefined ? [] : [{ n: x, error: oneLine(error, 300) }]
     }),
+    superseded: [...supersededProposals(name)],
   }
 }
 
@@ -2241,6 +2310,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   const s = liveSwarm(name)
   const litterDir = sessionDir()
   if (!s || !litterDir) return buildBuilder(p, { ...n, view: 'builder', notice: n.notice ?? { text: `${name} isn't live`, level: 'info' } })
+  await freshProposals(p, name)
   const now = await p.now()
   let listedArr: ListedAgent[] = []
   try {
@@ -2336,6 +2406,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     composer,
     transcript: tr ? await transcriptOf(p, tr, trName) : null,
     selected,
+    proposals: [...pendingProposals(name)],
   }
 }
 

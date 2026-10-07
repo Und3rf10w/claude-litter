@@ -683,6 +683,40 @@ export async function undecidedProposals(p: Ports, litterDir: string, name: stri
 }
 
 /**
+ * The undecided proposals that still need you, and those that don't (WP-DD):
+ * an undecided proposal is superseded once a later proposal of the swarm was
+ * decided (accepted or rejected), or once a revision was saved after it was
+ * staged. A revision its own accept wrote, before a crash kept its decision
+ * from being recorded, doesn't supersede it. Each list oldest first, from the
+ * spec ledger's order alone; the hub's count and the browser's banner take
+ * `current`, the builder lists `superseded` as older proposals.
+ */
+export async function proposalStanding(p: Ports, litterDir: string, name: string): Promise<{ current: number[]; superseded: number[] }> {
+  if (!SWARM_NAME.test(name)) return { current: [], superseded: [] }
+  const r = await readSpecLedger(p, litterDir, name)
+  const staged: number[] = []
+  const decided = new Set<number>()
+  const over = new Set<number>()
+  const open = (): number[] => staged.filter(n => !decided.has(n) && !over.has(n))
+  for (const rec of r.records) {
+    if (rec.by.source !== 'mod') continue
+    const body = rec.body as Raw
+    if (rec.kind === 'swarm.proposal' && typeof body.n === 'number') {
+      if (!staged.includes(body.n)) staged.push(body.n)
+    } else if (rec.kind === 'swarm.revision' && typeof body.n === 'number') {
+      const own = body.from === 'proposal' && typeof body.proposal === 'number' ? body.proposal : null
+      for (const n of open()) if (n !== own) over.add(n)
+    } else if (rec.kind === 'swarm.proposal.decided' && typeof body.proposal === 'number' && staged.includes(body.proposal) && !decided.has(body.proposal)) {
+      const k = body.proposal
+      decided.add(k)
+      for (const n of open()) if (n < k) over.add(n)
+    }
+  }
+  const undecided = staged.filter(n => !decided.has(n)).sort((a, b) => a - b)
+  return { current: undecided.filter(n => !over.has(n)), superseded: undecided.filter(n => over.has(n)) }
+}
+
+/**
  * Records only the decision, `accepted: 'none'`; nothing reaches briefs/.
  * Rejects when there's no such proposal, or it was decided. It reads only the
  * ledger, never the staged files, so a proposal readProposal can't read (a

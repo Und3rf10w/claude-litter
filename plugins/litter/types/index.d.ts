@@ -68,6 +68,13 @@ export type SwarmTemplateForm = {
 }
 export type SwarmListRow = { name: string; goal: string; revision: number; nodes: number; live: boolean }
 
+/**
+ * A saved swarm that needs you (WP-DD, "wherever ⚑ is raised, the section
+ * shows it"): its current proposals (superseded ones aren't), and a live
+ * one's open questions, who asks and the first line.
+ */
+export type SwarmNeedsYou = { swarm: string; live: boolean; proposals: number[]; questions: { who: string; text: string }[] }
+
 export type SwarmStartView = SwarmViewCommon & {
   view: 'start'
   /** Why nothing here can act (no litter directory), or null. */
@@ -77,6 +84,8 @@ export type SwarmStartView = SwarmViewCommon & {
   templates: SwarmTemplateRow[]
   template: SwarmTemplateForm | null
   swarms: SwarmListRow[]
+  /** The saved swarms that need you: the banner above everything. */
+  needsYou: SwarmNeedsYou[]
 }
 
 // The builder (15.5).
@@ -177,10 +186,16 @@ export type SwarmBuilderView = SwarmViewCommon & {
   checking: boolean
   askLead: string
   saveAs: SwarmSaveAsForm | null
-  /** The lead's staged proposals not yet decided, by number. */
+  /** The lead's current proposals (staged, not decided, not superseded), by number. */
   proposals: number[]
   /** Those of them J can't read (a staged brief changed, its base revision gone): why, and [Reject]. */
   unreadable: { n: number; error: string }[]
+  /**
+   * Undecided proposals a later decided proposal or a later revision
+   * superseded (J's proposalStanding): "Older proposals", muted, each with
+   * [Reject], and [Reject all older]. They don't need you.
+   */
+  superseded: number[]
 }
 
 // A lead's proposal (15.5, "Asking the lead").
@@ -339,6 +354,8 @@ export type SwarmBrowserView = SwarmViewCommon & {
   transcript: SwarmTranscript | null
   /** The selected agentId. */
   selected: string | null
+  /** The lead's current proposals for this swarm: the needs-you banner's, each with [Review]. */
+  proposals: number[]
 }
 
 export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }
