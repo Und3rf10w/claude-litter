@@ -47,6 +47,9 @@ let calls: string[]
 
 const passed = {}
 
+/** The sections as hub.ts builds them, kept before beforeEach puts the stand-ins in. */
+const REAL = { ...sections }
+
 /** A stand-in section: it records each call, answers a load with its label, and passes on a key it doesn't own. */
 function standIn(id: HubSection, owns: (key: string) => boolean): Section {
   const ui: PaneUiHandlers = {
@@ -249,6 +252,15 @@ describe('the ring and the lists (WP-DA2)', () => {
     await openSection(p, 'agents', '')
     expect(await wheel(1)).toEqual({ deny: 'the pane scrolled' })
     expect(calls.filter(c => c.includes('.scroll'))).toEqual(['swarms.scroll 1', 'tasks.scroll -1'])
+  })
+
+  test("the real Swarms, Rules, Tasks and Agents entries hand the wheel to their section's handler, which passes on a tick over nothing drawn", async () => {
+    const tick = { component: 'Pane', requestId: 'litter', offset: 0, by: 1, bodyRows: 20, contentRows: 40, origin: { kind: 'person' }, pointer: { column: 3, row: 5 } } as never
+    for (const id of ['swarms', 'rules', 'tasks', 'agents'] as const) {
+      const scroll = REAL[id].ui.scroll
+      expect(typeof scroll).toBe('function')
+      expect(await scroll!(p, tick, (async () => ({ deny: `${id} passed it on` })) as never)).toEqual({ deny: `${id} passed it on` })
+    }
   })
 
   test("a list's Client posts: a row's press reaches its section as its Button's would; an offset moves the window, clamped, kept in the hub", async () => {
