@@ -14,10 +14,13 @@ import {
   SECTIONS,
   USAGE,
   deps,
+  focusedElement,
+  listOffset,
   litterCommand,
   litterShows,
   litterTick,
   liveOf,
+  moveList,
   onLitterUi,
   openSection,
   ownerOf,
@@ -59,6 +62,15 @@ function standIn(id: HubSection, owns: (key: string) => boolean): Section {
       calls.push(`${id}.select ${e.element}`)
       return owns(e.element) ? { element: e.element, value: e.value } : next(e)
     },
+    // WP-DA2: a focus always lands (passed on); Swarms takes every wheel tick (its list), the others pass them on.
+    focus: async (q, e, next) => {
+      calls.push(`${id}.focus ${e.element ?? '(engine)'}`)
+      return next(e)
+    },
+    scroll: async (q, e, next) => {
+      calls.push(`${id}.scroll ${e.by}`)
+      return id === 'swarms' ? {} : next(e)
+    },
   }
   return {
     owns,
@@ -80,6 +92,19 @@ const select = (element: string, value: string) =>
 const message = (element: string) =>
   onLitterUi.message(p, { plugin: 'litter', element, data: {}, component: 'Pane', requestId: 'litter', surface: 'terminal' } as never, (async () => passed) as never)
 const run = (args: string) => litterCommand(p, { command: 'litter', args } as never, (async () => ({ text: 'next' })) as never)
+/** A Client's post with its data. */
+const post = (element: string, data: unknown) =>
+  onLitterUi.message(p, { plugin: 'litter', element, data, component: 'Pane', requestId: 'litter', surface: 'terminal' } as never, (async () => passed) as never)
+/** The ring moving onto `element` (none: an engine stop); beneath, the core lands it, or answers `deny`. */
+const focusOn = (element: string | undefined, deny?: string) =>
+  onLitterUi.focus(
+    p,
+    { component: 'Pane', requestId: 'litter', ...(element !== undefined ? { plugin: 'litter', element } : {}), origin: { kind: 'person' } } as never,
+    (async () => (deny ? { deny } : {})) as never,
+  )
+/** A wheel tick; beneath, the engine's window, which this test's answers so it's told apart. */
+const wheel = (by: number) =>
+  onLitterUi.scroll(p, { component: 'Pane', requestId: 'litter', offset: 0, by, bodyRows: 20, contentRows: 40, origin: { kind: 'person' }, pointer: { column: 3, row: 5 } } as never, (async () => ({ deny: 'the pane scrolled' })) as never)
 
 const hubView = (): HubView => p.views.hub as HubView
 
@@ -162,6 +187,76 @@ describe('the key rule', () => {
     expect(await press('someone-else')).toEqual({ element: 'next someone-else' })
     expect(await message('elsewhere')).toBe(passed)
     expect(calls).toEqual(['agents.press someone-else', 'agents.message elsewhere'])
+  })
+})
+
+describe('the ring and the lists (WP-DA2)', () => {
+  test("ui.focus reaches the shown section by its element's key, and the hub keeps where the ring landed", async () => {
+    await openSection(p, 'tasks', '')
+    calls = []
+    expect(await focusOn('tasks:filter:all')).toEqual({})
+    expect(calls).toEqual(['tasks.focus tasks:filter:all'])
+    expect(focusedElement()).toBe('tasks:filter:all')
+    expect(hubView().focus).toBe('tasks:filter:all')
+    // A key no section owns is the shown section's to pass on, as the other events are.
+    expect(await focusOn('someone-else')).toEqual({})
+    expect(calls).toEqual(['tasks.focus tasks:filter:all', 'tasks.focus someone-else'])
+  })
+
+  test("the strip's, an engine stop's and another section's move the ring and reach no section: a focus is no action, so no toast", async () => {
+    await openSection(p, 'tasks', '')
+    calls = []
+    expect(await focusOn(stripKey('runs'))).toEqual({})
+    expect(hubView().focus).toBe(stripKey('runs'))
+    expect(await focusOn(undefined)).toEqual({})
+    expect(hubView().focus).toBeNull()
+    expect(await focusOn('rules:accept:x')).toEqual({})
+    expect(hubView().focus).toBe('rules:accept:x')
+    expect(calls).toEqual([])
+    expect(p.toasts).toEqual([])
+  })
+
+  test('a focus the core denies leaves the kept element where it was', async () => {
+    await openSection(p, 'tasks', '')
+    await focusOn('tasks:sort')
+    expect(await focusOn('tasks:filter:all', 'another move landed first')).toEqual({ deny: 'another move landed first' })
+    expect(focusedElement()).toBe('tasks:sort')
+  })
+
+  test('ui.scroll reaches the shown section, which takes a tick over its list or passes it on; with no handler it passes on', async () => {
+    await openSection(p, 'swarms', '')
+    calls = []
+    expect(await wheel(1)).toEqual({})
+    await openSection(p, 'tasks', '')
+    expect(await wheel(-1)).toEqual({ deny: 'the pane scrolled' })
+    expect(calls.filter(c => c.includes('.scroll'))).toEqual(['swarms.scroll 1', 'tasks.scroll -1'])
+    const { scroll: _gone, ...rest } = sections.agents.ui
+    sections.agents = { ...sections.agents, ui: rest }
+    await openSection(p, 'agents', '')
+    expect(await wheel(1)).toEqual({ deny: 'the pane scrolled' })
+    expect(calls.filter(c => c.includes('.scroll'))).toEqual(['swarms.scroll 1', 'tasks.scroll -1'])
+  })
+
+  test("a list's Client posts: a row's press reaches its section as its Button's would; an offset moves the window, clamped, kept in the hub", async () => {
+    await openSection(p, 'swarms', '')
+    calls = []
+    const list = 'swarm:start:templates'
+    expect(await post(list, { list, press: 'swarm:start:template:builtin:pipeline' })).toEqual({})
+    expect(calls).toEqual(['swarms.press swarm:start:template:builtin:pipeline'])
+    expect(await post(list, { list, offset: 3, max: 5 })).toEqual({})
+    expect(listOffset(list)).toBe(3)
+    expect(hubView().lists).toEqual({ [list]: 3 })
+    await post(list, { list, offset: 9, max: 5 })
+    expect(hubView().lists).toEqual({ [list]: 5 })
+    // At the edge already: nothing moves.
+    expect(await moveList(p, list, 7, 5)).toBe(false)
+    // Another section's key, another list's post, a shape it isn't: the section's own message handler, as before.
+    calls = []
+    await post(list, { list, press: 'tasks:filter:all' })
+    await post(list, { list: 'elsewhere', offset: 1, max: 2 })
+    await post(list, { list, offset: -1, max: 2 })
+    expect(calls).toEqual([`swarms.message ${list}`, `swarms.message ${list}`, `swarms.message ${list}`])
+    expect(listOffset(list)).toBe(5)
   })
 })
 

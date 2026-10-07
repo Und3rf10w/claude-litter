@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { TasksBody, TasksPaneView } from '../../types/index'
+import type { TaskListRef } from '../../hooks/uitypes'
 import { onTasksUi, refreshTasks, resetTasksPaneForTests, tasksCommand, tasksTick } from '../../hooks/tasks/pane'
 import { LITTER_PANE as TASKS_PANE, resetHubForTests } from '../../hooks/ui/hub'
-import { EMPTIED_DONE, EMPTIED_GONE, LINE_MARK, TASKS_STORE_KEY, deps, tasksNavOf } from '../../hooks/tasks/view'
+import { EMPTIED_DONE, EMPTIED_GONE, LINE_MARK, TASKS_STORE_KEY, deps, hiddenList, hiddenNote, tasksNavOf } from '../../hooks/tasks/view'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 // teamfile.sh runs for real on a direct save; a loaded machine is slow.
@@ -168,6 +169,45 @@ describe('the list, the filters and the sort', () => {
     await pick(p, 'tasks:list', 'gone-team')
     expect(p.toasts).toEqual(["that list isn't offered any more, so it was ignored"])
     expect(body(p).list).toBe(SESSION)
+  })
+})
+
+describe('the picker leaves out empty team lists (WP-DA2)', () => {
+  const ref = (name: string, over: Partial<TaskListRef> = {}): TaskListRef => ({ name, dir: `/cfg/tasks/${name}`, kind: 'team', team: name, mine: false, ...over })
+
+  test('a team list with no tasks is left out, unless it is this session\'s, the one shown or the one named', () => {
+    expect(hiddenList(ref('session-1a2b3c4d'), 0, 'team-a', null)).toBe(true)
+    expect(hiddenList(ref('session-1a2b3c4d'), 1, 'team-a', null)).toBe(false)
+    expect(hiddenList(ref('session-1a2b3c4d', { mine: true }), 0, 'team-a', null)).toBe(false)
+    expect(hiddenList(ref('session-1a2b3c4d'), 0, 'session-1a2b3c4d', null)).toBe(false)
+    expect(hiddenList(ref('session-1a2b3c4d'), 0, 'team-a', 'session-1a2b3c4d')).toBe(false)
+    // This session's own list, with no team, is never a team list.
+    expect(hiddenList(ref(SESSION, { kind: 'session', team: null }), 0, 'team-a', null)).toBe(false)
+  })
+
+  test('the note says how many, as session teams when every one is the engine\'s, else as team lists', () => {
+    expect(hiddenNote([])).toBeNull()
+    expect(hiddenNote([ref('session-1a2b3c4d')])).toBe('1 empty session team hidden')
+    expect(hiddenNote([ref('session-1a2b3c4d'), ref('session-5e6f7a8b')])).toBe('2 empty session teams hidden')
+    expect(hiddenNote([ref('session-1a2b3c4d'), ref('quiet-team')])).toBe('2 empty team lists hidden')
+  })
+
+  test('the view: the empty session teams are out of the picker, counted in its note; one named comes back', async () => {
+    const { p, config } = await opened()
+    for (const s of ['session-1a2b3c4d', 'session-5e6f7a8b', 'session-9c0d1e2f']) team(config, s, [])
+    team(config, 'busy-session', [])
+    write(config, 'busy-session', [{ id: '1' }])
+    await tasksCommand(p, cmd('team-a'), never)
+    expect(body(p).lists.map(o => o.value)).toEqual([SESSION, 'busy-session', 'team-a'])
+    expect(body(p).hidden).toBe('3 empty session teams hidden')
+    await tasksCommand(p, cmd('session-5e6f7a8b'), never)
+    expect(body(p).lists.map(o => o.value)).toEqual([SESSION, 'busy-session', 'session-5e6f7a8b', 'team-a'])
+    expect(body(p).hidden).toBe('2 empty session teams hidden')
+    // A team that's yours, led by this session, is your list: kept, empty or not.
+    team(config, 'session-mine0000', [], SESSION)
+    await tasksCommand(p, cmd('team-a'), never)
+    expect(body(p).lists[0]).toEqual({ value: 'session-mine0000', label: "session-mine0000 · team session-mine0000, this session's · 0 tasks" })
+    expect(body(p).hidden).toBe('3 empty session teams hidden')
   })
 })
 
