@@ -4,10 +4,11 @@
 // view, which register.tsx reads from their atoms.
 //
 // Every body gets the themed table (chrome.tsx: a dim Text is muted) and a
-// BodyContext. Home fits its rows, so the keys line sits at the pane's foot;
-// each other section says in its own module (its SectionMeta) whether its
-// body fits `ctx.rows` yet, and which keys it adds to the keys line. One that
-// doesn't fit is drawn whole (the keys line follows it, reached by scrolling).
+// BodyContext. Home (home.tsx, WP-DB) fits its rows, so the keys line sits at
+// the pane's foot; each other section says in its own module (its
+// SectionMeta) whether its body fits `ctx.rows` yet, and which keys it adds
+// to the keys line. One that doesn't fit is drawn whole (the keys line
+// follows it, reached by scrolling).
 //
 // `h` and `Fragment` are the environment's JSX factory, so no name here takes them.
 
@@ -21,10 +22,11 @@ import { doctorSection, renderDoctorPane } from '../swarm/doctorpane'
 import { renderRulesPane, rulesSection } from '../rules/pane'
 import { renderTasksPane, tasksSection } from '../tasks/pane'
 import { agentsSection, renderAgentsPane } from '../agents/pane'
-import { actions, header, heading, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint, type SectionMeta } from './chrome'
+import { header, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint, type SectionMeta } from './chrome'
+import { cells } from '../band/view'
 import { noteDrawn } from './drawn'
+import { renderHome } from './home'
 import { LABEL, SECTIONS, tabsOf } from './hub'
-import { STYLE } from './style'
 
 /** The shown section's view, whichever it is: register.tsx reads the one atom the hub's section names. */
 export type SectionView = BoardView | SwarmPaneView | RulesPaneView | TasksPaneView | AgentsPaneView | DoctorPaneView
@@ -68,6 +70,26 @@ export function bodyBox(shown: HubSection, placement: 'dock' | 'inline', rows: n
 /** The tabs before the hub's first write: every section, nothing counted. */
 const blankTabs = (): HubTab[] => tabsOf({ runs: 0, swarms: 0, swarmsNeedYou: false, rules: null, tasks: null, agents: null })
 
+/**
+ * The rows the keys line wraps to past its first at `columns` (WP-DB): chrome's
+ * plan counts it one row, but keysLine is a wrapping row of keys, each after
+ * the first with ` · ` before it, and at 60 columns the hub's own four
+ * already take two. Unfocused it's one line. Pure.
+ */
+export function keysOverflow(keys: readonly KeyHint[], isFocused: boolean, columns: number): number {
+  if (!isFocused || !Number.isFinite(columns)) return 0
+  let rows = 1
+  let used = 0
+  keys.forEach((k, i) => {
+    const w = (i > 0 ? 3 : 0) + cells(k.key) + 1 + cells(k.word)
+    if (used > 0 && used + w > columns) {
+      rows++
+      used = w
+    } else used += w
+  })
+  return rows - 1
+}
+
 /** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter' }`. Pure but for its note of what the terminal drew (ui/drawn.ts). */
 export function renderLitterPane(hub: HubView | null, view: SectionView | null, resolved: PaneElements, e: PaneRender): RenderElement {
   const el = themed(tableFor(resolved, e.surface))
@@ -76,7 +98,10 @@ export function renderLitterPane(hub: HubView | null, view: SectionView | null, 
   const tabs = hub?.tabs && hub.tabs.length === SECTIONS.length ? hub.tabs : blankTabs()
   const { bodyColumns, isFocused, placement, scroll } = e.props
   const keys = e.surface === 'terminal'
-  const layout = plan({ bodyColumns, bodyRows: scroll.bodyRows, context: false, strip: stripWidths(tabs, shown, isFocused), keys })
+  const keyHints = keysLineOf(shown, view)
+  // plan counts the keys line one row: the rows it wraps to past that come off the body's.
+  const over = keys ? keysOverflow(keyHints, isFocused, bodyColumns) : 0
+  const layout = plan({ bodyColumns, bodyRows: scroll.bodyRows - over, context: false, strip: stripWidths(tabs, shown, isFocused), keys })
   const ctx: BodyContext = { surface: e.surface, bodyColumns, isFocused, placement, scroll, rows: layout.bodyRows, focused: hub?.focus ?? null, lists: hub?.lists ?? {} }
   // The header's rows, the strip's, and the gap above the body.
   if (e.surface === 'terminal') noteDrawn({ shown, view, ctx, bodyTop: layout.headerRows + layout.stripRows + 1, scrollOffset: scroll.offset })
@@ -85,18 +110,18 @@ export function renderLitterPane(hub: HubView | null, view: SectionView | null, 
       {header(el, { section: LABEL[shown], live: hub?.live ?? [] }, bodyColumns)}
       {strip(el, tabs, shown, isFocused)}
       <Box flexDirection="column" marginTop={1} {...bodyBox(shown, placement, layout.bodyRows)}>
-        {body(shown, tabs, view, el, ctx)}
+        {body(shown, hub, view, el, ctx)}
       </Box>
-      {keys ? keysLine(el, keysLineOf(shown, view), isFocused) : null}
+      {keys ? keysLine(el, keyHints, isFocused) : null}
     </Box>
   )
 }
 
-/** The shown section's body, through its renderer, over the view register.tsx read from that section's atom. */
-function body(shown: HubSection, tabs: readonly HubTab[], view: SectionView | null, el: PaneElements, ctx: BodyContext): RenderElement {
+/** The shown section's body, through its renderer, over the view register.tsx read from that section's atom (Home's is the hub's own). */
+function body(shown: HubSection, hub: HubView | null, view: SectionView | null, el: PaneElements, ctx: BodyContext): RenderElement {
   switch (shown) {
     case 'home':
-      return renderHome(tabs, el, ctx)
+      return renderHome(hub?.home, el, ctx)
     case 'runs':
       return renderBoardPane(view as BoardView | null, el, ctx)
     case 'swarms':
@@ -110,36 +135,4 @@ function body(shown: HubSection, tabs: readonly HubTab[], view: SectionView | nu
     case 'doctor':
       return renderDoctorPane(view as DoctorPaneView | null, el, ctx)
   }
-}
-
-/**
- * Home, a placeholder (WP-DB fills it): each section with its count in
- * words and one [Open]. The first section that needs you has the primary
- * [Open]; the rows past `ctx.rows` are left out.
- */
-export function renderHome(tabs: readonly HubTab[], el: PaneElements, ctx: BodyContext): RenderElement {
-  const { Box, Text } = el
-  const listed = tabs.filter(t => t.section !== 'home')
-  const first = listed.find(t => t.needsYou)?.section ?? null
-  // A heading, then a row per section (two when narrow: the line, then [Open]).
-  const narrow = Number.isFinite(ctx.bodyColumns) && ctx.bodyColumns < 60
-  const perRow = narrow ? 2 : 1
-  const room = Number.isFinite(ctx.rows) ? Math.max(0, Math.floor((ctx.rows - 1) / perRow)) : listed.length
-  const fits = listed.slice(0, room)
-  return (
-    <Box flexDirection="column">
-      {heading(el, 'Sections', ctx.bodyColumns, listed.length > fits.length ? `${listed.length - fits.length} more below the fold` : null)}
-      {fits.map(t => (
-        <Box flexDirection={narrow ? 'column' : 'row'} columnGap={1}>
-          <Box flexDirection="row" columnGap={1} flexGrow={1}>
-            <Text bold color={t.needsYou ? STYLE.needsYou : STYLE.label}>{`${t.needsYou ? '⚑ ' : ''}${t.label}`}</Text>
-            <Text color={STYLE.muted} wrap="truncate-end">
-              {t.summary}
-            </Text>
-          </Box>
-          {actions(el, [{ key: `home:open:${t.section}`, label: 'Open', primary: t.section === first }])}
-        </Box>
-      ))}
-    </Box>
-  )
 }

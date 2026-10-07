@@ -8,6 +8,8 @@
 // the same pane; a key of a section that isn't shown is ignored with a toast;
 // and the pane draws in the dock and inline, wide and narrow, Home keeping to
 // its rows. The router's and the tick's cases are tier 2's (hub.spec.ts).
+// Home's own cases (WP-DB: what it says, its folds, its [Open] on an item)
+// are tests/home.test.tsx's.
 
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -226,9 +228,10 @@ describe('the openers in the pane', () => {
     await start($, on)
     await run($, 'litter', '')
     const ui = await mount($, 'terminal')
-    expect(await ui.find({ type: 'Button', key: 'home:open:rules' })).toBeDefined()
-    expect(await ui.press({ key: 'home:open:rules' })).toEqual({ element: 'home:open:rules' })
-    expect(await ui.find({ type: 'Text', text: ' · Rules' })).toBeDefined()
+    // Nothing runs here, so Home's lines are Swarms' and Doctor's (WP-DB).
+    expect(await ui.find({ type: 'Button', key: 'home:open:swarms' })).toBeDefined()
+    expect(await ui.press({ key: 'home:open:swarms' })).toEqual({ element: 'home:open:swarms' })
+    expect(await ui.find({ type: 'Text', text: ' · Swarms' })).toBeDefined()
   })
 
   test("the builder's [Doctor] shows Doctor on its swarm, asking for the keyboard", SLOW, async ($, on) => {
@@ -246,8 +249,9 @@ describe("a key of a section that isn't shown", () => {
   test('is ignored with a toast, answered in its shape, and acts on nothing', async ($, on) => {
     const w = await start($, on)
     await run($, 'litter', 'runs')
-    // A drawing made while Home was shown, pressed after the section moved to Runs.
-    w.held.value = { view: 'hub', v: 999, section: 'home', live: [], tabs: [] }
+    // A drawing made while Home was shown (with an Agents line, WP-DB), pressed after the section moved to Runs.
+    const home = { needsYou: [], running: [], ended: [], endedMinutes: 10, others: [{ open: 'home:open:agents', label: 'Agents', text: '1 running in this session' }] }
+    w.held.value = { view: 'hub', v: 999, section: 'home', live: [], tabs: [], home }
     const ui = await mount($, 'terminal')
     expect(await ui.press({ key: 'home:open:agents' })).toEqual({ element: 'home:open:agents' })
     expect(w.toasts).toContain('that was on Home, and litter shows Runs now, so it was ignored')
@@ -265,17 +269,19 @@ describe('inline and narrow', () => {
       const ui = await mount($, 'terminal', { placement, bodyColumns: 40, bodyRows: 12 })
       expect(await ui.find({ type: 'Text', text: 'litter' })).toBeDefined()
       expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('litter:section:'))).toHaveLength(6)
-      // 2 header rows, 2 strip rows, a gap and 2 keys rows leave 5: the heading and two sections, two rows each.
-      expect(await ui.find({ type: 'Text', text: '4 more below the fold' })).toBeDefined()
-      expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('home:open:'))).toHaveLength(2)
+      // 2 header rows, 2 strip rows, a gap and 2 keys rows leave 5 (WP-DB): the quiet line, the next step on two,
+      // and the other sections folded into one line of their names (each line would take two rows, with its [Open]).
+      expect(await ui.find({ type: 'Text', text: 'Nothing needs you, and nothing runs.' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Swarms, Doctor' })).toBeDefined()
+      expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('home:open:'))).toHaveLength(0)
     })
   }
 
-  test('wide, every section has its row', async ($, on) => {
+  test('wide, every line of Home is drawn, none folded', async ($, on) => {
     await start($, on)
     await run($, 'litter', '')
     const ui = await mount($, 'terminal', { bodyColumns: 140, bodyRows: 40 })
-    expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('home:open:'))).toHaveLength(6)
-    expect(await ui.find({ type: 'Text', text: /more below the fold/ })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('home:open:')).map(b => b.key)).toEqual(['home:open:swarms', 'home:open:doctor'])
+    expect(await ui.find({ type: 'Text', text: 'Swarms, Doctor' })).toBeUndefined()
   })
 })

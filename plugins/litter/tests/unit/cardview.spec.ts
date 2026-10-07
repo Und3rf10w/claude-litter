@@ -7,7 +7,10 @@
 // of the 20 newest of 25 runs with a repair and a resumed generation, each
 // ledger read once; an unreadable and a tampered ledger; no write when
 // nothing changed, and the refresh's write anyway; a hot reload; cardRow;
-// and the [Board] press.
+// and the [Board] press. WP-DB (the UI review's item 11): the title is the
+// run's line as the band and Home draw it (the status's mark and word, then
+// `litter` muted), then the recorded outcome, then the evidence: the gate
+// that didn't land with its verdict's dimensions in plain words, the land.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { chmodSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -206,6 +209,9 @@ describe('a card for each way a run ends', () => {
     // run.launch at minute 2, run.end at minute 12.
     expect(textOf(card.title)).toBe(`✓ done · litter · execute ${run} · 10m 0s`)
     expect(card.title[0]).toEqual({ text: '✓ done', color: 'success', bold: true })
+    // litter's name and the time in the muted role, as the band's.
+    expect(card.title[2]).toEqual({ text: 'litter', color: 'inactive' })
+    expect(card.title.at(-1)).toEqual({ text: '10m 0s', color: 'inactive' })
     expect(span(card, run)?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     expect(linesOf(card)).toEqual(['3/3 gates landed · last land 3333333'])
     expect(span(card, '3333333')?.color).toBe('warning')
@@ -214,7 +220,7 @@ describe('a card for each way a run ends', () => {
     expect(p.logs).toEqual([])
   })
 
-  test('execute, halted at a gate: its attempt, failing dimensions and plan gap, then the reason', async () => {
+  test('execute, halted at a gate: the reason, then its attempt with each dimension in plain words, the plan gap, then the gates landed', async () => {
     const run = '20261005-halt'
     await record(run, [
       start('execute', run),
@@ -233,13 +239,15 @@ describe('a card for each way a run ends', () => {
     const card = cardOf('t-halt')
     expect(card.title[0]).toEqual({ text: '⚑ halted', color: 'warning', bold: true })
     expect(linesOf(card)).toEqual([
-      '1/3 gates landed · last land 1111111',
-      'G2, attempt 2: failed tests_green, no_regressions',
+      'G2: out of attempts',
+      'G2, attempt 2: plan ✓ tests ✕ regressions ✕ rules ✓',
       "plan gap: the plan doesn't say how long to wait between tries",
-      'halted: G2: out of attempts',
+      '1/3 gates landed · last land 1111111',
     ])
-    expect(span(card, 'failed tests_green, no_regressions')?.color).toBe('warning')
-    expect(card.lines[3]![0]!.color).toBe('warning')
+    expect(card.lines[0]![0]!.color).toBe('warning')
+    expect(span(card, 'tests ✕')?.color).toBe('error')
+    expect(span(card, 'plan ✓')?.color).toBe('success')
+    expect(span(card, '1111111')?.color).toBe('warning')
   })
 
   test("execute, halted on an executor's plan-gap stop after the verdict, and on a rule clash", async () => {
@@ -264,12 +272,12 @@ describe('a card for each way a run ends', () => {
     writeRunJson(clash, 'execute', { gates: GATES.slice(0, 1) })
     await noteCards(p, submit(`${notice('t-stop')}\n${notice('t-clash')}`))
     expect(writes).toHaveLength(1)
-    expect(linesOf(cardOf('t-stop'))).toEqual(['0/1 gates landed', 'G1, attempt 2: its executor stopped before the attempt was judged', 'plan gap: which header wins?', 'halted: G1: a plan gap'])
+    expect(linesOf(cardOf('t-stop'))).toEqual(['G1: a plan gap', 'G1, attempt 2: its executor stopped before the attempt was judged', 'plan gap: which header wins?', '0/1 gates landed'])
     expect(linesOf(cardOf('t-clash'))).toEqual([
-      '0/1 gates landed',
-      'G1, attempt 1: its last verdict passed every dimension',
+      'G1: a rule clash',
+      'G1, attempt 1: plan ✓ tests ✓ regressions ✓ rules ✓',
       'rule clash: P-tests-first and L-no-sleeps clash',
-      'halted: G1: a rule clash',
+      '0/1 gates landed',
     ])
   })
 
@@ -320,23 +328,24 @@ describe('a card for each way a run ends', () => {
     writeRunJson(run, 'design', { deliverable: 'plan', bar: [{ id: 'C1' }, { id: 'C3' }, { id: 'C5' }, { id: 'C7' }] })
     await noteCards(p, submit(notice('t-hold')))
     const card = cardOf('t-hold')
+    // The outcome first, then the version's verdict, then the delivery.
     expect(linesOf(card)).toEqual([
-      'v4 HOLDING · 3 open: C3 investigation, C5 design, C7 not judged · source changed',
       'holding: max rounds reached',
+      'v4 HOLDING · 3 open: C3 investigation, C5 design, C7 not judged · source changed',
       'plan.md not delivered: holding (max-rounds)',
     ])
     expect(span(card, 'HOLDING')?.color).toBe('warning')
   })
 
-  test('design, needing you: the reason in the summary words, in the permission color', async () => {
+  test('design, needing you: the title says so in words, the first line what for in the summary words, in the permission color', async () => {
     const run = '20261005-needs'
     await record(run, [start('design', run), launch('t-needs'), end('t-needs', 1, 'needs_user', 'user-gap', { stopped: 'user-gap' })])
     writeRunJson(run, 'design', { deliverable: 'decision', bar: [] })
     await noteCards(p, submit(notice('t-needs')))
     const card = cardOf('t-needs')
-    expect(card.title[0]).toEqual({ text: '⚑ needs_user', color: 'permission', bold: true })
-    expect(linesOf(card)).toEqual(['no version recorded', 'needs you: a gap only you can close'])
-    expect(card.lines[1]![0]!.color).toBe('permission')
+    expect(card.title[0]).toEqual({ text: '⚑ needs you', color: 'permission', bold: true })
+    expect(linesOf(card)).toEqual(['for a gap only you can close', 'no version recorded'])
+    expect(card.lines[0]![0]!.color).toBe('permission')
   })
 
   test('fanout, done: the writers done of all, and the land', async () => {
@@ -375,8 +384,8 @@ describe('a card for each way a run ends', () => {
     await noteCards(p, submit(notice('t-broke', 'failed')))
     const card = cardOf('t-broke')
     expect(card.title[0]).toEqual({ text: '✕ failed', color: 'error', bold: true })
-    expect(linesOf(card)).toEqual(['0/2 gates landed', 'failed: the workflow failed: SyntaxError at line 3'])
-    expect(card.lines[1]![0]!.color).toBe('error')
+    expect(linesOf(card)).toEqual(['the workflow failed: SyntaxError at line 3', '0/2 gates landed'])
+    expect(card.lines[0]![0]!.color).toBe('error')
     await restoreCards(p)
     expect(Object.keys(last().byTask)).toEqual(['t-broke'])
   })
@@ -388,7 +397,7 @@ describe('a card for each way a run ends', () => {
     await noteCards(p, submit(notice('t-p2')))
     const card = cardOf('t-p2')
     expect(textOf(card.title)).toBe(`⚑ halted · litter · plan ${run} · generation 2 · 1m 0s`)
-    expect(linesOf(card)).toEqual(['halted: the plan has no gates'])
+    expect(linesOf(card)).toEqual(['the plan has no gates'])
   })
 
   test('every text from the ledger is cleaned and cut to one line', async () => {
@@ -397,7 +406,7 @@ describe('a card for each way a run ends', () => {
     writeRunJson(run, 'fanout', { tasks: [] })
     await noteCards(p, submit(notice('t-dirty')))
     const line = linesOf(cardOf('t-dirty'))[0]!
-    expect(line.startsWith('halted: the merge')).toBe(true)
+    expect(line.startsWith('the merge')).toBe(true)
     expect(line).not.toContain('\n')
     expect(line).not.toContain('\u001b')
     expect(line.length).toBeLessThanOrEqual(300)
@@ -425,7 +434,8 @@ describe('which notifications get a card', () => {
     await noteCards(p, submit('next prompt', 'composer'))
     expect(writes).toHaveLength(1)
     expect(cardOf('t-kill').title[0]).toEqual({ text: '− stopped', color: 'inactive', bold: true })
-    expect(linesOf(cardOf('t-kill'))).toEqual(['0/3 gates landed', 'G1, attempt 1: no verdict recorded', 'stopped: stopped'])
+    // A reason that only repeats the title's status isn't said again.
+    expect(linesOf(cardOf('t-kill'))).toEqual(['G1, attempt 1: no verdict recorded', '0/3 gates landed'])
     // Built once: the next prompt reads nothing more and writes nothing.
     await noteCards(p, submit('and another', 'composer'))
     expect(writes).toHaveLength(1)
@@ -446,7 +456,7 @@ describe('which notifications get a card', () => {
     await cardsTick(p)
     expect(writes).toHaveLength(1)
     expect(cardOf('t-late').title[0]).toEqual({ text: '− stopped', color: 'inactive', bold: true })
-    expect(linesOf(cardOf('t-late'))).toEqual(['0/3 gates landed', 'G1, attempt 1: no verdict recorded', 'stopped: stopped'])
+    expect(linesOf(cardOf('t-late'))).toEqual(['G1, attempt 1: no verdict recorded', '0/3 gates landed'])
     // Built: nothing waits now, so the next tick and the next prompt read nothing and write nothing.
     touched.length = 0
     await cardsTick(p)
@@ -548,7 +558,7 @@ describe('restoreCards and refreshCards', () => {
     const kept = starts.slice(0, 18).map(s => `t-${s.i}`)
     expect(Object.keys(byTask).sort()).toEqual([...kept, 't-rep', 't-res1', 't-res2'].sort())
     for (const s of starts.slice(18)) expect(byTask[`t-${s.i}`]).toBeUndefined()
-    expect(linesOf(byTask['t-rep']!)).toEqual(['halted: the integration verify is red'])
+    expect(linesOf(byTask['t-rep']!)).toEqual(['the integration verify is red'])
     expect(textOf(byTask['t-res2']!.title)).toContain(' · generation 2 · ')
     expect(textOf(byTask['t-res1']!.title)).not.toContain('generation')
     // Oldest first, so the cap drops the oldest: the newest run's cards come last.

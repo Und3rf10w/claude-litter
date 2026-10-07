@@ -3,12 +3,16 @@
 // for through `sections` and the reads through `deps`, so each check sees
 // only the hub: the one opener, `/litter`'s parse, the key rule and the
 // router, the tick's gate, the strip's counts, and the row budget at a wide
-// and a narrow size.
+// and a narrow size. WP-DB: what writeHub puts in Home's part of the view,
+// from the band's lines, the open questions and proposals, and the counts;
+// Home's [Open] on an item; the live line; the keys line's wrapped rows.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { Ports } from '../../hooks/ports'
 import type { PaneUiHandlers } from '../../hooks/hooktypes'
-import type { HubSection, HubView } from '../../types/index'
+import type { HomeRow, HubSection, HubView } from '../../types/index'
+import { runMark, type BandLine } from '../../hooks/band/view'
+import { HUB_KEYS, keysOverflow } from '../../hooks/ui/pane'
 import {
   LABEL,
   SECTIONS,
@@ -120,11 +124,21 @@ beforeEach(() => {
   sections.tasks = standIn('tasks', k => k.startsWith('tasks:'))
   sections.agents = standIn('agents', k => k.startsWith('agents:'))
   sections.doctor = standIn('doctor', k => k.startsWith('swarm:doctor:'))
+  quietDeps()
+})
+
+/** The reads beside the sections, all quiet: no run, no swarm, nothing built. */
+function quietDeps(): void {
   deps.bandCounts = () => ({ runs: 0, ended: 0 })
+  deps.bandLines = () => []
+  deps.endedMinutes = () => 10
   deps.liveSwarms = () => []
+  deps.openQuestions = () => []
+  deps.pendingProposals = () => []
+  deps.swarmNav = () => null
   deps.rulesCounts = () => null
   deps.tasksShown = () => null
-})
+}
 
 afterEach(() => resetHubForTests())
 
@@ -281,10 +295,7 @@ describe('the strip and Home', () => {
     resetHubForTests()
     sections.runs = standIn('runs', k => k.startsWith('board:'))
     sections.tasks = standIn('tasks', k => k.startsWith('tasks:'))
-    deps.bandCounts = () => ({ runs: 0, ended: 0 })
-    deps.liveSwarms = () => []
-    deps.rulesCounts = () => null
-    deps.tasksShown = () => null
+    quietDeps()
     await openSection(p, 'home', '')
     expect(await press('home:open:tasks')).toEqual({ element: 'home:open:tasks' })
     expect(shownSection()).toBe('tasks')
@@ -383,10 +394,8 @@ describe('/litter [section] [arg]', () => {
 
   test("bare /litter through the real Home answers Home's line and opens with focus", async () => {
     resetHubForTests()
+    quietDeps()
     deps.bandCounts = () => ({ runs: 2, ended: 0 })
-    deps.liveSwarms = () => []
-    deps.rulesCounts = () => null
-    deps.tasksShown = () => null
     expect(await run('')).toEqual({ text: 'Home shows 2 active runs' })
     expect(p.panes.opened).toEqual([{ id: 'litter', title: 'litter', focus: true }])
     expect(hubView().section).toBe('home')
@@ -445,14 +454,21 @@ describe('the counts', () => {
     expect(tabs.map(t => t.section)).toEqual([...SECTIONS])
     expect(tabs.map(t => t.count)).toEqual([null, 2, 1, 3, 5, 1, null])
     expect(tabs.map(t => t.needsYou)).toEqual([false, false, true, true, false, false, false])
-    expect(tabs.find(t => t.section === 'tasks')?.summary).toBe('5 open tasks')
-    expect(tabs.find(t => t.section === 'runs')?.summary).toBe('2 active runs')
+    // WP-DB: the tab has no summary of its own; Home says what each section has.
+    expect(Object.keys(tabs[1]!).sort()).toEqual(['count', 'label', 'needsYou', 'section'])
   })
 
-  test('the live line: what runs, then what needs you, each with its glyph and word', () => {
-    expect(liveOf(counts(), tabsOf(counts()))).toEqual([{ text: 'nothing running', color: 'inactive' }])
+  test('the live line (WP-DB): what runs, then what needs you, by what it is, each with its glyph and word in its color', () => {
+    expect(liveOf(counts(), [])).toEqual([{ text: 'nothing running', color: 'inactive' }])
     const busy = counts({ runs: 1, swarms: 2, swarmsNeedYou: true })
-    expect(liveOf(busy, tabsOf(busy)).map(s => s.text).join('')).toBe('▸ 1 run · 2 swarms live · ⚑ needs you: Swarms')
+    expect(liveOf(busy, ['1 question', '2 rules'])).toEqual([
+      { text: '▸ running: ', color: 'background' },
+      { text: '1 run, 2 swarms' },
+      { text: ' · ', color: 'subtle' },
+      { text: '⚑ needs you: 1 question, 2 rules', color: 'permission' },
+    ])
+    expect(liveOf(counts(), ['1 run']).map(s => s.text).join('')).toBe('nothing running · ⚑ needs you: 1 run')
+    expect(liveOf(counts({ runs: 2 }), []).map(s => s.text).join('')).toBe('▸ running: 2 runs')
   })
 
   test('each count comes from module memory and the agent list: a read that throws counts nothing, logged', async () => {
@@ -472,7 +488,211 @@ describe('the counts', () => {
   })
 })
 
+describe("Home's part of the hub's view (WP-DB)", () => {
+  /** A band line as band/view.ts builds one; an open execute run unless told otherwise. */
+  const line = (over: Partial<BandLine>): BandLine => ({
+    key: 'run:20261006-exec:1:open',
+    kind: 'run',
+    name: '20261006-exec',
+    mark: runMark('running'),
+    noun: 'execute',
+    detail: [{ text: 'gate 1/3' }],
+    time: '14m',
+    needsYou: false,
+    ...over,
+  })
+  const said = (r: HomeRow): [string, string] => [r.open, `${r.mark.glyph} ${r.mark.word} | ${r.spans.map(s => s.text).join('')}`]
+  /** A busy session: an open run, a run that halted, one done, a swarm with a question and two proposals, rules proposed, tasks and agents. */
+  function busy(): void {
+    deps.bandLines = () => [
+      line({}),
+      line({ key: 'run:20261006-old:1:halted', kind: 'ended', name: '20261006-old', mark: runMark('halted'), detail: [{ text: 'at G2' }], time: '12m', needsYou: true }),
+      line({ key: 'run:20261006-done:1:done', kind: 'ended', name: '20261006-done', mark: runMark('done'), detail: [{ text: '3/3 landed' }], time: '30m' }),
+      line({ key: 'swarm:review:1', kind: 'swarm', name: 'review', mark: { glyph: '▸', word: 'live', color: 'background' }, noun: 'swarm', detail: [{ text: '3 running', color: 'background' }], time: '22m', needsYou: true }),
+    ]
+    deps.bandCounts = () => ({ runs: 1, ended: 2 })
+    deps.liveSwarms = () => [{ name: 'review' }] as never
+    deps.openQuestions = () => [{ node: 'reviewer', text: 'tabs or spaces?\nEither reads fine to me.' }] as never
+    deps.pendingProposals = () => [3, 4]
+    deps.rulesCounts = () => ({ proposed: 2, inForce: 5 })
+    deps.tasksShown = () => ({ list: { name: 'team-a', mine: false }, tasks: [{ status: 'pending' }, { status: 'completed' }] }) as never
+    deps.endedMinutes = () => 15
+    p.agents = [{ status: 'running' }] as never
+  }
+
+  test('writeHub words the band lines, the open questions and proposals, and the counts into Home, needs you first', async () => {
+    busy()
+    await openSection(p, 'home', '')
+    const home = hubView().home!
+    // Each thing that waits, in plain words: the question's first line; each proposal by its number, opening on it.
+    expect(home.needsYou.map(said)).toEqual([
+      ['home:open:swarms:review', '⚑ needs you | reviewer asks: tabs or spaces?'],
+      ['home:open:swarms:review/3', "⚑ needs you | the lead's proposal 3 for review"],
+      ['home:open:swarms:review/4', "⚑ needs you | the lead's proposal 4 for review"],
+      ['home:open:rules', '⚑ needs you | 2 rules proposed or unverified, for you to accept or dismiss'],
+      ['home:open:runs:20261006-old', '⚑ needs you | execute 20261006-old · halted at G2 · 12m'],
+    ])
+    // The band's own marks and words; a second [Open] on the same swarm gets its own key.
+    expect(home.running.map(said)).toEqual([
+      ['home:open:runs:20261006-exec', '▸ running | execute 20261006-exec · gate 1/3 · 14m'],
+      ['home:open:swarms:review#2', '▸ live | swarm review · 3 running · 22m'],
+    ])
+    expect(home.running[0]!.mark).toEqual({ glyph: '▸', word: 'running', color: 'background' })
+    expect(home.ended.map(said)).toEqual([['home:open:runs:20261006-done', '✓ done | execute 20261006-done · 3/3 landed · 30m']])
+    expect(home.endedMinutes).toBe(15)
+    expect(home.others).toEqual([
+      { open: 'home:open:tasks', label: 'Tasks', text: '1 open task in team-a' },
+      { open: 'home:open:agents', label: 'Agents', text: '1 running in this session' },
+      { open: 'home:open:doctor', label: 'Doctor', text: "what a swarm needs of this session's settings and limits" },
+    ])
+    // The header says the same, by what it is.
+    expect(hubView().live.map(s => s.text).join('')).toBe('▸ running: 1 run, 1 swarm · ⚑ needs you: 1 question, 2 proposals, 2 rules, 1 run')
+    expect(hubView().tabs.find(t => t.section === 'swarms')?.needsYou).toBe(true)
+  })
+
+  test("bare /litter's reply says what runs and what needs you", async () => {
+    // The real Home, over the busy reads.
+    resetHubForTests()
+    quietDeps()
+    busy()
+    expect(await run('')).toEqual({ text: 'Home shows 1 active run, 1 live swarm; needs you: 1 question, 2 proposals, 2 rules, 1 run' })
+  })
+
+  test('nothing running and nothing waiting: no run rows, a Swarms line beside Doctor, and a section with nothing to say is left out', async () => {
+    deps.tasksShown = () => ({ list: { name: 'x', mine: true }, tasks: [{ status: 'completed' }] }) as never
+    p.agents = [{ status: 'completed' }] as never
+    await openSection(p, 'home', '')
+    const home = hubView().home!
+    expect([home.needsYou, home.running, home.ended]).toEqual([[], [], []])
+    expect(home.others.map(o => o.label)).toEqual(['Swarms', 'Doctor'])
+    expect(hubView().live).toEqual([{ text: 'nothing running', color: 'inactive' }])
+  })
+
+  test("this session's list is named so; a read that throws leaves its part out, logged, and Home is still written", async () => {
+    busy()
+    deps.tasksShown = () => ({ list: { name: 'abc', mine: true }, tasks: [{ status: 'in_progress' }, { status: 'pending' }] }) as never
+    deps.bandLines = () => {
+      throw new Error('band broke')
+    }
+    await openSection(p, 'home', '')
+    const home = hubView().home!
+    expect(home.running).toEqual([])
+    expect(home.needsYou.map(r => r.open)).toEqual(['home:open:swarms:review', 'home:open:swarms:review/3', 'home:open:swarms:review/4', 'home:open:rules'])
+    expect(home.others[0]).toEqual({ open: 'home:open:tasks', label: 'Tasks', text: "2 open tasks in this session's list" })
+    expect(p.logs).toContain("litter pane: the band couldn't be counted: band broke")
+  })
+
+  test('Home changes the view: a new line writes it, the same facts again do not', async () => {
+    p.paneOpenValue = true
+    await openSection(p, 'home', '')
+    const v = hubView().v
+    await litterTick(p)
+    expect(hubView().v).toBe(v)
+    deps.bandLines = () => [line({})]
+    await litterTick(p)
+    expect(hubView().v).toBe(v + 1)
+    expect(hubView().home!.running).toHaveLength(1)
+  })
+
+  test("Home's [Open] on an item loads its section on it in the pane that's open; a refused one keeps Home and says why", async () => {
+    await openSection(p, 'home', '', { focus: true })
+    calls = []
+    expect(await press('home:open:runs:20261006-exec')).toEqual({ element: 'home:open:runs:20261006-exec' })
+    expect(calls).toEqual(['runs.load "20261006-exec"'])
+    expect(shownSection()).toBe('runs')
+    expect(p.panes.opened).toHaveLength(1)
+    await openSection(p, 'home', '')
+    calls = []
+    // A second row on the same swarm: `#2` after the key opens the same place.
+    await press('home:open:swarms:review#2')
+    expect(calls).toEqual(['swarms.load "review"'])
+    await openSection(p, 'home', '')
+    calls = []
+    expect(await press('home:open:swarms:bad')).toEqual({ element: 'home:open:swarms:bad' })
+    expect(shownSection()).toBe('home')
+    expect(p.toasts).toEqual(['swarms refused bad'])
+    // Not an [Open], no section, an item that isn't one, an item where a section takes none: answered, nothing loaded.
+    calls = []
+    for (const k of ['home:open:nowhere', 'home:open:home', 'home:open:runs:../etc', 'home:open:rules:x', 'home:open:swarms:Bad Name', 'home:other']) expect(await press(k)).toEqual({ element: k })
+    expect(calls).toEqual([])
+    expect(shownSection()).toBe('home')
+  })
+
+  describe("a proposal's [Open] steps Swarms to its view through Swarms' own keys", () => {
+    type At = { view: string; swarm: string | null; proposal: number | null }
+    let at: At | null
+    /** Swarms as the real one moves: the load lands where `landing` says, and each key moves as its button would. */
+    function swarmsMoving(landing: (name: string) => At): void {
+      at = null
+      const base = standIn('swarms', k => k.startsWith('swarm:'))
+      sections.swarms = {
+        ...base,
+        load: async (q, arg) => {
+          await base.load(q, arg)
+          at = landing(String(arg))
+          return { text: 'Swarms shows it' }
+        },
+        ui: {
+          ...base.ui,
+          press: async (q, e, next) => {
+            await base.ui.press(q, e, next)
+            const m = /^swarm:(browser|builder|proposal):(builder|proposal|back):([a-z]+)(?:\/([0-9]+))?$/.exec(e.element)
+            if (m && at && m[1] === at.view) at = m[2] === 'proposal' ? { ...at, view: 'proposal', proposal: Number(m[4]) } : { ...at, view: 'builder', proposal: null }
+            return { element: e.element }
+          },
+        },
+      }
+      deps.swarmNav = () => at as never
+      deps.pendingProposals = () => [3, 4]
+    }
+    const presses = () => calls.filter(c => c.startsWith('swarms.'))
+
+    test('a live swarm: its browser, then [Builder], then the proposal', async () => {
+      swarmsMoving(name => ({ view: 'browser', swarm: name, proposal: null }))
+      await openSection(p, 'home', '')
+      calls = []
+      await press('home:open:swarms:review/4')
+      expect(presses()).toEqual(['swarms.load "review"', 'swarms.press swarm:browser:builder:review', 'swarms.press swarm:builder:proposal:review/4'])
+      expect(at).toEqual({ view: 'proposal', swarm: 'review', proposal: 4 })
+      expect(shownSection()).toBe('swarms')
+    })
+
+    test("a swarm that isn't live lands on its first proposal: that one is there already; another goes back to the builder first", async () => {
+      swarmsMoving(name => ({ view: 'proposal', swarm: name, proposal: 3 }))
+      await openSection(p, 'home', '')
+      calls = []
+      await press('home:open:swarms:review/3')
+      expect(presses()).toEqual(['swarms.load "review"'])
+      await openSection(p, 'home', '')
+      calls = []
+      await press('home:open:swarms:review/4')
+      expect(presses()).toEqual(['swarms.load "review"', 'swarms.press swarm:proposal:back:review/3', 'swarms.press swarm:builder:proposal:review/4'])
+      expect(at).toEqual({ view: 'proposal', swarm: 'review', proposal: 4 })
+    })
+
+    test("a recovery card waiting is the swarm's own need, shown first: it stays, logged", async () => {
+      swarmsMoving(name => ({ view: 'recovery', swarm: name, proposal: null }))
+      await openSection(p, 'home', '')
+      calls = []
+      await press('home:open:swarms:review/4')
+      expect(presses()).toEqual(['swarms.load "review"'])
+      expect(at?.view).toBe('recovery')
+      expect(p.logs).toContain("litter pane: Home's proposal 4 for review opened Swarms on its recovery")
+    })
+  })
+})
+
 describe('the chrome layout', () => {
+  test('the keys line (WP-DB): one row at 100 columns, two at 60, so the body gets one row fewer; one row unfocused', () => {
+    // `1–7 section · tab next · enter press · esc back to the prompt` is 61 cells.
+    expect(keysOverflow(HUB_KEYS, true, 100)).toBe(0)
+    expect(keysOverflow(HUB_KEYS, true, 61)).toBe(0)
+    expect(keysOverflow(HUB_KEYS, true, 60)).toBe(1)
+    expect(keysOverflow(HUB_KEYS, true, 20)).toBe(3)
+    expect(keysOverflow(HUB_KEYS, false, 60)).toBe(0)
+    expect(keysOverflow(HUB_KEYS, true, Number.POSITIVE_INFINITY)).toBe(0)
+  })
+
   test('packWidths packs items into rows of the width, one cell between, never an empty row', () => {
     expect(packWidths([5, 5, 5], 11)).toEqual([[0, 1], [2]])
     expect(packWidths([5, 5, 5], 17)).toEqual([[0, 1, 2]])

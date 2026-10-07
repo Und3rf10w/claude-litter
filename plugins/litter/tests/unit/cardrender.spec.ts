@@ -1,7 +1,7 @@
 // Tier 2: the card's render (hooks/card/render.tsx; WP-CC, COMMON decisions
 // 8, 11, 12) with a table of plain constructors in place of the engine's:
 // the title, the lines and [Board] in order, at most 6 rows, every Text set
-// to truncate, the spans' colors carried as given; with the engine's own row
+// to truncate, the spans' colors carried as given (a dim one muted, WP-DB); with the engine's own row
 // (an expanded row's, WP-CK), the card above it in one column. cardOf: the
 // row's card, expanded or not, and null, so the engine draws its own row,
 // with no card, no view, or a task id that's only a key of Object's
@@ -33,10 +33,10 @@ const card = (over: Partial<CardView> = {}): CardView => ({
     { text: ' · 14m 2s', dim: true },
   ],
   lines: [
-    [{ text: '1/3 gates landed · last land ' }, { text: '1111111', color: 'yellow' }],
-    [{ text: 'G2, attempt 2: ' }, { text: 'failed tests_green', color: 'warning' }],
+    [{ text: 'G2: out of attempts', color: 'warning' }],
+    [{ text: 'G2, attempt 2: ' }, { text: 'plan ✓', color: 'success' }, { text: ' ' }, { text: 'tests ✕', color: 'error' }],
     [{ text: 'plan gap: the plan never says how long to wait', color: 'warning' }],
-    [{ text: 'halted: G2: out of attempts', color: 'warning' }],
+    [{ text: '1/3 gates landed · last land ' }, { text: '1111111', color: 'yellow' }],
   ],
   buttons: [{ key: 'card:board:20261005-exec', label: 'Board' }],
   ...over,
@@ -64,16 +64,18 @@ describe('renderCard', () => {
     expect(rows.map(r => r.type)).toEqual(['Text', 'Text', 'Text', 'Text', 'Text', 'Box'])
     expect(rows.slice(0, 5).map(textOf)).toEqual([
       '⚑ halted · litter · execute 20261005-exec · 14m 2s',
-      '1/3 gates landed · last land 1111111',
-      'G2, attempt 2: failed tests_green',
+      'G2: out of attempts',
+      'G2, attempt 2: plan ✓ tests ✕',
       'plan gap: the plan never says how long to wait',
-      'halted: G2: out of attempts',
+      '1/3 gates landed · last land 1111111',
     ])
     const title = (rows[0]!.props.children as Node[]).map(s => s.props)
     expect(title[0]).toEqual(expect.objectContaining({ color: 'warning', bold: true, children: '⚑ halted' }))
     expect(title[2]).toEqual(expect.objectContaining({ color: 'cyan', children: '20261005-exec' }))
-    expect(title[3]).toEqual(expect.objectContaining({ dimColor: true }))
-    const sha = (rows[1]!.props.children as Node[])[1]!.props
+    // WP-DB: a dim span with no color is the pane's muted role, not the terminal's faint attribute.
+    expect(title[3]).toEqual(expect.objectContaining({ color: 'inactive' }))
+    expect(nodes(tree).some(n => 'dimColor' in n.props)).toBe(false)
+    const sha = (rows[4]!.props.children as Node[])[1]!.props
     expect(sha).toEqual(expect.objectContaining({ color: 'yellow', children: '1111111' }))
     const button = (rows[5]!.props.children as Node[])[0]!
     expect(button.type).toBe('Button')

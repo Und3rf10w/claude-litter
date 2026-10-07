@@ -8,7 +8,10 @@
 // line is a transcript row now), [Hide] and its $.store mirror, the write
 // check, the failure paths (a missing litter directory, an unreadable
 // policy.json or ledger), the presses, and the fitting the render draws from
-// (fitRows, fitSpans).
+// (fitRows, fitSpans). WP-DB: each row reads `<glyph> <word> · litter · …`,
+// in the style table's roles, and bandLines() hands Home every line of the
+// last build (every run ended inside the window, every hidden row), which
+// the hub's writeHub words into Home's part of its view.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -16,7 +19,7 @@ import { join } from 'node:path'
 import type { BandPressHook } from '../../hooks/hooktypes'
 import type { SpoolLine } from '../../hooks/hookfiles'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
-import type { BandRow, BandView, SwarmSpan } from '../../types/index'
+import type { BandRow, BandView, HubView, SwarmSpan } from '../../types/index'
 import { appendRecord } from '../../hooks/ledgercore'
 import { ledgerDir, policyPath, runDir, runJsonPath } from '../../hooks/layout'
 import { setOptions, updateSession } from '../../hooks/session'
@@ -26,6 +29,8 @@ import { asksTick, consumeAsks, openAsks, resetAsksForTests } from '../../hooks/
 import {
   BAND_STORE_KEY,
   ENDED_MS,
+  bandCounts,
+  bandLines,
   bandShows,
   bandTick,
   deps,
@@ -39,7 +44,8 @@ import {
   roomFor,
 } from '../../hooks/band/view'
 import { resetPanesForTests } from '../../hooks/swarm/panes'
-import { resetHubForTests, shownSection } from '../../hooks/ui/hub'
+import { noteProposal, resetViewForTests } from '../../hooks/swarm/view'
+import { deps as hubDeps, resetHubForTests, shownSection, writeHub } from '../../hooks/ui/hub'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 setDefaultTimeout(120_000)
@@ -160,58 +166,60 @@ describe("an execute run's row", () => {
     await bandTick(p)
     const rows = band()!.rows
     expect(rows).toHaveLength(1)
-    expect(text(rows[0])).toBe(`▸ litter · execute ${EXEC} · gate 1/3 · 14m`)
+    expect(text(rows[0])).toBe(`▸ running · litter · execute ${EXEC} · gate 1/3 · 14m`)
     expect(rows[0]!.kind).toBe('run')
     expect(rows[0]!.key).toBe(`run:${EXEC}:1:open`)
     expect(rows[0]!.buttons).toEqual([
       { key: `band:board:${EXEC}`, label: 'Board' },
       { key: `band:hide:run:${EXEC}:1:open`, label: 'Hide' },
     ])
-    // The colors: the glyph its RUN_STATUS color, the run id the name color, the elapsed time dim.
+    // The colors (WP-DB, the style table's roles): the mark its RUN_STATUS color, litter's name and the elapsed time muted, the run id the name color.
     const spans = rows[0]!.spans
-    expect(spans[0]).toEqual({ text: '▸', color: 'background' })
+    expect(spans[0]).toEqual({ text: '▸ running', color: 'background' })
+    expect(spans[2]).toEqual({ text: 'litter', color: 'inactive' })
     expect(spans.find(s => s.text === EXEC)?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
-    expect(spans.at(-1)).toEqual({ text: '14m', dim: true })
+    expect(spans.at(-1)).toEqual({ text: '14m', color: 'inactive' })
+    expect(spans.some(s => s.dim)).toBe(false)
   })
 
   test('on a retry: the gate and its retry count, in warning', async () => {
     await executeRun()
     await record(EXEC, [verify('v1', 'G1', 1), verdict('v1', false)])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · G1 retry 1 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · G1 retry 1 · <1m`])
     expect(band()!.rows[0]!.spans.find(s => s.text === 'retry 1')?.color).toBe('warning')
     // G1 lands on its second attempt; G2 is on its third.
     await record(EXEC, [verify('v2', 'G1', 2), verdict('v2', true), land('G1', 'v2'), verify('v3', 'G2', 1), verdict('v3', false), verify('v4', 'G2', 2), verdict('v4', false)])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 2/3 · G2 retry 2 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 2/3 · G2 retry 2 · <1m`])
     // The critic's verify of the third attempt is in: still the third.
     await record(EXEC, [verify('v5', 'G2', 3)])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 2/3 · G2 retry 2 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 2/3 · G2 retry 2 · <1m`])
   })
 
   test('critiquing and landing, from the in-flight flag', async () => {
     await executeRun()
     writePolicy(EXEC, 'critique')
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · G1 critic · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · G1 critic · <1m`])
     await record(EXEC, [verify('v1', 'G1', 1), verdict('v1', false), verify('v2', 'G1', 2)])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · G1 retry 1 critic · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · G1 retry 1 critic · <1m`])
     writePolicy(EXEC, 'land')
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · landing G1 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · landing G1 · <1m`])
     writePolicy(EXEC, null)
     await record(EXEC, [verdict('v2', true), land('G1', 'v2')])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 2/3 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 2/3 · <1m`])
   })
 
   test('a resumed generation numbers its attempts afresh', async () => {
     await executeRun()
     await record(EXEC, [verify('v1', 'G1', 1), verdict('v1', false), verify('v2', 'G1', 2), verdict('v2', false), end(1, 'halted'), launch(2)])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · <1m`])
     expect(band()!.rows[0]!.key).toBe(`run:${EXEC}:2:open`)
   })
 
@@ -222,15 +230,17 @@ describe("an execute run's row", () => {
     await record(EXEC, [{ kind: 'run.repair', body: { generation: 2, swarm: 'fix-g1', launch: '20261005-120000', budget: { rounds: 2, agents: 4 } } }])
     p.clock.now = NOW + 9 * MIN
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · ↻ repair swarm fix-g1 · 6m`])
+    // The mark says repairing; the swarm is in the running color.
+    expect(texts()).toEqual([`↻ repairing · litter · execute ${EXEC} · repair swarm fix-g1 · 6m`])
+    expect(band()!.rows[0]!.spans.find(s => s.text === 'repair swarm fix-g1')?.color).toBe('background')
   })
 
   test('a stopping run says so', async () => {
     await executeRun()
     await record(EXEC, [{ kind: 'run.stopping', body: { taskId: 't1', generation: 1 } }])
     await bandTick(p)
-    expect(texts()).toEqual([`! litter · execute ${EXEC} · gate 1/3 · stopping · <1m`])
-    expect(band()!.rows[0]!.spans[0]).toEqual({ text: '!', color: 'warning' })
+    expect(texts()).toEqual([`! stopping · litter · execute ${EXEC} · gate 1/3 · <1m`])
+    expect(band()!.rows[0]!.spans[0]).toEqual({ text: '! stopping', color: 'warning' })
   })
 })
 
@@ -240,18 +250,20 @@ describe('the other workflows', () => {
     await record(DESIGN, [start('design'), launch()])
     writePolicy(DESIGN)
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · design ${DESIGN} · no proposal yet · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · design ${DESIGN} · no proposal yet · <1m`])
     await record(DESIGN, [{ kind: 'proposal', body: { text: 'x', version: 'v1', sha256: 'f'.repeat(64) } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · design ${DESIGN} · v1 · awaiting the critic · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · design ${DESIGN} · v1 · awaiting the critic · <1m`])
+    // A dim span is the muted role when drawn (render.tsx); the view keeps the flag.
+    expect(band()!.rows[0]!.spans.find(s => s.text === 'awaiting the critic')).toEqual({ text: 'awaiting the critic', dim: true })
     const crit = (id: string, verdict: string) => ({ id, verdict, evidence: 'e', ...(verdict === 'PASS' ? {} : { gap_kind: 'design' }) })
     await record(DESIGN, [{ kind: 'verdict', body: { version: 'v1', criteria: [crit('C1', 'PASS'), crit('C2', 'FAIL'), crit('B1', 'PASS')], overall: 'HOLDING', sha256: null } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · design ${DESIGN} · v1 · 2/3 pass · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · design ${DESIGN} · v1 · 2/3 pass · <1m`])
     // A design verdict isn't an execute one: it never reads as a gate retry.
     await record(DESIGN, [{ kind: 'proposal', body: { text: 'y', version: 'v2', sha256: 'e'.repeat(64) } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · design ${DESIGN} · v2 · awaiting the critic · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · design ${DESIGN} · v2 · awaiting the critic · <1m`])
   })
 
   test('fanout: the tasks with a result, then integrating, verifying and landing', async () => {
@@ -261,16 +273,16 @@ describe('the other workflows', () => {
     const result = (task: string): Rec => ({ kind: 'task.result', body: { task, role: 'executor', tool_use_id: `tu-${task}`, result: {} } })
     await record(FAN, [result('a'), result('b')])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · fanout ${FAN} · 2/3 tasks · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · fanout ${FAN} · 2/3 tasks · <1m`])
     await record(FAN, [result('c'), { kind: 'integrate.merge', body: { task: 'a', branch: 'litter/x-w1', commit: 'b'.repeat(40), paths: [] } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · fanout ${FAN} · 3/3 tasks · integrating · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · fanout ${FAN} · 3/3 tasks · integrating · <1m`])
     await record(FAN, [{ kind: 'integrate.done', body: { tip: 'b'.repeat(40), tree: 'c'.repeat(40), changed: [], blocked: [] } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · fanout ${FAN} · 3/3 tasks · verifying · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · fanout ${FAN} · 3/3 tasks · verifying · <1m`])
     await record(FAN, [{ kind: 'land.intent', body: { gate: 'fanout', verify_id: 'v9', commit: 'b'.repeat(40) } }])
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · fanout ${FAN} · 3/3 tasks · landing · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · fanout ${FAN} · 3/3 tasks · landing · <1m`])
   })
 
   test('plan: the record count', async () => {
@@ -278,7 +290,7 @@ describe('the other workflows', () => {
     await record(PLAN, [start('plan'), launch(), { kind: 'finding', body: { text: 'x' } }])
     writePolicy(PLAN)
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · plan ${PLAN} · 3 records · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · plan ${PLAN} · 3 records · <1m`])
   })
 })
 
@@ -294,9 +306,9 @@ describe('a run that ended', () => {
     p.clock.now = NOW + 31 * MIN
     await bandTick(p)
     const row = band()!.rows[0]!
-    expect(text(row)).toBe(`✓ litter · execute ${EXEC} · done · 3/3 landed · 30m`)
+    expect(text(row)).toBe(`✓ done · litter · execute ${EXEC} · 3/3 landed · 30m`)
     expect(row.kind).toBe('ended')
-    expect(row.spans[0]).toEqual({ text: '✓', color: 'success' })
+    expect(row.spans[0]).toEqual({ text: '✓ done', color: 'success' })
     expect(row.buttons.map(b => b.key)).toEqual([`band:board:${EXEC}`, `band:hide:run:${EXEC}:1:done`])
     p.clock.now = NOW + 30 * MIN + ENDED_MS - 1
     await bandTick(p)
@@ -315,12 +327,13 @@ describe('a run that ended', () => {
     await record(FAN, [start('fanout'), launch()])
     writePolicy(FAN)
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · fanout ${FAN} · 0/1 tasks · <1m`, `⚑ litter · execute ${EXEC} · halted at G2 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · fanout ${FAN} · 0/1 tasks · <1m`, `⚑ halted · litter · execute ${EXEC} · at G2 · <1m`])
+    expect(band()!.rows[1]!.spans[0]).toEqual({ text: '⚑ halted', color: 'warning' })
     p.clock.now = NOW + 2 * MIN
     await record(FAN, [end(1, 'failed')])
     writePolicy(null)
     await bandTick(p)
-    expect(texts()).toEqual([`✕ litter · fanout ${FAN} · failed · 0/1 tasks · 1m`])
+    expect(texts()).toEqual([`✕ failed · litter · fanout ${FAN} · 0/1 tasks · 1m`])
   })
 
   test('a 1-minute bandEndedMinutes keeps the row at 30 s and drops it at 61 s, by the fake clock', async () => {
@@ -331,7 +344,7 @@ describe('a run that ended', () => {
     writePolicy(null)
     p.clock.now = NOW + 30_000
     await bandTick(p)
-    expect(texts()).toEqual([`✕ litter · execute ${EXEC} · failed · <1m`])
+    expect(texts()).toEqual([`✕ failed · litter · execute ${EXEC} · <1m`])
     p.clock.now = NOW + 61_000
     await bandTick(p)
     expect(band()!.rows).toEqual([])
@@ -341,7 +354,7 @@ describe('a run that ended', () => {
     setOptions({ bandEndedMinutes: 0 })
     await executeRun()
     await bandTick(p)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · <1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · <1m`])
     await record(EXEC, [end(1, 'done')])
     writePolicy(null)
     await bandTick(p)
@@ -358,7 +371,7 @@ describe('a run that ended', () => {
     await record(EXEC, [end(1, 'failed')])
     writePolicy(null)
     await bandTick(p)
-    expect(texts()).toEqual([`✕ litter · execute ${EXEC} · failed · <1m`])
+    expect(texts()).toEqual([`✕ failed · litter · execute ${EXEC} · <1m`])
   })
 
   test("a launch that never opened a generation ends as launch failed", async () => {
@@ -371,7 +384,7 @@ describe('a run that ended', () => {
     await record(EXEC, [end(0, 'launch_failed')])
     writePolicy(null)
     await bandTick(p)
-    expect(texts()).toEqual([`✕ litter · execute ${EXEC} · launch failed · <1m`])
+    expect(texts()).toEqual([`✕ launch failed · litter · execute ${EXEC} · <1m`])
   })
 })
 
@@ -419,21 +432,93 @@ describe('a live swarm', () => {
     state.noteQuestion('a4', 'which file?', NOW)
     await bandTick(p)
     const row = band()!.rows[0]!
-    expect(text(row)).toBe('▸ litter · swarm review · 3 running · 1 waiting · 22m')
+    expect(text(row)).toBe('▸ live · litter · swarm review · 3 running · ⚑ 1 waiting · 22m')
     expect(row.kind).toBe('swarm')
     expect(row.buttons).toEqual([
       { key: 'band:browser:review', label: 'Browser' },
       { key: 'band:hide:swarm:review:20261005-093000', label: 'Hide' },
     ])
-    expect(row.spans.find(s => s.text === '1 waiting')?.color).toBe('warning')
+    // WP-DB: the running count in the running color, the waiting one the needs-you mark and color.
+    expect(row.spans.find(s => s.text === '3 running')?.color).toBe('background')
+    expect(row.spans.find(s => s.text === '⚑ 1 waiting')?.color).toBe('permission')
     expect(row.spans.find(s => s.text === 'review')?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
+    expect(row.spans[0]).toEqual({ text: '▸ live', color: 'background' })
   })
 
-  test("a run's repair swarm is shown in the run's row only; a read-only swarm says so", async () => {
+  test("a run's repair swarm is shown in the run's row only; a read-only swarm says so, and a count of none isn't said", async () => {
     liveSwarm('fix-g1', { run: { runDir: runDir(litterDir, EXEC), run: EXEC, generation: 2 } } as Partial<LiveSwarm>)
     liveSwarm('other', { readOnly: true })
     await bandTick(p)
-    expect(texts()).toEqual(['▸ litter · swarm other · 0 running · 0 waiting · read-only · 22m'])
+    expect(texts()).toEqual(['▸ live · litter · swarm other · 0 running · read-only · 22m'])
+  })
+
+  test("the lead's proposals waiting for your review are on the row, and a stopping swarm says so", async () => {
+    liveSwarm('review', { state: 'stopping' } as Partial<LiveSwarm>)
+    noteProposal('review', 3)
+    noteProposal('review', 4)
+    try {
+      await bandTick(p)
+      expect(texts()).toEqual(['! stopping · litter · swarm review · 0 running · ⚑ 2 proposals · 22m'])
+      expect(band()!.rows[0]!.spans.find(s => s.text === '⚑ 2 proposals')?.color).toBe('permission')
+      expect(bandLines()[0]!.needsYou).toBe(true)
+    } finally {
+      resetViewForTests()
+    }
+  })
+})
+
+describe('the lines Home reads (WP-DB)', () => {
+  /** Two runs end inside the window, a minute apart: an execute run halted at G2, then a fanout run failed. */
+  async function twoEnded(): Promise<void> {
+    await executeRun()
+    await bandTick(p)
+    await record(EXEC, [verify('v1', 'G1', 1), verdict('v1', true), land('G1', 'v1'), end(1, 'halted')])
+    writeRunJson(FAN, 'fanout', { tasks: [{ id: 'a' }] })
+    p.clock.now = NOW + MIN
+    await record(FAN, [start('fanout'), launch()])
+    writePolicy(FAN)
+    await bandTick(p)
+    p.clock.now = NOW + 2 * MIN
+    await record(FAN, [end(1, 'failed')])
+    writePolicy(null)
+    await bandTick(p)
+  }
+
+  test('bandLines holds every run that ended inside the window, newest first, and the rows [Hide] hid; the band draws the newest end alone', async () => {
+    await twoEnded()
+    expect(texts()).toEqual([`✕ failed · litter · fanout ${FAN} · 0/1 tasks · 1m`])
+    expect(bandLines().map(l => [l.kind, l.name, `${l.mark.glyph} ${l.mark.word}`, l.needsYou])).toEqual([
+      ['ended', FAN, '✕ failed', false],
+      ['ended', EXEC, '⚑ halted', true],
+    ])
+    await press(`band:hide:run:${FAN}:1:failed`)
+    expect(band()!.rows).toEqual([])
+    expect(bandLines()).toHaveLength(2)
+    // The strip counts what the build holds, [Hide] or not.
+    expect(bandCounts()).toEqual({ runs: 0, ended: 2 })
+  })
+
+  test("writeHub words the built lines into Home: the halted run under needs you, the failed one under ended, the swarm's question and its row", async () => {
+    await twoEnded()
+    liveSwarm('review')
+    bindNode('review', 'a4')
+    state.markRunning('a4')
+    state.noteQuestion('a4', 'which file?', NOW)
+    await bandTick(p)
+    // Nothing built by the other sections in this spec.
+    hubDeps.rulesCounts = () => null
+    hubDeps.tasksShown = () => null
+    await writeHub(p)
+    const hub = p.views.hub as HubView
+    const words = (rows: { spans: SwarmSpan[] }[]) => rows.map(r => r.spans.map(s => s.text).join(''))
+    expect(hub.home!.needsYou.map(r => r.open)).toEqual(['home:open:swarms:review', `home:open:runs:${EXEC}`])
+    expect(words(hub.home!.needsYou)).toEqual(['fixer asks: which file?', `execute ${EXEC} · halted at G2 · <1m`])
+    expect(words(hub.home!.running)).toEqual(['swarm review · 0 running · ⚑ 1 waiting · 24m'])
+    expect(hub.home!.running[0]!.mark).toEqual({ glyph: '▸', word: 'live', color: 'background' })
+    expect(words(hub.home!.ended)).toEqual([`fanout ${FAN} · 0/1 tasks · 1m`])
+    expect(hub.home!.ended[0]!.mark).toEqual({ glyph: '✕', word: 'failed', color: 'error' })
+    expect(hub.home!.endedMinutes).toBe(10)
+    expect(hub.live.map(s => s.text).join('')).toBe('▸ running: 1 swarm · ⚑ needs you: 1 question, 1 run')
   })
 })
 
@@ -480,7 +565,7 @@ describe('[Hide]', () => {
     await record(EXEC, [end(1, 'failed')])
     writePolicy(null)
     await bandTick(p)
-    expect(texts()).toEqual([`✕ litter · execute ${EXEC} · failed · <1m`])
+    expect(texts()).toEqual([`✕ failed · litter · execute ${EXEC} · <1m`])
   })
 
   test("another session's hidden keys are ignored", async () => {
@@ -516,7 +601,7 @@ describe('the write check', () => {
     p.clock.now = NOW + MIN
     await bandTick(p)
     expect(band()!.v).toBe(first.v + 1)
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · 1m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · 1m`])
   })
 
   test('nothing to show writes nothing; refreshBand writes even an unchanged view', async () => {
@@ -564,7 +649,7 @@ describe('the failure paths', () => {
     await bandTick(p)
     expect(p.logs.filter(l => l.startsWith('band: policy.json'))).toHaveLength(1)
     // The ledgers that moved last are still read: the run is open, so it has its row.
-    expect(texts()).toEqual([`▸ litter · execute ${EXEC} · gate 1/3 · 20m`])
+    expect(texts()).toEqual([`▸ running · litter · execute ${EXEC} · gate 1/3 · 20m`])
   })
 
   test("an unreadable ledger gives no row and one log line, never a throw", async () => {
@@ -583,7 +668,7 @@ describe('the failure paths', () => {
     updateSession({ litterDir: null })
     liveSwarm('review')
     await bandTick(p)
-    expect(texts()).toEqual(['▸ litter · swarm review · 0 running · 0 waiting · 22m'])
+    expect(texts()).toEqual(['▸ live · litter · swarm review · 0 running · 22m'])
   })
 })
 

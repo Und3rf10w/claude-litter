@@ -7,11 +7,15 @@
 // end: a recorded run in a checkout at /repo, session.start's restore, the
 // row drawn as its card, compact and expanded, and [Board] opening the board
 // (Runs, in the one `litter` pane: WP-DA), the press answered `{ element }`.
+// WP-DB: the card as card/view.ts builds it now (the title the run's line as
+// the band and Home draw it; the recorded outcome, then the evidence), drawn
+// at 100 and 60 columns with each row's colors beside it.
 
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { CardsView } from '../types/index'
+import { drawWithColors } from './drawing'
 
 const SESSION = 'tier1-session'
 const LITTER = '/repo/.claude/litter'
@@ -22,6 +26,9 @@ const ROW_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const row = (over: Record<string, unknown> = {}) => ({ text: 'fix the parser', origin: { kind: 'composer' }, isExpanded: false, ...over }) as never
 const NOTIFICATION = { text: 'Workflow "litter:execute-run" completed', origin: { kind: 'task-notification' }, task: { id: 'task-1', status: 'completed', durationMs: 840_000 } }
 
+const NAME = 'cyan_FOR_SUBAGENTS_ONLY'
+const SEP = { text: ' · ' }
+const dimension = (word: string, pass: boolean) => ({ text: `${word} ${pass ? '✓' : '✕'}`, color: pass ? 'success' : 'error' })
 const CARDS: CardsView = {
   view: 'cards',
   v: 1,
@@ -29,15 +36,17 @@ const CARDS: CardsView = {
     'task-1': {
       taskId: 'task-1',
       run: RUN,
-      title: [{ text: '⚑ halted', color: 'warning', bold: true }, { text: ' · litter · execute ' }, { text: RUN, color: 'cyan' }, { text: ' · 14m 2s', dim: true }],
+      title: [{ text: '⚑ halted', color: 'warning', bold: true }, SEP, { text: 'litter', color: 'inactive' }, SEP, { text: 'execute ' }, { text: RUN, color: NAME }, SEP, { text: '14m 2s', color: 'inactive' }],
       lines: [
-        [{ text: '1/3 gates landed · last land ' }, { text: '1111111', color: 'yellow' }],
-        [{ text: 'halted: G2: out of attempts', color: 'warning' }],
+        [{ text: 'G2: out of attempts', color: 'warning' }],
+        [{ text: 'G2, attempt 2: ' }, dimension('plan', true), { text: ' ' }, dimension('tests', false), { text: ' ' }, dimension('regressions', true), { text: ' ' }, dimension('rules', true)],
+        [{ text: '1/3 gates landed · last land ' }, { text: '1111111', color: 'warning' }],
       ],
       buttons: [{ key: `card:board:${RUN}`, label: 'Board' }],
     },
   },
 }
+const CARD_LINES = [`⚑ halted · litter · execute ${RUN} · 14m 2s`, 'G2: out of attempts', 'G2, attempt 2: plan ✓ tests ✕ regressions ✓ rules ✓', '1/3 gates landed · last land 1111111']
 
 /** The engine's own drawing of a row, beneath litter: its text, and a button of another plugin's. */
 function rowBeneath(on: On, reached: string[]): void {
@@ -66,8 +75,9 @@ describe('the card in a row', () => {
     for (const surface of ROW_SURFACES) {
       const ui = await $.ui.mount({ plugin: 'litter', surface, component: 'UserMessage', props: row(NOTIFICATION) })
       expect(await ui.find({ type: 'Text', text: /^⚑ halted · litter · execute 20261005-retry · 14m 2s$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^G2: out of attempts$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^G2, attempt 2: plan ✓ tests ✕ regressions ✓ rules ✓$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /1\/3 gates landed · last land 1111111/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /halted: G2: out of attempts/ })).toBeDefined()
       expect((await ui.findAll({ type: 'Button' })).length).toBe(1)
       expect(await ui.find({ type: 'Text', text: /^engine:/ })).toBeUndefined()
       await ui.unmount()
@@ -86,9 +96,9 @@ describe('the card in a row', () => {
       expect(root.props?.flexDirection).toBe('column')
       expect(root.children).toHaveLength(2)
       const [card, engine] = root.children as Node[]
-      // The card first: its title, its two lines and [Board]; then the engine's row with its own button.
-      expect((card!.children as Node[]).slice(0, 3).map(shownText)).toEqual([`⚑ halted · litter · execute ${RUN} · 14m 2s`, '1/3 gates landed · last land 1111111', 'halted: G2: out of attempts'])
-      expect(card!.children).toHaveLength(4)
+      // The card first: its title, its three lines and [Board]; then the engine's row with its own button.
+      expect((card!.children as Node[]).slice(0, 4).map(shownText)).toEqual(CARD_LINES)
+      expect(card!.children).toHaveLength(5)
       expect(shownText(engine)).toBe(`engine: ${NOTIFICATION.text}`)
       expect((await ui.findAll({ type: 'Button' })).map(b => b.props.label)).toEqual(['Board', 'Other'])
       expect(await ui.press({ key: 'other', plugin: 'test' })).toEqual(expect.objectContaining({ element: 'other' }))
@@ -330,4 +340,50 @@ describe('a recorded run, end to end', () => {
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'desktop', component: 'UserMessage', props: row(NOTIFICATION) })
     expect(await ui.find({ type: 'Text', text: `✓ done · litter · execute ${RUN} · 3m 0s` })).toBeDefined()
   })
+})
+
+/** Rows of a drawing with the colors beside each, as drawWithColors writes them. */
+const golden = (columns: number, rows: readonly (readonly [string, string])[]): string[] => rows.map(([text, colors]) => `${text.padEnd(columns)}  | ${colors}`)
+
+/**
+ * The cards in WP-DB's report, the same at 100 and 60 columns: the title is
+ * the run's line (the mark and its word bold in the state's color, `litter`
+ * and the time muted, the run in the name color), then the recorded
+ * outcome, then the evidence (the gate's dimensions, ✓ done's color and ✕
+ * failed's; the last land's commit in the sha color), then [Board].
+ */
+const HALTED_DRAWN: [string, string][] = [
+  [`⚑ halted · litter · execute ${RUN} · 14m 2s`, `warning bold, default, inactive, default, ${NAME}, default, inactive`],
+  ['G2: out of attempts', 'warning'],
+  ['G2, attempt 2: plan ✓ tests ✕ regressions ✓ rules ✓', 'default, success, error, success'],
+  ['1/3 gates landed · last land 1111111', 'default, warning'],
+  ['[ Board ]', 'default'],
+]
+const DONE_DRAWN: [string, string][] = [
+  [`✓ done · litter · execute ${RUN} · 3m 0s`, `success bold, default, inactive, default, ${NAME}, default, inactive`],
+  ['2/2 gates landed · last land 2222222', 'default, warning'],
+  ['[ Board ]', 'default'],
+]
+
+describe('the drawings', () => {
+  for (const columns of [100, 60]) {
+    test(`a halted run's card, at ${columns} columns`, async ($, on) => {
+      mock.store(on)
+      cardsHeld(on, CARDS)
+      rowBeneath(on, [])
+      const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'UserMessage', props: row(NOTIFICATION) })
+      expect(drawWithColors(await ui.drawn(), columns)).toEqual(golden(columns, HALTED_DRAWN))
+    })
+
+    test(`a done run's card from its ledger, at ${columns} columns`, async ($, on) => {
+      mock.store(on)
+      mock.clock(on, { now: NOW + 10 * 60_000 })
+      const { files } = world(on)
+      rowBeneath(on, [])
+      await recordRun(files)
+      await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+      const done = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'UserMessage', props: row(NOTIFICATION) })
+      expect(drawWithColors(await done.drawn(), columns)).toEqual(golden(columns, DONE_DRAWN))
+    })
+  }
 })

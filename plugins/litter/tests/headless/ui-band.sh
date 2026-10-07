@@ -8,10 +8,10 @@
 # gate adding one function to lib/math.sh with its test). The first prompt
 # records run.start (repair: off) and launches litter:execute-run with its
 # args, as execute.sh basic's does. While the run's generation is open the
-# band shows its row with the gate count (`▸ litter · execute <run> · gate
-# 1/2 …  [ Board ] [ Hide ]`); a click on [ Hide ] hides it; at the run's end
-# the row is back with its outcome (`✓ litter · execute <run> · done · 2/2
-# landed`), and a minute later it's gone: the case sets the bandEndedMinutes
+# band shows its row with the gate count (`▸ running · litter · execute <run>
+# · gate 1/2 …  [ Board ] [ Hide ]`); a click on [ Hide ] hides it; at the
+# run's end the row is back with its outcome (`✓ done · litter · execute <run>
+# · 2/2 landed`), and a minute later it's gone: the case sets the bandEndedMinutes
 # option to 1. A plugin loaded with --plugin-dir takes its options from the
 # settings' pluginConfigs.<name>.options, here through --settings, as every
 # tier-4 case sets verify.
@@ -48,16 +48,16 @@ fi
 R=$H_REPO
 LD=$R/.claude/litter
 UI="sh $H_HERE/ui.sh"
-# A run's band row: its status glyph, then litter's name (the card in the transcript reads "done · litter · …").
+# A run's band row: its status glyph and word, then litter's name, as the card in the transcript reads ("✓ done · litter · …", WP-DB).
 # Alternatives, not a bracket: in the C locale a bracket of these glyphs is a set of their bytes.
-GLYPH='(▸|✓|⚑|✕|−|!|↻)'
-ROW="$GLYPH litter · execute [0-9]{8}-[a-z0-9-]+"
+GLYPH='(▸|✓|⚑|✕|−|!|↻) [a-z ]+'
+ROW="$GLYPH · litter · execute [0-9]{8}-[a-z0-9-]+"
 
 if [ -z "${H_CHECKS:-}" ]; then
   cat >|"$H_DIR/steps.txt" <<EOF
 $(h_tool_steps "$H_DIR/debug.txt")
 # The run's row while its generation is open, with the gate count.
-wait 900 $UI shows $H_DIR '▸ litter · execute [0-9]{8}-[a-z0-9-]+ · gate [0-9]+/2'
+wait 900 $UI shows $H_DIR '▸ running · litter · execute [0-9]{8}-[a-z0-9-]+ · gate [0-9]+/2'
 sleep 3
 until $UI mark $H_DIR running
 # [Hide], with the pointer; the row goes.
@@ -67,7 +67,7 @@ sleep 3
 until $UI mark $H_DIR hidden
 # The run's end: the row is back, with its outcome.
 wait 1800 ls $LD/2*/ledger/*-run.end.json
-wait 120 $UI shows $H_DIR '✓ litter · execute [0-9]{8}-[a-z0-9-]+ · done'
+wait 120 $UI shows $H_DIR '✓ done · litter · execute [0-9]{8}-[a-z0-9-]+'
 sleep 3
 until $UI mark $H_DIR ended
 # A minute on (bandEndedMinutes: 1), the row is gone.
@@ -106,8 +106,8 @@ fi
 RUN=$(ls "$LD" 2>/dev/null | grep -E '^[0-9]{8}-' | head -n 1)
 RD=$LD/$RUN
 ledger() { cat "$RD"/ledger/*-"$1".json 2>/dev/null; }
-# The run's row on the screen at a mark: this run's id after the glyph.
-row_at() { $UI screen "$H_DIR" "$1" | grep -E "$GLYPH litter · execute $RUN( |\$)"; }
+# The run's row on the screen at a mark: this run's id after the glyph and word.
+row_at() { $UI screen "$H_DIR" "$1" | grep -E "$GLYPH · litter · execute $RUN( |\$)"; }
 end_s() { ledger run.end | jq -s -r 'map(.at) | first // empty | . / 1000 | floor'; }
 marked() { [ -f "$H_DIR/marks/$1" ] || { echo "no mark $1: the steps didn't get that far (drive.txt)"; return 1; }; }
 
@@ -119,7 +119,7 @@ c_run() {
 c_running() {
   marked running || return 1
   r=$(row_at running) || { echo "the screen at the mark shows no row for $RUN:"; $UI screen "$H_DIR" running | tail -n 12; return 1; }
-  printf '%s\n' "$r" | grep -Eq "▸ litter · execute $RUN · gate [12]/2" || { echo "the row isn't the open run's with its gate count: $r"; return 1; }
+  printf '%s\n' "$r" | grep -Eq "▸ running · litter · execute $RUN · gate [12]/2" || { echo "the row isn't the open run's with its gate count: $r"; return 1; }
   printf '%s\n' "$r" | grep -Fq '[ Board ]' && printf '%s\n' "$r" | grep -Fq '[ Hide ]' || { echo "the row has no [ Board ] and [ Hide ]: $r"; return 1; }
 }
 c_hidden() {
@@ -133,7 +133,7 @@ c_hidden() {
 c_ended() {
   marked ended || return 1
   r=$(row_at ended) || { echo "no row for $RUN at the run's end:"; $UI screen "$H_DIR" ended | tail -n 12; return 1; }
-  printf '%s\n' "$r" | grep -Eq "✓ litter · execute $RUN · done · 2/2 landed" || { echo "the ended row doesn't say done and 2/2 landed: $r"; return 1; }
+  printf '%s\n' "$r" | grep -Eq "✓ done · litter · execute $RUN · 2/2 landed" || { echo "the ended row doesn't say done and 2/2 landed: $r"; return 1; }
 }
 c_gone() {
   marked gone || return 1

@@ -19,6 +19,13 @@
 // (a killed run still settling) waits, and is looked at again until the end
 // is there: on the ui tick once its run's ledger moved (cardsTick, WP-CH),
 // and at each prompt.submit.
+//
+// What a card says (phase 5b, WP-DB; the UI review's item 11): the title is
+// the run's line as the band and Home draw it, the status's mark and word
+// first (band/view.ts, runMark), then `litter · <workflow> <run>` and the
+// time; then the recorded outcome (an end's reason, a design's verdict),
+// then the evidence that matters (the gate that didn't land and its
+// verdict's dimensions in plain words, the last land's commit), and [Board].
 
 import type { Ports } from '../ports'
 import type { CardPressHook, CardRender, PortHook, PromptSubmitHook } from '../hooktypes'
@@ -37,9 +44,9 @@ import { fanoutTasks } from '../integrate'
 import { barIds, proposalRecords, verdictRecords } from '../design/finalize'
 import { session } from '../session'
 import { oneLine } from '../swarm/view'
-import { statusWord } from '../board/view'
+import { markSpan, runMark } from '../band/view'
 import { openSection } from '../ui/hub'
-import { STYLE } from '../ui/style'
+import { MARK, STYLE } from '../ui/style'
 
 // The `litter` pane's one opener (phase 5b, WP-DA), through one table so tier
 // 2 can stand in for it (COMMON, "Another package's module"). The mod never changes it.
@@ -313,38 +320,41 @@ export function duration(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
-/** The reason of an end that isn't done, on one line: `failed` for a failure, else `warning`. */
+/**
+ * The reason of an end that isn't done, as recorded, on one line (the title
+ * says the status, so a reason that only repeats it isn't said): `failed`
+ * for a failure, else `warning`.
+ */
 function reasonLine(end: RunEndBody): SwarmSpan[] | null {
   if (end.status === 'done' || !named(end.reason)) return null
+  const text = oneLine(end.reason, 300)
+  if ([end.status, runMark(end.status).word].includes(text.toLowerCase())) return null
   const color = end.status === 'failed' || end.status === 'launch_failed' ? STYLE.failed : STYLE.warning
-  return [{ text: oneLine(`${end.status}: ${end.reason}`, 300), color }]
+  return [{ text, color }]
 }
 
-/** One generation's card: the status, the run and its time, then what the ledger says of how it ended. */
+const SEP: SwarmSpan = { text: ' · ' }
+
+/** One generation's card: the run's line (its mark, `litter`, the run and its time), then the recorded outcome, then the evidence. */
 function cardOf(f: RunFacts, st: RunState, gen: Generation): CardView {
   const end = gen.end!
   const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
-  const sw = statusWord(end.status)
   const endAt = f.records.find(r => r.seq === gen.endSeq)?.at
-  const title: SwarmSpan[] = [
-    { text: `${sw.glyph} ${oneLine(sw.text, 40)}`, color: sw.color, bold: true },
-    { text: ` · litter · ${oneLine(workflow, 40)} ` },
-    { text: f.run, color: STYLE.name },
-  ]
-  if (gen.repair) title.push({ text: ' · repair' })
-  else if (gen.n > 1) title.push({ text: ` · generation ${gen.n}` })
-  if (typeof endAt === 'number') title.push({ text: ` · ${duration(endAt - gen.openedAt)}`, dim: true })
+  const title: SwarmSpan[] = [markSpan(runMark(end.status), true), SEP, { text: 'litter', color: STYLE.muted }, SEP, { text: `${oneLine(workflow, 40)} ` }, { text: f.run, color: STYLE.name }]
+  if (gen.repair) title.push(SEP, { text: 'repair' })
+  else if (gen.n > 1) title.push(SEP, { text: `generation ${gen.n}` })
+  if (typeof endAt === 'number') title.push(SEP, { text: duration(endAt - gen.openedAt), color: STYLE.muted })
 
   const endSeq = gen.endSeq ?? Infinity
   const before = f.records.filter(r => r.seq < endSeq)
   const after = f.records.filter(r => r.seq > endSeq)
   let lines: SwarmSpan[][]
-  // A design's stop says its reason in the summary's words; any other run's end says it as it was recorded.
+  // A design's stop says its reason in the summary's words; any other run's end says it as it was recorded, first.
   if (workflow === 'design') lines = designLines(f.json, before, after, end)
   else {
     const reason = reasonLine(end)
     const own = workflow === 'execute' ? executeLines(f.json, before, end) : workflow === 'fanout' ? fanoutLines(f.json, before) : []
-    lines = [...own, ...(reason ? [reason] : [])]
+    lines = [...(reason ? [reason] : []), ...own]
   }
 
   return { taskId: gen.taskId, run: f.run, title, lines: lines.slice(0, LINES_MAX), buttons: [{ key: `card:board:${f.run}`, label: 'Board' }] }
@@ -357,7 +367,7 @@ function gateIds(json: RunJson | null): { worked: string[]; earlier: string[] } 
   return { worked, earlier: ids(json?.args?.landed).filter(id => !worked.includes(id)) }
 }
 
-/** execute: the gates landed and the last land's commit; when it didn't end done, the gate that didn't land. */
+/** execute: when it didn't end done, the gate that didn't land first; then the gates landed and the last land's commit. */
 function executeLines(json: RunJson | null, before: readonly StoredRecord[], end: RunEndBody): SwarmSpan[][] {
   const { worked, earlier } = gateIds(json)
   const lands = before.filter(r => r.kind === 'land' && typeof r.body.gate === 'string' && typeof r.body.commit === 'string')
@@ -367,17 +377,32 @@ function executeLines(json: RunJson | null, before: readonly StoredRecord[], end
   const head: SwarmSpan[] = [{ text: count }]
   const last = short(lands.at(-1)?.body.commit)
   if (last) head.push({ text: ' · last land ' }, { text: last, color: STYLE.sha })
-  const out = [head]
   const stuck = end.status === 'done' ? undefined : worked.find(id => !landed.has(id))
-  if (stuck) out.push(...stuckLines(before, stuck))
-  return out
+  return [...(stuck ? stuckLines(before, stuck) : []), head]
 }
 
 type Dim = { pass?: unknown }
 
+/** A verdict's dimensions in plain words (COMMON-5B: `plan ✓ tests ✓ regressions ✓ rules ✓`), in the order the critic judges them. */
+const DIMENSION_WORD: Record<(typeof VERDICT_DIMENSIONS)[number], string> = {
+  plan_adherence: 'plan',
+  tests_green: 'tests',
+  no_regressions: 'regressions',
+  rules: 'rules',
+}
+
+/** Each dimension's word and its mark: ✓ in done's key when it passed, ✕ in failed's when it didn't. */
+function dimensionSpans(verdict: StoredRecord): SwarmSpan[] {
+  return VERDICT_DIMENSIONS.flatMap((d, i) => {
+    const pass = (verdict.body[d] as Dim).pass === true
+    const mark = pass ? MARK.done : MARK.failed
+    return [...(i > 0 ? [{ text: ' ' }] : []), { text: `${DIMENSION_WORD[d]} ${mark.glyph}`, color: mark.color }]
+  })
+}
+
 /**
- * The gate that didn't land: its attempt and its last verdict's failing
- * dimensions, then the plan gap or the rule clash. An executor's stop on a
+ * The gate that didn't land: its attempt and its last verdict's dimensions,
+ * each ✓ or ✕, then the plan gap or the rule clash. An executor's stop on a
  * plan gap after that verdict wins, as it does for the bridge and the summary.
  * Nothing for a gate with no attempt, verdict or stop.
  */
@@ -392,14 +417,13 @@ function stuckLines(records: readonly StoredRecord[], gate: string): SwarmSpan[]
   const result = records.filter(r => r.kind === 'task.result' && r.body.role === 'executor' && r.body.gate === gate).at(-1)
   const res = result && (!verdict || result.seq > verdict.seq) ? result.body.result : null
   const stop = isObj(res) && res.status === 'blocked' && named(res.plan_gap) ? res.plan_gap : null
-  const failing = verdict ? VERDICT_DIMENSIONS.filter(d => (verdict.body[d] as Dim).pass !== true) : []
   // A gate nothing was tried on didn't halt the run (the board's halted state asks the same).
   if (attempt === 0 && !verdict && stop === null) return []
 
   const head: SwarmSpan[] = [{ text: `${oneLine(gate, 40)}${attempt > 0 ? `, attempt ${attempt}` : ''}: ` }]
   if (stop !== null) head.push({ text: 'its executor stopped before the attempt was judged', color: STYLE.warning })
-  else if (failing.length > 0) head.push({ text: `failed ${failing.join(', ')}`, color: STYLE.warning })
-  else head.push({ text: verdict ? 'its last verdict passed every dimension' : 'no verdict recorded' })
+  else if (verdict) head.push(...dimensionSpans(verdict))
+  else head.push({ text: 'no verdict recorded' })
   const out = [head]
   const gap = stop ?? (verdict && named(verdict.body.plan_gap) ? verdict.body.plan_gap : null)
   if (gap !== null) out.push([{ text: oneLine(`plan gap: ${gap}`, 300), color: STYLE.warning }])
@@ -420,12 +444,9 @@ const NEEDS: Record<string, string> = {
   'user-gap': 'a gap only you can close',
 }
 
-/** design: the latest version and its verdict, how it stopped when it isn't approved, and a plan's delivery. */
+/** design: how it stopped when it isn't approved (the title has the status), the latest version and its verdict, and a plan's delivery. */
 function designLines(json: RunJson | null, before: readonly StoredRecord[], after: readonly StoredRecord[], end: RunEndBody): SwarmSpan[][] {
   const out: SwarmSpan[][] = []
-  const version = proposalRecords(before).at(-1)?.body.version
-  if (typeof version !== 'string') out.push([{ text: 'no version recorded' }])
-  else out.push(versionLine(version, verdictRecords(before).filter(v => v.body.version === version).at(-1), barIds(json) ?? []))
   const pl = end.payload ?? {}
   if (end.status === 'done') {
     if (pl.outcome !== 'approved') {
@@ -433,13 +454,19 @@ function designLines(json: RunJson | null, before: readonly StoredRecord[], afte
       out.push([{ text: `holding: ${by}`, color: STYLE.warning }])
     }
   } else if (end.status === 'needs_user') {
-    out.push([{ text: oneLine(`needs you: ${NEEDS[end.reason ?? ''] ?? end.reason ?? 'no reason recorded'}`, 300), color: STYLE.needsYou }])
+    // The title says it needs you; this line says what for, as summary.ts words it, else as recorded.
+    const known = NEEDS[end.reason ?? '']
+    const why = known ? `for ${known}` : named(end.reason) ? oneLine(end.reason, 300) : 'no reason recorded'
+    out.push([{ text: why, color: STYLE.needsYou }])
   } else if (end.status === 'halted' && end.reason === 'source-changed') {
-    out.push([{ text: 'halted: the checkout changed during a round (source-changed)', color: STYLE.warning }])
+    out.push([{ text: 'the checkout changed during a round (source-changed)', color: STYLE.warning }])
   } else {
     const r = reasonLine(end)
     if (r) out.push(r)
   }
+  const version = proposalRecords(before).at(-1)?.body.version
+  if (typeof version !== 'string') out.push([{ text: 'no version recorded' }])
+  else out.push(versionLine(version, verdictRecords(before).filter(v => v.body.version === version).at(-1), barIds(json) ?? []))
   if (json?.args?.deliverable === 'plan') out.push(deliveryLine(after))
   return out
 }

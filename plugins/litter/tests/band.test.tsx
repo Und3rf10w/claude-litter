@@ -11,10 +11,14 @@
 // can't draw passes to what's beneath (the render's catch), and [Hide]'s press
 // answers `{ element }`. These are the cases WP-CB's brief names for a tier-2
 // bandrender.spec.ts, here at tier 1 since tier 2 has no JSX (COMMON, "Tests").
+// WP-DB: the rows as band/view.ts builds them now (`<glyph> <word> · litter ·
+// …`, in the `litter` pane's style table: a dim span is drawn muted), and
+// the band drawn at 100 and 60 columns with each row's colors beside it.
 
 import type { On, RenderElement } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { BandView } from '../types/index'
+import { drawWithColors } from './drawing'
 
 const SESSION = 'tier1-session'
 const RUN = '20261005-retry'
@@ -22,17 +26,25 @@ const SURFACES = ['terminal', 'desktop'] as const
 
 const BAND = { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 95, scroll: { offset: 0, bodyRows: 9 }, view: {} } as const
 
+const NAME = 'cyan_FOR_SUBAGENTS_ONLY'
+const SEP = { text: ' · ' }
+const LITTER = [SEP, { text: 'litter', color: 'inactive' }, SEP]
 const runRow = {
   key: `run:${RUN}:1:open`,
   kind: 'run',
   spans: [
-    { text: '▸', color: 'background' },
-    { text: ' litter · execute ' },
-    { text: RUN, color: 'cyan' },
-    { text: ' · gate 3/7 · G2 ' },
+    { text: '▸ running', color: 'background' },
+    ...LITTER,
+    { text: 'execute ' },
+    { text: RUN, color: NAME },
+    SEP,
+    { text: 'gate 3/7' },
+    SEP,
+    { text: 'G2' },
+    { text: ' ' },
     { text: 'retry 2', color: 'warning' },
-    { text: ' · ' },
-    { text: '14m', dim: true },
+    SEP,
+    { text: '14m', color: 'inactive' },
   ],
   buttons: [
     { key: `band:board:${RUN}`, label: 'Board' },
@@ -42,13 +54,23 @@ const runRow = {
 const swarmRow = (n: number) => ({
   key: `swarm:s${n}:20261005-093000`,
   kind: 'swarm',
-  spans: [{ text: '▸', color: 'background' }, { text: ' litter · swarm ' }, { text: `s${n}`, color: 'cyan' }, { text: ' · ' }, { text: '1 waiting', color: 'warning' }],
+  spans: [{ text: '▸ live', color: 'background' }, ...LITTER, { text: 'swarm ' }, { text: `s${n}`, color: NAME }, SEP, { text: '2 running', color: 'background' }, SEP, { text: '⚑ 1 waiting', color: 'permission' }],
   buttons: [
     { key: `band:browser:s${n}`, label: 'Browser' },
     { key: `band:hide:swarm:s${n}:20261005-093000`, label: 'Hide' },
   ],
 })
+const endedRow = {
+  key: 'run:20261005-split:1:done',
+  kind: 'ended',
+  spans: [{ text: '✓ done', color: 'success' }, ...LITTER, { text: 'fanout ' }, { text: '20261005-split', color: NAME }, SEP, { text: '3/3 tasks' }, SEP, { text: 'landed' }, SEP, { text: '9m', color: 'inactive' }],
+  buttons: [
+    { key: 'band:board:20261005-split', label: 'Board' },
+    { key: 'band:hide:run:20261005-split:1:done', label: 'Hide' },
+  ],
+}
 const ONE_ROW = { view: 'band', v: 3, rows: [runRow] } as BandView
+const ROW_TEXT = `▸ running · litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m`
 
 /** The band atom holds `view`, as the ui tick would have written it. */
 function bandAtom(on: On, view: unknown): void {
@@ -98,7 +120,7 @@ describe('the band', () => {
       expect(root.props?.flexDirection).toBe('column')
       const [first, last] = [root.children?.[0], root.children?.at(-1)]
       expect(root.children).toHaveLength(2)
-      expect(shownText(first)).toBe(`▸ litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m`)
+      expect(shownText(first)).toBe(ROW_TEXT)
       expect(shownText(last)).toBe('drawn beneath litter')
       // litter's two buttons, then the two beneath, in that order.
       expect((await ui.findAll({ type: 'Button' })).map(b => b.props.label)).toEqual(['Board', 'Hide', 'Board', 'Other'])
@@ -116,10 +138,12 @@ describe('the band', () => {
     const texts = ours.filter(n => n.type === 'Text')
     expect(texts.length).toBeGreaterThan(0)
     expect(texts.every(t => t.props?.wrap === 'truncate-end')).toBe(true)
-    expect(texts.find(t => shownText(t) === RUN)?.props?.color).toBe('cyan')
+    expect(texts.find(t => shownText(t) === RUN)?.props?.color).toBe(NAME)
     expect(texts.find(t => shownText(t) === 'retry 2')?.props?.color).toBe('warning')
-    expect(texts.find(t => shownText(t) === '1 waiting')?.props?.color).toBe('warning')
-    expect(texts.find(t => shownText(t) === '14m')?.props?.dimColor).toBe(true)
+    expect(texts.find(t => shownText(t) === '⚑ 1 waiting')?.props?.color).toBe('permission')
+    // The style table's muted role, as the pane draws a dim text (WP-DB); no faint attribute.
+    expect(texts.find(t => shownText(t) === '14m')?.props?.color).toBe('inactive')
+    expect(texts.some(t => t.props?.dimColor === true)).toBe(false)
     const buttons = ours.filter(n => n.type === 'Button')
     expect(buttons.map(b => b.props?.key)).toEqual([`band:board:${RUN}`, `band:hide:run:${RUN}:1:open`, 'band:browser:s1', 'band:hide:swarm:s1:20261005-093000'])
     expect(buttons.every(b => b.props?.hotkey === undefined)).toBe(true)
@@ -131,8 +155,8 @@ describe('the band', () => {
     engineBeneath(on)
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 40 } })
     const root = (await ui.drawn()) as unknown as Node
-    // `[ Board ]` and `[ Hide ]` with a cell before each leave 21 cells.
-    expect(shownText(root.children?.[0])).toBe('▸ litter · execute 2…')
+    // `[ Board ]` and `[ Hide ]` with a cell before each leave 21 cells: the mark and litter's name.
+    expect(shownText(root.children?.[0])).toBe('▸ running · litter ·…')
     expect((await ui.findAll({ type: 'Button' })).map(b => b.props.label)).toEqual(['Board', 'Hide'])
   })
 
@@ -155,7 +179,7 @@ describe('the band', () => {
     engineBeneath(on)
     const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, maxRows: 3 } })
     const root = (await ui.drawn()) as unknown as Node
-    expect((root.children ?? []).map(shownText)).toEqual([`▸ litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m`, '▸ litter · swarm s1 · 1 waiting', '+2 more swarms'])
+    expect((root.children ?? []).map(shownText)).toEqual([ROW_TEXT, '▸ live · litter · swarm s1 · 2 running · ⚑ 1 waiting', '+2 more swarms'])
   })
 
   test('a survey holds the band: only what is beneath is drawn', async ($, on) => {
@@ -210,4 +234,38 @@ describe("the band's presses", () => {
     expect(reached).toEqual(['band:board', 'other'])
     expect(toasts).toHaveLength(1)
   })
+})
+
+/** Rows of a drawing with the colors beside each, as drawWithColors writes them. */
+const golden = (columns: number, rows: readonly (readonly [string, string])[]): string[] => rows.map(([text, colors]) => `${text.padEnd(columns)}  | ${colors}`)
+
+/**
+ * The band at 100 and 60 columns (WP-DB's report): each row the mark and its
+ * word in the state's color, `litter` muted, what it is with the name in the
+ * name color, its progress or outcome, the time muted, then its buttons.
+ * Narrow, the words are cut and the buttons kept.
+ */
+const BAND_DRAWN: Record<number, [string, string][]> = {
+  100: [
+    [`▸ running · litter · execute ${RUN} · gate 3/7 · G2 retry 2 · 14m [ Board ] [ Hide ]`, `background, default, inactive, default, ${NAME}, default, warning, default, inactive, default`],
+    ['✓ done · litter · fanout 20261005-split · 3/3 tasks · landed · 9m [ Board ] [ Hide ]', `success, default, inactive, default, ${NAME}, default, inactive, default`],
+    ['▸ live · litter · swarm s1 · 2 running · ⚑ 1 waiting [ Browser ] [ Hide ]', `background, default, inactive, default, ${NAME}, default, background, default, permission, default`],
+  ],
+  60: [
+    ['▸ running · litter · execute 20261005-re… [ Board ] [ Hide ]', `background, default, inactive, default, ${NAME}, default`],
+    ['✓ done · litter · fanout 20261005-split … [ Board ] [ Hide ]', `success, default, inactive, default, ${NAME}, default`],
+    ['▸ live · litter · swarm s1 · 2 running… [ Browser ] [ Hide ]', `background, default, inactive, default, ${NAME}, default, background, default`],
+  ],
+}
+
+describe('the drawings', () => {
+  for (const columns of [100, 60]) {
+    test(`an open run, a run that ended and a live swarm, at ${columns} columns`, async ($, on) => {
+      mock.store(on)
+      bandAtom(on, { view: 'band', v: 8, rows: [runRow, endedRow, swarmRow(1)] })
+      engineBeneath(on)
+      const ui = await $.ui.mount({ plugin: 'litter', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: columns } })
+      expect(drawWithColors(await ui.drawn(), columns)).toEqual(golden(columns, BAND_DRAWN[columns]!))
+    })
+  }
 })
