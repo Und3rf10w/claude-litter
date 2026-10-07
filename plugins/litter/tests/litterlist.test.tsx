@@ -1,7 +1,7 @@
 // Tier 1 (phase 5b, WP-DA2): the chrome's heading, field and list as the
 // engine draws them in the one `litter` pane. Home's heading has its faint
 // rule to the body's edge, wide and narrow; the start screen's Name is a
-// field with its caption under its frame and Ask one without, the frame the
+// field with its caption under its frame and Ask one too (WP-DD), the frame the
 // accent while the ring is on it; its template list draws six rows of eight
 // and a footer, a wheel tick over the list moves its window (one elsewhere
 // passes on), the focused template's description sits beside its row wide
@@ -172,21 +172,24 @@ describe('the heading', () => {
     expect((await narrow.find({ type: 'Text', text: '4 more below the fold' }))?.props.color).toBe('inactive')
   })
 
-  test("the builder's section() is the chrome's heading: its rule fills the row by flex", async ($, on) => {
+  test("the start screen's template heading is the chrome's heading, its rule to [Blank] beside it (WP-DD)", async ($, on) => {
     await startScreen($, on)
     const ui = await mount($, { bodyColumns: 100 })
     const tree = await ui.drawn()
     const title = findNode(tree, n => n.type === 'Text' && JSON.stringify(n).includes('From a template'))!
+    expect(title.props).toEqual(expect.objectContaining({ bold: true, color: 'suggestion' }))
     const rowBox = pathTo(tree, title)!.at(-1)!
-    const fill = (rowBox.children ?? []).find((c): c is DrawnNode => typeof c === 'object' && c !== null && (c as DrawnNode).props?.flexGrow === 1)
-    expect(fill?.props).toEqual(expect.objectContaining({ width: 0, minWidth: 3, height: 1, overflow: 'hidden' }))
+    // The heading's own row: the title, then its faint rule, a fixed length now (the row has [Blank] to leave room for).
+    const rule = (rowBox.children ?? []).find((c): c is DrawnNode => typeof c === 'object' && c !== null && (c as DrawnNode).type === 'Text' && (c as DrawnNode).props?.color === 'subtle')
+    expect(JSON.stringify(rule?.children ?? rule?.props?.children)).toContain('─'.repeat(71))
     const rows = drawText(tree, 100)
-    expect(rows[rowOf(rows, 'From a template')]).toBe(`From a template ${'─'.repeat(100 - 16)}`)
+    // `or [ Blank ]` takes its 12 cells (and a gap) off the heading's.
+    expect(rows[rowOf(rows, 'From a template')]).toBe(`From a template ${'─'.repeat(100 - 16 - 13)} or [ Blank ]`)
   })
 })
 
 describe('the field', () => {
-  test('Name: the Input labelled in a round frame, its caption one muted line under the frame; Ask: framed, no caption', async ($, on) => {
+  test('Name: the Input labelled in a round frame, its caption one muted line under the frame; Ask: framed, what it does its caption (WP-DD)', async ($, on) => {
     await startScreen($, on)
     const ui = await mount($, { bodyColumns: 100 })
     const tree = await ui.drawn()
@@ -205,7 +208,9 @@ describe('the field', () => {
     expect(ask.props?.placeholder).toBe('what the swarm is for')
     const [askField, askFrame] = pathTo(tree, ask)!.slice(-2)
     expect(askFrame!.props).toEqual(expect.objectContaining({ borderStyle: 'round' }))
-    expect((askField!.children ?? []).length).toBe(1)
+    const askParts = (askField!.children ?? []) as DrawnNode[]
+    expect(askParts.map(p => p.type)).toEqual(['Box', 'Text'])
+    expect(JSON.stringify(askParts[1])).toContain('the lead proposes one; you review it here')
 
     const rows = drawText(tree, 100)
     const at = rowOf(rows, 'Name: ')
@@ -307,7 +312,8 @@ describe('the list: the template picker', () => {
     expect(await ui.press({ key: TEMPLATE_KEY('builtin:review-panel') })).toEqual(expect.objectContaining({ element: TEMPLATE_KEY('builtin:review-panel') }))
     expect(await ui.find({ type: 'Button', key: 'swarm:start:use-template' })).toBeDefined()
     const rows = drawText(await ui.drawn(), 100)
-    expect(rows[rowOf(rows, 'review-panel')]).toMatch(/^› review-panel/)
+    // Its form's box sits beside the list (WP-DD), its title the template's name, so the row is found by its mark.
+    expect(rows.some(r => /^› review-panel/.test(r))).toBe(true)
     expect(rows.filter(r => r.startsWith('›'))).toHaveLength(1)
   })
 })
@@ -342,7 +348,7 @@ const golden = (columns: number, rows: readonly [string, string][]): string[] =>
  */
 const PICKER: Record<number, [string, string][]> = {
   100: [
-    [`From a template ${'─'.repeat(84)}`, 'suggestion bold, subtle'],
+    [`From a template ${'─'.repeat(71)} or [ Blank ]`, 'suggestion bold, subtle, inactive, default dim'],
     ['  branch-per-orchestrator built-in     One orchestrator per branch, each with reviewers, fixers in …', 'default, inactive, subtle'],
     ['  research-fan-out        built-in     One orchestrator that splits a question across read-only res…', 'default, inactive, subtle'],
     ['  review-panel            built-in     Read-only reviewers, one per lens, each reporting to the lea…', 'default, inactive'],
@@ -352,7 +358,7 @@ const PICKER: Record<number, [string, string][]> = {
     ['  ↓ 2 more', 'default dim'],
   ],
   60: [
-    [`From a template ${'─'.repeat(44)}`, 'suggestion bold, subtle'],
+    [`From a template ${'─'.repeat(31)} or [ Blank ]`, 'suggestion bold, subtle, inactive, default dim'],
     ['  branch-per-orchestrator built-in', 'default, inactive'],
     ['  research-fan-out        built-in', 'default, inactive'],
     ['  review-panel            built-in', 'default, inactive'],
