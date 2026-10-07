@@ -4,30 +4,38 @@
 // unknown one; a team's members with their inbox counts; a teammate of this
 // session's team with both a status and a count; the selected agent's inbox
 // and transcript tail, [More]; a message cleaned and cut; the stamp the tick
-// compares; and what couldn't be read.
+// compares; and what couldn't be read. WP-DF: the first line in place of a
+// title; only teams that run (the registry through `deps.sessions`), the
+// ended ones counted, an ended team shown on purpose; and the engine's
+// wrapped messages as words, on each tag, unknown markup and a cut message.
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { ListedAgent, SessionMessage } from '../../hooks/ports'
 import type { InboxEntry, TeamInfo } from '../../hooks/uitypes'
 import type { AgentsBody } from '../../types/index'
 import { clockAt } from '../../hooks/swarm/view'
+import type { RunningSession, TeamRecord } from '../../hooks/team/store'
 import {
+  ENDED,
   INBOX_SHOWN,
   MAX_ROWS,
   NOT_HERE,
-  TAIL,
-  TAIL_MORE,
+  LINES_KEPT,
   blankAgentsNav,
   buildAgents,
   deps,
+  endedText,
   entryOf,
   factsStamp,
   gather,
+  lineText,
   messageLine,
   parseRowArg,
   rowArg,
   scopeOf,
   statusOf,
+  teamActive,
+  teamEnded,
   teamOfScope,
   type AgentsNav,
 } from '../../hooks/agents/view'
@@ -43,7 +51,7 @@ afterEach(() => {
 
 const agent = (id: string, over: Partial<ListedAgent> = {}): ListedAgent => ({ id, description: `task ${id}`, type: 'general-purpose', status: 'running', ...over })
 
-function team(name: string, members: readonly string[], over: Partial<TeamInfo> = {}): TeamInfo {
+function team(name: string, members: readonly string[], over: Partial<TeamRecord> = {}): TeamRecord {
   return {
     name,
     dir: name,
@@ -56,8 +64,12 @@ function team(name: string, members: readonly string[], over: Partial<TeamInfo> 
 
 const entry = (text: string, over: Partial<InboxEntry> = {}): InboxEntry => ({ from: 'team-lead', text, timestamp: new Date(NOW - 60_000).toISOString(), summary: null, ...over })
 
-/** CE's store as a spec sets it: the teams, and each inbox by `<team>/<agent>` (null: none; an Error: unreadable). */
-type Store = { teams: TeamInfo[] | Error; inboxes: Record<string, InboxEntry[] | null | Error>; stamps: Record<string, string>; reads: string[] }
+/**
+ * CE's store as a spec sets it: the teams, and each inbox by `<team>/<agent>`
+ * (null: none; an Error: unreadable); the registry of running sessions
+ * (undefined: the real reader, which can't tell in tier 2, so null).
+ */
+type Store = { teams: TeamRecord[] | Error; inboxes: Record<string, InboxEntry[] | null | Error>; stamps: Record<string, string>; reads: string[]; sessions?: RunningSession[] | null }
 
 function fakeStore(over: Partial<Store> = {}): Store {
   const s: Store = { teams: [], inboxes: {}, stamps: {}, reads: [], ...over }
@@ -65,6 +77,7 @@ function fakeStore(over: Partial<Store> = {}): Store {
     if (s.teams instanceof Error) throw s.teams
     return structuredClone(s.teams)
   }
+  if ('sessions' in over) deps.sessions = async () => structuredClone(s.sessions ?? null)
   deps.readInbox = async (_p, t, a) => {
     const k = `${t}/${a}`
     s.reads.push(k)
@@ -132,7 +145,8 @@ describe("this session's agents", () => {
     // A plain subagent has no inbox, so no count.
     expect(b.rows.every(r => r.unread === null)).toBe(true)
     expect(b.scope).toBe('session')
-    expect(b.title.map(s => s.text).join('')).toBe('litter · agents · this session · 8 agents · 1 running')
+    // No title line: the first line is what's shown, and its counts (WP-DF).
+    expect(b.head).toEqual({ team: null, note: '8 agents · 1 running' })
     expect(b.broadcast).toBeNull()
     expect(b.problems).toEqual([])
     // Nothing selected: no composer.
@@ -220,7 +234,7 @@ describe("this session's agents", () => {
       "this session's agents couldn't be listed: the session is not bound",
       "the teams couldn't be read: neither CLAUDE_CONFIG_DIR nor an absolute HOME is set",
     ])
-    expect(b.options).toEqual([{ value: 'session', label: 'this session' }])
+    expect(b.options).toEqual([{ value: 'session', label: 'this session', members: null, active: true, description: '0 agents' }])
   })
 
   test(`past ${MAX_ROWS} rows the rest are counted, not drawn, and their inboxes aren't read`, async () => {
@@ -249,17 +263,19 @@ describe("a team's members", () => {
       ['checker', 'checker', 'general-purpose', NOT_HERE, 0],
     ])
     expect(b.scope).toBe('team.team-b')
-    expect(b.title.map(s => s.text).join('')).toBe('litter · agents · team team-b · 3 members')
-    expect(b.title.find(s => s.text === 'team-b')?.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
+    expect(b.head).toEqual({ team: 'team-b', note: '3 members' })
     // A team's view keeps the composer for [Broadcast], with no row to [Send] to yet.
     expect(b.broadcast).toBe('team-b')
     expect(b.composer).toEqual({ key: 'agents:text:0', text: '', to: null })
-    // The picker: this session first, then each team as the store answers them (newest first), with its member count.
+    // The picker: this session first, then each team as the store answers them (newest first), with its
+    // member count; whether it runs is null, since tier 2 has no registry to read (no config dir).
     expect(b.options).toEqual([
-      { value: 'session', label: 'this session' },
-      { value: 'team.team-b', label: 'team-b (3 members)' },
-      { value: 'team.team-a', label: 'team-a (1 member)' },
+      { value: 'session', label: 'this session', members: null, active: true, description: 'the agents this session started, and its teammates' },
+      { value: 'team.team-b', label: 'team-b', members: 3, active: null, description: 'team-lead, writer, checker' },
+      { value: 'team.team-a', label: 'team-a', members: 1, active: null, description: 'team-lead' },
     ])
+    expect(b.hiddenTeams).toBe(0)
+    expect(b.ended).toBeNull()
   })
 
   test("a member of the team this session leads that it lists is its agent; the lead member is this session; an unlisted member is sent to by name", async () => {
@@ -274,7 +290,13 @@ describe("a team's members", () => {
       ['idler', 'not in this session', { kind: 'name', name: 'idler' }, null],
     ])
     const b = await body(p, n)
-    expect(b.title.map(s => s.text).join('')).toBe('litter · agents · team team-a · 3 members · led by this session')
+    expect(b.head).toEqual({ team: 'team-a', note: '3 members · led by this session' })
+    // What the menu offers each row: Message where something sends, Transcript for this session's agent, Stop while it runs.
+    expect(b.rows.map(r => [r.key, r.can])).toEqual([
+      ['team-lead', { message: false, transcript: false, stop: false }],
+      ['reviewer', { message: true, transcript: true, stop: true }],
+      ['idler', { message: true, transcript: false, stop: false }],
+    ])
     // The lead member, selected: nothing sends to it, nothing stops it.
     const lead = (await body(p, nav({ team: 'team-a', selected: 'team-lead' }))).selected!
     expect(lead.sendNote).toBeNull()
@@ -306,7 +328,7 @@ describe("a team's members", () => {
     expect(b.rows).toEqual([])
     expect(b.problems).toEqual(["there's no team named gone with a readable config"])
     expect(b.broadcast).toBeNull()
-    expect(b.title.map(s => s.text).join('')).toBe('litter · agents · team gone · not found')
+    expect(b.head).toEqual({ team: 'gone', note: 'not found' })
   })
 })
 
@@ -344,7 +366,7 @@ describe('the selected agent', () => {
     expect(entryOf({ from: 7, text: '', timestamp: 'yesterday', summary: null } as never, NOW)).toEqual({ from: '7', at: 'yesterday', lines: ['(empty)'] })
   })
 
-  test(`its transcript: the last ${TAIL} messages, one line each (the text, or the tool and its first argument); [More] shows ${TAIL_MORE}`, async () => {
+  test(`its transcript: every message that reads as a line, one each, up to the last ${LINES_KEPT} (the pane windows them)`, async () => {
     fakeStore()
     const p = ports([agent('a1', { name: 'reviewer' })])
     const rows: SessionMessage[] = []
@@ -355,24 +377,32 @@ describe('the selected agent', () => {
     const t = (await body(p, nav({ selected: 'a1' }))).selected!.transcript!
     expect(t.readable).toBe(true)
     expect(t.total).toBe(42)
-    expect(t.more).toBe(false)
-    expect(t.lines.length).toBe(TAIL)
+    expect(t.lines.length).toBe(42)
+    expect(t.lines[0]).toEqual([{ text: '◆ step 1' }])
+    // Each line its spans: assistant and tool lines keep their glyphs, a user's is muted; a tool's name bold in the label color.
     expect(t.lines.slice(-3)).toEqual([
-      { text: '◆ step 40' },
-      { text: '↳ Bash npm test (+1 more)', color: 'inactive' },
-      { text: '› [bold]brackets[/bold] stay', dim: true },
+      [{ text: '◆ step 40' }],
+      [
+        { text: '↳ ', color: 'subtle' },
+        { text: 'Bash', bold: true, color: 'text' },
+        { text: ' npm test', color: 'inactive' },
+        { text: ' (+1 more)', color: 'subtle' },
+      ],
+      [{ text: '› [bold]brackets[/bold] stay', color: 'inactive' }],
     ])
-    const more = (await body(p, nav({ selected: 'a1', more: true }))).selected!.transcript!
-    expect(more.lines.length).toBe(TAIL_MORE)
-    expect(more.more).toBe(true)
-    expect(more.lines[0]).toEqual({ text: '◆ step 13' })
+    // Past the cap, the newest are kept and the total counts them all.
+    p.transcripts = { a1: Array.from({ length: LINES_KEPT + 30 }, (_, i) => say(`line ${i}`)) }
+    const long = (await body(p, nav({ selected: 'a1' }))).selected!.transcript!
+    expect(long.total).toBe(LINES_KEPT + 30)
+    expect(long.lines.length).toBe(LINES_KEPT)
+    expect(lineText(long.lines[0]!)).toBe('◆ line 30')
   })
 
   test("a transcript the engine won't read (another process's teammate, a finished agent) is unreadable, not empty", async () => {
     fakeStore()
     const p = ports([agent('a1')])
     const t = (await body(p, nav({ selected: 'a1' }))).selected!.transcript
-    expect(t).toEqual({ readable: false, lines: [], total: 0, more: false })
+    expect(t).toEqual({ readable: false, lines: [], total: 0 })
     p.messages = async () => {
       throw new Error('boom')
     }
@@ -393,9 +423,22 @@ describe('the selected agent', () => {
     expect(asked).toEqual(['a2'])
   })
 
+  test("a tool line (the user's ask, 2026-10-07): ↳ faint, the name bold in the label color, a command muted, a file's path in the path color, (+n more) faint", () => {
+    const arrow = { text: '↳ ', color: 'subtle' }
+    const name = (n: string) => ({ text: n, bold: true, color: 'text' })
+    expect(messageLine(toolCall('Bash', { command: 'cd /Users/me && grep -n x' }))).toEqual([arrow, name('Bash'), { text: ' cd /Users/me && grep -n x', color: 'inactive' }])
+    expect(messageLine(toolCall('Read', { file_path: '/work/a.ts' }, 2))).toEqual([arrow, name('Read'), { text: ' /work/a.ts', color: 'suggestion' }, { text: ' (+2 more)', color: 'subtle' }])
+    expect(messageLine(toolCall('Edit', { file_path: '/work/b.ts', old_string: 'x' }))![2]).toEqual({ text: ' /work/b.ts', color: 'suggestion' })
+    expect(messageLine(toolCall('Write', { file_path: '/work/c.ts' }))![2]!.color).toBe('suggestion')
+    // A path argument that isn't a string is muted, as any other.
+    expect(messageLine(toolCall('Edit', { file_path: { nested: true } }))).toEqual([arrow, name('Edit'), { text: ' {"nested":true}', color: 'inactive' }])
+  })
+
   test('a message line: a tool with no argument, and a row with neither text nor tool, which reads as nothing', () => {
-    expect(messageLine(toolCall('TaskList', {}))).toEqual({ text: '↳ TaskList', color: 'inactive' })
-    expect(messageLine(toolCall('Edit', { file_path: { nested: true } }))).toEqual({ text: '↳ Edit {"nested":true}', color: 'inactive' })
+    expect(messageLine(toolCall('TaskList', {}))).toEqual([
+      { text: '↳ ', color: 'subtle' },
+      { text: 'TaskList', bold: true, color: 'text' },
+    ])
     expect(messageLine(result())).toBeNull()
   })
 
@@ -420,6 +463,167 @@ describe('the selected agent', () => {
     const b = await body(p, nav({ selected: 'a1', text: 'typed since', field: 'restored', gen: 3 }))
     expect(b.composer).toEqual({ key: 'agents:text:3', text: 'restored', to: 'reviewer' })
     expect(b.selected!.sendNote).toBe('sent through the engine: it reads it at its next turn')
+  })
+})
+
+/** A registry entry as store.ts reads it. */
+const running = (sessionId: string, cwd = '/work'): RunningSession => ({ pid: 100, sessionId, cwd, startedAt: NOW - 3_600_000, status: null })
+
+describe('only teams that run (WP-DF §0)', () => {
+  test('teamActive: a member this session lists, a team it leads, or its lead in the registry; null when the registry is unread', () => {
+    const t = team('team-a', ['team-lead', 'reviewer'], { leadSessionId: 'lead-sid' })
+    expect(teamActive(t, SESSION, [agent('a1', { teammateId: 'reviewer@team-a' })], [])).toBe(true)
+    expect(teamActive({ ...t, leadSessionId: SESSION }, SESSION, [], [])).toBe(true)
+    expect(teamActive(t, SESSION, [], [running('lead-sid')])).toBe(true)
+    expect(teamActive(t, SESSION, [], [running('other')])).toBe(false)
+    expect(teamActive({ ...t, leadSessionId: null }, SESSION, [], [running('other')])).toBe(false)
+    expect(teamActive(t, SESSION, [], null)).toBeNull()
+    // Leading it, or listing a member, needs no registry.
+    expect(teamActive({ ...t, leadSessionId: SESSION }, SESSION, [], null)).toBe(true)
+    expect(teamActive(t, SESSION, [agent('a1', { teammateId: 'reviewer@team-a' })], null)).toBe(true)
+  })
+
+  test("the picker: this session, then the teams that run; the ended ones counted and left out, [Show all] lists them; one shown or named stays", async () => {
+    fakeStore({
+      teams: [
+        team('live', ['team-lead'], { leadSessionId: 'sid-live', leadCwd: '/work/live', createdAt: NOW - 600_000 }),
+        team('old-1', ['team-lead'], { leadSessionId: 'sid-gone' }),
+        team('old-2', ['team-lead', 'x'], { leadSessionId: 'sid-gone-2' }),
+        team('mine', ['team-lead'], { leadSessionId: SESSION }),
+      ],
+      sessions: [running('sid-live')],
+    })
+    const p = ports()
+    const b = await body(p, nav())
+    expect(b.options.map(o => [o.value, o.active])).toEqual([
+      ['session', true],
+      ['team.live', true],
+      ['team.mine', true],
+    ])
+    expect(b.hiddenTeams).toBe(2)
+    expect(b.showAll).toBe(false)
+    // Its description: where its lead runs, when it was made, its members.
+    expect(b.options[1]!.description).toBe(`lead in /work/live · made ${clockAt(NOW - 600_000)} · team-lead`)
+    const all = await body(p, nav({ showAll: true }))
+    expect(all.options.map(o => [o.value, o.active])).toEqual([
+      ['session', true],
+      ['team.live', true],
+      ['team.old-1', false],
+      ['team.old-2', false],
+      ['team.mine', true],
+    ])
+    expect(all.hiddenTeams).toBe(0)
+    expect(all.showAll).toBe(true)
+    expect((await body(p, nav({ named: 'old-1' }))).options.map(o => o.value)).toEqual(['session', 'team.live', 'team.old-1', 'team.mine'])
+    const shown = await body(p, nav({ team: 'old-2' }))
+    expect(shown.options.map(o => o.value)).toEqual(['session', 'team.live', 'team.old-2', 'team.mine'])
+    expect(shown.hiddenTeams).toBe(1)
+  })
+
+  test("an ended team shown on purpose: one notice naming its lead's folder and start; members `ended`; inboxes read; no composer", async () => {
+    const s = fakeStore({
+      teams: [team('session-ff3586a6', ['team-lead'], { leadSessionId: 'sid-gone', leadCwd: '/Users/me/flex-web', createdAt: NOW - 3 * 86_400_000 })],
+      inboxes: { 'session-ff3586a6/team-lead': [entry('left over')] },
+      sessions: [running('sid-other')],
+    })
+    const p = ports([agent('a1')])
+    const n = nav({ team: 'session-ff3586a6', selected: 'team-lead' })
+    const b = await body(p, n)
+    expect(b.head).toEqual({ team: 'session-ff3586a6', note: '1 member · ended' })
+    expect(b.ended).toMatch(
+      /^session-ff3586a6 isn't running: its lead session \(\/Users\/me\/flex-web, started \d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ended\. Its inboxes stay readable; nothing here sends to it, since a message would be read by nobody\.$/,
+    )
+    expect(b.rows.map(r => [r.key, r.status, r.unread, r.can])).toEqual([['team-lead', ENDED, 1, { message: false, transcript: false, stop: false }]])
+    expect(s.reads).toContain('session-ff3586a6/team-lead')
+    expect(b.selected!.inbox!.entries.map(e => e.lines)).toEqual([['left over']])
+    expect(b.selected!.sendNote).toBeNull()
+    expect(b.composer).toBeNull()
+    expect(b.broadcast).toBeNull()
+    expect(teamEnded(await gather(p, n), 'session-ff3586a6')).toBe(true)
+    // Without a folder or a start in its config, the notice says only what's known.
+    expect(endedText(team('bare', []), NOW)).toBe("bare isn't running: its lead session ended. Its inboxes stay readable; nothing here sends to it, since a message would be read by nobody.")
+  })
+
+  test('teamEnded never says so without evidence: an unread registry or unread teams is not ended; a team gone from a read folder is', async () => {
+    // No `sessions`: the real reader, which tier 2's ports can't point at a registry.
+    fakeStore({ teams: [team('t', ['team-lead'], { leadSessionId: 'sid-gone' })] })
+    const p = ports()
+    const unread = await gather(p, nav())
+    expect(unread.activity).toEqual({ t: null })
+    expect(teamEnded(unread, 't')).toBe(false)
+    expect(teamEnded(unread, 'gone')).toBe(true)
+    expect(teamEnded(unread, null)).toBe(false)
+    fakeStore({ teams: new Error('EACCES'), sessions: [] })
+    expect(teamEnded(await gather(p, nav()), 't')).toBe(false)
+    fakeStore({ teams: [team('t', ['team-lead'], { leadSessionId: 'sid-gone' })], sessions: [] })
+    expect(teamEnded(await gather(p, nav()), 't')).toBe(true)
+  })
+
+  test('the stamp moves when a team starts or stops running', async () => {
+    const s = fakeStore({ teams: [team('t', ['team-lead'], { leadSessionId: 'sid-t' })], sessions: [] })
+    const p = ports()
+    const before = factsStamp(await gather(p, nav()))
+    s.sessions = [running('sid-t')]
+    expect(factsStamp(await gather(p, nav()))).not.toBe(before)
+  })
+})
+
+describe("a transcript's wrapped messages (WP-DF; 2.1.291's tags)", () => {
+  const user = (text: string): SessionMessage => say(text, 'user')
+  const words = (text: string): string | null => {
+    const l = messageLine(user(text))
+    return l === null ? null : lineText(l)
+  }
+
+  test('<teammate-message> reads "from <name>: text", the name in the name color, the rest muted; more than one is counted', () => {
+    expect(messageLine(user('<teammate-message teammate_id="lead" color="blue" summary="next step">\nlook at G2 first\nthen G3\n</teammate-message>'))).toEqual([
+      { text: '› from ', color: 'inactive' },
+      { text: 'lead', color: 'cyan_FOR_SUBAGENTS_ONLY' },
+      { text: ': look at G2 first', color: 'inactive' },
+    ])
+    expect(words('<teammate-message teammate_id="a">\nx\n</teammate-message>\n\n<teammate-message teammate_id="b">\ny\n</teammate-message>')).toBe('› from a: x (+1 more)')
+  })
+
+  test('each sender tag: agent-message from, cross-session-message from-name (else from), channel source; attributes unescaped', () => {
+    expect(words('<agent-message from="planner">\nplan ready\n</agent-message>')).toBe('› from planner: plan ready')
+    expect(words('<cross-session-message from="sid-1" from-session="sid-1" hop-chain="a" from-name="web &quot;main&quot;">\nhello\n</cross-session-message>')).toBe('› from web "main": hello')
+    expect(words('<cross-session-message from="sid-9">\nhi\n</cross-session-message>')).toBe('› from sid-9: hi')
+    expect(words('<channel source="slack" chat_id="C1">\nping\n</channel>')).toBe('› from slack: ping')
+    // No sender in it: the tag's name says what it was.
+    expect(words('<teammate-message>\nanon\n</teammate-message>')).toBe('› teammate-message: anon')
+  })
+
+  test('a task notification, a command, shell input and command output; a system reminder gives way to the words after it', () => {
+    expect(
+      words(
+        '<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n<task-type>local_bash</task-type>\n<output-file>/tmp/x</output-file>\n<status>completed</status>\n<summary>Background command "npm test" completed (exit code 0)</summary>\n</task-notification>',
+      ),
+    ).toBe('› task completed: Background command "npm test" completed (exit code 0)')
+    expect(words('<command-name>/litter</command-name>\n<command-message>litter</command-message>\n<command-args>agents team-a</command-args>')).toBe('› /litter agents team-a')
+    expect(words('<bash-input>ls -la</bash-input>')).toBe('› shell: ls -la')
+    // An empty block says nothing, so it isn't counted.
+    expect(words('<bash-stdout>total 0</bash-stdout><bash-stderr></bash-stderr>')).toBe('› shell output: total 0')
+    expect(words('<bash-stdout>a</bash-stdout><bash-stderr>b</bash-stderr>')).toBe('› shell output: a (+1 more)')
+    expect(words('<local-command-stdout>done</local-command-stdout>')).toBe('› command output: done')
+    expect(words('<system-reminder>\nnote to the model\n</system-reminder>\nplease fix G2')).toBe('› please fix G2')
+    expect(words('<system-reminder>\nonly this\n</system-reminder>')).toBe('› system reminder: only this')
+  })
+
+  test('unknown markup is shown with its tags taken out, never dropped; text that starts with none is as written', () => {
+    expect(words('<future-wrapper kind="x">\nsomething new\n</future-wrapper>')).toBe('› future-wrapper: something new')
+    expect(words('<empty-thing/>')).toBe('› empty-thing')
+    expect(words('<outer>\n<inner a="1">deep</inner>\n</outer>')).toBe('› outer: deep')
+    expect(words('compare <b>this</b> and <i>that</i>')).toBe('› compare <b>this</b> and <i>that</i>')
+  })
+
+  test('a cut message: a tag never closed runs to the end, one cut inside itself is shown as written, an escaped close is words, a long one is cut', () => {
+    expect(words('<teammate-message teammate_id="lead">\nthe text was cut here')).toBe('› from lead: the text was cut here')
+    expect(words('<teammate-message teammate_id="le')).toBe('› <teammate-message teammate_id="le')
+    // The engine escapes a close inside the text as `<\/tag>`: it isn't the end.
+    expect(words('<teammate-message teammate_id="lead">\nquote: <\\/teammate-message> done\n</teammate-message>')).toBe('› from lead: quote: done')
+    const long = words(`<teammate-message teammate_id="lead">\n${'x'.repeat(500)}\n</teammate-message>`)!
+    expect(long.length).toBe('› from lead: '.length + 200)
+    expect(long.endsWith('…')).toBe(true)
   })
 })
 
