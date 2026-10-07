@@ -22,10 +22,11 @@ import type { Loaded } from '../ui/hub'
 import { listOffset, litterShows, moveList, openSection } from '../ui/hub'
 import { lastDrawn } from '../ui/drawn'
 import { listHit, listPlace, listWindow, pageOf, scrolled } from '../ui/list'
-import { TEMPLATE_LIST, startListTop, templateList } from './builder'
+import { TEMPLATE_LIST, startListTop, templateList, templateListCtx } from './builder'
+import { browserWheel } from './browser'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
-import { liveSwarm, takeProposals, version } from './state'
+import { bindings, liveSwarm, openQuestions, takeProposals, version } from './state'
 import { parameterize } from './templates'
 import { waitBudget } from './admit'
 import {
@@ -82,6 +83,7 @@ import {
   setSwarmField,
   spawnKey,
   stripOf,
+  supersededProposals,
   swarmView,
   templateOf,
   unprefixed,
@@ -93,6 +95,8 @@ export const TREE_KEY = 'swarm-tree'
 export const TREE_ACTIONS: readonly string[] = ['select', 'add', 'attach', 'duplicate', 'delete', 'up', 'down']
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+/** `2, 5 and 6`. */
+const andList = (ns: readonly number[]): string => (ns.length < 2 ? ns.join('') : `${ns.slice(0, -1).join(', ')} and ${ns[ns.length - 1]}`)
 
 // ---------------------------------------------------------------------------
 // The commands
@@ -106,14 +110,38 @@ export const doctorCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ 
 /** Where `/litter swarms` lands for a live swarm: its recovery card while one waits, else the browser. */
 const liveNav = (name: string): SwarmNav => blankNav(pendingCard(name) ? 'recovery' : 'browser', name)
 
-/** A swarm name an argument names, or the refusal's line. */
-function swarmNamed(arg: string): { name: string } | { refused: string } {
-  const name = arg.trim().split(/\s+/)[0] ?? ''
+/** A swarm name an argument names, and the node after it (WP-DG), or the refusal's line. */
+function swarmNamed(arg: string): { name: string; node: string } | { refused: string } {
+  const [name = '', ...rest] = arg.trim().split(/\s+/)
   if (name !== '' && !SWARM_NAME.test(name)) return { refused: `"${oneLine(name, 40)}" isn't a swarm name (a-z, 0-9 and -, up to 24, not starting with -)` }
-  return { name }
+  return { name, node: rest.join(' ') }
 }
 
-/** Swarms' load (openSection): `/litter swarms [name]`'s work, and the band's [Browser]; answers the command's line. */
+/**
+ * The agent `<node>` names in a live swarm (WP-DG, "a node from elsewhere":
+ * Home's question rows, the Agents section): an agentId bound in it, an
+ * instance (`fixer#2` or `fixer #2`), or a node id, whose instance with an
+ * open question is taken first, then its newest. Null when none matches.
+ */
+export function pickNode(swarm: string, node: string): string | null {
+  const all = bindings(swarm).filter(b => b.kind !== 'child')
+  const word = node.trim()
+  if (word === '') return null
+  const byId = bindings(swarm).find(b => b.agentId === word)
+  if (byId) return byId.agentId
+  const m = /^(.+?)\s*#\s*([0-9]{1,6})$/.exec(word)
+  if (m) return all.find(b => b.node === m[1] && b.n === Number(m[2]))?.agentId ?? null
+  const mine = all.filter(b => b.node === word).sort((a, b) => b.n - a.n)
+  const asking = new Set(openQuestions(swarm).map(q => q.agentId))
+  return (mine.find(b => asking.has(b.agentId)) ?? mine[0])?.agentId ?? null
+}
+
+/**
+ * Swarms' load (openSection): `/litter swarms [name [node]]`'s work, Home's
+ * and the band's; answers the command's line. With a node, a live swarm's
+ * browser opens with that node picked (the composer's To on it); a node it
+ * doesn't have, or a swarm that isn't live, opens as without, with a notice.
+ */
 export async function loadSwarm(p: Ports, arg: string): Promise<Loaded> {
   await restoreNav(p)
   const named = swarmNamed(arg)
@@ -126,11 +154,12 @@ export async function loadSwarm(p: Ports, arg: string): Promise<Loaded> {
   if (name === '') {
     const live = defaultLiveSwarm()
     n = live ? liveNav(live) : blankNav('start', null)
-  } else if (liveSwarm(name)) {
-    n = liveNav(name)
-  } else {
-    const staged = pendingProposals(name)
-    n = staged.length > 0 ? await proposalNav(p, name, staged[0]!) : blankNav('builder', name)
+  } else n = await openNav(p, name)
+  if (name !== '' && named.node !== '') {
+    const picked = liveSwarm(name) ? pickNode(name, named.node) : null
+    const what = oneLine(named.node, 40)
+    if (picked) n = { ...n, selected: picked }
+    else n = { ...n, notice: { level: 'info', text: liveSwarm(name) ? `${name} has no node ${what}: pick one in the roster` : `${name} isn't live, so ${what} can't be picked` } }
   }
   setNav(n)
   await drawSwarm(p)
@@ -436,23 +465,31 @@ export const onUiSelect: PortHook<UiSelectHook> = async (p, e, next) => {
 
 /**
  * ui.scroll while Swarms is shown (WP-DA2): a wheel tick over the start
- * screen's template list moves the list's window (the hub keeps it) and
- * answers `{}`, so the pane stays put. Any other (the scroll keys, a tick over
- * the rest of the body, one at the list's edge) passes on, and the pane
- * scrolls. Where the list sits is what the terminal last drew (ui/drawn.ts):
- * the body's top, the window's offset as read, and the rows above the list
- * (startListTop, kept in step with renderStart).
+ * screen's template list, or over the browser's open transcript (WP-DD's
+ * window, WP-DG), moves that window (the hub keeps its offset) and answers
+ * `{}`, so the pane stays put. Any other (the scroll keys, a tick over the
+ * rest of the body, one at the window's edge) passes on, and the pane
+ * scrolls. Where each sits is what the terminal last drew (ui/drawn.ts): the
+ * body's top, the pane's offset as read, and the rows above it (startListTop
+ * and browserTranscriptTop, each kept in step with its renderer).
  */
 export const onUiScroll: PortHook<UiScrollHook> = async (p, e, next) => {
   const d = lastDrawn()
   const at = e.pointer
   if (!at || !d || d.shown !== 'swarms' || e.by === 0) return next(e)
   const view = d.view as SwarmPaneView | null
+  if (view?.view === 'browser') {
+    // The body's row under the pointer, the pane's scroll counted in.
+    const hit = browserWheel(view, d.ctx, d.scrollOffset + at.row - d.bodyTop, e.by)
+    return hit && (await moveList(p, hit.id, hit.to, hit.max)) ? {} : next(e)
+  }
   if (!view || view.view !== 'start' || view.blocked) return next(e)
   const spec = templateList(view)
-  const place = listPlace(spec, d.ctx)
+  // Past WIDE_COLUMNS with a template picked, the list has its share of the columns: a tick over the form's box isn't its.
+  const listCtx = templateListCtx(view, d.ctx)
+  const place = listPlace(spec, listCtx)
   const top = d.bodyTop + startListTop(view, d.ctx)
-  if (!listHit(place, top, d.scrollOffset + at.row, at.column, d.ctx.bodyColumns)) return next(e)
+  if (!listHit(place, top, d.scrollOffset + at.row, at.column, listCtx.bodyColumns)) return next(e)
   const to = scrolled(place.count, listOffset(spec.id), place.budget, e.by)
   return (await moveList(p, spec.id, to, place.window.max)) ? {} : next(e)
 }
@@ -624,13 +661,31 @@ async function startAction(p: Ports, k: PaneKey, input: Input): Promise<boolean>
       const name = k.arg
       if (!SWARM_NAME.test(name)) return true
       await seedProposals(p, name)
-      if (liveSwarm(name)) setNav(liveNav(name))
-      else go('builder', name)
+      setNav(await openNav(p, name))
       return true
     }
+    // The saved swarms' menu (WP-DG): Launch runs the saved revision, as the builder's [Launch]; Doctor checks its spec.
+    case 'launch':
+      if (!SWARM_NAME.test(k.arg) || liveSwarm(k.arg)) return true
+      return launch(p, k.arg)
+    case 'doctor':
+      if (!SWARM_NAME.test(k.arg)) return true
+      await openSection(p, 'doctor', k.arg, { focus: true })
+      return true
     default:
       return true
   }
+}
+
+/**
+ * Where opening a swarm by name lands (`/litter swarms <name>`, a saved
+ * swarm's row): a live one's browser (or its recovery card), else its first
+ * current proposal (WP-DG), else its builder. Its proposals seeded first.
+ */
+async function openNav(p: Ports, name: string): Promise<SwarmNav> {
+  if (liveSwarm(name)) return liveNav(name)
+  const staged = pendingProposals(name)
+  return staged.length > 0 ? proposalNav(p, name, staged[0]!) : blankNav('builder', name)
 }
 
 /** The start screen's name, checked: a valid name no saved swarm has. */
@@ -1050,6 +1105,24 @@ async function builderAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       if (Number.isSafeInteger(num) && pendingProposals(name).includes(num)) setNav(await proposalNav(p, name, num))
       return true
     }
+    case 'reject-older': {
+      // [Reject all older] (WP-DG): each superseded proposal rejected as [Reject] does, the lists read again, one notice.
+      if (!litterDir) return true
+      const older = [...supersededProposals(name)]
+      const rejected: number[] = []
+      const errors: string[] = []
+      for (const num of older) {
+        const r = await call(p, `rejectProposal ${name} ${num}`, () => o.rejectProposal(p, litterDir, name, num))
+        if (r.ok) rejected.push(num)
+        else errors.push(`${num}: ${r.error}`)
+      }
+      await seedProposals(p, name)
+      const list = andList(rejected)
+      if (errors.length > 0) failed(p, 'rejecting', `${rejected.length > 0 ? `rejected ${list}; ` : ''}not ${errors.join('; ')}`)
+      else if (rejected.length > 0) notice('info', `rejected the lead's older proposal${rejected.length === 1 ? '' : 's'} ${list}`)
+      else notice('info', 'no older proposal to reject')
+      return true
+    }
     case 'reject': {
       // A proposal J can't read: rejecting it needs only its record.
       const num = Number(row)
@@ -1428,13 +1501,25 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
     case 'close-transcript':
       setNav({ ...n, transcript: null })
       return true
-    case 'builder':
-      go('builder', name)
+    case 'builder': {
+      // [Review] on the banner carries its proposal's number: that proposal, while it's still current (WP-DG).
+      const num = Number(arg)
+      if (arg !== '' && Number.isSafeInteger(num) && pendingProposals(name).includes(num)) setNav(await proposalNav(p, name, num))
+      else go('builder', name)
       return true
+    }
     case 'history':
       go('history', name)
       return true
-    case 'end': {
+    case 'end':
+      // End swarm asks first (WP-DG): the confirm row stands in for it until [Confirm end] or [Cancel].
+      setNav({ ...n, confirmEnd: true })
+      return true
+    case 'end-cancel':
+      setNav({ ...n, confirmEnd: false })
+      return true
+    case 'end-confirm': {
+      setNav({ ...n, confirmEnd: false })
       const r = await call(p, `endSwarm ${name} request`, () => o.endSwarm(p, name, 'request'))
       if (!r.ok) failed(p, 'End swarm', r.error)
       else notice('ok', 'ending: every node is asked to stop, then litter cleans up')

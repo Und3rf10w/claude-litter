@@ -833,12 +833,13 @@ export function tokens(agentIdOrSwarm: string): TokenCount {
 /**
  * A bound agent's question, open until closeQuestion, its text cut to 4 KiB.
  * Null for an agent no binding knows. `at` is when it was asked (the caller's
- * `p.now()`): C added it, since WP-P's brief omits it.
+ * `p.now()`): C added it, since WP-P's brief omits it. `to` is where it
+ * went, `lead` or the parent node's id (WP-DG), when the caller knows.
  */
-export function noteQuestion(agentId: string, text: string, at: number): Question | null {
+export function noteQuestion(agentId: string, text: string, at: number, to?: string): Question | null {
   const b = bindingsById.get(agentId)
   if (!b) return null
-  const q: Question = { swarm: b.swarm, agentId, node: b.node, text: cutBytes(text, NOTE_MAX_BYTES), at, closedAt: null }
+  const q: Question = { swarm: b.swarm, agentId, node: b.node, text: cutBytes(text, NOTE_MAX_BYTES), at, closedAt: null, ...(to !== undefined ? { to } : {}) }
   questionList.push(q)
   // Bounded per swarm: the oldest closed ones go first, then the oldest.
   const mine = questionList.filter(x => x.swarm === b.swarm)

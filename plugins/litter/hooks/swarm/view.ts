@@ -61,6 +61,7 @@ import type {
   HealthReport,
   LiveSwarm,
   NodeBinding,
+  Question,
   SpecCheck,
   SwarmNode,
   SwarmSpec,
@@ -89,6 +90,7 @@ import {
   spawnsUsed,
   status as admissionStatus,
   tokens,
+  turnSteps,
 } from './state'
 import { validateSaved } from './spec'
 import { checkHealth } from './doctor'
@@ -230,6 +232,8 @@ export type SwarmNav = {
   offerQueue: boolean
   /** Unsettled: when you chose [Wait longer]; the report comes back 2 minutes after. */
   waitedOn: number | null
+  /** Browser: [End swarm] was pressed and waits on [Confirm end] or [Cancel] (WP-DG). */
+  confirmEnd: boolean
   notice: SwarmNotice | null
 }
 
@@ -265,6 +269,7 @@ export const blankNav = (view: SwarmViewName, swarm: string | null): SwarmNav =>
   recoveryPicked: [],
   offerQueue: false,
   waitedOn: null,
+  confirmEnd: false,
   notice: null,
 })
 
@@ -1415,7 +1420,7 @@ async function needsYouOf(p: Ports, swarms: readonly SwarmListRow[]): Promise<Sw
   const out: SwarmNeedsYou[] = []
   for (const s of swarms) {
     await freshProposals(p, s.name)
-    const questions = s.live ? openQuestions(s.name).map(q => ({ who: clean(q.node, 40), text: firstLine(q.text, 120) })) : []
+    const questions = s.live ? openQuestions(s.name).map(q => ({ who: clean(q.node, 40), text: firstLine(q.text, 120), to: questionTo(q) })) : []
     const current = pendingProposals(s.name)
     if (current.length > 0 || questions.length > 0) out.push({ swarm: s.name, live: s.live, proposals: [...current], questions })
   }
@@ -1937,6 +1942,10 @@ function instanceName(b: NodeBinding, all: readonly NodeBinding[], listed: Liste
 
 const KIND_ORDER: Record<BindingKind, number> = { orchestrator: 0, worker: 1, child: 2 }
 
+/** Where a question went, as its row says it (WP-DG): `the lead`, or the parent node's name; null for one recorded before. */
+export const questionTo = (q: Pick<Question, 'to'> | null): string | null =>
+  !q || typeof q.to !== 'string' || q.to === '' ? null : q.to === 'lead' ? 'the lead' : clean(q.to, 40)
+
 /** The tree rows of a live swarm: the lead, then each orchestrator instance and what it spawned, in spec order. */
 function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: Set<string>): SwarmNodeRow[] {
   const s = liveSwarm(name)
@@ -1963,10 +1972,12 @@ function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: 
       running: leadBusy(),
       tool: '',
       turns: null,
+      steps: null,
       tokens: '',
       report: '',
       queued: [],
       question: null,
+      questionTo: null,
       flagged: false,
     },
   ]
@@ -1996,10 +2007,13 @@ function liveRows(name: string, listed: Map<string, ListedAgent>, flaggedNodes: 
       running: st.running,
       tool: call ? oneLine(call.tool, 40) : '',
       turns: t.turns,
+      // A subagent's whole task is one turn (WP-DG): while it runs, the turn under way and its requests say more.
+      steps: turnSteps(b.agentId),
       tokens: fmtTokens(sumTokens(t)),
       report: report ? firstLine(report.text, 120) : '',
       queued: queued(name, b.agentId).map(m => ({ id: m.id, text: firstLine(m.text, 80) })),
       question: q ? firstLine(q.text, 120) : null,
+      questionTo: questionTo(q),
       flagged: flaggedNodes.has(b.node) && st.running,
     })
     for (const c of sorted.filter(x => x.parent === b.agentId)) add(c, depth + 1, myColor)
@@ -2371,15 +2385,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   try {
     // O's, when this session summarised or loaded the swarm; else the last one recorded (a read-only swarm's, say).
     const sum = o.summaryOf(name) ?? recordedSummary(ledger.records)
-    if (sum) {
-      summary = {
-        goal: oneLine(sum.goalNow, 300),
-        progress: sum.progress.slice(0, 6).map(x => oneLine(x, 200)),
-        waiting: sum.waitingOnYou.slice(0, 4).map(x => oneLine(x, 200)),
-        age: ago(now - sum.at),
-        stale: sum.stale,
-      }
-    }
+    if (sum) summary = summaryPanel(sum, s.spec.nodes.map(x => x.id), ago(now - sum.at))
   } catch (err) {
     p.log(`swarm pane: no summary: ${errText(err)}`)
   }
@@ -2439,6 +2445,8 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     transcript: tr ? await transcriptOf(p, tr, trName) : null,
     selected,
     proposals: [...pendingProposals(name)],
+    // Only while there's a live swarm this session owns to end.
+    confirmEnd: n.confirmEnd === true && !s.readOnly && !s.lost && s.state === 'live',
   }
 }
 
@@ -2464,9 +2472,93 @@ export function recordedSummary(records: readonly StoredRecord[]): ReturnType<Ow
   return {
     goalNow: goal,
     progress: parsed?.progress ?? [],
-    waitingOnYou: parsed?.waitingOnYou ?? [],
+    // parseSummary reads a record's `Waiting on you:` from before WP-DG as `Blocked:`.
+    blocked: parsed?.blocked ?? [],
     at: r.at,
     stale: records.slice(at + 1).some(x => x.kind === 'swarm.event'),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The summary's lines (WP-DG: the user, 2026-10-07, "This needs to be easier
+// to read", and "Why is it telling me that it's waiting on me here?")
+
+/** One member a summary line names: a node, or one of its instances (`fixer #1`, `#3` after a named one), or the lead. */
+const MEMBER = /^(?:the\s+)?([A-Za-z0-9][A-Za-z0-9._-]*)?\s*(?:#\s*[0-9]{1,4})?$/i
+/** Between members: a comma (`, and` too), `and`, or `&`. */
+const MEMBER_SEP = /\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*/i
+
+/**
+ * The members a summary line starts with, `<members>:`, when every name
+ * before the colon is one of the swarm's nodes or the lead (` #n` and `and`
+ * allowed: `codex-researcher #1 and #3:`); null otherwise. Pure.
+ */
+export function leadingMembers(line: string, nodes: readonly string[]): { members: string; rest: string } | null {
+  const colon = line.indexOf(':')
+  if (colon <= 0 || colon > 160) return null
+  const head = line.slice(0, colon)
+  const known = new Set([...nodes.map(n => n.toLowerCase()), 'lead'])
+  let named = false
+  for (const t of head.trim().split(MEMBER_SEP)) {
+    const m = MEMBER.exec(t.trim())
+    if (!m || t.trim() === '') return null
+    if (m[1] !== undefined) {
+      if (!known.has(m[1].toLowerCase())) return null
+      named = true
+    } else if (!named || !/#/.test(t)) return null
+  }
+  return named ? { members: head, rest: line.slice(colon + 1) } : null
+}
+
+/** A progress line's leading status word → its state's color. Waiting words take `warning`, never the needs-you key: the model's text never says what needs you. */
+const STATUS_WORDS: Record<string, string> = {
+  finished: STYLE.done,
+  done: STYLE.done,
+  complete: STYLE.done,
+  completed: STYLE.done,
+  running: STYLE.running,
+  continuing: STYLE.running,
+  probing: STYLE.running,
+  blocked: STYLE.warning,
+  waiting: STYLE.warning,
+  awaiting: STYLE.warning,
+}
+
+/**
+ * A summary line in spans: its leading members in the name color, then a
+ * progress line's status word in its color and the rest as it is, or a
+ * blocked line's rest muted. A line that names no node is one span. Pure.
+ */
+export function summarySpans(line: string, nodes: readonly string[], kind: 'progress' | 'blocked'): SwarmSpan[] {
+  const rest = (text: string): SwarmSpan => (kind === 'blocked' ? { text, color: STYLE.muted } : { text })
+  const m = leadingMembers(line, nodes)
+  if (!m) return [rest(line)]
+  const out: SwarmSpan[] = [{ text: m.members, color: STYLE.name }]
+  if (kind === 'progress') {
+    const w = /^(\s*)([A-Za-z]+)/.exec(m.rest)
+    const color = w ? STATUS_WORDS[w[2]!.toLowerCase()] : undefined
+    if (w && color) {
+      out.push({ text: `:${w[1]}` }, { text: w[2]!, color }, ...(m.rest.length > w[0].length ? [{ text: m.rest.slice(w[0].length) }] : []))
+      return out
+    }
+  }
+  out.push(rest(`:${m.rest}`))
+  return out
+}
+
+/** What a stale summary's blocked lines end with: a newer event may have unblocked them. */
+export const STALE_BLOCKED = ' (may have moved on)'
+
+/** The browser's summary panel from O's summary (or the last one recorded): its lines in spans, cut. Pure. */
+export function summaryPanel(sum: NonNullable<ReturnType<Owners['summaryOf']>>, nodes: readonly string[], age: string): SwarmBrowserView['summary'] {
+  return {
+    goal: oneLine(sum.goalNow, 300),
+    progress: sum.progress.slice(0, 6).map(x => summarySpans(oneLine(x, 200), nodes, 'progress')),
+    blocked: sum.blocked
+      .slice(0, 4)
+      .map(x => [...summarySpans(oneLine(x, 200), nodes, 'blocked'), ...(sum.stale ? [{ text: STALE_BLOCKED, color: STYLE.muted }] : [])]),
+    age,
+    stale: sum.stale,
   }
 }
 

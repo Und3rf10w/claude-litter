@@ -23,7 +23,9 @@ import {
   changeWords,
   clean,
   composerKey,
+  doctorNavigation,
   failingFirst,
+  leadingMembers,
   messageSpans,
   messageText,
   nav,
@@ -31,6 +33,7 @@ import {
   resetViewForTests,
   setNav,
   setOwnersForTests,
+  summarySpans,
   supersededProposals,
   swarmView,
   tildePath,
@@ -46,6 +49,7 @@ import {
   browserTranscriptTop,
   browserWheel,
   composerCaption,
+  endConfirmActions,
   eventColumns,
   reviewKey,
   rosterActions,
@@ -55,10 +59,12 @@ import {
   transcriptListId,
   transcriptRows,
   transcriptWindow,
+  turnsText,
 } from '../../hooks/swarm/browser'
 import { doctorActions, doctorTally } from '../../hooks/swarm/doctorpane'
-import { doctorCommand, handle, onUiInput, onUiPress, paneTick, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
-import { resetHubForTests } from '../../hooks/ui/hub'
+import { doctorCommand, handle, onUiInput, onUiPress, onUiScroll, paneTick, pickNode, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
+import { noteDrawn, resetDrawnForTests } from '../../hooks/ui/drawn'
+import { factsNow, listOffset, resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import type { WaitBudget } from '../../hooks/swarm/admit'
 import type {
   DoctorPaneView,
@@ -553,7 +559,8 @@ describe('S9: the read-only browser shows the last recorded summary', () => {
     p.clock.now = NOW
     setNav(blankNav('browser', SWARM))
     const v = (await swarmView(p)) as SwarmBrowserView
-    expect(v.summary).toEqual({ goal: 'parser first', progress: ['tokenizer done'], waiting: ['which branch'], age: '1m ago', stale: false })
+    // Recorded before WP-DG: its `Waiting on you:` is drawn as Blocked, muted, never a ⚑.
+    expect(v.summary).toEqual({ goal: 'parser first', progress: [[{ text: 'tokenizer done' }]], blocked: [[{ text: 'which branch', color: 'inactive' }]], age: '1m ago', stale: false })
   })
 })
 
@@ -878,9 +885,9 @@ describe('WP-DD: the roster', () => {
     budget: null,
     summary: null,
     rows: [
-      { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, tokens: '', report: '', queued: [], question: null, flagged: false },
-      { key: 'o1', agentId: 'o1', depth: 1, name: 'part-a', role: 'orchestrator', color: null, dim: false, status: 'running', statusGlyph: '▸', statusColor: 'background', running: true, tool: 'Bash', turns: 3, tokens: '2k', report: 'half done', queued: [], question: null, flagged: false },
-      { key: 'w1', agentId: 'w1', depth: 2, name: 'reader', role: 'worker', color: null, dim: true, status: 'done', statusGlyph: '✓', statusColor: 'success', running: false, tool: '', turns: 1, tokens: '800', report: '', queued: [], question: null, flagged: false },
+      { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', queued: [], question: null, questionTo: null, flagged: false },
+      { key: 'o1', agentId: 'o1', depth: 1, name: 'part-a', role: 'orchestrator', color: null, dim: false, status: 'running', statusGlyph: '▸', statusColor: 'background', running: true, tool: 'Bash', turns: 3, steps: null, tokens: '2k', report: 'half done', queued: [], question: null, questionTo: null, flagged: false },
+      { key: 'w1', agentId: 'w1', depth: 2, name: 'reader', role: 'worker', color: null, dim: true, status: 'done', statusGlyph: '✓', statusColor: 'success', running: false, tool: '', turns: 1, steps: null, tokens: '800', report: '', queued: [], question: null, questionTo: null, flagged: false },
     ],
     flags: [],
     events: [],
@@ -888,6 +895,7 @@ describe('WP-DD: the roster', () => {
     transcript: null,
     selected: null,
     proposals: [],
+    confirmEnd: false,
     ...over,
   })
 
@@ -1162,6 +1170,285 @@ describe('WP-DD: what needs you is shown where ⚑ is raised, and a superseded p
     expect(eventColumns(list, 40)).toEqual({ at: 5, who: 0 })
     expect(eventColumns(list, 28)).toEqual({ at: 0, who: 0 })
     expect(eventColumns([{ at: '09:30', who: 'x'.repeat(40) }], 100).who).toBe(20)
+  })
+})
+
+describe("WP-DG: WP-DD's pane contract changes", () => {
+  const stage = (goal: string) => stageProposal(p, litterDir, SWARM, { baseRevision: 1, spec: { ...rev1(), goal }, briefs: {}, changes: [{ path: 'goal', reason: 'x' }] })
+  const ctxAt = (bodyColumns: number) => ({ surface: 'terminal' as const, bodyColumns, isFocused: false, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 60 }, rows: 40, focused: null, lists: {} })
+  const passed = { n: 0 }
+  const nextScroll = (async () => {
+    passed.n++
+    return {}
+  }) as never
+  const tick = (row: number, column: number, by: number) => onUiScroll(p, { component: 'Pane', requestId: 'litter', offset: 0, by, bodyRows: 60, contentRows: 120, origin: { kind: 'person' }, pointer: { column, row } } as never, nextScroll)
+
+  afterEach(() => {
+    resetDrawnForTests()
+    passed.n = 0
+  })
+
+  test("the wheel over the browser's transcript moves its window; over the rest of the body it passes on", async () => {
+    goLive()
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    const lines = Array.from({ length: 40 }, (_, i) => [{ text: `line ${i + 1}` }])
+    const view: SwarmBrowserView = { ...shown<SwarmBrowserView>(), transcript: { agentId: 'w1', name: 'reviewer', readable: true, lines } }
+    const ctx = ctxAt(100)
+    const top = browserTranscriptTop(view, ctx)
+    // The body starts at the tree's row 4; the pane is scrolled 2 rows, so the pointer's row 2 + top is the body's row top.
+    noteDrawn({ shown: 'swarms', view, ctx, bodyTop: 4, scrollOffset: 2 })
+    expect(await tick(top + 2, 4, -1)).toEqual({})
+    expect(listOffset(transcriptListId(SWARM, 'w1'))).toBe(1)
+    expect(passed.n).toBe(0)
+    // A row above the transcript: the pane's own scroll.
+    await tick(top + 1, 4, -1)
+    expect(passed.n).toBe(1)
+  })
+
+  test('the wheel over the template list hits it at its own share of the columns, with a template picked past 100', async () => {
+    const templates = Array.from({ length: 10 }, (_, i) => ({ id: `builtin:t${i}`, name: `t${i}`, description: 'd', scope: 'builtin' as const }))
+    const view: SwarmStartView = {
+      view: 'start',
+      v: 1,
+      title: [],
+      notice: null,
+      blocked: null,
+      name: '',
+      ask: '',
+      templates,
+      template: { id: 'builtin:t0', name: 't0', description: '', params: [], errors: [] },
+      swarms: [],
+      needsYou: [],
+    }
+    const ctx = ctxAt(120)
+    const top = startListTop(view, ctx)
+    noteDrawn({ shown: 'swarms', view, ctx, bodyTop: 0, scrollOffset: 0 })
+    const listColumns = templateListCtx(view, ctx).bodyColumns
+    expect(listColumns).toBeLessThan(120)
+    // Over the form's box beside the list: not the list's.
+    await tick(top, listColumns + 2, 1)
+    expect(passed.n).toBe(1)
+    expect(listOffset('swarm:start:templates')).toBe(0)
+    expect(await tick(top, 4, 1)).toEqual({})
+    expect(listOffset('swarm:start:templates')).toBe(1)
+  })
+
+  test("[Review] on the browser's banner opens that proposal itself, not the builder", async () => {
+    await saveRev1()
+    await stage('One')
+    goLive()
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    await handle(p, reviewKey(SWARM, 1), {})
+    expect(nav()).toEqual(expect.objectContaining({ view: 'proposal', proposal: 1 }))
+    // [Builder] without a number, or one no longer current, is the builder.
+    setNav(blankNav('browser', SWARM))
+    await handle(p, `swarm:browser:builder:${SWARM}/7`, {})
+    expect(nav()?.view).toBe('builder')
+  })
+
+  test("a saved swarm's row that isn't live opens on its current proposal; without one, its builder", async () => {
+    await saveRev1()
+    setNav(blankNav('start', null))
+    await handle(p, `swarm:start:open:${SWARM}`, {})
+    expect(nav()?.view).toBe('builder')
+    await stage('One')
+    setNav(blankNav('start', null))
+    await handle(p, `swarm:start:open:${SWARM}`, {})
+    expect(nav()).toEqual(expect.objectContaining({ view: 'proposal', proposal: 1 }))
+  })
+
+  test('[Reject all older] rejects each superseded proposal, reads the lists again, and says so once', async () => {
+    await saveRev1()
+    await stage('One')
+    await stage('Two')
+    await stage('Three')
+    await rejectProposal(p, litterDir, SWARM, 3)
+    setNav(blankNav('builder', SWARM))
+    await paneTick(p)
+    expect(shown<SwarmBuilderView>().superseded).toEqual([1, 2])
+    await handle(p, `swarm:builder:reject-older:${SWARM}`, {})
+    const decided = (await readSpecLedger(p, litterDir, SWARM)).records.filter(r => r.kind === 'swarm.proposal.decided').map(r => r.body)
+    expect(decided).toEqual([
+      { proposal: 3, accepted: 'none' },
+      { proposal: 1, accepted: 'none' },
+      { proposal: 2, accepted: 'none' },
+    ])
+    expect(nav()?.notice).toEqual({ level: 'info', text: "rejected the lead's older proposals 1 and 2" })
+    expect(shown<SwarmBuilderView>().superseded).toEqual([])
+    await handle(p, `swarm:builder:reject-older:${SWARM}`, {})
+    expect(nav()?.notice?.text).toBe('no older proposal to reject')
+  })
+
+  test("the start screen's launch and doctor keys: Launch runs the saved revision, Doctor checks its spec", async () => {
+    await saveRev1()
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async () => HEALTHY),
+      launchSwarm: fake('launchSwarm', async () => {
+        goLive()
+        return { ok: true, launch: LAUNCH }
+      }),
+    })
+    setNav(blankNav('start', null))
+    await handle(p, `swarm:start:launch:${SWARM}`, {})
+    expect(called('launchSwarm')).toEqual([[SWARM]])
+    expect(nav()).toEqual(expect.objectContaining({ view: 'browser', notice: { level: 'ok', text: `launched (${LAUNCH})` } }))
+    // A live one's row doesn't launch it again.
+    setNav(blankNav('start', null))
+    await handle(p, `swarm:start:launch:${SWARM}`, {})
+    expect(called('launchSwarm')).toEqual([[SWARM]])
+    setNav(blankNav('start', null))
+    await handle(p, `swarm:start:doctor:${SWARM}`, {})
+    expect(doctorNavigation()?.swarm).toBe(SWARM)
+    expect(shownSection()).toBe('doctor')
+  })
+
+  test('[End swarm] asks first: [Cancel] takes it back, [Confirm end] ends it; [Confirm end] is never the primary', async () => {
+    goLive()
+    setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY), endSwarm: fake('endSwarm', async () => {}) })
+    setNav(blankNav('browser', SWARM))
+    await handle(p, `swarm:browser:end:${SWARM}`, {})
+    expect(called('endSwarm')).toEqual([])
+    expect(shown<SwarmBrowserView>().confirmEnd).toBe(true)
+    await handle(p, `swarm:browser:end-cancel:${SWARM}`, {})
+    expect(shown<SwarmBrowserView>().confirmEnd).toBe(false)
+    await handle(p, `swarm:browser:end:${SWARM}`, {})
+    await handle(p, `swarm:browser:end-confirm:${SWARM}`, {})
+    expect(called('endSwarm')).toEqual([[SWARM, 'request']])
+    expect(shown<SwarmBrowserView>().confirmEnd).toBe(false)
+    expect(endConfirmActions(SWARM).map(a => [a.label, a.primary ?? false])).toEqual([
+      ['Confirm end', false],
+      ['Cancel', false],
+    ])
+    // A read-only swarm shows no confirm, whatever the navigation holds.
+    setNav({ ...blankNav('browser', SWARM), confirmEnd: true })
+    state.patchLiveSwarm(SWARM, { readOnly: true })
+    setOwnersForTests({ checkHealth: fake('checkHealth', async () => HEALTHY), readOwner: fake('readOwner', async () => null) })
+    expect(((await swarmView(p)) as SwarmBrowserView).confirmEnd).toBe(false)
+  })
+})
+
+describe('WP-DG: who asks, and whom; the summary says who is blocked, never that you are', () => {
+  test("an open question's row names where it went: the lead, the parent node, or nothing for one recorded before", async () => {
+    goLive()
+    state.noteQuestion('o1', 'Which branch do I base on?', NOW - 3_000, 'lead')
+    state.noteQuestion('w1', 'Do I keep the old API?', NOW - 2_000, 'part-a')
+    state.noteQuestion('o2', 'Tabs or spaces?', NOW - 1_000)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    // part-a is picked already (the first orchestrator), so its row has no [Answer].
+    expect(browserNeeds(shown<SwarmBrowserView>()).map(x => [x.text, x.action?.label ?? null])).toEqual([
+      ['part-a asks the lead: Which branch do I base on?', null],
+      ['reviewer asks part-a: Do I keep the old API?', 'Answer'],
+      ['part-c asks: Tabs or spaces?', 'Answer'],
+    ])
+    // [Answer] picks the asker: the composer's To is on it.
+    const answer = browserNeeds(shown<SwarmBrowserView>())[1]!.action!
+    expect(answer.key).toBe(`swarm:browser:select:${SWARM}/w1`)
+    await handle(p, answer.key, {})
+    expect(shown<SwarmBrowserView>().composer?.to).toBe('w1')
+  })
+
+  test("a Blocked line naming a sibling draws no ⚑ and adds nothing to what needs you", async () => {
+    goLive()
+    setOwnersForTests({
+      checkHealth: fake('checkHealth', async () => HEALTHY),
+      summaryOf: fake('summaryOf', () => ({
+        goalNow: 'Write DESIGN.md',
+        progress: ['part-a: waiting on reviewer #1'],
+        blocked: ['part-a: results from reviewer #1, to write DESIGN.md'],
+        at: NOW - 60_000,
+        stale: false,
+      })),
+    })
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    const v = shown<SwarmBrowserView>()
+    expect(browserNeeds(v)).toEqual([])
+    expect(v.summary?.blocked).toEqual([
+      [
+        { text: 'part-a', color: 'cyan_FOR_SUBAGENTS_ONLY' },
+        { text: ': results from reviewer #1, to write DESIGN.md', color: 'inactive' },
+      ],
+    ])
+    expect(JSON.stringify(v.summary)).not.toContain('⚑')
+    const facts = await factsNow(p)
+    expect(facts.counts.swarmsNeedYou).toBe(false)
+    expect(facts.home.questions).toEqual([])
+  })
+
+  test('a summary line: its members in the name color when they are nodes, a progress line\'s status word in its color', () => {
+    const nodes = ['codex-researcher', 'codex-prober', 'port']
+    expect(leadingMembers('codex-researcher #1 and #3: finished research on hooks', nodes)).toEqual({ members: 'codex-researcher #1 and #3', rest: ' finished research on hooks' })
+    expect(leadingMembers('codex-prober #1, port: probing', nodes)?.members).toBe('codex-prober #1, port')
+    expect(leadingMembers('the lead: replied', nodes)?.members).toBe('the lead')
+    expect(leadingMembers('Note: nothing to say', nodes)).toBeNull()
+    expect(leadingMembers('#3: done', nodes)).toBeNull()
+    expect(leadingMembers('no colon here', nodes)).toBeNull()
+    expect(summarySpans('codex-researcher #1 and #3: finished research on hooks', nodes, 'progress')).toEqual([
+      { text: 'codex-researcher #1 and #3', color: 'cyan_FOR_SUBAGENTS_ONLY' },
+      { text: ': ' },
+      { text: 'finished', color: 'success' },
+      { text: ' research on hooks' },
+    ])
+    expect(summarySpans('codex-prober #1: probing the app-server', nodes, 'progress')[2]).toEqual({ text: 'probing', color: 'background' })
+    // A waiting word takes warning, never the needs-you key.
+    expect(summarySpans('port: waiting on codex-prober #1', nodes, 'progress')[2]).toEqual({ text: 'waiting', color: 'warning' })
+    expect(summarySpans('port: drafting DESIGN.md', nodes, 'progress')).toEqual([{ text: 'port', color: 'cyan_FOR_SUBAGENTS_ONLY' }, { text: ': drafting DESIGN.md' }])
+    expect(summarySpans('someone: finished', nodes, 'progress')).toEqual([{ text: 'someone: finished' }])
+    expect(summarySpans('someone: the lexer', nodes, 'blocked')).toEqual([{ text: 'someone: the lexer', color: 'inactive' }])
+  })
+})
+
+describe('WP-DG: a node from elsewhere, and the roster\'s turns', () => {
+  test('`/litter swarms <name> <node>` opens the browser with that node picked; one it lacks opens the swarm with a notice', async () => {
+    goLive()
+    state.putBinding(bind('w2', { n: 2, boundAt: NOW - 40_000 }))
+    state.noteQuestion('w1', 'Which file?', NOW - 1_000, 'part-a')
+    // A node id: its instance with an open question first, else its newest.
+    expect((await swarmCommand(p, command(`${SWARM} reviewer`), next)).text).toBe(`Swarms shows ${SWARM}, live`)
+    expect(nav()).toEqual(expect.objectContaining({ view: 'browser', selected: 'w1' }))
+    expect(shown<SwarmBrowserView>().composer?.to).toBe('w1')
+    await swarmCommand(p, command(`${SWARM} part-c`), next)
+    expect(nav()?.selected).toBe('o2')
+    // An instance, either way it's written, and an agent id.
+    await swarmCommand(p, command(`${SWARM} reviewer#2`), next)
+    expect(nav()?.selected).toBe('w2')
+    await swarmCommand(p, command(`${SWARM} reviewer #1`), next)
+    expect(nav()?.selected).toBe('w1')
+    await swarmCommand(p, command(`${SWARM} o1`), next)
+    expect(nav()?.selected).toBe('o1')
+    state.closeQuestion('w1', NOW)
+    expect(pickNode(SWARM, 'reviewer')).toBe('w2')
+    await swarmCommand(p, command(`${SWARM} nobody`), next)
+    expect(nav()?.view).toBe('browser')
+    expect(nav()?.notice).toEqual({ level: 'info', text: `${SWARM} has no node nobody: pick one in the roster` })
+  })
+
+  test("a swarm that isn't live opens as without the node, and says why", async () => {
+    await saveRev1()
+    await swarmCommand(p, command(`${SWARM} part-a`), next)
+    expect(nav()).toEqual(expect.objectContaining({ view: 'builder', notice: { level: 'info', text: `${SWARM} isn't live, so part-a can't be picked` } }))
+  })
+
+  test('a running node reads `turn n+1 · m requests`; between turns, `n turns`', async () => {
+    goLive()
+    state.addTokens('o1', { input_tokens: 1000, output_tokens: 200 } as never, 't1')
+    state.addStep('o1', 't2', { input_tokens: 500, output_tokens: 100 } as never)
+    state.addStep('o1', 't2', { input_tokens: 500, output_tokens: 100 } as never)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    const o1 = shown<SwarmBrowserView>().rows.find(r => r.agentId === 'o1')!
+    expect([o1.turns, o1.steps]).toEqual([1, 2])
+    expect(rosterDescription(o1)).toBe('turn 2 · 2 requests · 2k tokens')
+    const w1 = shown<SwarmBrowserView>().rows.find(r => r.agentId === 'w1')!
+    expect(w1.steps).toBeNull()
+    expect(rosterDescription(w1)).toBe('0 turns · 0 tokens')
+    expect(turnsText({ turns: 0, steps: 1 })).toBe('turn 1 · 1 request')
+    expect(turnsText({ turns: 3, steps: null })).toBe('3 turns')
+    expect(turnsText({ turns: 1, steps: null })).toBe('1 turn')
+    expect(turnsText({ turns: null, steps: null })).toBe('')
   })
 })
 

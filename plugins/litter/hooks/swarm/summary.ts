@@ -17,7 +17,7 @@ import type { Ports } from '../ports'
 import type { StoredRecord } from '../records/core'
 import type { SwarmSummaryBody } from '../records/swarm'
 import type { LiveSwarm, NodeBinding, SwarmSummary } from './types'
-import { SUMMARY_LABELS, SWARM_SUMMARY } from '../prompts/swarm-summary'
+import { LEGACY_BLOCKED_LABEL, SUMMARY_LABELS, SWARM_SUMMARY } from '../prompts/swarm-summary'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { sha256 } from '../fsx'
 import { getOptions, session } from '../session'
@@ -44,7 +44,7 @@ const EVENT_INPUT_MAX = 512
 /** The parsed parts, bounded: they're kept in $.store. */
 const PART_MAX = 400
 const PROGRESS_KEPT = 3
-const WAITING_KEPT = 10
+const BLOCKED_KEPT = 10
 /** The plugin option's floor (plugin.json), in case a value below it reaches the mod. */
 const MIN_EVERY_SEC = 10
 
@@ -105,7 +105,7 @@ export function summaryOf(swarm: string): SwarmSummary | null {
   return {
     goalNow: k.summary.goalNow,
     progress: [...k.summary.progress],
-    waitingOnYou: [...k.summary.waitingOnYou],
+    blocked: [...k.summary.blocked],
     at: k.summary.at,
     stale: (triggers.get(swarm) ?? 0) > k.seen,
   }
@@ -157,8 +157,9 @@ async function loadKept(p: Ports, litterDir: string, s: LiveSwarm): Promise<void
   loaded.add(key)
   if (kept.get(s.name)?.launch === s.launch) return
   const raw = (await p.store.get(summaryKey(litterDir, s.name))) as Stored | undefined
-  if (raw && raw.v === 1 && raw.launch === s.launch && raw.summary && typeof raw.summary.goalNow === 'string') {
-    kept.set(s.name, { launch: s.launch, summary: raw.summary, seen: triggers.get(s.name) ?? 0 })
+  const summary = raw && raw.v === 1 && raw.launch === s.launch ? keptSummary(raw.summary) : null
+  if (raw && summary) {
+    kept.set(s.name, { launch: s.launch, summary, seen: triggers.get(s.name) ?? 0 })
     if (raw.hash) lastHash.set(s.name, raw.hash)
     if (raw.goal !== null) recordedGoal.set(s.name, raw.goal)
     return
@@ -389,12 +390,16 @@ export function plainText(text: string): string {
 
 const plainLine = (line: string): string => one(line.replace(LEAD_MARKS, '').replace(EMPHASIS, ''))
 
-const LABELS = SUMMARY_LABELS.map(l => l.slice(0, -1).toLowerCase())
+/** Each label's words, lowercased, by part; the third part also takes its old label (a summary recorded before WP-DG). */
+const LABELS: readonly (readonly string[])[] = SUMMARY_LABELS.map((l, i) =>
+  [l, ...(i === 2 ? [LEGACY_BLOCKED_LABEL] : [])].map(x => x.slice(0, -1).toLowerCase()),
+)
 
 /**
  * The three labelled parts (prompts/swarm-summary.ts), as plain text; null
  * when one is missing or the goal is empty. Labels are found at a line's
- * start, with any Markdown around them.
+ * start, with any Markdown around them. The third is `Blocked:`, or `Waiting
+ * on you:` in an answer from before WP-DG: either is read as `blocked`.
  */
 export function parseSummary(answer: string): Omit<SwarmSummary, 'at' | 'stale'> | null {
   const parts: (string[] | null)[] = [null, null, null]
@@ -402,24 +407,34 @@ export function parseSummary(answer: string): Omit<SwarmSummary, 'at' | 'stale'>
   for (const raw of plainText(answer).split('\n')) {
     const line = plainLine(raw)
     const lower = line.toLowerCase()
-    const label = LABELS.findIndex(l => lower.startsWith(`${l}:`))
+    const label = LABELS.findIndex(ls => ls.some(l => lower.startsWith(`${l}:`)))
+    const word = label >= 0 ? LABELS[label]!.find(l => lower.startsWith(`${l}:`))! : ''
     if (label >= 0 && parts[label] === null) {
       at = label
       parts[label] = []
-      const rest = plainLine(line.slice(LABELS[label]!.length + 1))
+      const rest = plainLine(line.slice(word.length + 1))
       if (rest !== '') parts[label]!.push(rest)
     } else if (at >= 0 && line !== '') parts[at]!.push(line)
   }
-  const [goal, progress, waiting] = parts
-  if (!goal || !progress || !waiting) return null
+  const [goal, progress, blocked] = parts
+  if (!goal || !progress || !blocked) return null
   const goalNow = cut(goal.join(' '), PART_MAX)
   if (goalNow === '') return null
-  const nothing = waiting.length === 1 && /^"?nothing"?\.?$/i.test(waiting[0]!)
+  const nothing = blocked.length === 1 && /^"?nothing"?\.?$/i.test(blocked[0]!)
   return {
     goalNow,
     progress: progress.slice(0, PROGRESS_KEPT).map(l => cut(l, PART_MAX)),
-    waitingOnYou: nothing ? [] : waiting.slice(0, WAITING_KEPT).map(l => cut(l, PART_MAX)),
+    blocked: nothing ? [] : blocked.slice(0, BLOCKED_KEPT).map(l => cut(l, PART_MAX)),
   }
+}
+
+/** A summary as kept in $.store, whichever version wrote it: one from before WP-DG has `waitingOnYou` for `blocked`. */
+export function keptSummary(raw: unknown): Omit<SwarmSummary, 'stale'> | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const r = raw as Partial<SwarmSummary> & { waitingOnYou?: unknown }
+  if (typeof r.goalNow !== 'string') return null
+  const lines = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  return { goalNow: r.goalNow, progress: lines(r.progress), blocked: lines(r.blocked ?? r.waitingOnYou), at: typeof r.at === 'number' ? r.at : 0 }
 }
 
 /** One line, for comparing goal lines: a change of spacing or case isn't a new goal. */
@@ -427,8 +442,8 @@ const sameLine = (text: string): string => one(text).toLowerCase()
 
 /** The summary as swarm.summary's `text` (and the goal history). */
 export function summaryText(s: Omit<SwarmSummary, 'stale'>): string {
-  const lines = [`Goal now: ${s.goalNow}`, 'Progress:', ...s.progress.map(l => `- ${l}`), 'Waiting on you:']
-  lines.push(...(s.waitingOnYou.length === 0 ? ['- nothing'] : s.waitingOnYou.map(l => `- ${l}`)))
+  const lines = [`Goal now: ${s.goalNow}`, 'Progress:', ...s.progress.map(l => `- ${l}`), 'Blocked:']
+  lines.push(...(s.blocked.length === 0 ? ['- nothing'] : s.blocked.map(l => `- ${l}`)))
   return lines.join('\n')
 }
 

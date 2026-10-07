@@ -504,7 +504,7 @@ describe('the browser', () => {
   test('a live swarm: statuses with their glyphs, the call in flight, the question, the report, the queued message, the events and the flag', async () => {
     goLive()
     owners({
-      summaryOf: fake('summaryOf', () => ({ goalNow: 'parser first', progress: ['tokenizer done'], waitingOnYou: ['which branch'], at: NOW - 60_000, stale: true })),
+      summaryOf: fake('summaryOf', () => ({ goalNow: 'parser first', progress: ['tokenizer done'], blocked: ['which branch'], at: NOW - 60_000, stale: true })),
     })
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'message', from: 'user', to: 'o1', route: 'direct', delivery: 'interject', text: 'go' })
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'report', node: 'fixer', agentId: 'w1', via: 'handback', text: 'fixed the tokenizer' })
@@ -531,7 +531,13 @@ describe('the browser', () => {
       ['litter', '! refs/heads/main moved aaaaaaa → bbbbbbb'],
     ])
     expect(v.flags).toEqual([expect.objectContaining({ kind: 'branch-moved', running: ['fixer'] })])
-    expect(v.summary).toEqual({ goal: 'parser first', progress: ['tokenizer done'], waiting: ['which branch'], age: '1m ago', stale: true })
+    expect(v.summary).toEqual({
+      goal: 'parser first',
+      progress: [[{ text: 'tokenizer done' }]],
+      blocked: [[{ text: 'which branch', color: 'inactive' }, { text: ' (may have moved on)', color: 'inactive' }]],
+      age: '1m ago',
+      stale: true,
+    })
     expect(v.composer?.to).toBe('o1')
     expect(v.composer?.routes.map(r => r.value)).toEqual(['direct', 'lead'])
   })
@@ -585,7 +591,9 @@ describe('the browser', () => {
     await handle(p, 'swarm:browser:hard-stop:demo/o1', {})
     await handle(p, 'swarm:browser:ack:demo/' + flag.seq, {})
     await handle(p, 'swarm:browser:stop-them:demo/' + flag.seq, {})
+    // End swarm asks first (WP-DG): [Confirm end] ends it.
     await handle(p, 'swarm:browser:end:demo', {})
+    await handle(p, 'swarm:browser:end-confirm:demo', {})
     expect(called('stopNode')).toEqual([
       [SWARM, 'w1', 'soft'],
       [SWARM, 'o1', 'hard'],

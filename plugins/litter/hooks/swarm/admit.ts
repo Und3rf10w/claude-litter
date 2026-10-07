@@ -734,7 +734,9 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
   if (!toLead && !toParent) return
   state.noteReport(b.agentId, text, 'message', at)
   const q = questionIn(text)
-  if (q && state.noteQuestion(b.agentId, q, at)) await swarmEvent(p, s, { kind: 'question', node: b.node, agentId: b.agentId, text: q })
+  // Where it went (WP-DG: "How do I know who I need to reply to?"): the lead, or the parent node, which the browser names.
+  const to = toLead || b.parent === null ? 'lead' : (state.binding(b.parent)?.node ?? b.parent)
+  if (q && state.noteQuestion(b.agentId, q, at, to)) await swarmEvent(p, s, { kind: 'question', node: b.node, agentId: b.agentId, text: q, to })
 }
 
 /**

@@ -87,8 +87,8 @@ function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
   }
 }
 
-const ANSWER = (goal = 'Get the stack reviewed before the release.', waiting = 'nothing') =>
-  `Goal now: ${goal}\nProgress:\n- part-a is reviewing the parser\n- fixer #1 finished the lint fixes\nWaiting on you: ${waiting}`
+const ANSWER = (goal = 'Get the stack reviewed before the release.', blocked = 'nothing') =>
+  `Goal now: ${goal}\nProgress:\n- part-a is reviewing the parser\n- fixer #1 finished the lint fixes\nBlocked: ${blocked}`
 
 let p: TestPorts
 let litterDir: string
@@ -316,33 +316,42 @@ describe('the answer', () => {
     const answer =
       '**Goal now:** Ship \u001b[31mthe\u001b[0m `parser`' + RLO + ' fix.\r\n' +
       '## Progress:\n* **part-a**: reviewing\u0007\n- fixer: done\n- part-b: idle\n- extra line\n' +
-      '__Waiting on you:__\n1. may it rename the enum?\n'
+      '__Blocked:__\n1. part-b: the enum rename\n'
     expect(parseSummary(answer)).toEqual({
       goalNow: 'Ship the parser fix.',
       progress: ['part-a: reviewing', 'fixer: done', 'part-b: idle'],
-      waitingOnYou: ['1. may it rename the enum?'],
+      blocked: ['1. part-b: the enum rename'],
     })
   })
 
-  test('"nothing" waits on you is an empty list; a label on its own line takes the lines under it', () => {
-    expect(parseSummary('Goal now:\nShip it.\nProgress: part-a is done\nWaiting on you: "nothing".')).toEqual({
+  test('"nothing" blocked is an empty list; a label on its own line takes the lines under it', () => {
+    expect(parseSummary('Goal now:\nShip it.\nProgress: part-a is done\nBlocked: "nothing".')).toEqual({
       goalNow: 'Ship it.',
       progress: ['part-a is done'],
-      waitingOnYou: [],
+      blocked: [],
+    })
+  })
+
+  // WP-DG: an answer, or a swarm.summary's text, from before the third part was `Blocked:` reads its `Waiting on you:` as it.
+  test('an older answer\'s `Waiting on you:` is read as `Blocked:`', () => {
+    expect(parseSummary('Goal now: Ship it.\nProgress:\n- port: waiting\n__Waiting on you:__\n- port: results from codex-prober #1')).toEqual({
+      goalNow: 'Ship it.',
+      progress: ['port: waiting'],
+      blocked: ['port: results from codex-prober #1'],
     })
   })
 
   test("an answer without its three parts, or with an empty goal, doesn't parse", () => {
     expect(parseSummary('Everything is going well.')).toBeNull()
     expect(parseSummary('Goal now: x\nProgress: y')).toBeNull()
-    expect(parseSummary('Goal now:\nProgress: y\nWaiting on you: nothing')).toBeNull()
+    expect(parseSummary('Goal now:\nProgress: y\nBlocked: nothing')).toBeNull()
   })
 
   test('summaryOf answers the last good summary, plain, with its time, stale once a newer event exists', async () => {
-    answers.push({ isAnswered: true, text: '**Goal now:** \u001b[1mShip\u001b[0m it\nProgress: part-a: done\nWaiting on you: nothing', usage: USAGE })
+    answers.push({ isAnswered: true, text: '**Goal now:** \u001b[1mShip\u001b[0m it\nProgress: part-a: done\nBlocked: nothing', usage: USAGE })
     noteSummaryTrigger('alpha', 'lead-turn')
     await summaryTick(p)
-    expect(summaryOf('alpha')).toEqual({ goalNow: 'Ship it', progress: ['part-a: done'], waitingOnYou: [], at: NOW, stale: false })
+    expect(summaryOf('alpha')).toEqual({ goalNow: 'Ship it', progress: ['part-a: done'], blocked: [], at: NOW, stale: false })
     noteSummaryTrigger('alpha', 'denied')
     expect(summaryOf('alpha')?.stale).toBe(true)
     expect(summaryOf('beta')).toBeNull()
@@ -402,7 +411,7 @@ describe('the record', () => {
     const recs = await summaries()
     expect(recs.map(r => (r.body as SwarmSummaryBody).goal)).toEqual(['Review the parser.', 'Fix the enum rename.'])
     const first = recs[0]!.body as SwarmSummaryBody
-    expect(first.text).toBe('Goal now: Review the parser.\nProgress:\n- part-a is reviewing the parser\n- fixer #1 finished the lint fixes\nWaiting on you:\n- nothing')
+    expect(first.text).toBe('Goal now: Review the parser.\nProgress:\n- part-a is reviewing the parser\n- fixer #1 finished the lint fixes\nBlocked:\n- nothing')
     expect(first.inputsHash).toMatch(/^[0-9a-f]{64}$/)
     expect(first.usage).toEqual(USAGE)
   })
@@ -436,6 +445,18 @@ describe('the record', () => {
     await summaryTick(p)
     expect(p.completions).toHaveLength(1)
     expect(await summaries()).toHaveLength(1)
+  })
+
+  test("a summary kept in $.store before WP-DG has `waitingOnYou`: it's read back as `blocked`", async () => {
+    p.storeMap.set(summaryKey(litterDir, 'alpha'), {
+      v: 1,
+      launch: LAUNCH,
+      summary: { goalNow: 'Write DESIGN.md', progress: ['port: waiting'], waitingOnYou: ['port: results from codex-prober #1'], at: NOW - 1 },
+      hash: null,
+      goal: 'write design.md',
+    })
+    await summaryTick(p)
+    expect(summaryOf('alpha')).toEqual({ goalNow: 'Write DESIGN.md', progress: ['port: waiting'], blocked: ['port: results from codex-prober #1'], at: NOW - 1, stale: false })
   })
 
   test("another launch's stored summary isn't shown", async () => {

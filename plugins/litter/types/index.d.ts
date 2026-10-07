@@ -73,7 +73,13 @@ export type SwarmListRow = { name: string; goal: string; revision: number; nodes
  * shows it"): its current proposals (superseded ones aren't), and a live
  * one's open questions, who asks and the first line.
  */
-export type SwarmNeedsYou = { swarm: string; live: boolean; proposals: number[]; questions: { who: string; text: string }[] }
+export type SwarmNeedsYou = {
+  swarm: string
+  live: boolean
+  proposals: number[]
+  /** `to` (WP-DG): where the question went, `the lead` or the parent node's name; absent or null when not recorded. */
+  questions: { who: string; text: string; to?: string | null }[]
+}
 
 export type SwarmStartView = SwarmViewCommon & {
   view: 'start'
@@ -272,13 +278,18 @@ export type SwarmNodeRow = {
   running: boolean
   /** The call in flight, or ''. */
   tool: string
+  /** Its finished turns; null for the lead. */
   turns: number | null
+  /** The model requests of the turn under way (state.ts's turnSteps), or null between turns (WP-DG). */
+  steps: number | null
   tokens: string
   /** The last report's first line, or ''. */
   report: string
   queued: { id: string; text: string }[]
   /** The open question, or null (⚑). */
   question: string | null
+  /** Where the question went (WP-DG): `the lead`, or the parent node's name; null when it wasn't recorded (an older question). */
+  questionTo: string | null
   /** A branch-moved or rule-commit flag names it. */
   flagged: boolean
 }
@@ -288,8 +299,15 @@ export type SwarmEventRow = { at: string; who: string; text: string; color: stri
 /** A branch-moved or rule-commit event not yet acknowledged. */
 export type SwarmFlagRow = { seq: number; kind: 'branch-moved' | 'rule-commit'; text: string; running: string[] }
 
-/** O's summary, labelled as generated. */
-export type SwarmSummaryPanel = { goal: string; progress: string[]; waiting: string[]; age: string; stale: boolean }
+/**
+ * O's summary, labelled as generated (WP-DG). Each progress and blocked line
+ * is spans: the members it starts with (`fixer #1 and #3:`) in the name
+ * color when they're the swarm's nodes, a progress line's leading status word
+ * in its state's color, the rest as it is (a blocked line's muted). Model
+ * text: nothing here is a ⚑ or counts as needing you; open questions and
+ * proposals do, from the swarm's state.
+ */
+export type SwarmSummaryPanel = { goal: string; progress: SwarmSpan[][]; blocked: SwarmSpan[][]; age: string; stale: boolean }
 
 export type SwarmComposer = {
   /** The target's agentId. */
@@ -356,6 +374,8 @@ export type SwarmBrowserView = SwarmViewCommon & {
   selected: string | null
   /** The lead's current proposals for this swarm: the needs-you banner's, each with [Review]. */
   proposals: number[]
+  /** [End swarm] was pressed: the confirm row ([Confirm end], [Cancel]) stands in for it (WP-DG). */
+  confirmEnd: boolean
 }
 
 export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }

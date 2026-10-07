@@ -270,7 +270,7 @@ export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 
  * | denied (P) | tool, reason |
  * | report (P, L) | via, text (cut) |
  * | report-to-lead (P) | |
- * | question (L) | text |
+ * | question (L) | text, to (`lead` or the parent node's id) |
  * | worker-ended-early (P) | children |
  * | held (P) | children |
  * | isolation-lost (P) | tool, cwd, expected |
@@ -301,7 +301,8 @@ export type SwarmEventFields = {
   denied: { tool: string; reason: string }
   report: { via: 'handback' | 'answer' | 'message'; text: string }
   'report-to-lead': Record<never, never>
-  question: { text: string }
+  /** `to` (WP-DG): `lead`, or the parent node's id; absent before WP-DG. */
+  question: { text: string; to?: string }
   'worker-ended-early': { children: string[] }
   held: { children: string[] }
   'isolation-lost': { tool: string; cwd: string; expected: string | null }
