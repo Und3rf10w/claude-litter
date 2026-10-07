@@ -262,9 +262,16 @@ async function clearTo(w: World, to: string, opts: { sessionEnd?: boolean } = {}
   w.sid.value = to
 }
 
-/** Waits a few turns of the event loop for `cond` (a tick's rebind starts after its sessionId read). */
+/**
+ * Waits for `cond`, a turn of the event loop at a time, for at most UNTIL_MS
+ * (a tick's rebind starts after its sessionId read, and runs real git). By
+ * time, not a count of turns: with the machine loaded (2026-10-07, load
+ * average 17), 200 turns was half a second, before the rebind's git was done.
+ */
+const UNTIL_MS = 5_000
 async function until(cond: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !cond(); i++) await new Promise<void>(resolve => setTimeout(resolve, 0))
+  const end = Date.now() + UNTIL_MS
+  while (!cond() && Date.now() < end) await new Promise<void>(resolve => setTimeout(resolve, 0))
   expect(cond()).toBe(true)
 }
 
