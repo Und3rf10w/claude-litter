@@ -1,7 +1,16 @@
 // The agents pane's view (phase 5; COMMON step 6, decisions 5, 6, 16): this
 // session's agents (`$.agent.list()`) or a team's members (CE's store.ts),
 // each with its status and unread count, and for the selected one its
-// pending inbox and the tail of its transcript. Owner: WP-CG.
+// pending inbox and its transcript's last 200 lines, which the pane shows a
+// window of. Owner: WP-CG; phase 5b, WP-DF.
+//
+// Only teams that run (WP-DF §0, the user's ask). A team is active when this
+// session lists one of its members, or leads it, or the engine's registry of
+// running sessions (store.ts, runningSessions) lists its lead session. The
+// picker leaves the rest out unless one is shown or was named, and counts
+// them; a team that ended, shown on purpose, says so once, its members read
+// "ended", and nothing sends to it. When the registry can't be read, nobody
+// can tell: every team is offered, as before.
 //
 // The navigation (the team shown, the row selected, the composer's text, the
 // armed stop and when it was armed) lives in module memory and is mirrored in
@@ -14,29 +23,57 @@
 // Every text from a file, a transcript or the agent list is cleaned and cut
 // (swarm/view.ts, clean and oneLine): names, types and messages are model or
 // user text.
+//
+// A swarm's nodes (WP-DF, the user's "aren't these members of a team?"): an
+// agent swarm/state.ts binds to a live swarm is labelled by its node, as the
+// Swarms browser names it, with its swarm and its engine description beside.
+// It isn't a team's member and has no inbox: litter routes its messages
+// through the engine and records each in the launch ledger (`swarm.event`,
+// kind `message`), so the selected node's are read from there, in the
+// inbox's place: the launch's message records, read again only when its
+// head moves, bounded, and a failure said in words.
 
 import type { ListedAgent, Ports, SessionMessage } from '../ports'
 import type { InboxEntry, TeamInfo } from '../uitypes'
 import type {
+  AgentsBody,
   AgentsInboxEntry,
+  AgentsOption,
   AgentsPaneView,
   AgentsRow,
   AgentsSelected,
   AgentsStatus,
+  AgentsSwarmMessage,
   SwarmNotice,
-  SwarmOption,
   SwarmSpan,
 } from '../../types/index'
-import { appendInbox, readInbox, teams } from '../team/store'
-import { clean, clockAt, firstLine, oneLine } from '../swarm/view'
+import type { NodeBinding } from '../swarm/types'
+import type { Head } from '../ledgercore'
+import { appendInbox, ownTeam, readInbox, runningSessions, teams, type RunningSession, type TeamRecord } from '../team/store'
+import { clean, clockAt, oneLine } from '../swarm/view'
+import { binding, bindings, liveSwarm } from '../swarm/state'
+import { readLaunchLedger } from '../records/swarm'
+import { headKey } from '../ledgercore'
+import { launchDir } from '../layout'
+import { session } from '../session'
 import { STYLE } from '../ui/style'
 
-// CE's store, through one table so tier 2 can stand in for it (COMMON,
-// "Another package's module"). The mod never changes it.
+// CE's store, the swarms' live state and the launch ledger, through one table
+// so tier 2 can stand in for them (COMMON, "Another package's module"). The
+// mod never changes them.
 export const deps = {
   teams: (...a: Parameters<typeof teams>) => teams(...a),
   readInbox: (...a: Parameters<typeof readInbox>) => readInbox(...a),
   appendInbox: (...a: Parameters<typeof appendInbox>) => appendInbox(...a),
+  sessions: (...a: Parameters<typeof runningSessions>) => runningSessions(...a),
+  /** The live swarm node an agent runs, or null. */
+  binding: (agentId: string): NodeBinding | null => binding(agentId),
+  /** A swarm's bound agents, for the names an instance and a message's ends are drawn by. */
+  bindings: (swarm: string): NodeBinding[] => bindings(swarm),
+  /** The live swarm's launch, or null. */
+  launchOf: (swarm: string): string | null => liveSwarm(swarm)?.launch ?? null,
+  launchLedger: (...a: Parameters<typeof readLaunchLedger>) => readLaunchLedger(...a),
+  litterDir: (): string | null => session().litterDir,
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -48,15 +85,22 @@ export const AGENTS_STORE_KEY = 'litter.agents.pane'
 export const MAX_ROWS = 40
 /** Inbox entries drawn at most: the newest, oldest first. */
 export const INBOX_SHOWN = 20
-/** The transcript's tail, and with [More] (the brief; the swarm browser's tail). */
-export const TAIL = 8
-export const TAIL_MORE = 30
+/** The transcript's lines the view keeps, the newest: the pane shows a window of them (WP-DF). */
+export const LINES_KEPT = 200
 /** A first [Stop] arms it for this long; the second within it stops (decision 6). */
 export const STOP_ARM_MS = 5000
 /** The engine's name for a team's lead member (`Fi`, 2.1.289 `:66754`). */
 export const LEAD_MEMBER = 'team-lead'
 /** The picker's value for this session's agents; a team's is `team.<name, URI-encoded>`. */
 export const SESSION_SCOPE = 'session'
+/** Teams the picker offers at most, newest first: its list scrolls, and the view stays small (decision 11). */
+export const MAX_TEAMS = 200
+/** A swarm node's messages the view keeps, the newest (WP-DF): the pane draws those that fit. */
+export const AGENTS_MESSAGES = 20
+/** A launch's message records kept in memory, the newest: a long launch stays light. */
+export const LAUNCH_MESSAGES_KEPT = 400
+/** A swarm node's engine description, beside its name, cut to this. */
+export const SAID_CELLS = 32
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -114,11 +158,15 @@ export type AgentsNav = {
    */
   gen: number
   field: string
-  /** [More]: the transcript's last 30 messages instead of 8. */
-  more: boolean
   /** The armed [Stop]: the row (`<scope>/<row>`) and when, in ms (decision 6). */
   armed: { arg: string; at: number } | null
   notice: SwarmNotice | null
+  /** [Show all]: the picker lists the teams that ended too (WP-DF §0). */
+  showAll: boolean
+  /** The team `/litter agents <team>` named, or a pick chose: kept in the picker, ended or not. */
+  named: string | null
+  /** [Change] opened the picker where it's folded to a line (inline, or a short pane); a pick folds it again. */
+  picking: boolean
 }
 
 type AgentsStore = { v: 1; session: string; nav: AgentsNav | null }
@@ -134,9 +182,11 @@ export const blankAgentsNav = (team: string | null): AgentsNav => ({
   text: '',
   gen: 0,
   field: '',
-  more: false,
   armed: null,
   notice: null,
+  showAll: false,
+  named: null,
+  picking: false,
 })
 
 /** The pane's navigation, or null while it was never opened in this session. */
@@ -181,12 +231,14 @@ export async function restoreAgentsNav(p: Ports): Promise<void> {
       text: str(n.text),
       gen: Number.isInteger(n.gen) && (n.gen as number) >= 0 ? (n.gen as number) : 0,
       field: str(n.field),
-      more: n.more === true,
       armed: armed && typeof armed.arg === 'string' && typeof armed.at === 'number' && Number.isFinite(armed.at) ? { arg: armed.arg, at: armed.at } : null,
       notice:
         notice && typeof notice.text === 'string' && (NOTICE_LEVELS as readonly unknown[]).includes(notice.level)
           ? { text: oneLine(notice.text, 400), level: notice.level as SwarmNotice['level'] }
           : null,
+      showAll: n.showAll === true,
+      named: typeof n.named === 'string' && n.named !== '' ? n.named : null,
+      picking: n.picking === true,
     }
     // What was typed and not drawn comes back in a field of its own.
     if (agentsNav.text !== agentsNav.field) agentsNav = { ...agentsNav, gen: agentsNav.gen + 1, field: agentsNav.text }
@@ -212,6 +264,7 @@ export function resetAgentsNavForTests(): void {
   restored = false
   rev = 0
   textDirty = false
+  launchMessages.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +289,8 @@ export function statusOf(status: unknown): AgentsStatus {
 
 /** A team's member that `$.agent.list()` doesn't list: it runs in another session, or not at all. */
 export const NOT_HERE: AgentsStatus = { text: 'not in this session', glyph: '', color: STYLE.muted, dim: true }
+/** A member of a team whose lead session ended (WP-DF §0): nothing runs it. */
+export const ENDED: AgentsStatus = { text: 'ended', glyph: '−', color: STYLE.idle }
 /** The lead member of a team this session leads: this session itself. */
 const THIS_SESSION: AgentsStatus = { text: 'this session', glyph: '', color: STYLE.muted, dim: true }
 
@@ -262,21 +317,35 @@ export type RowFacts = {
   via: SendVia | null
   /** TaskStop's `task_id` (stopIdOf: a teammate's bare name, else its id), while it's this session's and running or waiting. */
   stopId: string | null
+  /** The live swarm node it runs (swarm/state.ts's binding), its swarm and the engine's description beside its name; null for any other agent. */
+  swarm: { binding: NodeBinding; said: string } | null
 }
 
 export type InboxFacts = { entries: InboxEntry[] | null; stamp: string; error: string | null }
 
+/** One `message` record of a launch ledger: when, who to whom (as swarm.event gives them: `user`, `lead`, an agentId, `plugin:<name>`), the text. */
+export type MessageFact = { at: number; from: string; to: string; agentId: string; text: string }
+
+/** The selected swarm node's messages, read from its launch ledger: those to or from it, oldest first; `error` says what couldn't be read. */
+export type SwarmMessagesFacts = { swarm: string; node: string; records: MessageFact[]; names: Record<string, string>; error: string | null }
+
 export type AgentsFacts = {
   /** The team shown, or null (this session, or a team that's gone). */
-  team: TeamInfo | null
+  team: TeamRecord | null
   /** This session leads the team shown. */
   led: boolean
-  teams: TeamInfo[]
+  teams: TeamRecord[]
+  /** The teams' folder was read: a team missing from `teams` is gone, not unknown. */
+  teamsRead: boolean
+  /** By team name: whether it runs (teamActive); null when the registry can't be read. */
+  activity: Record<string, boolean | null>
   rows: RowFacts[]
   /** By row key: the inboxes read (the shown rows' and the selected one's). */
   inboxes: Record<string, InboxFacts>
   /** The selected agent's transcript: null when it can't be read, undefined when it wasn't (no agent of this session selected). */
   messages: SessionMessage[] | null | undefined
+  /** The selected agent's messages from its launch ledger, when it's a live swarm's node; null otherwise. */
+  swarmMessages: SwarmMessagesFacts | null
   problems: string[]
 }
 
@@ -299,27 +368,71 @@ const stoppable = (a: ListedAgent): boolean => a.status === 'running' || a.statu
  */
 const stopIdOf = (a: ListedAgent): string => addressOf(a.teammateId)?.name ?? a.id
 
-/** This session's agents, in the engine's order; a teammate's inbox is its team's file for its name. */
+/**
+ * A swarm instance's name, as the Swarms browser draws it (swarm/view.ts's
+ * instanceName): its node, with `#n` when the node has run more than once;
+ * a child (an agent a node started) its own words, then "(child)". Pure.
+ */
+export function nodeName(b: NodeBinding, all: readonly NodeBinding[], listed?: ListedAgent | null): string {
+  if (b.kind === 'child') return `${oneLine(listed?.description || listed?.type || 'agent', 24)} (child)`
+  const several = all.filter(x => x.node === b.node && x.kind !== 'child').length > 1
+  return oneLine(several ? `${b.node} #${b.n}` : b.node, 40)
+}
+
+/** A node's kind, in the type's place: its served type (`litter:sw-<swarm>-<node>`) only repeats the swarm and the node. */
+const KIND_WORD: Record<NodeBinding['kind'], string> = { orchestrator: 'orchestrator', worker: 'worker', child: 'child' }
+
+/** The engine's description of a node, as drawn beside its name: '' when it only repeats them (the lead's `swarm <swarm>: <node>`). */
+export function saidOf(a: ListedAgent, b: NodeBinding, name: string): string {
+  const said = oneLine(a.description, 200)
+  if (said === '' || said === name || said === `swarm ${b.swarm}: ${b.node}` || b.kind === 'child') return ''
+  return oneLine(said, SAID_CELLS)
+}
+
+/** This session's agents, in the engine's order; a teammate's inbox is its team's file for its name; a swarm's node is named by its node. */
 function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo[]): RowFacts[] {
   const seen = new Set<string>()
   const rows: RowFacts[] = []
+  const swarmsBound = new Map<string, NodeBinding[]>()
+  const boundIn = (swarm: string): NodeBinding[] => {
+    let all = swarmsBound.get(swarm)
+    if (!all) swarmsBound.set(swarm, (all = deps.bindings(swarm)))
+    return all
+  }
   for (const a of listed) {
     if (typeof a.id !== 'string' || a.id === '' || seen.has(a.id)) continue
     seen.add(a.id)
     const addr = addressOf(a.teammateId)
     const team = addr ? teamList.find(t => t.name === addr.team) : undefined
+    const b = deps.binding(a.id)
+    const name = b ? nodeName(b, boundIn(b.swarm), a) : labelOf(a)
     rows.push({
       key: a.id,
-      name: labelOf(a),
-      type: oneLine(a.type, 40),
+      name,
+      type: b ? KIND_WORD[b.kind] : oneLine(a.type, 40),
       status: statusOf(a.status),
       listed: a,
       inbox: addr && team ? { team: team.name, agent: addr.name } : null,
       via: { kind: 'agent', agentId: a.id },
       stopId: stoppable(a) ? stopIdOf(a) : null,
+      swarm: b ? { binding: b, said: saidOf(a, b, name) } : null,
     })
   }
   return rows
+}
+
+/**
+ * Whether a team runs (WP-DF §0): this session lists one of its members, or
+ * leads it, or its lead session is in the engine's registry of running
+ * sessions. Null when the registry couldn't be read: nobody can tell. Pure.
+ */
+export function teamActive(team: TeamInfo, sessionId: string, listed: readonly ListedAgent[], sessions: readonly RunningSession[] | null, own: string | null = null): boolean | null {
+  if (listed.some(a => addressOf(a.teammateId)?.team === team.name)) return true
+  if (team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) return true
+  // The team store.ts's ownTeam tells is this session's (a background job's first team).
+  if (own !== null && team.name === own) return true
+  if (sessions === null) return null
+  return team.leadSessionId !== null && sessions.some(s => s.sessionId === team.leadSessionId)
 }
 
 /**
@@ -328,9 +441,10 @@ function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo
  * a send through the engine and [Stop]. Any other member of a team this
  * session leads is sent to by name; of another team, by the locked append to
  * its inbox (decision 5). The lead member of a team this session leads is
- * this session.
+ * this session. A team that ended (WP-DF §0): its members are `ended`, and
+ * nothing sends to them, since a message would be read by nobody.
  */
-function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean): RowFacts[] {
+function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean, ended = false): RowFacts[] {
   const seen = new Set<string>()
   const rows: RowFacts[] = []
   for (const m of team.members) {
@@ -340,7 +454,7 @@ function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean):
     const self = !a && led && m.name === LEAD_MEMBER
     const via: SendVia | null = a
       ? { kind: 'agent', agentId: a.id }
-      : self
+      : self || ended
         ? null
         : led
           ? { kind: 'name', name: m.name }
@@ -349,20 +463,74 @@ function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean):
       key: m.name,
       name: oneLine(m.name, 40),
       type: oneLine(m.agentType ?? '', 40),
-      status: a ? statusOf(a.status) : self ? { ...THIS_SESSION } : { ...NOT_HERE },
+      status: a ? statusOf(a.status) : self ? { ...THIS_SESSION } : ended ? { ...ENDED } : { ...NOT_HERE },
       listed: a,
       inbox: { team: team.name, agent: m.name },
       via,
       stopId: a && stoppable(a) ? stopIdOf(a) : null,
+      swarm: null,
     })
   }
   return rows
 }
 
+/** A launch's message records as last read, by its folder: read again only when the ledger's head moved (as swarm/view.ts's launchRecords). */
+const launchMessages = new Map<string, { seq: number; records: MessageFact[]; tampered: string | null }>()
+
+const textOf = (x: unknown): string => (typeof x === 'string' ? x : '')
+
+/** A launch ledger's `message` records, the newest LAUNCH_MESSAGES_KEPT, those before a broken link only. Throws what the read throws. */
+async function launchMessagesOf(p: Ports, litterDir: string, swarm: string, launch: string): Promise<{ records: MessageFact[]; tampered: string | null }> {
+  const dir = launchDir(litterDir, swarm, launch)
+  const head = (await p.store.get(headKey(dir)).catch(() => undefined)) as Head | undefined
+  const cached = launchMessages.get(dir)
+  if (cached && head && cached.seq === head.seq) return cached
+  const read = await deps.launchLedger(p, litterDir, swarm, launch)
+  const upTo = read.tampered ? read.tampered.seq : Number.POSITIVE_INFINITY
+  const records: MessageFact[] = []
+  for (const r of read.records) {
+    if (r.seq >= upTo || r.kind !== 'swarm.event') continue
+    const e = r.body as Record<string, unknown>
+    if (e.kind !== 'message') continue
+    records.push({ at: r.at, from: textOf(e.from), to: textOf(e.to), agentId: textOf(e.agentId), text: textOf(e.text) })
+  }
+  const out = {
+    seq: read.head?.seq ?? 0,
+    records: records.slice(-LAUNCH_MESSAGES_KEPT),
+    tampered: read.tampered ? `the launch ledger is broken at record ${read.tampered.seq} (${oneLine(read.tampered.reason, 100)}), so its messages stop there` : null,
+  }
+  launchMessages.set(dir, out)
+  return out
+}
+
+/**
+ * The selected node's messages (WP-DF): the launch ledger's `message`
+ * records sent to or by it, and the names of every end, read the way an
+ * inbox is (a failure is a line in words, never a throw). The launch is the
+ * live swarm's, else the one it was bound in.
+ */
+async function nodeMessages(p: Ports, b: NodeBinding, listed: ListedAgent | null): Promise<SwarmMessagesFacts> {
+  const all = deps.bindings(b.swarm)
+  const names: Record<string, string> = {}
+  for (const x of all) names[x.agentId] = nodeName(x, all)
+  names[b.agentId] = nodeName(b, all, listed)
+  const base = { swarm: oneLine(b.swarm, 40), node: names[b.agentId]!, names }
+  const dir = deps.litterDir()
+  if (!dir) return { ...base, records: [], error: "this session has no litter directory, so the launch ledger can't be read" }
+  try {
+    const read = await launchMessagesOf(p, dir, b.swarm, deps.launchOf(b.swarm) ?? b.launch)
+    const records = read.records.filter(r => r.from === b.agentId || r.to === b.agentId || r.agentId === b.agentId)
+    return { ...base, records, error: read.tampered }
+  } catch (err) {
+    return { ...base, records: [], error: `the launch ledger couldn't be read: ${oneLine(errText(err), 200)}` }
+  }
+}
+
 /**
  * Everything the view and the presses read, once: the agent list, the
  * teams, the shown rows' inboxes, and the selected agent's transcript only
- * (decision 16). A read that fails is a problem line, never a throw.
+ * (decision 16), or a swarm node's messages from its launch ledger. A read
+ * that fails is a problem line, never a throw.
  */
 export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
   const problems: string[] = []
@@ -373,18 +541,28 @@ export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
   } catch (err) {
     problems.push(`this session's agents couldn't be listed: ${oneLine(errText(err), 200)}`)
   }
-  let teamList: TeamInfo[] = []
+  let teamList: TeamRecord[] = []
+  let teamsRead = true
   try {
     teamList = await deps.teams(p)
   } catch (err) {
+    teamsRead = false
     problems.push(`the teams couldn't be read: ${oneLine(errText(err), 200)}`)
   }
+  // The registry is read only, and only shown (WP-DF §0): a failure is "can't tell", never a problem line.
+  const sessions = await deps.sessions(p).catch(() => null)
+  // This session's own team, as the tasks pane's list is told (a background job's first team included).
+  const own = sessionId !== '' ? (ownTeam(teamList, sessionId, sessions)?.name ?? null) : null
+  const activity: Record<string, boolean | null> = {}
+  for (const t of teamList) activity[t.name] = teamActive(t, sessionId, listed, sessions, own)
   const team = nav.team === null ? null : (teamList.find(t => t.name === nav.team) ?? null)
   if (nav.team !== null && !team) problems.push(`there's no team named ${oneLine(nav.team, 60)} with a readable config`)
   const led =
     team !== null &&
-    ((team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) || listed.some(a => addressOf(a.teammateId)?.team === team.name))
-  const rows = nav.team === null ? sessionRows(listed, teamList) : team ? teamRows(team, listed, led) : []
+    ((team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) ||
+      team.name === own ||
+      listed.some(a => addressOf(a.teammateId)?.team === team.name))
+  const rows = nav.team === null ? sessionRows(listed, teamList) : team ? teamRows(team, listed, led, activity[team.name] === false) : []
 
   const toRead = rows.slice(0, MAX_ROWS)
   const sel = rows.find(r => r.key === nav.selected) ?? null
@@ -415,20 +593,27 @@ export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
       messages = null
     }
   }
-  return { team, led, teams: teamList, rows, inboxes, messages, problems }
+  const swarmMessages = sel?.swarm ? await nodeMessages(p, sel.swarm.binding, sel.listed) : null
+  if (swarmMessages?.error) problems.push(`${sel!.name}'s messages: ${swarmMessages.error}`)
+  return { team, led, teams: teamList, teamsRead, activity, rows, inboxes, messages, swarmMessages, problems }
 }
+
+/** The team is known to have ended (WP-DF §0): the teams were read and it isn't among them, or it isn't running. */
+export const teamEnded = (f: AgentsFacts, team: string | null): boolean => team !== null && f.teamsRead && (!f.teams.some(t => t.name === team) || f.activity[team] === false)
 
 /**
  * What the tick compares (decision 16): the rows' ids and statuses, each
- * inbox's stamp (CE's: the file's size and mtime) and count, the teams, the
- * selected agent's message count, and what couldn't be read.
+ * inbox's stamp (CE's: the file's size and mtime) and count, the teams and
+ * whether each runs, the selected agent's message count, and what couldn't
+ * be read.
  */
 export function factsStamp(f: AgentsFacts): string {
   return JSON.stringify([
-    f.rows.map(r => [r.key, r.status.text, r.name, r.type, r.via?.kind ?? '', r.stopId ?? '', f.inboxes[r.key]?.stamp ?? '', f.inboxes[r.key]?.entries?.length ?? -1]),
-    f.teams.map(t => [t.name, t.mtimeMs, t.members.length]),
+    f.rows.map(r => [r.key, r.status.text, r.name, r.type, r.via?.kind ?? '', r.stopId ?? '', f.inboxes[r.key]?.stamp ?? '', f.inboxes[r.key]?.entries?.length ?? -1, r.swarm?.said ?? null]),
+    f.teams.map(t => [t.name, t.mtimeMs, t.members.length, f.activity[t.name] ?? null]),
     f.led,
     f.messages === undefined ? -2 : f.messages === null ? -1 : f.messages.length,
+    f.swarmMessages === null ? null : [f.swarmMessages.records.length, f.swarmMessages.records.at(-1)?.at ?? 0, f.swarmMessages.error],
     f.problems,
   ])
 }
@@ -459,31 +644,187 @@ export function entryOf(e: InboxEntry, now: number): AgentsInboxEntry {
   return { from: oneLine(e?.from, 40) || 'unknown', at: whenOf(e?.timestamp, now), lines: lines.length > 0 ? lines : ['(empty)'] }
 }
 
-/** A tool call's first argument, one line. */
-function firstArg(input: unknown): string {
-  if (input === null || typeof input !== 'object') return ''
-  const v = Object.values(input as Record<string, unknown>)[0]
-  if (v === undefined) return ''
-  return oneLine(typeof v === 'string' ? v : (JSON.stringify(v) ?? ''), 80)
+/** A tool call's first argument, one line, and whether it's a path (Read's, Edit's, Write's `file_path`, and the like). */
+function firstArg(input: unknown): { text: string; path: boolean } {
+  if (input === null || typeof input !== 'object') return { text: '', path: false }
+  const first = Object.entries(input as Record<string, unknown>)[0]
+  if (first === undefined) return { text: '', path: false }
+  const [key, v] = first
+  return { text: oneLine(typeof v === 'string' ? v : (JSON.stringify(v) ?? ''), 80), path: typeof v === 'string' && PATH_ARGS.has(key) }
 }
 
-/** One message as one line: its text's first line, else its first tool and that tool's first argument; nothing for a row with neither. */
-export function messageLine(m: SessionMessage): SwarmSpan | null {
-  const text = firstLine(m?.text, 200)
-  if (text !== '') return { text: `${m.role === 'assistant' ? '◆' : '›'} ${text}`, ...(m.role === 'user' ? { dim: true } : {}) }
+/** The arguments that name a file, drawn in the path color. */
+const PATH_ARGS = new Set(['file_path', 'notebook_path', 'path'])
+
+// ---------------------------------------------------------------------------
+// A transcript's lines: the engine's wrapped messages as plain words (WP-DF)
+
+/**
+ * The tags the engine wraps a delivered message in that name who sent it, and
+ * the attribute (first present wins) that holds the sender, from 2.1.291's
+ * writers: `teammate-message` (`A6t`, :369634: teammate_id, color, summary,
+ * verified), `agent-message` (`dhe`, :108806: from), `cross-session-message`
+ * (`urt`, :68179: from, from-session, hop-chain, from-name, from-mode,
+ * from-plugin) and `channel` (`_dt`, :994317: source and meta keys). Each
+ * writes `<tag …>\n<text>\n</tag>`, attributes escaped `&quot;` and `&apos;`
+ * (`Ss`, :65888).
+ */
+const FROM_TAGS: Record<string, readonly string[]> = {
+  'teammate-message': ['teammate_id'],
+  'agent-message': ['from'],
+  'cross-session-message': ['from-name', 'from'],
+  channel: ['source'],
+}
+
+/**
+ * The engine's other wrappers (its list `yne`, :17860, with the tag names at
+ * :17797-17857), each read as a word before its text. One not here is
+ * still shown, its markup taken out.
+ */
+const TAG_WORD: Record<string, string> = {
+  'task-notification': 'task',
+  'system-reminder': 'system reminder',
+  system_reminder: 'system reminder',
+  'command-name': 'command',
+  'local-command-stdout': 'command output',
+  'local-command-stderr': 'command error',
+  'local-command-caveat': 'note',
+  'bash-input': 'shell',
+  'bash-stdout': 'shell output',
+  'bash-stderr': 'shell error',
+  'bash-exit-code': 'shell exit code',
+  'user-prompt-submit-hook': 'hook',
+  'fetched-web-content': 'web content',
+  'coordinator-relay': 'relayed',
+  'slack-ping': 'slack',
+  'slack-tag-message': 'slack',
+  'remote-review': 'remote review',
+  'remote-review-progress': 'remote review',
+  tick: 'tick',
+}
+
+/** One top-level block of a message: its tag, attributes and inner text (to its close, or to the end of a cut message); or text outside any tag. */
+type Block = { tag: string | null; attrs: Record<string, string>; inner: string }
+
+const OPEN_TAG = /^<([A-Za-z][\w-]*)((?:\s+[\w-]+="[^"]*")*)\s*(\/?)>/
+const ATTR = /([\w-]+)="([^"]*)"/g
+const unescapeAttr = (v: string): string => v.replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+
+/** A message's text as blocks: each leading `<tag …>…</tag>` in turn, then whatever text is left. A tag never closed runs to the end. */
+function blocksOf(text: string): Block[] {
+  const out: Block[] = []
+  let rest = text.trim()
+  for (let i = 0; i < 20 && rest !== ''; i++) {
+    const m = OPEN_TAG.exec(rest)
+    if (!m) {
+      out.push({ tag: null, attrs: {}, inner: rest })
+      break
+    }
+    const tag = m[1]!
+    const attrs: Record<string, string> = {}
+    for (const a of m[2]!.matchAll(ATTR)) attrs[a[1]!] = unescapeAttr(a[2]!)
+    const after = rest.slice(m[0].length)
+    if (m[3] === '/') {
+      out.push({ tag, attrs, inner: '' })
+      rest = after.trim()
+      continue
+    }
+    const close = after.indexOf(`</${tag}>`)
+    out.push({ tag, attrs, inner: close < 0 ? after : after.slice(0, close) })
+    rest = close < 0 ? '' : after.slice(close + tag.length + 3).trim()
+  }
+  return out
+}
+
+/** Text with every tag taken out (the engine's escaped close, `<\/tag>`, too), its line breaks kept and the spaces left closed up. */
+const untagged = (text: string): string => text.replace(/<\\?\/?[A-Za-z][\w-]*(?:\s+[\w-]+="[^"]*")*\s*\/?>/g, ' ').replace(/[ \t]{2,}/g, ' ')
+
+/** A line's first non-empty line, one line, cut. */
+const firstOf = (text: string, max: number): string => oneLine(text.split('\n').find(l => l.trim() !== '') ?? '', max)
+
+/** A tagged block as the words drawn: who sent it (the name apart, for its color) and what it says. */
+function blockWords(b: Block): { from: string | null; text: string } {
+  if (b.tag === null) return { from: null, text: firstOf(b.inner, 200) }
+  const from = FROM_TAGS[b.tag]
+  if (from) {
+    const who = from.map(k => b.attrs[k]).find(v => v !== undefined && v.trim() !== '') ?? null
+    const text = firstOf(untagged(b.inner), 200)
+    return { from: who === null ? null : oneLine(who, 40), text: who === null ? `${b.tag}: ${text}` : text }
+  }
+  if (b.tag === 'task-notification') {
+    // `<task-notification>` holds `<task-id>`, `<status>`, `<summary>` and the rest (`Zi`, :384075).
+    const inner = blocksOf(b.inner.trim())
+    const pick = (t: string) => inner.find(x => x.tag === t)?.inner.trim() ?? ''
+    const status = oneLine(pick('status'), 24)
+    const summary = firstOf(untagged(pick('summary')), 160) || firstOf(untagged(b.inner), 160)
+    return { from: null, text: `task${status ? ` ${status}` : ''}${summary ? `: ${summary}` : ''}` }
+  }
+  const word = TAG_WORD[b.tag] ?? b.tag
+  const text = firstOf(untagged(b.inner), 200)
+  return { from: null, text: text === '' ? word : `${word}: ${text}` }
+}
+
+/**
+ * A user message's words: its first block that says something, past a
+ * system reminder (the reminder itself when it's all there is), and how many
+ * more say something. `<command-name>` and its `<command-args>` read as the
+ * command typed. Pure.
+ */
+function userWords(text: string): { from: string | null; text: string; more: number } | null {
+  const blocks = blocksOf(text).filter(b => b.tag !== null || b.inner.trim() !== '')
+  if (blocks.length === 0) return null
+  const command = blocks.find(b => b.tag === 'command-name')
+  if (command) {
+    const args = oneLine(untagged(blocks.find(b => b.tag === 'command-args')?.inner ?? ''), 160)
+    return { from: null, text: `${oneLine(untagged(command.inner), 60)}${args ? ` ${args}` : ''}`, more: 0 }
+  }
+  const said = blocks.filter(b => b.tag !== 'system-reminder' && b.tag !== 'system_reminder')
+  const pool = [said, blocks].map(bs => bs.filter(b => untagged(b.inner).trim() !== '')).find(bs => bs.length > 0) ?? (said.length > 0 ? said : blocks)
+  return { ...blockWords(pool[0]!), more: pool.length - 1 }
+}
+
+/**
+ * One message as one line of spans: an assistant's text `◆`, a user's `›`
+ * muted, the engine's wrapped messages in words (`from lead: …`, the name in
+ * the name color), else its first tool and that tool's first argument: `↳`
+ * faint, the tool's name bold in the label color (as the engine draws one),
+ * the argument muted (a file's path in the path color), `(+n more)` faint
+ * (the user's ask, 2026-10-07; WP-DD's Swarms browser draws it the same).
+ * Nothing for a row with neither. Markup it doesn't know is shown with the
+ * tags taken out, never dropped. Text is cleaned and cut.
+ */
+export function messageLine(m: SessionMessage): SwarmSpan[] | null {
+  const text = clean(m?.text, 8000)
+  if (text.trim() !== '') {
+    if (m.role === 'assistant') return [{ text: `◆ ${firstOf(text, 200)}` }]
+    const w = userWords(text)
+    if (w && w.text !== '') {
+      const more = w.more > 0 ? ` (+${w.more} more)` : ''
+      if (w.from !== null) return [{ text: '› from ', color: STYLE.muted }, { text: w.from, color: STYLE.name }, { text: `: ${w.text}${more}`, color: STYLE.muted }]
+      return [{ text: `› ${w.text}${more}`, color: STYLE.muted }]
+    }
+  }
   const uses = Array.isArray(m?.toolUses) ? m.toolUses : []
   const t = uses[0] as { tool?: unknown; name?: unknown; input?: unknown } | undefined
   if (!t) return null
   const arg = firstArg(t.input)
-  const more = uses.length > 1 ? ` (+${uses.length - 1} more)` : ''
-  return { text: `↳ ${oneLine(t.tool ?? t.name ?? 'tool', 40)}${arg ? ` ${arg}` : ''}${more}`, color: STYLE.muted }
+  const spans: SwarmSpan[] = [
+    { text: '↳ ', color: STYLE.faint },
+    { text: oneLine(t.tool ?? t.name ?? 'tool', 40) || 'tool', bold: true, color: STYLE.label },
+  ]
+  if (arg.text !== '') spans.push({ text: ` ${arg.text}`, color: arg.path ? STYLE.path : STYLE.muted })
+  if (uses.length > 1) spans.push({ text: ` (+${uses.length - 1} more)`, color: STYLE.faint })
+  return spans
 }
 
-/** The transcript's tail: the last 8 messages that read as a line, or 30 with [More]. */
-export function tailOf(messages: readonly SessionMessage[] | null | undefined, more: boolean): NonNullable<AgentsSelected['transcript']> {
-  if (!Array.isArray(messages)) return { readable: false, lines: [], total: 0, more: false }
-  const lines = messages.map(messageLine).filter((l): l is SwarmSpan => l !== null)
-  return { readable: true, lines: lines.slice(-(more ? TAIL_MORE : TAIL)), total: lines.length, more }
+/** A line's text, its spans joined. */
+export const lineText = (spans: readonly SwarmSpan[]): string => spans.map(s => s.text).join('')
+
+/** The transcript as the view keeps it: its messages that read as a line, the last LINES_KEPT of them, and how many there are. */
+export function tailOf(messages: readonly SessionMessage[] | null | undefined): NonNullable<AgentsSelected['transcript']> {
+  if (!Array.isArray(messages)) return { readable: false, lines: [], total: 0 }
+  const lines = messages.map(messageLine).filter((l): l is SwarmSpan[] => l !== null)
+  return { readable: true, lines: lines.slice(-LINES_KEPT), total: lines.length }
 }
 
 function sendNote(via: SendVia | null): string | null {
@@ -499,6 +840,28 @@ function unreadOf(f: AgentsFacts, r: RowFacts): number | null {
   return box?.entries ? box.entries.length : null
 }
 
+/** A message's own first line: past the line litter's routing frames it with ("From the lead:", "For your worker fixer (…), from …:"). Pure. */
+export function messageFirst(text: string): string {
+  const lines = text.split('\n').filter(l => l.trim() !== '')
+  const framed = lines.length > 1 && /^\s*(?:From .+|For your .+, from .+):\s*$/.test(lines[0]!)
+  return oneLine(lines[framed ? 1 : 0] ?? '', 200)
+}
+
+/** One end of a message as drawn: you, the lead, a plugin, or a node by its instance name. */
+function endOf(id: string, names: Readonly<Record<string, string>>): string {
+  if (id === 'user') return 'you'
+  if (id === 'lead' || id === 'main') return 'lead'
+  if (id.startsWith('plugin:')) return `${oneLine(id.slice('plugin:'.length), 24)} plugin`
+  return names[id] ?? (oneLine(id, 16) || 'unknown')
+}
+
+/** The selected node's messages as the view holds them: the newest AGENTS_MESSAGES, oldest first. Pure. */
+export function swarmMessagesOf(m: SwarmMessagesFacts, now: number): NonNullable<AgentsSelected['swarm']> {
+  const kept = m.records.slice(-AGENTS_MESSAGES)
+  const messages: AgentsSwarmMessage[] = kept.map(x => ({ from: endOf(x.from, m.names), to: endOf(x.to, m.names), at: whenAt(x.at, now), line: messageFirst(x.text) }))
+  return { name: m.swarm, node: m.node, messages, hidden: m.records.length - kept.length, error: m.error }
+}
+
 function selectedOf(f: AgentsFacts, nav: AgentsNav, r: RowFacts, now: number): AgentsSelected {
   const box = r.inbox ? f.inboxes[r.key] : undefined
   const entries = box?.entries ?? []
@@ -510,49 +873,102 @@ function selectedOf(f: AgentsFacts, nav: AgentsNav, r: RowFacts, now: number): A
     key: r.key,
     name: r.name,
     inbox,
-    transcript: r.listed ? tailOf(f.messages, nav.more) : null,
+    transcript: r.listed ? tailOf(f.messages) : null,
     sendNote: sendNote(r.via),
     stop: r.stopId ? { armed: nav.armed?.arg === arg && armedLive(nav, now) } : null,
+    swarm: r.swarm && f.swarmMessages ? swarmMessagesOf(f.swarmMessages, now) : null,
   }
 }
 
-/** This session first, then each team (newest first, as the store answers), with its member count. */
-function pickerOptions(teamList: readonly TeamInfo[]): SwarmOption[] {
-  return [
-    { value: SESSION_SCOPE, label: 'this session' },
-    ...teamList.slice(0, 20).map(t => ({ value: scopeOf(t.name), label: `${oneLine(t.name, 40)} (${plural(t.members.length, 'member')})` })),
-  ]
+/** A moment in ms as whenOf draws it. */
+const whenAt = (ms: number, now: number): string => whenOf(new Date(ms).toISOString(), now)
+
+/** A team's description in the picker: where its lead runs (or ran), when it was made, its members. */
+function teamDescription(t: TeamRecord, now: number): string {
+  const names = t.members.map(m => oneLine(m.name, 30))
+  const members = names.length === 0 ? 'no members' : `${names.slice(0, 6).join(', ')}${names.length > 6 ? ` +${names.length - 6} more` : ''}`
+  return [t.leadCwd ? `lead in ${oneLine(t.leadCwd, 80)}` : null, t.createdAt !== undefined ? `made ${whenAt(t.createdAt, now)}` : null, members].filter(Boolean).join(' · ')
 }
 
-function titleOf(f: AgentsFacts, nav: AgentsNav): SwarmSpan[] {
-  const head: SwarmSpan = { text: 'litter · agents', bold: true }
+/**
+ * The picker (WP-DF §0): this session first, then each team, newest first,
+ * that runs, or can't be told to have ended, or is the one shown or named;
+ * with [Show all] every team. Answers how many ended teams were left out.
+ */
+function pickerOf(f: AgentsFacts, nav: AgentsNav, now: number): { options: AgentsOption[]; hidden: number } {
+  const mine = nav.team === null ? plural(f.rows.length, 'agent') : "the agents this session started, and its teammates"
+  const options: AgentsOption[] = [{ value: SESSION_SCOPE, label: 'this session', members: null, active: true, description: mine }]
+  let hidden = 0
+  for (const t of f.teams) {
+    const active = f.activity[t.name] ?? null
+    if (!nav.showAll && active === false && t.name !== nav.team && t.name !== nav.named) {
+      hidden++
+      continue
+    }
+    if (options.length > MAX_TEAMS) continue
+    options.push({ value: scopeOf(t.name), label: oneLine(t.name, 40), members: t.members.length, active, description: teamDescription(t, now) })
+  }
+  return { options, hidden }
+}
+
+/** The notice for a team shown that isn't running (WP-DF §0): its lead's folder and when it started, from its config, and why nothing sends. */
+export function endedText(t: TeamRecord, now: number): string {
+  const where = [t.leadCwd ? oneLine(t.leadCwd, 80) : null, t.createdAt !== undefined ? `started ${whenAt(t.createdAt, now)}` : null].filter(Boolean).join(', ')
+  return `${oneLine(t.name, 60)} isn't running: its lead session${where ? ` (${where})` : ''} ended. Its inboxes stay readable; nothing here sends to it, since a message would be read by nobody.`
+}
+
+/** The body's first line: what's shown, and its counts. */
+function headOf(f: AgentsFacts, nav: AgentsNav): AgentsBody['head'] {
   if (nav.team === null) {
     const running = f.rows.filter(r => r.listed?.status === 'running').length
-    return [head, { text: ` · this session · ${plural(f.rows.length, 'agent')}${running > 0 ? ` · ${running} running` : ''}` }]
+    return { team: null, note: `${plural(f.rows.length, 'agent')}${running > 0 ? ` · ${running} running` : ''}` }
   }
-  return [
-    head,
-    { text: ' · team ' },
-    { text: oneLine(nav.team, 40), color: STYLE.name },
-    { text: f.team ? ` · ${plural(f.rows.length, 'member')}${f.led ? ' · led by this session' : ''}` : ' · not found', ...(f.team ? {} : { dim: true }) },
-  ]
+  const team = oneLine(nav.team, 40)
+  if (!f.team) return { team, note: 'not found' }
+  const state = f.led ? ' · led by this session' : f.activity[f.team.name] === false ? ' · ended' : ''
+  return { team, note: `${plural(f.rows.length, 'member')}${state}` }
+}
+
+/** A row's description: the selected agent's last line, else its task's own words when the row isn't named by them (a swarm node's are beside its name already). */
+function rowDescription(f: AgentsFacts, r: RowFacts, selected: boolean): string {
+  if (selected && Array.isArray(f.messages)) {
+    const last = tailOf(f.messages).lines.at(-1)
+    if (last) return oneLine(lineText(last), 200)
+  }
+  const said = r.listed && !r.swarm ? oneLine(r.listed.description, 200) : ''
+  return said !== '' && said !== r.name ? said : ''
 }
 
 /** The view, from what gather() read and the navigation: a pure function, `v` the writer's. */
 export function agentsView(f: AgentsFacts, nav: AgentsNav, now: number, v: number): AgentsPaneView {
   const shown = f.rows.slice(0, MAX_ROWS)
-  const rows: AgentsRow[] = shown.map(r => ({ key: r.key, name: r.name, type: r.type, status: r.status, unread: unreadOf(f, r) }))
+  const rows: AgentsRow[] = shown.map(r => ({
+    key: r.key,
+    name: r.name,
+    type: r.type,
+    status: r.status,
+    unread: unreadOf(f, r),
+    description: rowDescription(f, r, r.key === nav.selected),
+    can: { message: r.via !== null, transcript: r.listed !== null, stop: r.stopId !== null },
+    swarm: r.swarm ? { name: oneLine(r.swarm.binding.swarm, 40), said: r.swarm.said } : null,
+  }))
   const sel = f.rows.find(r => r.key === nav.selected) ?? null
   const to = sel?.via ? sel.name : null
-  const broadcast = nav.team !== null && f.team ? oneLine(f.team.name, 40) : null
+  const ended = nav.team !== null && f.team !== null && f.activity[f.team.name] === false
+  const broadcast = nav.team !== null && f.team && !ended ? oneLine(f.team.name, 40) : null
+  const picker = pickerOf(f, nav, now)
   return {
     view: 'agents',
     v,
     body: {
-      title: titleOf(f, nav),
+      head: headOf(f, nav),
       notice: nav.notice,
+      ended: ended && f.team ? endedText(f.team, now) : null,
       scope: scopeOf(nav.team),
-      options: pickerOptions(f.teams),
+      options: picker.options,
+      hiddenTeams: picker.hidden,
+      showAll: nav.showAll,
+      picking: nav.picking,
       rows,
       hiddenRows: f.rows.length - shown.length,
       selected: sel ? selectedOf(f, nav, sel, now) : null,

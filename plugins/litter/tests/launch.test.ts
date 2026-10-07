@@ -92,6 +92,18 @@ describe('the agent.spawn block', () => {
     expect((await $.agent.spawn({ ...SPAWN, subagentType: 'general-purpose' })).deny).toBeUndefined()
   })
 
+  // 2.1.292 raises agent.spawn for each agent() a workflow script starts: `workflow` set, parentAgentId absent as from main.
+  test("a workflow's agent of a litter role passes, as litter's own runs start them; a workflow's of a swarm type is refused", async ($, on) => {
+    mock.store(on)
+    on('agent.spawn', async () => ({ model: 'test-model', agentId: 'agent-new' }))
+    const wf = { ...SPAWN, workflow: { runId: 'wf_1', agentIndex: 1 } } as const
+    expect(await $.agent.spawn({ ...wf, subagentType: 'litter:executor' })).toEqual({ model: 'test-model', agentId: 'agent-new' })
+    expect(await $.agent.spawn({ ...wf, subagentType: 'general-purpose' })).toEqual({ model: 'test-model', agentId: 'agent-new' })
+    expect((await $.agent.spawn({ ...wf, subagentType: 'litter:sw-worker' })).deny).toContain("a swarm's agents are started by its lead and nodes, not by a workflow")
+    // The main thread's own spawn of a role is still refused.
+    expect((await $.agent.spawn({ ...SPAWN, subagentType: 'litter:executor' })).deny).toContain('litter roles run inside litter workflows only')
+  })
+
   // 2.1.289 runs agent.spawn for a teammate (isTeammate, background). A pin: the fast path past the waits
   // (swarm-admit.test.ts proves it skips them) leaves the role block as it was.
   test('pin: a main-thread teammate of a litter role is still refused; an outside teammate passes', async ($, on) => {

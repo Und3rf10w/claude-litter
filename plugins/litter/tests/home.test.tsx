@@ -40,6 +40,8 @@ type World = {
   /** Each hub view litter wrote, in order, and each board view. */
   hubs: HubView[]
   boards: BoardView[]
+  /** Resolves with the first hub view litter writes that `pred` holds of (the last one written, when it does already). */
+  hubWritten: (pred: (h: HubView) => boolean) => Promise<HubView>
   clock: ReturnType<typeof mock.clock>
 }
 
@@ -103,19 +105,31 @@ function world(on: On): World {
   })
   const hubs: HubView[] = []
   const boards: BoardView[] = []
+  let waiting: { pred: (h: HubView) => boolean; resolve: (h: HubView) => void }[] = []
   on('state.set', async (_$, e, next) => {
     const set = await next(e)
-    if (e.key === 'hub') hubs.push(e.value as HubView)
+    if (e.key === 'hub') {
+      const hub = e.value as HubView
+      hubs.push(hub)
+      const met = waiting.filter(x => x.pred(hub))
+      waiting = waiting.filter(x => !met.includes(x))
+      for (const x of met) x.resolve(hub)
+    }
     if (e.key === 'board') boards.push(e.value as BoardView)
     return set
   })
+  const hubWritten = (pred: (h: HubView) => boolean): Promise<HubView> => {
+    const last = hubs.at(-1)
+    // One that's never written fails the test at its own timeout.
+    return last && pred(last) ? Promise.resolve(last) : new Promise(resolve => waiting.push({ pred, resolve }))
+  }
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('session.id', async () => ({ value: SESSION }))
   on('session.cwd', async () => ({ value: '/repo' }))
   mock.store(on)
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME: '/home/tier1' })
-  return { files, opened, toasts, held, hubs, boards, clock }
+  return { files, opened, toasts, held, hubs, boards, hubWritten, clock }
 }
 
 async function start($: Engine, on: On): Promise<World> {
@@ -393,10 +407,16 @@ describe("Home's [Open]", () => {
     const w = await start($, on)
     await haltedRun(w.files)
     await run($, '')
-    for (let i = 0; i < 5 && !(w.hubs.at(-1)?.home?.needsYou.length ?? 0); i++) await w.clock.advance(2_000)
-    const home = w.hubs.at(-1)!.home!
-    expect(home.needsYou.map(r => [r.open, `${r.mark.glyph} ${r.mark.word}`, r.spans.map(s => s.text).join('')])).toEqual([[`home:open:runs:${RUN}`, '⚑ needs you', `execute ${RUN} · halted at G2 · 4m`]])
-    expect(w.hubs.at(-1)!.live.map(s => s.text).join('')).toBe('nothing running · ⚑ needs you: 1 run')
+    // Before the band's first build, Home has nothing of the run (it reads no file).
+    expect(w.hubs.at(-1)!.home!.needsYou).toEqual([])
+    // The ui tick's first run, 2 s after session.start: the band's build, then the hub's write. The build checks
+    // each ledger record's sha256, which resolves outside what the mock clock's advance waits for, so advance can
+    // return mid-tick (and the ticks later advances fire are skipped, as a tick never overlaps one running). So
+    // the test waits for the hub's write itself, never on more advances.
+    await w.clock.advance(2_000)
+    const hub = await w.hubWritten(h => (h.home?.needsYou.length ?? 0) > 0)
+    expect(hub.home!.needsYou.map(r => [r.open, `${r.mark.glyph} ${r.mark.word}`, r.spans.map(s => s.text).join('')])).toEqual([[`home:open:runs:${RUN}`, '⚑ needs you', `execute ${RUN} · halted at G2 · 4m`]])
+    expect(hub.live.map(s => s.text).join('')).toBe('nothing running · ⚑ needs you: 1 run')
     const ui = await mount($)
     const open = await ui.find({ type: 'Button', key: `home:open:runs:${RUN}` })
     expect(open?.props.variant).toBe('primary')

@@ -50,7 +50,7 @@ import { resolveLitterDir, writeGitignore } from './litterdir'
 import { onSessionEnd, onTurnComplete, reconcileRuns, settleNotices } from './lifecycle'
 import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
-import { roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
+import { outsideWorkflow, roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 import { holdClear, noteSessionEnd, rebound, startSwarmTimers } from './clear'
 import { attach, binding, notePromptOrigin, setInteractive, setRecordedSession, withGateClosed } from './swarm/state'
 import { registerSwarmTools } from './swarm/tools'
@@ -414,9 +414,10 @@ export const register: Register = (on, options) => {
 
   // The main thread can't spawn litter roles; then the swarm's spawn check, with
   // the engine's own `next`. A rendezvous, so it keeps the spawner's context.
-  // A teammate litter has no stake in passes first, waiting on no rebind.
+  // A teammate litter has no stake in passes first, waiting on no rebind, and so
+  // does a workflow's agent of no swarm type (2.1.292 raises one for each agent()).
   on('agent.spawn', async ($, e, next) => {
-    if (outsideTeammate(e)) return next(e)
+    if (outsideTeammate(e) || outsideWorkflow(e)) return next(e)
     const p = enginePorts($)
     await rebound(p)
     const refused = roleSpawnRefusal(e)

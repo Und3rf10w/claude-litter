@@ -319,19 +319,71 @@ describe('the finished-run card, with no card built', () => {
   })
 })
 
-/** The `litter` pane's request id, and each section these tests show in it: its atom, view, "nothing yet" title and line, and the hub's header. */
+/**
+ * The `litter` pane's request id, and each section these tests show in it:
+ * its atom, view, "nothing yet" line (the chrome's empty: its words, the
+ * command, what it does), the hub's header, and a body as its build writes
+ * one (phase 5b, WP-DF: no title; the first line is `head`, its note "built").
+ */
 const LITTER_PANE = 'litter'
+const NOTICE = { level: 'info', text: 'a notice' }
 const SHOWN = [
-  ['tasks', 'tasksPane', 'tasks', 'litter · tasks', 'nothing to show yet: /litter tasks opens a task list', ' · Tasks'],
-  ['agents', 'agentsPane', 'agents', 'litter · agents', "nothing to show yet: /litter agents opens this session's agents", ' · Agents'],
+  [
+    'tasks',
+    'tasksPane',
+    'tasks',
+    ['nothing to show yet: ', '/litter tasks', ' opens a task list'],
+    ' · Tasks',
+    {
+      head: { label: 'this session', name: null, note: 'built' },
+      notice: NOTICE,
+      list: null,
+      lists: [],
+      hidden: null,
+      hiddenCount: 0,
+      showEmpty: false,
+      picking: false,
+      listName: null,
+      filter: 'all',
+      counts: { all: 0, pending: 0, in_progress: 0, completed: 0 },
+      sort: 'id',
+      rows: [],
+      empty: 'no tasks yet',
+      problems: [],
+      editor: null,
+    },
+  ],
+  [
+    'agents',
+    'agentsPane',
+    'agents',
+    ['nothing to show yet: ', '/litter agents', " opens this session's agents"],
+    ' · Agents',
+    {
+      head: { team: null, note: 'built' },
+      notice: NOTICE,
+      ended: null,
+      scope: 'session',
+      options: [],
+      hiddenTeams: 0,
+      showAll: false,
+      picking: false,
+      rows: [],
+      hiddenRows: 0,
+      selected: null,
+      composer: null,
+      broadcast: null,
+      problems: [],
+    },
+  ],
 ] as const
 
 /** The hub's view with `section` shown, the strip drawn from nothing counted. */
 const hubOn = (section: string) => ({ view: 'hub', v: 1, section, live: [], tabs: [] })
 
 describe('the `litter` pane on Tasks and on Agents', () => {
-  for (const [section, atom, view, title, empty, head] of SHOWN) {
-    test(`${section}: draws its "nothing yet" tree with no view, and a body's header with one, under the hub's header, on the terminal and the desktop`, async ($, on) => {
+  for (const [section, atom, view, empty, head, body] of SHOWN) {
+    test(`${section}: draws its "nothing yet" tree with no view, and a body's first line with one, under the hub's header, on the terminal and the desktop`, async ($, on) => {
       mock.store(on)
       let held: unknown = null
       on('state.get', async (_$, e, next) =>
@@ -341,12 +393,12 @@ describe('the `litter` pane on Tasks and on Agents', () => {
         held = null
         const blank = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
         expect((await blank.find({ type: 'Text', text: head }))?.text).toBe(head)
-        expect((await blank.find({ type: 'Text', text: title }))?.text).toBe(title)
-        expect((await blank.find({ type: 'Text', text: empty }))?.text).toBe(empty)
+        for (const part of empty) expect((await blank.find({ type: 'Text', text: part }))?.text).toBe(part)
         await blank.unmount()
-        held = { view, v: 1, body: { title: [{ text: `${title} · built`, bold: true }], notice: { level: 'info', text: 'a notice' } } }
+        held = { view, v: 1, body }
         const built = await $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: LITTER_PANE, props: pane(LITTER_PANE) })
-        expect((await built.find({ type: 'Text', text: `${title} · built` }))?.text).toBe(`${title} · built`)
+        expect((await built.find({ type: 'Text', text: /^this session$/ }))?.text).toBe('this session')
+        expect((await built.find({ type: 'Text', text: /^built$/ }))?.text).toBe('built')
         expect(await built.find({ type: 'Text', text: /a notice/ })).toBeDefined()
         await built.unmount()
       }
@@ -354,7 +406,7 @@ describe('the `litter` pane on Tasks and on Agents', () => {
 
     test(`${section}: ui.render's catch passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
       mock.store(on)
-      // The section's atom holds a body whose title isn't spans: the render throws on it, and its catch passes the render on.
+      // The section's atom holds a body not of its shape (no first line): the render throws on it, and its catch passes the render on.
       on('state.get', async (_$, e, next) =>
         e.key === 'hub'
           ? { value: { value: hubOn(section), version: 1 } }

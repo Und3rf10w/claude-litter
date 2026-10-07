@@ -130,6 +130,22 @@ describe('agent.spawn', () => {
     expect(await agentSpawnFailed($, spawn('Explore'), lead.next)).toBe(PASSED)
   })
 
+  // 2.1.292 raises agent.spawn for each agent() a workflow script starts (`workflow`, no parentAgentId), and asks
+  // the catch in the hook's place for one raised beneath the hook's own frame (HookFailure 're-entry').
+  test("a workflow's agent of a litter role passes, as litter's own runs start them; a workflow's of a swarm type is denied", async () => {
+    const wf = (subagentType: string) => ({ ...(spawn(subagentType) as object), workflow: { runId: 'wf_1', agentIndex: 1 } }) as never
+    for (const type of ['litter:executor', 'litter:verifier', 'Explore']) {
+      const { next, calls } = caught('re-entry')
+      expect(await agentSpawnFailed($, wf(type), next)).toBe(PASSED)
+      expect(calls.length).toBe(1)
+    }
+    for (const type of ['litter:sw-alpha-fixer', 'sw-alpha-fixer']) {
+      const { next, calls } = caught('re-entry')
+      expect((await agentSpawnFailed($, wf(type), next)) as unknown).toEqual({ deny: expect.stringContaining('litter guard failed: agent.spawn') })
+      expect(calls).toEqual([])
+    }
+  })
+
   test('once the hook had called next the subagent has started: every spawn gets what that call settled to, never a deny', async () => {
     for (const e of [spawn('litter:sw-alpha-fixer'), spawn('Explore', 'node-1'), spawn('litter:executor'), spawn('Explore')]) {
       const { next, calls } = caught('ran past its budget', true)
