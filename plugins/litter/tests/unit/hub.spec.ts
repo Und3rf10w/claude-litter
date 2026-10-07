@@ -730,10 +730,13 @@ describe('the chrome layout', () => {
     expect(WIDE_COLUMNS).toBe(100)
   })
 
-  test("the strip's widths: `1: label` focused, the label alone unfocused, `› ` before the shown one", () => {
+  test("the strip's widths: `1: label` focused, the label alone unfocused, `› ` before the shown one, ` │` after all but the last", () => {
     const tabs = tabsOf({ runs: 2, swarms: 0, swarmsNeedYou: false, rules: null, tasks: null, agents: null })
-    expect(stripWidths(tabs, 'home', false).slice(0, 2)).toEqual(['Home'.length + 2, 'Runs 2'.length])
-    expect(stripWidths(tabs, 'home', true).slice(0, 2)).toEqual(['Home'.length + 5, 'Runs 2'.length + 3])
+    expect(stripWidths(tabs, 'home', false).slice(0, 2)).toEqual(['Home │'.length + 2, 'Runs 2 │'.length])
+    expect(stripWidths(tabs, 'home', true).slice(0, 2)).toEqual(['Home │'.length + 5, 'Runs 2 │'.length + 3])
+    expect(stripWidths(tabs, 'home', false).at(-1)).toBe('Doctor'.length)
+    const flagged = tabsOf({ runs: 0, swarms: 1, swarmsNeedYou: true, rules: null, tasks: null, agents: null })
+    expect(stripWidths(flagged, 'home', false)[2]).toBe('Swarms 1 ⚑ │'.length)
   })
 
   test('planColumns drops the least important column first, then cuts the fill column', () => {

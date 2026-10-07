@@ -34,9 +34,9 @@ import type { SwarmNotice, SwarmOption, TasksBody, TasksEditor, TasksFilter, Tas
 import type { Loaded } from '../ui/hub'
 import { cells } from '../band/view'
 import { tableFor } from '../swarm/builder'
-import { oneLine } from '../swarm/view'
+import { clean, oneLine } from '../swarm/view'
 import { NOTICE_STYLE, STYLE, type NoticeLevel } from '../ui/style'
-import { action, actions, empty, field, fieldRows, fitCell, heading, notice, packItems, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
+import { action, actions, empty, field, fieldOverflows, fieldRows, fitCell, framesFields, heading, notice, packItems, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
 import { DESCRIPTION_MIN, list, listPlace, pageOf, scrolled, type ListAction, type ListSpec } from '../ui/list'
 import { lastDrawn } from '../ui/drawn'
 import { listOffset, moveList, openSection } from '../ui/hub'
@@ -160,6 +160,17 @@ export const SUBJECT_MIN = 20
 const OWNER_CELLS = 16
 /** The rows a description's own lines take under its field at most. */
 const DESCRIPTION_TEXT_ROWS = 3
+
+/**
+ * The description's own lines under its field: its lines when it has
+ * several; its one line, cleaned, when the framed field cuts it, so the
+ * whole of it reads (the user's live look, 2026-10-07). Pure.
+ */
+function descriptionLines(ed: TasksEditor, ctx: Pick<BodyContext, 'surface' | 'bodyColumns'>): string | null {
+  if (ed.descriptionText !== null) return ed.descriptionText
+  if (ed.description === null || !framesFields(ctx.surface)) return null
+  return fieldOverflows({ label: 'Description', value: ed.description }, ctx.bodyColumns) ? clean(ed.description, 2000) : null
+}
 /** `[ Reload ]` and its gap, beside the changed-on-disk line. */
 const RELOAD_CELLS = 11
 /** The lists' ids: the hub keeps each window by it, and its footer's keys are `<id>:up` and `<id>:down`. */
@@ -320,7 +331,8 @@ function editorRows(body: TasksBody, ctx: TasksCtx): number {
   // A field with its caption; on the mobile app its value as text, then the caption.
   const fieldH = (has: boolean): number => (!has ? 1 : fieldsOn(ctx.surface) ? fieldRows(ctx.surface, true) : 2)
   let n = 1 + fieldH(ed.subject !== null) + fieldH(ed.description !== null) + 2 + 1
-  if (ed.descriptionText !== null) n += Math.min(DESCRIPTION_TEXT_ROWS, textRows(ed.descriptionText, cols))
+  const lines = descriptionLines(ed, ctx)
+  if (lines !== null) n += Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, cols))
   if (ed.changed) n += textRows(noticeText('warning', changedText(ed)), Number.isFinite(cols) ? cols - RELOAD_CELLS : cols)
   return n
 }
@@ -512,7 +524,7 @@ function reloadBanner(el: PaneElements, text: string, key: string): RenderElemen
  * The selected task's editor under its heading (its links the note):
  * Subject and Description as framed fields, each captioned with how it
  * saves (the Description's with what ⏎ marks too); the description's own
- * lines when it has several; Status and Owner short Selects; the
+ * lines when it has several or its field cuts it; Status and Owner short Selects; the
  * changed-on-disk banner with [Reload]; [Save], primary while there's an
  * edit to save, and [Revert].
  */
@@ -520,8 +532,9 @@ function editorPart(el: PaneElements, listKey: string, ed: TasksEditor, ctx: Bod
   const { Box, Text } = el
   const k = (a: string): string => `tasks:${a}:${listKey}/${ed.id}`
   const how = ed.via === 'tool' ? 'saves through TaskUpdate' : 'saves by a direct write: no hooks run, no assignment message'
-  const at = { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused }
   const cols = ctx.bodyColumns
+  const at = { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused, columns: cols }
+  const lines = descriptionLines(ed, ctx)
   const tooLong = (what: string): RenderElement => (
     <Text color={STYLE.warning} wrap="truncate-end">
       {`${NOTICE_STYLE.warning.glyph} the ${what} is too long to edit here`}
@@ -534,10 +547,10 @@ function editorPart(el: PaneElements, listKey: string, ed: TasksEditor, ctx: Bod
       {ed.description !== null
         ? field(el, { key: k('description'), label: 'Description', value: ed.description, placeholder: 'none', submitLabel: 'keep' }, `${LINE_MARK} marks a line break · ${how}`, at)
         : tooLong('description')}
-      {ed.descriptionText !== null ? (
-        <Box height={Math.min(DESCRIPTION_TEXT_ROWS, textRows(ed.descriptionText, cols))} overflow="hidden">
+      {lines !== null ? (
+        <Box height={Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, cols))} overflow="hidden">
           <Text color={STYLE.muted} wrap="wrap">
-            {ed.descriptionText}
+            {lines}
           </Text>
         </Box>
       ) : null}

@@ -1041,7 +1041,7 @@ function scopePart(el: PaneElements, r: RulesRow, scopes: readonly string[]): Re
 /** [Edit…]'s editor: Paths a field whose caption says what an empty one means (what a ban protects); Type a short Select (Buttons where there's none); [Done]. */
 function editorPart(el: PaneElements, r: RulesRow, editing: NonNullable<RulesBody['editing']>, ctx: BodyContext): RenderElement {
   const { Box, Button, Text } = el
-  const at = { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused }
+  const at = { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused, columns: ctx.bodyColumns }
   const type =
     'Select' in el ? (
       <el.Select key={`rules:type:${r.key}`} label="Type" options={TYPES.map(t => ({ value: t, label: t }))} value={editing.type} onSelect={noop} />

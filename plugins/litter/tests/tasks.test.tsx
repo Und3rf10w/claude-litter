@@ -639,4 +639,35 @@ describe('the drawings', () => {
       expect(bodyOf(await drawn(ui, columns, true), 'team team-a', 'right-click a row')).toEqual(golden(columns, INLINE_ROWS(columns)))
     })
   }
+
+  // The user's live look (2026-10-07): a description wider than its field drew `Descriptioncodex-prober: …` with its
+  // `:` on a second row, the engine's Input squeezing its own label. The field keeps its one row and the label whole.
+  test('a one-line description wider than its field: the label whole on the one row, the value cut, the whole of it under the field; holding the ring, the label is the Input’s again', async ($, on) => {
+    const long = 'codex-prober: P1 install from a local marketplace, P2 the hooks it runs, P3 the app server'
+    const w = world(on, { ...TEAM_A, '/cfg/tasks/team-a/3.json': task('3', { status: 'in_progress', subject: 'Check the parser', owner: 'writer', description: long }) })
+    await run($, 'team-a')
+    const ui = await mountTasks($, 'terminal', { bodyColumns: 60, bodyRows: 40, isFocused: true })
+    await pressRow(ui, w, 'terminal', 2, 'tasks:select:team-a/3')
+    expect(bodyOf(await drawn(ui, 60, true), 'Task #3', 'Status:')).toEqual(
+      golden(60, [
+        [ruled('Task #3', 60), 'suggestion bold, subtle'],
+        ...framed('Subject: Check the parser', 60, 'promptBorder, default, promptBorder'),
+        [HOW, 'inactive'],
+        ...framed('Description: codex-prober: P1 install from a local marke', 60, 'promptBorder, default, promptBorder'),
+        ['⏎ marks a line break · saves by a direct write: no hooks ru…', 'inactive'],
+        ['codex-prober: P1 install from a local marketplace, P2 the', 'inactive'],
+        ['hooks it runs, P3 the app server', 'inactive'],
+        ['Status: ▸ in progress ▾', 'default'],
+      ]),
+    )
+    const key = 'tasks:description:team-a/3'
+    expect((await ui.find({ type: 'Input', key }))?.props).toEqual(expect.objectContaining({ value: long }))
+    expect((await ui.find({ type: 'Input', key }))?.props.label).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'Description:' })).toBeDefined()
+    // A subject that fits keeps the engine's label.
+    expect((await ui.find({ type: 'Input', key: 'tasks:subject:team-a/3' }))?.props.label).toBe('Subject')
+    await $.ui.focus({ component: 'Pane', requestId: 'litter', plugin: 'litter', element: key, origin: { kind: 'person' } })
+    expect((await ui.find({ type: 'Input', key }))?.props.label).toBe('Description')
+    expect(await ui.find({ type: 'Text', text: 'Description:' })).toBeUndefined()
+  })
 })

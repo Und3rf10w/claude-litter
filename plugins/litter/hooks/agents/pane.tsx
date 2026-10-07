@@ -831,7 +831,7 @@ function composerPart(el: PaneElements, body: AgentsBody, ctx: BodyContext): Ren
   return (
     <Box flexDirection="column">
       {'Input' in el ? (
-        field(el, { key: c.key, label, value: c.text, placeholder: 'message', submitLabel: 'send' }, caption, { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused })
+        field(el, { key: c.key, label, value: c.text, placeholder: 'message', submitLabel: 'send' }, caption, { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused, columns: ctx.bodyColumns })
       ) : (
         <Text color={STYLE.muted}>messages are typed on the terminal or the desktop</Text>
       )}

@@ -573,7 +573,7 @@ function saveAsForm(el: PaneElements, view: SwarmBuilderView, e: BodyContext, co
   const f = view.saveAs
   if (!f) return null
   const s = view.swarm
-  const at = { surface: e.surface, isFocused: e.isFocused, focused: e.focused }
+  const at = { surface: e.surface, isFocused: e.isFocused, focused: e.focused, columns }
   const body = (
     <Box flexDirection="column">
       {field(el, { key: `swarm:builder:saveas-name:${s}`, label: 'Name', value: f.name }, 'a-z, 0-9 and -, up to 24', at)}

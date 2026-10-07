@@ -249,17 +249,19 @@ const filled = (rows: readonly string[]): string[] => rows.filter(r => r.trim() 
 const HEAD_QUIET: [string, string][] = [
   ['litter · Home', 'claude bold, inactive'],
   ['nothing running', 'inactive'],
-  ['› 1: Home Runs Swarms Rules Tasks Agents Doctor', 'text bold, default'],
+  ['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Doctor', 'text bold, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default'],
 ]
+// Each tab's count muted after its label, its ⚑ in the needs-you color, a faint │ after every tab but the last.
+const BUSY_TABS = 'text bold, subtle, default, inactive, subtle, default, inactive, permission, subtle, default, inactive, permission, subtle, default, inactive, subtle'
 const HEAD_BUSY = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   // One line, cut to the pane (chrome's spansLine).
   [cut('▸ running: 1 run, 1 swarm · ⚑ needs you: 1 question, 1 proposal, 2 rules', c), 'background, default, subtle, permission'],
   ...(c >= 100
-    ? ([['› 1: Home Runs 1 Swarms 1 ⚑ Rules 2 ⚑ Tasks 3 Agents 2 Doctor', 'text bold, default']] as [string, string][])
+    ? ([['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │ Agents 2 │ Doctor', `${BUSY_TABS}, default, inactive, subtle, default`]] as [string, string][])
     : ([
-        ['› 1: Home Runs 1 Swarms 1 ⚑ Rules 2 ⚑ Tasks 3 Agents 2', 'text bold, default'],
-        ['Doctor', 'default'],
+        ['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │', BUSY_TABS],
+        ['Agents 2 │ Doctor', 'default, inactive, subtle, default'],
       ] as [string, string][])),
 ]
 const KEYS = (c: number): [string, string][] =>

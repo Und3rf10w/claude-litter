@@ -182,12 +182,19 @@ export const STRIP_PREFIX = 'litter:section:'
 /** A strip Button's key. */
 export const stripKey = (section: HubSection): string => `${STRIP_PREFIX}${section}`
 
-/** A tab's label: the section, its count, and `⚑` when something there needs you. */
-export const tabLabel = (tab: HubTab): string => `${tab.label}${tab.count !== null && tab.count > 0 ? ` ${tab.count}` : ''}${tab.needsYou ? ' ⚑' : ''}`
+/** What ends every tab but the last, after a cell: the tabs read as tabs, not as one line of words. */
+export const TAB_SEP = '│'
 
-/** How wide each tab draws on the terminal: a plain Button is `1: label` with its hotkey, the label alone without; the shown one `› `. */
+/** A tab's count, drawn after its label: none for no count or 0. */
+const tabCount = (tab: HubTab): string | null => (tab.count !== null && tab.count > 0 ? String(tab.count) : null)
+
+/** How wide each tab draws on the terminal: a plain Button is `1: label` with its hotkey, the label alone without; the shown one `› `; then its count and its `⚑`, a cell before each, and ` │` but on the last. */
 export function stripWidths(tabs: readonly HubTab[], shown: HubSection, isFocused: boolean): number[] {
-  return tabs.map(t => cells(tabLabel(t)) + (isFocused ? 3 : 0) + (t.section === shown ? 2 : 0))
+  return tabs.map((t, i) => {
+    const count = tabCount(t)
+    const marks = (count !== null ? 1 + cells(count) : 0) + (t.needsYou ? 2 : 0) + (i < tabs.length - 1 ? 2 : 0)
+    return cells(t.label) + marks + (isFocused ? 3 : 0) + (t.section === shown ? 2 : 0)
+  })
 }
 
 /**
@@ -195,18 +202,29 @@ export function stripWidths(tabs: readonly HubTab[], shown: HubSection, isFocuse
  * hotkey 1–7 while the pane is focused (a Pane's hotkeys never reach the
  * composer). The shown one is bold text with `›`, not a Button: pressing it
  * would do nothing. Sections use letters for their own hotkeys, never digits.
+ * A tab's count is muted beside its label and its `⚑` in the needs-you color
+ * (the user's live look, 2026-10-07: `Swarms 1 Rules Tasks 5` read as one
+ * line of words), each tab but the last ended by a faint `│`.
  */
 export function strip(el: PaneElements, tabs: readonly HubTab[], shown: HubSection, isFocused: boolean): RenderElement {
   const { Box, Button, Text } = el
   return (
     <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-      {tabs.map((t, i) =>
-        t.section === shown ? (
-          <Text bold color={STYLE.label}>{`${SELECTED_MARK} ${isFocused ? `${i + 1}: ` : ''}${tabLabel(t)}`}</Text>
-        ) : (
-          <Button key={stripKey(t.section)} label={tabLabel(t)} plain {...(isFocused ? { hotkey: String(i + 1) } : {})} onPress={noop} />
-        ),
-      )}
+      {tabs.map((t, i) => {
+        const count = tabCount(t)
+        return (
+          <Box flexDirection="row">
+            {t.section === shown ? (
+              <Text bold color={STYLE.label}>{`${SELECTED_MARK} ${isFocused ? `${i + 1}: ` : ''}${t.label}`}</Text>
+            ) : (
+              <Button key={stripKey(t.section)} label={t.label} plain {...(isFocused ? { hotkey: String(i + 1) } : {})} onPress={noop} />
+            )}
+            {count !== null ? <Text color={STYLE.muted}>{` ${count}`}</Text> : null}
+            {t.needsYou ? <Text color={STYLE.needsYou}>{' ⚑'}</Text> : null}
+            {i < tabs.length - 1 ? <Text color={STYLE.faint}>{` ${TAB_SEP}`}</Text> : null}
+          </Box>
+        )
+      })}
     </Box>
   )
 }
@@ -286,8 +304,17 @@ export function heading(el: PaneElements, text: string, columns?: number, note?:
 /** An Input's spec, as field() draws it: `label` drawn before it (no `label`, no `: ` marker). */
 export type FieldInput = { key: string; label?: string; value: string; placeholder?: string; submitLabel?: string; autoFocus?: boolean }
 
-/** Where a field is drawn: the surface, and the ring (the pane's keys, the element holding them) when known. */
-export type FieldAt = { surface: string; isFocused?: boolean; focused?: string | null }
+/** Where a field is drawn: the surface, the ring (the pane's keys, the element holding them) and the body's columns, when known. */
+export type FieldAt = { surface: string; isFocused?: boolean; focused?: string | null; columns?: number }
+
+/** The cells a field's frame takes beside what it holds: its border's and its padding's, two a side. */
+export const FIELD_FRAME = 4
+
+/** Whether a labelled field's label and value run past its frame at `columns`: what it holds is cut. Unknown or infinite columns: no. Pure. */
+export function fieldOverflows(input: Pick<FieldInput, 'label' | 'value' | 'placeholder'>, columns: number | undefined): boolean {
+  if (!input.label || columns === undefined || !Number.isFinite(columns)) return false
+  return cells(`${input.label}: `) + cells(input.value || input.placeholder || '') > Math.floor(columns) - FIELD_FRAME
+}
 
 /**
  * Whether the surface draws a field's frame: the terminal does. A desktop and
@@ -307,6 +334,14 @@ export const fieldRows = (surface: string, caption: boolean): number => (framesF
  * above the field. The engine draws the placeholder dim and the `: ` after a
  * label; neither is litter's to style. Where no frame is drawn, the Input
  * alone with its caption; with no Input (mobile), the value as text.
+ *
+ * A framed value wider than its frame: the engine's Input lets its own label
+ * shrink beside it (2.1.291's: a plain Text, the value `truncate-end`), so
+ * `Description: ` lost two cells and its `:` fell to a second row (the
+ * user's live look, 2026-10-07). There, while the field doesn't hold the
+ * ring, litter draws the label, kept whole, and the Input, label-less, cuts
+ * its value with `…` in the rest of the row. Holding the ring, the engine's
+ * editor sizes itself from its label, so the label goes back on the Input.
  */
 export function field(el: PaneElements, input: FieldInput, caption?: string | null, at?: FieldAt): RenderElement {
   const { Box, Text } = el
@@ -324,10 +359,13 @@ export function field(el: PaneElements, input: FieldInput, caption?: string | nu
     )
   }
   const { Input } = el
+  const ringed = at?.isFocused === true && at.focused === input.key
+  const framed = at === undefined || framesFields(at.surface)
+  const ownLabel = framed && !ringed && fieldOverflows(input, at?.columns)
   const control = (
     <Input
       key={input.key}
-      {...(input.label ? { label: input.label } : {})}
+      {...(input.label && !ownLabel ? { label: input.label } : {})}
       value={input.value}
       {...(input.placeholder ? { placeholder: input.placeholder } : {})}
       {...(input.submitLabel ? { submitLabel: input.submitLabel } : {})}
@@ -336,12 +374,23 @@ export function field(el: PaneElements, input: FieldInput, caption?: string | nu
       onSubmit={noop}
     />
   )
-  const ringed = at?.isFocused === true && at.focused === input.key
   return (
     <Box flexDirection="column">
-      {at === undefined || framesFields(at.surface) ? (
-        <Box flexDirection="row" borderStyle="round" borderColor={ringed ? STYLE.accent : STYLE.frame} paddingX={1}>
-          {control}
+      {framed ? (
+        <Box flexDirection="row" columnGap={1} borderStyle="round" borderColor={ringed ? STYLE.accent : STYLE.frame} paddingX={1}>
+          {ownLabel ? (
+            <Box flexShrink={0}>
+              <Text>{`${input.label}:`}</Text>
+            </Box>
+          ) : null}
+          {ownLabel ? (
+            // No width of its own: it grows into the rest of the row, so the Input is laid out at that and cuts its value.
+            <Box flexGrow={1} width={0} height={1} overflow="hidden">
+              {control}
+            </Box>
+          ) : (
+            control
+          )}
         </Box>
       ) : (
         control
