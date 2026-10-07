@@ -786,6 +786,20 @@ const NAME_CAPTION = 'a-z, 0-9 and -, up to 24, not starting with -'
 const PICKED_LIST_SHARE = 0.45
 
 /**
+ * The context the template list is drawn at: the body's, but past
+ * WIDE_COLUMNS with a template picked, the list's own share of the columns
+ * (its form's box takes the rest). For the wheel's hit test too
+ * (swarm/panes.ts's onUiScroll should place the list at this context, so a
+ * tick over the form's box isn't the list's: the report's contract change).
+ * Pure.
+ */
+export function templateListCtx<C extends Pick<BodyContext, 'bodyColumns'>>(view: Pick<SwarmStartView, 'template'>, ctx: C): C {
+  const columns = ctx.bodyColumns
+  if (!view.template || !Number.isFinite(columns) || columns < WIDE_COLUMNS) return ctx
+  return { ...ctx, bodyColumns: Math.max(30, Math.floor(columns * PICKED_LIST_SHARE)) }
+}
+
+/**
  * The rows the start screen draws above its template list at `ctx` (the hit
  * test for a wheel tick over the list, swarm/panes.ts's onUiScroll): the
  * notice wrapped, the Name field and its caption, "Ask the lead" (a gap and
@@ -871,8 +885,9 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Bod
   // "or [ Blank ]" beside the template heading: its cells off the heading's.
   const blank = 3 + itemWidth({ kind: 'button', label: 'Blank' })
   const templates = templateList(view)
-  const listColumns = t && wide ? Math.max(30, Math.floor(columns * PICKED_LIST_SHARE)) : columns
-  const picker = list(el, templates, { ...e, bodyColumns: listColumns })
+  const listCtx = templateListCtx(view, e)
+  const listColumns = listCtx.bodyColumns
+  const picker = list(el, templates, listCtx)
   const form = t ? panels(el, [{ title: t.name, body: templateForm(el, t, primary === 'template', e, wide ? columns - listColumns - 5 : columns - 4) }], false) : null
   // What's above the list keeps to startListTop's rows.
   return (

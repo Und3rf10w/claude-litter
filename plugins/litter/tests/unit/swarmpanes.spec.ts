@@ -19,7 +19,7 @@ import { others as endOthers, resetEndForTests } from '../../hooks/swarm/end'
 import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
 import type { Owners } from '../../hooks/swarm/view'
 import { blankNav, changeWords, clean, composerKey, failingFirst, messageSpans, messageText, nav, resetViewForTests, setNav, setOwnersForTests, swarmView, toolLine, valueWords } from '../../hooks/swarm/view'
-import { builderPrimary, startListTop, startPrimary } from '../../hooks/swarm/builder'
+import { builderPrimary, startListTop, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
 import {
   TRANSCRIPT_INLINE_ROWS,
   TRANSCRIPT_MIN_ROWS,
@@ -972,6 +972,11 @@ describe('WP-DD: the primary per state, the start list top, Doctor', () => {
     const long = { ...start, notice: { level: 'warning' as const, text: 'name the swarm first: a-z, 0-9 and -, up to 24, not starting with -' } }
     expect(startListTop(long, { bodyColumns: 100, surface: 'terminal' })).toBe(13)
     expect(startListTop(long, { bodyColumns: 60, surface: 'terminal' })).toBe(14)
+    // With a template picked past 100 columns the list takes its share, its form's box the rest; narrower, the body's.
+    const picked = { template: { id: 'builtin:x', name: 'x', description: '', params: [], errors: [] } }
+    expect(templateListCtx(picked, { bodyColumns: 100 }).bodyColumns).toBe(45)
+    expect(templateListCtx(picked, { bodyColumns: 60 }).bodyColumns).toBe(60)
+    expect(templateListCtx({ template: null }, { bodyColumns: 120 }).bodyColumns).toBe(120)
   })
 
   test("Doctor's rows: each its word, a failing one first; its tally; its fix the primary", async () => {
