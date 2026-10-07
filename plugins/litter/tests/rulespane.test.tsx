@@ -330,9 +330,9 @@ const HUB: HubView = { view: 'hub', v: 1, section: 'rules', live: [], tabs: [] }
  * swaps it); the hub's the last the plugin wrote (so a window it moves is
  * drawn, on Rules; `hubs` holds each as written). Each read answers the
  * version the write beneath it stands at, so a second write's compare-and-set
- * lands.
+ * lands. The writes are heard through the world's state.set.
  */
-function views(on: On, view: RulesPaneView): { written: RulesPaneView[]; hubs: HubView[]; show: (next: RulesPaneView) => void } {
+function views(on: On, w: World, view: RulesPaneView): { written: RulesPaneView[]; hubs: HubView[]; show: (next: RulesPaneView) => void } {
   let current = view
   const seen = { written: [] as RulesPaneView[], hubs: [] as HubView[], show: (next: RulesPaneView) => void (current = next) }
   let hub: HubView = HUB
@@ -341,13 +341,12 @@ function views(on: On, view: RulesPaneView): { written: RulesPaneView[]; hubs: H
     const beneath = (await next(e)) as { value?: { version?: number } }
     return { value: { value: e.key === 'rulesPane' ? current : hub, version: beneath.value?.version ?? 0 } }
   })
-  on('state.set', async (_$, e, next) => {
-    if (e.key === 'rulesPane') seen.written.push(e.value as RulesPaneView)
-    if (e.key === 'hub') {
-      seen.hubs.push(e.value as HubView)
-      hub = { ...(e.value as HubView), section: 'rules' }
+  w.onSet((key, value) => {
+    if (key === 'rulesPane') seen.written.push(value as RulesPaneView)
+    if (key === 'hub') {
+      seen.hubs.push(value as HubView)
+      hub = { ...(value as HubView), section: 'rules' }
     }
-    return next(e)
   })
   return seen
 }
@@ -355,15 +354,74 @@ function views(on: On, view: RulesPaneView): { written: RulesPaneView[]; hubs: H
 // ---------------------------------------------------------------------------
 // The world
 
+/**
+ * What a test waits on: the next rules view the plugin writes, or the next
+ * hub view that holds what `met` asks (each asked before the act that writes
+ * it), or the files' map standing a way. Each resolves once that write has
+ * landed, so a read after it sees it; a wait that's never met fails at the
+ * test's timeout.
+ */
+type Waits = {
+  nextRules: () => Promise<RulesPaneView>
+  nextHub: (met: (view: HubView) => boolean) => Promise<HubView>
+  until: (met: () => boolean) => Promise<void>
+}
+
+type World = Waits & {
+  files: Map<string, string>
+  logs: string[]
+  toasts: string[]
+  filled: string[]
+  opened: { id: string; focus: boolean }[]
+  /** Hears each $.state write once it has landed (a test hooks state.set once, here). */
+  onSet: (heard: (key: string, value: unknown) => void) => void
+}
+
 /** $.fs from a map and git as a plain checkout at /repo answers it, so session.start resolves the litter directory. */
-function world(on: On): { files: Map<string, string>; logs: string[]; toasts: string[]; filled: string[]; opened: { id: string; focus: boolean }[] } {
+function world(on: On): World {
   const files = new Map<string, string>()
   const logs: string[] = []
   const toasts: string[] = []
   const filled: string[] = []
   const opened: { id: string; focus: boolean }[] = []
+  const rulesWaits: ((view: RulesPaneView) => void)[] = []
+  const hubWaits: { met: (view: HubView) => boolean; resolve: (view: HubView) => void }[] = []
+  const untils: { met: () => boolean; resolve: () => void }[] = []
+  const hearers: ((key: string, value: unknown) => void)[] = []
+  // Each `until` is checked again once a write lands.
+  const changed = () => {
+    for (const u of [...untils]) {
+      if (!u.met()) continue
+      untils.splice(untils.indexOf(u), 1)
+      u.resolve()
+    }
+  }
+  const waits: Waits = {
+    nextRules: () => new Promise(resolve => void rulesWaits.push(resolve)),
+    nextHub: met => new Promise(resolve => void hubWaits.push({ met, resolve })),
+    until: met => (met() ? Promise.resolve() : new Promise(resolve => void untils.push({ met, resolve }))),
+  }
+  // A view resolves its waits once the write beneath has landed (a compare-and-set refused resolves none).
+  on('state.set', async (_$, e, next) => {
+    const r = await next(e)
+    for (const heard of hearers) heard(e.key, e.value)
+    if (e.key === 'rulesPane') for (const resolve of rulesWaits.splice(0)) resolve(e.value as RulesPaneView)
+    if (e.key === 'hub') {
+      const view = e.value as HubView
+      for (const h of [...hubWaits]) {
+        if (!h.met(view)) continue
+        hubWaits.splice(hubWaits.indexOf(h), 1)
+        h.resolve(view)
+      }
+    }
+    changed()
+    return r
+  })
   const isDir = (path: string) => [...files.keys()].some(k => k.startsWith(`${path}/`))
-  const ran = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  const ran = (exitCode: number, stdout = '') => {
+    changed()
+    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  }
   on('fs.exists', async (_$, e) => ({ value: files.has(e.path) || isDir(e.path) }))
   on('fs.read', async (_$, e) => {
     const text = files.get(e.path)
@@ -372,6 +430,7 @@ function world(on: On): { files: Map<string, string>; logs: string[]; toasts: st
   })
   on('fs.write', async (_$, e) => {
     files.set(e.path, e.text)
+    changed()
     return { value: undefined }
   })
   on('fs.list', async (_$, e) => {
@@ -432,7 +491,22 @@ function world(on: On): { files: Map<string, string>; logs: string[]; toasts: st
   on('session.id', async () => ({ value: SESSION }))
   on('session.cwd', async () => ({ value: '/repo' }))
   mock.env(on, { HOME: '/home/tier1', CLAUDE_CONFIG_DIR: '/cfg' })
-  return { files, logs, toasts, filled, opened }
+  return { ...waits, files, logs, toasts, filled, opened, onSet: heard => void hearers.push(heard) }
+}
+
+/**
+ * A click, a key or a post on a list's Client only posts: litter handles the
+ * post (the hub presses the row's or the menu item's key on Rules) after the
+ * act resolves, and the act's settle can stop before that press is done (it
+ * gives up at the first 2 ms in which no host call starts or ends, and the
+ * ledgers' records are hashed outside any). So the act waits for the rules
+ * view its press ends by writing; a read after it sees that press's work and
+ * its drawing. Answers that view.
+ */
+async function posted(w: Waits, act: () => Promise<void>): Promise<RulesPaneView> {
+  const drawn = w.nextRules()
+  await act()
+  return drawn
 }
 
 /** A session started in /repo, interactive unless said, with the navigation seeded and the view fed. */
@@ -441,7 +515,7 @@ async function start($: Engine, on: On, opts: { nav?: Record<string, unknown>; v
   const clock = mock.clock(on, { now: NOW })
   const w = world(on)
   for (const [k, v] of Object.entries(opts.files ?? {})) w.files.set(k, v)
-  const seen = views(on, opts.view ?? PROPOSED)
+  const seen = views(on, w, opts.view ?? PROPOSED)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: opts.interactive ?? true })
   return { ...w, ...seen, clock }
 }
@@ -755,8 +829,8 @@ describe('the cases, at 100 and 60 columns', () => {
 // ---------------------------------------------------------------------------
 // Every action, by its Button and by the list's menu
 
-/** A pick from the list's right-click menu, as its Client posts it (ui/listmenu.tsx): the hub presses the key on Rules. */
-const menuPick = (ui: Ui, list: string, key: string) => ui.post({ list, press: key }, { in: list })
+/** A pick from the list's right-click menu, as its Client posts it (ui/listmenu.tsx): the hub presses the key on Rules. Answers the view that press wrote. */
+const menuPick = (w: Waits, ui: Ui, list: string, key: string) => posted(w, () => ui.post({ list, press: key }, { in: list }))
 
 const MENU_WORDS = new Set(['Accept', 'Edit…', 'Dismiss', 'Retire', 'Check', 'Uncheck', 'close'])
 /** The open menu's items, as the list's Client draws them (one padded Text each, under the row's own text). */
@@ -766,27 +840,31 @@ const menuItems = async (ui: Ui, list: string): Promise<string[]> =>
 describe('every action reaches the store by its Button and by the menu, one press at a time', () => {
   for (const by of ['press', 'menu'] as const) {
     // A Button is the picked row's; the menu is any row's, so its row is picked only for the press.
-    const act = (ui: Ui, key: string, list = 'rules:list:main') => (by === 'press' ? ui.press({ key }) : menuPick(ui, list, key))
+    const act = async (w: Waits, ui: Ui, key: string, list = 'rules:list:main') => {
+      if (by === 'press') return ui.press({ key })
+      await menuPick(w, ui, list, key)
+      return undefined
+    }
     const on_ = (view: RulesPaneView, key: string): RulesPaneView => (by === 'press' ? { ...view, body: { ...view.body!, focus: key } } : view)
 
     test(`[Accept] on a user proposal calls acceptRule once, and nothing else (${by})`, async ($, on) => {
       const s = await start($, on, { view: on_(PROPOSED, 'repo:3') })
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:accept:repo:3')
+      await act(s, ui, 'rules:accept:repo:3')
       expect(storeCalls(s.logs)).toEqual(['acceptRule repo:3 user'])
     })
 
     test(`a project proposal shows the preview first: [Accept] calls previewAccept, never acceptRule (${by})`, async ($, on) => {
       const s = await start($, on, { view: on_(PROPOSED, 'repo:4') })
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:accept:repo:4')
+      await act(s, ui, 'rules:accept:repo:4')
       expect(storeCalls(s.logs)).toEqual(['previewAccept repo:4 project'])
     })
 
     test(`a scope is asked when there is none: [Accept] calls nothing (${by})`, async ($, on) => {
       const s = await start($, on)
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:accept:repo:5')
+      await act(s, ui, 'rules:accept:repo:5')
       expect(storeCalls(s.logs)).toEqual([])
       expect(s.logs).toContain('rules pane: asks the scope for repo:5')
       expect(s.written.at(-1)?.body?.notice?.text).toContain('pick the scope to accept it into')
@@ -795,14 +873,14 @@ describe('every action reaches the store by its Button and by the menu, one pres
     test(`[Dismiss] calls dismissRule (${by})`, async ($, on) => {
       const s = await start($, on, { view: on_(PROPOSED, 'repo:3') })
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:dismiss:repo:3')
+      await act(s, ui, 'rules:dismiss:repo:3')
       expect(storeCalls(s.logs)).toEqual(['dismissRule repo:3'])
     })
 
     test(`[Retire] asks for [Confirm retire] first, which calls retireRule (${by})`, async ($, on) => {
       const s = await start($, on, { view: IN_FORCE, nav: { tab: 'in-force' } })
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:retire:P-tests-first')
+      await act(s, ui, 'rules:retire:P-tests-first')
       expect(storeCalls(s.logs)).toEqual([])
       expect(s.written.at(-1)?.body?.notice?.text ?? '').toContain('[Confirm retire]')
     })
@@ -810,7 +888,7 @@ describe('every action reaches the store by its Button and by the menu, one pres
     test(`[Edit…] on a rule in force fills the prompt with /litter:rules show <id> (${by})`, async ($, on) => {
       const s = await start($, on, { view: IN_FORCE, nav: { tab: 'in-force' } })
       const ui = await mountRules($, 'terminal')
-      await act(ui, 'rules:edit:P-tests-first')
+      await act(s, ui, 'rules:edit:P-tests-first')
       expect(s.filled).toEqual(['/litter:rules show P-tests-first'])
       expect(acting(s.logs)).toEqual([])
     })
@@ -818,7 +896,7 @@ describe('every action reaches the store by its Button and by the menu, one pres
     test(`a check toggles a row of the batch, and calls nothing (${by})`, async ($, on) => {
       const s = await start($, on, { view: on_(BATCH, 'repo:11') })
       const ui = await mountRules($, 'terminal')
-      expect(await act(ui, 'rules:check:repo:11', 'rules:list:i0')).toEqual(by === 'press' ? expect.objectContaining({ element: 'rules:check:repo:11' }) : undefined)
+      expect(await act(s, ui, 'rules:check:repo:11', 'rules:list:i0')).toEqual(by === 'press' ? expect.objectContaining({ element: 'rules:check:repo:11' }) : undefined)
       expect(storeCalls(s.logs)).toEqual([])
     })
   }
@@ -829,10 +907,10 @@ describe('every action reaches the store by its Button and by the menu, one pres
     // The batch's first list: its second row, right-clicked.
     await ui.pointer({ type: 'down', x: 4, y: 1, button: 'right', in: 'rules:list:i0' })
     expect(await menuItems(ui, 'rules:list:i0')).toEqual(['Accept', 'Edit…', 'Dismiss', 'Check', 'close'])
-    // ↓ ↓ to Dismiss, Enter: the press its Button would make.
+    // ↓ ↓ to Dismiss (the menu's own), Enter: the press its Button would make, posted.
     await ui.key({ key: 'down', in: 'rules:list:i0' })
     await ui.key({ key: 'down', in: 'rules:list:i0' })
-    await ui.key({ key: 'return', in: 'rules:list:i0' })
+    await posted(s, () => ui.key({ key: 'return', in: 'rules:list:i0' }))
     expect(storeCalls(s.logs)).toEqual(['dismissRule repo:11'])
     // A rule in force offers Edit… and Retire, never Accept.
     s.show(IN_FORCE)
@@ -859,10 +937,12 @@ describe('every action reaches the store by its Button and by the menu, one pres
 
   // Live, since a press redraws from the plugin's own store (a fed view's rows are gone after one).
   test('a scope picked, then [Accept]: acceptRule once, into that scope; the pick itself accepts nothing', { timeoutMs: 20000 }, async ($, on) => {
-    const { logs, files } = await live($, on)
+    const w = await live($, on)
+    const { logs, files } = w
     const ui = await mountRules($, 'terminal')
-    // The ban, with no scope yet.
-    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: 'rules:list:main' })
+    // The ban, with no scope yet: clicked, so its actions are drawn.
+    const picked = await posted(w, () => ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: 'rules:list:main' }))
+    expect(picked.body?.focus).toBe('repo:3')
     await ui.press({ key: 'rules:scope-local:repo:3' })
     expect(storeCalls(logs)).toEqual([])
     expect((await shows(ui, '› local')).props.bold).toBe(true)
@@ -1021,11 +1101,11 @@ async function live($: Engine, on: On) {
 
 describe('live: the flows still write what they wrote', () => {
   test('a click, [next] and [previous] pick a row; its description and actions follow', { timeoutMs: 20000 }, async ($, on) => {
-    await live($, on)
+    const w = await live($, on)
     const ui = await mountRules($, 'terminal', { bodyColumns: 100, isFocused: true })
     await shows(ui, '1 of 3')
     expect(await ui.find({ type: 'Button', key: 'rules:accept:repo:1' })).toBeDefined()
-    await ui.pointer({ type: 'down', x: 4, y: 1, button: 'left', in: 'rules:list:main' })
+    expect((await posted(w, () => ui.pointer({ type: 'down', x: 4, y: 1, button: 'left', in: 'rules:list:main' }))).body?.focus).toBe('repo:2')
     await shows(ui, '2 of 3')
     await shows(ui, 'Name each test after what it checks.')
     expect(await ui.find({ type: 'Button', key: 'rules:accept:repo:2' })).toBeDefined()
@@ -1046,10 +1126,10 @@ describe('live: the flows still write what they wrote', () => {
   })
 
   test("[Edit…] on a proposal: its paths through the field, its type through the Select, kept for the accept", { timeoutMs: 20000 }, async ($, on) => {
-    await live($, on)
+    const w = await live($, on)
     const ui = await mountRules($, 'terminal', { bodyColumns: 100 })
     // The ban, the third row, clicked: its actions are drawn.
-    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: 'rules:list:main' })
+    expect((await posted(w, () => ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: 'rules:list:main' }))).body?.focus).toBe('repo:3')
     await ui.press({ key: 'rules:edit:repo:3' })
     expect(await ui.find({ type: 'Input', key: 'rules:paths:repo:3' })).toBeDefined()
     await shows(ui, 'globs it protects; a ban reaches every gate')
@@ -1064,15 +1144,16 @@ describe('live: the flows still write what they wrote', () => {
   })
 
   test('[Accept], [Dismiss] (from the menu), the preview and [Confirm accept], then [Retire] and its confirm: each writes what it wrote', { timeoutMs: 30000 }, async ($, on) => {
-    const { files, filled } = await live($, on)
+    const w = await live($, on)
+    const { files, filled } = w
     const ui = await mountRules($, 'terminal', { bodyColumns: 100 })
     // A user rule: written to your config dir's rules, its accept in the ledger.
     await ui.press({ key: 'rules:accept:repo:1' })
     expect(files.has('/cfg/litter/rules/U-keep-fixtures-small.md')).toBe(true)
     expect(await ui.find({ type: 'Text', text: /^✓ accepted into user scope/ })).toBeDefined()
     expect(ruleLedger(files, USER_LEDGER).map(r => [r.kind, r.body.id, r.body.via])).toEqual([['rule.accept', 'U-keep-fixtures-small', 'ui']])
-    // The ban, dismissed from its menu.
-    await menuPick(ui, 'rules:list:main', 'rules:dismiss:repo:3')
+    // The ban, dismissed from its menu: the record lands before the view the press ends with.
+    expect((await menuPick(w, ui, 'rules:list:main', 'rules:dismiss:repo:3')).body?.notice?.text).toMatch(/^dismissed/)
     expect(ruleLedger(files).map(r => r.kind).slice(3)).toEqual(['rule.dismiss'])
     // The project rule: the preview first, nothing written; then [Confirm accept] writes it.
     await ui.press({ key: 'rules:accept:repo:2' })
@@ -1089,7 +1170,7 @@ describe('live: the flows still write what they wrote', () => {
     const rows = drawText(await ui.drawn({ in: 'rules:list:main' }), 53).filter(r => /✓ in force/.test(r))
     expect(rows).toHaveLength(2)
     const id = 'P-name-each-test-after-what-it-checks'
-    await menuPick(ui, 'rules:list:main', `rules:retire:${id}`)
+    expect((await menuPick(w, ui, 'rules:list:main', `rules:retire:${id}`)).body?.pending).toEqual(expect.objectContaining({ kind: 'retire', key: id }))
     expect(await ui.find({ type: 'Button', key: `rules:confirm-retire:${id}` })).toBeDefined()
     expect(files.has(`/repo/.litter/rules/${id}.md`)).toBe(true)
     await ui.press({ key: `rules:confirm-retire:${id}` })
@@ -1140,15 +1221,22 @@ describe('no other hook reaches acceptRule, dismissRule or retireRule (12:1566)'
       await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: `t-${input.kind}-agent`, agentId: 'a1', ...input })
     }
     // The timers: the drain, the swarm ticks and the ui tick, whose `litter` step redraws Rules, the section shown.
+    // The advance can return mid-drain (the settle stops while records are hashed), so the drain is waited for:
+    // the spool renamed aside, its lines delivered, and the aside file removed.
+    const spoolFile = `${LITTER}/hooks/spool/${SESSION}.jsonl`
     await s.clock.advance(10_000)
+    await s.until(() => ![...s.files.keys()].some(k => k.startsWith(spoolFile)))
     // A scope pick and a wheel of the pane's own keys, and a post that isn't a list's.
     const ui = await mountRules($, 'terminal')
     await ui.press({ key: 'rules:scope-user:repo:10' })
+    // The wheel's post moves the list once the hub has handled it, after the act.
+    const moved = s.nextHub(h => h.lists?.['rules:list:i0'] === 1)
     await ui.post({ list: 'rules:list:i0', offset: 1, max: 1 }, { in: 'rules:list:i0' })
+    await moved
     await ui.post({ list: 'rules:list:i0', press: 'litter:section:home' }, { in: 'rules:list:i0' })
+    // The spool was drained (its lines read), and nothing acted.
+    expect(s.files.has(spoolFile)).toBe(false)
     expect(acting(s.logs)).toEqual([])
-    // The spool was drained (its lines read), and still nothing acted.
-    expect(s.files.has(`${LITTER}/hooks/spool/${SESSION}.jsonl`)).toBe(false)
   })
 })
 

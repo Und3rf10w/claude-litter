@@ -526,6 +526,40 @@ describe('the presses reach the store once each, with what the pane showed', () 
     expect(view().body!.notice).toEqual({ level: 'ok', text: 'accepted into user scope: written to /home/you/.claude/litter/rules/user-rule.md' })
   })
 
+  test("one step at a time: a press waits for the row pick before it, whose build is still running, so the pick's view never lands over the press's", async () => {
+    await rulesCommand(p, command(), next)
+    // The pick's build is held: a click's post is handled apart from the press after it.
+    let release!: () => void
+    const held = new Promise<void>(r => (release = r))
+    const load = viewDeps.loadRules
+    let first = true
+    viewDeps.loadRules = async (...a) => {
+      if (first) {
+        first = false
+        await held
+      }
+      return load(...a)
+    }
+    const drawn: (string | null)[] = []
+    const setView = p.setView
+    p.setView = async (pane, v) => {
+      if (pane === 'rules') drawn.push((v as RulesPaneView).body?.focus ?? null)
+      return setView(pane, v)
+    }
+    const pick = pressRules(p, 'rules:row:repo:4')
+    const accept = pressRules(p, 'rules:accept:repo:3')
+    // A bounded look for the press running early; it can't, queued behind the pick.
+    expect(await Promise.race([accept.then(() => 'ran'), new Promise(r => setTimeout(() => r('queued'), 50))])).toBe('queued')
+    expect(acting()).toEqual([])
+    release()
+    await Promise.all([pick, accept])
+    // The pick drew, then the press: the last view is the accept's, on its row, with its outcome.
+    expect(drawn).toEqual(['repo:4', 'repo:3'])
+    expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 3 } }, { scope: 'user' }] }])
+    expect(view().body!.focus).toBe('repo:3')
+    expect(notice()).toMatch(/^accepted into user scope/)
+  })
+
   test('a project proposal: [Accept] shows the exact file, [Confirm accept] writes it, and a second confirm is ignored', async () => {
     await rulesCommand(p, command(), next)
     await pressRules(p, 'rules:accept:repo:4')
