@@ -13,10 +13,15 @@
 // colors are theme keys beside a word or glyph. Every Text truncates, so a
 // row never wraps past its six. The elements are called as constructors, not
 // written as JSX, so tier 2 can draw a card with a table of its own.
+//
+// The colors are the `litter` pane's (phase 5b, WP-DB: ui/style.ts): a dim
+// span with no color of its own is drawn `muted`, as the pane's `themed`
+// table draws it, not in the terminal's faint attribute.
 
 import type { RenderElement } from 'claude-code'
 import type { CardElements, CardRender } from '../hooktypes'
 import type { CardView, CardsView, SwarmSpan } from '../../types/index'
+import { STYLE } from '../ui/style'
 
 /** The rows a card takes at most. */
 export const CARD_ROWS = 6
@@ -29,9 +34,10 @@ function row(el: CardElements, spans: readonly SwarmSpan[]): RenderElement {
   const { Text } = el
   return Text({
     wrap: 'truncate',
-    children: spans.map(s =>
-      Text({ wrap: 'truncate', ...(s.color ? { color: s.color } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), children: s.text }),
-    ),
+    children: spans.map(s => {
+      const color = s.color ?? (s.dim ? STYLE.muted : undefined)
+      return Text({ wrap: 'truncate', ...(color ? { color } : {}), ...(s.bold ? { bold: true } : {}), children: s.text })
+    }),
   })
 }
 

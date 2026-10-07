@@ -24,6 +24,17 @@
 //
 // Every text from a ledger, run.json or a swarm is cleaned and cut
 // (swarm/view.ts, oneLine): a record holds model text.
+//
+// One line, three places (phase 5b, WP-DB). Each row is built first as a
+// BandLine: its mark (a glyph and a word in the state's key), what it is,
+// its progress or outcome, and its time. The band draws a line as
+// `<glyph> <word> · litter · <workflow> <run> · <detail> · <time>`, the
+// `litter` pane's Home the same without `litter · ` (it's in litter's own
+// pane), and the finished-run card's title the same mark and words
+// (card/view.ts, runMark), so a run reads alike in all three. bandLines()
+// hands Home the last build's lines: every active run, every run that ended
+// inside the window (the band itself keeps the newest), and every live
+// swarm, [Hide] or not.
 
 import type { Ports } from '../ports'
 import type { BandPressHook, BandRender, PortHook } from '../hooktypes'
@@ -39,9 +50,9 @@ import { loadRun, runState } from '../lifecycle'
 import { getOptions, session } from '../session'
 import { runStatusOf, statusWord } from '../board/view'
 import { openSection } from '../ui/hub'
-import { MARK, STYLE } from '../ui/style'
+import { MARK, STYLE, type Mark } from '../ui/style'
 import { bindings, liveSwarms, openQuestions, status as admissionStatus } from '../swarm/state'
-import { oneLine, unprefixed } from '../swarm/view'
+import { oneLine, pendingProposals, unprefixed } from '../swarm/view'
 
 // The other packages' modules the band calls, through one table so tier 2
 // can stand in for them (COMMON, "Another package's module"): the `litter`
@@ -214,7 +225,7 @@ function factsOf(run: string, json: RunJson | null, records: readonly StoredReco
 }
 
 // ---------------------------------------------------------------------------
-// The rows
+// The lines: one row's words, before the band or Home lays them out
 
 /** Whole minutes (decision 7): `<1m`, `14m`, `2h 05m`. */
 export function elapsed(ms: number): string {
@@ -224,17 +235,82 @@ export function elapsed(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 
-const lead = (glyph: string, color: string): SwarmSpan[] => [{ text: glyph, color }, { text: ' litter · ' }]
-const runLabel = (f: RunFacts): SwarmSpan[] => [{ text: `${oneLine(f.workflow, 16)} ` }, { text: oneLine(f.run, 72), color: STYLE.name }]
+/**
+ * A row's words (WP-DB): its mark, what it is (`execute` and the run's id,
+ * or `swarm` and the swarm's name), its progress or outcome, and its time.
+ * The band, Home and the card draw from these, so a run reads alike in all
+ * three. Every text is cleaned and cut.
+ */
+export type BandLine = {
+  /** The band row's key, which [Hide] names. */
+  key: string
+  kind: 'run' | 'ended' | 'swarm'
+  /** The run's id, or the swarm's name: where [Board], [Browser] and Home's [Open] go. */
+  name: string
+  mark: Mark
+  /** What it is, before the name: the workflow, or `swarm`. */
+  noun: string
+  /** Its progress (open) or outcome (ended), after the name; may be empty. */
+  detail: SwarmSpan[]
+  /** Whole minutes: how long it has run, or how long its last generation ran; null when unknown. */
+  time: string | null
+  /** It waits on you: a run that ended halted or back for you, a swarm with a question or a proposal waiting. */
+  needsYou: boolean
+}
+
+/** A status's words, where the code isn't one: `needs_user` is back for you. */
+const STATUS_WORD: Record<string, string> = { needs_user: MARK.needsYou.word }
+
+/** A run status's mark: board/view.ts's glyph and color (one table for the board, the band, Home and the card), and a word. */
+export function runMark(status: string): Mark {
+  const s = statusWord(status)
+  return { glyph: s.glyph, word: STATUS_WORD[status] ?? status.replace(/_/g, ' '), color: s.color }
+}
+
+/** A live swarm's mark; one stopping says so. */
+const swarmMark = (stopping: boolean): Mark => (stopping ? runMark('stopping') : { glyph: MARK.running.glyph, word: 'live', color: MARK.running.color })
+
+/** A line's name: the name color, cut. */
+const nameSpan = (l: BandLine): SwarmSpan => ({ text: oneLine(l.name, 72), color: STYLE.name })
+
+/**
+ * A line's words after its mark, as Home draws them (the band adds
+ * `litter · ` before): `execute <run> · <detail> · <time>`, the time muted.
+ */
+export function lineSpans(l: BandLine): SwarmSpan[] {
+  const out: SwarmSpan[] = [{ text: `${oneLine(l.noun, 16)} ` }, nameSpan(l)]
+  if (l.detail.length > 0) out.push(SEP, ...l.detail)
+  if (l.time !== null) out.push(SEP, { text: l.time, color: STYLE.muted })
+  return out
+}
+
+/** A mark as one span: its glyph and word in its color. */
+export const markSpan = (m: Mark, bold = false): SwarmSpan => ({ text: `${m.glyph} ${m.word}`, color: m.color, ...(bold ? { bold: true } : {}) })
+
+/** A line as the band draws it: the mark, `litter`, then Home's words. */
+export const bandSpans = (l: BandLine): SwarmSpan[] => [markSpan(l.mark), SEP, { text: 'litter', color: STYLE.muted }, SEP, ...lineSpans(l)]
+
 const runButtons = (run: string, key: string): BandButton[] => [
   { key: `band:board:${run}`, label: 'Board' },
   { key: `band:hide:${key}`, label: 'Hide' },
 ]
 
-/** An open generation's progress, by workflow (WP-CB, "The rows"); a repair generation's is its swarm. */
+/** A line's band row. */
+function rowOf(l: BandLine): BandRow {
+  const buttons: BandButton[] =
+    l.kind === 'swarm'
+      ? [
+          { key: `band:browser:${l.name}`, label: 'Browser' },
+          { key: `band:hide:${l.key}`, label: 'Hide' },
+        ]
+      : runButtons(l.name, l.key)
+  return { key: l.key, kind: l.kind, spans: bandSpans(l), buttons }
+}
+
+/** An open generation's progress, by workflow (WP-CB, "The rows"); a repair generation's is its swarm (its mark says repairing). */
 function progressSpans(f: RunFacts, inflight: Inflight): SwarmSpan[] {
-  if (f.tamperedAt !== null) return [{ text: `ledger tampered at ${f.tamperedAt}`, color: STYLE.failed }]
-  if (f.repairSwarm !== null) return [{ text: `↻ repair swarm ${f.repairSwarm}`, color: STYLE.running }]
+  if (f.tamperedAt !== null) return [{ text: `at record ${f.tamperedAt}`, color: STYLE.failed }]
+  if (f.repairSwarm !== null) return [{ text: `repair swarm ${f.repairSwarm}`, color: STYLE.running }]
   const g = f.progress
   switch (g?.kind) {
     case 'execute': {
@@ -264,78 +340,84 @@ function progressSpans(f: RunFacts, inflight: Inflight): SwarmSpan[] {
   }
 }
 
-function activeRow(f: RunFacts, inflight: Inflight, now: number): BandRow {
-  // A stopping or tampered run's glyph says so; a running or repairing one's is ▸ (the repair says itself in the progress).
-  const st = statusWord(f.status === 'stopping' || f.status === 'ledger_tampered' ? f.status : 'running')
-  const spans: SwarmSpan[] = [...lead(st.glyph, st.color), ...runLabel(f), SEP, ...progressSpans(f, inflight)]
-  if (f.status === 'stopping') spans.push(SEP, { text: 'stopping', color: st.color })
-  if (f.openedAt !== null) spans.push(SEP, { text: elapsed(now - f.openedAt), dim: true })
-  const key = `run:${f.run}:${f.generation}:open`
-  return { key, kind: 'run', spans, buttons: runButtons(f.run, key) }
+/** An open generation: its status's mark (running, repairing, stopping, a tampered ledger), its progress and how long it has run. */
+function activeLine(f: RunFacts, inflight: Inflight, now: number): BandLine {
+  return {
+    key: `run:${f.run}:${f.generation}:open`,
+    kind: 'run',
+    name: f.run,
+    mark: runMark(f.status),
+    noun: f.workflow,
+    detail: progressSpans(f, inflight),
+    time: f.openedAt !== null ? elapsed(now - f.openedAt) : null,
+    needsYou: false,
+  }
 }
 
-/** What an ended run's row says after its status word: `7/7 landed`, `at G3`, a design's version. */
+/** What an ended run's line says after its mark: `7/7 landed`, `at G3`, a design's version. */
 function outcomeSpans(f: RunFacts): SwarmSpan[] {
-  if (f.tamperedAt !== null) return [{ text: ` at ${f.tamperedAt}` }]
+  if (f.tamperedAt !== null) return [{ text: `at record ${f.tamperedAt}` }]
   const g = f.progress
   switch (g?.kind) {
     case 'execute':
-      if (f.status === 'halted' && g.current !== null) return [{ text: ` at ${oneLine(g.current, 32)}` }]
-      return f.status === 'done' && g.gates > 0 ? [SEP, { text: `${g.landed}/${g.gates} landed` }] : []
+      if (f.status === 'halted' && g.current !== null) return [{ text: `at ${oneLine(g.current, 32)}` }]
+      return f.status === 'done' && g.gates > 0 ? [{ text: `${g.landed}/${g.gates} landed` }] : []
     case 'design':
-      return g.version === null ? [] : [SEP, { text: g.overall ? `${g.version} ${g.overall}` : g.version }]
+      return g.version === null ? [] : [{ text: g.overall ? `${g.version} ${g.overall}` : g.version }]
     case 'fanout':
-      return [SEP, { text: `${g.done}/${g.tasks} tasks` }, ...(g.landed ? [SEP, { text: 'landed' }] : [])]
+      return [{ text: `${g.done}/${g.tasks} tasks` }, ...(g.landed ? [SEP, { text: 'landed' }] : [])]
     case 'plan':
-      return [SEP, { text: plural(g.records, 'record') }]
+      return [{ text: plural(g.records, 'record') }]
     default:
       return []
   }
 }
 
-/** A run that ended: its status glyph and word in place of ▸ and the progress, and how long its last generation ran. */
-function endedRow(f: RunFacts): BandRow {
-  const st = statusWord(f.status)
-  const spans: SwarmSpan[] = [...lead(st.glyph, st.color), ...runLabel(f), SEP, { text: f.status.replace(/_/g, ' '), color: st.color }, ...outcomeSpans(f)]
-  if (f.openedAt !== null && f.endedAt !== null) spans.push(SEP, { text: elapsed(f.endedAt - f.openedAt), dim: true })
-  const key = `run:${f.run}:${f.generation}:${f.status}`
-  return { key, kind: 'ended', spans, buttons: runButtons(f.run, key) }
+/** The ends that want a decision of yours: a run halted (its gate out of attempts, a plan gap), or one back for you. */
+const DECIDE = new Set(['halted', 'needs_user'])
+
+/** A run that ended: its status's mark, its outcome, and how long its last generation ran. */
+function endedLine(f: RunFacts): BandLine {
+  return {
+    key: `run:${f.run}:${f.generation}:${f.status}`,
+    kind: 'ended',
+    name: f.run,
+    mark: runMark(f.status),
+    noun: f.workflow,
+    detail: outcomeSpans(f),
+    time: f.openedAt !== null && f.endedAt !== null ? elapsed(f.endedAt - f.openedAt) : null,
+    needsYou: DECIDE.has(f.status),
+  }
 }
 
 /**
  * A live swarm: its nodes counted as the browser words them, from the
  * admission table and the open questions (swarm/view.ts, statusOf): running
- * or settling, and ⚑ waiting on a question.
+ * or settling, and ⚑ waiting on a question; and ⚑ the lead's proposals
+ * waiting for your review. A count of none isn't said.
  */
-function swarmRow(s: LiveSwarm, now: number): BandRow {
+function swarmLine(s: LiveSwarm, now: number): BandLine {
   const waiting = new Set(openQuestions(s.name).map(q => q.agentId))
   let running = 0
   for (const b of bindings(s.name)) {
     const st = admissionStatus(b.agentId)
     if ((st === 'running' || st === 'settling') && !waiting.has(b.agentId)) running++
   }
-  const key = `swarm:${s.name}:${s.launch}`
-  const spans: SwarmSpan[] = [
-    { text: MARK.running.glyph, color: MARK.running.color },
-    { text: ' litter · swarm ' },
-    { text: oneLine(s.name, 24), color: STYLE.name },
-    SEP,
-    { text: `${running} running`, color: STYLE.running },
-    SEP,
-    waiting.size > 0 ? { text: `${waiting.size} waiting`, color: STYLE.warning } : { text: '0 waiting' },
-  ]
-  if (s.state === 'stopping') spans.push(SEP, { text: 'stopping', color: STYLE.warning })
-  if (s.lost) spans.push(SEP, { text: 'lost to another session', color: STYLE.failed })
-  else if (s.readOnly) spans.push(SEP, { text: 'read-only', color: STYLE.muted })
-  spans.push(SEP, { text: elapsed(now - s.startedAt), dim: true })
+  const proposals = pendingProposals(s.name).length
+  const detail: SwarmSpan[] = [{ text: `${running} running`, color: STYLE.running }]
+  if (waiting.size > 0) detail.push(SEP, { text: `${MARK.needsYou.glyph} ${waiting.size} waiting`, color: STYLE.needsYou })
+  if (proposals > 0) detail.push(SEP, { text: `${MARK.needsYou.glyph} ${plural(proposals, 'proposal')}`, color: STYLE.needsYou })
+  if (s.lost) detail.push(SEP, { text: 'lost to another session', color: STYLE.failed })
+  else if (s.readOnly) detail.push(SEP, { text: 'read-only', color: STYLE.muted })
   return {
-    key,
+    key: `swarm:${s.name}:${s.launch}`,
     kind: 'swarm',
-    spans,
-    buttons: [
-      { key: `band:browser:${s.name}`, label: 'Browser' },
-      { key: `band:hide:${key}`, label: 'Hide' },
-    ],
+    name: s.name,
+    mark: swarmMark(s.state === 'stopping'),
+    noun: 'swarm',
+    detail,
+    time: elapsed(now - s.startedAt),
+    needsYou: waiting.size > 0 || proposals > 0,
   }
 }
 
@@ -432,6 +514,8 @@ let hidden: string[] = []
 let restored = false
 let viewSeq = 0
 let current: BandView | null = null
+/** The last build's lines, [Hide] or not: Home's (bandLines). */
+let lines: BandLine[] = []
 const EMPTY = JSON.stringify({ rows: [] })
 let currentJson = EMPTY
 /** Problems already in the debug log, by what they're about: each is said once until it clears. */
@@ -450,6 +534,7 @@ export function resetBandForTests(): void {
   restored = false
   viewSeq = 0
   current = null
+  lines = []
   currentJson = EMPTY
   logged.clear()
   Object.assign(deps, defaults)
@@ -459,14 +544,22 @@ export function resetBandForTests(): void {
 export const hiddenKeys = (): readonly string[] => hidden
 
 /**
- * What the last build holds, for the `litter` pane's strip and Home (phase
- * 5b, WP-DA): its active runs' rows and its ended runs' rows, a hidden one
- * left out. Module memory only: the ui tick builds it every 2 s.
+ * What the last build holds, for the `litter` pane's strip (phase 5b, WP-DA):
+ * its active runs and the runs that ended inside the window, [Hide] or not
+ * (the strip and Home aren't the band). Module memory only: the ui tick
+ * builds it every 2 s.
  */
 export function bandCounts(): { runs: number; ended: number } {
-  const rows = current?.rows ?? []
-  return { runs: rows.filter(r => r.kind === 'run').length, ended: rows.filter(r => r.kind === 'ended').length }
+  return { runs: lines.filter(l => l.kind === 'run').length, ended: lines.filter(l => l.kind === 'ended').length }
 }
+
+/**
+ * Home's reader (WP-DB): the last build's lines, [Hide] or not, in the
+ * band's order: the active runs (policy.json's first), every run that ended
+ * inside the window (newest first; the band draws only the newest), then
+ * the live swarms. Module memory only.
+ */
+export const bandLines = (): readonly BandLine[] => lines
 
 type BandStore = { v: 1; session: string; hidden: string[] }
 
@@ -570,7 +663,8 @@ async function runFacts(p: Ports, t: Tracking, run: string, minute: number): Pro
   return facts
 }
 
-async function runRows(p: Ports, litterDir: string, now: number): Promise<BandRow[]> {
+/** The runs' lines: the open ones, then every one that ended inside the window, newest end first. */
+async function runLines(p: Ports, litterDir: string, now: number): Promise<BandLine[]> {
   if (tracking?.litterDir !== litterDir) tracking = { litterDir, runs: new Set(), seeded: false, policyStamp: null, active: null, facts: new Map() }
   const t = tracking
   await readActive(p, t)
@@ -590,36 +684,42 @@ async function runRows(p: Ports, litterDir: string, now: number): Promise<BandRo
       t.facts.delete(run)
     } else if (f) all.push(f)
   }
-  const rows: BandRow[] = []
+  const out: BandLine[] = []
   // The active run first, then any other whose ledger shows an open generation (COMMON step 1).
   const isActive = (f: RunFacts) => (f.run === active?.run ? 1 : 0)
   const open = all.filter(f => f.open).sort((a, b) => isActive(b) - isActive(a) || (b.openedAt ?? 0) - (a.openedAt ?? 0))
-  for (const f of open) rows.push(activeRow(f, f.run === active?.run ? active.inflight : null, now))
-  // One ended row at most: the newest end.
-  const ended = all.filter(f => !f.open && f.endedAt !== null && now - f.endedAt < endedMs).sort((a, b) => b.endedAt! - a.endedAt!)[0]
-  if (ended) rows.push(endedRow(ended))
-  return rows
+  for (const f of open) out.push(activeLine(f, f.run === active?.run ? active.inflight : null, now))
+  const ended = all.filter(f => !f.open && f.endedAt !== null && now - f.endedAt < endedMs).sort((a, b) => b.endedAt! - a.endedAt!)
+  for (const f of ended) out.push(endedLine(f))
+  return out
 }
 
-function swarmRows(p: Ports, now: number): BandRow[] {
+function swarmLines(p: Ports, now: number): BandLine[] {
   try {
-    // A run's repair swarm is shown in that run's row only.
+    // A run's repair swarm is shown in that run's line only.
     return liveSwarms()
       .filter(s => s.run === undefined)
-      .map(s => swarmRow(s, now))
+      .map(s => swarmLine(s, now))
   } catch (err) {
     logOnce(p, 'swarms', `band: the live swarms can't be read: ${errText(err)}`)
     return []
   }
 }
 
-/** The rows in their order (decision 7): the runs, then the swarms; a row [Hide] hid is left out. */
+/**
+ * The band's rows in their order (decision 7): the open runs, one ended row
+ * at most (the newest end), then the swarms; a row [Hide] hid is left out.
+ * The lines, all of them, are kept for Home.
+ */
 async function build(p: Ports): Promise<{ rows: BandRow[] }> {
   await restoreHidden(p)
   const now = await p.now()
   const litterDir = session().litterDir
-  const runs = litterDir ? await runRows(p, litterDir, now) : []
-  return { rows: [...runs, ...swarmRows(p, now)].filter(r => !hidden.includes(r.key)) }
+  const runs = litterDir ? await runLines(p, litterDir, now) : []
+  lines = [...runs, ...swarmLines(p, now)]
+  const newestEnd = runs.find(l => l.kind === 'ended')
+  const shown = lines.filter(l => l.kind !== 'ended' || l === newestEnd)
+  return { rows: shown.map(rowOf).filter(r => !hidden.includes(r.key)) }
 }
 
 /** Builds the view; true when its rows changed, and with them its `v`. */

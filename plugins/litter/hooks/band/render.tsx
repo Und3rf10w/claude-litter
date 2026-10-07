@@ -8,10 +8,15 @@
 // differently from view.ts's fitSpans. No Button has a hotkey: a bare digit in
 // an empty composer would press it instead of typing (2.1.289). Each Button's
 // handler is a no-op: the band's ui.press hook answers litter's keys (view.ts).
+//
+// The colors are the `litter` pane's (phase 5b, WP-DB: ui/style.ts): a dim
+// span with no color of its own is drawn `muted`, as the pane's `themed`
+// table draws it, not in the terminal's faint attribute.
 
 import type { RenderElement } from 'claude-code'
 import type { BandElements, BandRender } from '../hooktypes'
 import type { BandRow, BandView } from '../../types/index'
+import { STYLE } from '../ui/style'
 import { fitRows, fitSpans, roomFor } from './view'
 
 const noop = (): void => {}
@@ -34,7 +39,7 @@ function rowOf(el: BandElements, r: BandRow, columns: number): RenderElement {
         <Box flexShrink={1}>
           <Text wrap="truncate-end">
             {spans.map(s => (
-              <Text color={s.color} dimColor={s.dim} bold={s.bold} wrap="truncate-end">
+              <Text color={s.color ?? (s.dim ? STYLE.muted : undefined)} bold={s.bold} wrap="truncate-end">
                 {s.text}
               </Text>
             ))}
