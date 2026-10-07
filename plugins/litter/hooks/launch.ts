@@ -325,14 +325,29 @@ export const taskStop: PortHook<TaskStopHook> = async (p, e, next) => {
 export const taskStopFailed: TaskStopCatch = async ($, e, next) => next(e)
 
 const isRole = (type: string) => type.startsWith('litter:') && !type.startsWith('litter:sw-')
+/** A swarm's agent type, with or without its `litter:` (swarm/state.ts's swarmOfType reads both). */
+const isSwarmType = (type: string) => type.startsWith('litter:sw-') || type.startsWith('sw-')
+
+type SpawnFacts = Pick<Parameters<PortHook<SpawnHook>>[1], 'parentAgentId' | 'subagentType' | 'workflow'>
+
+/**
+ * A workflow script's `agent()` of no swarm type. 2.1.292 raises agent.spawn
+ * for each (`workflow` set, `parentAgentId` absent as from main) where 2.1.291
+ * raised none, and litter's own runs start their roles that way, so it passes
+ * the role block, and register.tsx passes it before any wait, as before.
+ */
+export const outsideWorkflow = (e: Pick<SpawnFacts, 'subagentType' | 'workflow'>): boolean => e.workflow !== undefined && !isSwarmType(e.subagentType)
 
 /**
  * The role block's check alone: the main thread can't spawn a litter role
  * (section 6). The spawner is `parentAgentId`, absent on the main thread.
- * Swarm types aren't roles. The refusal's text, or null. register.tsx calls it,
- * then the swarm's spawn check with the engine's own `next` (phase 2b-1).
+ * Swarm types aren't roles. A workflow's agent isn't the main thread's: it
+ * passes, but a swarm's types are its lead's and nodes' to start, never a
+ * workflow's. The refusal's text, or null. register.tsx calls it, then the
+ * swarm's spawn check with the engine's own `next` (phase 2b-1).
  */
-export function roleSpawnRefusal(e: Pick<Parameters<PortHook<SpawnHook>>[1], 'parentAgentId' | 'subagentType'>): string | null {
+export function roleSpawnRefusal(e: SpawnFacts): string | null {
+  if (e.workflow !== undefined) return isSwarmType(e.subagentType) ? `a swarm's agents are started by its lead and nodes, not by a workflow; ${e.subagentType} wasn't started` : null
   return e.parentAgentId === undefined && isRole(e.subagentType)
     ? `litter roles run inside litter workflows only; use /litter:design, /litter:execute or /litter:fanout instead of spawning ${e.subagentType}`
     : null
@@ -344,14 +359,17 @@ export const spawnBlock: PortHook<SpawnHook> = async (_p, e, next) => {
   return refused ? { deny: refused } : next(e)
 }
 
-/** Its catch: refuses a main-thread spawn of a litter type, swarm types included. */
+/** Its catch: refuses a main-thread spawn of a litter type, swarm types included, and a workflow's of a swarm type. */
 export const spawnBlockFailed: SpawnCatch = async ($, e, next) => roleSpawnFailed(e, next)
 
 /**
  * spawnBlockFailed's answer without `$`, so the swarm's spawn catch
  * (swarm/wiring.ts) can fall back to it: validate never follows `$` across an import.
+ * A workflow's agent of no swarm type passes, as the hook would pass it (2.1.292
+ * also asks the catch for an event raised beneath the hook's own frame).
  */
 export async function roleSpawnFailed(e: Parameters<SpawnCatch>[1], next: Parameters<SpawnCatch>[2]) {
+  if (e.workflow !== undefined) return isSwarmType(e.subagentType) ? { deny: 'litter guard failed: agent.spawn; refusing' } : next(e)
   return e.parentAgentId === undefined && e.subagentType.startsWith('litter:')
     ? { deny: 'litter guard failed: agent.spawn; refusing' }
     : next(e)
