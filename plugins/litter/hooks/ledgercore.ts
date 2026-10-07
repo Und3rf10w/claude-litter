@@ -61,12 +61,15 @@ const sameHead = (a: Head | undefined, b: Head | undefined): boolean =>
 
 export type AppendInput<B> = { run: string; kind: string; by: Author; body: B }
 
+// Fields, not parameter properties: node runs this file with its types
+// stripped, which can't rewrite a parameter property.
 export class RecordTooLarge extends Error {
-  constructor(
-    readonly bytes: number,
-    readonly field: string | null,
-  ) {
+  readonly bytes: number
+  readonly field: string | null
+  constructor(bytes: number, field: string | null) {
     super(`record is ${bytes} bytes, over the ${RECORD_MAX_BYTES}-byte limit${field ? `; the largest field is '${field}'` : ''}`)
+    this.bytes = bytes
+    this.field = field
   }
 }
 
@@ -87,11 +90,12 @@ function largestField(body: unknown): string | null {
 
 /** The chain is broken: the run is `ledger_tampered`, and nothing from `seq` on is acted on. */
 export class LedgerTampered extends Error {
-  constructor(
-    readonly seq: number,
-    readonly reason: string,
-  ) {
+  readonly seq: number
+  readonly reason: string
+  constructor(seq: number, reason: string) {
     super(`ledger tampered at ${seq}: ${reason}`)
+    this.seq = seq
+    this.reason = reason
   }
 }
 

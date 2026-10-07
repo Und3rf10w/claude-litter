@@ -14,13 +14,18 @@ import { randomId, remove } from './fsx'
  */
 export const SNAPSHOT_PATHSPEC: readonly string[] = ['.', ...SNAPSHOT_EXCLUDES.map(p => `:(exclude)${p}`)]
 
+// Fields, not parameter properties, here and in the classes like it: node runs
+// these files with their types stripped, which can't rewrite a parameter
+// property (tests/unit/codexgraph.spec.ts keeps them out).
 export class GitFailed extends Error {
-  constructor(
-    readonly argv: readonly string[],
-    readonly code: number,
-    readonly stderr: string,
-  ) {
+  readonly argv: readonly string[]
+  readonly code: number
+  readonly stderr: string
+  constructor(argv: readonly string[], code: number, stderr: string) {
     super(`git ${argv.join(' ')} failed (exit ${code}): ${stderr.trim()}`)
+    this.argv = argv
+    this.code = code
+    this.stderr = stderr
   }
 }
 

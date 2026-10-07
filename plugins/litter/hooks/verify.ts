@@ -263,11 +263,16 @@ class Log {
   bytes = 0
   private buf = ''
   private bufBytes = 0
-  constructor(
-    private readonly p: Ports,
-    private readonly runDir: string,
-    private readonly verifyId: string,
-  ) {}
+  // Fields, not parameter properties: node strips this file's types, and
+  // can't rewrite those.
+  private readonly p: Ports
+  private readonly runDir: string
+  private readonly verifyId: string
+  constructor(p: Ports, runDir: string, verifyId: string) {
+    this.p = p
+    this.runDir = runDir
+    this.verifyId = verifyId
+  }
 
   async add(text: string): Promise<void> {
     let rest = text

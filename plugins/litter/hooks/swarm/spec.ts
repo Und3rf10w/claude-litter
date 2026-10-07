@@ -530,11 +530,16 @@ export class SpecPlaces {
   private list?: Promise<ListedReal[] | null>
   private rootDir?: Promise<string>
   private top?: Promise<string | null>
-  constructor(
-    private readonly p: Ports,
-    readonly repo: string,
-    readonly litterDir: string,
-  ) {}
+  // Fields, not parameter properties: node strips this file's types, and
+  // can't rewrite those.
+  private readonly p: Ports
+  readonly repo: string
+  readonly litterDir: string
+  constructor(p: Ports, repo: string, litterDir: string) {
+    this.p = p
+    this.repo = repo
+    this.litterDir = litterDir
+  }
 
   /** `git worktree list`, each path resolved; null when git can't list them. */
   worktrees(): Promise<ListedReal[] | null> {
