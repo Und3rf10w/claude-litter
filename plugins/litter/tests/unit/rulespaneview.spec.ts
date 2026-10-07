@@ -21,7 +21,23 @@ import type { RulesPaneView, RulesRow } from '../../types/index'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import { MOD } from '../../hooks/verify'
-import { BAN_MATCHES_NO_FILE, MATCHES_NO_FILE, blankRulesNav, deps as viewDeps, resetRulesViewForTests, rulesNavOf, rulesView } from '../../hooks/rules/paneview'
+import {
+  BAN_MATCHES_NO_FILE,
+  BAN_NO_PATHS,
+  MATCHES_NO_FILE,
+  NO_PATHS,
+  NO_PATHS_IN_FORCE,
+  STATUS,
+  batchConsequence,
+  blankRulesNav,
+  consequenceOf,
+  describeRow,
+  flagged,
+  deps as viewDeps,
+  resetRulesViewForTests,
+  rulesNavOf,
+  rulesView,
+} from '../../hooks/rules/paneview'
 import { deps as paneDeps, onRulesUi, pressRules, refreshRulesPane, resetRulesPaneForTests, rulesCommand, rulesTick } from '../../hooks/rules/pane'
 import { boardTick, resetBoardPaneForTests } from '../../hooks/board/pane'
 import { resetBoardForTests } from '../../hooks/board/view'
@@ -163,7 +179,7 @@ const LOADED = (): LoadedRule[] => [
   rule('P-nowhere', 'project', { d: doc('P-nowhere', 1, { paths: ['nowhere/**'] }) }),
 ]
 
-const origin = (instance: string, archived = false) => ({ instance, source: 'deepwork guardrail', archived })
+const origin = (instance: string, archived = false) => ({ instance, source: 'flag', archived })
 const PROPOSALS = (): { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }[] => [
   { ref: { store: 'repo', seq: 3 }, body: { rule: 'Prefer small commits', source: 'user', scope: 'user', when: 'committing' }, status: 'proposed' },
   { ref: { store: 'repo', seq: 4 }, body: { rule: 'Parse once', source: 'user', scope: 'project', paths: ['src/parser/**'] }, status: 'proposed' },
@@ -207,24 +223,47 @@ describe('the Proposed tab', () => {
   test('proposals with where they came from, an edit as a diff, then the unverified files', async () => {
     const { view: v, shown } = await rulesView(p, litterDir, blankRulesNav('proposed'))
     expect(v.tab).toBe('proposed')
-    expect(v.body!.title).toEqual([{ text: 'litter · rules', bold: true }, { text: ' · Proposed' }])
+    // No title of its own (WP-DE): the hub's header names the section, the tab strip the tab.
+    expect('title' in v.body!).toBe(false)
     // The dismissed one isn't there; the store is asked for the proposed ones.
     expect(rowsOf(v).map(r => r.key)).toEqual(['repo:3', 'repo:4', 'repo:5', 'repo:10', 'repo:11', 'repo:12', 'P-hand', 'U-new'])
     expect(called('proposalsOf')).toEqual([[{ status: ['proposed'] }]])
     expect(v.body!.counts).toEqual({ proposed: 8, inForce: 5 })
     // loadRules' problems are the In force tab's.
     expect(v.body!.problems).toEqual([])
+    // With nothing picked, the first row is the one drawn with its description; nothing is opened under [More].
+    expect([v.body!.focus, v.body!.more]).toEqual(['repo:3', null])
 
     const user = row(v, 'repo:3')
     expect(user).toEqual(expect.objectContaining({ kind: 'proposal', id: null, scope: 'user', type: 'rule', when: 'committing', rule: 'Prefer small commits', paths: [], diff: null }))
+    // Whatever waits on you has the needs-you mark; never the in-force one.
     expect(user.status).toEqual({ text: 'proposed', color: 'permission', glyph: '⚑' })
-    expect(user.notes).toEqual(['drafted from your words (/litter:rules add)', 'its id is assigned when you accept it'])
+    expect(user.origin).toBe('drafted from your words (/litter:rules add)')
+    expect(user.notes).toEqual(['its id is assigned when you accept it'])
     expect(user.actions).toEqual(['accept', 'edit', 'dismiss'])
     expect(row(v, 'repo:4').paths).toEqual(['src/parser/**'])
+    // What [Accept] writes, on the line above it: a new rule's folder (its id comes at the accept), and who gets it.
+    expect(row(v, 'repo:4').consequence).toEqual([
+      { text: 'Accept', bold: true },
+      { text: ' writes ' },
+      { text: '.litter/rules/P-….md', color: 'suggestion' },
+      { text: ', for you to commit; every later run in project scope gets it' },
+    ])
+    expect(user.consequence?.slice(-1)).toEqual([{ text: '; every later run in user scope gets it' }])
 
+    // An edit: its rule's scope (it can't be accepted into another), its file and next version, its diff.
     const edit = row(v, 'repo:5')
-    expect(edit.scope).toBeNull()
-    expect(edit.notes).toEqual(['proposed by a gate critic in run 20261003-api at G2', 'an edit of P-tests-first@2', 'its id is assigned when you accept it'])
+    expect(edit.scope).toBe('project')
+    expect(edit.edits).toBe('P-tests-first@2')
+    expect(edit.origin).toBe('proposed by a gate critic in run 20261003-api at G2')
+    expect(edit.notes).toEqual([])
+    expect(edit.consequence).toEqual([
+      { text: 'Accept', bold: true },
+      { text: ' writes ' },
+      { text: '.litter/rules/P-tests-first.md', color: 'suggestion' },
+      { text: ' as version 3' },
+      { text: ', for you to commit; every later run in project scope gets it' },
+    ])
     expect(edit.diff).toEqual(
       expect.arrayContaining([
         { text: '− Write the test first.', color: 'error' },
@@ -233,23 +272,47 @@ describe('the Proposed tab', () => {
       ]),
     )
 
-    // An import is a ban unless it says otherwise (16.8).
+    // An import is a ban unless it says otherwise (16.8); with no scope, [Accept] writes nothing until one is picked.
     expect(row(v, 'repo:11')).toEqual(expect.objectContaining({ type: 'ban', scope: null, source: 'import' }))
-    expect(row(v, 'repo:11').notes.slice(0, 2)).toEqual(['from deepwork instance old-plan', 'from an archived instance'])
+    expect(row(v, 'repo:11').origin).toBe('from deepwork instance old-plan, a flag guardrail')
+    expect(row(v, 'repo:11').notes[0]).toBe('from an archived instance')
+    expect(row(v, 'repo:11').consequence).toEqual([{ text: 'Accept', bold: true }, { text: ' writes nothing until you pick a scope' }])
     // Out of a focused batch, an import row has no check.
     expect(row(v, 'repo:10').checked).toBeUndefined()
 
     const hand = row(v, 'P-hand')
-    expect(hand.status).toEqual({ text: 'unverified', color: 'warning', glyph: '!' })
-    expect(hand.notes).toEqual(['a hand edit', 'P-hand@1 stays in force until you accept this', `file ${rulesPath('P-hand')}`])
+    expect(hand.status).toEqual({ text: 'unverified', color: 'permission', glyph: '⚑' })
+    expect(hand.origin).toBe('a hand edit')
+    expect(hand.notes).toEqual(['P-hand@1 stays in force until you accept this', `file ${rulesPath('P-hand')}`])
     expect(hand.diff).toEqual(expect.arrayContaining([{ text: '+ Changed by hand.', color: 'success' }]))
     expect(hand.actions).toEqual(['accept'])
-    expect(row(v, 'U-new').notes[1]).toBe('nothing of it is in force')
+    expect(hand.consequence).toEqual([
+      { text: 'Accept', bold: true },
+      { text: ' marks ' },
+      { text: '.litter/rules/P-hand.md', color: 'suggestion' },
+      { text: ' accepted, as it stands' },
+      { text: ', for you to commit; every later run in project scope gets it' },
+    ])
+    expect(row(v, 'U-new').notes[0]).toBe('nothing of it is in force')
 
     // What each row showed, for the presses.
     expect(Object.keys(shown)).toEqual(rowsOf(v).map(r => r.key))
     expect(shown['repo:4']).toEqual({ kind: 'proposal', ref: { store: 'repo', seq: 4 }, file: null, id: null, version: null, scope: 'project', type: 'rule', paths: ['src/parser/**'], source: 'user', batch: null, actions: ['accept', 'edit', 'dismiss'] })
+    expect(shown['repo:5']?.scope).toBe('project')
     expect(shown['P-hand']).toEqual(expect.objectContaining({ kind: 'unverified', file: rulesPath('P-hand'), id: 'P-hand', version: 1, scope: 'project' }))
+  })
+
+  test("the row picked, and what [More] opened, are the view's while they're shown", async () => {
+    const picked = await rulesView(p, litterDir, { ...blankRulesNav('proposed'), selected: 'repo:4', more: 'repo:4' })
+    expect([picked.view.body!.focus, picked.view.body!.more]).toEqual(['repo:4', 'repo:4'])
+    // A row that's gone falls back to the first; [More] on problems with none is nothing.
+    const gone = await rulesView(p, litterDir, { ...blankRulesNav('proposed'), selected: 'repo:99', more: 'problems' })
+    expect([gone.view.body!.focus, gone.view.body!.more]).toEqual(['repo:3', null])
+    // What a step waits on comes before the row the pane opened on.
+    const waiting = await rulesView(p, litterDir, { ...blankRulesNav('proposed', { proposal: { store: 'repo', seq: 3 } }), pending: { kind: 'scope', key: 'repo:11' } })
+    expect(waiting.view.body!.focus).toBe('repo:11')
+    const opened = await rulesView(p, litterDir, blankRulesNav('proposed', { proposal: { store: 'repo', seq: 4 } }))
+    expect(opened.view.body!.focus).toBe('repo:4')
   })
 
   test('an import batch, focused by its record or one of its proposals: grouped by instance, its preselection checked once', async () => {
@@ -262,10 +325,20 @@ describe('the Proposed tab', () => {
         { id: 'old-plan', goal: 'an old plan', date: '2026-08-01', archived: true },
       ],
       preselected: ['repo:10', 'repo:12'],
+      // What [Accept selected] writes: the checked ones, in project scope (an import's, 16.8).
+      consequence: [
+        { text: 'Accept selected', bold: true },
+        { text: ' writes ' },
+        { text: '2 new files in ' },
+        { text: '.litter/rules/', color: 'suggestion' },
+        { text: ', for you to commit; every later run in project scope gets them' },
+      ],
     })
     // The batch first, by its instances' order; the rest after.
     expect(rowsOf(v).map(r => r.key)).toEqual(['repo:10', 'repo:12', 'repo:11', 'repo:3', 'repo:4', 'repo:5', 'P-hand', 'U-new'])
     expect(['repo:10', 'repo:12', 'repo:11'].map(k => row(v, k).checked)).toEqual([true, true, false])
+    // Each batch row names its instance, which the pane groups it under; the rest have none.
+    expect(['repo:10', 'repo:12', 'repo:11', 'repo:3'].map(k => row(v, k).instance)).toEqual(['auth-fix', 'auth-fix', 'old-plan', undefined])
     expect([byRecord.batch, byRecord.seeded, byRecord.checked]).toEqual([9, 9, ['repo:10', 'repo:12']])
     expect(byRecord.shown['repo:11']?.batch).toBe(9)
 
@@ -299,16 +372,22 @@ describe('the Proposed tab', () => {
 describe('the In force tab', () => {
   test('the version in force of each rule, its standing, overrides on both rules, a rule that matches no file, the problems', async () => {
     const { view: v } = await rulesView(p, litterDir, blankRulesNav('in-force'))
-    expect(v.body!.title[1]).toEqual({ text: ' · In force' })
+    expect(v.tab).toBe('in-force')
     expect(rowsOf(v).map(r => r.key)).toEqual(['P-tests-first', 'U-theirs', 'L-mine', 'P-hand', 'P-nowhere'])
     expect(rowsOf(v).every(r => r.kind === 'accepted' && r.actions.join() === 'edit,retire')).toBe(true)
+    // Nothing in force has an [Accept], so nothing says what one writes.
+    expect(rowsOf(v).every(r => r.consequence === undefined)).toBe(true)
 
-    expect(row(v, 'P-tests-first')).toEqual(expect.objectContaining({ id: 'P-tests-first', version: 2, scope: 'project', paths: ['src/**'], notes: [] }))
-    expect(row(v, 'P-tests-first').status).toEqual({ text: 'accepted', color: 'success', glyph: '✓' })
+    // An edit of it waits under Proposed (repo:5): said here, so the version in force isn't mistaken for the last word.
+    expect(row(v, 'P-tests-first')).toEqual(expect.objectContaining({ id: 'P-tests-first', version: 2, scope: 'project', paths: ['src/**'], notes: ['an edit of it is proposed: see the Proposed tab'] }))
+    // The done mark, and "in force": never a proposal's.
+    expect(row(v, 'P-tests-first').status).toEqual({ text: 'in force', color: 'success', glyph: '✓' })
+    expect(row(v, 'P-tests-first').origin).toBe('accepted in the rules pane')
     expect(row(v, 'U-theirs').notes).toEqual(['local L-mine overrides U-theirs'])
     expect(row(v, 'L-mine').notes).toEqual(['local L-mine overrides U-theirs'])
     // The hand-edited file's committed version is what's in force.
-    expect(row(v, 'P-hand').status.text).toBe('accepted (committed)')
+    expect(row(v, 'P-hand').status.text).toBe('in force (committed)')
+    expect(row(v, 'P-hand').origin).toBe('accepted through a commit: the version at HEAD')
     expect(row(v, 'P-hand').rule).toBe('rule P-hand')
     expect(row(v, 'P-hand').notes).toEqual(["the file has an edit you haven't accepted: see the Proposed tab"])
     expect(row(v, 'P-nowhere').notes).toEqual([MATCHES_NO_FILE])
@@ -346,6 +425,98 @@ describe('the In force tab', () => {
   })
 })
 
+describe("a row's words (WP-DE): its mark, its description, what [Accept] writes", () => {
+  const base: RulesRow = {
+    key: 'repo:1',
+    kind: 'proposal',
+    id: null,
+    version: null,
+    scope: null,
+    type: 'rule',
+    status: STATUS.proposed,
+    when: 'touching the parser',
+    rule: 'Run the parser tests.\nThen the grammar ones.',
+    paths: [],
+    origin: 'drafted from your words (/litter:rules add)',
+    notes: ['its id is assigned when you accept it', MATCHES_NO_FILE, 'local L-mine overrides U-theirs'],
+    diff: null,
+    source: 'user',
+    actions: ['accept', 'edit', 'dismiss'],
+  }
+
+  test('what waits on you has the needs-you mark, what is in force the done one: never the same', () => {
+    expect([STATUS.proposed, STATUS.unverified].map(s => [s.glyph, s.color])).toEqual([
+      ['⚑', 'permission'],
+      ['⚑', 'permission'],
+    ])
+    expect([STATUS.accepted, STATUS['accepted (committed)']].map(s => [s.glyph, s.color, s.text])).toEqual([
+      ['✓', 'success', 'in force'],
+      ['✓', 'success', 'in force (committed)'],
+    ])
+  })
+
+  test('the description: the wording, type and scope, when, the paths or the no-paths warning, where it came from, the notes, the diff', () => {
+    expect(describeRow(base)).toEqual([
+      [{ text: 'Run the parser tests.' }],
+      [{ text: 'Then the grammar ones.' }],
+      [{ text: 'rule' }, { text: ' · ', color: 'subtle' }, { text: '! no scope yet', color: 'warning' }],
+      [{ text: 'when ', color: 'inactive' }, { text: 'touching the parser' }],
+      [{ text: `! ${NO_PATHS}`, color: 'warning' }],
+      [{ text: 'drafted from your words (/litter:rules add)', color: 'inactive' }],
+      [{ text: 'its id is assigned when you accept it', color: 'inactive' }],
+      // A note that flags something: the warning color, with its `!`.
+      [{ text: `! ${MATCHES_NO_FILE}`, color: 'warning' }],
+      [{ text: '! local L-mine overrides U-theirs', color: 'warning' }],
+    ])
+    expect([MATCHES_NO_FILE, 'local L-mine overrides U-theirs', BAN_MATCHES_NO_FILE].map(flagged)).toEqual([true, true, false])
+    // A ban's paths are what it protects; with none, it still reaches every gate but names nothing.
+    const ban = { ...base, type: 'ban', scope: 'project', notes: [] }
+    expect(describeRow({ ...ban, paths: ['vendor/**', 'gen/**'] })[4]).toEqual([{ text: 'protects ', color: 'inactive' }, { text: 'vendor/**, gen/**', color: 'suggestion' }])
+    expect(describeRow(ban)[4]).toEqual([{ text: `! ${BAN_NO_PATHS}`, color: 'warning' }])
+    expect(describeRow({ ...ban, type: 'rule', paths: ['src/**'] })[4]).toEqual([{ text: 'paths ', color: 'inactive' }, { text: 'src/**', color: 'suggestion' }])
+    expect(describeRow(ban)[2]).toEqual([{ text: 'ban' }, { text: ' · ', color: 'subtle' }, { text: 'project scope' }])
+    expect(describeRow({ ...base, kind: 'accepted', scope: 'user', notes: [] })[4]).toEqual([{ text: `! ${NO_PATHS_IN_FORCE}`, color: 'warning' }])
+    // An edit's diff last, under its heading, each line in its color.
+    const diff = describeRow({ ...base, notes: [], diff: [{ text: '  type: rule', dim: true }, { text: '− old', color: 'error' }, { text: '+ new', color: 'success' }] })
+    expect(diff.slice(-4)).toEqual([
+      [{ text: 'against the version in force:', color: 'inactive' }],
+      [{ text: '  type: rule', color: 'inactive' }],
+      [{ text: '− old', color: 'error' }],
+      [{ text: '+ new', color: 'success' }],
+    ])
+  })
+
+  test('what [Accept] writes: nothing without a scope, a new file in its folder, the next version of an edit, a file as it stands, the exact path once seen', () => {
+    expect(consequenceOf({ kind: 'no-scope' })).toEqual([{ text: 'Accept', bold: true }, { text: ' writes nothing until you pick a scope' }])
+    expect(consequenceOf({ kind: 'new', scope: 'user', folder: '/cfg/litter/rules' })).toEqual([
+      { text: 'Accept', bold: true },
+      { text: ' writes ' },
+      { text: '/cfg/litter/rules/U-….md', color: 'suggestion' },
+      { text: '; every later run in user scope gets it' },
+    ])
+    expect(consequenceOf({ kind: 'new', scope: 'user', folder: null })[2]).toEqual({ text: 'a user rule file' })
+    expect(consequenceOf({ kind: 'edit', scope: 'project', path: '.litter/rules/P-x.md', version: 4 }).map(s => s.text).join('')).toBe(
+      'Accept writes .litter/rules/P-x.md as version 4, for you to commit; every later run in project scope gets it',
+    )
+    expect(consequenceOf({ kind: 'file', scope: 'local', path: '.litter.local/rules/L-x.md' }).map(s => s.text).join('')).toBe(
+      'Accept marks .litter.local/rules/L-x.md accepted, as it stands; every later run in local scope gets it',
+    )
+    expect(consequenceOf({ kind: 'confirm', scope: 'project', path: '.litter/rules/P-x.md' })[0]).toEqual({ text: 'Confirm accept', bold: true })
+  })
+
+  test("what [Accept selected] writes: each scope's count and folder, the project ones for you to commit", () => {
+    const folders = { user: '/cfg/litter/rules', project: '.litter/rules', local: '.litter.local/rules' }
+    const words = (scopes: ('user' | 'project' | 'local' | null)[], confirm = false) => batchConsequence(scopes, folders, confirm).map(s => s.text).join('')
+    expect(words([])).toBe('Accept selected writes nothing: nothing is checked')
+    // An import's scope is project unless you picked another (16.8).
+    expect(words([null])).toBe('Accept selected writes 1 new file in .litter/rules/, for you to commit; every later run in project scope gets it')
+    expect(words(['project', 'user', null], true)).toBe(
+      'Confirm accept writes 1 new file in /cfg/litter/rules/ and 2 new files in .litter/rules/, the project ones for you to commit; every later run in user or project scope gets them',
+    )
+    expect(batchConsequence(['local'], { ...folders, local: null }, false).map(s => s.text).join('')).toBe('Accept selected writes 1 new file in the local rules; every later run in local scope gets it')
+  })
+})
+
 describe('the presses reach the store once each, with what the pane showed', () => {
   test('/litter rules opens `litter` on Rules; [Accept] on a user proposal accepts it once into user scope', async () => {
     expect(await rulesCommand(p, command(), next)).toEqual({ text: 'Rules shows 8 proposed or unverified, 5 in force' })
@@ -360,7 +531,15 @@ describe('the presses reach the store once each, with what the pane showed', () 
     await pressRules(p, 'rules:accept:repo:4')
     expect(called('previewAccept')).toEqual([[{ proposal: { store: 'repo', seq: 4 } }, { scope: 'project' }]])
     expect(acting()).toEqual([])
-    expect(view().body!.pending).toEqual({ kind: 'preview', key: 'repo:4', path: rulesPath('P-repo-4'), text: '---\nid: P-repo-4\n---\n\n## Rule\nParse once.\n' })
+    // The file's path as you'd commit it, relative to the checkout; what [Confirm accept] writes, on its line.
+    expect(view().body!.pending).toEqual({ kind: 'preview', key: 'repo:4', path: '.litter/rules/P-repo-4.md', text: '---\nid: P-repo-4\n---\n\n## Rule\nParse once.\n' })
+    expect(row(view(), 'repo:4').consequence).toEqual([
+      { text: 'Confirm accept', bold: true },
+      { text: ' writes ' },
+      { text: '.litter/rules/P-repo-4.md', color: 'suggestion' },
+      { text: ', for you to commit; every later run in project scope gets it' },
+    ])
+    expect(view().body!.focus).toBe('repo:4')
     await pressRules(p, 'rules:confirm:repo:4')
     expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 4 } }, { scope: 'project' }] }])
     expect(notice()).toBe('accepted: commit .litter/rules/P-parse-once.md yourself')
@@ -381,19 +560,39 @@ describe('the presses reach the store once each, with what the pane showed', () 
 
   test('no scope: [Accept] asks, a pick holds it without accepting, then [Accept] accepts into it', async () => {
     await rulesCommand(p, command(), next)
-    await pressRules(p, 'rules:accept:repo:5')
+    // repo:11, an import out of its batch, has no scope of its own.
+    await pressRules(p, 'rules:accept:repo:11')
     expect(calls.filter(c => c.fn !== 'proposalsOf')).toEqual([])
-    expect(view().body!.pending).toEqual({ kind: 'scope', key: 'repo:5' })
+    expect(view().body!.pending).toEqual({ kind: 'scope', key: 'repo:11' })
     expect(notice()).toContain('pick the scope to accept it into')
-    // A scope that isn't one is ignored; a real one is held.
-    await onRulesUi.select(p, { element: 'rules:scope:repo:5', value: 'everywhere' } as never, next)
-    expect(rulesNavOf()!.held['repo:5']).toBeUndefined()
-    expect(await onRulesUi.select(p, { element: 'rules:scope:repo:5', value: 'local' } as never, next)).toEqual({ element: 'rules:scope:repo:5', value: 'local' })
+    // The press picked its row.
+    expect(view().body!.focus).toBe('repo:11')
+    // A scope that isn't one is ignored; a real one is held, from the pick's Button (WP-DE) or a Select.
+    await onRulesUi.select(p, { element: 'rules:scope:repo:11', value: 'everywhere' } as never, next)
+    await pressRules(p, 'rules:scope-everywhere:repo:11')
+    expect(rulesNavOf()!.held['repo:11']).toBeUndefined()
+    await pressRules(p, 'rules:scope-user:repo:11')
+    expect(rulesNavOf()!.held['repo:11']).toEqual({ scope: 'user' })
+    expect(await onRulesUi.select(p, { element: 'rules:scope:repo:11', value: 'local' } as never, next)).toEqual({ element: 'rules:scope:repo:11', value: 'local' })
     expect(acting()).toEqual([])
     expect(view().body!.pending).toBeNull()
-    expect(row(view(), 'repo:5').notes).toContain('scope local, chosen here')
+    expect(row(view(), 'repo:11').notes).toContain('scope local, chosen here')
+    expect(row(view(), 'repo:11').consequence).toEqual([
+      { text: 'Accept', bold: true },
+      { text: ' writes ' },
+      { text: '.litter.local/rules/L-….md', color: 'suggestion' },
+      { text: '; every later run in local scope gets it' },
+    ])
+    await pressRules(p, 'rules:accept:repo:11')
+    expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 11 } }, { scope: 'local' }] }])
+  })
+
+  test('an edit stays in its rule\'s scope: [Accept] shows the next version of its file, never asks a scope', async () => {
+    await rulesCommand(p, command(), next)
     await pressRules(p, 'rules:accept:repo:5')
-    expect(acting()).toEqual([{ fn: 'acceptRule', args: [{ proposal: { store: 'repo', seq: 5 } }, { scope: 'local' }] }])
+    expect(called('previewAccept')).toEqual([[{ proposal: { store: 'repo', seq: 5 } }, { scope: 'project' }]])
+    expect(view().body!.pending).toEqual(expect.objectContaining({ kind: 'preview', key: 'repo:5' }))
+    expect(acting()).toEqual([])
   })
 
   test("[Edit…] holds the paths, through AD's narrowPaths on Enter, and the type, until [Accept]", async () => {
@@ -431,8 +630,10 @@ describe('the presses reach the store once each, with what the pane showed', () 
       [{ proposal: { store: 'repo', seq: 11 } }, { scope: 'project' }],
     ])
     expect(acting()).toEqual([])
-    expect(view().body!.pending).toEqual(expect.objectContaining({ kind: 'preview', key: 'batch:9', path: `${dir}/.litter/rules/` }))
-    expect(view().body!.pending?.kind === 'preview' && view().body!.pending).toEqual(expect.objectContaining({ text: expect.stringContaining(`--- ${rulesPath('P-repo-11')}`) }))
+    // The folder and each file as you'd commit them, relative to the checkout; [Confirm accept]'s line says what it writes.
+    expect(view().body!.pending).toEqual(expect.objectContaining({ kind: 'preview', key: 'batch:9', path: '.litter/rules/' }))
+    expect(view().body!.pending?.kind === 'preview' && view().body!.pending).toEqual(expect.objectContaining({ text: expect.stringContaining('--- .litter/rules/P-repo-11.md') }))
+    expect(view().body!.batch?.consequence?.[0]).toEqual({ text: 'Confirm accept', bold: true })
 
     refuse['repo:11'] = 'the proposal changed since it was shown'
     await pressRules(p, 'rules:confirm:batch:9')

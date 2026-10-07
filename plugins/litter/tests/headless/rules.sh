@@ -77,8 +77,9 @@ until [ -f $LD/hooks/mode ]
 $(h_tool_steps "$H_DIR/debug.txt")
 sleep 5
 # Step 1: the import. The rules pane opens on the batch: live1 live and old1
-# archived, live1's user and flag guardrails checked, every entry "no paths:
-# applies to every gate".
+# archived, live1's user and flag guardrails checked, the first one picked,
+# its description saying "no paths: it reaches every gate, but protects
+# nothing by name" (each import is a ban with no paths).
 send /litter:rules import
 wait 600 ls $RL/*-rule.import.json
 sleep 15
@@ -101,16 +102,31 @@ sleep 15
 # every count, from the pane this fixture's import draws: change the two
 # together.
 #
+# Rules (WP-DE): after the strip, its tab strip (the other tab, one Button:
+# place 7); the rows are lists drawn as Clients, no Tab stop, beside the
+# picked row's detail. The left column's Buttons come first (the batch's
+# [Accept selected], 8), then the detail's: [previous] [next] (9, 10), each
+# scope but the picked one (an import's is project: user 11, local 12), the
+# editor while it's open, then the row's [Accept] [Edit…] [Dismiss] and its
+# [Uncheck] or [Check]. Only the picked row's buttons are drawn, so `j`
+# ([next]'s hotkey while the pane holds the keyboard) picks the next row
+# first; a click on the row would too.
+#
 # Step 2: narrow the flag ban to a/** and accept it in project scope.
-# KEYS: ctrl-x tab into the pane; move to the [Edit…] of live1's flag row ("$G_FLAG") and press it (17 Tabs).
+# KEYS: ctrl-x tab into the pane; j picks live1's flag row ("$G_FLAG"), the second; then its [Edit…] (14 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+type j
 sleep 3
 key esc
 sleep 2
-# KEYS: in its Paths field (16 Tabs), type a/** and set it (send a/**); then press [Done], two Tabs on.
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+sleep 3
+key esc
+sleep 2
+# KEYS: in its Paths field (13 Tabs), type a/** and set it (send a/**); then press [Done], two Tabs on.
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab
 send a/**
 sleep 3
 key tab tab enter
@@ -118,34 +134,39 @@ sleep 3
 key esc
 sleep 2
 # KEYS: press that row's own [Accept], not the batch's [Accept selected] (which would also accept the preselected user guardrail); pick project if it asks the scope.
-# (An import is a project proposal already, so it doesn't ask: the preview replaces the row's buttons.) 16 Tabs.
+# (An import is a project proposal already, so it doesn't ask: the file takes the body, [Confirm accept] and [Cancel] above it.) 13 Tabs.
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 sleep 5
 key esc
 sleep 2
-# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept] (16 Tabs).
+# KEYS: the preview names .litter/rules/P-…md with paths: [a/**]; press [Confirm accept], the first after the tab (8 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.accept.json
 sleep 3
 key esc
 sleep 2
 # Step 3: dismiss the orchestrator proposal; the others stay pending.
-# KEYS: move to the orchestrator row ("$G_ORCH") and press its [Dismiss] (18 Tabs).
+# KEYS: the first row is picked again; j picks the orchestrator row ("$G_ORCH"), then its [Dismiss] (15 Tabs).
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
+type j
+sleep 3
+key esc
+sleep 2
+key ctrl-x tab
+key tab tab tab tab tab tab tab tab tab tab tab tab tab tab tab enter
 wait 120 ls $RL/*-rule.dismiss.json
 key esc
 sleep 2
-# /litter rules shows the ban in force as accepted. The checks read tty.txt from the mark on.
+# /litter rules shows the ban in force. The checks read tty.txt from the mark on.
 until wc -c <$H_DIR/tty.txt >|$H_DIR/rules-mark
 send /litter rules
 sleep 10
-# KEYS: ctrl-x tab into the pane; press the [In force (1)] tab.
-# (/litter rules opens on the Proposed tab with no batch: the ring starts with the strip's six, then its two tabs: 8 Tabs.)
+# KEYS: ctrl-x tab into the pane; press the [✓ In force 1] tab.
+# (/litter rules opens on the Proposed tab with no batch: the ring starts with the strip's six, then the other tab: 7 Tabs.)
 key ctrl-x tab
-key tab tab tab tab tab tab tab tab enter
+key tab tab tab tab tab tab tab enter
 sleep 10
 key esc
 sleep 2
@@ -260,18 +281,20 @@ c_load() {
   got=$(printf '%s\n' "$out" | jq -r '[.rules[] | select(.delivered != null and .scope != "user") | "\(.delivered) \(.standing)"] | join(";")') || { echo "rules-load.ts printed '$out'"; return 1; }
   [ -n "$BAN" ] && [ "$got" = "$BAN@1 accepted" ] || { echo "the rules in force are '$got', not ${BAN:-the ban}@1 alone"; return 1; }
 }
-# /litter rules answers "… N in force" (rules/pane.tsx), and its In force tab draws the ban's row as "✓ accepted <id>@1".
+# /litter rules answers "… N in force" (rules/pane.tsx), and its In force tab draws the ban's row as
+# "<its first line>  ✓ in force  project  ban  <id>@1" (WP-DE: the row's line first, then its columns).
 c_rules_pane() {
   [ -f "$H_DIR/rules-mark" ] || { echo "the /litter rules step never ran"; return 1; }
   m=$(tr -dc 0-9 <"$H_DIR/rules-mark")
   s=$(tail -c +"$((${m:-0} + 1))" "$H_DIR/tty.txt" | screen)
   # paneview.ts counts user-scope rules too: one of yours under your config dir makes this 2.
   printf '%s\n' "$s" | grep -Eq '(^|[^0-9])1 in force' || { echo "/litter rules didn't answer '1 in force'"; return 1; }
-  printf '%s\n' "$s" | LC_ALL=C grep -Eq "accepted[^A-Za-z]*$BAN@1" || { echo "the In force tab never showed ${BAN:-the ban}@1 as accepted (its KEYS step)"; return 1; }
+  printf '%s\n' "$s" | LC_ALL=C grep -Eq "in force .*$BAN@1" || { echo "the In force tab never showed ${BAN:-the ban}@1 in force (its KEYS step)"; return 1; }
 }
+# The batch's headings, and the picked import's description: a ban with no paths reaches every gate.
 c_pane_batch() {
   s=$(screen "$H_DIR/tty.txt")
-  for w in 'Import from deepwork' live1 old1 'no paths: applies to every gate'; do
+  for w in 'Import from deepwork' live1 old1 'no paths: it reaches every gate'; do
     case $s in *"$w"*) ;; *) echo "the pane never showed '$w'"; return 1 ;; esac
   done
 }
@@ -351,7 +374,7 @@ c_lock_free() {
 
 h_expect "the import recorded one batch: live1 live, old1 archived, live1's user and flag preselected" c_import
 h_expect "one rule.propose per offered guardrail, each a project ban with no paths" c_proposals
-h_expect "the pane opened on the batch, every entry with no paths" c_pane_batch
+h_expect "the pane opened on the batch, its picked entry a ban with no paths" c_pane_batch
 h_expect "one rule.accept, via ui, of the flag ban in project scope, its sha256 the file's, paths [a/**]" c_accept
 h_expect "one rule.dismiss, of the orchestrator proposal" c_dismiss
 h_expect "loadRules shows the ban as the one accepted rule" c_load
