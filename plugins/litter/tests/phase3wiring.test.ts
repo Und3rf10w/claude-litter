@@ -151,7 +151,8 @@ describe('/litter runs and /litter rules', () => {
     expect((await run($, 'litter', 'runs')).text).toBe('Runs has no litter directory to read')
     const board = await mountLitter($, 'terminal')
     expect((await board.find({ type: 'Text', text: ' · Runs' }))?.text).toBe(' · Runs')
-    expect((await board.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
+    // WP-DC: the board has no title line of its own; it draws why, above everything.
+    expect(await board.find({ type: 'Text', text: '✕ this session has no litter directory' })).toBeDefined()
     await board.unmount()
     expect((await run($, 'litter', 'rules')).text).toBe('Rules has no litter directory to read')
     const rules = await mountLitter($, 'desktop')
@@ -187,10 +188,12 @@ describe("each new hook's catch answers in its event's shape", () => {
   ] as const) {
     test(`litter on ${section}: ui.render passes on, then ui.press, ui.input and ui.select pass on`, async ($, on) => {
       mock.store(on)
-      // The section's atom holds a body whose title isn't spans: the mod's render throws on it, and its catch passes the render on.
+      // The section's atom holds a body the mod's render throws on (the rules pane's title isn't spans; the board's header,
+      // WP-DC, isn't a header), and its catch passes the render on.
+      const broken = atom === 'board' ? { header: 'not a header' } : { title: 'not spans' }
       on('state.get', async (_$, e, next) => {
         if (e.key === 'hub') return { value: { value: hubOn(section), version: 1 } }
-        if (e.key === atom) return { value: { value: { view: atom === 'board' ? 'board' : 'rules', v: 1, body: { title: 'not spans' } }, version: 1 } }
+        if (e.key === atom) return { value: { value: { view: atom === 'board' ? 'board' : 'rules', v: 1, body: broken }, version: 1 } }
         return next(e)
       })
       on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
@@ -244,7 +247,8 @@ describe("each new hook's catch answers in its event's shape", () => {
   // passes it on. The rules pane has no Client yet, so its ui.message can't be raised at this tier.
   test('litter on runs: ui.message from the gate table passes on', async ($, on) => {
     mock.store(on)
-    const view = { view: 'board', v: 1, run: 'r', body: { title: [{ text: 'litter · board' }], gates: { run: 'r', rows: [], selected: null } } }
+    // WP-DC: the board has no title line; its table draws under the `Gates` heading.
+    const view = { view: 'board', v: 1, run: 'r', body: { gates: { run: 'r', rows: [], selected: null } } }
     on('state.get', async (_$, e, next) =>
       e.key === 'hub' ? { value: { value: hubOn('runs'), version: 1 } } : e.key === 'board' ? { value: { value: view, version: 1 } } : next(e),
     )
@@ -253,7 +257,7 @@ describe("each new hook's catch answers in its event's shape", () => {
     const ids = sessionId(on, sid)
 
     const ui = await mountLitter($, 'desktop')
-    expect((await ui.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
+    expect((await ui.find({ type: 'Text', text: 'Gates' }))?.text).toBe('Gates')
 
     await clearEnds($, SESSION)
     sid.value = null
@@ -261,7 +265,7 @@ describe("each new hook's catch answers in its event's shape", () => {
     expect(await ui.post({ pick: 1 }, { in: 'board-gates' })).toBeUndefined()
     // The mod's hook reached `rebound`, which threw; the drawing is still whole.
     expect(ids.calls - before).toBeGreaterThanOrEqual(1)
-    expect((await ui.find({ type: 'Text', text: 'litter · board' }))?.text).toBe('litter · board')
+    expect((await ui.find({ type: 'Text', text: 'Gates' }))?.text).toBe('Gates')
   })
 })
 
