@@ -1149,6 +1149,39 @@ describe('the browser', () => {
     expect(rowWith(rows, 'Events ')).toBeDefined()
   })
 
+  // WP-DG: each flag says where its branch is checked out; two or more get one [That was me, all n] after them.
+  const MOVES: SwarmBrowserView['flags'] = [
+    { seq: 7, kind: 'branch-moved', text: 'refs/heads/main moved aaaaaaa → bbbbbbb while fixer ran · checked out in ~/tmp/claude-litter', running: ['fixer'] },
+    { seq: 9, kind: 'branch-moved', text: 'refs/heads/feature/y moved none → ccccccc while fixer ran · checked out nowhere', running: ['fixer'] },
+  ]
+  for (const columns of [100, 60]) {
+    test(`flags say where, and [That was me, all 2] comes after them, at ${columns} columns`, async ($, on) => {
+      mock.store(on)
+      views(on, { ...BROWSER, flags: MOVES })
+      const ui = await mountAt($, columns)
+      const all = await ui.find({ type: 'Button', key: 'swarm:browser:ack-all:demo/7.9' })
+      expect(all?.props.label).toBe('That was me, all 2')
+      expect(all?.props.variant).not.toBe('primary')
+      expect(await ui.find({ type: 'Button', key: 'swarm:browser:ack:demo/7' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'swarm:browser:ack:demo/9' })).toBeDefined()
+      const rows = drawText(await ui.drawn(), columns)
+      const nowhere = rows.findIndex(r => r.includes('nowhere'))
+      expect(nowhere).toBeGreaterThan(0)
+      // At 60 columns the first flag wraps: its path is on a row of its own, above the second flag.
+      expect(rows.findIndex(r => r.includes('~/tmp/claude-litter'))).toBeLessThan(nowhere)
+      expect(rows.findIndex(r => r.includes('[ That was me, all 2 ]'))).toBeGreaterThan(nowhere)
+      expect(rows.findIndex(r => r.includes('[ That was me, all 2 ]'))).toBeLessThan(rows.findIndex(r => r.startsWith('Agents ')))
+    })
+  }
+
+  test('one flag: no [That was me, all n]', async ($, on) => {
+    mock.store(on)
+    views(on, { ...BROWSER, flags: MOVES.slice(0, 1) })
+    const ui = await mountAt($, 100)
+    expect(await ui.find({ type: 'Button', text: /That was me, all/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:browser:ack:demo/7' })).toBeDefined()
+  })
+
   test('inline: the roster first, the summary one line, no events', async ($, on) => {
     mock.store(on)
     views(on, BROWSER)

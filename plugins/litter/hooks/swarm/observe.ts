@@ -21,7 +21,7 @@ import { modePath, SWARM_NAME } from '../layout'
 import { serial } from '../fsx'
 import { roleOf } from '../policy'
 import { session } from '../session'
-import { errText, git, OID } from '../worktrees'
+import { errText, git, listWorktrees, OID, realOf, type Listed } from '../worktrees'
 import * as state from './state'
 import { others } from './end'
 import { plainText } from './summary'
@@ -385,6 +385,52 @@ async function madeFrom(p: Ports, litterDir: string, s: LiveSwarm, ref: string):
   return typeof from === 'string' && OID.test(from) ? from : null
 }
 
+/** A path with no trailing `/`, in NFC (git's paths and the engine's may differ in either). */
+const normPath = (path: string): string => (path.length > 1 ? path.replace(/\/+$/, '') : path).normalize('NFC')
+
+/** `path` is `root` or below it, on a path boundary. */
+const below = (path: string, root: string): boolean => path === root || root === '/' || path.startsWith(`${root}/`)
+
+/**
+ * The listed worktree a directory is in: the entry whose path is the longest
+ * path-boundary prefix of `cwd`, as given or resolved (a worktree nested in
+ * another, `.claude/worktrees/<x>` in the primary checkout, is its own). Null
+ * when none holds it.
+ */
+async function worktreeHolding(p: Ports, list: readonly Listed[], cwd: string): Promise<string | null> {
+  const dirs = [...new Set([normPath(cwd), normPath(await realOf(p, cwd))])]
+  let best: string | null = null
+  for (const w of list) {
+    const root = normPath(w.path)
+    if (dirs.some(d => below(d, root)) && (best === null || root.length > best.length)) best = root
+  }
+  return best
+}
+
+/**
+ * Where each moved branch is checked out, and which worktrees the swarm's
+ * nodes and the lead work in (WP-DG): read once per check, only when a move
+ * would be flagged. Null when `git worktree list` fails.
+ */
+async function checkouts(p: Ports, s: LiveSwarm): Promise<{ where: Map<string, string>; ours: Set<string> } | null> {
+  const list = await listWorktrees(p, s.commonDir)
+  if (!list) return null
+  const where = new Map<string, string>()
+  for (const w of list) if (w.branch !== null && !where.has(w.branch)) where.set(w.branch, normPath(w.path))
+  let leadCwd = s.sessionCwd
+  try {
+    leadCwd = await p.cwd()
+  } catch {
+    // The directory Launch saw.
+  }
+  const ours = new Set<string>()
+  for (const cwd of [leadCwd, ...new Set(state.bindings(s.name).map(x => x.cwd))]) {
+    const root = await worktreeHolding(p, list, cwd)
+    if (root !== null) ours.add(root)
+  }
+  return { where, ours }
+}
+
 /**
  * 15.4, "Commits stay on the bound branch", checked again afterwards; one
  * swarm's checks at a time, so two nodes' turns don't compare against the
@@ -392,7 +438,12 @@ async function madeFrom(p: Ports, litterDir: string, s: LiveSwarm, ref: string):
  *  - the node's HEAD is still its bound ref (`head-moved` otherwise);
  *  - every local branch against the tips at the last check: one that moved
  *    and isn't the bound branch of a node that was running is `branch-moved`,
- *    naming those nodes;
+ *    naming those nodes and where it's checked out (`where`, null for nowhere);
+ *  - but not a branch checked out in a worktree where no node and not the
+ *    lead works (WP-DG: another session's work-package branches move on their
+ *    own). Those get one log line per check. A node working in another
+ *    worktree is the isolation check's to catch (`isolation-lost`); when
+ *    `git worktree list` fails, every move is flagged, with no `where`;
  *  - a bound branch that moved is diffed over the rule folders (`rule-commit`);
  *  - then the tips are the swarm's new ones.
  */
@@ -423,6 +474,7 @@ async function branchChecks(p: Ports, litterDir: string, name: string, b: NodeBi
     const runningNodes = [...new Set(running.filter(x => x.kind !== 'child').map(x => x.node))].sort()
     const bound = new Map<string, NodeBinding>()
     for (const x of running) if (x.branch !== null && (!bound.has(x.branch) || x.agentId === b.agentId)) bound.set(x.branch, x)
+    const moved: { ref: string; from: string | null; to: string | null }[] = []
     for (const ref of [...new Set([...Object.keys(s.tips), ...Object.keys(tips)])].sort()) {
       const from = s.tips[ref] ?? null
       const to = tips[ref] ?? null
@@ -434,7 +486,24 @@ async function branchChecks(p: Ports, litterDir: string, name: string, b: NodeBi
         continue
       }
       if (expectedMove(ref, from)) continue
-      await recordEvent(p, litterDir, s, { kind: 'branch-moved', ref, from, to, running: runningNodes })
+      moved.push({ ref, from, to })
+    }
+    if (moved.length > 0) {
+      const co = await checkouts(p, s)
+      if (!co) p.log(`swarm ${name}: git worktree list failed in ${s.commonDir}; every moved branch is flagged`)
+      const ignored: string[] = []
+      for (const m of moved) {
+        if (!co) {
+          await recordEvent(p, litterDir, s, { kind: 'branch-moved', ...m, running: runningNodes })
+          continue
+        }
+        const where = co.where.get(m.ref) ?? null
+        if (where !== null && !co.ours.has(where)) ignored.push(`${m.ref} (in ${where})`)
+        else await recordEvent(p, litterDir, s, { kind: 'branch-moved', ...m, running: runningNodes, where })
+      }
+      if (ignored.length > 0) {
+        p.log(`swarm ${name}: not flagged, checked out where no node and not the lead works: ${ignored.slice(0, LIST_MAX).join(', ')}`)
+      }
     }
     state.patchLiveSwarm(name, { tips })
   })

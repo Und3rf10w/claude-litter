@@ -274,7 +274,7 @@ export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 
  * | worker-ended-early (P) | children |
  * | held (P) | children |
  * | isolation-lost (P) | tool, cwd, expected |
- * | branch-moved (P) | ref, from, to, running (node ids) |
+ * | branch-moved (P) | ref, from, to, running (node ids), where (its worktree, or null) |
  * | branch-moved-ack (P) | seq (the branch-moved event's) |
  * | rule-commit (P) | from, to, files |
  * | head-moved (P) | expected, actual |
@@ -305,7 +305,8 @@ export type SwarmEventFields = {
   'worker-ended-early': { children: string[] }
   held: { children: string[] }
   'isolation-lost': { tool: string; cwd: string; expected: string | null }
-  'branch-moved': { ref: string; from: string | null; to: string | null; running: string[] }
+  /** `where` (WP-DG): the worktree it's checked out in, null for nowhere; absent before WP-DG, or when `git worktree list` failed. */
+  'branch-moved': { ref: string; from: string | null; to: string | null; running: string[]; where?: string | null }
   'branch-moved-ack': { seq: number }
   'rule-commit': { from: string; to: string; files: string[] }
   'head-moved': { expected: string; actual: string | null }

@@ -1455,6 +1455,19 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       if (!r.ok) failed(p, 'That was me', r.error)
       return true
     }
+    case 'ack-all': {
+      // [That was me, all n] (WP-DG): the branch-moved flags the browser drew, by the seqs its key carries, each acked once
+      // (ackBranchMoved skips a seq already acked, so a second press adds nothing).
+      const seqs = [...new Set(arg.split('.').map(Number))].filter(x => Number.isSafeInteger(x) && x > 0)
+      let acked = 0
+      for (const seq of seqs) {
+        const r = await call(p, `ackBranchMoved ${name} ${seq}`, () => o.ackBranchMoved(p, name, seq))
+        if (r.ok) acked++
+        else failed(p, 'That was me, all', r.error)
+      }
+      if (acked > 0) notice('ok', `marked ${acked} branch move${acked === 1 ? '' : 's'} as yours`)
+      return true
+    }
     case 'stop-them': {
       const seq = Number(arg)
       const flag = openFlags(await launchLedgerRecords(p, name), []).find(f => f.seq === seq)
