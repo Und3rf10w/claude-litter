@@ -68,17 +68,26 @@ export type UiInputHook = Hook<'ui.input'>
 export type UiInputCatch = CatchHandler<UiInputHook>
 export type UiSelectHook = Hook<'ui.select'>
 export type UiSelectCatch = CatchHandler<UiSelectHook>
+/** The pane's focus ring moving (WP-DA2): Tab, the arrows, a click, an autoFocus; `e.element` the key taking it, absent for an engine stop. */
+export type UiFocusHook = Hook<'ui.focus'>
+export type UiFocusCatch = CatchHandler<UiFocusHook>
+/** The pane's window asked to move (WP-DA2): the wheel, the scroll keys; `e.pointer` the body cell under the wheel. */
+export type UiScrollHook = Hook<'ui.scroll'>
+export type UiScrollCatch = CatchHandler<UiScrollHook>
 /**
  * One section's `ui.*` handlers, as the board and the rules pane export them
  * (phase 3, AF). Phase 5b (WP-DA): register.tsx matches the hub's
  * (ui/hub.ts, onLitterUi) on `requestId: 'litter'`, and the hub routes each
- * key to its section's.
+ * key to its section's. WP-DA2: `focus` and `scroll`, which a section that
+ * draws an in-pane list answers (ui/list.tsx); one without passes them on.
  */
 export type PaneUiHandlers = {
   message: PortHook<UiMessageHook>
   press: PortHook<UiPressHook>
   input: PortHook<UiInputHook>
   select: PortHook<UiSelectHook>
+  focus?: PortHook<UiFocusHook>
+  scroll?: PortHook<UiScrollHook>
 }
 /** The three swarm tools, answered in their hooks, never passed on. */
 export type SwarmProposeHook = MatchedHook<'tool.call', { readonly tool: 'mcp__litter__swarm_propose' }>

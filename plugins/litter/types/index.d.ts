@@ -737,8 +737,10 @@ export type TasksBody = {
   notice: SwarmNotice | null
   /** The list shown, by its folder name (the keys' `list`); null when there's none. */
   list: string | null
-  /** The list picker: each list with its kind and task count, by name. */
+  /** The list picker: each list with its kind and task count, by name. A team list with no tasks is left out, but for this session's, the one shown and the one named (WP-DA2). */
   lists: SwarmOption[]
+  /** The picker's note of the lists left out ("13 empty session teams hidden"); null or absent for none. */
+  hidden?: string | null
   /** The picker's value: the shown list's name. */
   listName: string | null
   filter: TasksFilter
@@ -848,8 +850,51 @@ export type HubTab = {
   summary: string
 }
 
-/** The hub's view: the section shown, the header's live line, and the strip. */
-export type HubView = { view: 'hub'; v: number; section: HubSection; live: SwarmSpan[]; tabs: HubTab[] }
+/**
+ * The hub's view: the section shown, the header's live line, and the strip.
+ * WP-DA2: `focus`, the element the pane's ring is on (ui.focus), and `lists`,
+ * each in-pane list's window offset by the list's id (ui.scroll); both
+ * absent before the first of either.
+ */
+export type HubView = {
+  view: 'hub'
+  v: number
+  section: HubSection
+  live: SwarmSpan[]
+  tabs: HubTab[]
+  focus?: string | null
+  lists?: Record<string, number>
+}
+
+/** One row of an in-pane list's Client (hooks/ui/listmenu.tsx): laid out by hooks/ui/list.tsx, plain JSON. */
+export type ListClientRow = {
+  /** The item's key: a click presses it. */
+  key: string
+  /** The label and its columns, padded to the list's widths. */
+  text: string
+  description: string
+  selected: boolean
+  /** The right-click menu: each presses its `key`. */
+  actions: { key: string; label: string; color?: string }[]
+}
+
+/** The props of an in-pane list's Client: the window's rows, what's outside it, and where the description goes. */
+export type ListClientProps = {
+  /** The list's id, posted back with each pick. */
+  list: string
+  rows: ListClientRow[]
+  above: number
+  below: number
+  offset: number
+  /** The window's last offset. */
+  max: number
+  /** The description beside the rows, else on the status line. */
+  beside: boolean
+  /** The element the pane's ring is on, or null. */
+  focused: string | null
+  /** The body's columns as the hooks laid the rows out, 0 when unbounded. */
+  width: number
+}
 // ===== end hub section (owner: WP-DA) =====
 
 declare module 'claude-code' {

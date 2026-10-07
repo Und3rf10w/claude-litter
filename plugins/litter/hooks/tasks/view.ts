@@ -307,6 +307,23 @@ function listFor(lists: readonly TaskListRef[], n: TasksNav): TaskListRef | null
   return lists.find(l => l.mine) ?? lists[0] ?? null
 }
 
+/**
+ * Whether the picker leaves a list out (WP-DA2): most lists are the engine's
+ * implicit, empty `session-<sid8>` teams, so a team's list with no tasks is
+ * left out, unless it's this session's own, the one shown, or the one named
+ * (`named`: the navigation's, which `/litter tasks <list>` and a pick set).
+ */
+export const hiddenList = (l: TaskListRef, count: number, shownName: string | null, named: string | null): boolean =>
+  l.kind === 'team' && !l.mine && count === 0 && l.name !== shownName && l.name !== named
+
+/** The picker's note of the lists it left out: "13 empty session teams hidden", else "… team lists …"; null for none. */
+export function hiddenNote(left: readonly TaskListRef[]): string | null {
+  if (left.length === 0) return null
+  const sessions = left.every(l => (l.team ?? l.name).startsWith('session-'))
+  const what = sessions ? 'session team' : 'team list'
+  return `${left.length} empty ${what}${left.length === 1 ? '' : 's'} hidden`
+}
+
 /** A `/litter tasks <list>` argument: a list's name, its folder name, or its team's; null for none that matches. */
 export function listNamed(lists: readonly TaskListRef[], arg: string): TaskListRef | null {
   return lists.find(l => l.name === arg) ?? lists.find(l => sanitize(l.name) === sanitize(arg)) ?? lists.find(l => l.team === arg) ?? null
@@ -387,8 +404,13 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
         : null
 
   const options: SwarmOption[] = []
+  const left: TaskListRef[] = []
   for (const l of lists) {
     const count = l === list ? tasks.length : await deps.countTasks(p, l)
+    if (hiddenList(l, count, list.name, n.list)) {
+      left.push(l)
+      continue
+    }
     const kind = l.mine ? (l.kind === 'team' ? `team ${l.team}, this session's` : "this session's") : 'team'
     options.push({ value: l.name, label: oneLine(`${l.name} · ${kind} · ${count} task${count === 1 ? '' : 's'}`, 120) })
   }
@@ -400,6 +422,7 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
     notice,
     list: listKey,
     lists: options,
+    hidden: hiddenNote(left),
     listName: list.name,
     filter,
     counts,

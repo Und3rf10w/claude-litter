@@ -28,6 +28,8 @@ import type {
   SwarmTreeRow,
 } from '../../types/index'
 import { NOTICE_STYLE, STYLE } from '../ui/style'
+import { field, fieldRows, heading, spanRows, textRows } from '../ui/chrome'
+import { list, type ListSpec } from '../ui/list'
 import { BADGE_COLOR } from './view'
 
 // ---------------------------------------------------------------------------
@@ -91,12 +93,16 @@ export function line(el: PaneElements, spans: readonly SwarmSpan[]): RenderEleme
   )
 }
 
+/**
+ * A section's heading, a row below what's above it: the chrome's (WP-DA2),
+ * its rule filling what the row has left, the aside its note (muted, or in
+ * the aside's own color).
+ */
 export function section(el: PaneElements, label: string, aside?: SwarmSpan): RenderElement {
-  const { Box, Text } = el
+  const { Box } = el
   return (
-    <Box flexDirection="row" marginTop={1}>
-      <Text bold>{label}</Text>
-      {aside && <Text color={aside.color} dimColor={aside.dim}>{`  ${aside.text}`}</Text>}
+    <Box flexDirection="column" marginTop={1}>
+      {heading(el, label, undefined, aside ? { text: aside.text, ...(aside.color ? { color: aside.color } : {}) } : null)}
     </Box>
   )
 }
@@ -442,6 +448,44 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Bo
 const SCOPE_ORDER = { builtin: 0, user: 1, project: 2 } as const
 const SCOPE_LABEL = { builtin: 'built-in', user: 'yours', project: 'this project' } as const
 
+/** The start screen's template list (WP-DA2): its id, which keeps its window in the hub, and its footer's keys' base. */
+export const TEMPLATE_LIST = 'swarm:start:templates'
+/** Its row budget: the rows past it are a scroll away. */
+export const TEMPLATE_ROWS = 6
+/** A template row's key: a press picks it, as the Select's pick did. */
+export const templateKey = (id: string): string => `swarm:start:template:${id}`
+
+/** The templates as a list: the built-ins first, each row its name and scope, its description beside the focused one. Pure. */
+export function templateList(view: SwarmStartView): ListSpec {
+  const templates = [...view.templates].sort((a, b) => SCOPE_ORDER[a.scope] - SCOPE_ORDER[b.scope])
+  return {
+    id: TEMPLATE_LIST,
+    rows: TEMPLATE_ROWS,
+    items: templates.map(x => ({
+      key: templateKey(x.id),
+      label: x.name,
+      cells: [{ text: SCOPE_LABEL[x.scope], color: STYLE.muted }],
+      description: x.description,
+      selected: view.template?.id === x.id,
+    })),
+    columns: [{ drop: 1 }],
+    empty: 'no templates',
+  }
+}
+
+/**
+ * The rows the start screen draws above its template list at `ctx` (the hit
+ * test for a wheel tick over the list, swarm/panes.ts): the header (the
+ * title, the notice wrapped), the Name field and its caption, "Ask the
+ * lead" and its field, and the list's heading. Kept in step with renderStart.
+ */
+export function startListTop(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface'>): number {
+  const notice = view.notice ? textRows(`${NOTICE[view.notice.level].glyph} ${view.notice.text}`, ctx.bodyColumns) : 0
+  // section(): a gap, then the heading's row.
+  const headed = 2
+  return spanRows(view.title, ctx.bodyColumns) + notice + fieldRows(ctx.surface, true) + headed + fieldRows(ctx.surface, false) + headed
+}
+
 export function renderStart(view: SwarmStartView, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
   const { Box, Text } = el
@@ -453,28 +497,19 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Bod
       </Box>
     )
   }
-  const templates = [...view.templates].sort((a, b) => SCOPE_ORDER[a.scope] - SCOPE_ORDER[b.scope])
   const t = view.template
+  // What's above the list keeps to startListTop's rows.
   return (
     <Box flexDirection="column">
       {header(el, view.title, view.notice)}
-      {input(el, { key: 'swarm:start:name', label: 'Name', value: view.name, placeholder: 'a-z, 0-9 and -, up to 24' })}
+      {field(el, { key: 'swarm:start:name', label: 'Name', value: view.name }, 'a-z, 0-9 and -, up to 24, not starting with -', e)}
       {section(el, 'Ask the lead')}
       <Box flexDirection="row" columnGap={1}>
-        {input(el, { key: 'swarm:start:ask', label: '', value: view.ask, placeholder: 'what the swarm is for', submitLabel: 'ask' })}
+        {field(el, { key: 'swarm:start:ask', value: view.ask, placeholder: 'what the swarm is for', submitLabel: 'ask' }, null, e)}
         {button(el, { key: 'swarm:start:ask-send', label: 'Ask the lead', primary: true })}
       </Box>
       {section(el, 'From a template')}
-      {templates.length === 0 ? (
-        <Text dimColor>no templates</Text>
-      ) : (
-        select(el, {
-          key: 'swarm:start:template',
-          label: 'Template',
-          value: t?.id ?? '',
-          options: [{ value: '', label: 'pick one' }, ...templates.map(x => ({ value: x.id, label: `${x.name} (${SCOPE_LABEL[x.scope]})` }))],
-        })
-      )}
+      {list(el, templateList(view), e)}
       {t && (
         <Box flexDirection="column" borderStyle="round" paddingX={1}>
           <Text bold>{t.name}</Text>

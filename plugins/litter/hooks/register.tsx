@@ -76,9 +76,11 @@ import {
   swarmSendFailed,
   turnStartFailed,
   turnStepFailed,
+  uiFocusFailed,
   uiInputFailed,
   uiMessageFailed,
   uiPressFailed,
+  uiScrollFailed,
   uiSelectFailed,
 } from './swarm/wiring'
 import { registerLitterCommand } from './uicommands'
@@ -542,6 +544,21 @@ export const register: Register = (on, options) => {
     await rebound(p)
     return onLitterUi.select(p, e, next)
   }).catch(uiSelectFailed)
+
+  // WP-DA2: the pane's ring and its window. The hub keeps the element the
+  // ring lands on (a list draws its description) and routes a wheel tick to
+  // the shown section, which moves its in-pane list or passes it on.
+  on('ui.focus', { requestId: 'litter' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onLitterUi.focus(p, e, next)
+  }).catch(uiFocusFailed)
+
+  on('ui.scroll', { requestId: 'litter' }, async ($, e, next) => {
+    const p = enginePorts($)
+    await rebound(p)
+    return onLitterUi.scroll(p, e, next)
+  }).catch(uiScrollFailed)
 
   // Phase 5 (WP-CA). The band above the prompt (CB): litter's rows over the
   // tree the plugins beneath draw, which it awaits and keeps below its own;

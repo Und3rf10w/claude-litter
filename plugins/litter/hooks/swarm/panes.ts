@@ -13,13 +13,16 @@
 // Contract owner: phase 2b-1, package N (C picked the signatures).
 
 import type { Ports } from '../ports'
-import type { CommandRunHook, PortHook, UiInputHook, UiMessageHook, UiPressHook, UiSelectHook } from '../hooktypes'
-import type { SwarmNotice } from '../../types/index'
+import type { CommandRunHook, PortHook, UiInputHook, UiMessageHook, UiPressHook, UiScrollHook, UiSelectHook } from '../hooktypes'
+import type { SwarmNotice, SwarmPaneView } from '../../types/index'
 import type { Draft, SwarmNode, SwarmSpec, Template } from './types'
 import type { SwarmNav } from './view'
 import type { WaitBudget } from './admit'
 import type { Loaded } from '../ui/hub'
-import { litterShows, openSection } from '../ui/hub'
+import { listOffset, litterShows, moveList, openSection } from '../ui/hub'
+import { lastDrawn } from '../ui/drawn'
+import { listHit, listPlace, listWindow, pageOf, scrolled } from '../ui/list'
+import { TEMPLATE_LIST, startListTop, templateList } from './builder'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
 import { liveSwarm, takeProposals, version } from './state'
@@ -193,6 +196,8 @@ export async function resumeDoctor(p: Ports): Promise<void> {
 
 let lastStamp = ''
 let savedRev = -1
+/** The swarm view last written: the template list's footer moves the window over the rows it drew. */
+let lastSwarm: SwarmPaneView | null = null
 
 async function stampOf(p: Ports): Promise<string> {
   const n = nav()
@@ -218,6 +223,7 @@ async function drawSwarm(p: Ports): Promise<void> {
     if (Object.keys(patch).length > 0) setNav({ ...n, ...patch })
   }
   await p.setView('swarm', view)
+  lastSwarm = view
   lastStamp = await stampOf(p)
   if (savedRev !== navRev()) {
     savedRev = navRev()
@@ -428,6 +434,29 @@ export const onUiSelect: PortHook<UiSelectHook> = async (p, e, next) => {
   return { element: e.element, value: e.value }
 }
 
+/**
+ * ui.scroll while Swarms is shown (WP-DA2): a wheel tick over the start
+ * screen's template list moves the list's window (the hub keeps it) and
+ * answers `{}`, so the pane stays put. Any other (the scroll keys, a tick over
+ * the rest of the body, one at the list's edge) passes on, and the pane
+ * scrolls. Where the list sits is what the terminal last drew (ui/drawn.ts):
+ * the body's top, the window's offset as read, and the rows above the list
+ * (startListTop, kept in step with renderStart).
+ */
+export const onUiScroll: PortHook<UiScrollHook> = async (p, e, next) => {
+  const d = lastDrawn()
+  const at = e.pointer
+  if (!at || !d || d.shown !== 'swarms' || e.by === 0) return next(e)
+  const view = d.view as SwarmPaneView | null
+  if (!view || view.view !== 'start' || view.blocked) return next(e)
+  const spec = templateList(view)
+  const place = listPlace(spec, d.ctx)
+  const top = d.bodyTop + startListTop(view, d.ctx)
+  if (!listHit(place, top, d.scrollOffset + at.row, at.column, d.ctx.bodyColumns)) return next(e)
+  const to = scrolled(place.count, listOffset(spec.id), place.budget, e.by)
+  return (await moveList(p, spec.id, to, place.window.max)) ? {} : next(e)
+}
+
 /** One press, field or pick: the stale check, the action, then the redraw. */
 export async function handle(p: Ports, key: string, input: Input): Promise<void> {
   const k = parseKey(key)
@@ -560,9 +589,22 @@ async function startAction(p: Ports, k: PaneKey, input: Input): Promise<boolean>
     }
     case 'ask-send':
       return askNew(p)
-    case 'template':
-      setNav({ ...n, template: input.value ? input.value : null, templateErrors: [] })
+    case 'template': {
+      // A row of the template list (WP-DA2) names its template in its key; the Select it replaced gave it as the value.
+      const id = input.value ?? k.arg
+      setNav({ ...n, template: id ? id : null, templateErrors: [] })
       return true
+    }
+    case 'templates': {
+      // The list's footer: [↑ n above] and [↓ n more] move its window a page.
+      const shown = lastSwarm
+      if (!shown || shown.view !== 'start') return true
+      const spec = templateList(shown)
+      const w = listWindow(spec.items.length, listOffset(TEMPLATE_LIST), spec.rows)
+      const page = pageOf(spec.rows)
+      await moveList(p, TEMPLATE_LIST, w.offset + (k.arg === 'up' ? -page : k.arg === 'down' ? page : 0), w.max)
+      return true
+    }
     case 'cancel-template':
       setNav({ ...n, template: null, templateErrors: [] })
       return true
@@ -1660,6 +1702,7 @@ export function resetPanesForTests(): void {
   ticking = false
   lastStamp = ''
   savedRev = -1
+  lastSwarm = null
   lastDoctor = null
   invalidNow.clear()
 }

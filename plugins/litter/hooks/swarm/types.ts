@@ -260,6 +260,8 @@ export type Template = {
 export type TemplateListing = {
   name: string
   description: string
+  /** Its spec's goal, as written (its `{param}`s unfilled): the start screen's list shows its first line when there's no description (WP-DA2). */
+  goal: string
   scope: Template['scope']
   params: TemplateParam[]
   /** The file, or null for a built-in. */

@@ -32,9 +32,20 @@
 // open; while it is, it refreshes the shown section alone, then the strip's
 // counts. The swarm pane's own 1 s timer is gated the same way
 // (litterShows), all but its proposals' hand-over.
+//
+// The ring and the lists (WP-DA2). ui.focus and ui.scroll go to the shown
+// section as the other events do: a focus by its element's key (one of
+// another section's moves the ring and nothing else), a scroll always to the
+// shown section, which takes a tick over its own list (ui/list.tsx) and
+// passes the rest on, so the pane scrolls. The hub keeps, in its atom, the
+// element the ring is on (every body's ctx.focused) and each list's window
+// offset (ctx.lists), so a render reads them and never keeps them. An
+// in-pane list's Client posts `{ list, press }` (a row's click, a menu
+// pick), pressed on the list's section as its Button would be, or
+// `{ list, offset, max }` (its keys past the window's edge).
 
 import type { Ports } from '../ports'
-import type { CommandRunHook, PaneUiHandlers, PortHook } from '../hooktypes'
+import type { CommandRunHook, PaneUiHandlers, PortHook, UiPressHook } from '../hooktypes'
 import type { HubSection, HubTab, HubView, SwarmSpan } from '../../types/index'
 import type { ProposalRef } from '../records/rules'
 import { agentLive } from '../ports'
@@ -42,7 +53,7 @@ import { MARK, STYLE } from './style'
 import { STRIP_PREFIX } from './chrome'
 import { GATES_KEY, boardCommand, boardTick, loadBoard, onBoardUi, resumeBoard } from '../board/pane'
 import { loadRules, onRulesUi, resumeRules, rulesCommand, rulesCounts, rulesTick } from '../rules/pane'
-import { TREE_KEY, doctorCommand, loadDoctor, loadSwarm, onUiInput, onUiMessage, onUiPress, onUiSelect, resumeDoctor, resumeSwarm, swarmCommand } from '../swarm/panes'
+import { TREE_KEY, doctorCommand, loadDoctor, loadSwarm, onUiInput, onUiMessage, onUiPress, onUiScroll, onUiSelect, resumeDoctor, resumeSwarm, swarmCommand } from '../swarm/panes'
 import { loadTasks, onTasksUi, resumeTasks, tasksCommand, tasksTick } from '../tasks/pane'
 import { agentsCommand, agentsTick, loadAgents, onAgentsUi, resumeAgents } from '../agents/pane'
 import { bandCounts } from '../band/view'
@@ -133,7 +144,8 @@ export const sections: Record<HubSection, Section> = {
     owns: key => (key.startsWith('swarm:') && !key.startsWith('swarm:doctor:')) || key === TREE_KEY,
     load: (p, arg) => loadSwarm(p, asText(arg)),
     resume: p => resumeSwarm(p),
-    ui: swarmUi,
+    // The start screen's template list scrolls under the wheel (WP-DA2).
+    ui: { ...swarmUi, scroll: (p, e, next) => onUiScroll(p, e, next) },
     // The swarm pane's own 1 s timer refreshes it, gated by litterShows.
     tick: noop,
   },
@@ -217,6 +229,10 @@ let restored = false
 let viewSeq = 0
 let lastJson = ''
 let panesFailed = false
+/** The element the pane's ring is on (ui.focus), or null. */
+let focus: string | null = null
+/** Each in-pane list's window offset, by the list's id. */
+let lists: Record<string, number> = {}
 
 /** The section shown now. */
 export const shownSection = (): HubSection => shown
@@ -251,6 +267,9 @@ export function resetHubForTests(): void {
   viewSeq = 0
   lastJson = ''
   panesFailed = false
+  focus = null
+  lists = {}
+  counted = null
   Object.assign(sections, defaults.sections)
   Object.assign(deps, { ...defaults.deps, command: { ...defaults.deps.command } })
 }
@@ -334,18 +353,58 @@ const liveWords = (c: HubCounts): string => {
   return parts.length > 0 ? parts.join(', ') : 'nothing running'
 }
 
+/** The strip and the live line as last counted, so a ring or a list that moves writes the hub without counting again. */
+let counted: { live: SwarmSpan[]; tabs: HubTab[] } | null = null
+
 /** Builds the hub's view and writes it when it changed (or always, with `force`: $.state was wiped). */
 export async function writeHub(p: Ports, force = false): Promise<HubView> {
   const c = await countsNow(p)
   const tabs = tabsOf(c)
-  const live = liveOf(c, tabs)
-  const json = JSON.stringify({ section: shown, live, tabs })
-  const view: HubView = { view: 'hub', v: viewSeq, section: shown, live, tabs }
+  counted = { live: liveOf(c, tabs), tabs }
+  return putHub(p, counted, force)
+}
+
+async function putHub(p: Ports, strip: { live: SwarmSpan[]; tabs: HubTab[] }, force: boolean): Promise<HubView> {
+  const { live, tabs } = strip
+  const json = JSON.stringify({ section: shown, live, tabs, focus, lists })
+  const view: HubView = { view: 'hub', v: viewSeq, section: shown, live, tabs, focus, lists: { ...lists } }
   if (!force && json === lastJson) return view
   view.v = ++viewSeq
   await p.setView('hub', view)
   lastJson = json
   return view
+}
+
+/** The hub's view again after the ring or a list moved: the strip as last counted (a wheel tick reads no count). */
+const writeMoved = async (p: Ports): Promise<void> => {
+  if (counted === null) await writeHub(p)
+  else await putHub(p, counted, false)
+}
+
+/** The element the pane's ring is on, as the hub keeps it. */
+export const focusedElement = (): string | null => focus
+
+/** A list's window offset, as the hub keeps it (0 before any move). */
+export const listOffset = (id: string): number => lists[id] ?? 0
+
+/**
+ * Moves a list's window to `offset`, clamped to [0, max], and writes the
+ * hub's view when it moved; answers whether it did (false: the window was at
+ * that edge already, so the caller passes the tick on).
+ */
+export async function moveList(p: Ports, id: string, offset: number, max: number): Promise<boolean> {
+  const to = Math.min(Math.max(0, Math.floor(max)), Math.max(0, Math.floor(offset)))
+  if (!Number.isFinite(to) || to === listOffset(id)) return false
+  lists = { ...lists, [id]: to }
+  await writeMoved(p)
+  return true
+}
+
+/** The ring moved onto `element` (null: one of the engine's stops): kept, and the hub written, so bodies draw it. */
+async function noteFocus(p: Ports, element: string | null): Promise<void> {
+  if (element === focus) return
+  focus = element
+  await writeMoved(p)
 }
 
 /** Shows `id` and writes the hub: the render draws its body next. */
@@ -426,14 +485,40 @@ function stale(p: Ports, owner: HubSection): void {
   p.log(`litter pane: a ${LABEL[owner]} key while ${LABEL[shown]} is shown, ignored`)
 }
 
-/** The pane's ui.message (a Client's posts), ui.press, ui.input and ui.select, by the key rule above. */
-export const onLitterUi: PaneUiHandlers = {
+type PressArg = Parameters<PortHook<UiPressHook>>[1]
+
+/** What an in-pane list's Client posted (ui/listmenu.tsx), checked: data from code, so only these two shapes, of this list's own section. */
+type ListPost = { press: string } | { offset: number; max: number }
+
+function listPost(element: string, data: unknown): ListPost | null {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return null
+  const d = data as Record<string, unknown>
+  if (d.list !== element) return null
+  if (typeof d.press === 'string' && d.press !== '' && d.press.length <= 300 && ownerOf(d.press) === ownerOf(element)) return { press: d.press }
+  const whole = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 100_000
+  if (whole(d.offset) && whole(d.max)) return { offset: d.offset, max: d.max }
+  return null
+}
+
+/** The pane's ui.message (a Client's posts), ui.press, ui.input, ui.select, ui.focus and ui.scroll, by the key rule above. */
+export const onLitterUi: Required<PaneUiHandlers> = {
   message: async (p, e, next) => {
     await restoreHub(p)
     const owner = ownerOf(e.element)
     if (owner === null) return sections[shown].ui.message(p, e, next)
     if (owner !== shown) {
       stale(p, owner)
+      return {}
+    }
+    const post = listPost(e.element, e.data)
+    if (post !== null && 'press' in post) {
+      // A row's click or a menu pick: the press its Button would have made, on the same section.
+      const press: PressArg = { plugin: 'litter', element: post.press, component: e.component, requestId: e.requestId, surface: e.surface } as PressArg
+      await sections[owner].ui.press(p, press, (async (pe: PressArg) => ({ element: pe.element })) as Parameters<PortHook<UiPressHook>>[2])
+      return {}
+    }
+    if (post !== null) {
+      await moveList(p, e.element, post.offset, post.max)
       return {}
     }
     return sections[owner].ui.message(p, e, next)
@@ -472,6 +557,27 @@ export const onLitterUi: PaneUiHandlers = {
       return { element: e.element, value: e.value }
     }
     return sections[owner].ui.select(p, e, next)
+  },
+  /**
+   * The ring moving: kept as ctx.focused, then the shown section's to answer
+   * (it passes on, and the ring lands). The strip's, an engine stop's and
+   * another section's (a stale drawing's) move the ring and nothing else: a
+   * focus is no action, so no toast.
+   */
+  focus: async (p, e, next) => {
+    await restoreHub(p)
+    const owner = e.element === undefined || e.element.startsWith(STRIP_PREFIX) ? undefined : ownerOf(e.element)
+    const handler = owner === undefined || (owner !== null && owner !== shown) ? undefined : sections[shown].ui.focus
+    const r = handler ? await handler(p, e, next) : await next(e)
+    // Kept once the ring landed (a deny: it stayed where it was).
+    if (r.deny === undefined) await noteFocus(p, e.element ?? null)
+    return r
+  },
+  /** A wheel tick or a scroll key: no element, so the shown section's, which takes one over its own list and passes the rest on (the pane scrolls). */
+  scroll: async (p, e, next) => {
+    await restoreHub(p)
+    const handler = sections[shown].ui.scroll
+    return handler ? handler(p, e, next) : next(e)
   },
 }
 

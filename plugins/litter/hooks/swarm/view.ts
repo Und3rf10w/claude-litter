@@ -1210,6 +1210,10 @@ function title(...parts: SwarmSpan[]): SwarmSpan[] {
 
 export const templateId = (t: { scope: string; name: string }) => `${t.scope}:${t.name}`
 
+/** What the start screen's list says of a template (WP-DA2): its own description, else its goal's first line. */
+export const listedAs = (t: { description: string; goal?: string }): string =>
+  t.description.trim() !== '' ? t.description : ((t.goal ?? '').split('\n').find(l => l.trim() !== '') ?? '')
+
 /** A template's `name` parameter, the swarm's name (every built-in has one): the start screen's Name fills it. */
 export const namesTheSwarm = (param: { name: string; type: string }): boolean => param.name === 'name' && param.type === 'string'
 
@@ -1286,7 +1290,7 @@ async function buildStart(p: Ports, n: SwarmNav): Promise<SwarmStartView> {
     ...base,
     notice,
     blocked: null,
-    templates: listings.map(t => ({ id: templateId(t), name: clean(t.name, 60), description: oneLine(t.description, 120), scope: t.scope })),
+    templates: listings.map(t => ({ id: templateId(t), name: clean(t.name, 60), description: oneLine(listedAs(t), 120), scope: t.scope })),
     template,
     swarms,
   }

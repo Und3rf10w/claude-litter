@@ -177,7 +177,7 @@ describe('yours and the project\'s', () => {
     symlinkSync(join(dir, 'outside.json'), join(folder, 'linked.json'))
     const before = tree(dir)
     const listed = await listTemplates(p, litterDir)
-    expect(listed.filter(t => t.scope !== 'builtin')).toEqual([{ name: 'areas', description: 'One orchestrator per area', scope: 'project', params: file.params, path: join(folder, 'areas.json') }])
+    expect(listed.filter(t => t.scope !== 'builtin')).toEqual([{ name: 'areas', description: 'One orchestrator per area', goal: 'Look over {areas}', scope: 'project', params: file.params, path: join(folder, 'areas.json') }])
     expect(tree(dir)).toEqual(before)
     expect(p.storeMap.size).toBe(0)
     expect(p.logs.filter(l => l.includes('broken.json') || l.includes('misnamed.json'))).toHaveLength(2)

@@ -287,7 +287,7 @@ async function found(p: Ports, litterDir: string): Promise<{ template: Template;
 
 /** The built-ins, then yours (`p.configDir()`), then this project's. A project template is only read. */
 export async function listTemplates(p: Ports, litterDir: string): Promise<TemplateListing[]> {
-  return (await found(p, litterDir)).map(({ template: t, path }) => ({ name: t.name, description: t.description, scope: t.scope, params: t.params, path }))
+  return (await found(p, litterDir)).map(({ template: t, path }) => ({ name: t.name, description: t.description, goal: t.spec.goal, scope: t.scope, params: t.params, path }))
 }
 
 /** One template whole, by its scope and name, for `instantiate`; null when there's none. */

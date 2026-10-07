@@ -164,6 +164,11 @@ function controlsPart(el: PaneElements, body: TasksBody): RenderElement {
           {(body.lists ?? []).map(o => button(el, { key: `tasks:pick:${o.value}`, label: o.label, ...(o.value === body.listName ? { primary: true } : {}) }))}
         </Box>
       )}
+      {body.hidden ? (
+        <Text color={STYLE.muted} wrap="truncate-end">
+          {body.hidden}
+        </Text>
+      ) : null}
       {buttons(
         el,
         FILTERS.map(f => ({ key: `tasks:filter:${f}`, label: `${body.filter === f ? '› ' : ''}${FILTER_LABEL[f]} ${counts[f] ?? 0}`, primary: body.filter === f })),

@@ -22,6 +22,7 @@ import { renderRulesPane, rulesSection } from '../rules/pane'
 import { renderTasksPane, tasksSection } from '../tasks/pane'
 import { agentsSection, renderAgentsPane } from '../agents/pane'
 import { actions, header, heading, keysLine, plan, strip, stripWidths, themed, type BodyContext, type KeyHint, type SectionMeta } from './chrome'
+import { noteDrawn } from './drawn'
 import { LABEL, SECTIONS, tabsOf } from './hub'
 import { STYLE } from './style'
 
@@ -40,6 +41,7 @@ export const HUB_KEYS: readonly KeyHint[] = [
 ]
 
 /** Each section but Home, as its own module declares it (chrome.tsx's SectionMeta). Home fits and has no keys of its own. */
+export type MetaTable = Record<Exclude<HubSection, 'home'>, SectionMeta<never>>
 const META = {
   runs: runsSection,
   swarms: swarmsSection,
@@ -47,18 +49,26 @@ const META = {
   tasks: tasksSection,
   agents: agentsSection,
   doctor: doctorSection,
-} satisfies Record<Exclude<HubSection, 'home'>, SectionMeta<never>>
+} satisfies MetaTable
 
-/** Whether the shown section's body fits `ctx.rows` (the hub clips it there in the dock). */
-const fitsOf = (shown: HubSection): boolean => shown === 'home' || META[shown].fits
+/** Whether the shown section's body fits `ctx.rows` (the hub clips it there in the dock). The table is a seam for tier 2. */
+export const fitsOf = (shown: HubSection, table: MetaTable = META): boolean => shown === 'home' || table[shown].fits
 
 /** The shown section's own keys, drawn before the hub's. */
-const keysOf = (shown: HubSection, view: SectionView | null): readonly KeyHint[] => (shown === 'home' ? [] : META[shown].keys(view as never))
+export const keysOf = (shown: HubSection, view: SectionView | null, table: MetaTable = META): readonly KeyHint[] => (shown === 'home' ? [] : table[shown].keys(view as never))
+
+/** The keys line's keys: the shown section's, then the hub's. */
+export const keysLineOf = (shown: HubSection, view: SectionView | null, table: MetaTable = META): KeyHint[] => [...keysOf(shown, view, table), ...HUB_KEYS]
+
+/** The body's Box props: a section that fits is clipped to `rows` in the dock (so the keys line sits at the pane's foot); else drawn whole. */
+export function bodyBox(shown: HubSection, placement: 'dock' | 'inline', rows: number, table: MetaTable = META): { height?: number; overflow?: 'hidden' } {
+  return fitsOf(shown, table) && placement === 'dock' && Number.isFinite(rows) ? { height: rows, overflow: 'hidden' } : {}
+}
 
 /** The tabs before the hub's first write: every section, nothing counted. */
 const blankTabs = (): HubTab[] => tabsOf({ runs: 0, swarms: 0, swarmsNeedYou: false, rules: null, tasks: null, agents: null })
 
-/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter' }`. Pure. */
+/** register.tsx's ui.render hook for `{ component: 'Pane', requestId: 'litter' }`. Pure but for its note of what the terminal drew (ui/drawn.ts). */
 export function renderLitterPane(hub: HubView | null, view: SectionView | null, resolved: PaneElements, e: PaneRender): RenderElement {
   const el = themed(tableFor(resolved, e.surface))
   const { Box } = el
@@ -67,16 +77,17 @@ export function renderLitterPane(hub: HubView | null, view: SectionView | null, 
   const { bodyColumns, isFocused, placement, scroll } = e.props
   const keys = e.surface === 'terminal'
   const layout = plan({ bodyColumns, bodyRows: scroll.bodyRows, context: false, strip: stripWidths(tabs, shown, isFocused), keys })
-  const ctx: BodyContext = { surface: e.surface, bodyColumns, isFocused, placement, scroll, rows: layout.bodyRows }
-  const clip = fitsOf(shown) && placement === 'dock' && Number.isFinite(layout.bodyRows)
+  const ctx: BodyContext = { surface: e.surface, bodyColumns, isFocused, placement, scroll, rows: layout.bodyRows, focused: hub?.focus ?? null, lists: hub?.lists ?? {} }
+  // The header's rows, the strip's, and the gap above the body.
+  if (e.surface === 'terminal') noteDrawn({ shown, view, ctx, bodyTop: layout.headerRows + layout.stripRows + 1, scrollOffset: scroll.offset })
   return (
     <Box flexDirection="column">
       {header(el, { section: LABEL[shown], live: hub?.live ?? [] }, bodyColumns)}
       {strip(el, tabs, shown, isFocused)}
-      <Box flexDirection="column" marginTop={1} {...(clip ? { height: layout.bodyRows, overflow: 'hidden' as const } : {})}>
+      <Box flexDirection="column" marginTop={1} {...bodyBox(shown, placement, layout.bodyRows)}>
         {body(shown, tabs, view, el, ctx)}
       </Box>
-      {keys ? keysLine(el, [...keysOf(shown, view), ...HUB_KEYS], isFocused) : null}
+      {keys ? keysLine(el, keysLineOf(shown, view), isFocused) : null}
     </Box>
   )
 }
@@ -117,7 +128,7 @@ export function renderHome(tabs: readonly HubTab[], el: PaneElements, ctx: BodyC
   const fits = listed.slice(0, room)
   return (
     <Box flexDirection="column">
-      {heading(el, 'Sections', listed.length > fits.length ? `${listed.length - fits.length} more below the fold` : null)}
+      {heading(el, 'Sections', ctx.bodyColumns, listed.length > fits.length ? `${listed.length - fits.length} more below the fold` : null)}
       {fits.map(t => (
         <Box flexDirection={narrow ? 'column' : 'row'} columnGap={1}>
           <Box flexDirection="row" columnGap={1} flexGrow={1}>

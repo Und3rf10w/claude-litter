@@ -30,10 +30,12 @@ import type {
   SwarmSendCatch,
   TurnStartCatch,
   TurnStepCatch,
+  UiFocusCatch,
   UiInputCatch,
   UiMessageCatch,
   UiPressCatch,
   UiRenderCatch,
+  UiScrollCatch,
   UiSelectCatch,
 } from '../hooktypes'
 import { SWARM_TYPE_PREFIX } from '../layout'
@@ -134,11 +136,13 @@ export const litterCommandFailed: CommandRunCatch = async ($, e, next) => {
 /** ui.render's catch for the pane: the engine draws its own. */
 export const paneRenderFailed: UiRenderCatch = async ($, e, next) => next(e)
 
-/** The panes' ui.message, ui.press, ui.input and ui.select catches: pass on. */
+/** The panes' ui.message, ui.press, ui.input, ui.select, ui.focus and ui.scroll catches: pass on (the ring lands, the pane scrolls). */
 export const uiMessageFailed: UiMessageCatch = async ($, e, next) => next(e)
 export const uiPressFailed: UiPressCatch = async ($, e, next) => next(e)
 export const uiInputFailed: UiInputCatch = async ($, e, next) => next(e)
 export const uiSelectFailed: UiSelectCatch = async ($, e, next) => next(e)
+export const uiFocusFailed: UiFocusCatch = async ($, e, next) => next(e)
+export const uiScrollFailed: UiScrollCatch = async ($, e, next) => next(e)
 
 /** The swarm tools' catches: an error result naming the hook, never passed on (like recordFailed). */
 export const swarmProposeFailed: SwarmProposeCatch = async ($, e, next) => ({

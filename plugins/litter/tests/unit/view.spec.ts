@@ -99,10 +99,11 @@ function owners(over: Partial<Owners> = {}): void {
     }),
     listSwarms: fake('listSwarms', async () => [{ name: SWARM, goal: 'ship the parser', revision: 1, nodes: 3, live: false }]),
     listTemplates: fake('listTemplates', async () => [
-      { name: 'mine', description: 'my own', scope: 'user', params: [], path: '/nowhere/mine.json' },
+      { name: 'mine', description: 'my own', goal: 'Do mine', scope: 'user', params: [], path: '/nowhere/mine.json' },
       {
         name: 'fan-out',
         description: 'one worker per part',
+        goal: '{goal}',
         scope: 'builtin',
         params: [
           { name: 'goal', type: 'string', description: 'what for', default: 'tidy up' },
