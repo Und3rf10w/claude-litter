@@ -38,7 +38,6 @@ export const SWARM_CONTEXT_CLEAR_KILLED = 'Cut short by the clear: {who} was run
 
 /**
  * A direct message from you since the last block (state.takeDirect()). The form is
- * litter-prompts.md's example line. Slots: {node}, {delivery} (`queued`, or
- * `interjected`), {text}.
+ * litter-prompts.md's example line. Slots: {node}, {text}.
  */
-export const SWARM_CONTEXT_DIRECT = 'The user sent {node} directly ({delivery}): {text}'
+export const SWARM_CONTEXT_DIRECT = 'The user sent {node} directly: {text}'

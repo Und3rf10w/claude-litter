@@ -463,7 +463,8 @@ describe('S5, S6: the recovery card offers orchestrators K can act on, and stays
 describe('S7: one To and one Route for the drawing and [Send]', () => {
   test('⏎ sends to the To the composer shows, by the Route it shows', async () => {
     goLive()
-    p.storeMap.set(composerKey(litterDir, SWARM), { when: 'interject', route: 'parent' })
+    // An older litter's prefs: its `when` is read no more.
+    p.storeMap.set(composerKey(litterDir, SWARM), { when: 'queue', route: 'parent' })
     setOwnersForTests({
       checkHealth: fake('checkHealth', async () => HEALTHY),
       readOwner: fake('readOwner', async () => null),
@@ -475,7 +476,7 @@ describe('S7: one To and one Route for the drawing and [Send]', () => {
     expect([c.to, c.address, c.route]).toEqual(['o1', 'part-a#1', 'direct'])
     await handle(p, 'swarm:browser:text:alpha', { value: 'go on', kind: 'change' })
     await handle(p, 'swarm:browser:text:alpha', { value: 'go on', kind: 'submit' })
-    expect(called('sendFromBrowser')).toEqual([[{ swarm: SWARM, node: 'part-a#1', text: 'go on', when: 'interject', route: 'direct' }]])
+    expect(called('sendFromBrowser')).toEqual([[{ swarm: SWARM, node: 'part-a#1', text: 'go on', route: 'direct' }]])
   })
 })
 
@@ -885,35 +886,40 @@ describe('WP-DD: the roster', () => {
     budget: null,
     summary: null,
     rows: [
-      { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', queued: [], question: null, questionTo: null, flagged: false },
-      { key: 'o1', agentId: 'o1', depth: 1, name: 'part-a', role: 'orchestrator', color: null, dim: false, status: 'running', statusGlyph: '▸', statusColor: 'background', running: true, tool: 'Bash', turns: 3, steps: null, tokens: '2k', report: 'half done', queued: [], question: null, questionTo: null, flagged: false },
-      { key: 'w1', agentId: 'w1', depth: 2, name: 'reader', role: 'worker', color: null, dim: true, status: 'done', statusGlyph: '✓', statusColor: 'success', running: false, tool: '', turns: 1, steps: null, tokens: '800', report: '', queued: [], question: null, questionTo: null, flagged: false },
+      { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', question: null, questionTo: null, flagged: false, model: null, effort: null, tuned: false },
+      { key: 'o1', agentId: 'o1', depth: 1, name: 'part-a', role: 'orchestrator', color: null, dim: false, status: 'running', statusGlyph: '▸', statusColor: 'background', running: true, tool: 'Bash', turns: 3, steps: null, tokens: '2k', report: 'half done', question: null, questionTo: null, flagged: false, model: 'claude-opus-5-5[1m]', effort: 'xhigh', tuned: false },
+      { key: 'w1', agentId: 'w1', depth: 2, name: 'reader', role: 'worker', color: null, dim: true, status: 'done', statusGlyph: '✓', statusColor: 'success', running: false, tool: '', turns: 1, steps: null, tokens: '800', report: '', question: null, questionTo: null, flagged: false, model: null, effort: null, tuned: false },
     ],
     flags: [],
     events: [],
     composer: null,
     transcript: null,
+    tune: null,
     selected: null,
     proposals: [],
     confirmEnd: false,
     ...over,
   })
 
-  test("its description is the turns, tokens and last report; Stop and Hard stop only beside a running node of a swarm this session owns", () => {
+  test("its description is the turns, tokens and last report; its model and effort in the menu; Stop and Hard stop only beside a running node of a swarm this session owns", () => {
     const v = view()
     expect(rosterDescription(v.rows[1]!)).toBe('3 turns · 2k tokens · last report: half done')
     expect(rosterDescription(v.rows[2]!)).toBe('1 turn · 800 tokens')
     const labels = (x: SwarmBrowserView, i: number) => rosterActions(x, x.rows[i]!).map(a => a.label)
-    expect(labels(v, 1)).toEqual(['Transcript', 'Stop node', 'Hard stop'])
-    expect(labels(v, 2)).toEqual(['Transcript'])
-    expect(labels(view({ readOnly: true }), 1)).toEqual(['Transcript'])
-    expect(labels(view({ lost: true }), 1)).toEqual(['Transcript'])
+    // The user's live look (2026-10-07): "right click here and see the model and effort level".
+    const tuned = ['Model: claude-opus-5-5[1m]', 'Effort: xhigh']
+    expect(labels(v, 1)).toEqual(['Transcript', ...tuned, 'Stop node', 'Hard stop'])
+    expect(labels(v, 2)).toEqual(['Transcript', 'Model: not known yet', 'Effort: not known yet'])
+    expect(labels(view({ readOnly: true }), 1)).toEqual(['Transcript', ...tuned])
+    expect(labels(view({ lost: true }), 1)).toEqual(['Transcript', ...tuned])
     expect(rosterActions(v, v.rows[0]!)).toEqual([])
+    // Both open the node's panel.
+    expect(rosterActions(v, v.rows[1]!).slice(1, 3).map(a => a.key)).toEqual(['swarm:browser:tune:demo/o1', 'swarm:browser:tune:demo/o1/effort'])
     // The list: the lead is the heading's note, so two rows; the menu only where the rows are a Client.
     const spec = rosterList(v, true)
     expect(spec.items.map(i => i.label)).toEqual(['part-a', '  reader'])
     expect(spec.items[0]!.cells?.map(c => c.text)).toEqual(['▸ running', 'orchestrator', '', '▸ Bash'])
-    expect(spec.items[0]!.actions?.map(a => a.label)).toEqual(['Transcript', 'Stop node', 'Hard stop'])
+    expect(spec.items[0]!.actions?.map(a => a.label)).toEqual(['Transcript', ...tuned, 'Stop node', 'Hard stop'])
     expect(rosterList(v, false).items[0]!.actions).toBeUndefined()
   })
 
@@ -940,14 +946,14 @@ describe('WP-DD: the roster', () => {
     expect(transcriptRows(v, { ...ctx, rows: Number.POSITIVE_INFINITY })).toBe(TRANSCRIPT_INLINE_ROWS)
   })
 
-  test("the composer's caption says who it goes to, and whether it interjects or queues", () => {
+  test("the composer's caption says who it goes to, that it goes now, and the route", () => {
     const routes = [
       { value: 'direct', label: 'direct' },
       { value: 'lead', label: 'via the lead' },
     ]
     const targets = [{ value: 'w1', label: 'reader' }]
-    expect(composerCaption({ to: 'w1', targets, when: 'interject', route: 'direct', routes })).toBe('to reader · interjects now · direct')
-    expect(composerCaption({ to: null, targets, when: 'queue', route: 'lead', routes })).toBe('pick who it goes to · queues until its turn ends · via the lead')
+    expect(composerCaption({ to: 'w1', targets, route: 'direct', routes })).toBe('to reader · goes now · direct')
+    expect(composerCaption({ to: null, targets, route: 'lead', routes })).toBe('pick who it goes to · goes now · via the lead')
   })
 })
 

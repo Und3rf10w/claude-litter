@@ -1,7 +1,7 @@
 // Tier 2: the swarm panes (hooks/swarm/view.ts and panes.ts; WP-N): each
 // view built from inputs set up here (a saved spec, a draft with edits, a
 // staged proposal with a conflict, a live swarm in state.ts with bindings,
-// an in-flight call, a queued message and ledger events, a recovery card, an
+// an in-flight call, ledger events (an older one's queued message), a recovery card, an
 // unsettled report, a read-only swarm), the composer's idle-worker case, the
 // list's 2.1.289 words (held, between turns, starting) and [Stop them]'s
 // count, the stale-press check, and each handler reaching its owner through
@@ -179,7 +179,7 @@ function bind(agentId: string, over: Partial<NodeBinding> = {}): NodeBinding {
   }
 }
 
-/** A live swarm: part-a #1 (o1, running Bash, asking), fixer #1 (w1, done, reported, a message queued). */
+/** A live swarm: part-a #1 (o1, running Bash, asking), fixer #1 (w1, done, reported). */
 function goLive(over: Partial<LiveSwarm> = {}): void {
   state.putLiveSwarm(live(over))
   state.putBinding(bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, type: 'litter:sw-demo-part-a' }))
@@ -188,7 +188,6 @@ function goLive(over: Partial<LiveSwarm> = {}): void {
   state.callStart('o1', 'tu1', 'Bash', NOW - 5_000)
   state.noteQuestion('o1', 'which branch do I base on?', NOW - 3_000)
   state.noteReport('w1', 'fixed the tokenizer\nand more', 'handback', NOW - 10_000)
-  state.enqueue({ swarm: SWARM, agentId: 'w1', node: 'fixer', text: 'also check the lexer', from: 'user', at: NOW - 1_000 })
   state.addTokens('o1', { input_tokens: 1200, output_tokens: 300 } as never)
   p.agents = [
     { id: 'o1', description: 'part-a', type: 'litter:sw-demo-part-a', status: 'running' },
@@ -501,12 +500,15 @@ describe('a proposal', () => {
 })
 
 describe('the browser', () => {
-  test('a live swarm: statuses with their glyphs, the call in flight, the question, the report, the queued message, the events and the flag', async () => {
+  test("a live swarm: statuses with their glyphs, the call in flight, the question, the report, the events (an older ledger's queued message too) and the flag", async () => {
     goLive()
     owners({
       summaryOf: fake('summaryOf', () => ({ goalNow: 'parser first', progress: ['tokenizer done'], blocked: ['which branch'], at: NOW - 60_000, stale: true })),
     })
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'message', from: 'user', to: 'o1', route: 'direct', delivery: 'interject', text: 'go' })
+    // An older litter held this one for fixer's turn to end, then sent it.
+    await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'message', from: 'user', to: 'w1', route: 'direct', delivery: 'queue', text: 'also check the lexer' })
+    await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'queue-sent', node: 'fixer', agentId: 'w1', id: 'q0a1b2c3d' })
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'report', node: 'fixer', agentId: 'w1', via: 'handback', text: 'fixed the tokenizer' })
     await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', { kind: 'branch-moved', ref: 'refs/heads/main', from: 'a'.repeat(40), to: 'b'.repeat(40), running: ['fixer'] })
     const v = await view<SwarmBrowserView>('browser')
@@ -523,10 +525,11 @@ describe('the browser', () => {
     expect(o1?.question).toBe('which branch do I base on?')
     expect(o1?.turns).toBe(1)
     expect(w1?.report).toBe('fixed the tokenizer')
-    expect(w1?.queued.map(q => q.text)).toEqual(['also check the lexer'])
     expect(w1?.color).toBe(ORCHESTRATOR_COLORS[0])
     expect(v.events.map(e => [e.who, e.text])).toEqual([
-      ['you → part-a', 'direct, interject: "go"'],
+      ['you → part-a', 'direct: "go"'],
+      ['you → fixer', 'direct, queued: "also check the lexer"'],
+      ['fixer', 'queued message sent'],
       ['fixer', 'reported: "fixed the tokenizer"'],
       ['litter', '! refs/heads/main moved aaaaaaa → bbbbbbb'],
     ])
@@ -556,24 +559,94 @@ describe('the browser', () => {
     expect(running.composer?.routes[0]).toEqual({ value: 'direct', label: 'Direct' })
   })
 
-  test('[Send] hands L the instance, the text and your When and Route (kept per swarm); a refusal offers the queue', async () => {
+  test('[Send] hands L the instance, the text and your Route (kept per swarm); a refusal keeps the text and says why', async () => {
     goLive()
     setNav(blankNav('browser', SWARM))
     await handle(p, 'swarm:browser:to:demo', { value: 'w1' })
     await handle(p, 'swarm:browser:route:demo', { value: 'parent' })
     await handle(p, 'swarm:browser:text:demo', { value: 'look at the lexer', kind: 'change' })
     await handle(p, 'swarm:browser:send:demo/fixer#1', {})
-    expect(called('sendFromBrowser')).toEqual([[{ swarm: SWARM, node: 'fixer#1', text: 'look at the lexer', when: 'interject', route: 'parent' }]])
-    expect(p.storeMap.get(`litter.swarm.composer.${litterDir}.${SWARM}`)).toEqual({ when: 'interject', route: 'parent' })
+    expect(called('sendFromBrowser')).toEqual([[{ swarm: SWARM, node: 'fixer#1', text: 'look at the lexer', route: 'parent' }]])
+    expect(p.storeMap.get(`litter.swarm.composer.${litterDir}.${SWARM}`)).toEqual({ route: 'parent' })
     expect(nav()?.inputs['swarm:browser:text:demo']).toBeUndefined()
 
-    owners({ sendFromBrowser: fake('sendFromBrowser', async () => ({ kind: 'refused', reason: 'it is running', canQueue: true })) })
+    owners({ sendFromBrowser: fake('sendFromBrowser', async () => ({ kind: 'refused', reason: 'fixer#1 is at its limit' })) })
     await handle(p, 'swarm:browser:text:demo', { value: 'again', kind: 'change' })
     await handle(p, 'swarm:browser:send:demo/fixer#1', {})
-    expect(nav()?.offerQueue).toBe(true)
-    expect((p.views.swarm as SwarmBrowserView).composer?.offerQueue).toBe(true)
+    expect(nav()?.notice).toEqual({ level: 'error', text: 'not sent: fixer#1 is at its limit' })
+    expect(nav()?.inputs['swarm:browser:text:demo']).toBe('again')
+    // An older pane's [Queue instead] press does nothing.
     await handle(p, 'swarm:browser:queue-instead:demo/fixer#1', {})
-    expect(called('sendFromBrowser').at(-1)).toEqual([{ swarm: SWARM, node: 'fixer#1', text: 'again', when: 'queue', route: 'parent' }])
+    expect(called('sendFromBrowser').length).toBe(2)
+  })
+
+  // WP-DI, the user's live look (2026-10-07): "right click here and see the model and effort level ... bonus points for adjustment".
+  test("a row's model and effort: what you set, else what its last request named, else its spec node's; the lead and a child none of the spec's", async () => {
+    goLive()
+    state.putBinding(bind('c1', { node: 'fixer', kind: 'child', parent: 'w1', of: 'w1' }))
+    let v = await view<SwarmBrowserView>('browser')
+    const of = (x: SwarmBrowserView, id: string | null) => {
+      const r = x.rows.find(r => r.agentId === id)!
+      return [r.model, r.effort, r.tuned]
+    }
+    expect(of(v, null)).toEqual([null, null, false])
+    expect(of(v, 'o1')).toEqual([null, null, false])
+    expect(of(v, 'w1')).toEqual(['sonnet', null, false])
+    expect(of(v, 'c1')).toEqual([null, null, false])
+    state.noteStepModel('o1', 'claude-opus-5-5[1m]', 'xhigh', NOW)
+    state.noteStepModel('w1', 'claude-sonnet-5-5', 32_000, NOW)
+    state.tuneModel('o1', { effort: 'low' })
+    v = await view<SwarmBrowserView>('browser')
+    expect(of(v, 'o1')).toEqual(['claude-opus-5-5[1m]', 'low', true])
+    expect(of(v, 'w1')).toEqual(['claude-sonnet-5-5', '32000 thinking tokens', false])
+  })
+
+  test('Model: … and Effort: … open the panel and close the transcript; its selects reach L; [Close] and Transcript close it', async () => {
+    goLive()
+    state.noteStepModel('o1', 'claude-opus-5-5[1m]', 'xhigh', NOW)
+    owners({ tuneNode: fake('tuneNode', async () => ({ ok: true, text: 'part-a thinks at low from its next request' })) })
+    setNav({ ...blankNav('browser', SWARM), transcript: 'w1' })
+    await handle(p, 'swarm:browser:tune:demo/o1/effort', {})
+    expect([nav()?.tune, nav()?.transcript]).toEqual(['o1', null])
+    const v = (await swarmView(p)) as SwarmBrowserView
+    expect(v.tune).toEqual(
+      expect.objectContaining({ agentId: 'o1', name: 'part-a', seenModel: 'claude-opus-5-5[1m]', seenEffort: 'xhigh', model: '', effort: '', editable: true }),
+    )
+    // What it was launched with first, then the models nodes here ran with, then the full ids (turn.step resolves no alias).
+    expect(v.tune?.models.map(o => o.value)).toEqual(['', 'claude-opus-5-5[1m]', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001'])
+    expect(v.tune?.models[0]?.label).toBe("as launched (the session's)")
+    expect(v.tune?.efforts.map(o => o.value)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+    await handle(p, 'swarm:browser:tune-effort:demo/o1', { value: 'low' })
+    expect(called('tuneNode')).toEqual([[{ swarm: SWARM, agentId: 'o1', effort: 'low' }]])
+    expect(nav()?.notice).toEqual({ level: 'ok', text: 'part-a thinks at low from its next request' })
+    await handle(p, 'swarm:browser:tune-model:demo/o1', { value: '' })
+    expect(called('tuneNode').at(-1)).toEqual([{ swarm: SWARM, agentId: 'o1', model: null }])
+    // Not an effort: refused here, never sent.
+    await handle(p, 'swarm:browser:tune-effort:demo/o1', { value: 'extreme' })
+    expect(called('tuneNode').length).toBe(2)
+    expect(nav()?.notice?.level).toBe('error')
+
+    owners({ tuneNode: fake('tuneNode', async () => ({ ok: false, reason: "claude-fable-5-1 wasn't set: the provider refused it (not_found, status 404)" })) })
+    await handle(p, 'swarm:browser:tune-model:demo/o1', { value: 'claude-fable-5-1' })
+    expect(nav()?.notice).toEqual({ level: 'error', text: "not set: claude-fable-5-1 wasn't set: the provider refused it (not_found, status 404)" })
+
+    await handle(p, 'swarm:browser:transcript:demo/w1', {})
+    expect([nav()?.tune, nav()?.transcript]).toEqual([null, 'w1'])
+    await handle(p, 'swarm:browser:tune:demo/w1', {})
+    await handle(p, 'swarm:browser:close-tune:demo', {})
+    expect([nav()?.tune, nav()?.transcript]).toEqual([null, null])
+  })
+
+  test("a child's panel says it keeps its own; a read-only swarm's has no selects", async () => {
+    goLive()
+    state.putBinding(bind('c1', { node: 'fixer', kind: 'child', parent: 'w1', of: 'w1' }))
+    const child = await view<SwarmBrowserView>('browser', { tune: 'c1' })
+    expect(child.tune?.models[0]?.label).toBe('as launched (its own)')
+    const fixer = await view<SwarmBrowserView>('browser', { tune: 'w1' })
+    expect(fixer.tune?.models[0]?.label).toBe('as launched (sonnet)')
+    state.putLiveSwarm(live({ readOnly: true }))
+    expect((await view<SwarmBrowserView>('browser', { tune: 'w1' })).tune?.editable).toBe(false)
   })
 
   test('[Stop node], [Hard stop], [End swarm], [That was me] and [Stop them] reach P', async () => {

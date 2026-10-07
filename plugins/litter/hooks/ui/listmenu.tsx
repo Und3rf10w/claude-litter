@@ -128,7 +128,8 @@ const ListMenu: ClientModule<ListClientProps, State> = (props, surface) => {
       {rows.map((r, i) => (
         <Box flexDirection="row" columnGap={1}>
           <Text color={STYLE.accent}>{r.selected ? SELECTED_MARK : ' '}</Text>
-          <Box flexDirection="row">
+          {/* The cells keep their widths (list.tsx planned them to fit): shrunk beside a long description, a label wrapped onto rows of its own (the user's live look, 2026-10-07). */}
+          <Box flexDirection="row" flexShrink={0}>
             {spansOf(r).map(s => {
               // The lit row one inverse bar in the text's color, not a cell's.
               const lit = i === shown && !r.selected
@@ -140,9 +141,12 @@ const ListMenu: ClientModule<ListClientProps, State> = (props, surface) => {
             })}
           </Box>
           {props.beside && r.description !== '' ? (
-            <Text color={i === shown || r.key === props.focused ? STYLE.muted : STYLE.faint} wrap="truncate-end">
-              {r.description}
-            </Text>
+            // No width of its own, so only the description is cut when the row runs over, as list.tsx's own rows.
+            <Box flexGrow={1} width={0} height={1} overflow="hidden">
+              <Text color={i === shown || r.key === props.focused ? STYLE.muted : STYLE.faint} wrap="truncate-end">
+                {r.description}
+              </Text>
+            </Box>
           ) : null}
         </Box>
       ))}

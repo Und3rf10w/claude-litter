@@ -242,6 +242,23 @@ describe('recoverSwarms, a swarm this session owns', () => {
     ])
   })
 
+  // The user's live look (2026-10-07): "get rid of the ability to queue messages". An older litter's held ones went unsent.
+  test("an older litter's held messages are logged each and told in one toast, and never sent", async () => {
+    await liveInSessionA()
+    const { q } = await crashRespawn()
+    const key = swarmStateKey(w.litterDir, 'alpha')
+    const held = (node: string, text: string) => ({ id: `q-${text}`, swarm: 'alpha', node, agentId: 'ag-l1', from: 'user', text, at: NOW })
+    q.storeMap.set(key, { ...(q.storeMap.get(key) as object), queue: [held('lead-a', 'rebase on main'), held('lead-a', 'then tag it')] })
+    q.agents = []
+    await recoverSwarms(q, w.litterDir)
+    expect(q.logs.filter(l => l.includes("a message held for lead-a wasn't sent (litter no longer holds messages)"))).toEqual([
+      expect.stringContaining('rebase on main'),
+      expect.stringContaining('then tag it'),
+    ])
+    expect(q.toasts).toContain("swarm alpha: 2 messages held for lead-a weren't sent; litter now sends at once, so send them again")
+    expect(q.sent).toEqual([])
+  })
+
   test("a spec that doesn't match swarm.start's hash registers no type", async () => {
     await liveInSessionA()
     const { q } = await crashRespawn()

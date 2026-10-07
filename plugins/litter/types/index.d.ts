@@ -285,13 +285,21 @@ export type SwarmNodeRow = {
   tokens: string
   /** The last report's first line, or ''. */
   report: string
-  queued: { id: string; text: string }[]
   /** The open question, or null (⚑). */
   question: string | null
   /** Where the question went (WP-DG): `the lead`, or the parent node's name; null when it wasn't recorded (an older question). */
   questionTo: string | null
   /** A branch-moved or rule-commit flag names it. */
   flagged: boolean
+  /**
+   * WP-DI: the model its requests use: what you set, else what its last one
+   * named, else its spec's; null when none is known yet (and for the lead).
+   */
+  model: string | null
+  /** WP-DI: its effort, the same way; null for none known or a model that takes none. */
+  effort: string | null
+  /** WP-DI: you set its model or effort in the browser. */
+  tuned: boolean
 }
 
 export type SwarmEventRow = { at: string; who: string; text: string; color: string | null }
@@ -316,11 +324,8 @@ export type SwarmComposer = {
   address: string | null
   targets: SwarmOption[]
   text: string
-  when: 'interject' | 'queue'
   route: 'direct' | 'lead' | 'parent'
   routes: SwarmOption[]
-  /** The last send was refused and can be queued instead. */
-  offerQueue: boolean
 }
 
 /**
@@ -329,6 +334,25 @@ export type SwarmComposer = {
  * them, "no outcome recorded" where it doesn't).
  */
 export type SwarmTranscript = { agentId: string; name: string; readable: boolean; lines: SwarmSpan[][] }
+
+/**
+ * The Model and effort panel (WP-DI, the user's live look of 2026-10-07):
+ * opened from a node's row. What its last request named, and a select each
+ * for what you set; '' is what it was launched with.
+ */
+export type SwarmTune = {
+  agentId: string
+  name: string
+  /** What its last request named; null before its first since litter bound it. */
+  seenModel: string | null
+  seenEffort: string | null
+  model: string
+  effort: string
+  models: SwarmOption[]
+  efforts: SwarmOption[]
+  /** False on a swarm another session owns, or this one lost: the values, no selects. */
+  editable: boolean
+}
 
 /** Who owns a read-only swarm, and whether [Take over] can be offered. */
 export type SwarmOwnerPanel = { text: string; canTakeOver: boolean; why: string | null }
@@ -370,6 +394,8 @@ export type SwarmBrowserView = SwarmViewCommon & {
   /** Null when read-only or lost. */
   composer: SwarmComposer | null
   transcript: SwarmTranscript | null
+  /** WP-DI: the Model and effort panel, while it's open. */
+  tune: SwarmTune | null
   /** The selected agentId. */
   selected: string | null
   /** The lead's current proposals for this swarm: the needs-you banner's, each with [Review]. */

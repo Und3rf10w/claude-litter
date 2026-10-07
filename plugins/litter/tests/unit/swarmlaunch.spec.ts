@@ -19,7 +19,6 @@ import { readLaunchLedger } from '../../hooks/records/swarm'
 import { REPORT_EVENT_PHRASES, DELEGATION_NO_OTHER, DELEGATION_NONE, AUTHORITY_COMMIT_YES, AUTHORITY_PATHS } from '../../hooks/prompts/swarm-node'
 import {
   closeGate,
-  enqueue,
   liveSwarm,
   markRunning,
   markSettled,
@@ -509,7 +508,7 @@ describe('mcp__litter__swarm_read', () => {
     expect(await read({ swarm: 'alpha', node: 'lead-a', for: 'resume' })).toEqual({ ok: false, error: expect.stringContaining('no instance this session can resume') })
   })
 
-  test('a live read: the authority, the orchestrators to spawn, and each instance with its status, report, questions and queue', async () => {
+  test('a live read: the authority, the orchestrators to spawn, and each instance with its status, report and questions', async () => {
     const launch = await launched()
     let r = await read({ swarm: 'alpha' })
     expect(r).toEqual(
@@ -537,17 +536,16 @@ describe('mcp__litter__swarm_read', () => {
     stop('alpha', ['ag-f2'], 'stopped (soft)')
     noteReport('ag-f1', 'The tokenizer half is done.', 'handback', NOW)
     noteQuestion('ag-l1', 'Keep the old error text?', NOW)
-    const m = enqueue({ swarm: 'alpha', agentId: 'ag-f1', node: 'fixer', text: 'x'.repeat(3000), from: 'user', at: NOW })
     w.p.agents = [{ id: 'ag-f1', description: 'fixer', type: 'litter:sw-alpha-fixer', status: 'completed' } as never]
     r = await read({ swarm: 'alpha' })
     // lead-a has an instance; docs is still to spawn.
     expect(r.orchestrators.map((o: { node: string }) => o.node)).toEqual(['docs'])
     const byNode = Object.fromEntries(r.nodes.map((n: { node: string; instances: unknown[] }) => [n.node, n.instances]))
-    expect(byNode['lead-a']).toEqual([{ n: 1, agentId: 'ag-l1', status: 'running', lastReport: null, openQuestions: ['Keep the old error text?'], queued: [] }])
+    expect(byNode['lead-a']).toEqual([{ n: 1, agentId: 'ag-l1', status: 'running', lastReport: null, openQuestions: ['Keep the old error text?'] }])
     // fixer's two instances; its child ag-c1 isn't one.
     expect(byNode.fixer).toEqual([
-      { n: 1, agentId: 'ag-f1', status: 'completed', lastReport: 'The tokenizer half is done.', openQuestions: [], queued: [{ id: m.id, text: `${'x'.repeat(1000)}…` }] },
-      { n: 2, agentId: 'ag-f2', status: 'stopped', lastReport: null, openQuestions: [], queued: [] },
+      { n: 1, agentId: 'ag-f1', status: 'completed', lastReport: 'The tokenizer half is done.', openQuestions: [] },
+      { n: 2, agentId: 'ag-f2', status: 'stopped', lastReport: null, openQuestions: [] },
     ])
     expect(byNode.docs).toEqual([])
   })
@@ -584,7 +582,7 @@ describe('mcp__litter__swarm_read', () => {
     q.agents = []
     const r = await read({ swarm: 'alpha' })
     expect(r).toEqual(expect.objectContaining({ ok: true, launch, readOnly: true, authority, orchestrators: [] }))
-    expect(r.nodes[0].instances).toEqual([{ n: 1, agentId: 'ag-l1', status: 'running', lastReport: null, openQuestions: [], queued: [] }])
+    expect(r.nodes[0].instances).toEqual([{ n: 1, agentId: 'ag-l1', status: 'running', lastReport: null, openQuestions: [] }])
     expect(await read({ swarm: 'alpha', node: 'lead-a', for: 'respawn' })).toEqual({ ok: false, error: expect.stringContaining('owned by session sess-a') })
   })
 })

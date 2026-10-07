@@ -18,6 +18,7 @@ import type { LedgerRead } from '../ledgercore'
 import type {
   BindingKind,
   DiffCounts,
+  Effort,
   NodeDir,
   RepairBudget,
   RevisionFrom,
@@ -241,6 +242,7 @@ export type SwarmEventKind =
   | 'gate'
   | 'budget'
   | 'start-filled'
+  | 'tuned'
 
 /** The run-ledger records a repair swarm's `gate` event mirrors (2b-2, Y). */
 export type GateRecordKind = 'verify' | 'verdict' | 'land'
@@ -259,7 +261,7 @@ export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 
  *
  * | kind | fields |
  * |---|---|
- * | message (L) | from, to, route, delivery (`interject` or `queue`), text (cut) |
+ * | message (L) | from, to, route, delivery (`interject`; `queue` in an older ledger), text (cut) |
  * | readdressed (L) | from, to (the worker), parent, why |
  * | queued (L) | id, from |
  * | queue-sent (L) | id |
@@ -285,6 +287,11 @@ export type GateResult = 'green' | 'red' | 'approved' | 'rejected' | 'landed' | 
  * | gate (Y) | run, seq (the run-ledger record's), record, gate, result, verify_id, round (a verdict's) |
  * | budget (X) | requested, granted, budget (as it stands after) |
  * | start-filled (X) | filled (whether the prompt box took the start line) |
+ * | tuned (L) | model or effort: what you set, null for back to the launch's |
+ *
+ * `queued`, `queue-sent` and `queue-cancelled` are in older ledgers only:
+ * litter no longer holds a message to send later (2026-10-07), so it writes
+ * none of them, and the browser still shows those it reads.
  *
  * A stale owner's stand-down records nothing: it may race the new owner's
  * appends, and the new owner's swarm.handover already says it.
@@ -335,6 +342,11 @@ export type SwarmEventFields = {
    * `filled` is whether the box took it.
    */
   'start-filled': { filled: boolean }
+  /**
+   * WP-DI: the model or effort you set for a node in the browser, from its
+   * next request; null for back to what it was launched with.
+   */
+  tuned: { model?: string | null; effort?: Effort | null }
 }
 
 /** swarm.event (L, P, O, K): one body per kind. */
@@ -542,7 +554,6 @@ export type SwarmReadInstance = {
   status: string
   lastReport: string | null
   openQuestions: string[]
-  queued: { id: string; text: string }[]
 }
 
 /** The launch read: the authority lines, the orchestrators to spawn, and each node's instances. */
@@ -576,16 +587,14 @@ export type SwarmReadReply = SwarmReadDraft | SwarmReadLaunch | SwarmReadContinu
 
 /**
  * mcp__litter__swarm_send (L): the lead only. `node` by name, or `<node>#<n>`
- * for one instance; `swarm` when two live swarms share a node name. With
- * `queued`, the stored message is sent as it is, and `node`, `text` and
- * `deliver` are left out.
+ * for one instance; `swarm` when two live swarms share a node name. It goes
+ * now: a running node reads it at its next step, and an idle one is resumed
+ * with it.
  */
 export type SwarmSendInput = {
   swarm?: string
   node?: string
   text?: string
-  deliver?: 'interject' | 'queue'
-  queued?: string
 }
 
 /** What happened to the send, or why it couldn't be judged at all. */

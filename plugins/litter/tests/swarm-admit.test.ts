@@ -130,7 +130,6 @@ const PART = {
       { agentId: 'ag-f1', status: 'settling', scope: null, swarm: 'alpha', node: 'fixer', parent: 'ag-1', kind: 'worker' },
     ],
     stopped: [],
-    queue: [],
     instances: { lead: 1, fixer: 1 },
     calls: [],
     shells: [],
@@ -229,8 +228,12 @@ describe('mcp__litter__swarm_send', () => {
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     const r = await $.tool.call({ tool: 'mcp__litter__swarm_send', tool_use_id: 's3', node: 'fixer', text: 'hi' })
     expect(parse(r)).toEqual({ ok: false, error: "litter: no live swarm has a node 'fixer'" })
+    // An older litter's request for a held message: it holds none now.
     const q = await $.tool.call({ tool: 'mcp__litter__swarm_send', tool_use_id: 's4', queued: 'q1234abcd' })
-    expect(parse(q)).toEqual({ ok: false, error: "litter: no message is queued as 'q1234abcd': it was delivered or cancelled" })
+    expect(parse(q)).toEqual({
+      ok: false,
+      error: "litter: litter no longer holds messages to send later, so there's nothing queued to deliver; send the text with 'node' and it goes now",
+    })
   })
 })
 

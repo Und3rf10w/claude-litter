@@ -1,8 +1,7 @@
-// Tier 2: messages (hooks/swarm/admit.ts; WP-L): one test per cell of 15.4's
-// "Messages from you" table, [Cancel], the queue across a reload, several
-// queued messages sent as one, mcp__litter__swarm_send's addressing, a
-// node's messages to the lead and while its swarm is ending, and the lead's
-// <swarm> block.
+// Tier 2: messages (hooks/swarm/admit.ts; WP-L): one test per route of 15.4's
+// "Messages from you" table, each going now, an older part's held messages,
+// mcp__litter__swarm_send's addressing, a node's messages to the lead and
+// while its swarm is ending, and the lead's <swarm> block.
 //
 // The policy files are M's real writer's (guard.ts); O's summary trigger is
 // recorded instead of run.
@@ -143,8 +142,8 @@ const tool = async (input: Record<string, unknown>, agentId?: string) =>
     }) as never)) as { result: string }).result,
   ) as Record<string, unknown>
 
-const browser = (node: string, text: string, when: 'interject' | 'queue', route: 'direct' | 'lead' | 'parent') =>
-  admit.sendFromBrowser(p, { swarm: 'alpha', node, text, when, route })
+const browser = (node: string, text: string, route: 'direct' | 'lead' | 'parent') =>
+  admit.sendFromBrowser(p, { swarm: 'alpha', node, text, route })
 
 /** A node's turn ends and the list lets it go: the settle poll's next tick settles it. */
 async function settle(agentId: string, parent?: string): Promise<void> {
@@ -179,79 +178,50 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("messages from you (15.4's table)", () => {
-  test('direct, interject: sent now, recorded, and listed once in the lead block', async () => {
+  test('direct: sent now, recorded, and listed once in the lead block', async () => {
     await put(o1(), true)
     await put(w(1), true)
-    expect(await browser('fixer', 'rename it to parseArgs', 'interject', 'direct')).toEqual({ kind: 'delivered' })
+    expect(await browser('fixer', 'rename it to parseArgs', 'direct')).toEqual({ kind: 'delivered' })
     expect(p.sent).toEqual([{ to: 'w1', text: 'rename it to parseArgs' }])
     expect((await events()).at(-1)).toEqual(
       expect.objectContaining({ kind: 'message', agentId: 'w1', from: 'user', to: 'w1', route: 'direct', delivery: 'interject', text: 'rename it to parseArgs' }),
     )
-    const line = 'The user sent fixer#1 directly (interjected): rename it to parseArgs'
+    const line = 'The user sent fixer#1 directly: rename it to parseArgs'
     expect((await admit.swarmContext(p))!.split('\n').filter(l => l === line).length).toBe(1)
     expect(await admit.swarmContext(p)).not.toContain(line)
   })
 
-  test('direct, queue: held while the node runs, handed to the lead once it settles, then delivered', async () => {
+  // The user's live look (2026-10-07): "queue never works". Nothing waits for a node's turn to end.
+  test("direct to a running orchestrator: it goes now, with nothing held for the node's turn to end", async () => {
     await put(o1(), true)
-    const out = await browser('part-a', 'rebase on main when done', 'queue', 'direct')
-    expect(out.kind).toBe('queued')
-    const id = (out as { id: string }).id
-    expect(p.sent).toEqual([])
-    expect(p.submitted).toEqual([])
-    expect(await admit.swarmContext(p)).toContain('The user sent part-a directly (queued): rebase on main when done')
-
-    await settle('o1')
-    expect(p.submitted.length).toBe(1)
-    expect(p.submitted[0]).toContain(`- part-a in swarm alpha: 1 message, queued: "${id}"`)
-
-    expect(await tool({ queued: id })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
+    expect(await browser('part-a', 'rebase on main when done', 'direct')).toEqual({ kind: 'delivered' })
     expect(p.sent).toEqual([{ to: 'o1', text: 'rebase on main when done' }])
-    expect(state.queued()).toEqual([])
-    expect((await events()).map(e => e.kind)).toEqual(['queued', 'message', 'queue-sent'])
-  })
-
-  // The user's live look (2026-10-07): a message queued for an orchestrator that ran for hours waited "forever".
-  test("[Send now]: the node's queued messages go now as one interject while it runs, and leave the queue; an idle node's stay", async () => {
-    await put(o1(), true)
-    const first = (await browser('part-a', 'rebase on main when done', 'queue', 'direct')) as { id: string }
-    await browser('part-a', 'then tag it', 'queue', 'direct')
-    expect(state.queued().length).toBe(2)
-    expect(await admit.sendQueuedNow(p, first.id)).toEqual({ kind: 'delivered' })
-    expect(p.sent).toEqual([{ to: 'o1', text: expect.stringMatching(/^2 messages queued while you were busy, oldest first\.\n\nFrom the user:\n\nrebase on main when done\n\nFrom the user:\n\nthen tag it$/) }])
-    expect(state.queued()).toEqual([])
-    expect((await events()).map(e => e.kind)).toEqual(['queued', 'queued', 'message', 'queue-sent', 'queue-sent'])
-    expect(await admit.sendQueuedNow(p, first.id)).toEqual(expect.objectContaining({ kind: 'refused', reason: 'that message was sent or cancelled already' }))
-  })
-
-  test('[Send now] on an idle node: refused, the message kept for litter to hand on', async () => {
-    await put(o1(), true)
-    const { id } = (await browser('part-a', 'later', 'queue', 'direct')) as { id: string }
+    expect(await admit.swarmContext(p)).toContain('The user sent part-a directly: rebase on main when done')
     await settle('o1')
-    expect(await admit.sendQueuedNow(p, id)).toEqual(expect.objectContaining({ kind: 'refused', reason: "part-a isn't running: litter sends it once it's idle" }))
-    expect(state.queued().map(q => q.id)).toEqual([id])
+    expect(p.submitted).toEqual([])
+    expect((await events()).map(e => e.kind)).toEqual(['message'])
   })
 
-  test('direct, queue: sent at once to an idle node', async () => {
+  test('direct to an idle node: it is resumed with it', async () => {
     await put(o1(), false)
-    expect(await browser('part-a', 'rebase on main', 'queue', 'direct')).toEqual({ kind: 'delivered' })
+    expect(await browser('part-a', 'rebase on main', 'direct')).toEqual({ kind: 'delivered' })
     expect(p.sent).toEqual([{ to: 'o1', text: 'rebase on main' }])
-    expect(state.queued()).toEqual([])
     expect(state.status('o1')).toBe('running')
   })
 
-  test('via lead, interject: appended while the lead is busy, submitted from a timer while it is idle', async () => {
+  test('via lead: appended while the lead is busy, submitted from a timer while it is idle', async () => {
     await put(o1(), true)
     state.setLeadBusy(true)
-    expect(await browser('part-a', 'split the PR', 'interject', 'lead')).toEqual({ kind: 'delivered' })
+    expect(await browser('part-a', 'split the PR', 'lead')).toEqual({ kind: 'delivered' })
     expect(p.appended.length).toBe(1)
-    expect(p.appended[0]).toContain('for part-a in swarm alpha, through you, to deliver now, as an interject')
-    expect(p.appended[0]).toContain('(swarm "alpha", node "part-a", deliver "interject")')
+    expect(p.appended[0]).toContain('for part-a in swarm alpha, through you, to deliver now (a running node reads it at its next step)')
+    expect(p.appended[0]).toContain('(swarm "alpha", node "part-a")')
+    expect(p.appended[0]).not.toContain('deliver "')
     expect(p.appended[0]).toEndWith('<message>\nsplit the PR\n</message>')
     expect(p.afters).toEqual([])
 
     state.setLeadBusy(false)
-    expect(await browser('part-a', 'split the PR', 'interject', 'lead')).toEqual({ kind: 'delivered' })
+    expect(await browser('part-a', 'split the PR', 'lead')).toEqual({ kind: 'delivered' })
     expect(p.appended.length).toBe(1)
     // Not from the ui.message dispatch: from a timer callback, after it.
     expect(p.submitted).toEqual([])
@@ -261,70 +231,21 @@ describe("messages from you (15.4's table)", () => {
     expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', from: 'user', to: 'lead', route: 'lead', delivery: 'interject' }))
   })
 
-  test('via lead, queue: submitted from a timer, with the delivery spelled out', async () => {
-    await put(o1(), true)
-    state.setLeadBusy(true)
-    expect(await browser('part-a', 'after this, write the summary', 'queue', 'lead')).toEqual({ kind: 'delivered' })
-    expect(p.appended).toEqual([])
-    await runAfters(p)
-    expect(p.submitted.length).toBe(1)
-    expect(p.submitted[0]).toContain("to deliver as a queued message (it starts the node's next turn)")
-    expect(p.submitted[0]).toContain('deliver "queue"')
-  })
-
   test('via parent: the parent gets it wrapped, to pass on', async () => {
     await put(o1(), true)
     await put(w(1), true)
-    expect(await browser('fixer', 'use the existing helper', 'interject', 'parent')).toEqual({ kind: 'delivered' })
+    expect(await browser('fixer', 'use the existing helper', 'parent')).toEqual({ kind: 'delivered' })
     expect(p.sent).toEqual([
       { to: 'o1', text: 'For your worker fixer (w1), from the user:\n\nuse the existing helper\n\nPass it on with SendMessage, or answer it yourself.' },
     ])
     expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', agentId: 'o1', route: 'parent' }))
-    expect(await browser('part-a', 'hi', 'interject', 'parent')).toEqual(expect.objectContaining({ kind: 'refused' }))
+    expect(await browser('part-a', 'hi', 'parent')).toEqual(expect.objectContaining({ kind: 'refused' }))
   })
 
-  test('[Cancel] removes a queued message and records it', async () => {
+  test("the lead's send and an older litter's 'deliver': it goes now all the same", async () => {
     await put(o1(), true)
-    const { id } = (await browser('part-a', 'later', 'queue', 'direct')) as { id: string }
-    expect(await admit.cancelQueued(p, id)).toBe(true)
-    expect(state.queued()).toEqual([])
-    expect(await admit.cancelQueued(p, id)).toBe(false)
-    expect((await events()).at(-1)).toEqual({ kind: 'queue-cancelled', node: 'part-a', agentId: 'o1', id })
-    await settle('o1')
-    expect(p.submitted).toEqual([])
-  })
-
-  test('queued messages survive a reload', async () => {
-    state.attach(p, litterDir)
-    await put(o1(), true)
-    const { id } = (await browser('part-a', 'once you finish: tag it', 'queue', 'direct')) as { id: string }
-    await state.flushed()
-    // A new process: nothing in memory but the store.
-    state.resetForTests()
-    admit.resetForTests()
-    expect(state.queued()).toEqual([])
-    const s = await state.loadSwarm(p, litterDir, 'alpha')
-    expect(s?.name).toBe('alpha')
-    state.patchLiveSwarm('alpha', { typesReady: true })
-    expect(state.queued().map(q => [q.id, q.text, q.from])).toEqual([[id, 'once you finish: tag it', 'user']])
-    await settle('o1')
-    expect(p.submitted[0]).toContain(`queued: "${id}"`)
-    expect(await tool({ queued: id })).toEqual(expect.objectContaining({ ok: true, outcome: { kind: 'delivered' } }))
-    expect(p.sent).toEqual([{ to: 'o1', text: 'once you finish: tag it' }])
-  })
-
-  test('several queued messages for one node go as one, oldest first', async () => {
-    await put(o1(), true)
-    const first = (await browser('part-a', 'first: rebase', 'queue', 'direct')) as { id: string }
-    expect(await tool({ node: 'part-a', text: 'second: then tag it', deliver: 'queue' })).toEqual(expect.objectContaining({ ok: true, outcome: expect.objectContaining({ kind: 'queued' }) }))
-    await settle('o1')
-    expect(p.submitted[0]).toContain(`- part-a in swarm alpha: 2 messages, queued: "${first.id}"`)
-    expect(await tool({ queued: first.id })).toEqual(expect.objectContaining({ ok: true }))
-    expect(p.sent).toEqual([
-      { to: 'o1', text: '2 messages queued while you were busy, oldest first.\n\nFrom the user:\n\nfirst: rebase\n\nFrom the lead:\n\nsecond: then tag it' },
-    ])
-    expect(state.queued()).toEqual([])
-    expect((await events()).filter(e => e.kind === 'queue-sent').length).toBe(2)
+    expect(await tool({ node: 'part-a', text: 'then tag it', deliver: 'queue' })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
+    expect(p.sent).toEqual([{ to: 'o1', text: 'From the lead:\n\nthen tag it' }])
   })
 })
 
@@ -351,8 +272,7 @@ describe('mcp__litter__swarm_send', () => {
     expect(String((await tool({ node: 'nope', text: 'x' })).error)).toContain("no live swarm has a node 'nope'")
     expect(String((await tool({ node: 'part-b', text: 'x' })).error)).toContain("part-b hasn't been spawned yet")
     expect(String((await tool({ node: 'part-a' })).error)).toContain("'text' is required")
-    expect(String((await tool({ node: 'part-a', text: 'x', deliver: 'later' })).error)).toContain("'deliver' is interject or queue")
-    expect(String((await tool({ queued: 'qnothing' })).error)).toContain("no message is queued as 'qnothing'")
+    expect(String((await tool({ queued: 'qnothing' })).error)).toContain('litter no longer holds messages to send later')
     expect(p.sent).toEqual([])
   })
 })

@@ -231,7 +231,7 @@ const BROWSER: SwarmBrowserView = {
     stale: true,
   },
   rows: [
-    { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', queued: [], question: null, questionTo: null, flagged: false },
+    { key: 'lead', agentId: null, depth: 0, name: 'lead', role: 'lead', color: null, dim: false, status: 'idle', statusGlyph: '', statusColor: 'inactive', running: false, tool: '', turns: null, steps: null, tokens: '', report: '', question: null, questionTo: null, flagged: false, model: null, effort: null, tuned: false },
     {
       key: 'o1',
       agentId: 'o1',
@@ -249,10 +249,12 @@ const BROWSER: SwarmBrowserView = {
       steps: null,
       tokens: '2k',
       report: '',
-      queued: [],
       question: 'which branch?',
       questionTo: 'the lead',
       flagged: false,
+      model: 'claude-opus-5-5[1m]',
+      effort: 'xhigh',
+      tuned: false,
     },
     {
       key: 'w1',
@@ -271,10 +273,12 @@ const BROWSER: SwarmBrowserView = {
       steps: 12,
       tokens: '800',
       report: 'fixed the tokenizer',
-      queued: [{ id: 'q1', text: 'also the lexer' }],
       question: null,
       questionTo: null,
       flagged: true,
+      model: 'claude-sonnet-5-5',
+      effort: 'high',
+      tuned: true,
     },
     {
       key: 'w2',
@@ -293,14 +297,16 @@ const BROWSER: SwarmBrowserView = {
       steps: null,
       tokens: '3k',
       report: 'read the grammar',
-      queued: [],
       question: null,
       questionTo: null,
       flagged: false,
+      model: null,
+      effort: null,
+      tuned: false,
     },
   ],
   flags: [{ seq: 7, kind: 'branch-moved', text: 'refs/heads/main moved aaaaaaa → bbbbbbb while fixer ran', running: ['fixer'] }],
-  events: [{ at: '09:30', who: 'you → part-a', text: 'direct, interject: "go"', color: null }],
+  events: [{ at: '09:30', who: 'you → part-a', text: 'direct: "go"', color: null }],
   composer: {
     to: 'w1',
     address: 'fixer#1',
@@ -309,14 +315,12 @@ const BROWSER: SwarmBrowserView = {
       { value: 'w1', label: 'fixer' },
     ],
     text: 'hello',
-    when: 'interject',
     route: 'direct',
     routes: [
       { value: 'direct', label: "via parent (it's idle)" },
       { value: 'lead', label: 'Via lead' },
       { value: 'parent', label: 'Via parent' },
     ],
-    offerQueue: true,
   },
   transcript: {
     agentId: 'w1',
@@ -335,9 +339,35 @@ const BROWSER: SwarmBrowserView = {
       ],
     ],
   },
+  tune: null,
   selected: 'w1',
   proposals: [],
   confirmEnd: false,
+}
+
+/** WP-DI: the browser with fixer's Model and effort panel open (and so no transcript), its model set. */
+const TUNED: SwarmBrowserView = {
+  ...BROWSER,
+  transcript: null,
+  tune: {
+    agentId: 'w1',
+    name: 'fixer',
+    seenModel: 'claude-opus-5-5[1m]',
+    seenEffort: 'high',
+    model: 'claude-sonnet-5-5',
+    effort: '',
+    models: [
+      { value: '', label: "as launched (the session's)" },
+      { value: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' },
+      { value: 'claude-opus-5-5[1m]', label: 'claude-opus-5-5[1m]' },
+    ],
+    efforts: [
+      { value: '', label: 'as launched (high)' },
+      { value: 'low', label: 'low' },
+      { value: 'high', label: 'high' },
+    ],
+    editable: true,
+  },
 }
 
 /** A repair swarm (2b-2): its run in the header, its budget row with a part used up, and its gate and budget events. */
@@ -520,7 +550,6 @@ const navStore = (swarm: Record<string, unknown>) => ({
       template: null,
       saveAs: null,
       recoveryPicked: [],
-      offerQueue: false,
       waitedOn: null,
       notice: null,
       ...swarm,
@@ -655,15 +684,15 @@ describe('the swarm panes draw every view', () => {
     })
   }
 
-  // The user's live looks (2026-10-07): "My queued message has been stuck forever"; "a question it answered itself".
-  test("a running node's queued message says what it waits for, with [Send now] and [Cancel]; a question row has [Dismiss]", async ($, on) => {
+  // The user's live looks (2026-10-07): "a question it answered itself"; "get rid of the ability to queue messages".
+  test('a question row has [Dismiss]; nothing is queued, and the composer has no When or [Queue instead]', async ($, on) => {
     mock.store(on)
     views(on, BROWSER)
     const ui = await mountSwarm($, 'terminal')
-    expect((await ui.find({ type: 'Text', text: 'queued for fixer until its turn ends: also the lexer' }))?.props.color).toBe('warning')
-    expect(await ui.find({ type: 'Button', key: 'swarm:browser:send-queued:demo/q1' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', key: 'swarm:browser:cancel:demo/q1' })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'swarm:browser:dismiss-question:demo/o1' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /queued/ })).toBeUndefined()
+    expect(await ui.find({ key: 'swarm:browser:when:demo' })).toBeUndefined()
+    expect(await ui.find({ key: 'swarm:browser:queue-instead:demo/fixer#1' })).toBeUndefined()
   })
 
   test('a read-only swarm has no composer and no stop buttons', async ($, on) => {
@@ -828,7 +857,14 @@ describe('a press reaches its owner', () => {
       const seen = await start($, on, BROWSER, { view: 'browser', swarm: 'demo', selected: 'w1', inputs: { 'swarm:browser:text:demo': 'hello' } })
       const ui = await mountSwarm($, surface)
       await ui.press({ key: 'swarm:browser:send:demo/fixer#1' })
-      expect(seen.logs).toContain('swarm pane: sendFromBrowser demo fixer#1 interject direct')
+      expect(seen.logs).toContain('swarm pane: sendFromBrowser demo fixer#1 direct')
+    })
+
+    test(`the Effort select reaches tuneNode, on the ${surface}`, async ($, on) => {
+      const seen = await start($, on, TUNED, { view: 'browser', swarm: 'demo', selected: 'w1', tune: 'w1' })
+      const ui = await mountSwarm($, surface)
+      await ui.select({ key: 'swarm:browser:tune-effort:demo/w1', value: 'low' })
+      expect(seen.logs).toContain('swarm pane: tuneNode demo w1 effort low')
     })
 
     test(`[Stop node] reaches stopNode, on the ${surface}`, async ($, on) => {
@@ -1072,7 +1108,7 @@ describe('the browser', () => {
     expect(rows[agents]).toMatch(/lead · idle ──$/)
     expect(rowWith(rows, '  part-a')).toMatch(/^ {2}part-a +⚑ waiting +orchestrator +▸ Bash/)
     // The selected row: `›`, then the worker indented under its orchestrator.
-    expect(rows.find(r => r.startsWith('›   fixer'))).toMatch(/^› {3}fixer +▸ running +worker +! flagged · 1 queued +▸ Edit/)
+    expect(rows.find(r => r.startsWith('›   fixer'))).toMatch(/^› {3}fixer +▸ running +worker +! flagged +▸ Edit/)
   })
 
   test('a finished node has no Stop: only a running node of a live swarm this session owns offers Stop and Hard stop', async ($, on) => {
@@ -1094,18 +1130,44 @@ describe('the browser', () => {
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     const ui = await mountSwarm($, 'terminal')
     const roster = 'swarm:browser:roster:demo'
-    // The reader is done: its menu is Transcript alone.
+    // The reader is done: its menu is Transcript, and its model and effort, not known yet.
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: roster })
     expect(await ui.find({ type: 'Text', text: ' Transcript', in: roster })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ' Model: not known yet', in: roster })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: ' Stop node', in: roster })).toBeUndefined()
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: roster })
-    // part-a runs: Transcript, Stop node, Hard stop.
+    // part-a runs: Transcript, its model and effort (WP-DI), Stop node, Hard stop.
     await ui.pointer({ type: 'down', x: 4, y: 0, button: 'right', in: roster })
+    expect(await ui.find({ type: 'Text', text: ' Model: claude-opus-5-5[1m]', in: roster })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ' Effort: xhigh', in: roster })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: ' Hard stop', in: roster })).toBeDefined()
     const stopped = seen.nextLog('swarm pane: stopNode')
-    await ui.key({ key: 'down', in: roster })
+    for (let i = 0; i < 3; i++) await ui.key({ key: 'down', in: roster })
     await ui.key({ key: 'return', in: roster })
     expect(await stopped).toContain('swarm pane: stopNode demo o1 soft')
+  })
+
+  // WP-DI, the user's live look (2026-10-07): "right click here and see the model and effort level ... bonus points for adjustment".
+  test("the Model and effort panel: its last request, a Model and an Effort select, when it applies, and [Close]", async ($, on) => {
+    mock.store(on)
+    views(on, TUNED)
+    const ui = await mountAt($, 100)
+    const rows = drawText(await ui.drawn(), 100)
+    expect(rowWith(rows, 'Model and effort · fixer')).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: 'its last request: claude-opus-5-5[1m] · high' }))?.props.color).toBe('inactive')
+    const model = await ui.find({ type: 'Select', key: 'swarm:browser:tune-model:demo/w1' })
+    expect(model?.props.value).toBe('claude-sonnet-5-5')
+    expect((await ui.find({ type: 'Select', key: 'swarm:browser:tune-effort:demo/w1' }))?.props.value).toBe('')
+    expect((await ui.find({ type: 'Text', text: 'From its next request. A new model reads its conversation again, without the cache.' }))?.props.color).toBe('inactive')
+    expect(await ui.find({ type: 'Button', key: 'swarm:browser:close-tune:demo' })).toBeDefined()
+  })
+
+  test('on a swarm another session owns, the panel shows the values, with no select', async ($, on) => {
+    mock.store(on)
+    views(on, { ...TUNED, readOnly: true, owner: READ_ONLY.owner, composer: null, tune: { ...TUNED.tune!, editable: false } })
+    const ui = await mountAt($, 100)
+    expect(await ui.find({ type: 'Text', text: "Model: claude-sonnet-5-5 · Effort: as launched (high)" })).toBeDefined()
+    expect(await ui.find({ key: 'swarm:browser:tune-model:demo/w1' })).toBeUndefined()
   })
 
   test('read-only: the owner as a warning first, [Take over] the primary, no composer and no Stop', async ($, on) => {
@@ -1175,7 +1237,7 @@ describe('the browser', () => {
     views(on, BROWSER)
     const ui = await mountAt($, 100)
     expect(await ui.find({ type: 'Input', key: 'swarm:browser:text:demo' })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: "to fixer · interjects now · via parent (it's idle)" }))?.props.color).toBe('inactive')
+    expect((await ui.find({ type: 'Text', text: "to fixer · goes now · via parent (it's idle)" }))?.props.color).toBe('inactive')
     expect((await ui.find({ type: 'Text', text: 'generated 1m ago, before the latest event' }))?.props.color).toBe('warning')
     const rows = drawText(await ui.drawn(), 100)
     expect(rows.findIndex(r => r.startsWith('Summary '))).toBeGreaterThan(rows.findIndex(r => r.startsWith('Agents ')))
@@ -1472,7 +1534,7 @@ describe('what needs you is the first thing in the body (the user\'s "It says it
       ...BROWSER,
       events: [
         { at: '00:47', who: 'summary', text: long, color: null },
-        { at: '09:30', who: 'you → part-a', text: 'direct, interject: "go"', color: null },
+        { at: '09:30', who: 'you → part-a', text: 'direct: "go"', color: null },
       ],
     })
     const ui = await mountAt($, 60)
@@ -1481,7 +1543,7 @@ describe('what needs you is the first thing in the body (the user\'s "It says it
     expect(at).toBeGreaterThan(0)
     // The rest of the event under its own column, past the time and who cells.
     expect(rows[at + 1]).toMatch(/^ {19}\S/)
-    expect(rowWith(rows, '09:30 you → part-a')).toMatch(/^09:30 you → part-a direct, interject: "go"$/)
+    expect(rowWith(rows, '09:30 you → part-a')).toMatch(/^09:30 you → part-a direct: "go"$/)
   })
 })
 

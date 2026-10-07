@@ -388,10 +388,12 @@ describe('skills/swarm/SKILL.md', () => {
     expect(text.indexOf('\n## 8. ')).toBe(-1)
   })
 
-  test('section 4 has the bullet for the plugin\'s own requests: only the queued id', () => {
+  test('section 4 sends now, and names no queue or delivery', () => {
     const lead = section(swarmSkill(), 4)
-    expect(lead).toContain("**The plugin's own requests.**")
-    expect(lead).toContain('call `mcp__litter__swarm_send` with only the `queued` id it names, and nothing else')
+    expect(lead).toContain('Pass a request to the node that owns that part with `mcp__litter__swarm_send` (`node`, `text`)')
+    expect(lead).toContain('It goes now: a running node reads it at its next step, and one between turns is resumed with it.')
+    expect(lead).not.toContain("**The plugin's own requests.**")
+    for (const old of ['`queued`', '`deliver`', 'queue']) expect(swarmSkill()).not.toContain(old)
   })
 
   test("section 6 ends the swarm with the record tool's swarm.end, as written", () => {
@@ -399,11 +401,11 @@ describe('skills/swarm/SKILL.md', () => {
     expect(end).toContain("Record `{ kind: 'swarm.end', swarm }` with `mcp__litter__record`.")
   })
 
-  test('section 7 resumes with swarm_read for resume and an interject, and re-spawns with the returned type, never a name, isolation or model', () => {
+  test('section 7 resumes with swarm_read for resume and a send, and re-spawns with the returned type, never a name, isolation or model', () => {
     const s7 = section(swarmSkill(), 7)
     expect(s7).toContain('## 7. Resume or re-spawn (resume <name> <nodes> | respawn <name> <nodes>)')
     expect(s7).toContain("`for: 'resume'`")
-    expect(s7).toContain("`deliver: 'interject'`")
+    expect(s7).toContain('with `mcp__litter__swarm_send` (`node`, `text`), as it was returned.')
     expect(s7).toContain("`for: 'respawn'`")
     expect(s7).toContain('`subagent_type` and `description`')
     expect(s7).toContain('Leave `name`, `isolation` and `model` unset.')

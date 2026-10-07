@@ -462,20 +462,6 @@ export type Reservation = {
  */
 export type AdmissionStatus = 'running' | 'settling' | 'idle'
 
-/** A message held until its node settles (15.4, "Messages from you"). Put by L; mirrored. */
-export type QueuedMessage = {
-  /** Assigned by state.ts's `enqueue`. */
-  id: string
-  swarm: string
-  agentId: string
-  node: string
-  /** At most 16 KiB (cut by state.ts). */
-  text: string
-  /** `user` (the browser), `lead`, or the sending node's agentId. */
-  from: string
-  at: number
-}
-
 /** An open tool call, from guard.sh's `call` start until its end, a deny, a stop or an aborted turn (P's consumer). */
 export type InflightCall = {
   agentId: string
@@ -496,6 +482,20 @@ export type NodeReport = { text: string; via: 'handback' | 'answer' | 'message';
 
 /** Summed from each turn.complete's `e.usage` (P). */
 export type TokenCount = { input: number; output: number; cacheRead: number; cacheCreation: number; turns: number }
+
+/** An effort as a turn.step names it: a level, or a number of thinking tokens. */
+export type StepEffort = Effort | number
+
+/**
+ * A node's model and effort (WP-DI, the user's live look of 2026-10-07: "right
+ * click here and see the model and effort level ... bonus points for
+ * adjustment"). `seen`: what its last model request named (turn.step), the
+ * engine's resolved id and effort; null for a model without effort. `set`:
+ * what you set for it in the browser, applied to each request from the next
+ * one; a field left out keeps what it runs with.
+ */
+export type NodeModelSeen = { model: string; effort: StepEffort | null; at: number }
+export type NodeModelSet = { model?: string; effort?: Effort }
 
 /**
  * A swarm's spend (WP-DH): how far the session's cost total (`$.session.usage`)
@@ -625,14 +625,15 @@ export type OwnerView = {
 }
 
 /**
- * What a send did (L): delivered; readdressed to the node's parent (the reply
- * route); queued until the node settles; or refused, with whether it can queue.
+ * What a send did (L): delivered (a running node reads it at its next step;
+ * an idle one is resumed with it); readdressed to the node's parent (the
+ * reply route); or refused. Nothing is held to send later (the user,
+ * 2026-10-07: "get rid of the ability to queue messages and interject only").
  */
 export type SendOutcome =
   | { kind: 'delivered' }
   | { kind: 'readdressed'; to: string; parentNode: string; why: string }
-  | { kind: 'queued'; id: string }
-  | { kind: 'refused'; reason: string; canQueue: boolean }
+  | { kind: 'refused'; reason: string }
 
 /** What the browser's composer sends (N to L's sendFromBrowser). */
 export type BrowserSend = {
@@ -640,6 +641,5 @@ export type BrowserSend = {
   /** The node's id, or `<node>#<n>` for one instance. */
   node: string
   text: string
-  when: 'interject' | 'queue'
   route: 'direct' | 'lead' | 'parent'
 }

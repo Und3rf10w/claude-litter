@@ -49,6 +49,7 @@ import type {
   SwarmStripRow,
   SwarmTreeProps,
   SwarmTreeRow,
+  SwarmTune,
   SwarmUnsettledView,
   SwarmViewName,
 } from '../../types/index'
@@ -84,12 +85,14 @@ import {
   leadBusy,
   liveSwarm,
   liveSwarms,
+  modelsSeen,
   openQuestions,
-  queued,
   roundsUsed,
   spawnsUsed,
   status as admissionStatus,
+  stepModel,
   tokens,
+  tunedModel,
   turnSteps,
 } from './state'
 import { validateSaved } from './spec'
@@ -111,7 +114,7 @@ import { instantiate, listTemplates, loadTemplate, saveTemplate, templateOffers 
 import { launchSwarm } from './launch'
 import { handover, readOwner } from './owner'
 import { recoveryCard, requestResume, resumeTargets } from './recover'
-import { cancelQueued, dismissQuestion, sendFromBrowser, sendQueuedNow } from './admit'
+import { dismissQuestion, MODEL_CHOICES, sendFromBrowser, tuneNode } from './admit'
 import { endSwarm, settleProgress, stopNode } from './end'
 import { ackBranchMoved } from './observe'
 import { parseSummary, plainText, summaryOf } from './summary'
@@ -148,9 +151,8 @@ export type Owners = {
   requestResume: typeof requestResume
   resumeTargets: typeof resumeTargets
   sendFromBrowser: typeof sendFromBrowser
-  cancelQueued: typeof cancelQueued
-  sendQueuedNow: typeof sendQueuedNow
   dismissQuestion: typeof dismissQuestion
+  tuneNode: typeof tuneNode
   stopNode: typeof stopNode
   endSwarm: typeof endSwarm
   settleProgress: typeof settleProgress
@@ -186,9 +188,8 @@ export function owners(): Owners {
     requestResume,
     resumeTargets,
     sendFromBrowser,
-    cancelQueued,
-    sendQueuedNow,
     dismissQuestion,
+    tuneNode,
     stopNode,
     endSwarm,
     settleProgress,
@@ -222,6 +223,8 @@ export type SwarmNav = {
   diff: string | null
   /** Browser: whose transcript is open. */
   transcript: string | null
+  /** Browser: whose Model and effort panel is open (WP-DI). */
+  tune: string | null
   /** What's typed in each field, by element key, so a redraw keeps it. */
   inputs: Record<string, string>
   /** Start: the template picked (`<scope>:<name>`). */
@@ -232,8 +235,6 @@ export type SwarmNav = {
   saveAs: { scope: 'user' | 'project'; params: string[] } | null
   /** Recovery: the orchestrators picked, by node id. */
   recoveryPicked: string[]
-  /** Browser: the last send was refused and can be queued instead. */
-  offerQueue: boolean
   /** Unsettled: when you chose [Wait longer]; the report comes back 2 minutes after. */
   waitedOn: number | null
   /** Browser: [End swarm] was pressed and waits on [Confirm end] or [Cancel] (WP-DG). */
@@ -266,12 +267,12 @@ export const blankNav = (view: SwarmViewName, swarm: string | null): SwarmNav =>
   pickedBriefs: [],
   diff: null,
   transcript: null,
+  tune: null,
   inputs: {},
   template: null,
   templateErrors: [],
   saveAs: null,
   recoveryPicked: [],
-  offerQueue: false,
   waitedOn: null,
   confirmEnd: false,
   notice: null,
@@ -373,8 +374,8 @@ const invalidInputs = new Map<string, string>()
 type LedgerCache = { seq: number; records: StoredRecord[]; tampered: string | null }
 const ledgers = new Map<string, LedgerCache>()
 
-/** The composer's When and Route, kept per swarm in $.store (15.6). */
-export type ComposerPrefs = { when: 'interject' | 'queue'; route: 'direct' | 'lead' | 'parent' }
+/** The composer's Route, kept per swarm in $.store (15.6). An older litter's `when` beside it is ignored. */
+export type ComposerPrefs = { route: 'direct' | 'lead' | 'parent' }
 const composerPrefs = new Map<string, ComposerPrefs>()
 export const composerKey = (litterDir: string, swarm: string) => `litter.swarm.composer.${litterDir}.${swarm}`
 
@@ -1979,10 +1980,12 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
       steps: null,
       tokens: '',
       report: '',
-      queued: [],
       question: null,
       questionTo: null,
       flagged: false,
+      model: null,
+      effort: null,
+      tuned: false,
     },
   ]
   const seen = new Set<string>()
@@ -2015,10 +2018,10 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
       steps: turnSteps(b.agentId),
       tokens: fmtTokens(sumTokens(t)),
       report: report ? firstLine(report.text, 120) : '',
-      queued: queued(name, b.agentId).map(m => ({ id: m.id, text: firstLine(m.text, 80) })),
       question: q ? firstLine(q.text, 120) : null,
       questionTo: questionTo(q),
       flagged: flaggedNodes.has(b.node) && st.running,
+      ...modelOf(b, s?.spec.nodes.find(x => x.id === b.node) ?? null),
     })
     for (const c of sorted.filter(x => x.parent === b.agentId)) add(c, depth + 1, myColor)
   }
@@ -2026,6 +2029,53 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
   // Anything whose parent isn't bound (a reload, a binding pruned) still gets a row.
   for (const b of sorted) add(b, 1, null)
   return rows
+}
+
+/** An effort as a row shows it: a level, or a number of thinking tokens. */
+const effortText = (e: string | number | null | undefined): string | null =>
+  e === null || e === undefined ? null : typeof e === 'number' ? `${e} thinking tokens` : e
+
+/**
+ * A node's model and effort (WP-DI): what you set, else what its last request
+ * named, else its spec node's (a child has none of its own there). Each
+ * independently: an effort you set beside a model it ran with.
+ */
+function modelOf(b: NodeBinding, node: SwarmNode | null): Pick<SwarmNodeRow, 'model' | 'effort' | 'tuned'> {
+  const set = tunedModel(b.agentId)
+  const seen = stepModel(b.agentId)
+  const spec = b.kind === 'child' ? null : node
+  return {
+    model: set?.model ?? seen?.model ?? spec?.model ?? null,
+    effort: set?.effort ?? effortText(seen?.effort) ?? spec?.effort ?? null,
+    tuned: set !== null,
+  }
+}
+
+/**
+ * The Model and effort panel for one node (WP-DI): the selects' choices are
+ * what it was launched with (''), the models any node here ran with, and
+ * MODEL_CHOICES' full ids; the five efforts.
+ */
+function tuneOf(s: LiveSwarm, b: NodeBinding, name: string): SwarmTune {
+  const set = tunedModel(b.agentId)
+  const seen = stepModel(b.agentId)
+  const node = b.kind === 'child' ? null : (s.spec.nodes.find(x => x.id === b.node) ?? null)
+  const launched = (what: string | undefined, none: string) => `as launched (${what ?? none})`
+  const ids = [...new Set([...(set?.model ? [set.model] : []), ...modelsSeen(), ...MODEL_CHOICES])]
+  return {
+    agentId: b.agentId,
+    name,
+    seenModel: seen ? clean(seen.model, 80) : null,
+    seenEffort: seen ? effortText(seen.effort) : null,
+    model: set?.model ?? '',
+    effort: set?.effort ?? '',
+    models: [{ value: '', label: launched(node?.model, b.kind === 'child' ? 'its own' : "the session's") }, ...ids.map(id => ({ value: id, label: clean(id, 80) }))],
+    efforts: [
+      { value: '', label: launched(node?.effort, b.kind === 'child' ? 'its own' : "the session's") },
+      ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(e => ({ value: e, label: e })),
+    ],
+    editable: !s.readOnly && !s.lost,
+  }
 }
 
 const whoOf = (id: string | undefined, all: readonly NodeBinding[]): string => {
@@ -2078,8 +2128,11 @@ export function eventRow(r: StoredRecord, all: readonly NodeBinding[]): SwarmEve
 function swarmEventRow(at: string, e: SwarmEventBody, all: readonly NodeBinding[]): SwarmEventRow | null {
   const who = e.node ?? whoOf(e.agentId, all)
   switch (e.kind) {
-    case 'message':
-      return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `${e.route === 'lead' ? 'via lead' : e.route}, ${e.delivery}: "${oneLine(e.text, 80)}"`, color: null }
+    case 'message': {
+      // Every send goes now; only an older ledger's held one says so.
+      const how = `${e.route === 'lead' ? 'via lead' : e.route}${e.delivery === 'queue' ? ', queued' : ''}`
+      return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `${how}: "${oneLine(e.text, 80)}"`, color: null }
+    }
     case 'readdressed':
       return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `sent via its parent ${whoOf(e.parent, all)}: ${oneLine(e.why, 60)}`, color: COLOR.subtle }
     case 'queued':
@@ -2128,6 +2181,17 @@ function swarmEventRow(at: string, e: SwarmEventBody, all: readonly NodeBinding[
       return gateRow(at, who, e)
     case 'budget':
       return budgetRow(at, e)
+    case 'tuned': {
+      const what =
+        e.model !== undefined
+          ? e.model === null
+            ? "model back to the launch's"
+            : `model set to ${oneLine(e.model, 60)}`
+          : e.effort === null || e.effort === undefined
+            ? "effort back to the launch's"
+            : `effort set to ${e.effort}`
+      return { at, who: `you → ${who}`, text: what, color: COLOR.subtle }
+    }
     default:
       return null
   }
@@ -2418,6 +2482,8 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   const composer = s.readOnly || s.lost ? null : await composerFor(p, litterDir, name, n, selected, all, listed)
   const tr = n.transcript && all.some(b => b.agentId === n.transcript) ? n.transcript : null
   const trName = tr ? (rows.find(r => r.agentId === tr)?.name ?? tr) : ''
+  const tuneB = n.tune ? (all.find(b => b.agentId === n.tune) ?? null) : null
+  const tune = tuneB ? tuneOf(s, tuneB, rows.find(r => r.agentId === tuneB.agentId)?.name ?? tuneB.node) : null
   const notice = n.notice ?? (ledger.tampered ? { text: oneLine(ledger.tampered, 300), level: 'error' as const } : null)
   return {
     view: 'browser',
@@ -2447,6 +2513,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     events,
     composer,
     transcript: tr ? await transcriptOf(p, tr, trName) : null,
+    tune,
     selected,
     proposals: [...pendingProposals(name)],
     // Only while there's a live swarm this session owns to end.
@@ -2603,16 +2670,14 @@ const takesDirect = (agentId: string, listed: Map<string, ListedAgent>): boolean
   return adm === 'running' || adm === 'settling' || listed.get(agentId)?.status === 'running'
 }
 
-/** The composer's When and Route for a swarm: module memory, else $.store, else interject and direct. */
+/** The composer's Route for a swarm: module memory, else $.store, else direct. */
 export async function prefsOf(p: Ports, litterDir: string, swarm: string): Promise<ComposerPrefs> {
   const cur = composerPrefs.get(swarm)
   if (cur) return cur
-  let out: ComposerPrefs = { when: 'interject', route: 'direct' }
+  let out: ComposerPrefs = { route: 'direct' }
   try {
     const raw = (await p.store.get(composerKey(litterDir, swarm))) as Partial<ComposerPrefs> | undefined
-    if (raw && (raw.when === 'interject' || raw.when === 'queue') && (raw.route === 'direct' || raw.route === 'lead' || raw.route === 'parent')) {
-      out = { when: raw.when, route: raw.route }
-    }
+    if (raw && (raw.route === 'direct' || raw.route === 'lead' || raw.route === 'parent')) out = { route: raw.route }
   } catch {
     // The defaults stand.
   }
@@ -2653,10 +2718,8 @@ async function composerFor(
     address: target ? instanceAddress(target) : null,
     targets,
     text: clean(n.inputs[`swarm:browser:text:${name}`] ?? '', 4000),
-    when: prefs.when,
     route,
     routes,
-    offerQueue: n.offerQueue,
   }
 }
 

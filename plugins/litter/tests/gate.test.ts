@@ -93,7 +93,6 @@ const PART = {
     bindings: [],
     admission: [{ agentId: 'ag-1', status: 'running', scope: null, swarm: 'alpha', node: 'lead', parent: null, kind: 'orchestrator' }],
     stopped: [],
-    queue: [],
     instances: { lead: 1 },
     calls: [],
     shells: [],

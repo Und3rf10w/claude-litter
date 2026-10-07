@@ -22,7 +22,7 @@ import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmSpan, SwarmUnsettledView } from '../../types/index'
-import { action, empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
+import { empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
 import { list, listPlace, type ListAction, type ListSpec } from '../ui/list'
 import { MARK, STYLE } from '../ui/style'
 import { cells } from '../band/view'
@@ -108,12 +108,23 @@ export function rosterDescription(r: Pick<SwarmNodeRow, 'turns' | 'steps' | 'tok
     .join(' · ')
 }
 
-/** A row's actions, the same in its right-click menu and as Buttons under the list: Transcript, and Stop node and Hard stop where stoppable. */
+/** The menu's Model and Effort items' keys (WP-DI): both open the node's Model and effort panel. */
+export const tuneKey = (swarm: string, agentId: string): string => `swarm:browser:tune:${swarm}/${agentId}`
+export const tuneEffortKey = (swarm: string, agentId: string): string => `swarm:browser:tune:${swarm}/${agentId}/effort`
+
+/**
+ * A row's actions, the same in its right-click menu and as Buttons under the
+ * list: Transcript; its model and effort (WP-DI, the user's live look of
+ * 2026-10-07: "right click here and see the model and effort level"), which
+ * open the panel that sets them; and Stop node and Hard stop where stoppable.
+ */
 export function rosterActions(view: SwarmBrowserView, r: SwarmNodeRow): ListAction[] {
   if (r.agentId === null) return []
   const s = view.swarm
   return [
     { key: `swarm:browser:transcript:${s}/${r.agentId}`, label: view.transcript?.agentId === r.agentId ? 'Hide transcript' : 'Transcript' },
+    { key: tuneKey(s, r.agentId), label: `Model: ${r.model ?? 'not known yet'}` },
+    { key: tuneEffortKey(s, r.agentId), label: `Effort: ${r.effort ?? 'not known yet'}` },
     ...(stoppable(view, r)
       ? [
           { key: `swarm:browser:stop:${s}/${r.agentId}`, label: 'Stop node' },
@@ -139,7 +150,7 @@ export function rosterList(view: SwarmBrowserView, client: boolean): ListSpec {
     id: rosterId(view.swarm),
     rows: Math.max(1, agents.length),
     items: agents.map(r => {
-      const flags = [r.flagged ? '! flagged' : '', r.queued.length > 0 ? `${r.queued.length} queued` : ''].filter(x => x !== '').join(' · ')
+      const flags = r.flagged ? '! flagged' : ''
       const acts = client ? rosterActions(view, r) : []
       return {
         key: `swarm:browser:select:${view.swarm}/${r.agentId}`,
@@ -327,11 +338,10 @@ export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyConte
     const b = view.budget
     rows += packWidths([cells('Repair budget'), cells(`${b.rounds.glyph ? `${b.rounds.glyph} ` : ''}${b.rounds.text}`), 2 + cells(`${b.agents.glyph ? `${b.agents.glyph} ` : ''}${b.agents.text}`)], c).length
   }
-  // The roster: its heading a row below, the list, the selected row's actions, the queued messages.
+  // The roster: its heading a row below, the list, the selected row's actions.
   rows += 2 + listPlace(rosterList(view, ctx.surface === 'terminal' || ctx.surface === 'desktop'), ctx).height
   const sel = view.rows.find(r => r.agentId !== null && r.agentId === view.selected) ?? null
   if (sel) rows += Math.max(1, actionRows(rosterActions(view, sel).map(a => a.label), Math.max(1, c - cells(sel.name) - 2)))
-  rows += view.rows.reduce((n, r) => n + r.queued.length, 0)
   // The box's top frame and its heading.
   return rows + 2
 }
@@ -390,15 +400,55 @@ function transcriptBox(el: PaneElements, view: SwarmBrowserView, e: BodyContext,
   )
 }
 
-/** The roster: its heading (the lead's state its note), the list, the selected row's actions, the queued messages, the transcript. */
+/** The Model and effort panel's caption: when a change applies, and what a new model costs. */
+export const TUNE_NOTE = 'From its next request. A new model reads its conversation again, without the cache.'
+
+/**
+ * The Model and effort panel (WP-DI), in a frame: what its last request
+ * named, a Model and an Effort select (the values alone on a swarm another
+ * session owns), when a change applies, and [Close]. It and the transcript
+ * are open one at a time (swarm/panes.ts), so the transcript's top needs no
+ * rows of it.
+ */
+function tuneBox(el: PaneElements, view: SwarmBrowserView, columns: number): RenderElement | null {
+  const { Box, Text } = el
+  const t = view.tune
+  if (!t) return null
+  const inner = Number.isFinite(columns) ? Math.max(1, columns - 4) : columns
+  const s = view.swarm
+  const last = t.seenModel === null ? 'no request yet since litter bound it' : `its last request: ${t.seenModel}${t.seenEffort ? ` · ${t.seenEffort}` : ''}`
+  const shown = (v: string, options: readonly { value: string; label: string }[]) => options.find(o => o.value === v)?.label ?? v
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={STYLE.frame} paddingX={1}>
+      {heading(el, `Model and effort · ${t.name}`, Number.isFinite(inner) ? inner : undefined, t.editable ? null : 'read-only')}
+      <Text color={STYLE.muted} wrap="wrap">
+        {last}
+      </Text>
+      {t.editable ? (
+        <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+          {choose(el, { key: `swarm:browser:tune-model:${s}/${t.agentId}`, label: 'Model', value: t.model, options: t.models })}
+          {choose(el, { key: `swarm:browser:tune-effort:${s}/${t.agentId}`, label: 'Effort', value: t.effort, options: t.efforts })}
+        </Box>
+      ) : (
+        <Text wrap="wrap">{`Model: ${shown(t.model, t.models)} · Effort: ${shown(t.effort, t.efforts)}`}</Text>
+      )}
+      {t.editable && (
+        <Text color={STYLE.muted} wrap="wrap">
+          {TUNE_NOTE}
+        </Text>
+      )}
+      {actionRow(el, [{ key: `swarm:browser:close-tune:${s}`, label: 'Close' }], inner)}
+    </Box>
+  )
+}
+
+/** The roster: its heading (the lead's state its note), the list, the selected row's actions, the transcript. */
 function roster(el: PaneElements, view: SwarmBrowserView, e: BodyContext, columns: number): RenderElement {
   const { Box, Text } = el
-  const s = view.swarm
   const lead = view.rows.find(r => r.agentId === null) ?? null
   const leadMark = lead ? (lead.running ? MARK.running : MARK.idle) : null
   const client = drawsClient(el, e.surface)
   const sel = view.rows.find(r => r.agentId !== null && r.agentId === view.selected) ?? null
-  const queued = view.rows.flatMap(r => r.queued.map(q => ({ name: r.name, running: r.running, ...q })))
   // What's above the transcript keeps to browserTranscriptTop's rows.
   return (
     <Box flexDirection="column">
@@ -412,20 +462,7 @@ function roster(el: PaneElements, view: SwarmBrowserView, e: BodyContext, column
           {actionRow(el, rosterActions(view, sel), Math.max(1, columns - cells(sel.name) - 2))}
         </Box>
       )}
-      {queued.map(q => (
-        // A queued message waits for its node's turn to end, which for an orchestrator can be hours (the user's
-        // live look, 2026-10-07: "stuck forever"): the row says so, and [Send now] interjects it while it runs.
-        <Box flexDirection="row" columnGap={1}>
-          <Text color={STYLE.warning} wrap="truncate-end">{`queued for ${q.name}${q.running ? ' until its turn ends' : ''}: ${q.text}`}</Text>
-          {!view.readOnly &&
-            !view.lost &&
-            [...(q.running ? [{ key: `swarm:browser:send-queued:${s}/${q.id}`, label: 'Send now' }] : []), { key: `swarm:browser:cancel:${s}/${q.id}`, label: 'Cancel' }].map(a => (
-              <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: a.label })}>
-                {action(el, a)}
-              </Box>
-            ))}
-        </Box>
-      ))}
+      {tuneBox(el, view, columns)}
       {transcriptBox(el, view, e, columns)}
     </Box>
   )
@@ -521,12 +558,11 @@ function summary(el: PaneElements, view: SwarmBrowserView, compact: boolean, col
   )
 }
 
-/** Where a message goes and how, the composer's caption: "to reader · interjects now · direct". Pure. */
-export function composerCaption(c: Pick<SwarmComposer, 'to' | 'targets' | 'when' | 'route' | 'routes'>): string {
+/** Where a message goes, the composer's caption: "to reader · goes now · direct". Every send goes now: none is held. Pure. */
+export function composerCaption(c: Pick<SwarmComposer, 'to' | 'targets' | 'route' | 'routes'>): string {
   const to = c.to === null ? 'pick who it goes to' : `to ${c.targets.find(t => t.value === c.to)?.label ?? c.to}`
-  const when = c.when === 'queue' ? 'queues until its turn ends' : 'interjects now'
   const route = c.routes.find(r => r.value === c.route)?.label ?? c.route
-  return `${to} · ${when} · ${route}`
+  return `${to} · goes now · ${route}`
 }
 
 /** The composer: who and how as short choices, the message as a field with where it goes as its caption, and [Send]. */
@@ -545,15 +581,6 @@ function composer(el: PaneElements, view: SwarmBrowserView, e: BodyContext, colu
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {choose(el, { key: `swarm:browser:to:${s}`, label: 'To', value: c.to ?? '', options: c.to === null ? [{ value: '', label: 'pick an agent' }, ...c.targets] : c.targets })}
-            {choose(el, {
-              key: `swarm:browser:when:${s}`,
-              label: 'When',
-              value: c.when,
-              options: [
-                { value: 'interject', label: 'Interject' },
-                { value: 'queue', label: 'Queue' },
-              ],
-            })}
             {choose(el, { key: `swarm:browser:route:${s}`, label: 'Route', value: c.route, options: c.routes })}
           </Box>
           {field(el, { key: `swarm:browser:text:${s}`, value: c.text, placeholder: 'your message', submitLabel: 'send' }, composerCaption(c), {
@@ -561,14 +588,7 @@ function composer(el: PaneElements, view: SwarmBrowserView, e: BodyContext, colu
             isFocused: e.isFocused,
             focused: e.focused,
           })}
-          {actionRow(
-            el,
-            [
-              { key: `swarm:browser:send:${s}${address}`, label: 'Send', primary: true },
-              c.offerQueue && { key: `swarm:browser:queue-instead:${s}${address}`, label: 'Queue instead' },
-            ],
-            columns,
-          )}
+          {actionRow(el, [{ key: `swarm:browser:send:${s}${address}`, label: 'Send', primary: true }], columns)}
         </Box>
       )}
     </Box>

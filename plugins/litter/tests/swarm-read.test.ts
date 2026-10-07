@@ -94,7 +94,6 @@ const PART = {
     bindings: [],
     admission: [{ agentId: 'ag-1', status: 'running', scope: null, swarm: 'alpha', node: 'lead', parent: null, kind: 'orchestrator' }],
     stopped: [],
-    queue: [],
     instances: { lead: 1 },
     calls: [],
     shells: [],
@@ -204,7 +203,7 @@ describe('mcp__litter__swarm_read', () => {
       readOnly: true,
       authority: [AUTHORITY],
       orchestrators: [],
-      nodes: [{ node: 'lead', kind: 'orchestrator', instances: [{ n: 1, agentId: 'ag-1', status: 'running', lastReport: null, openQuestions: [], queued: [] }] }],
+      nodes: [{ node: 'lead', kind: 'orchestrator', instances: [{ n: 1, agentId: 'ag-1', status: 'running', lastReport: null, openQuestions: [] }] }],
     })
     const draft = parse(await $.tool.call({ tool: 'mcp__litter__swarm_read', tool_use_id: 'r4', swarm: 'alpha', node: 'lead', for: 'resume' }))
     expect(draft).toEqual({ ok: false, error: expect.stringContaining('owned by session owner-session') })

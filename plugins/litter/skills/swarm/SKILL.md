@@ -1,7 +1,7 @@
 ---
 name: swarm
 description: Draft, start, lead and end a litter swarm, a tree of agents led from this session, where orchestrators each own part of the work and delegate to their own workers. Drafts the swarm's shape into the litter swarm builder, starts it after the user launches it there, and keeps the lead role while it runs.
-when_to_use: Use when the user wants several long-running agents that each own a part of the work and delegate further, while the user talks only to this session, such as one agent per branch, per package or per review area. Also for the "/litter:swarm start <name>", "resume" and "respawn" lines that the litter swarm builder and browser put in the prompt box, for the proposal requests, queued deliveries and routed messages that they send, and for repairing a failed fanout as a swarm. Not for a fixed list of independent tasks (use /litter:fanout) or a step-by-step plan (use /litter:execute).
+when_to_use: Use when the user wants several long-running agents that each own a part of the work and delegate further, while the user talks only to this session, such as one agent per branch, per package or per review area. Also for the "/litter:swarm start <name>", "resume" and "respawn" lines that the litter swarm builder and browser put in the prompt box, for the proposal requests and routed messages that they send, and for repairing a failed fanout as a swarm. Not for a fixed list of independent tasks (use /litter:fanout) or a step-by-step plan (use /litter:execute).
 argument-hint: "<description> | start <name> | lead <name> | revise <name> <node>: <change> | resume <name> <nodes> | respawn <name> <nodes> | end <name> | repair <run>"
 allowed-tools: [Read, Grep, Glob, "Bash(git worktree list:*)", "Bash(git branch:*)", "Bash(git log:*)", "Bash(git status:*)", mcp__litter__swarm_read, mcp__litter__swarm_propose, mcp__litter__swarm_send, mcp__litter__record]
 ---
@@ -47,15 +47,14 @@ For a failed fanout, or an execute run halted on a plan gap or out of attempts. 
 This section also covers `lead <name>`, which picks a live swarm back up after the conversation was cleared: read it with `mcp__litter__swarm_read` and carry on.
 
 Each of the user's prompts carries a `<swarm>` block from the mod. It lists every node with its status and any open questions, and anything the user sent a node directly.
-- **Route work.** Pass a request to the node that owns that part with `mcp__litter__swarm_send` (`node`, `text`, `deliver`), and tell the user which node has it. Use `interject` when it changes what the node is doing now, and `queue` when it's the next thing. Don't do the nodes' work in this session.
+- **Route work.** Pass a request to the node that owns that part with `mcp__litter__swarm_send` (`node`, `text`), and tell the user which node has it. It goes now: a running node reads it at its next step, and one between turns is resumed with it. Nothing waits for a node's turn to end, so when it's the next thing rather than a change to what the node is doing, say so in the text. Don't do the nodes' work in this session.
   - A send to a worker that has finished goes to its orchestrator, which passes it on, so the worker keeps reporting there. The result says so.
   - A send can be refused: the node is at its limit, stopped, or no longer in the swarm. Tell the user the reason; don't reach the node another way.
-- **The plugin's own requests.** When the litter plugin asks you to deliver a queued message, call `mcp__litter__swarm_send` with only the `queued` id it names, and nothing else: the plugin sends the stored text as it is.
-- **Messages the user routes through you.** The litter plugin hands you a message from the user for a node, with the delivery they chose. Before passing it on:
+- **Messages the user routes through you.** The litter plugin hands you a message from the user for a node. Before passing it on:
   - check it against what you know, such as another node already doing it, a conflict with another part, or a step outside the node's authority;
   - add any context the node needs.
 
-  Then send it with the delivery the user chose, and tell them what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.
+  Then send it, and tell them what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.
 - **Check, then relay.** When a node reports, check its important claims before you pass them on: that a commit exists, a test result, a file:line. Relay it faithfully, quoting its evidence, and say what you couldn't check.
 - **Questions go to the user.** Ask a node's question with AskUserQuestion, then send the answer to that node.
 - **Findings that cross parts.** When a node reports something that belongs to another node's part, send it there and tell the user.
@@ -65,7 +64,7 @@ Each of the user's prompts carries a `<swarm>` block from the mod. It lists ever
 
 ## 5. Revise (revise <name> <node>: <change>)
 
-Follow section 2 for that node's brief. Once the user accepts the change, a running node still has its old brief, so send it the new one with `mcp__litter__swarm_send`, using `queue`.
+Follow section 2 for that node's brief. Once the user accepts the change, a running node still has its old brief, so send it the new one with `mcp__litter__swarm_send`, saying it takes over from the old one once the node is done with what it's doing now.
 
 ## 6. End (end <name>)
 
@@ -76,7 +75,7 @@ End a repair swarm once its orchestrator reports done after its land (check the 
 ## 7. Resume or re-spawn (resume <name> <nodes> | respawn <name> <nodes>)
 
 The browser puts one of these lines in the prompt box after a restart, with the authority the user confirmed at launch. Take the nodes in the order given.
-- **resume:** for each node, call `mcp__litter__swarm_read` with `swarm`, `node` and `for: 'resume'`, then send the text it returns to that node with `mcp__litter__swarm_send` (`node`, `text`, `deliver: 'interject'`), as it was returned.
+- **resume:** for each node, call `mcp__litter__swarm_read` with `swarm`, `node` and `for: 'resume'`, then send the text it returns to that node with `mcp__litter__swarm_send` (`node`, `text`), as it was returned.
 - **respawn:** for each node, call `mcp__litter__swarm_read` with `swarm`, `node` and `for: 'respawn'`. Then spawn them all in one message with the Agent tool: each one's returned `subagent_type` and `description`, with the returned text as the prompt. Leave `name`, `isolation` and `model` unset.
 
 If a read, a send or a spawn is refused, show the reason and go on with the other nodes; don't reach a node another way. Then tell the user which nodes were resumed or re-spawned, and carry on as the lead (section 4).

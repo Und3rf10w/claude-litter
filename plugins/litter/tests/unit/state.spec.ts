@@ -93,12 +93,10 @@ describe('live swarms', () => {
     state.putBinding(bind('w1'))
     state.putBinding(bind('w2', { swarm: 'beta', type: 'litter:sw-beta-fixer' }))
     state.markRunning('w1')
-    state.enqueue({ swarm: 'alpha', agentId: 'w1', node: 'fixer', text: 'hi', from: 'user', at: NOW })
     state.reserve(res('t1'))
     state.dropLiveSwarm('alpha')
     expect(state.binding('w1')).toBeNull()
     expect(state.status('w1')).toBe('idle')
-    expect(state.queued('alpha')).toEqual([])
     expect(state.reservations('alpha')).toEqual([])
     expect(state.binding('w2')?.swarm).toBe('beta')
   })
@@ -328,30 +326,13 @@ describe('admission', () => {
   })
 })
 
-describe('the stopped list and the queue', () => {
+describe('the stopped list', () => {
   test('stop, isStopped, stopped', () => {
     state.stop('alpha', ['w1', 'w2'], 'stopped from the swarm browser')
     expect(state.isStopped('w1')).toBe(true)
     expect(state.isStopped('w3')).toBe(false)
     expect(state.stopped('alpha').map(x => x.agentId).sort()).toEqual(['w1', 'w2'])
     expect(state.stopped('beta')).toEqual([])
-  })
-
-  test('enqueue assigns ids and cuts the text to 16 KiB; queued filters; dequeue and cancelQueued take one', () => {
-    const a = state.enqueue({ swarm: 'alpha', agentId: 'w1', node: 'fixer', text: 'é'.repeat(10_000), from: 'user', at: NOW })
-    const b = state.enqueue({ swarm: 'alpha', agentId: 'w2', node: 'fixer', text: 'two', from: 'lead', at: NOW + 1 })
-    const c = state.enqueue({ swarm: 'beta', agentId: 'w3', node: 'x', text: 'three', from: 'user', at: NOW + 2 })
-    expect(a.id).toMatch(/^q[0-9a-f]{8}$/)
-    expect(new Set([a.id, b.id, c.id]).size).toBe(3)
-    expect(new TextEncoder().encode(a.text).length).toBeLessThanOrEqual(state.QUEUED_MAX_BYTES)
-    expect(a.text.length).toBe(state.QUEUED_MAX_BYTES / 2)
-    expect(state.queued().length).toBe(3)
-    expect(state.queued('alpha').map(m => m.id)).toEqual([a.id, b.id])
-    expect(state.queued('alpha', 'w2').map(m => m.text)).toEqual(['two'])
-    expect(state.dequeue(b.id)?.text).toBe('two')
-    expect(state.dequeue(b.id)).toBeNull()
-    expect(state.cancelQueued(c.id)?.swarm).toBe('beta')
-    expect(state.cancelQueued(c.id)).toBeNull()
   })
 })
 
@@ -534,7 +515,6 @@ describe('turns, the clear and the rest', () => {
       () => state.nextInstance('alpha', 'fixer'),
       () => state.noteInstance('alpha', 'fixer', 9),
       () => state.stop('alpha', ['w1'], 'r'),
-      () => state.enqueue({ swarm: 'alpha', agentId: 'w1', node: 'fixer', text: 't', from: 'user', at: NOW }),
       () => state.callStart('w1', 'u1', 'Bash', NOW),
       () => state.callEnd('w1', 'u1'),
       () => state.shellStarted('w1', 'sh1', NOW),
@@ -672,7 +652,6 @@ describe('the mirror', () => {
     state.putBinding(bind('w1'))
     state.markRunning('w1', scope('/repo', true))
     state.stop('alpha', ['w9'], 'stopped from the swarm browser')
-    state.enqueue({ swarm: 'alpha', agentId: 'w1', node: 'fixer', text: 'later', from: 'user', at: NOW })
     state.nextInstance('alpha', 'fixer')
     state.callStart('w1', 'u1', 'Bash', NOW)
     state.shellStarted('w1', 'sh1', NOW)
@@ -694,7 +673,6 @@ describe('the mirror', () => {
     expect(state.status('w1')).toBe('running')
     expect(state.activeScopes('alpha')[0]?.commit).toBe(true)
     expect(state.isStopped('w9')).toBe(true)
-    expect(state.queued('alpha').map(m => m.text)).toEqual(['later'])
     expect(state.nextInstance('alpha', 'fixer')).toBe(2)
     expect(state.inflight().map(c => c.toolUseId)).toEqual(['u1'])
     expect(state.shells('alpha').map(s => s.shellId)).toEqual(['sh1'])
@@ -825,16 +803,26 @@ describe('the bounds on what the mirror holds', () => {
     expect(state.takeDirect('alpha')[0]!.length).toBe(state.NOTE_MAX_BYTES)
   })
 
-  test('a swarm queues at most 50 messages: the next throws naming the node, and queues nothing', () => {
-    for (let i = 0; i < state.QUEUE_MAX; i++) state.enqueue(msg('alpha', i))
-    expect(state.QUEUE_MAX).toBe(50)
-    expect(() => state.enqueue(msg('alpha', 99))).toThrow('litter: the queue for fixer is full')
-    expect(state.queued('alpha').length).toBe(50)
-    // Another swarm's queue is its own; a message taken off makes room.
-    state.enqueue(msg('beta', 0))
-    state.dequeue(state.queued('alpha')[0]!.id)
-    state.enqueue(msg('alpha', 100))
-    expect(state.queued('alpha').length).toBe(50)
+  test("an older part's held messages are told once and never written again (litter no longer holds them, 2026-10-07)", async () => {
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    state.putBinding(bind('w1'))
+    await state.flushed()
+    const key = state.swarmStateKey(LITTER, 'alpha')
+    const older = { ...(p.storeMap.get(key) as state.SwarmPart), queue: [msg('alpha', 1), msg('alpha', 2), { id: 'q3', text: 7 }] }
+    p.storeMap.set(key, older)
+    state.resetForTests()
+    state.attach(p, LITTER)
+    await state.loadSwarm(p, LITTER, 'alpha')
+    // The malformed one is left out; the next take answers none.
+    expect(state.takeHeldBefore('alpha')).toEqual([
+      { node: 'fixer', text: 'm1' },
+      { node: 'fixer', text: 'm2' },
+    ])
+    expect(state.takeHeldBefore('alpha')).toEqual([])
+    state.noteDirect('alpha', 'hi')
+    await state.flushed()
+    expect('queue' in (p.storeMap.get(key) as object)).toBe(false)
   })
 
   test("dropBinding prunes the agent's report, tokens, refused turns, stop mark and questions, in memory and the mirror", async () => {

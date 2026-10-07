@@ -15,7 +15,7 @@
 import type { Ports } from '../ports'
 import type { CommandRunHook, PortHook, UiInputHook, UiMessageHook, UiPressHook, UiScrollHook, UiSelectHook } from '../hooktypes'
 import type { SwarmNotice, SwarmPaneView } from '../../types/index'
-import type { Draft, SwarmNode, SwarmSpec, Template } from './types'
+import type { Draft, Effort, SwarmNode, SwarmSpec, Template } from './types'
 import type { SwarmNav } from './view'
 import type { WaitBudget } from './admit'
 import type { Loaded } from '../ui/hub'
@@ -26,7 +26,7 @@ import { TEMPLATE_LIST, startListTop, templateList, templateListCtx } from './bu
 import { browserWheel } from './browser'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
-import { bindings, liveSwarm, openQuestions, takeProposals, version } from './state'
+import { bindings, liveSwarm, modelsSeen, openQuestions, takeProposals, version } from './state'
 import { parameterize } from './templates'
 import { waitBudget } from './admit'
 import {
@@ -1451,50 +1451,24 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
   switch (k.action) {
     case 'select':
     case 'to':
-      setNav({ ...n, selected: (k.action === 'to' ? input.value : arg) || null, offerQueue: false })
+      setNav({ ...n, selected: (k.action === 'to' ? input.value : arg) || null })
       return true
     case 'text':
       putInput(TEXT_KEY(name), input.value ?? '')
-      if (input.kind === 'submit') return send(p, name, null, '', input.budget)
-      if (n.offerQueue) {
-        setNav({ ...nav()!, offerQueue: false })
-        return true
-      }
+      if (input.kind === 'submit') return send(p, name, '', input.budget)
       return false
-    case 'when':
     case 'route': {
       if (!litterDir) return true
-      const prefs = await prefsOf(p, litterDir, name)
       const v = input.value ?? ''
-      const next =
-        k.action === 'when'
-          ? { ...prefs, when: v === 'queue' ? ('queue' as const) : ('interject' as const) }
-          : { ...prefs, route: v === 'lead' ? ('lead' as const) : v === 'parent' ? ('parent' as const) : ('direct' as const) }
       try {
-        await setPrefs(p, litterDir, name, next)
+        await setPrefs(p, litterDir, name, { route: v === 'lead' ? 'lead' : v === 'parent' ? 'parent' : 'direct' })
       } catch (err) {
         p.log(`swarm pane: the composer's choice wasn't kept: ${errText(err)}`)
       }
       return true
     }
     case 'send':
-      return send(p, name, null, arg, input.budget)
-    case 'queue-instead':
-      return send(p, name, 'queue', arg, input.budget)
-    case 'cancel': {
-      const r = await call(p, `cancelQueued ${arg}`, () => o.cancelQueued(p, arg))
-      if (!r.ok) failed(p, 'cancelling', r.error)
-      else notice(r.value ? 'ok' : 'info', r.value ? 'cancelled the queued message' : 'that message was already sent or cancelled')
-      return true
-    }
-    case 'send-queued': {
-      const r = await call(p, `sendQueuedNow ${arg}`, () => o.sendQueuedNow(p, arg, input.budget))
-      if (!r.ok) failed(p, 'Send now', r.error)
-      else if (r.value.kind === 'refused') notice('warning', `not sent: ${r.value.reason}`)
-      else if (r.value.kind === 'queued') notice('info', 'it was finishing its turn, so it stays queued: litter sends it when it settles')
-      else notice('ok', 'sent: it reads it at its next step')
-      return true
-    }
+      return send(p, name, arg, input.budget)
     case 'dismiss-question': {
       const r = await call(p, `dismissQuestion ${name} ${arg}`, () => o.dismissQuestion(p, name, arg))
       if (!r.ok) failed(p, 'Dismiss', r.error)
@@ -1509,12 +1483,23 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       else notice('ok', how === 'soft' ? 'stopping it: it ends at its next step' : 'hard-stopped it')
       return true
     }
+    // The transcript and the Model and effort panel are open one at a time (browser.tsx's tuneBox).
     case 'transcript':
-      setNav({ ...n, transcript: n.transcript === arg ? null : arg })
+      setNav({ ...n, transcript: n.transcript === arg ? null : arg, tune: null })
       return true
     case 'close-transcript':
       setNav({ ...n, transcript: null })
       return true
+    case 'tune':
+      // Model: … and Effort: … in a row's menu (WP-DI): `<agentId>`, or `<agentId>/effort`.
+      setNav({ ...n, tune: arg.split('/')[0] || null, transcript: null })
+      return true
+    case 'close-tune':
+      setNav({ ...n, tune: null })
+      return true
+    case 'tune-model':
+    case 'tune-effort':
+      return tune(p, name, arg, k.action === 'tune-model' ? 'model' : 'effort', input.value ?? '')
     case 'builder': {
       // [Review] on the banner carries its proposal's number: that proposal, while it's still current (WP-DG).
       const num = Number(arg)
@@ -1602,7 +1587,7 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
  * address that's gone. `budget` is the press's or ⏎'s dispatch's, so L's
  * settle wait never runs past what that hook has left.
  */
-async function send(p: Ports, name: string, when: 'queue' | null, shown: string, budget?: WaitBudget): Promise<boolean> {
+async function send(p: Ports, name: string, shown: string, budget?: WaitBudget): Promise<boolean> {
   const n = nav()!
   const litterDir = litterDirOr()
   if (!litterDir) return true
@@ -1623,9 +1608,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string,
   }
   const prefs = await prefsOf(p, litterDir, name)
   const route = composerRoute(prefs.route, selected)
-  const r = await call(p, `sendFromBrowser ${name} ${address} ${when ?? prefs.when} ${route}`, () =>
-    owners().sendFromBrowser(p, { swarm: name, node: address, text, when: when ?? prefs.when, route }, budget),
-  )
+  const r = await call(p, `sendFromBrowser ${name} ${address} ${route}`, () => owners().sendFromBrowser(p, { swarm: name, node: address, text, route }, budget))
   if (!r.ok) {
     failed(p, 'Send', r.error)
     return true
@@ -1633,7 +1616,7 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string,
   const out = r.value
   const sent = () => {
     putInput(TEXT_KEY(name), null)
-    setNav({ ...nav()!, offerQueue: false })
+    setNav({ ...nav()! })
   }
   switch (out.kind) {
     case 'delivered':
@@ -1644,17 +1627,35 @@ async function send(p: Ports, name: string, when: 'queue' | null, shown: string,
       sent()
       notice('info', `sent to ${out.parentNode}, its parent, instead: ${out.why}`)
       break
-    case 'queued':
-      sent()
-      notice('ok', `queued for ${address}: it goes when the node settles`)
-      break
     case 'refused':
-      setNav({ ...nav()!, offerQueue: out.canQueue })
-      notice('error', `not sent: ${out.reason}${out.canQueue ? ' ([Queue instead] sends it when the node settles)' : ''}`)
+      notice('error', `not sent: ${out.reason}`)
       break
   }
   return true
 }
+
+/**
+ * The Model and effort panel's selects (WP-DI): L's tuneNode, '' for what the
+ * node was launched with. A model nothing here ran with is checked first,
+ * which can take seconds: the notice says so meanwhile.
+ */
+async function tune(p: Ports, name: string, agentId: string, what: 'model' | 'effort', value: string): Promise<boolean> {
+  const v = value.trim()
+  if (what === 'effort' && v !== '' && !EFFORT_VALUES.includes(v)) {
+    notice('error', `not set: ${oneLine(v, 40)} isn't an effort`)
+    return true
+  }
+  // The pane's tick draws it while the check runs.
+  if (what === 'model' && v !== '' && !modelsSeen().includes(v)) notice('info', `checking that ${oneLine(v, 80)} answers…`)
+  const input = what === 'model' ? { swarm: name, agentId, model: v === '' ? null : v } : { swarm: name, agentId, effort: v === '' ? null : (v as Effort) }
+  const r = await call(p, `tuneNode ${name} ${agentId} ${what} ${v === '' ? '(as launched)' : v}`, () => owners().tuneNode(p, input))
+  if (!r.ok) failed(p, what === 'model' ? 'Model' : 'Effort', r.error)
+  else if (!r.value.ok) notice('error', `not set: ${r.value.reason}`)
+  else notice('ok', r.value.text)
+  return true
+}
+
+const EFFORT_VALUES: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // ---------------------------------------------------------------------------
 // The recovery card and the unsettled report

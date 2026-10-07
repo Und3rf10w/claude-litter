@@ -1,9 +1,16 @@
 // WP-L: admission for sends and wakes (session.send, turn.step), settling,
-// the reply route, the message queue, mcp__litter__swarm_send, the browser's
-// sends, the lead's <swarm> block, and swarm.bind with adoption after a reload
-// (plan 15.4, "A send that resumes a node is admitted like a spawn" through
-// "Wakes the engine starts on its own are admitted too", "Messages" and
-// "Messages from you").
+// the reply route, mcp__litter__swarm_send, the browser's sends, the lead's
+// <swarm> block, and swarm.bind with adoption after a reload (plan 15.4, "A
+// send that resumes a node is admitted like a spawn" through "Wakes the
+// engine starts on its own are admitted too", "Messages" and "Messages from
+// you").
+//
+// Every send goes now (the user, 2026-10-07: "get rid of the ability to queue
+// messages and interject only"): a running node reads it at its next step,
+// an idle one is resumed with it, and one still finishing its turn gets it
+// after the settle wait, which the engine resumes it with (its stranded
+// messages, 2.1.293 `agentStrandedMessages`) and turn.step admits. Nothing is
+// held to send later.
 //
 // One judgment covers every way a node hears something. `judge` reads the
 // live state and, for a resume, reserves the place in the same synchronous
@@ -20,7 +27,7 @@ import type { AgentStatus, Ports, SessionSendResult } from '../ports'
 import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
 import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply } from '../records/swarm'
-import type { BrowserSend, ClearKill, ClearReason, LiveSwarm, NodeBinding, QueuedMessage, SendOutcome, SwarmNode, WriteScope } from './types'
+import type { BrowserSend, ClearKill, ClearReason, Effort, LiveSwarm, NodeBinding, SendOutcome, SwarmNode, WriteScope } from './types'
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { agentLive } from '../ports'
@@ -77,7 +84,7 @@ export type WaitBudget = { left(): Promise<number> }
  * still through every `$` call but a `$.clock` wait. Where nothing meters it
  * (Infinity, or a test's bare next), the hook's 10 s from now. Each wait takes
  * the smaller of its own cap and what's left, less the margin; past it, the
- * hook refuses in its event's shape and queues nothing.
+ * wait ends.
  */
 export async function waitBudget(p: Ports, next?: object): Promise<WaitBudget> {
   // `budget` is a getter on the engine's next: each read is the meter now.
@@ -257,16 +264,12 @@ export async function swarmEvent(p: Ports, s: LiveSwarm | null, body: SwarmEvent
 }
 
 // ---------------------------------------------------------------------------
-// Module memory: the settle poll, the queue's hand-offs, the mod's own sends
-// in flight, and what the last <swarm> block showed. Not mirrored: a reload
-// starts the poll again (`kick`), and hands every queued message to the lead.
+// Module memory: the settle poll, the mod's own sends in flight, and what the
+// last <swarm> block showed. Not mirrored: a reload starts the poll again
+// (`kick`).
 
 let poll: { cancel(): void } | null = null
 let ticking = false
-/** Queued ids handed to the lead and not yet delivered or cancelled. */
-const handed = new Set<string>()
-/** Queued ids refused for room at delivery: handed again once a place in their swarm frees. */
-const waitingRoom = new Set<string>()
 /** The mod's own sends in flight (`to` and text): the session.send hook passes them, judged already. */
 const ownSends = new Map<string, number>()
 /** Tokens a swarm.bind is binding now, so two calls can't take one instance. */
@@ -280,8 +283,6 @@ export function resetForTests(): void {
   poll?.cancel()
   poll = null
   ticking = false
-  handed.clear()
-  waitingRoom.clear()
   ownSends.clear()
   claiming.clear()
   shown.clear()
@@ -297,9 +298,9 @@ type Verdict =
   | { kind: 'resume'; key: string }
   /** The reply route: to the parent (null: the lead). */
   | { kind: 'reply'; parent: NodeBinding | null }
-  | { kind: 'refuse'; reason: string; canQueue: boolean }
+  | { kind: 'refuse'; reason: string }
 
-const refuse = (reason: string, canQueue = false): Verdict => ({ kind: 'refuse', reason, canQueue })
+const refuse = (reason: string): Verdict => ({ kind: 'refuse', reason })
 const resumeKey = (agentId: string): string => `resume:${agentId}`
 /** A resume of this agent holds a place now (a send in flight). */
 const resuming = (agentId: string): boolean => state.reservations().some(r => r.agentId === agentId)
@@ -308,15 +309,15 @@ const resuming = (agentId: string): boolean => state.reservations().some(r => r.
 const specOf = (s: LiveSwarm, b: NodeBinding): SwarmNode | null => nodeOf(s, b.node)
 
 /** The checks a resume needs besides room (15.4, "A node that isn't running would be resumed"). */
-function resumeRefusal(s: LiveSwarm, b: NodeBinding): { reason: string; canQueue: boolean } | null {
-  if (!s.typesReady) return { reason: `swarm ${s.name}'s node types aren't registered in this session yet; try again in a moment`, canQueue: true }
-  if (!specOf(s, b)) return { reason: `${b.node} isn't in swarm ${s.name}'s revision ${s.revision}`, canQueue: false }
+function resumeRefusal(s: LiveSwarm, b: NodeBinding): string | null {
+  if (!s.typesReady) return `swarm ${s.name}'s node types aren't registered in this session yet; try again in a moment`
+  if (!specOf(s, b)) return `${b.node} isn't in swarm ${s.name}'s revision ${s.revision}`
   const stop = state.stopped(s.name).find(x => x.agentId === b.agentId)
-  if (stop) return { reason: `${labelOf(b)} was stopped (${stop.reason})`, canQueue: false }
+  if (stop) return `${labelOf(b)} was stopped (${stop.reason})`
   if (b.kind === 'worker') {
     const parent = b.parent === null ? null : state.binding(b.parent)
     const pn = parent ? nodeOf(s, parent.node) : null
-    if (!pn?.spawns?.[b.node]) return { reason: `${b.node} isn't in ${parent?.node ?? 'its parent'}'s spawns in revision ${s.revision}`, canQueue: false }
+    if (!pn?.spawns?.[b.node]) return `${b.node} isn't in ${parent?.node ?? 'its parent'}'s spawns in revision ${s.revision}`
   }
   return null
 }
@@ -376,7 +377,7 @@ function judge(b: NodeBinding, sender: string | null, at: number): Verdict {
   if (st === 'running' || resuming(b.agentId)) return { kind: 'deliver' }
   if (st === 'settling') return { kind: 'settling' }
   const why = resumeRefusal(s, b)
-  if (why) return refuse(why.reason, why.canQueue)
+  if (why) return refuse(why)
   if (sender !== b.parent) {
     if (b.parent === null) return { kind: 'reply', parent: null }
     const parent = state.binding(b.parent)
@@ -385,7 +386,7 @@ function judge(b: NodeBinding, sender: string | null, at: number): Verdict {
   }
   const scope = instanceScope(s, b)
   const room = placeRefusal(s, b, scope)
-  if (room) return refuse(room, true)
+  if (room) return refuse(room)
   const key = resumeKey(b.agentId)
   state.reserve({ key, swarm: s.name, node: b.node, parent: b.parent, kind: b.kind, n: b.kind === 'child' ? null : b.n, scope, at, agentId: b.agentId })
   return { kind: 'resume', key }
@@ -399,7 +400,7 @@ function admitWake(b: NodeBinding): Wake {
   const off = swarmRefusal(s, b.swarm, true)
   if (off || !s) return { ok: false, reason: off ?? `swarm ${b.swarm} isn't live` }
   const why = resumeRefusal(s, b)
-  if (why) return { ok: false, reason: why.reason }
+  if (why) return { ok: false, reason: why }
   // A send resuming it holds its place already.
   const held = state.reservations().find(r => r.agentId === b.agentId)
   if (held) {
@@ -432,7 +433,7 @@ type SendReq = {
   to: NodeBinding
   /** What reaches the node when it's delivered now. */
   text: string
-  /** The message as its sender wrote it: what the queue keeps, and a readdress wraps. */
+  /** The message as its sender wrote it: what a readdress wraps. */
   raw: string
   /** The sending loop: an agentId, or null for the main loop. */
   sender: string | null
@@ -441,15 +442,14 @@ type SendReq = {
   /** The sender in words, for the wrapper: `the user`, `the lead`, `fixer #2 (<agentId>)`. */
   label: string
   route: Route
-  delivery: 'interject' | 'queue'
 }
 
 type Deliver = (to: string, text: string) => Promise<SessionSendResult>
 type Routed = { result: SessionSendResult; outcome: SendOutcome }
 
-const refused = (reason: string, canQueue: boolean): Routed => ({
+const refused = (reason: string): Routed => ({
   result: { isDelivered: false, reason: `litter: ${reason}` },
-  outcome: { kind: 'refused', reason, canQueue },
+  outcome: { kind: 'refused', reason },
 })
 
 /** 15.4's wrapper for a message readdressed to the parent; to the lead for an orchestrator a node sent to. */
@@ -462,17 +462,9 @@ function wrapFor(b: NodeBinding, label: string, raw: string): string {
 /** The text a node gets from the mod: yours as written; anyone else's with who it's from. */
 const frame = (from: string, label: string, raw: string): string => (from === 'user' ? raw : `From ${label}:\n\n${raw}`)
 
-function labelFrom(from: string): string {
-  if (from === 'user') return 'the user'
-  if (from === 'lead') return 'the lead'
-  if (from.startsWith('plugin:')) return `the ${from.slice('plugin:'.length)} plugin`
-  const b = state.binding(from)
-  return b ? labelOf(b) : `agent ${from}`
-}
-
 /** One `message` event for a delivered send. */
 function messageEvent(req: SendReq, to: NodeBinding, route: Route, text: string): SwarmEventBody {
-  return { kind: 'message', node: to.node, agentId: to.agentId, from: req.from, to: to.agentId, route, delivery: req.delivery, text: cut(text, EVENT_TEXT_MAX) }
+  return { kind: 'message', node: to.node, agentId: to.agentId, from: req.from, to: to.agentId, route, delivery: 'interject', text: cut(text, EVENT_TEXT_MAX) }
 }
 
 /**
@@ -482,8 +474,9 @@ function messageEvent(req: SendReq, to: NodeBinding, route: Route, text: string)
  * (2.1.289's `running`), when a message would be resumed with no admission
  * (15.4, "A node that's settling is neither"). A `waiting` node is parked on
  * children or background work, completed to the engine, so a message resumes
- * it through admission, as in 2.1.288; holding it settling would queue every
- * message to it. Parked, it keeps its place until it ends (WP-AJ).
+ * it through admission, as in 2.1.288; holding it settling would make every
+ * message to it wait out the settle. Parked, it keeps its place until it ends
+ * (WP-AJ).
  */
 async function settleIfDone(p: Ports, b: NodeBinding): Promise<void> {
   const row = (await p.listAgents()).find(a => a.id === b.agentId)
@@ -497,65 +490,39 @@ async function letGo(p: Ports, b: NodeBinding, listed: AgentStatus | undefined):
   else await finishSettle(p, b)
 }
 
-async function queueFor(p: Ports, s: LiveSwarm, req: SendReq, at: number): Promise<Routed> {
-  const b = req.to
-  let m: QueuedMessage
-  try {
-    m = state.enqueue({ swarm: s.name, agentId: b.agentId, node: b.node, text: req.raw, from: req.from, at })
-  } catch (err) {
-    return refused(errText(err).replace(/^litter: /, ''), false)
-  }
-  await swarmEvent(p, s, { kind: 'queued', node: b.node, agentId: b.agentId, id: m.id, from: req.from })
-  kick(p)
-  return { result: { isDelivered: true }, outcome: { kind: 'queued', id: m.id } }
-}
-
 /**
  * Judges a send and carries it out with `deliver` (the hook's `next`, or the
  * mod's own `p.send`): delivered, resumed with a place, readdressed to the
- * parent, queued, or refused. Each ends in at most one `deliver`. Its settle
- * wait spends `budget`, the dispatch's.
+ * parent, or refused. Each ends in at most one `deliver`. Its settle wait
+ * spends `budget`, the dispatch's.
  */
 async function routeSend(p: Ports, req: SendReq, deliver: Deliver, budget: WaitBudget, depth = 0): Promise<Routed> {
   const b = req.to
   const s = state.liveSwarm(b.swarm)
   const at = await p.now()
-  // Queue: held while the node runs or settles; sent at once when it's idle.
-  if (req.delivery === 'queue' && s && swarmRefusal(s, b.swarm, false) === null && state.status(b.agentId) !== 'idle') return queueFor(p, s, req, at)
   let v = judge(b, req.sender, at)
   // Settling: wait for the list to let it go, then judge again (a $.clock wait spends the hook's budget:
   // 2 s at most, and never more than the dispatch has left).
-  let outOfTime = false
   for (let waited = 0; v.kind === 'settling' && waited < SETTLE_WAIT_MS; waited += SETTLE_STEP_MS) {
-    if ((await budget.left()) < SETTLE_STEP_MS) {
-      outOfTime = true
-      break
-    }
+    if ((await budget.left()) < SETTLE_STEP_MS) break
     await p.sleep(SETTLE_STEP_MS)
     await settleIfDone(p, b)
     v = judge(b, req.sender, await p.now())
   }
-  if (v.kind === 'settling' && outOfTime) {
-    // Past the budget the engine treats the hook as absent, so it queues nothing it can't answer for.
-    const reason = `${labelOf(b)} is finishing its turn, and this hook ran out of time to wait for it; send it again, or queue it`
-    await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason })
-    return refused(reason, true)
-  }
-  if (v.kind === 'settling') return s ? queueFor(p, s, req, at) : refused(`swarm ${b.swarm} isn't live`, false)
   if (v.kind === 'refuse') {
-    if (req.delivery === 'queue' && v.canQueue && s) return queueFor(p, s, req, at)
     await swarmEvent(p, s, { kind: 'send-refused', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, reason: v.reason })
-    return refused(v.reason, v.canQueue)
+    return refused(v.reason)
   }
   if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, budget, depth)
-  if (v.kind === 'deliver') {
-    const r = await deliver(b.agentId, req.text)
-    if (!r.isDelivered) return { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
-    state.closeQuestion(b.agentId, at)
-    await swarmEvent(p, s, messageEvent(req, b, req.route, req.text))
-    return { result: r, outcome: { kind: 'delivered' } }
-  }
-  return resumeNow(p, s!, req, v.key, deliver, at)
+  if (v.kind === 'resume') return resumeNow(p, s!, req, v.key, deliver, at)
+  // Running, or still finishing its turn after the wait: it goes now all the same. A finishing node's task finds
+  // the message waiting as it ends and the engine resumes the node with it (2.1.293's stranded messages); that wake
+  // is admitted at its first step (admitWake), keeping its place.
+  const r = await deliver(b.agentId, req.text)
+  if (!r.isDelivered) return { result: r, outcome: { kind: 'refused', reason: r.reason } }
+  state.closeQuestion(b.agentId, at)
+  await swarmEvent(p, s, messageEvent(req, b, req.route, req.text))
+  return { result: r, outcome: { kind: 'delivered' } }
 }
 
 /** A resume: the policy marked admitted before the send, the place kept once it's delivered, released if not. */
@@ -572,19 +539,19 @@ async function resumeNow(p: Ports, s: LiveSwarm, req: SendReq, key: string, deli
     await patchNodePolicy(p, dir, b.agentId, { admitted: true })
   } catch (err) {
     await undo()
-    return refused(`${labelOf(b)} couldn't be admitted: ${errText(err)}`, false)
+    return refused(`${labelOf(b)} couldn't be admitted: ${errText(err)}`)
   }
   let r: SessionSendResult
   try {
     r = await deliver(b.agentId, req.text)
   } catch (err) {
     await undo()
-    return refused(`the send to ${labelOf(b)} failed: ${errText(err)}`, false)
+    return refused(`the send to ${labelOf(b)} failed: ${errText(err)}`)
   }
   if (!r.isDelivered) {
     await undo()
     await swarmEvent(p, s, { kind: 'resume-refused', node: b.node, agentId: b.agentId, from: req.from, reason: r.reason })
-    return { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
+    return { result: r, outcome: { kind: 'refused', reason: r.reason } }
   }
   state.promote(key, b.agentId)
   state.closeQuestion(b.agentId, at)
@@ -604,9 +571,9 @@ async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBind
     const r = await deliver('main', wrapped)
     return r.isDelivered
       ? { result: r, outcome: { kind: 'readdressed', to: 'main', parentNode: 'the lead', why: REPLY_WHY } }
-      : { result: r, outcome: { kind: 'refused', reason: r.reason, canQueue: false } }
+      : { result: r, outcome: { kind: 'refused', reason: r.reason } }
   }
-  if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`, false)
+  if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`)
   const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, budget, depth + 1)
   if (up.outcome.kind === 'delivered') return { result: up.result, outcome: { kind: 'readdressed', to: parent.agentId, parentNode: parent.node, why: REPLY_WHY } }
   return up
@@ -791,7 +758,7 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
   const who = senderOf(e, fromB)
   const routed = await routeSend(
     p,
-    { to: toB, text: e.text, raw: e.text, sender, from: who.from, label: who.label, route: 'direct', delivery: 'interject' },
+    { to: toB, text: e.text, raw: e.text, sender, from: who.from, label: who.label, route: 'direct' },
     (to, text) => next({ ...e, to, text }),
     budget,
   )
@@ -830,8 +797,11 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
   }
   if (state.isRefusedTurn(id, e.turnId)) return yield* refusal(NOT_ADMITTED_LATER)
   // An admitted step's usage counts at once, so the browser's tokens move mid-turn (turn.complete settles them).
+  // It goes with the model and effort you set for the node (WP-DI), and the browser shows what it named.
   const counted = async function* () {
-    const r = yield* next(e)
+    const s = tunedStep(b, e)
+    state.noteStepModel(id, s.model, s.effort ?? null, await p.now())
+    const r = yield* next(s)
     state.addStep(id, e.turnId, r?.usage)
     return r
   }
@@ -861,6 +831,97 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
     }
   }
   return yield* counted()
+}
+
+// ---------------------------------------------------------------------------
+// A node's model and effort (WP-DI)
+
+/**
+ * A node's step as it goes: the model and effort you set for it, and
+ * otherwise its spec's effort, which then holds against an Agent call's own
+ * (2.1.292 gave the Agent tool an effort). A child keeps whatever it runs
+ * with, unless you set it. The engine drops an effort for a model that takes
+ * none, and holds `max` and `xhigh` to `high` where the model has no such level.
+ */
+export function tunedStep(b: NodeBinding, e: Parameters<TurnStepHook>[1]): Parameters<TurnStepHook>[1] {
+  const set = state.tunedModel(b.agentId)
+  const specEffort = b.kind === 'child' ? undefined : state.liveSwarm(b.swarm)?.spec.nodes.find(n => n.id === b.node)?.effort
+  const model = set?.model
+  const effort = set?.effort ?? specEffort
+  const newModel = model !== undefined && model !== e.model
+  const newEffort = effort !== undefined && effort !== e.effort
+  if (!newModel && !newEffort) return e
+  return { ...e, ...(newModel ? { model } : {}), ...(newEffort ? { effort } : {}) }
+}
+
+/** The models the browser offers beside the ones nodes ran with: full ids, since turn.step resolves no alias (`haiku`). */
+export const MODEL_CHOICES: readonly string[] = ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001']
+
+/** How long the check of a model nothing here has run with may take. */
+export const MODEL_CHECK_MS = 15_000
+
+/** What a tune answers: what changed, from when, or why nothing did. */
+export type TuneOutcome = { ok: true; text: string } | { ok: false; reason: string }
+
+/**
+ * The browser's Model and Effort for a node (N, from ui.message): `model` or
+ * `effort` set, or null for what it runs with. A model no request here has
+ * named yet is checked first with a short completion, so a node isn't moved
+ * to one the provider doesn't serve. It applies from the node's next request;
+ * a new model reads the conversation again, without the cache. Picking what
+ * it has already changes and records nothing.
+ */
+export async function tuneNode(
+  p: Ports,
+  input: { swarm: string; agentId: string; model?: string | null; effort?: Effort | null },
+): Promise<TuneOutcome> {
+  const s = state.liveSwarm(input.swarm)
+  const off = swarmRefusal(s, input.swarm, false)
+  if (off) return { ok: false, reason: off }
+  const b = state.binding(input.agentId)
+  if (!b || b.swarm !== input.swarm) return { ok: false, reason: `${input.agentId} isn't a node of swarm ${input.swarm}` }
+  const who = b.kind === 'child' ? `the agent ${b.node} started` : instanceName(b)
+  const was = state.tunedModel(b.agentId)
+  if (input.model !== undefined && (input.model?.trim() ?? null) === (was?.model ?? null)) return { ok: true, text: `${who} has that model already` }
+  if (input.model === undefined && input.effort !== undefined && input.effort === (was?.effort ?? null)) return { ok: true, text: `${who} has that effort already` }
+  if (input.model !== undefined && input.model !== null) {
+    const model = input.model.trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*(\[[0-9a-z]+\])?$/.test(model) || !model.includes('-'))
+      return { ok: false, reason: `${cut(oneLine(model), 80)} isn't a model id (a full one, such as claude-sonnet-5-5)` }
+    if (!state.modelsSeen().includes(model)) {
+      const bad = await modelCheck(p, model)
+      if (bad) return { ok: false, reason: `${model} wasn't set: ${bad}` }
+    }
+    state.tuneModel(b.agentId, { model })
+    await swarmEvent(p, s, { kind: 'tuned', node: b.node, agentId: b.agentId, model })
+    return { ok: true, text: `${who} uses ${model} from its next request; it reads its conversation again, without the cache` }
+  }
+  if (input.model === null) {
+    state.tuneModel(b.agentId, { model: null })
+    await swarmEvent(p, s, { kind: 'tuned', node: b.node, agentId: b.agentId, model: null })
+    return { ok: true, text: `${who} goes back to the model it was launched with, from its next request` }
+  }
+  if (input.effort !== undefined) {
+    state.tuneModel(b.agentId, { effort: input.effort })
+    await swarmEvent(p, s, { kind: 'tuned', node: b.node, agentId: b.agentId, effort: input.effort })
+    return {
+      ok: true,
+      text: input.effort === null ? `${who} goes back to the effort it was launched with, from its next request` : `${who} thinks at ${input.effort} from its next request`,
+    }
+  }
+  return { ok: false, reason: 'nothing to change' }
+}
+
+/** Why a model can't be used, from a one-token completion; null when it answered. */
+async function modelCheck(p: Ports, model: string): Promise<string | null> {
+  try {
+    const r = await p.complete({ model, prompt: 'Reply with the word OK.', maxTokens: 8, timeoutMs: MODEL_CHECK_MS })
+    if (r.isAnswered || r.reason === 'empty-reply') return null
+    if (r.reason === 'aborted') return `the check didn't finish in ${MODEL_CHECK_MS / 1000} s; try again`
+    return `the provider refused it (${r.error}${r.status === null ? '' : `, status ${r.status}`})`
+  } catch (err) {
+    return cut(oneLine(errText(err)), 200)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -899,18 +960,16 @@ function unadmit(p: Ports, b: NodeBinding, when: string): Promise<void> {
   return patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted ${when}: ${errText(err)}`))
 }
 
-/** Settled: its place is free, its policy no longer admitted, and its swarm's waiting messages may be handed on. */
+/** Settled: its place is free and its policy no longer admitted. */
 async function finishSettle(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
-  for (const q of state.queued(b.swarm)) waitingRoom.delete(q.id)
   await unadmit(p, b, 'after it settled')
 }
 
 /**
  * Parked (WP-AJ): its turn is over, as a settle's, so its policy is no
  * longer admitted, but it keeps its place until the list shows it ended, and
- * its wake is admitted on that place. No place frees, so the messages
- * waiting for room stay waiting.
+ * its wake is admitted on that place.
  */
 async function park(p: Ports, b: NodeBinding): Promise<void> {
   state.markParked(b.agentId)
@@ -919,19 +978,14 @@ async function park(p: Ports, b: NodeBinding): Promise<void> {
 
 /**
  * A parked node the list shows ended: its place frees, as a settle's does,
- * and the messages waiting for room may be handed on, all in one synchronous
- * step. Its admitted mark goes too, since recovery and adoption may have
- * admitted it while it was parked; the patch is queued in that step, so a
- * resume or a wake that admits it later is written later.
+ * in one synchronous step. Its admitted mark goes too, since recovery and
+ * adoption may have admitted it while it was parked; the patch is queued in
+ * that step, so a resume or a wake that admits it later is written later.
  */
 function unpark(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
-  for (const q of state.queued(b.swarm)) waitingRoom.delete(q.id)
   return unadmit(p, b, 'after it ended')
 }
-
-/** A queued message the lead can deliver now: its node idle (parked too), not handed already, not waiting for room. */
-const deliverable = (q: QueuedMessage): boolean => !handed.has(q.id) && !waitingRoom.has(q.id) && state.status(q.agentId) === 'idle'
 
 /**
  * A swarm this session runs. A read-only swarm's table is its owner's copy,
@@ -949,10 +1003,10 @@ function ownBindings(): NodeBinding[] {
 }
 
 function hasWork(): boolean {
-  return ownBindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId)) || state.queued().some(deliverable)
+  return ownBindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId))
 }
 
-/** Starts the settle poll when something settles, is parked, or waits to be handed to the lead. */
+/** Starts the settle poll when something settles or is parked. */
 function kick(p: Ports): void {
   if (poll || !hasWork()) return
   poll = p.every(SETTLE_POLL_MS, () => settleTick(p))
@@ -980,7 +1034,6 @@ async function settleTick(p: Ports): Promise<void> {
       for (const b of settling) await letGo(p, b, listed.find(a => a.id === b.agentId)?.status)
       await Promise.all(freed)
     }
-    handOff(p)
     if (!hasWork() && poll) {
       poll.cancel()
       poll = null
@@ -990,41 +1043,6 @@ async function settleTick(p: Ports): Promise<void> {
   } finally {
     ticking = false
   }
-}
-
-const QUEUED_HEAD =
-  "litter: queued swarm messages can go now: these nodes have finished their turns. Deliver each with mcp__litter__swarm_send, passing only 'queued' with the id shown; litter sends a node's queued messages as one, oldest first."
-
-/**
- * Hands every deliverable queued message to the lead, one prompt for all,
- * from the poll's timer callback: the host takes $.prompt.submit only there
- * or from a turn.complete (15.9, item 19), and it isn't awaited, since it
- * resolves only once the lead's next turn starts.
- */
-function handOff(p: Ports): void {
-  const lines: string[] = []
-  const ids: string[] = []
-  for (const s of state.liveSwarms()) {
-    if (swarmRefusal(s, s.name, false)) continue
-    const byAgent = new Map<string, QueuedMessage[]>()
-    for (const q of state.queued(s.name)) {
-      if (!deliverable(q)) continue
-      byAgent.set(q.agentId, [...(byAgent.get(q.agentId) ?? []), q])
-    }
-    for (const [agentId, list] of byAgent) {
-      const b = state.binding(agentId)
-      if (!b) continue
-      const k = list.length
-      lines.push(`- ${instanceName(b)} in swarm ${s.name}: ${k} message${k === 1 ? '' : 's'}, queued: "${list[0]!.id}"`)
-      for (const q of list) ids.push(q.id)
-    }
-  }
-  if (lines.length === 0) return
-  for (const id of ids) handed.add(id)
-  void p.submitPrompt([QUEUED_HEAD, ...lines].join('\n')).catch((err: unknown) => {
-    p.log(`queued swarm messages weren't handed to the lead: ${errText(err)}`)
-    for (const id of ids) handed.delete(id)
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,61 +1101,6 @@ function findInstance(swarmName: unknown, ref: unknown): { b: NodeBinding; s: Li
   return { error: `${id} has ${all.length} instances: ${list(all)}; name one as ${id}#<n>`, field: 'node' }
 }
 
-/** Several queued messages for one node go as one, oldest first, each with who it's from. */
-function joinQueued(list: readonly QueuedMessage[]): { text: string; raw: string; from: string; label: string } {
-  const froms = [...new Set(list.map(q => q.from))]
-  const label = froms.map(labelFrom).join(' and ')
-  const from = froms.length === 1 ? froms[0]! : froms.join(',')
-  if (list.length === 1) {
-    const q = list[0]!
-    return { text: frame(q.from, label, q.text), raw: q.text, from, label }
-  }
-  const raw = [`${list.length} messages queued while you were busy, oldest first.`, ...list.map(q => `From ${labelFrom(q.from)}:\n\n${q.text}`)].join('\n\n')
-  return { text: raw, raw, from, label }
-}
-
-/** swarm_send `{ queued }`: the stored messages for that node, sent through admission, then dropped from the queue. */
-async function deliverQueued(p: Ports, id: unknown, budget: WaitBudget): Promise<SwarmSendReply> {
-  if (typeof id !== 'string' || id.trim() === '') return { ok: false, error: "litter: 'queued' is a queued message id, as litter's request named it" }
-  const m = state.queued().find(q => q.id === id.trim())
-  if (!m) return { ok: false, error: `litter: no message is queued as '${id}': it was delivered or cancelled` }
-  const s = state.liveSwarm(m.swarm)
-  const all = state.queued(m.swarm, m.agentId)
-  const b = state.binding(m.agentId)
-  if (!s || !b) {
-    for (const q of all) state.dequeue(q.id)
-    return { ok: false, error: `litter: ${m.node} (${m.agentId}) is no longer in a live swarm; its queued messages were dropped` }
-  }
-  if (state.status(b.agentId) !== 'idle') {
-    for (const q of all) handed.delete(q.id)
-    return { ok: true, node: instanceName(b), agentId: b.agentId, outcome: { kind: 'queued', id: m.id } }
-  }
-  const j = joinQueued(all)
-  const routed = await routeSend(
-    p,
-    { to: b, text: j.text, raw: j.raw, sender: null, from: j.from, label: j.label, route: 'direct', delivery: 'interject' },
-    (to, text) => sendOwn(p, to, text),
-    budget,
-  )
-  const o = routed.outcome
-  if (o.kind === 'refused' && o.canQueue) {
-    // Kept: handed to you again once a place frees.
-    for (const q of all) {
-      handed.delete(q.id)
-      waitingRoom.add(q.id)
-    }
-    return { ok: false, error: `litter: ${o.reason}; litter keeps the message queued and asks again once there's room`, outcome: o }
-  }
-  for (const q of all) {
-    state.dequeue(q.id)
-    handed.delete(q.id)
-    waitingRoom.delete(q.id)
-    if (o.kind !== 'refused') await swarmEvent(p, s, { kind: 'queue-sent', node: b.node, agentId: b.agentId, id: q.id })
-  }
-  if (o.kind === 'refused') return { ok: false, error: `litter: ${o.reason}; the queued message was dropped`, outcome: o }
-  return { ok: true, node: instanceName(b), agentId: b.agentId, outcome: o }
-}
-
 /** tool.call on `mcp__litter__swarm_send`, after register.tsx's drain: answered here, never passed on. */
 export const swarmSendTool: PortHook<SwarmSendHook> = async (p, e, next) => {
   const reply = await swarmSend(p, e.agentId, decodeSwarmInput(SWARM_SEND, e as unknown as Record<string, unknown>), await waitBudget(p, next))
@@ -1149,17 +1112,16 @@ async function swarmSend(p: Ports, agentId: string | undefined, input: Record<st
   await state.ready(p, await budget.left())
   if (!session().litterDir) return { ok: false, error: 'litter: this session has no litter directory, so no swarm is live in it' }
   kick(p)
-  if (input.queued !== undefined) return deliverQueued(p, input.queued, budget)
+  // An older litter asked the lead to deliver held messages by id; it holds none now.
+  if (input.queued !== undefined) return { ok: false, error: "litter: litter no longer holds messages to send later, so there's nothing queued to deliver; send the text with 'node' and it goes now" }
   const found = findInstance(input.swarm, input.node)
   if ('error' in found) return { ok: false, error: `litter: ${found.error}` }
   const text = input.text
   if (typeof text !== 'string' || text.trim() === '') return { ok: false, error: "litter: 'text' is required: the message for the node" }
-  const deliver = input.deliver ?? 'interject'
-  if (deliver !== 'interject' && deliver !== 'queue') return { ok: false, error: "litter: 'deliver' is interject or queue" }
   const { b } = found
   const routed = await routeSend(
     p,
-    { to: b, text: frame('lead', 'the lead', text), raw: text, sender: null, from: 'lead', label: 'the lead', route: 'direct', delivery: deliver },
+    { to: b, text: frame('lead', 'the lead', text), raw: text, sender: null, from: 'lead', label: 'the lead', route: 'direct' },
     (to, t) => sendOwn(p, to, t),
     budget,
   )
@@ -1169,15 +1131,14 @@ async function swarmSend(p: Ports, agentId: string | undefined, input: Record<st
 }
 
 /**
- * What the lead gets for a message you route through it (15.4, "Via lead"),
- * with the delivery you chose spelled out. Your text is neutralised, so it
- * can't close the `<message>` block and go on as litter's own words.
+ * What the lead gets for a message you route through it (15.4, "Via lead").
+ * Your text is neutralised, so it can't close the `<message>` block and go on
+ * as litter's own words.
  */
-function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interject' | 'queue'): string {
-  const how = when === 'interject' ? 'now, as an interject (it reads it at its next tool call)' : 'as a queued message (it starts the node\'s next turn)'
+function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string): string {
   return [
-    `litter: the user sent this from the swarm browser for ${instanceName(b)} in swarm ${s.name}, through you, to deliver ${how}.`,
-    `Check it against what you know, add any context the node needs, then send it with mcp__litter__swarm_send (swarm "${s.name}", node "${instanceName(b)}", deliver "${when}"), and tell the user in a line what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.`,
+    `litter: the user sent this from the swarm browser for ${instanceName(b)} in swarm ${s.name}, through you, to deliver now (a running node reads it at its next step).`,
+    `Check it against what you know, add any context the node needs, then send it with mcp__litter__swarm_send (swarm "${s.name}", node "${instanceName(b)}"), and tell the user in a line what you added. If it shouldn't go as written, don't send it: tell the user why, and ask.`,
     '',
     '<message>',
     unblock(text),
@@ -1188,14 +1149,13 @@ function viaLeadText(s: LiveSwarm, b: NodeBinding, text: string, when: 'interjec
 /** A direct message from you, for the lead's next `<swarm>` block (15.4, "Direct skips the lead"). */
 function noteDirectSend(b: NodeBinding, text: string, o: SendOutcome): void {
   if (o.kind === 'refused') return
-  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), delivery: o.kind === 'queued' ? 'queued' : 'interjected', text: unblock(oneLine(text)) }))
+  state.noteDirect(b.swarm, renderSlots(SWARM_CONTEXT_DIRECT, { node: instanceName(b), text: unblock(oneLine(text)) }))
 }
 
 /**
  * The browser's composer (N, from ui.message): direct, via the lead, or via
  * the parent (15.4's table). Direct and via-parent sends go now, from this
- * dispatch; a queue is held until the node settles, or sent at once when it's
- * idle; a send to an idle worker takes the reply route. Via the lead, the
+ * dispatch; a send to an idle worker takes the reply route. Via the lead, the
  * text is a row the busy lead reads now, or a prompt of its own, submitted
  * from a timer callback. `budget` is the ui.message dispatch's (waitBudget
  * over its next); without one, the hook's 10 s from this call.
@@ -1205,26 +1165,26 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: Wai
   await state.ready(p, await wait.left())
   const s0 = state.liveSwarm(input.swarm)
   const off = swarmRefusal(s0, input.swarm, false)
-  if (off) return { kind: 'refused', reason: off, canQueue: false }
+  if (off) return { kind: 'refused', reason: off }
   const found = findInstance(input.swarm, input.node)
-  if ('error' in found) return { kind: 'refused', reason: found.error, canQueue: false }
+  if ('error' in found) return { kind: 'refused', reason: found.error }
   const { b, s } = found
-  if (typeof input.text !== 'string' || input.text.trim() === '') return { kind: 'refused', reason: 'the message is empty', canQueue: false }
+  if (typeof input.text !== 'string' || input.text.trim() === '') return { kind: 'refused', reason: 'the message is empty' }
   kick(p)
   const text = input.text
   if (input.route === 'lead') {
-    const row = viaLeadText(s, b, text, input.when)
-    if (input.when === 'interject' && state.leadBusy()) {
+    const row = viaLeadText(s, b, text)
+    if (state.leadBusy()) {
       try {
         await p.appendUserRow(row)
       } catch (err) {
-        return { kind: 'refused', reason: `the lead's conversation didn't take it: ${errText(err)}`, canQueue: false }
+        return { kind: 'refused', reason: `the lead's conversation didn't take it: ${errText(err)}` }
       }
     } else {
       // From a timer callback, outside this dispatch, and never awaited here (15.9, item 19).
       p.after(0, () => p.submitPrompt(row).catch((err: unknown) => p.log(`a message for ${instanceName(b)} via the lead wasn't submitted: ${errText(err)}`)))
     }
-    await swarmEvent(p, s, { kind: 'message', node: b.node, agentId: b.agentId, from: 'user', to: 'lead', route: 'lead', delivery: input.when, text: cut(text, EVENT_TEXT_MAX) })
+    await swarmEvent(p, s, { kind: 'message', node: b.node, agentId: b.agentId, from: 'user', to: 'lead', route: 'lead', delivery: 'interject', text: cut(text, EVENT_TEXT_MAX) })
     return { kind: 'delivered' }
   }
   let to = b
@@ -1232,66 +1192,15 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: Wai
   let route: Route = 'direct'
   if (input.route === 'parent') {
     const parent = b.parent === null ? null : state.binding(b.parent)
-    if (!parent) return { kind: 'refused', reason: `${instanceName(b)} has no parent node to route through; send it directly or via the lead`, canQueue: false }
+    if (!parent) return { kind: 'refused', reason: `${instanceName(b)} has no parent node to route through; send it directly or via the lead` }
     to = parent
     raw = wrapFor(b, 'the user', text)
     route = 'parent'
   }
-  const routed = await routeSend(
-    p,
-    { to, text: raw, raw, sender: null, from: 'user', label: 'the user', route, delivery: input.when },
-    (t, x) => sendOwn(p, t, x),
-    wait,
-  )
+  const routed = await routeSend(p, { to, text: raw, raw, sender: null, from: 'user', label: 'the user', route }, (t, x) => sendOwn(p, t, x), wait)
   const o = routed.outcome
   noteDirectSend(b, text, o)
   if (o.kind === 'readdressed' && input.route === 'direct') return { ...o, why: "via parent (it's idle)" }
-  return o
-}
-
-/** [Cancel] on a queued message: removes it and records `queue-cancelled`. True when it was there. */
-export async function cancelQueued(p: Ports, id: string): Promise<boolean> {
-  const m = state.cancelQueued(id)
-  if (!m) return false
-  handed.delete(id)
-  waitingRoom.delete(id)
-  await swarmEvent(p, state.liveSwarm(m.swarm), { kind: 'queue-cancelled', node: m.node, agentId: m.agentId, id })
-  return true
-}
-
-/**
- * [Send now] on a queued message (the user's live look, 2026-10-07: a
- * message queued for an orchestrator that ran for hours waited "forever"):
- * the node's queued messages go now as one interject, which a running node
- * reads at its next step, and leave the queue once delivered. A node that
- * isn't running keeps them: litter hands them on when it's idle.
- */
-export async function sendQueuedNow(p: Ports, id: string, budget?: WaitBudget): Promise<SendOutcome> {
-  const wait = budget ?? (await waitBudget(p))
-  await state.ready(p, await wait.left())
-  const m = state.queued().find(q => q.id === id)
-  if (!m) return { kind: 'refused', reason: 'that message was sent or cancelled already', canQueue: false }
-  const s = state.liveSwarm(m.swarm)
-  const b = state.binding(m.agentId)
-  if (!s || !b) return { kind: 'refused', reason: `${m.node} is no longer in a live swarm`, canQueue: false }
-  if (state.status(b.agentId) !== 'running') return { kind: 'refused', reason: `${instanceName(b)} isn't running: litter sends it once it's idle`, canQueue: false }
-  const all = state.queued(m.swarm, m.agentId)
-  const j = joinQueued(all)
-  const routed = await routeSend(
-    p,
-    { to: b, text: j.text, raw: j.raw, sender: null, from: j.from, label: j.label, route: 'direct', delivery: 'interject' },
-    (t, x) => sendOwn(p, t, x),
-    wait,
-  )
-  const o = routed.outcome
-  if (o.kind === 'refused') return o
-  for (const q of all) {
-    state.dequeue(q.id)
-    handed.delete(q.id)
-    waitingRoom.delete(q.id)
-    // Settling since the check, it was queued again as one message: the old ones go without a `queue-sent`.
-    if (o.kind !== 'queued') await swarmEvent(p, s, { kind: 'queue-sent', node: b.node, agentId: b.agentId, id: q.id })
-  }
   return o
 }
 

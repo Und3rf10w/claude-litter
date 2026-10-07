@@ -6,7 +6,7 @@
 // The ledger is the truth: a launch is live from its swarm.start until its
 // swarm.end, and its bindings are its swarm.node records. $.store's mirror
 // (state.ts) adds what the ledger doesn't hold (the admission table at the
-// crash, reports, questions, the queue), and the spec, which is checked
+// crash, reports, questions), and the spec, which is checked
 // against swarm.start's specHash before it's used. The ownership ref says
 // whose it is: a blob naming this session id is this session's (a
 // crash-respawn and --resume keep the id, spike 11).
@@ -48,6 +48,7 @@ import {
   status,
   stop,
   stopped,
+  takeHeldBefore,
 } from './state'
 import { nodePolicyFor, notNewer, releaseActive, writeNodePolicy, writeSwarmPolicy } from './guard'
 import { readRevision } from './store'
@@ -330,6 +331,14 @@ export async function recoverOwnedLaunch(
   if (!start) throw new Error(`litter: launch ${facts.launch} of ${name} has no swarm.start`)
   const b = start.body
   const mirror = await loadSwarm(p, litterDir, name)
+  // An older litter held messages to send later; this one sends at once, so those went unsent: say so, once.
+  const held = takeHeldBefore(name)
+  if (held.length > 0) {
+    for (const m of held) p.log(`swarm ${name}: a message held for ${m.node} wasn't sent (litter no longer holds messages): ${m.text}`)
+    const nodes = [...new Set(held.map(m => m.node))].join(', ')
+    const one = held.length === 1
+    p.toast(`swarm ${name}: ${held.length} message${one ? '' : 's'} held for ${nodes} ${one ? "wasn't" : "weren't"} sent; litter now sends at once, so send ${one ? 'it' : 'them'} again`)
+  }
   // The copy's places, read before the table is rebuilt, for each node the copy or the ledger binds.
   const known = mirror ? [...new Set([...bindings(name).map(x => x.agentId), ...[...facts.nodes.values()].map(r => r.body.agentId)])] : []
   // Who held a place at the crash: a parked node too, its work unfinished.

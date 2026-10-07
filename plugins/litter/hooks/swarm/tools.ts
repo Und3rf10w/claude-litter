@@ -84,17 +84,15 @@ export const SWARM_TOOLS: readonly ToolSpec[] = [
   {
     name: 'swarm_send',
     description:
-      'litter: send a message to a node of a live litter swarm. The lead only. deliver interject sends it now; queue holds it ' +
-      'until the node finishes its turn. queued delivers a message litter queued, by the id its request names. ' +
-      'The reply says whether it was delivered, readdressed to the parent, queued or refused, and why.',
+      'litter: send a message to a node of a live litter swarm. The lead only. It goes now: a running node reads it at its ' +
+      'next step, and one between turns is resumed with it. ' +
+      'The reply says whether it was delivered, readdressed to the parent or refused, and why.',
     inputSchema: {
       type: 'object',
       properties: {
         swarm: { type: 'string', description: 'The swarm name. Needed only when more than one swarm is live.' },
         node: { type: 'string', description: 'The node id, or <node>#<n> for one instance of a template with several live.' },
         text: { type: 'string', description: 'The message.' },
-        deliver: { type: 'string', enum: ['interject', 'queue'], description: 'interject (default) or queue.' },
-        queued: { type: 'string', description: 'A queued message id that litter asked you to deliver; send nothing else with it.' },
       },
     },
   },

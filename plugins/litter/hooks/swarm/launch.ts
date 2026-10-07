@@ -71,7 +71,6 @@ import {
   liveSwarms,
   openQuestions,
   putLiveSwarm,
-  queued,
   ready,
   reservations,
   status,
@@ -842,10 +841,6 @@ export async function fillStart(p: Ports, plan: Pick<LaunchPlan, 'name' | 'saved
 
 const no = (error: string): SwarmReadReply => ({ ok: false, error: `litter: ${error}` })
 
-/** A preview of a queued message: the lead needs its id, and enough to know which it is. */
-const PREVIEW_CHARS = 1000
-const preview = (text: string) => (text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)}…` : text)
-
 async function readDraftOf(p: Ports, litterDir: string, name: string): Promise<SwarmReadReply> {
   const draft = await deps.readDraft(p, litterDir, name)
   if (draft) return { ok: true, swarm: name, draft: true, revision: draft.base, spec: draft.spec, briefs: draft.briefs }
@@ -878,7 +873,6 @@ async function launchRead(p: Ports, litterDir: string, s: LiveSwarm): Promise<Sw
     status: statusOf(agentId),
     lastReport: lastReport(agentId)?.text ?? null,
     openQuestions: openQuestions(s.name).filter(q => q.agentId === agentId).map(q => q.text),
-    queued: queued(s.name, agentId).map(q => ({ id: q.id, text: preview(q.text) })),
   })
   // An orchestrator that has an instance already (spawned, bound or reserved) isn't spawned again by `start`.
   const started = new Set([

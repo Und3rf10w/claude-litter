@@ -1,5 +1,5 @@
 // Tier 2: admission (hooks/swarm/admit.ts; WP-L): resumes through
-// SendMessage, the browser and a queued delivery, each refused when its
+// SendMessage, the browser and swarm_send, each refused when its
 // parent is at its count, it was stopped, a revision removed it, or the swarm
 // is stopping; the reply route; settling; the engine's own wakes at
 // turn.step; parked nodes, which keep their places (WP-AJ); and swarm.bind
@@ -294,7 +294,7 @@ describe('resume admission', () => {
   test('a browser send to a finished orchestrator takes a place', async () => {
     wireOwnSends()
     await put(o1(), false)
-    expect(await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', when: 'interject', route: 'direct' })).toEqual({
+    expect(await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', route: 'direct' })).toEqual({
       kind: 'delivered',
     })
     expect(p.sent).toEqual([{ to: 'o1', text: 'look at the flaky test' }])
@@ -307,7 +307,7 @@ describe('resume admission', () => {
       wireOwnSends()
       await put(o1(), false)
       await arrange()
-      const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', when: 'interject', route: 'direct' })
+      const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look at the flaky test', route: 'direct' })
       expect(out).toEqual(expect.objectContaining({ kind: 'refused', reason }))
       expect(p.sent).toEqual([])
       expect(state.status('o1')).toBe('idle')
@@ -315,34 +315,36 @@ describe('resume admission', () => {
     })
   }
 
-  test('a queued delivery to a finished orchestrator takes a place', async () => {
+  test("the lead's swarm_send to a finished orchestrator takes a place", async () => {
     wireOwnSends()
     await put(o1(), false)
-    const m = state.enqueue({ swarm: 'alpha', agentId: 'o1', node: 'part-a', text: 'when you can: rebase', from: 'user', at: NOW })
-    expect(await tool({ queued: m.id })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
-    expect(p.sent).toEqual([{ to: 'o1', text: 'when you can: rebase' }])
-    expect(state.queued()).toEqual([])
+    expect(await tool({ node: 'part-a', text: 'when you can: rebase' })).toEqual({ ok: true, node: 'part-a', agentId: 'o1', outcome: { kind: 'delivered' } })
+    expect(p.sent).toEqual([{ to: 'o1', text: 'From the lead:\n\nwhen you can: rebase' }])
     expect(state.status('o1')).toBe('running')
-    expect((await events()).map(e => e.kind)).toEqual(['message', 'queue-sent'])
+    expect((await events()).map(e => e.kind)).toEqual(['message'])
   })
 
   for (const [why, arrange, reason] of orchestratorConditions) {
-    test(`a queued delivery to a finished orchestrator is refused when ${why}`, async () => {
+    test(`the lead's swarm_send to a finished orchestrator is refused when ${why}, and nothing is kept to send later`, async () => {
       wireOwnSends()
       await put(o1(), false)
-      const m = state.enqueue({ swarm: 'alpha', agentId: 'o1', node: 'part-a', text: 'when you can: rebase', from: 'user', at: NOW })
       await arrange()
-      const out = await tool({ queued: m.id })
+      const out = await tool({ node: 'part-a#1', text: 'when you can: rebase' })
       expect(out.ok).toBe(false)
       expect(String(out.error)).toContain(reason)
       expect(p.sent).toEqual([])
       expect(state.status('o1')).toBe('idle')
-      // Refused for room it stays queued, to be handed on again; otherwise it's dropped.
-      const kept = why === 'another instance of it runs'
-      expect(state.queued().map(q => q.id)).toEqual(kept ? [m.id] : [])
-      expect(String(out.error)).toContain(kept ? 'litter keeps the message queued' : 'the queued message was dropped')
+      expect(state.reservations()).toEqual([])
     })
   }
+
+  test("an older litter's request to deliver a queued id is refused: nothing is held, and the text goes with 'node'", async () => {
+    await put(o1(), false)
+    const out = await tool({ queued: 'q0a1b2c3d' })
+    expect(out.ok).toBe(false)
+    expect(String(out.error)).toContain('litter no longer holds messages to send later')
+    expect(p.sent).toEqual([])
+  })
 
   test('an interject to a running node needs no place', async () => {
     wireOwnSends()
@@ -374,7 +376,7 @@ describe('the reply route', () => {
     wireOwnSends()
     await put(o1(), true)
     await put(w1(), false)
-    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer', text: 'use the helper', when: 'interject', route: 'direct' })
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer', text: 'use the helper', route: 'direct' })
     expect(out).toEqual({ kind: 'readdressed', to: 'o1', parentNode: 'part-a', why: "via parent (it's idle)" })
     expect(p.sent).toEqual([{ to: 'o1', text: wrapped('the user', 'use the helper') }])
   })
@@ -434,7 +436,7 @@ describe('the reply route', () => {
 })
 
 describe('settling', () => {
-  test("between a worker's turn.complete and its status leaving running, a send waits up to 2 s, then queues and answers delivered", async () => {
+  test("between a worker's turn.complete and its status leaving running, a send waits up to 2 s, then goes all the same", async () => {
     await put(o1(), true)
     await put(w1(), true)
     p.agents = [agent('w1', T('fixer'), 'running', 'o1')]
@@ -443,22 +445,20 @@ describe('settling', () => {
     const { next, calls } = sendNext()
     expect(await send(sendE('w1', 'and the changelog'), next)).toEqual({ isDelivered: true })
     expect(p.sleeps).toEqual(Array(8).fill(250))
-    expect(calls).toEqual([])
-    const q = state.queued('alpha')
-    expect(q.map(m => [m.agentId, m.from, m.text])).toEqual([['w1', 'lead', 'and the changelog']])
+    // It goes as it is: the engine resumes the node with it once its task ends, and turn.step admits that wake.
+    expect(calls).toEqual([{ to: 'w1', text: 'and the changelog' }])
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', agentId: 'w1', delivery: 'interject' }))
+    expect(state.status('w1')).toBe('settling')
 
-    // The list lets it go: the poll settles it and hands the message to the lead, from its timer.
+    // The list lets it go: the poll settles it, and hands the lead nothing.
     p.agents = [agent('w1', T('fixer'), 'completed', 'o1')]
     await fireEvery(p)
     expect(state.status('w1')).toBe('idle')
     expect(policyOf('w1')?.admitted).toBe(false)
-    expect(p.submitted.length).toBe(1)
-    expect(p.submitted[0]).toContain(`- fixer#1 in swarm alpha: 1 message, queued: "${q[0]!.id}"`)
-    expect(p.submitted[0]).toContain('mcp__litter__swarm_send')
-    // Nothing left to do: the poll stops, and the message isn't handed twice.
+    expect(p.submitted).toEqual([])
+    // Nothing left to do: the poll stops.
     await fireEvery(p)
     expect(p.timers.size).toBe(0)
-    expect(p.submitted.length).toBe(1)
   })
 
   test('a send to a settling node goes as soon as the list lets it go', async () => {
@@ -760,17 +760,12 @@ describe('parked nodes', () => {
     expect(policyOf('w1')?.admitted).toBe(true)
   })
 
-  test('a message to it goes as to a finished node, never queued: its parent resumes it on its own place, anyone else is readdressed', async () => {
+  test('a message to it goes as to a finished node: its parent resumes it on its own place, anyone else is readdressed', async () => {
     await parkedW1()
     wireOwnSends()
-    // The browser's sends: it isn't running or settling, so nothing waits for it; it's idle, so they go via its
-    // parent, an interject at once, a queued one on the running parent's queue, never on its own.
-    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'the docs too', when: 'interject', route: 'direct' })
+    // The browser's send: it isn't running or settling, so nothing waits for it; it's idle, so it goes via its parent at once.
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'the docs too', route: 'direct' })
     expect(out).toEqual(expect.objectContaining({ kind: 'readdressed', to: 'o1' }))
-    const later = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'when you can: the docs', when: 'queue', route: 'direct' })
-    expect(later).toEqual(expect.objectContaining({ kind: 'queued' }))
-    expect(state.queued('alpha', 'w1')).toEqual([])
-    expect(state.queued('alpha', 'o1').length).toBe(1)
     // Its parent's SendMessage resumes it at the full cap: admitted before the send, then running.
     let admittedAtSend: boolean | undefined
     const next = (async () => {
@@ -1010,16 +1005,15 @@ describe('U5: one budget per hook dispatch', () => {
     expect(state.status('w1')).toBe('settling')
   }
 
-  test('a send to a settling node after a slow rebind waits only what the hook has left, then refuses and queues nothing', async () => {
+  test('a send to a settling node after a slow rebind waits only what the hook has left, then goes all the same', async () => {
     await settlingWorker()
     const { next, calls } = sendNext()
     // rebound spent 8.9 s of the 10 s: 1.1 s left, of which 500 ms is kept back.
     const r = await send(sendE('w1', 'and the changelog'), metered(next as object, 1_100) as never)
-    expect(r).toEqual({ isDelivered: false, reason: expect.stringContaining('ran out of time to wait for it') })
+    expect(r).toEqual({ isDelivered: true })
     expect(slept()).toBeLessThanOrEqual(600)
-    expect(calls).toEqual([])
-    expect(state.queued('alpha')).toEqual([])
-    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'send-refused', agentId: 'w1' }))
+    expect(calls).toEqual([{ to: 'w1', text: 'and the changelog' }])
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'message', agentId: 'w1' }))
   })
 
   test("the ready gate takes only what's left too: a closed gate rejects before the hook's budget does", async () => {
@@ -1029,7 +1023,6 @@ describe('U5: one budget per hook dispatch', () => {
     await expect(send(sendE('w1', 'and the changelog'), metered(next as object, 2_000) as never)).rejects.toThrow("litter: the swarm state isn't ready")
     expect(slept()).toBeLessThanOrEqual(1_500)
     expect(calls).toEqual([])
-    expect(state.queued('alpha')).toEqual([])
   })
 
   test("with nothing metering the dispatch, its waits share the hook's 10 s from the hook's start", async () => {
@@ -1041,21 +1034,20 @@ describe('U5: one budget per hook dispatch', () => {
     }
     const { next, calls } = sendNext()
     const r = await send(sendE('w1', 'and the changelog'), next)
-    expect(r).toEqual({ isDelivered: false, reason: expect.stringContaining('ran out of time to wait for it') })
+    expect(r).toEqual({ isDelivered: true })
     expect(slept()).toBeLessThanOrEqual(9_500)
-    expect(calls).toEqual([])
-    expect(state.queued('alpha')).toEqual([])
+    expect(calls).toEqual([{ to: 'w1', text: 'and the changelog' }])
   })
 
-  test('plenty left: the settle wait keeps its own 2 s cap, then queues as before', async () => {
+  test('plenty left: the settle wait keeps its own 2 s cap, then the send goes', async () => {
     await settlingWorker()
-    const { next } = sendNext()
+    const { next, calls } = sendNext()
     expect(await send(sendE('w1', 'and the changelog'), metered(next as object, 9_000) as never)).toEqual({ isDelivered: true })
     expect(p.sleeps).toEqual(Array(8).fill(250))
-    expect(state.queued('alpha').map(m => m.text)).toEqual(['and the changelog'])
+    expect(calls).toEqual([{ to: 'w1', text: 'and the changelog' }])
   })
 
-  test("swarm_send: the lead's send to a settling node is refused in the tool's shape, with nothing queued", async () => {
+  test("swarm_send: the lead's send to a settling node waits only what's left, then goes", async () => {
     await settlingWorker()
     const next = metered(
       (() => {
@@ -1066,9 +1058,9 @@ describe('U5: one budget per hook dispatch', () => {
     const reply = (await admit.swarmSendTool(p, { tool: SWARM_SEND, tool_use_id: 'toolu_s', swarm: 'alpha', node: 'fixer#1', text: 'and the changelog' } as never, next as never)) as {
       result: string
     }
-    expect(JSON.parse(reply.result)).toEqual(expect.objectContaining({ ok: false, error: expect.stringContaining('ran out of time to wait for it') }))
+    expect(JSON.parse(reply.result)).toEqual({ ok: true, node: 'fixer#1', agentId: 'w1', outcome: { kind: 'delivered' } })
     expect(slept()).toBeLessThanOrEqual(600)
-    expect(state.queued('alpha')).toEqual([])
+    expect(p.sent).toEqual([{ to: 'w1', text: 'From the lead:\n\nand the changelog' }])
   })
 
   test("turn.step: a node's step waits on a closed gate only for what's left", async () => {
@@ -1086,9 +1078,9 @@ describe('U5: one budget per hook dispatch', () => {
   test("the browser's send takes the budget it's handed", async () => {
     await settlingWorker()
     const budget = await admit.waitBudget(p, metered({}, 1_100))
-    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'and the changelog', when: 'interject', route: 'direct' }, budget)
-    expect(out).toEqual(expect.objectContaining({ kind: 'refused', canQueue: true, reason: expect.stringContaining('ran out of time to wait for it') }))
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'fixer#1', text: 'and the changelog', route: 'direct' }, budget)
+    expect(out).toEqual({ kind: 'delivered' })
     expect(slept()).toBeLessThanOrEqual(600)
-    expect(state.queued('alpha')).toEqual([])
+    expect(p.sent).toEqual([{ to: 'w1', text: 'and the changelog' }])
   })
 })

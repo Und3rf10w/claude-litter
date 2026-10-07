@@ -341,6 +341,15 @@ describe("the list's Client (listmenu.tsx)", () => {
     ui.pointer({ type: 'move', x: 3, y: 1 })
     expect(cell('yours')).toEqual(expect.objectContaining({ color: 'success', inverse: false }))
   })
+
+  // The user's live look (2026-10-07): beside a long description, a roster row's label wrapped, `(child)` on a row of its own.
+  test("a row's cells never shrink; only its description, in a box of no width of its own, is cut", () => {
+    const ui = mount({ ...PROPS, rows: [{ ...PROPS.rows[0]!, description: 'x'.repeat(200) }] })
+    // The Box a Text is a direct child of.
+    const holder = (text: string) => find(ui.tree(), e => e.type === 'Box' && e.children.flat().some(c => isEl(c) && c.type === 'Text' && textOf(c) === text))
+    expect(holder('built-in')?.props.flexShrink).toBe(0)
+    expect(holder('x'.repeat(200))?.props).toEqual(expect.objectContaining({ flexGrow: 1, width: 0, height: 1, overflow: 'hidden' }))
+  })
 })
 
 describe("the list's Client props (list.tsx)", () => {

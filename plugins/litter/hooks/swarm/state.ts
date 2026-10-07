@@ -18,9 +18,9 @@
 //  - The objects the getters return are the state's own: read them, and
 //    change them only through the changers.
 //  - Bounded, since $.store is 4 MiB for the whole plugin and a full store
-//    breaks every ledger append (ledgercore's head write): texts are cut, the
-//    queue is capped, an agent's entries go with its binding, and a part over
-//    256 KiB sheds old reports and closed questions before it's written.
+//    breaks every ledger append (ledgercore's head write): texts are cut, an
+//    agent's entries go with its binding, and a part over 256 KiB sheds old
+//    reports and closed questions before it's written.
 //
 // Contract owner: phase 2b-1, package C (built and tested here; tests/unit/state.spec.ts);
 // the repair budget's counters and the interactive flag are 2b-2's (package V).
@@ -31,11 +31,13 @@ import type {
   AdmissionStatus,
   BindingKind,
   ClearKill,
+  Effort,
   ClearReason,
   LiveSwarm,
   NodeBinding,
+  NodeModelSeen,
+  NodeModelSet,
   NodeReport,
-  QueuedMessage,
   Question,
   Reservation,
   InflightCall,
@@ -48,13 +50,10 @@ import type {
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-/** A report kept per agent, and a queued message's text: cut to these many UTF-8 bytes. */
+/** A report kept per agent: cut to these many UTF-8 bytes. */
 export const REPORT_MAX_BYTES = 4 * 1024
-export const QUEUED_MAX_BYTES = 16 * 1024
 /** A question's text, and a direct message's: cut to these many UTF-8 bytes. */
 export const NOTE_MAX_BYTES = 4 * 1024
-/** Queued messages held per swarm: `enqueue` throws past it. */
-export const QUEUE_MAX = 50
 /** A swarm's part in $.store, as JSON: over it, old reports and closed questions are dropped before the write. */
 export const PART_MAX_BYTES = 256 * 1024
 /**
@@ -124,7 +123,8 @@ export type SwarmPart = {
   bindings: NodeBinding[]
   admission: AdmissionEntry[]
   stopped: StoppedEntry[]
-  queue: QueuedMessage[]
+  /** An older litter's held messages (`{ node, text }` among their fields): read once to say they went unsent, never written. */
+  queue?: unknown[]
   /** Node id → the last instance number taken. */
   instances: Record<string, number>
   calls: InflightCall[]
@@ -143,6 +143,10 @@ export type SwarmPart = {
   spend?: SwarmSpend
   /** WP-DH: the lead's tokens, its turns that ended while the swarm was live. Absent in an older part. */
   lead?: TokenCount
+  /** WP-DI: each node's model and effort as its last request named them. Absent in an older part. */
+  seen?: Record<string, NodeModelSeen>
+  /** WP-DI: the model and effort you set for a node. Absent in an older part. */
+  tuned?: Record<string, NodeModelSet>
 }
 
 /** The $.store key of one swarm's part. */
@@ -156,13 +160,14 @@ const bindingsById = new Map<string, NodeBinding>()
 const reserved = new Map<string, Reservation>()
 const admission = new Map<string, AdmissionEntry>()
 const stoppedById = new Map<string, StoppedEntry>()
-const queue = new Map<string, QueuedMessage>()
 const instances = new Map<string, Map<string, number>>()
 const calls = new Map<string, InflightCall>()
 const shellsById = new Map<string, Shell>()
 const stoppedAgents = new Set<string>()
 const reports = new Map<string, NodeReport>()
 const tokenCounts = new Map<string, TokenCount>()
+const seenModels = new Map<string, NodeModelSeen>()
+const tunedModels = new Map<string, NodeModelSet>()
 /** The turns under way, by agent then turn id: model requests so far and their usage (turn.step), until that turn's turn.complete. Not mirrored. */
 const inTurn = new Map<string, Map<string, { steps: number; tokens: TokenCount }>>()
 let questionList: Question[] = []
@@ -305,7 +310,6 @@ function partOf(name: string, s: LiveSwarm): SwarmPart {
     bindings: bs,
     admission: [...admission.values()].filter(a => a.swarm === name),
     stopped: [...stoppedById.values()].filter(x => x.swarm === name),
-    queue: [...queue.values()].filter(q => q.swarm === name),
     instances: Object.fromEntries(instances.get(name) ?? []),
     calls: [...calls.values()].filter(c => c.swarm === name),
     shells: [...shellsById.values()].filter(x => x.swarm === name),
@@ -319,8 +323,14 @@ function partOf(name: string, s: LiveSwarm): SwarmPart {
     rounds: [...(roundsBy.get(name) ?? [])],
     ...(spendBy.has(name) ? { spend: { ...spendBy.get(name)! } } : {}),
     ...(leadBy.has(name) ? { lead: { ...leadBy.get(name)! } } : {}),
+    ...nonEmpty('seen', byAgent(seenModels)),
+    ...nonEmpty('tuned', byAgent(tunedModels)),
   }
 }
+
+/** `{ [key]: record }` when it holds anything, else nothing: an older part's shape for a swarm none of it applies to. */
+const nonEmpty = <K extends string, V>(key: K, record: Record<string, V>): { [P in K]?: Record<string, V> } =>
+  (Object.keys(record).length > 0 ? { [key]: record } : {}) as { [P in K]?: Record<string, V> }
 
 /**
  * Gives the state the ports it mirrors through, and the litter directory its
@@ -362,7 +372,10 @@ export async function loadSwarm(p: Ports, litterDir: string, name: string): Prom
   for (const b of part.bindings ?? []) bindingsById.set(b.agentId, b)
   for (const a of part.admission ?? []) admission.set(a.agentId, a)
   for (const x of part.stopped ?? []) stoppedById.set(x.agentId, x)
-  for (const q of part.queue ?? []) queue.set(q.id, q)
+  const held = (Array.isArray(part.queue) ? part.queue : []).flatMap(q =>
+    isRecord(q) && typeof q.node === 'string' && typeof q.text === 'string' ? [{ node: q.node, text: q.text }] : [],
+  )
+  if (held.length > 0) heldBefore.set(name, held)
   instances.set(name, new Map(Object.entries(part.instances ?? {})))
   for (const c of part.calls ?? []) calls.set(callKey(c.agentId, c.toolUseId), c)
   for (const sh of part.shells ?? []) shellsById.set(sh.shellId, sh)
@@ -378,8 +391,36 @@ export async function loadSwarm(p: Ports, litterDir: string, name: string): Prom
   if (spend) spendBy.set(name, spend)
   const leadCount = tokensOfPart(part.lead)
   if (leadCount) leadBy.set(name, leadCount)
+  for (const [id, m] of Object.entries(isRecord(part.seen) ? part.seen : {})) {
+    const seen = seenOfPart(m)
+    if (seen) seenModels.set(id, seen)
+  }
+  for (const [id, t] of Object.entries(isRecord(part.tuned) ? part.tuned : {})) {
+    const set = tunedOfPart(t)
+    if (set) tunedModels.set(id, set)
+  }
   ver++
   return s
+}
+
+/** The effort levels (spec.ts's EFFORTS; not imported, since this data layer imports no owner). */
+const EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'] satisfies readonly Effort[]
+const isEffort = (v: unknown): v is Effort => typeof v === 'string' && EFFORT_LEVELS.includes(v)
+
+/** A part's seen model, when it is one. */
+function seenOfPart(v: unknown): NodeModelSeen | null {
+  if (!isRecord(v) || typeof v.model !== 'string' || v.model === '' || !isCount(v.at)) return null
+  const effort = isEffort(v.effort) || isCount(v.effort) ? v.effort : null
+  return { model: v.model, effort, at: v.at }
+}
+
+/** A part's set model and effort, what of them is one; null when neither is. */
+function tunedOfPart(v: unknown): NodeModelSet | null {
+  if (!isRecord(v)) return null
+  const out: NodeModelSet = {}
+  if (typeof v.model === 'string' && v.model !== '') out.model = v.model
+  if (isEffort(v.effort)) out.effort = v.effort
+  return out.model === undefined && out.effort === undefined ? null : out
 }
 
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
@@ -408,13 +449,15 @@ function forget(name: string): void {
     stoppedAgents.delete(id)
     reports.delete(id)
     tokenCounts.delete(id)
+    seenModels.delete(id)
+    tunedModels.delete(id)
     inTurn.delete(id)
     refused.delete(id)
   }
   for (const [k, a] of admission) if (a.swarm === name) admission.delete(k)
   for (const [k, r] of reserved) if (r.swarm === name) reserved.delete(k)
   for (const [k, x] of stoppedById) if (x.swarm === name) stoppedById.delete(k)
-  for (const [k, q] of queue) if (q.swarm === name) queue.delete(k)
+  heldBefore.delete(name)
   for (const [k, c] of calls) if (c.swarm === name || ids.has(c.agentId)) calls.delete(k)
   for (const [k, sh] of shellsById) if (sh.swarm === name || ids.has(sh.agentId)) shellsById.delete(k)
   instances.delete(name)
@@ -485,8 +528,9 @@ export function putBinding(b: NodeBinding): void {
 
 /**
  * Drops an agent's binding, the place it holds, and its per-agent entries
- * (report, tokens, refused turns, its SubagentStop mark, its questions), so
- * nothing of a dropped agent stays in memory or in the mirror.
+ * (report, tokens, model and effort, refused turns, its SubagentStop mark,
+ * its questions), so nothing of a dropped agent stays in memory or in the
+ * mirror.
  */
 export function dropBinding(agentId: string): void {
   const swarm = bindingsById.get(agentId)?.swarm ?? admission.get(agentId)?.swarm
@@ -495,6 +539,8 @@ export function dropBinding(agentId: string): void {
   admission.delete(agentId)
   reports.delete(agentId)
   tokenCounts.delete(agentId)
+  seenModels.delete(agentId)
+  tunedModels.delete(agentId)
   inTurn.delete(agentId)
   refused.delete(agentId)
   stoppedAgents.delete(agentId)
@@ -687,40 +733,21 @@ export const isStopped = (agentId: string): boolean => stoppedById.has(agentId)
 export const stopped = (swarm: string): StoppedEntry[] => [...stoppedById.values()].filter(x => x.swarm === swarm)
 
 // ---------------------------------------------------------------------------
-// The queue (15.4, "Messages from you")
+// Messages an older litter held to send later
 
 /**
- * Queues a message, assigning its id; its text is cut to 16 KiB. A swarm
- * holds at most QUEUE_MAX queued messages: past it, this throws "the queue
- * for <node> is full" and queues nothing.
+ * What an older part's queue held, by swarm: the node and the message's first
+ * line. Litter no longer holds messages (2026-10-07), so loadSwarm keeps none
+ * of them, and the next write leaves them out; recovery tells you which went
+ * unsent (`takeHeldBefore`), once.
  */
-export function enqueue(msg: Omit<QueuedMessage, 'id'>): QueuedMessage {
-  if (queued(msg.swarm).length >= QUEUE_MAX) throw new Error(`litter: the queue for ${msg.node} is full`)
-  let id = ''
-  do id = `q${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`
-  while (queue.has(id))
-  const m: QueuedMessage = { ...msg, id, text: cutBytes(msg.text, QUEUED_MAX_BYTES) }
-  queue.set(id, m)
-  changed(m.swarm)
-  return m
-}
+const heldBefore = new Map<string, { node: string; text: string }[]>()
 
-/** Queued messages, oldest first, of a swarm, and of one agent. */
-export const queued = (swarm?: string, agentId?: string): QueuedMessage[] =>
-  [...queue.values()].filter(q => (swarm === undefined || q.swarm === swarm) && (agentId === undefined || q.agentId === agentId))
-
-/** Takes a message off the queue to send it. Null when it isn't queued. */
-export function dequeue(id: string): QueuedMessage | null {
-  const m = queue.get(id)
-  if (!m) return null
-  queue.delete(id)
-  changed(m.swarm)
-  return m
-}
-
-/** Cancels a queued message ([Cancel]). Null when it isn't queued. */
-export function cancelQueued(id: string): QueuedMessage | null {
-  return dequeue(id)
+/** The messages an older part held for `swarm`, once: the next call answers none. */
+export function takeHeldBefore(swarm: string): { node: string; text: string }[] {
+  const out = heldBefore.get(swarm) ?? []
+  heldBefore.delete(swarm)
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -981,6 +1008,46 @@ export function setLeadBusy(busy: boolean): void {
 export const leadBusy = (): boolean => lead
 
 // ---------------------------------------------------------------------------
+// Models and efforts (WP-DI): what each node's requests name, and what you set
+
+/**
+ * A node's request named `model` and `effort` (turn.step, after any you set).
+ * A change only: the same pair again writes nothing, so a turn's steps don't
+ * each rewrite the part.
+ */
+export function noteStepModel(agentId: string, model: string, effort: NodeModelSeen['effort'], at: number): void {
+  const was = seenModels.get(agentId)
+  if (was && was.model === model && was.effort === effort) return
+  seenModels.set(agentId, { model, effort, at })
+  changed(swarmOfAgent(agentId))
+}
+
+/** What a node's last request named; null before its first since it was bound (or an older part). */
+export const stepModel = (agentId: string): NodeModelSeen | null => seenModels.get(agentId) ?? null
+
+/** The models any node's request named, newest first: the browser offers them. */
+export const modelsSeen = (): string[] => [...new Set([...seenModels.values()].sort((a, b) => b.at - a.at).map(m => m.model))]
+
+/**
+ * Sets or clears what a node's requests use: a field given as null goes back
+ * to what it runs with, one left out stays. Nothing for an unbound agent.
+ */
+export function tuneModel(agentId: string, patch: { model?: string | null; effort?: Effort | null }): void {
+  if (!bindingsById.has(agentId)) return
+  const next: NodeModelSet = { ...tunedModels.get(agentId) }
+  if (patch.model === null) delete next.model
+  else if (patch.model !== undefined) next.model = patch.model
+  if (patch.effort === null) delete next.effort
+  else if (patch.effort !== undefined) next.effort = patch.effort
+  if (next.model === undefined && next.effort === undefined) tunedModels.delete(agentId)
+  else tunedModels.set(agentId, next)
+  changed(swarmOfAgent(agentId))
+}
+
+/** What you set for a node; null when nothing is. */
+export const tunedModel = (agentId: string): NodeModelSet | null => tunedModels.get(agentId) ?? null
+
+// ---------------------------------------------------------------------------
 // The clear (O; 15.4, "After /clear")
 
 export function setRebindPending(oldSession: string): void {
@@ -1195,13 +1262,15 @@ export function resetForTests(): void {
   reserved.clear()
   admission.clear()
   stoppedById.clear()
-  queue.clear()
+  heldBefore.clear()
   instances.clear()
   calls.clear()
   shellsById.clear()
   stoppedAgents.clear()
   reports.clear()
   tokenCounts.clear()
+  seenModels.clear()
+  tunedModels.clear()
   inTurn.clear()
   questionList = []
   directBySwarm.clear()
