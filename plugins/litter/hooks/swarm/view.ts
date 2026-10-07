@@ -2170,8 +2170,38 @@ const shortSha = (sha: string | null | undefined): string => (typeof sha === 'st
 
 const EVENTS_SHOWN = 8
 
+/**
+ * Your home folder, for drawing paths `~/…`: the config dir's parent when
+ * it's `<home>/.claude` (ports.ts, configDir); null when CLAUDE_CONFIG_DIR
+ * puts it elsewhere, or it can't be read. Ports has no HOME of its own.
+ */
+export async function homeOf(p: Ports): Promise<string | null> {
+  try {
+    const dir = (await p.configDir()).replace(/\/+$/, '')
+    return dir.endsWith('/.claude') && dir.length > '/.claude'.length ? dir.slice(0, -'/.claude'.length) : null
+  } catch {
+    return null
+  }
+}
+
+/** `path` as `~/…` when it's below `home`, else as it is. */
+export function tildePath(path: string, home: string | null): string {
+  const h = home?.replace(/\/+$/, '') ?? ''
+  if (h === '' || h === '/') return path
+  return path === h ? '~' : path.startsWith(`${h}/`) ? `~${path.slice(h.length)}` : path
+}
+
+/**
+ * A branch-moved flag's last part (WP-DG): `· checked out in ~/tmp/x`, or
+ * `· checked out nowhere`; empty for an event recorded before `where` was.
+ */
+function whereText(e: { where?: unknown }, home: string | null): string {
+  if (!('where' in e) || e.where === undefined) return ''
+  return typeof e.where === 'string' && e.where !== '' ? ` · checked out in ${oneLine(tildePath(e.where, home), 120)}` : ' · checked out nowhere'
+}
+
 /** The branch-moved and rule-commit events with no `branch-moved-ack` for their seq (15.4, "checked again afterwards"). */
-export function openFlags(records: readonly StoredRecord[], all: readonly NodeBinding[]): SwarmFlagRow[] {
+export function openFlags(records: readonly StoredRecord[], all: readonly NodeBinding[], home: string | null = null): SwarmFlagRow[] {
   const acked = new Set<number>()
   for (const r of records) {
     const b = r.body as Partial<SwarmEventBody>
@@ -2186,7 +2216,9 @@ export function openFlags(records: readonly StoredRecord[], all: readonly NodeBi
       out.push({
         seq: r.seq,
         kind: 'branch-moved',
-        text: oneLine(`${e.ref} moved ${shortSha(e.from)} → ${shortSha(e.to)}${running.length > 0 ? ` while ${running.join(', ')} ran` : ''}`, 160),
+        text:
+          oneLine(`${e.ref} moved ${shortSha(e.from)} → ${shortSha(e.to)}${running.length > 0 ? ` while ${running.join(', ')} ran` : ''}`, 160) +
+          whereText(e, home),
         running,
       })
     } else if (e.kind === 'rule-commit') {
@@ -2326,7 +2358,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   } catch (err) {
     ledger = { seq: 0, records: [], tampered: `the launch ledger can't be read: ${errText(err)}` }
   }
-  const flags = s.readOnly ? [] : openFlags(ledger.records, all)
+  const flags = s.readOnly ? [] : openFlags(ledger.records, all, await homeOf(p))
   const flaggedNodes = new Set(flags.flatMap(f => f.running))
   const rows = liveRows(name, listed, flaggedNodes)
   const events = ledger.records

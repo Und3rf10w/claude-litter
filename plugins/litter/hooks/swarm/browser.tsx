@@ -177,11 +177,23 @@ export function browserNeeds(view: SwarmBrowserView): { text: string; action: Ac
   ]
 }
 
+/**
+ * [That was me, all n] under the flags (WP-DG: one answer for several moves),
+ * when two or more branch-moved flags are drawn; its key carries their seqs,
+ * so a flag that came in after this draw isn't acked unseen. Null otherwise. Pure.
+ */
+export function ackAllAction(view: Pick<SwarmBrowserView, 'swarm' | 'flags' | 'readOnly' | 'lost'>): Action | null {
+  const seqs = view.flags.filter(f => f.kind === 'branch-moved').map(f => f.seq)
+  if (seqs.length < 2 || view.readOnly || view.lost) return null
+  return { key: `swarm:browser:ack-all:${view.swarm}/${seqs.join('.')}`, label: `That was me, all ${seqs.length}` }
+}
+
 /** The exceptions, under what needs you (COMMON-5B, "Order"): ownership, a used-up budget, the flags. */
 function exceptions(el: PaneElements, view: SwarmBrowserView, columns: number): RenderElement {
   const { Box, Text } = el
   const s = view.swarm
   const live = !view.readOnly && !view.lost
+  const ackAll = ackAllAction(view)
   return (
     <Box flexDirection="column">
       {view.owner && (
@@ -212,6 +224,7 @@ function exceptions(el: PaneElements, view: SwarmBrowserView, columns: number): 
             )}
         </Box>
       ))}
+      {ackAll && actionRow(el, [ackAll], columns)}
     </Box>
   )
 }
@@ -287,6 +300,8 @@ export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyConte
   }
   if (view.budget && view.budget.note !== null) rows += noticeRows(view.budget.note, c)
   for (const f of view.flags) rows += noticeRows(f.text, c) + (live ? actionRows(['That was me', ...(f.running.length > 0 ? ['Stop them'] : [])], c) : 0)
+  const ackAll = ackAllAction(view)
+  if (ackAll) rows += actionRows([ackAll.label], c)
   if (view.budget) {
     const b = view.budget
     rows += packWidths([cells('Repair budget'), cells(`${b.rounds.glyph ? `${b.rounds.glyph} ` : ''}${b.rounds.text}`), 2 + cells(`${b.agents.glyph ? `${b.agents.glyph} ` : ''}${b.agents.text}`)], c).length

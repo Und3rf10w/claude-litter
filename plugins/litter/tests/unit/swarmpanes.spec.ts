@@ -33,6 +33,7 @@ import {
   setOwnersForTests,
   supersededProposals,
   swarmView,
+  tildePath,
   toolLine,
   valueWords,
 } from '../../hooks/swarm/view'
@@ -40,6 +41,7 @@ import { builderPrimary, startListTop, startNeeds, startPrimary, templateListCtx
 import {
   TRANSCRIPT_INLINE_ROWS,
   TRANSCRIPT_MIN_ROWS,
+  ackAllAction,
   browserNeeds,
   browserTranscriptTop,
   browserWheel,
@@ -1160,5 +1162,72 @@ describe('WP-DD: what needs you is shown where ⚑ is raised, and a superseded p
     expect(eventColumns(list, 40)).toEqual({ at: 5, who: 0 })
     expect(eventColumns(list, 28)).toEqual({ at: 0, who: 0 })
     expect(eventColumns([{ at: '09:30', who: 'x'.repeat(40) }], 100).who).toBe(20)
+  })
+})
+
+describe("WP-DG: a branch-moved flag says where it's checked out, and one answer acks several", () => {
+  const moved = (ref: string, where: string | null | undefined) =>
+    appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', {
+      kind: 'branch-moved',
+      ref,
+      from: 'a'.repeat(40),
+      to: 'b'.repeat(40),
+      running: ['part-a'],
+      ...(where === undefined ? {} : { where }),
+    })
+  const acks = async () =>
+    (await readLaunchLedger(p, litterDir, SWARM, LAUNCH)).records.filter(r => r.kind === 'swarm.event' && r.body.kind === 'branch-moved-ack').map(r => (r.body as { seq: number }).seq)
+
+  test('`· checked out in ~/…` below your home, `· checked out nowhere` for null, and an older event as before', async () => {
+    goLive()
+    p.configDirValue = '/Users/me/.claude'
+    await moved('refs/heads/main', '/Users/me/tmp/x')
+    await moved('refs/heads/feature/y', null)
+    await moved('refs/heads/old', undefined)
+    await moved('refs/heads/elsewhere', '/srv/checkout')
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    expect(shown<SwarmBrowserView>().flags.map(f => f.text)).toEqual([
+      'refs/heads/main moved aaaaaaa → bbbbbbb while part-a ran · checked out in ~/tmp/x',
+      'refs/heads/feature/y moved aaaaaaa → bbbbbbb while part-a ran · checked out nowhere',
+      'refs/heads/old moved aaaaaaa → bbbbbbb while part-a ran',
+      'refs/heads/elsewhere moved aaaaaaa → bbbbbbb while part-a ran · checked out in /srv/checkout',
+    ])
+    // With CLAUDE_CONFIG_DIR elsewhere there's no home to shorten by: the path as it is.
+    expect(tildePath('/Users/me/tmp/x', null)).toBe('/Users/me/tmp/x')
+    expect(tildePath('/Users/me', '/Users/me/')).toBe('~')
+    expect(tildePath('/Users/meow/x', '/Users/me')).toBe('/Users/meow/x')
+  })
+
+  test('[That was me, all n] after two or more: acks each open seq once, and a second press adds nothing', async () => {
+    goLive()
+    const one = await moved('refs/heads/main', null)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    // One flag: its own [That was me] only.
+    expect(ackAllAction(shown<SwarmBrowserView>())).toBeNull()
+    const two = await moved('refs/heads/feature/y', null)
+    const rule = await appendLaunchRecord(p, litterDir, SWARM, LAUNCH, 'swarm.event', {
+      kind: 'rule-commit',
+      node: 'part-a',
+      agentId: 'o1',
+      from: 'a'.repeat(40),
+      to: 'b'.repeat(40),
+      files: ['.claude/rules/x.md'],
+    })
+    await paneTick(p)
+    const all = ackAllAction(shown<SwarmBrowserView>())
+    expect(all).toEqual({ key: `swarm:browser:ack-all:${SWARM}/${one.seq}.${two.seq}`, label: 'That was me, all 2' })
+    // A move that came in after the draw isn't in the key, so it isn't acked unseen.
+    const three = await moved('refs/heads/late', null)
+    await handle(p, all!.key, {})
+    expect(nav()?.notice).toEqual({ text: 'marked 2 branch moves as yours', level: 'ok' })
+    expect(await acks()).toEqual([one.seq, two.seq])
+    await handle(p, all!.key, {})
+    expect(await acks()).toEqual([one.seq, two.seq])
+    expect(shown<SwarmBrowserView>().flags.map(f => f.seq)).toEqual([rule.seq, three.seq])
+    expect(ackAllAction(shown<SwarmBrowserView>())).toBeNull()
+    // Read-only, it's never offered.
+    expect(ackAllAction({ ...shown<SwarmBrowserView>(), flags: [...shown<SwarmBrowserView>().flags, { seq: 99, kind: 'branch-moved', text: 'x', running: [] }], readOnly: true })).toBeNull()
   })
 })

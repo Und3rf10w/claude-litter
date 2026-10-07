@@ -418,6 +418,118 @@ describe('observeNodeTurn', () => {
     ])
   })
 
+  // WP-DG: "I didn't move the refs, why is it asking me". A branch checked out in a worktree where no node
+  // works and the lead doesn't (another session's work package) isn't flagged; everything else is, with `where`.
+  describe('a move in a worktree no node or the lead works in', () => {
+    /** A worktree at `.claude/worktrees/<name>` on a new branch `<name>`, nested in the primary checkout. */
+    const worktree = async (name: string): Promise<string> => {
+      const wt = join(realpathSync(dir), '.claude', 'worktrees', name)
+      await git('worktree', 'add', '-q', '-b', name, '--', wt, 'main')
+      return wt
+    }
+    /** A commit in `wt`, on what's checked out there. */
+    const commitIn = async (wt: string, file: string) => {
+      await p.fs.write(join(wt, file), `${file}\n`)
+      await git('-C', wt, 'add', file)
+      await git('-C', wt, 'commit', '-q', '-m', file)
+    }
+    const moves = async () => (await events()).filter(e => e.kind === 'branch-moved')
+    const ignoredLogs = () => p.logs.filter(l => l.includes('not flagged, checked out where no node and not the lead works'))
+    /** `git worktree list` runs, counted, and failing while `fail` is set. */
+    const listing = () => {
+      const run = p.run
+      const seen = { calls: 0, fail: false }
+      p.run = async (argv, init) => {
+        if (argv.includes('worktree') && argv.includes('list')) {
+          seen.calls++
+          if (seen.fail) return { code: 128, stdout: '', stderr: 'fatal: broken', truncated: false }
+        }
+        return run(argv, init)
+      }
+      return seen
+    }
+
+    test("another session's branch moving in its own worktree: no event, one log line naming it and the worktree", async () => {
+      const other = await worktree('wp-db')
+      const also = await worktree('wp-dc')
+      // The nodes work in the primary checkout (their cwd), the lead somewhere else entirely.
+      await live()
+      const seen = listing()
+      // A turn with no move doesn't read the worktree list.
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(seen.calls).toBe(0)
+      await commitIn(other, 'db.txt')
+      await commitIn(also, 'dc.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([])
+      expect(seen.calls).toBe(1)
+      expect(ignoredLogs()).toEqual([
+        `swarm alpha: not flagged, checked out where no node and not the lead works: refs/heads/wp-db (in ${other}), refs/heads/wp-dc (in ${also})`,
+      ])
+      // The tips moved on: the next turn has nothing to say.
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(ignoredLogs().length).toBe(1)
+    })
+
+    test("checked out in a node's worktree (its cwd below the root): flagged with `where`, unless that node is bound to it", async () => {
+      const wt = await worktree('wp-node')
+      await p.fs.write(join(wt, 'src', 'keep.txt'), 'x\n')
+      await live({}, { cwd: join(wt, 'src') })
+      await commitIn(wt, 'a.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([expect.objectContaining({ ref: 'refs/heads/wp-node', where: wt, running: ['fixer'] })])
+      expect(ignoredLogs()).toEqual([])
+
+      // Bound to it, the move is the node's own work: checked as a rule-commit, never flagged.
+      state.putBinding(bindingOf('a-fix1', { cwd: join(wt, 'src'), branch: 'refs/heads/wp-node' }))
+      await commitIn(wt, 'b.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect((await moves()).length).toBe(1)
+    })
+
+    test("checked out in the lead's worktree: flagged", async () => {
+      const wt = await worktree('wp-lead')
+      p.cwd = async () => `${wt}/`
+      await live()
+      await commitIn(wt, 'a.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([expect.objectContaining({ ref: 'refs/heads/wp-lead', where: wt })])
+    })
+
+    test('checked out nowhere: flagged, `where: null`', async () => {
+      await git('branch', 'feature/y')
+      await live({}, { cwd: '/nowhere' })
+      state.putBinding(bindingOf('a-boss', { node: 'boss', kind: 'orchestrator', parent: null, cwd: '/nowhere' }))
+      await commitIn(dir, 'a.txt')
+      await git('branch', '-f', 'feature/y', 'main')
+      await observeNodeTurn(p, turn('a-fix1'))
+      // main moved too, checked out in the primary checkout where no node and not the lead works.
+      expect(await moves()).toEqual([expect.objectContaining({ ref: 'refs/heads/feature/y', where: null })])
+      expect(ignoredLogs()).toEqual([`swarm alpha: not flagged, checked out where no node and not the lead works: refs/heads/main (in ${realpathSync(dir)})`])
+    })
+
+    test('a branch made after Launch, in another session\'s new worktree, is a move from null and not flagged', async () => {
+      await live()
+      const wt = await worktree('wp-dg')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([])
+      expect(ignoredLogs()).toEqual([expect.stringContaining(`refs/heads/wp-dg (in ${wt})`)])
+    })
+
+    test("when `git worktree list` fails, every move is flagged as before, with no `where`, and it's logged", async () => {
+      const other = await worktree('wp-db')
+      await live()
+      const seen = listing()
+      seen.fail = true
+      await commitIn(other, 'db.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      const moved = await moves()
+      expect(moved).toEqual([expect.objectContaining({ ref: 'refs/heads/wp-db', running: ['fixer'] })])
+      expect('where' in moved[0]!).toBe(false)
+      expect(p.logs).toContain(`swarm alpha: git worktree list failed in ${commonDir}; every moved branch is flagged`)
+    })
+  })
+
   test("an agent with no binding, or a read-only swarm's, isn't observed", async () => {
     await live({ readOnly: true })
     await observeNodeTurn(p, turn('a-fix1', { answer: 'x', usage: usage(1, 1) }))
