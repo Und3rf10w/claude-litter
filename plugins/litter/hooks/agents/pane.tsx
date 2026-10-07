@@ -265,11 +265,16 @@ const statusWords = (s: AgentsRow['status']): string => (s.glyph ? `${s.glyph} $
 /**
  * The roster as the chrome's list: each row its name, its type muted, its
  * status (glyph, word, color) and `✉ n` unread in the warning color; the
- * type drops first when narrow. Its menu: Message, Transcript and Stop,
- * each where it applies today (decision 6's confirm stays on Stop).
+ * type drops first when narrow. A live swarm's node (WP-DF) is named by its
+ * node, then `· swarm <swarm>` and the engine's description, both muted;
+ * with any node listed, those two columns come after the name, the
+ * description dropping first, then the type, then the swarm. Its menu:
+ * Message, Transcript and Stop, each where it applies today (decision 6's
+ * confirm stays on Stop).
  */
 export function rosterSpec(body: AgentsBody, rows: number): ListSpec {
   const scope = body.scope
+  const nodes = body.rows.some(r => r.swarm !== null)
   return {
     id: ROSTER_LIST,
     rows,
@@ -283,6 +288,12 @@ export function rosterSpec(body: AgentsBody, rows: number): ListSpec {
         key: `agents:select:${arg}`,
         label: r.name,
         cells: [
+          ...(nodes
+            ? [
+                { text: r.swarm ? `· swarm ${r.swarm.name}` : '', color: STYLE.muted },
+                { text: r.swarm?.said ?? '', color: STYLE.muted },
+              ]
+            : []),
           { text: r.type, color: STYLE.muted },
           { text: statusWords(r.status), color: r.status.dim ? STYLE.muted : r.status.color },
           { text: r.unread !== null && r.unread > 0 ? `✉ ${r.unread}` : '', color: STYLE.warning },
@@ -292,7 +303,7 @@ export function rosterSpec(body: AgentsBody, rows: number): ListSpec {
         ...(actions.length > 0 ? { actions } : {}),
       }
     }),
-    columns: [{ drop: 1 }, { drop: 0 }, { drop: 0 }],
+    columns: [...(nodes ? [{ drop: 1 }, { drop: 3 }] : []), { drop: nodes ? 2 : 1 }, { drop: 0 }, { drop: 0 }],
     empty: body.scope === SESSION_SCOPE ? 'no agent in this session yet' : 'no member to show',
   }
 }
@@ -329,15 +340,23 @@ export function inboxFit(
   return { kept, left, leftLine, rows: used + (leftLine ? 1 : 0) }
 }
 
-/** The rows the inbox draws under its heading at a budget of `rows`: one for a note in place of entries. */
-function inboxDrawn(sel: AgentsSelected, rows: number): number {
+/** A swarm node's messages as one-line entries, for inboxFit. */
+const messageEntries = (m: NonNullable<AgentsSelected['swarm']>): AgentsInboxEntry[] => m.messages.map(x => ({ from: x.from, at: x.at, lines: [x.line] }))
+
+/** The rows the inbox (or a swarm node's messages) takes under its heading at a budget of `rows`: one for a note in place of entries. */
+function slotRows(sel: AgentsSelected, rows: number): number {
+  const m = sel.swarm
+  if (m) return m.messages.length === 0 ? 1 : inboxFit(messageEntries(m), m.hidden, rows).rows
   const inbox = sel.inbox
   if (inbox === null || inbox.error !== null || inbox.entries.length === 0) return 1
   return inboxFit(inbox.entries, inbox.hidden, rows).rows
 }
 
+/** The rows drawn under the inbox's heading: its slot's, and a swarm node's "see /litter swarms" line. */
+const inboxDrawn = (sel: AgentsSelected, rows: number): number => slotRows(sel, rows) + (sel.swarm ? 1 : 0)
+
 /** The inbox's rows it would take whole. */
-const inboxWant = (sel: AgentsSelected): number => inboxDrawn(sel, Number.POSITIVE_INFINITY)
+const inboxWant = (sel: AgentsSelected): number => slotRows(sel, Number.POSITIVE_INFINITY)
 
 /** The transcript's lines to window: 0 when a note stands in for them. */
 const linesOf = (sel: AgentsSelected | null): number => {
@@ -415,6 +434,8 @@ export function agentsPlan(body: AgentsBody, ctx: AgentsCtx): AgentsPlan {
   if (body.hiddenRows > 0) fixed += 1
   if (sel?.stop) fixed += 1
   if (sel) fixed += 2
+  // A swarm node's "see /litter swarms" line, under its messages.
+  if (sel?.swarm) fixed += 1
   const count = body.rows.length
   const iWant = sel ? inboxWant(sel) : 0
   // The transcript's least: six lines and the footer, or every line when there are fewer; a note's one row.
@@ -499,8 +520,12 @@ export function agentsTops(body: AgentsBody, ctx: AgentsCtx): AgentsTops {
   return { plan, picker, roster, lines }
 }
 
-/** A heading whose title ends in a name drawn in the name color (WP-DF; the chrome's heading has one color): `team <name>`, `Inbox · <name>`. */
-function namedHeading(el: PaneElements, label: string, name: string, columns: number, note?: string | null): RenderElement {
+/**
+ * A heading whose title ends in a name drawn in the name color (WP-DF; the
+ * chrome's heading has one color): `team <name>`, `Inbox · <name>`. Tasks'
+ * first line uses it too. Pure.
+ */
+export function namedHeading(el: PaneElements, label: string, name: string, columns: number, note?: string | null): RenderElement {
   const { Box, Text } = el
   const whole = `${label}${name}`
   const plan = headingPlan(whole, columns, note ?? null)
@@ -541,12 +566,21 @@ function namedHeading(el: PaneElements, label: string, name: string, columns: nu
   )
 }
 
-/** Agents' body renderer (ui/pane.tsx calls it with the agentsPane atom under the hub's chrome). Pure. */
+/**
+ * What each surface last drew of the body: a footer's page reads it, since a
+ * press carries its surface but not the rows the body had there. The render
+ * notes it (as ui/pane.tsx notes the terminal's drawing in ui/drawn.ts); the
+ * note changes nothing drawn.
+ */
+const rendered = new Map<string, { body: AgentsBody; ctx: AgentsCtx }>()
+
+/** Agents' body renderer (ui/pane.tsx calls it with the agentsPane atom under the hub's chrome). Pure but for its note of what it drew. */
 export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
   const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
   if (!body) return empty(el, 'nothing to show yet', { command: '/litter agents', does: "opens this session's agents" })
+  rendered.set(ctx.surface, { body, ctx })
   const plan = agentsPlan(body, ctx)
   const cols = ctx.bodyColumns
   const sel = body.selected
@@ -652,9 +686,55 @@ function stopPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderE
   )
 }
 
-/** The inbox under its heading: its newest entries that fit `rows` (inboxFit; one line counts what's left out). */
+/**
+ * A swarm node's messages in the inbox's place (WP-DF): under "Messages ·
+ * <node>", the newest that fit `rows`, each `from → to · when · its first
+ * line`, the names in the name color; "no messages yet" for none, or what
+ * couldn't be read; then where the swarm is shown in full. (Swarms can't be
+ * opened on a node yet: its load takes a swarm's name only.)
+ */
+function messagesPart(el: PaneElements, m: NonNullable<AgentsSelected['swarm']>, rows: number, columns: number): RenderElement {
+  const { Box, Text } = el
+  const total = m.messages.length + m.hidden
+  const head = namedHeading(el, 'Messages · ', m.node, columns, total > 0 ? plural(total, 'message') : null)
+  const see = <Text color={STYLE.muted} wrap="truncate-end">{`see /litter swarms ${m.name}`}</Text>
+  if (m.messages.length === 0) {
+    return (
+      <Box flexDirection="column">
+        {head}
+        {m.error !== null ? (
+          <Text color={NOTICE_STYLE.error.color} wrap="truncate-end">{`${NOTICE_STYLE.error.glyph} ${m.error}`}</Text>
+        ) : (
+          <Text color={STYLE.muted}>no messages yet</Text>
+        )}
+        {see}
+      </Box>
+    )
+  }
+  const { kept, left, leftLine } = inboxFit(messageEntries(m), m.hidden, rows)
+  const shown = m.messages.slice(m.messages.length - kept.length)
+  return (
+    <Box flexDirection="column">
+      {head}
+      {leftLine ? <Text color={STYLE.muted}>{`${left} earlier not shown`}</Text> : null}
+      {shown.map(x => (
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={STYLE.name}>{x.from}</Text>
+          <Text color={STYLE.muted}>→</Text>
+          <Text color={STYLE.name}>{x.to}</Text>
+          <Text color={STYLE.muted}>{`· ${x.at} ·`}</Text>
+          <Text wrap="truncate-end">{x.line}</Text>
+        </Box>
+      ))}
+      {see}
+    </Box>
+  )
+}
+
+/** The inbox under its heading: its newest entries that fit `rows` (inboxFit; one line counts what's left out); a swarm node's messages in its place. */
 function inboxPart(el: PaneElements, sel: AgentsSelected, rows: number, columns: number): RenderElement {
   const { Box, Text } = el
+  if (sel.swarm) return messagesPart(el, sel.swarm, rows, columns)
   const inbox = sel.inbox
   // The inbox is an unread queue: an empty one isn't "nothing was ever sent".
   const head = namedHeading(el, 'Inbox · ', sel.name, columns, 'unread only')
@@ -663,7 +743,7 @@ function inboxPart(el: PaneElements, sel: AgentsSelected, rows: number, columns:
       <Box flexDirection="column">
         {head}
         {inbox === null ? (
-          <Text color={STYLE.muted}>no inbox: only a team's members have one</Text>
+          <Text color={STYLE.muted}>no inbox: it isn't in a team</Text>
         ) : inbox.error !== null ? (
           // One line: the problems above say it whole.
           <Text color={NOTICE_STYLE.error.color} wrap="truncate-end">{`${NOTICE_STYLE.error.glyph} it couldn't be read: ${inbox.error}`}</Text>
@@ -926,17 +1006,16 @@ function pickScope(token: string): void {
   setAgentsNav({ ...n, team: t.team, selected: null, armed: null, picking: false })
 }
 
-/** The last view this module wrote: a footer's page on a surface the hub notes no drawing for (ui/drawn.ts notes the terminal's only). */
+/** The last view this module wrote: a footer's page where no render was noted. */
 let lastView: AgentsPaneView | null = null
 
 /** A context for a list's page where nothing was noted: unbounded, so the plan's windows are the inline ones. */
 const NOMINAL: AgentsCtx = { surface: 'desktop', bodyColumns: 100, rows: Number.POSITIVE_INFINITY, placement: 'dock', focused: null, lists: {} }
 
-/** The body and the context the lists were last drawn at: the terminal's drawing, else the last view written at NOMINAL. */
-function drawnBody(): { body: AgentsBody; ctx: AgentsCtx } | null {
-  const d = lastDrawn()
-  const noted = d && d.shown === 'agents' ? ((d.view as AgentsPaneView | null)?.body ?? null) : null
-  if (noted && d) return { body: noted, ctx: d.ctx }
+/** The body and the context the lists were last drawn at on `surface`, else the last view written at NOMINAL. */
+function drawnBody(surface: string | undefined): { body: AgentsBody; ctx: AgentsCtx } | null {
+  const noted = surface !== undefined ? rendered.get(surface) : undefined
+  if (noted) return noted
   return lastView?.body ? { body: lastView.body, ctx: NOMINAL } : null
 }
 
@@ -975,9 +1054,9 @@ function pageRows(body: AgentsBody, ctx: AgentsCtx, which: AgentsScrolled): numb
   return pageOf(which === 'lines' ? plan.linesRows : which === 'picker' ? plan.pickerRows : plan.rosterRows)
 }
 
-/** A footer's [↑ n above] or [↓ n more] (the lists'), or the transcript's where no wheel reaches: its window a page that way. */
-async function pageList(p: Ports, which: AgentsScrolled, dir: string): Promise<void> {
-  const drawn = drawnBody()
+/** A footer's [↑ n above] or [↓ n more] (the lists'), or the transcript's where no wheel reaches, on `surface`: its window a page that way, as that surface drew it. */
+async function pageList(p: Ports, which: AgentsScrolled, dir: string, surface: string | undefined): Promise<void> {
+  const drawn = drawnBody(surface)
   if (!drawn || (dir !== 'up' && dir !== 'down')) return
   await moveBy(p, drawn.body, drawn.ctx, which, (dir === 'up' ? -1 : 1) * pageRows(drawn.body, drawn.ctx, which))
 }
@@ -1049,8 +1128,8 @@ async function keepLinesPlace(p: Ports, view: AgentsPaneView): Promise<void> {
   if (came > 0) await moveList(p, LINES_LIST, offset + came, Math.max(0, (t?.lines.length ?? 1) - 1))
 }
 
-/** One press: the action on rows read again, then the redraw. */
-export async function pressAgents(p: Ports, key: string): Promise<void> {
+/** One press (on `surface`, which a footer's page reads): the action on rows read again, then the redraw. */
+export async function pressAgents(p: Ports, key: string, surface?: string): Promise<void> {
   const k = parseKey(key)
   if (!k) return
   await restoreAgentsNav(p)
@@ -1096,13 +1175,13 @@ export async function pressAgents(p: Ports, key: string): Promise<void> {
         break
       }
       case 'scopes':
-        await pageList(p, 'picker', k.arg)
+        await pageList(p, 'picker', k.arg, surface)
         break
       case 'roster':
-        await pageList(p, 'roster', k.arg)
+        await pageList(p, 'roster', k.arg, surface)
         break
       case 'lines':
-        await pageList(p, 'lines', k.arg)
+        await pageList(p, 'lines', k.arg, surface)
         break
       case 'send': {
         const row = await rowFor(p, k.arg)
@@ -1169,7 +1248,7 @@ export const onAgentsUi: PaneUiHandlers = {
   message: async (p, e, next) => next(e),
   press: async (p, e, next) => {
     if (!parseKey(e.element)) return next(e)
-    await pressAgents(p, e.element)
+    await pressAgents(p, e.element, e.surface)
     return { element: e.element }
   },
   input: async (p, e, next) => {
@@ -1207,6 +1286,7 @@ export function resetAgentsPaneForTests(): void {
   viewSeq = 0
   lastKey = null
   lastView = null
+  rendered.clear()
   seenLines = null
   savedRev = -1
   resetAgentsNavForTests()

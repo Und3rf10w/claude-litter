@@ -13,6 +13,12 @@
 //
 // Every text from a task file is cleaned and cut (swarm/view.ts, clean): a
 // subject, a description and an owner are model text.
+//
+// Phase 5b (WP-DF): the body's first line names the list shown and its
+// counts (`head`); the picker offers each list with its open tasks, its
+// team's lead and members and its folder (the empty team lists left out
+// until [Show all], `showEmpty`); each row carries its description, its
+// links and what its right-click menu offers (`can`).
 
 import type { Ports } from '../ports'
 import type { TaskFile, TaskListRef, TeamInfo } from '../uitypes'
@@ -20,16 +26,16 @@ import type {
   BoardStatus,
   SwarmNotice,
   SwarmOption,
-  SwarmSpan,
   TasksBody,
   TasksEditor,
   TasksFilter,
+  TasksListOption,
   TasksPaneView,
   TasksRow,
   TasksSort,
 } from '../../types/index'
 import { clean, oneLine } from '../swarm/view'
-import { countTasks, readTasks, sanitize, taskLists, tasksStamp, teams, updateTask } from '../team/store'
+import { countTasks, readTasks, sanitize, taskLists, tasksStamp, teams, updateTask, type TeamRecord } from '../team/store'
 import { STYLE } from '../ui/style'
 
 // The store, through one table so tier 2 can stand in for it. The mod never changes it.
@@ -54,6 +60,14 @@ export const LINE_MARK = '⏎'
 const SUBJECT_MAX = 2000
 const DESCRIPTION_MAX = 8000
 const ROW_SUBJECT = 160
+/** A row's description: the task's, on one line. */
+const ROW_DESCRIPTION = 200
+/** The other lists whose tasks a build reads for their open counts; past these, a list's files are only counted. */
+export const OPEN_READS = 40
+/** The members a list's description names before `+n`. */
+const MEMBERS_NAMED = 6
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /** 15.6: a glyph and a word beside each theme key. */
 export const STATUS: Record<string, BoardStatus> = {
@@ -90,6 +104,10 @@ export type TasksNav = {
   /** Each edit begun, by `<list folder>/<id>`. */
   edits: Record<string, TasksEdit>
   notice: SwarmNotice | null
+  /** [Show all]: the picker lists the empty team lists too (WP-DF). */
+  showEmpty: boolean
+  /** [Change] opened the picker where it's folded; a pick folds it again. */
+  picking: boolean
 }
 
 /** The $.store key the navigation is mirrored under, read back only by the session that wrote it. */
@@ -101,7 +119,7 @@ let tasksNav: TasksNav | null = null
 let restored = false
 let rev = 0
 
-export const blankTasksNav = (list: string | null = null): TasksNav => ({ list, filter: 'all', sort: 'id', selected: null, edits: {}, notice: null })
+export const blankTasksNav = (list: string | null = null): TasksNav => ({ list, filter: 'all', sort: 'id', selected: null, edits: {}, notice: null, showEmpty: false, picking: false })
 
 /** The pane's navigation, or null while it was never opened in this session. */
 export const tasksNavOf = (): TasksNav | null => tasksNav
@@ -156,6 +174,8 @@ export async function restoreTasksNav(p: Ports): Promise<void> {
       selected: typeof n.selected === 'string' && TASK_ID.test(n.selected) ? n.selected : null,
       edits,
       notice: null,
+      showEmpty: n.showEmpty === true,
+      picking: n.picking === true,
     }
     rev++
   } catch (err) {
@@ -254,6 +274,15 @@ export function editFrom(task: TaskFile): TasksEdit {
 export const dirtyOf = (e: TasksEdit): boolean =>
   e.subject !== e.base.subject || e.description !== e.base.description || e.status !== e.base.status || e.owner !== e.base.owner
 
+/** A task's links in words: "blocks #4 · blocked by #1 #2", or ''. */
+const linksOf = (task: TaskFile): string =>
+  [
+    task.blocks.length > 0 ? `blocks ${task.blocks.map(b => `#${oneLine(b, 12)}`).join(' ')}` : '',
+    task.blockedBy.length > 0 ? `blocked by ${task.blockedBy.map(b => `#${oneLine(b, 12)}`).join(' ')}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
 function editorOf(task: TaskFile, held: TasksEdit | null, team: TeamInfo | null, via: 'tool' | 'direct'): TasksEditor {
   const e = held ?? editFrom(task)
   const owners: SwarmOption[] = [{ value: '', label: 'none' }]
@@ -261,12 +290,7 @@ function editorOf(task: TaskFile, held: TasksEdit | null, team: TeamInfo | null,
   for (const o of [task.owner, e.owner]) {
     if (o !== null && !owners.some(x => x.value === o)) owners.push({ value: o, label: `${oneLine(o, 60)} (not a member)` })
   }
-  const links = [
-    task.blocks.length > 0 ? `blocks ${task.blocks.map(b => `#${oneLine(b, 12)}`).join(' ')}` : '',
-    task.blockedBy.length > 0 ? `blocked by ${task.blockedBy.map(b => `#${oneLine(b, 12)}`).join(' ')}` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const links = linksOf(task)
   return {
     id: task.id,
     subject: task.subject.length > SUBJECT_MAX ? null : encodeField(e.subject),
@@ -283,11 +307,15 @@ function editorOf(task: TaskFile, held: TasksEdit | null, team: TeamInfo | null,
   }
 }
 
-const emptyBody = (title: SwarmSpan[], notice: SwarmNotice | null, n: TasksNav, empty: string): TasksBody => ({
-  title,
+const emptyBody = (notice: SwarmNotice | null, n: TasksNav, empty: string): TasksBody => ({
+  head: { label: 'no task list', name: null, note: null },
   notice,
   list: null,
   lists: [],
+  hidden: null,
+  hiddenCount: 0,
+  showEmpty: n.showEmpty,
+  picking: n.picking,
   listName: null,
   filter: n.filter,
   counts: { all: 0, pending: 0, in_progress: 0, completed: 0 },
@@ -329,6 +357,34 @@ export function listNamed(lists: readonly TaskListRef[], arg: string): TaskListR
   return lists.find(l => l.name === arg) ?? lists.find(l => sanitize(l.name) === sanitize(arg)) ?? lists.find(l => l.team === arg) ?? null
 }
 
+const openOf = (tasks: readonly TaskFile[]): number => tasks.filter(t => t.status !== 'completed').length
+
+/** The body's first line (WP-DF): "this session" for this session's own list, else "team <name>" (or "list <name>"), and its counts. Pure. */
+export function headOf(list: TaskListRef, tasks: readonly TaskFile[]): TasksBody['head'] {
+  const note = tasks.length === 0 ? 'no tasks' : `${plural(tasks.length, 'task')} · ${openOf(tasks)} open`
+  if (list.mine) return { label: 'this session', name: null, note }
+  return { label: list.team !== null ? 'team ' : 'list ', name: oneLine(list.team ?? list.name, 60), note }
+}
+
+/** A list's kind, as its picker row says it. */
+const kindOf = (l: TaskListRef): string => (l.mine ? (l.kind === 'team' ? 'this session · team' : 'this session') : l.kind === 'team' ? 'team' : 'session')
+
+/** A picker row's description: its tasks, its team's lead and members, and its folder. Pure. */
+export function listDescription(l: TaskListRef, total: number, open: number | null, team: TeamRecord | null): string {
+  const parts = [open === null ? plural(total, 'task') : total === 0 ? 'no tasks' : `${plural(total, 'task')}, ${open} open`]
+  if (team) {
+    const lead = team.leadName ?? null
+    const others = team.members.map(m => m.name).filter(name => name !== lead)
+    if (lead !== null) parts.push(`lead ${oneLine(lead, 40)}`)
+    if (others.length > 0) {
+      const named = others.slice(0, MEMBERS_NAMED).map(m => oneLine(m, 30))
+      parts.push(`${others.length === 1 ? 'member' : 'members'} ${named.join(', ')}${others.length > MEMBERS_NAMED ? ` +${others.length - MEMBERS_NAMED}` : ''}`)
+    } else if (lead === null) parts.push('no members')
+  }
+  parts.push(oneLine(l.dir, 200))
+  return parts.join(' · ')
+}
+
 /**
  * Builds the view for the navigation (which must be set), keeping what it
  * drew in `shown`, and answers it with the change key it was read under.
@@ -338,7 +394,6 @@ export function listNamed(lists: readonly TaskListRef[], arg: string): TaskListR
  */
 export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: string | null }> {
   const n = tasksNavOf()!
-  const title: SwarmSpan[] = [{ text: 'litter · tasks', bold: true }]
   let notice = n.notice
   let lists: TaskListRef[]
   try {
@@ -346,7 +401,7 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
   } catch (err) {
     shown = null
     const why = { level: 'error' as const, text: `the task lists can't be read: ${oneLine(errText(err), 240)}` }
-    return { view: { view: 'tasks', v: nextV(), body: emptyBody(title, why, n, 'no task list to show') }, key: null }
+    return { view: { view: 'tasks', v: nextV(), body: emptyBody(why, n, 'no task list to show') }, key: null }
   }
   let list = listFor(lists, n)
   if (n.list !== null && list?.name !== n.list) {
@@ -356,14 +411,16 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
   const nav = tasksNavOf()!
   if (!list) {
     shown = null
-    return { view: { view: 'tasks', v: nextV(), body: emptyBody(title, notice, nav, 'no task list to show') }, key: null }
+    return { view: { view: 'tasks', v: nextV(), body: emptyBody(notice, nav, 'no task list to show') }, key: null }
   }
   const listKey = sanitize(list.name)
-  title.push({ text: ` · ${oneLine(list.name, 80)}` })
   const key = await keyOf(p, list)
   const read = await deps.readTasks(p, list)
   const tasks = read.tasks
-  const team = list.team !== null ? ((await deps.teams(p)).find(t => t.name === list.team) ?? null) : null
+  // The first team of a name, as the store lists them (newest first).
+  const teamsByName = new Map<string, TeamRecord>()
+  for (const t of await deps.teams(p).catch(() => [] as TeamRecord[])) if (!teamsByName.has(t.name)) teamsByName.set(t.name, t)
+  const team = list.team !== null ? (teamsByName.get(list.team) ?? null) : null
   const via: 'tool' | 'direct' = list.mine && (await p.toolNames().catch(() => [] as string[])).includes('TaskUpdate') ? 'tool' : 'direct'
   shown = { list, key: listKey, tasks, team, via, lists }
 
@@ -383,6 +440,7 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
   const counts: Record<TasksFilter, number> = { all: tasks.length, pending: 0, in_progress: 0, completed: 0 }
   for (const t of tasks) if (t.status in counts) counts[t.status as TasksFilter]++
   const filter = tasksNavOf()!.filter
+  const members = team?.members.length ?? 0
   const rows: TasksRow[] = sortTasks(filter === 'all' ? tasks : tasks.filter(t => t.status === filter), tasksNavOf()!.sort).map(t => ({
     id: t.id,
     status: STATUS[t.status] ?? UNKNOWN_STATUS,
@@ -391,6 +449,10 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
     blockedBy: t.blockedBy.filter(b => statusOf.get(b) !== 'completed').map(b => oneLine(b, 12)),
     subject: oneLine(t.subject, ROW_SUBJECT),
     selected: t.id === selected,
+    description: oneLine(t.description, ROW_DESCRIPTION),
+    links: linksOf(t),
+    // Assign to… opens the editor's Owner: a member to pick, or an owner to clear.
+    can: { start: t.status !== 'in_progress', complete: t.status !== 'completed', assign: members > 0 || t.owner !== null },
   }))
 
   const before = seen.get(list.dir)
@@ -403,26 +465,41 @@ export async function buildTasks(p: Ports): Promise<{ view: TasksPaneView; key: 
         ? `no ${FILTER_LABEL[filter].toLowerCase()} tasks`
         : null
 
-  const options: SwarmOption[] = []
+  // The picker: each list with its open tasks (the first OPEN_READS others read for them, the rest counted), its team and its folder.
+  const showEmpty = tasksNavOf()!.showEmpty
+  const options: TasksListOption[] = []
   const left: TaskListRef[] = []
+  let reads = 0
   for (const l of lists) {
-    const count = l === list ? tasks.length : await deps.countTasks(p, l)
-    if (hiddenList(l, count, list.name, n.list)) {
+    const total = l === list ? tasks.length : await deps.countTasks(p, l)
+    if (!showEmpty && hiddenList(l, total, list.name, n.list)) {
       left.push(l)
       continue
     }
-    const kind = l.mine ? (l.kind === 'team' ? `team ${l.team}, this session's` : "this session's") : 'team'
-    options.push({ value: l.name, label: oneLine(`${l.name} · ${kind} · ${count} task${count === 1 ? '' : 's'}`, 120) })
+    let open: number | null = total === 0 ? 0 : null
+    if (l === list) open = openOf(tasks)
+    else if (total > 0 && reads < OPEN_READS) {
+      reads++
+      open = await deps.readTasks(p, l).then(
+        r => openOf(r.tasks),
+        () => null,
+      )
+    }
+    const lt = l.team !== null ? (teamsByName.get(l.team) ?? null) : null
+    options.push({ value: l.name, label: oneLine(l.name, 80), kind: kindOf(l), mine: l.mine, open, total, description: listDescription(l, total, open, lt) })
   }
 
   const task = selected === null ? null : (tasks.find(t => t.id === selected) ?? null)
   const editor = task ? editorOf(task, tasksNavOf()!.edits[editKey(listKey, task.id)] ?? null, team, via) : null
   const body: TasksBody = {
-    title,
+    head: headOf(list, tasks),
     notice,
     list: listKey,
     lists: options,
     hidden: hiddenNote(left),
+    hiddenCount: left.length,
+    showEmpty,
+    picking: tasksNavOf()!.picking,
     listName: list.name,
     filter,
     counts,

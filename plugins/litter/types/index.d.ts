@@ -687,7 +687,10 @@ export type CardsView = { view: 'cards'; v: number; byTask: Record<string, CardV
 // The tasks pane (phase 5; COMMON decisions 4, 15, 16): a task list's tasks,
 // filtered, sorted and edited in place. Built by hooks/tasks/view.ts from
 // hooks/team/store.ts, drawn by hooks/tasks/pane.tsx. Texts are cleaned and
-// cut; every status pairs its theme key with a glyph and a word.
+// cut; every status pairs its theme key with a glyph and a word. Phase 5b
+// (WP-DF): no title of its own, the first line names the list shown; the
+// picker and the tasks are the chrome's lists, a task's right-click menu
+// marks it or opens it.
 
 /** Which tasks the rows show. */
 export type TasksFilter = 'all' | 'pending' | 'in_progress' | 'completed'
@@ -706,6 +709,30 @@ export type TasksRow = {
   /** One line, cut. */
   subject: string
   selected: boolean
+  /** The task's description on one line, cut; '' for none (the focused row's description, with `links`). */
+  description: string
+  /** "blocks #4 · blocked by #1 #2", or ''. */
+  links: string
+  /** Its menu's marks, each where the status isn't that already, and Assign to… where an owner can be picked (a member to pick, or one to clear). */
+  can: { start: boolean; complete: boolean; assign: boolean }
+}
+
+/** One list the picker offers: its row's key is `tasks:pick:<value>`. */
+export type TasksListOption = {
+  /** The list's name. */
+  value: string
+  /** The name, cut. */
+  label: string
+  /** "this session", "this session · team" or "team". */
+  kind: string
+  /** This session's own list (decision 15). */
+  mine: boolean
+  /** Its open tasks (pending or in progress); null when only its files were counted. */
+  open: number | null
+  /** Its task files. */
+  total: number
+  /** The focused row's description: its tasks, its team's lead and members, and its folder. */
+  description: string
 }
 
 /** The selected task's editor: the file's values, or what you typed, held in the navigation until [Save]. */
@@ -733,15 +760,26 @@ export type TasksEditor = {
 }
 
 export type TasksBody = {
-  title: SwarmSpan[]
+  /**
+   * The first line (WP-DF): "this session", or `<label><name>` with the name
+   * in the name color ("team team-a"), and its counts; `name` null for the
+   * first form.
+   */
+  head: { label: string; name: string | null; note: string | null }
   notice: SwarmNotice | null
   /** The list shown, by its folder name (the keys' `list`); null when there's none. */
   list: string | null
-  /** The list picker: each list with its kind and task count, by name. A team list with no tasks is left out, but for this session's, the one shown and the one named (WP-DA2). */
-  lists: SwarmOption[]
-  /** The picker's note of the lists left out ("13 empty session teams hidden"); null or absent for none. */
-  hidden?: string | null
-  /** The picker's value: the shown list's name. */
+  /** The list picker: this session's first, then each team's. A team list with no tasks is left out, but for this session's, the one shown and the one named, until [Show all] (WP-DA2). */
+  lists: TasksListOption[]
+  /** The picker's note of the lists left out ("13 empty session teams hidden"); null for none. */
+  hidden: string | null
+  /** How many it left out. */
+  hiddenCount: number
+  /** [Show all] is on: the empty team lists are listed too. */
+  showEmpty: boolean
+  /** [Change] opened the picker where it's folded (inline, or a short dock). */
+  picking: boolean
+  /** The shown list's name. */
   listName: string | null
   filter: TasksFilter
   counts: Record<TasksFilter, number>
@@ -749,7 +787,7 @@ export type TasksBody = {
   rows: TasksRow[]
   /** What stands in for the rows when there are none (a list that went empty says so); null with rows. */
   empty: string | null
-  /** Task files that couldn't be read, one line each. */
+  /** Task files that couldn't be read, one line each (drawn as notices above the lists, the first few). */
   problems: string[]
   editor: TasksEditor | null
 }
@@ -783,7 +821,17 @@ export type AgentsRow = {
   description: string
   /** What its right-click menu offers today: a message where one reaches it, its transcript where this session has it, [Stop] where it's running or waiting. */
   can: { message: boolean; transcript: boolean; stop: boolean }
+  /**
+   * A node of a live swarm (swarm/state.ts's binding; WP-DF): `name` is
+   * labelled by its node, and this is its swarm, drawn muted after it
+   * ("· swarm <swarm>"), and its engine description, muted ('' for none, or
+   * when it only repeats the swarm and the node). Null for any other agent.
+   */
+  swarm: { name: string; said: string } | null
 }
+
+/** One message a swarm node sent or got, from its launch ledger (`swarm.event`, kind `message`): who to whom, when, and the message's first line. */
+export type AgentsSwarmMessage = { from: string; to: string; at: string; line: string }
 
 /** One pending inbox entry: who it's from, when, and its text in at most 3 lines. */
 export type AgentsInboxEntry = { from: string; at: string; lines: string[] }
@@ -806,6 +854,14 @@ export type AgentsSelected = {
   sendNote: string | null
   /** [Stop], for this session's agents that are running or waiting; `armed` while a second press stops it (decision 6). */
   stop: { armed: boolean } | null
+  /**
+   * A node of a live swarm (WP-DF): it has no inbox, since litter routes its
+   * messages through the engine, so in the inbox's place the messages its
+   * launch ledger records to and from it, the newest AGENTS_MESSAGES of them,
+   * oldest first; `hidden` counts the earlier ones, `error` says what
+   * couldn't be read. Null for any other agent.
+   */
+  swarm: { name: string; node: string; messages: AgentsSwarmMessage[]; hidden: number; error: string | null } | null
 }
 
 /** One choice of the picker (WP-DF): this session, or a team. */

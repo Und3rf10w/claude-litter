@@ -44,6 +44,12 @@
 //   child session don't register (`kc`, :136646). So a lead session id with
 //   no entry has ended (or /clear'd away from the team); an entry can
 //   outlive a crash until the next sweep. The pane only shows what it says.
+// - a background job's entry (kind `bg`) carries its `jobId` (:136521, from
+//   CLAUDE_JOB_DIR). On the user's machine (2.1.292) a job ran under a new
+//   session id while its list stayed under `session-<jobId>`, whose
+//   leadSessionId is the job's first id, `<jobId>-…`: ownTeam finds that
+//   team from the entry, since the engine's own pick (`Sw()`, its
+//   `taskList.leaderTeamName`) isn't in the mod API.
 
 import type { Ports, RunResult } from '../ports'
 import type { InboxEntry, TaskFile, TaskListRef, TaskPatch, TeamInfo, TeamMember, WriteResult } from '../uitypes'
@@ -101,12 +107,12 @@ const short = (s: string, max = 200): string => (s.length > max ? `${s.slice(0, 
 
 /**
  * A team as the store reads it: TeamInfo, and, when its config has them,
- * when it was made (`createdAt`, ms) and the lead member's folder
- * (`leadCwd`), which the agents pane names for a team whose lead ended
- * (WP-DF). Absent, not null, when the config has neither, so a TeamInfo
- * compares equal.
+ * when it was made (`createdAt`, ms), the lead member's folder (`leadCwd`),
+ * which the agents pane names for a team whose lead ended, and its name
+ * (`leadName`), which the tasks picker names (WP-DF). Absent, not null, when
+ * the config has none of them, so a TeamInfo compares equal.
  */
-export type TeamRecord = TeamInfo & { createdAt?: number; leadCwd?: string }
+export type TeamRecord = TeamInfo & { createdAt?: number; leadCwd?: string; leadName?: string }
 
 /** A team's config.json as TeamInfo, its members as the engine keeps them (a name each); null when it isn't one. */
 function teamOf(raw: unknown, dir: string, mtimeMs: number): TeamRecord | null {
@@ -123,6 +129,8 @@ function teamOf(raw: unknown, dir: string, mtimeMs: number): TeamRecord | null {
   const lead = all.find(m => typeof raw.leadAgentId === 'string' && m.agentId === raw.leadAgentId) ?? all.find(m => m.name === 'team-lead')
   const cwd = strOrNull(lead?.cwd)
   if (cwd !== null) info.leadCwd = cwd
+  const leadName = strOrNull(lead?.name)
+  if (leadName !== null && leadName !== '') info.leadName = leadName
   return info
 }
 
@@ -158,11 +166,34 @@ export async function teams(p: Ports): Promise<TeamRecord[]> {
 }
 
 /**
+ * The team this session leads, whose list is its own when no
+ * CLAUDE_CODE_TASK_LIST_ID names one (the engine's `Sw()` takes the env, the
+ * teammate's team, `taskList.leaderTeamName`, then the session id; the mod
+ * API doesn't give leaderTeamName, so it's told from the files):
+ *  - the team whose config names this session its lead;
+ *  - else, for a background job (its registry entry has a `jobId`; 2.1.292
+ *    keeps a job's list under the team it made with its first session id,
+ *    `session-<jobId>`, whose leadSessionId is that first id, after the job
+ *    runs under another), the team whose leadSessionId starts with
+ *    `<jobId>-`, else the one named `session-<jobId>`;
+ *  - else none: the session id names the list.
+ * Never "a session team that has tasks": that could be another session's.
+ * Pure; `sessions` as runningSessions reads them (null: can't tell).
+ */
+export function ownTeam(all: readonly TeamRecord[], sessionId: string, sessions: readonly RunningSession[] | null): TeamRecord | null {
+  const led = all.find(t => t.leadSessionId === sessionId)
+  if (led) return led
+  const job = sessions?.find(s => s.sessionId === sessionId)?.jobId ?? null
+  if (job === null) return null
+  return all.find(t => t.leadSessionId !== null && t.leadSessionId.startsWith(`${job}-`)) ?? all.find(t => t.name === `session-${job}`) ?? null
+}
+
+/**
  * This session's own list first, as the engine names it (decision 15):
- * CLAUDE_CODE_TASK_LIST_ID, else the team whose config names this session
- * its lead, else the session id. Then each team's list, newest config.json
- * first, at most 20. A list is named once, by its folder. Rejects when the
- * config dir can't be known.
+ * CLAUDE_CODE_TASK_LIST_ID, else the team it leads (ownTeam: a background
+ * job's included), else the session id. Then each team's list, newest
+ * config.json first, at most 20. A list is named once, by its folder.
+ * Rejects when the config dir can't be known.
  */
 export async function taskLists(p: Ports): Promise<TaskListRef[]> {
   const config = await p.configDir()
@@ -179,7 +210,8 @@ export async function taskLists(p: Ports): Promise<TaskListRef[]> {
   }
   if (env !== '') add(env, all.find(t => listDir(config, t.name) === listDir(config, env))?.name ?? null, true)
   else {
-    const led = all.find(t => t.leadSessionId === session)
+    // The registry only when no team names this session its lead: a job's entry says which team was its first.
+    const led = all.find(t => t.leadSessionId === session) ?? ownTeam(all, session, await runningSessions(p))
     if (led) add(led.name, led.name, true)
     else add(session, null, true)
   }
@@ -193,8 +225,13 @@ export async function taskLists(p: Ports): Promise<TaskListRef[]> {
 // ---------------------------------------------------------------------------
 // The registry of running sessions (read only; see the header)
 
-/** One running session as its registry file says: what the agents pane shows, nothing it acts on. */
-export type RunningSession = { pid: number; sessionId: string; cwd: string | null; startedAt: number | null; status: string | null }
+/**
+ * One running session as its registry file says: what the agents pane shows,
+ * nothing it acts on. `kind` is the engine's (`interactive`, `bg` for a
+ * background job, …); `jobId` a background job's id, which named the team its
+ * first session id made (ownTeam), and only when it's a name's segment.
+ */
+export type RunningSession = { pid: number; sessionId: string; cwd: string | null; startedAt: number | null; status: string | null; kind: string | null; jobId: string | null }
 
 const PID_FILE = /^[0-9]{1,10}\.json$/
 /** Registry files read at most, and the most of each: the engine's are a few hundred bytes. */
@@ -239,6 +276,8 @@ export async function runningSessions(p: Ports): Promise<RunningSession[] | null
         cwd: strOrNull(raw.cwd),
         startedAt: typeof raw.startedAt === 'number' && Number.isFinite(raw.startedAt) ? raw.startedAt : null,
         status: strOrNull(raw.status),
+        kind: strOrNull(raw.kind),
+        jobId: typeof raw.jobId === 'string' && SEGMENT.test(raw.jobId) ? raw.jobId : null,
       })
     } catch {
       // Gone between the listing and the read, or half written: not a session the pane can name.

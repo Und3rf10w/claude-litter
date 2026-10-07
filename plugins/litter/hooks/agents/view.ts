@@ -23,6 +23,15 @@
 // Every text from a file, a transcript or the agent list is cleaned and cut
 // (swarm/view.ts, clean and oneLine): names, types and messages are model or
 // user text.
+//
+// A swarm's nodes (WP-DF, the user's "aren't these members of a team?"): an
+// agent swarm/state.ts binds to a live swarm is labelled by its node, as the
+// Swarms browser names it, with its swarm and its engine description beside.
+// It isn't a team's member and has no inbox: litter routes its messages
+// through the engine and records each in the launch ledger (`swarm.event`,
+// kind `message`), so the selected node's are read from there, in the
+// inbox's place: the launch's message records, read again only when its
+// head moves, bounded, and a failure said in words.
 
 import type { ListedAgent, Ports, SessionMessage } from '../ports'
 import type { InboxEntry, TeamInfo } from '../uitypes'
@@ -34,20 +43,37 @@ import type {
   AgentsRow,
   AgentsSelected,
   AgentsStatus,
+  AgentsSwarmMessage,
   SwarmNotice,
   SwarmSpan,
 } from '../../types/index'
-import { appendInbox, readInbox, runningSessions, teams, type RunningSession, type TeamRecord } from '../team/store'
+import type { NodeBinding } from '../swarm/types'
+import type { Head } from '../ledgercore'
+import { appendInbox, ownTeam, readInbox, runningSessions, teams, type RunningSession, type TeamRecord } from '../team/store'
 import { clean, clockAt, oneLine } from '../swarm/view'
+import { binding, bindings, liveSwarm } from '../swarm/state'
+import { readLaunchLedger } from '../records/swarm'
+import { headKey } from '../ledgercore'
+import { launchDir } from '../layout'
+import { session } from '../session'
 import { STYLE } from '../ui/style'
 
-// CE's store, through one table so tier 2 can stand in for it (COMMON,
-// "Another package's module"). The mod never changes it.
+// CE's store, the swarms' live state and the launch ledger, through one table
+// so tier 2 can stand in for them (COMMON, "Another package's module"). The
+// mod never changes them.
 export const deps = {
   teams: (...a: Parameters<typeof teams>) => teams(...a),
   readInbox: (...a: Parameters<typeof readInbox>) => readInbox(...a),
   appendInbox: (...a: Parameters<typeof appendInbox>) => appendInbox(...a),
   sessions: (...a: Parameters<typeof runningSessions>) => runningSessions(...a),
+  /** The live swarm node an agent runs, or null. */
+  binding: (agentId: string): NodeBinding | null => binding(agentId),
+  /** A swarm's bound agents, for the names an instance and a message's ends are drawn by. */
+  bindings: (swarm: string): NodeBinding[] => bindings(swarm),
+  /** The live swarm's launch, or null. */
+  launchOf: (swarm: string): string | null => liveSwarm(swarm)?.launch ?? null,
+  launchLedger: (...a: Parameters<typeof readLaunchLedger>) => readLaunchLedger(...a),
+  litterDir: (): string | null => session().litterDir,
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -69,6 +95,12 @@ export const LEAD_MEMBER = 'team-lead'
 export const SESSION_SCOPE = 'session'
 /** Teams the picker offers at most, newest first: its list scrolls, and the view stays small (decision 11). */
 export const MAX_TEAMS = 200
+/** A swarm node's messages the view keeps, the newest (WP-DF): the pane draws those that fit. */
+export const AGENTS_MESSAGES = 20
+/** A launch's message records kept in memory, the newest: a long launch stays light. */
+export const LAUNCH_MESSAGES_KEPT = 400
+/** A swarm node's engine description, beside its name, cut to this. */
+export const SAID_CELLS = 32
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -232,6 +264,7 @@ export function resetAgentsNavForTests(): void {
   restored = false
   rev = 0
   textDirty = false
+  launchMessages.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +317,17 @@ export type RowFacts = {
   via: SendVia | null
   /** TaskStop's `task_id` (stopIdOf: a teammate's bare name, else its id), while it's this session's and running or waiting. */
   stopId: string | null
+  /** The live swarm node it runs (swarm/state.ts's binding), its swarm and the engine's description beside its name; null for any other agent. */
+  swarm: { binding: NodeBinding; said: string } | null
 }
 
 export type InboxFacts = { entries: InboxEntry[] | null; stamp: string; error: string | null }
+
+/** One `message` record of a launch ledger: when, who to whom (as swarm.event gives them: `user`, `lead`, an agentId, `plugin:<name>`), the text. */
+export type MessageFact = { at: number; from: string; to: string; agentId: string; text: string }
+
+/** The selected swarm node's messages, read from its launch ledger: those to or from it, oldest first; `error` says what couldn't be read. */
+export type SwarmMessagesFacts = { swarm: string; node: string; records: MessageFact[]; names: Record<string, string>; error: string | null }
 
 export type AgentsFacts = {
   /** The team shown, or null (this session, or a team that's gone). */
@@ -303,6 +344,8 @@ export type AgentsFacts = {
   inboxes: Record<string, InboxFacts>
   /** The selected agent's transcript: null when it can't be read, undefined when it wasn't (no agent of this session selected). */
   messages: SessionMessage[] | null | undefined
+  /** The selected agent's messages from its launch ledger, when it's a live swarm's node; null otherwise. */
+  swarmMessages: SwarmMessagesFacts | null
   problems: string[]
 }
 
@@ -325,24 +368,54 @@ const stoppable = (a: ListedAgent): boolean => a.status === 'running' || a.statu
  */
 const stopIdOf = (a: ListedAgent): string => addressOf(a.teammateId)?.name ?? a.id
 
-/** This session's agents, in the engine's order; a teammate's inbox is its team's file for its name. */
+/**
+ * A swarm instance's name, as the Swarms browser draws it (swarm/view.ts's
+ * instanceName): its node, with `#n` when the node has run more than once;
+ * a child (an agent a node started) its own words, then "(child)". Pure.
+ */
+export function nodeName(b: NodeBinding, all: readonly NodeBinding[], listed?: ListedAgent | null): string {
+  if (b.kind === 'child') return `${oneLine(listed?.description || listed?.type || 'agent', 24)} (child)`
+  const several = all.filter(x => x.node === b.node && x.kind !== 'child').length > 1
+  return oneLine(several ? `${b.node} #${b.n}` : b.node, 40)
+}
+
+/** A node's kind, in the type's place: its served type (`litter:sw-<swarm>-<node>`) only repeats the swarm and the node. */
+const KIND_WORD: Record<NodeBinding['kind'], string> = { orchestrator: 'orchestrator', worker: 'worker', child: 'child' }
+
+/** The engine's description of a node, as drawn beside its name: '' when it only repeats them (the lead's `swarm <swarm>: <node>`). */
+export function saidOf(a: ListedAgent, b: NodeBinding, name: string): string {
+  const said = oneLine(a.description, 200)
+  if (said === '' || said === name || said === `swarm ${b.swarm}: ${b.node}` || b.kind === 'child') return ''
+  return oneLine(said, SAID_CELLS)
+}
+
+/** This session's agents, in the engine's order; a teammate's inbox is its team's file for its name; a swarm's node is named by its node. */
 function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo[]): RowFacts[] {
   const seen = new Set<string>()
   const rows: RowFacts[] = []
+  const swarmsBound = new Map<string, NodeBinding[]>()
+  const boundIn = (swarm: string): NodeBinding[] => {
+    let all = swarmsBound.get(swarm)
+    if (!all) swarmsBound.set(swarm, (all = deps.bindings(swarm)))
+    return all
+  }
   for (const a of listed) {
     if (typeof a.id !== 'string' || a.id === '' || seen.has(a.id)) continue
     seen.add(a.id)
     const addr = addressOf(a.teammateId)
     const team = addr ? teamList.find(t => t.name === addr.team) : undefined
+    const b = deps.binding(a.id)
+    const name = b ? nodeName(b, boundIn(b.swarm), a) : labelOf(a)
     rows.push({
       key: a.id,
-      name: labelOf(a),
-      type: oneLine(a.type, 40),
+      name,
+      type: b ? KIND_WORD[b.kind] : oneLine(a.type, 40),
       status: statusOf(a.status),
       listed: a,
       inbox: addr && team ? { team: team.name, agent: addr.name } : null,
       via: { kind: 'agent', agentId: a.id },
       stopId: stoppable(a) ? stopIdOf(a) : null,
+      swarm: b ? { binding: b, said: saidOf(a, b, name) } : null,
     })
   }
   return rows
@@ -353,9 +426,11 @@ function sessionRows(listed: readonly ListedAgent[], teamList: readonly TeamInfo
  * leads it, or its lead session is in the engine's registry of running
  * sessions. Null when the registry couldn't be read: nobody can tell. Pure.
  */
-export function teamActive(team: TeamInfo, sessionId: string, listed: readonly ListedAgent[], sessions: readonly RunningSession[] | null): boolean | null {
+export function teamActive(team: TeamInfo, sessionId: string, listed: readonly ListedAgent[], sessions: readonly RunningSession[] | null, own: string | null = null): boolean | null {
   if (listed.some(a => addressOf(a.teammateId)?.team === team.name)) return true
   if (team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) return true
+  // The team store.ts's ownTeam tells is this session's (a background job's first team).
+  if (own !== null && team.name === own) return true
   if (sessions === null) return null
   return team.leadSessionId !== null && sessions.some(s => s.sessionId === team.leadSessionId)
 }
@@ -393,15 +468,69 @@ function teamRows(team: TeamInfo, listed: readonly ListedAgent[], led: boolean, 
       inbox: { team: team.name, agent: m.name },
       via,
       stopId: a && stoppable(a) ? stopIdOf(a) : null,
+      swarm: null,
     })
   }
   return rows
 }
 
+/** A launch's message records as last read, by its folder: read again only when the ledger's head moved (as swarm/view.ts's launchRecords). */
+const launchMessages = new Map<string, { seq: number; records: MessageFact[]; tampered: string | null }>()
+
+const textOf = (x: unknown): string => (typeof x === 'string' ? x : '')
+
+/** A launch ledger's `message` records, the newest LAUNCH_MESSAGES_KEPT, those before a broken link only. Throws what the read throws. */
+async function launchMessagesOf(p: Ports, litterDir: string, swarm: string, launch: string): Promise<{ records: MessageFact[]; tampered: string | null }> {
+  const dir = launchDir(litterDir, swarm, launch)
+  const head = (await p.store.get(headKey(dir)).catch(() => undefined)) as Head | undefined
+  const cached = launchMessages.get(dir)
+  if (cached && head && cached.seq === head.seq) return cached
+  const read = await deps.launchLedger(p, litterDir, swarm, launch)
+  const upTo = read.tampered ? read.tampered.seq : Number.POSITIVE_INFINITY
+  const records: MessageFact[] = []
+  for (const r of read.records) {
+    if (r.seq >= upTo || r.kind !== 'swarm.event') continue
+    const e = r.body as Record<string, unknown>
+    if (e.kind !== 'message') continue
+    records.push({ at: r.at, from: textOf(e.from), to: textOf(e.to), agentId: textOf(e.agentId), text: textOf(e.text) })
+  }
+  const out = {
+    seq: read.head?.seq ?? 0,
+    records: records.slice(-LAUNCH_MESSAGES_KEPT),
+    tampered: read.tampered ? `the launch ledger is broken at record ${read.tampered.seq} (${oneLine(read.tampered.reason, 100)}), so its messages stop there` : null,
+  }
+  launchMessages.set(dir, out)
+  return out
+}
+
+/**
+ * The selected node's messages (WP-DF): the launch ledger's `message`
+ * records sent to or by it, and the names of every end, read the way an
+ * inbox is (a failure is a line in words, never a throw). The launch is the
+ * live swarm's, else the one it was bound in.
+ */
+async function nodeMessages(p: Ports, b: NodeBinding, listed: ListedAgent | null): Promise<SwarmMessagesFacts> {
+  const all = deps.bindings(b.swarm)
+  const names: Record<string, string> = {}
+  for (const x of all) names[x.agentId] = nodeName(x, all)
+  names[b.agentId] = nodeName(b, all, listed)
+  const base = { swarm: oneLine(b.swarm, 40), node: names[b.agentId]!, names }
+  const dir = deps.litterDir()
+  if (!dir) return { ...base, records: [], error: "this session has no litter directory, so the launch ledger can't be read" }
+  try {
+    const read = await launchMessagesOf(p, dir, b.swarm, deps.launchOf(b.swarm) ?? b.launch)
+    const records = read.records.filter(r => r.from === b.agentId || r.to === b.agentId || r.agentId === b.agentId)
+    return { ...base, records, error: read.tampered }
+  } catch (err) {
+    return { ...base, records: [], error: `the launch ledger couldn't be read: ${oneLine(errText(err), 200)}` }
+  }
+}
+
 /**
  * Everything the view and the presses read, once: the agent list, the
  * teams, the shown rows' inboxes, and the selected agent's transcript only
- * (decision 16). A read that fails is a problem line, never a throw.
+ * (decision 16), or a swarm node's messages from its launch ledger. A read
+ * that fails is a problem line, never a throw.
  */
 export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
   const problems: string[] = []
@@ -422,13 +551,17 @@ export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
   }
   // The registry is read only, and only shown (WP-DF §0): a failure is "can't tell", never a problem line.
   const sessions = await deps.sessions(p).catch(() => null)
+  // This session's own team, as the tasks pane's list is told (a background job's first team included).
+  const own = sessionId !== '' ? (ownTeam(teamList, sessionId, sessions)?.name ?? null) : null
   const activity: Record<string, boolean | null> = {}
-  for (const t of teamList) activity[t.name] = teamActive(t, sessionId, listed, sessions)
+  for (const t of teamList) activity[t.name] = teamActive(t, sessionId, listed, sessions, own)
   const team = nav.team === null ? null : (teamList.find(t => t.name === nav.team) ?? null)
   if (nav.team !== null && !team) problems.push(`there's no team named ${oneLine(nav.team, 60)} with a readable config`)
   const led =
     team !== null &&
-    ((team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) || listed.some(a => addressOf(a.teammateId)?.team === team.name))
+    ((team.leadSessionId !== null && team.leadSessionId !== '' && team.leadSessionId === sessionId) ||
+      team.name === own ||
+      listed.some(a => addressOf(a.teammateId)?.team === team.name))
   const rows = nav.team === null ? sessionRows(listed, teamList) : team ? teamRows(team, listed, led, activity[team.name] === false) : []
 
   const toRead = rows.slice(0, MAX_ROWS)
@@ -460,7 +593,9 @@ export async function gather(p: Ports, nav: AgentsNav): Promise<AgentsFacts> {
       messages = null
     }
   }
-  return { team, led, teams: teamList, teamsRead, activity, rows, inboxes, messages, problems }
+  const swarmMessages = sel?.swarm ? await nodeMessages(p, sel.swarm.binding, sel.listed) : null
+  if (swarmMessages?.error) problems.push(`${sel!.name}'s messages: ${swarmMessages.error}`)
+  return { team, led, teams: teamList, teamsRead, activity, rows, inboxes, messages, swarmMessages, problems }
 }
 
 /** The team is known to have ended (WP-DF §0): the teams were read and it isn't among them, or it isn't running. */
@@ -474,10 +609,11 @@ export const teamEnded = (f: AgentsFacts, team: string | null): boolean => team 
  */
 export function factsStamp(f: AgentsFacts): string {
   return JSON.stringify([
-    f.rows.map(r => [r.key, r.status.text, r.name, r.type, r.via?.kind ?? '', r.stopId ?? '', f.inboxes[r.key]?.stamp ?? '', f.inboxes[r.key]?.entries?.length ?? -1]),
+    f.rows.map(r => [r.key, r.status.text, r.name, r.type, r.via?.kind ?? '', r.stopId ?? '', f.inboxes[r.key]?.stamp ?? '', f.inboxes[r.key]?.entries?.length ?? -1, r.swarm?.said ?? null]),
     f.teams.map(t => [t.name, t.mtimeMs, t.members.length, f.activity[t.name] ?? null]),
     f.led,
     f.messages === undefined ? -2 : f.messages === null ? -1 : f.messages.length,
+    f.swarmMessages === null ? null : [f.swarmMessages.records.length, f.swarmMessages.records.at(-1)?.at ?? 0, f.swarmMessages.error],
     f.problems,
   ])
 }
@@ -704,6 +840,28 @@ function unreadOf(f: AgentsFacts, r: RowFacts): number | null {
   return box?.entries ? box.entries.length : null
 }
 
+/** A message's own first line: past the line litter's routing frames it with ("From the lead:", "For your worker fixer (…), from …:"). Pure. */
+export function messageFirst(text: string): string {
+  const lines = text.split('\n').filter(l => l.trim() !== '')
+  const framed = lines.length > 1 && /^\s*(?:From .+|For your .+, from .+):\s*$/.test(lines[0]!)
+  return oneLine(lines[framed ? 1 : 0] ?? '', 200)
+}
+
+/** One end of a message as drawn: you, the lead, a plugin, or a node by its instance name. */
+function endOf(id: string, names: Readonly<Record<string, string>>): string {
+  if (id === 'user') return 'you'
+  if (id === 'lead' || id === 'main') return 'lead'
+  if (id.startsWith('plugin:')) return `${oneLine(id.slice('plugin:'.length), 24)} plugin`
+  return names[id] ?? (oneLine(id, 16) || 'unknown')
+}
+
+/** The selected node's messages as the view holds them: the newest AGENTS_MESSAGES, oldest first. Pure. */
+export function swarmMessagesOf(m: SwarmMessagesFacts, now: number): NonNullable<AgentsSelected['swarm']> {
+  const kept = m.records.slice(-AGENTS_MESSAGES)
+  const messages: AgentsSwarmMessage[] = kept.map(x => ({ from: endOf(x.from, m.names), to: endOf(x.to, m.names), at: whenAt(x.at, now), line: messageFirst(x.text) }))
+  return { name: m.swarm, node: m.node, messages, hidden: m.records.length - kept.length, error: m.error }
+}
+
 function selectedOf(f: AgentsFacts, nav: AgentsNav, r: RowFacts, now: number): AgentsSelected {
   const box = r.inbox ? f.inboxes[r.key] : undefined
   const entries = box?.entries ?? []
@@ -718,6 +876,7 @@ function selectedOf(f: AgentsFacts, nav: AgentsNav, r: RowFacts, now: number): A
     transcript: r.listed ? tailOf(f.messages) : null,
     sendNote: sendNote(r.via),
     stop: r.stopId ? { armed: nav.armed?.arg === arg && armedLive(nav, now) } : null,
+    swarm: r.swarm && f.swarmMessages ? swarmMessagesOf(f.swarmMessages, now) : null,
   }
 }
 
@@ -770,13 +929,13 @@ function headOf(f: AgentsFacts, nav: AgentsNav): AgentsBody['head'] {
   return { team, note: `${plural(f.rows.length, 'member')}${state}` }
 }
 
-/** A row's description: the selected agent's last line, else its task's own words when the row isn't named by them. */
+/** A row's description: the selected agent's last line, else its task's own words when the row isn't named by them (a swarm node's are beside its name already). */
 function rowDescription(f: AgentsFacts, r: RowFacts, selected: boolean): string {
   if (selected && Array.isArray(f.messages)) {
     const last = tailOf(f.messages).lines.at(-1)
     if (last) return oneLine(lineText(last), 200)
   }
-  const said = r.listed ? oneLine(r.listed.description, 200) : ''
+  const said = r.listed && !r.swarm ? oneLine(r.listed.description, 200) : ''
   return said !== '' && said !== r.name ? said : ''
 }
 
@@ -791,6 +950,7 @@ export function agentsView(f: AgentsFacts, nav: AgentsNav, now: number, v: numbe
     unread: unreadOf(f, r),
     description: rowDescription(f, r, r.key === nav.selected),
     can: { message: r.via !== null, transcript: r.listed !== null, stop: r.stopId !== null },
+    swarm: r.swarm ? { name: oneLine(r.swarm.binding.swarm, 40), said: r.swarm.said } : null,
   }))
   const sel = f.rows.find(r => r.key === nav.selected) ?? null
   const to = sel?.via ? sel.name : null
