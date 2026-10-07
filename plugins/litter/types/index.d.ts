@@ -762,7 +762,9 @@ export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
 // The agents pane (phase 5; COMMON decisions 5, 6, 16): agents, their
 // inboxes and transcripts, a composer and [Stop]. Built by
 // hooks/agents/view.ts, drawn by hooks/agents/pane.tsx. Texts are cleaned and
-// cut; colors are theme keys with a word or glyph beside each.
+// cut; colors are theme keys with a word or glyph beside each. Phase 5b
+// (WP-DF): only teams that run unless asked, the picker's and the roster's
+// descriptions, and the transcript a window the wheel moves.
 
 /** A status as drawn: its word, and the glyph and color beside it (15.6); `dim` for a member not in this session. */
 export type AgentsStatus = { text: string; glyph: string; color: string; dim?: boolean }
@@ -777,6 +779,10 @@ export type AgentsRow = {
   status: AgentsStatus
   /** Entries in its inbox, all unread (the engine drops one once it's delivered); null when it has no inbox or it couldn't be read. */
   unread: number | null
+  /** The focused row's description (WP-DF): the selected agent's last report or tool, else its task's own words when they aren't its name; '' for none. */
+  description: string
+  /** What its right-click menu offers today: a message where one reaches it, its transcript where this session has it, [Stop] where it's running or waiting. */
+  can: { message: boolean; transcript: boolean; stop: boolean }
 }
 
 /** One pending inbox entry: who it's from, when, and its text in at most 3 lines. */
@@ -788,21 +794,53 @@ export type AgentsSelected = {
   name: string
   /** Null when it has no inbox (it isn't a team's member). */
   inbox: { entries: AgentsInboxEntry[]; hidden: number; error: string | null } | null
-  /** Null for a member not in this session: its transcript is its own session's. */
-  transcript: { readable: boolean; lines: SwarmSpan[]; total: number; more: boolean } | null
-  /** How [Send] reaches it, in words; null when nothing here sends to it (this session's own lead). */
+  /**
+   * Null for a member not in this session: its transcript is its own
+   * session's. `lines`: its last 200 lines, oldest first, which the pane
+   * shows a window of (the wheel moves it; the hub keeps its offset from the
+   * newest, `agents:lines`); each line is spans, a sender's name and a tool's
+   * name in their own colors (WP-DF). `total`: every line it has.
+   */
+  transcript: { readable: boolean; lines: SwarmSpan[][]; total: number } | null
+  /** How [Send] reaches it, in words; null when nothing here sends to it (this session's own lead, a team that ended). */
   sendNote: string | null
   /** [Stop], for this session's agents that are running or waiting; `armed` while a second press stops it (decision 6). */
   stop: { armed: boolean } | null
 }
 
+/** One choice of the picker (WP-DF): this session, or a team. */
+export type AgentsOption = {
+  /** Its scope token: `session`, or `team.<name, URI-encoded>`. */
+  value: string
+  label: string
+  /** Its members; null for this session. */
+  members: number | null
+  /**
+   * Whether it's running (WP-DF §0): this session; a team this session lists
+   * a member of or leads, or whose lead session the engine's registry lists.
+   * Null when the registry can't be read, so nobody can tell.
+   */
+  active: boolean | null
+  /** The focused row's description: its lead's folder, when it was made, its members. */
+  description: string
+}
+
 export type AgentsBody = {
-  title: SwarmSpan[]
+  /** The body's first line: `this session`, or `team <name>` (the name null for this session), then its note, muted. */
+  head: { team: string | null; note: string }
   notice: SwarmNotice | null
+  /** The team shown isn't running: the one notice that says so, and there's no composer (WP-DF §0); null otherwise. */
+  ended: string | null
   /** The picker's value: `session`, or `team.<name, URI-encoded>`. Every key of the view carries it. */
   scope: string
-  /** This session first, then each team, newest first, with its member count. */
-  options: SwarmOption[]
+  /** This session first, then each team, newest first: the active ones, the one shown and the one named, or every team with [Show all]. */
+  options: AgentsOption[]
+  /** Teams left out of the picker because they ended; 0 with [Show all]. */
+  hiddenTeams: number
+  /** [Show all] is on: the ended teams are listed too. */
+  showAll: boolean
+  /** [Change] opened the picker where it's folded to one line (inline, a short pane). */
+  picking: boolean
   rows: AgentsRow[]
   /** Rows past the cap, not shown. */
   hiddenRows: number

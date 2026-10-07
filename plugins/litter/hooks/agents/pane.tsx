@@ -15,19 +15,30 @@
 // team's member (decision 5): "queued" is all a send can say. [Stop] is
 // TaskStop through `p.callTool` on a second press within 5 s (decision 6),
 // which litter's own TaskStop hook sees as it sees the model's.
+//
+// Phase 5b (WP-DF): only teams that run, unless asked (view.ts says how it
+// tells); the picker a strip or the chrome's list; the roster a list with a
+// right-click menu (Message, Transcript, Stop); the transcript in words, a
+// window over its last 200 lines pinned at the newest; the composer a framed
+// field; and the body keeps to the rows the hub gives it. The body has three
+// scrolled things (the picker's list, the roster, the transcript), so the
+// wheel hit-tests which one it's over (agentsTops, kept in step with the
+// render) and passes on over the rest or at an edge (COMMON-5B, "The wheel").
 
 import type { RenderElement } from 'claude-code'
 import type { Ports, ToolCallResult } from '../ports'
-import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook } from '../hooktypes'
-import type { AgentsBody, AgentsPaneView, AgentsRow, AgentsSelected, SwarmNotice, SwarmOption } from '../../types/index'
+import type { CommandRunHook, PaneElements, PaneUiHandlers, PortHook, UiScrollHook } from '../hooktypes'
+import type { AgentsBody, AgentsInboxEntry, AgentsPaneView, AgentsRow, AgentsSelected, SwarmNotice } from '../../types/index'
 import type { TeamInfo } from '../uitypes'
 import type { AgentsFacts, RowFacts } from './view'
-import type { BodyContext, SectionMeta } from '../ui/chrome'
 import type { Loaded } from '../ui/hub'
-import { button, buttons, header, input, line, section, select, tableFor } from '../swarm/builder'
+import { tableFor } from '../swarm/builder'
 import { clean, oneLine } from '../swarm/view'
-import { STYLE } from '../ui/style'
-import { openSection } from '../ui/hub'
+import { MARK, NOTICE_STYLE, STYLE, type NoticeLevel } from '../ui/style'
+import { actions, empty, field, fieldRows, heading, headingPlan, MIN_RULE, notice, packItems, RULE, RULE_TAIL, spansLine, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
+import { list, listPlace, pageOf, scrolled, type ListAction, type ListSpec } from '../ui/list'
+import { lastDrawn } from '../ui/drawn'
+import { listOffset, moveList, openSection } from '../ui/hub'
 import {
   SESSION_SCOPE,
   agentsNavOf,
@@ -48,12 +59,12 @@ import {
   scopeOf,
   scopeWords,
   setAgentsNav,
+  teamEnded,
   teamOfScope,
 } from './view'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
-const noop = (): void => {}
 
 // ---------------------------------------------------------------------------
 // The command, and drawing
@@ -75,8 +86,11 @@ async function drawAgents(p: Ports, force = false): Promise<AgentsFacts | null> 
   const now = await p.now()
   const key = `${factsStamp(facts)}|${agentsNavRev()}|${armedLive(n, now)}`
   if (force || key !== lastKey) {
-    await p.setView('agents', agentsView(facts, n, now, ++viewSeq))
+    const view = agentsView(facts, n, now, ++viewSeq)
+    await p.setView('agents', view)
+    lastView = view
     lastKey = key
+    await keepLinesPlace(p, view)
   }
   if (savedRev !== agentsNavRev() || agentsTextDirty()) {
     savedRev = agentsNavRev()
@@ -88,157 +102,587 @@ async function drawAgents(p: Ports, force = false): Promise<AgentsFacts | null> 
 /** `/litter agents [team]` (ui/hub.ts's litterCommand): shows Agents on that team in the `litter` pane. */
 export const agentsCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'agents', e.args ?? '', { focus: true })).text })
 
-/** Agents' load (openSection): the team named, else this session's agents; answers the reply's line. */
+/**
+ * Agents' load (openSection): the team named, shown even when it ended (on
+ * purpose); with no team, the team it showed if that still runs, else this
+ * session's agents (WP-DF §0). Answers the reply's line.
+ */
 export async function loadAgents(p: Ports, args: string): Promise<Loaded> {
   await restoreAgentsNav(p)
   const arg = clean(args, 200).trim()
+  if (arg === '') {
+    const facts = await reopen(p)
+    return { text: `Agents shows ${shownWords(agentsNavOf()?.team ?? null, facts?.rows.length ?? 0)}` }
+  }
   let team: string | null = null
   let notice: SwarmNotice | null = null
-  if (arg !== '') {
-    let list: TeamInfo[] = []
-    let why = ''
-    try {
-      list = await deps.teams(p)
-    } catch (err) {
-      why = ` (the teams couldn't be read: ${oneLine(errText(err), 160)})`
-    }
-    const found = list.find(t => t.name === arg) ?? list.find(t => t.dir === arg) ?? null
-    if (found) team = found.name
-    else notice = { level: 'warning', text: `there's no team named ${oneLine(arg, 60)}${why}, so this session's agents are shown: the picker lists the teams` }
+  let list: TeamInfo[] = []
+  let why = ''
+  try {
+    list = await deps.teams(p)
+  } catch (err) {
+    why = ` (the teams couldn't be read: ${oneLine(errText(err), 160)})`
   }
-  // What was typed before stays, in a field drawn afresh.
+  const found = list.find(t => t.name === arg) ?? list.find(t => t.dir === arg) ?? null
+  if (found) team = found.name
+  else notice = { level: 'warning', text: `there's no team named ${oneLine(arg, 60)}${why}, so this session's agents are shown: the picker lists the teams that run` }
+  // What was typed before stays, in a field drawn afresh; [Show all] too.
   const prev = agentsNavOf()
   const text = prev?.text ?? ''
-  setAgentsNav({ ...blankAgentsNav(team), text, gen: (prev?.gen ?? 0) + 1, field: text, notice })
+  setAgentsNav({ ...blankAgentsNav(team), text, gen: (prev?.gen ?? 0) + 1, field: text, notice, showAll: prev?.showAll ?? false, named: team ?? prev?.named ?? null })
   const facts = await drawAgents(p, true)
-  const count = facts?.rows.length ?? 0
-  const what = team === null ? `this session's ${plural(count, 'agent')}` : `team ${oneLine(team, 60)}'s ${plural(count, 'member')}`
-  return { text: `Agents shows ${what}` }
+  return { text: `Agents shows ${shownWords(team, facts?.rows.length ?? 0)}` }
 }
 
-/** Agents from the strip or Home: the scope it showed, drawn again, else this session's agents. */
+const shownWords = (team: string | null, count: number): string => (team === null ? `this session's ${plural(count, 'agent')}` : `team ${oneLine(team, 60)}'s ${plural(count, 'member')}`)
+
+/**
+ * Agents opened with no team (the strip, Home, `/litter agents`): what it
+ * showed, if that's this session or a team that still runs; a remembered
+ * team that ended (or is gone) isn't reopened, and the notice says so once
+ * (WP-DF §0). Selection, [More] and an armed stop go with a team left.
+ */
+async function reopen(p: Ports): Promise<AgentsFacts | null> {
+  const prev = agentsNavOf()
+  if (!prev) setAgentsNav(blankAgentsNav(null))
+  else if (prev.team !== null && teamEnded(await gather(p, prev), prev.team)) {
+    const name = oneLine(prev.team, 60)
+    setAgentsNav({ ...prev, team: null, selected: null, armed: null, picking: false, notice: { level: 'info', text: `team ${name} ended, so this session's agents are shown` } })
+  }
+  return drawAgents(p, true)
+}
+
+/** Agents from the strip or Home: the scope it showed while that still runs, else this session's agents. */
 export async function resumeAgents(p: Ports): Promise<void> {
   await restoreAgentsNav(p)
-  if (agentsNavOf()) await drawAgents(p, true)
-  else await loadAgents(p, '')
+  await reopen(p)
 }
 
 // ---------------------------------------------------------------------------
-// The render
+// The render (phase 5b, WP-DF)
+//
+// No title line of its own: the first line is what's shown ("this session",
+// or "team <name>") and its counts. Then what needs you (a team that ended,
+// the last action's outcome, what couldn't be read), the picker, the roster
+// (the chrome's list, with a right-click menu on the terminal and the
+// desktop), the selected agent's [Stop], its inbox and its transcript under
+// headings, and the composer. agentsPlan shares the body's rows (ctx.rows)
+// among them, so nothing is drawn past them: the lists window themselves,
+// the inbox shows its newest entries, the transcript a window of its lines.
 
-/** Agents to the hub (chrome.tsx's SectionMeta): drawn whole for now, no keys of its own. */
-export const agentsSection: SectionMeta<AgentsPaneView> = { fits: false, keys: () => [] }
+/** The picker is a strip of Buttons up to this many choices, the chrome's list past it. */
+export const STRIP_CHOICES = 4
+/** The picker list's window at most. */
+export const PICKER_ROWS = 5
+/** Under this many body rows, or inline, the picker folds to one line with [Change]. */
+export const SHORT_ROWS = 24
+/** The roster's window inline, and the share it keeps before the selected agent's detail takes the rest. */
+export const ROSTER_ROWS = 8
+/** The fewest roster rows the dock keeps. */
+const ROSTER_MIN = 3
+/** The transcript's window: at least this many lines in the dock while there are as many; inline, this many. */
+export const LINES_MIN = 6
+export const LINES_INLINE = 8
+/** The inbox's rows before the transcript takes the rest. */
+const INBOX_FIRST = 8
+/** The lists' ids: the hub keeps each window by it, and its footer's keys are `<id>:up` and `<id>:down`. */
+export const PICKER_LIST = 'agents:scopes'
+export const ROSTER_LIST = 'agents:roster'
+/** The transcript's window: the hub keeps its offset by this id too, counted from the newest line (0: pinned there). */
+export const LINES_LIST = 'agents:lines'
+
+/** Agents to the hub (chrome.tsx's SectionMeta): its body keeps to ctx.rows; its keys. */
+export const agentsSection: SectionMeta<AgentsPaneView> = {
+  fits: true,
+  keys: view =>
+    (view?.body?.rows.length ?? 0) > 0
+      ? [
+          { key: 'right-click', word: "an agent's actions" },
+          { key: 'wheel', word: 'scrolls the list or the transcript under it' },
+        ]
+      : [],
+}
+
+/** What the planner reads of the context. */
+export type AgentsCtx = Pick<BodyContext, 'surface' | 'bodyColumns' | 'rows' | 'placement' | 'focused' | 'lists'>
+
+/**
+ * How the body shares its rows: the picker's form and window, the roster's
+ * window, the inbox's rows under its heading, the transcript's window of
+ * lines and whether its footer line (`↑ n earlier · ↓ n newer`) is drawn.
+ */
+export type AgentsPlan = { picker: 'strip' | 'list' | 'folded'; pickerRows: number; rosterRows: number; inboxRows: number; linesRows: number; linesFooter: boolean }
+
+const noticeText = (n: { level: NoticeLevel; text: string }): string => `${NOTICE_STYLE[n.level].glyph} ${n.text}`
+const buttonRows = (labels: readonly string[], columns: number): number =>
+  labels.length === 0 ? 0 : packItems(labels.map(label => ({ kind: 'button' as const, label })), Number.isFinite(columns) ? columns : Number.POSITIVE_INFINITY).length
+
+/** The transcript's window over `count` lines: `rows` of them, ending `offset` lines before the newest (clamped), and how many lie each way. Pure. */
+export type LinesWindow = { start: number; end: number; earlier: number; newer: number; offset: number; max: number }
+
+export function linesWindow(count: number, offset: number, rows: number): LinesWindow {
+  const n = Math.max(0, Math.floor(count))
+  const b = Math.max(1, Math.floor(Number.isFinite(rows) ? rows : n || 1))
+  const max = Math.max(0, n - b)
+  const o = Math.min(max, Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0)))
+  const end = n - o
+  const start = Math.max(0, end - b)
+  return { start, end, earlier: start, newer: n - end, offset: o, max }
+}
+
+/** The footer's words: what lies above and below the window. */
+export const linesFooterText = (w: LinesWindow): string => [w.earlier > 0 ? `↑ ${w.earlier} earlier` : '', w.newer > 0 ? `↓ ${w.newer} newer` : ''].filter(x => x !== '').join(' · ')
+
+/** The surfaces the wheel reaches (the hub notes a drawing for the terminal; the desktop has a pointer): elsewhere the footer is Buttons. */
+const wheeled = (surface: string): boolean => surface === 'terminal' || surface === 'desktop'
+
+/** The picker as the chrome's list: this session, then each team with its members and whether it runs; the focused one's description beside or under it. */
+export function pickerSpec(body: AgentsBody, rows: number): ListSpec {
+  return {
+    id: PICKER_LIST,
+    rows,
+    items: body.options.map(o => ({
+      key: `agents:scope:${o.value}`,
+      label: o.label,
+      cells: [
+        { text: o.members === null ? '' : plural(o.members, 'member'), color: STYLE.muted },
+        o.members === null || o.active === null
+          ? { text: '' }
+          : o.active
+            ? { text: `${MARK.running.glyph} running`, color: MARK.running.color }
+            : { text: `${MARK.stopped.glyph} ended`, color: MARK.stopped.color },
+      ],
+      description: o.description,
+      selected: o.value === body.scope,
+    })),
+    columns: [{ drop: 1 }, { drop: 2 }],
+  }
+}
+
+/** A row's status as drawn: its glyph and word. */
+const statusWords = (s: AgentsRow['status']): string => (s.glyph ? `${s.glyph} ${s.text}` : s.text)
+
+/**
+ * The roster as the chrome's list: each row its name, its type muted, its
+ * status (glyph, word, color) and `✉ n` unread in the warning color; the
+ * type drops first when narrow. Its menu: Message, Transcript and Stop,
+ * each where it applies today (decision 6's confirm stays on Stop).
+ */
+export function rosterSpec(body: AgentsBody, rows: number): ListSpec {
+  const scope = body.scope
+  return {
+    id: ROSTER_LIST,
+    rows,
+    items: body.rows.map(r => {
+      const arg = rowArg(scope, r.key)
+      const actions: ListAction[] = []
+      if (r.can.message) actions.push({ key: `agents:message:${arg}`, label: 'Message' })
+      if (r.can.transcript) actions.push({ key: `agents:transcript:${arg}`, label: 'Transcript' })
+      if (r.can.stop) actions.push({ key: `agents:stop:${arg}`, label: 'Stop', color: STYLE.failed })
+      return {
+        key: `agents:select:${arg}`,
+        label: r.name,
+        cells: [
+          { text: r.type, color: STYLE.muted },
+          { text: statusWords(r.status), color: r.status.dim ? STYLE.muted : r.status.color },
+          { text: r.unread !== null && r.unread > 0 ? `✉ ${r.unread}` : '', color: STYLE.warning },
+        ],
+        ...(r.description !== '' ? { description: r.description } : {}),
+        selected: body.selected?.key === r.key,
+        ...(actions.length > 0 ? { actions } : {}),
+      }
+    }),
+    columns: [{ drop: 1 }, { drop: 0 }, { drop: 0 }],
+    empty: body.scope === SESSION_SCOPE ? 'no agent in this session yet' : 'no member to show',
+  }
+}
+
+/**
+ * The inbox's entries that fit `rows` rows: the newest whole ones, and a line
+ * counting what's left out when there's a row for it; the newest cut to the
+ * rows when even it doesn't fit. What's drawn never takes more. Pure.
+ */
+export function inboxFit(
+  entries: readonly AgentsInboxEntry[],
+  hidden: number,
+  rows: number,
+): { kept: AgentsInboxEntry[]; left: number; leftLine: boolean; rows: number } {
+  const all = entries.reduce((n, e) => n + e.lines.length, 0)
+  if (all + (hidden > 0 ? 1 : 0) <= rows) return { kept: [...entries], left: hidden, leftLine: hidden > 0, rows: all + (hidden > 0 ? 1 : 0) }
+  const room = rows >= 2 ? Math.floor(rows) - 1 : 1
+  const kept: AgentsInboxEntry[] = []
+  let used = 0
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!
+    if (used + e.lines.length > room) {
+      if (kept.length === 0) {
+        kept.unshift({ ...e, lines: e.lines.slice(0, room) })
+        used = room
+      }
+      break
+    }
+    kept.unshift(e)
+    used += e.lines.length
+  }
+  const left = hidden + entries.length - kept.length
+  const leftLine = left > 0 && rows >= 2
+  return { kept, left, leftLine, rows: used + (leftLine ? 1 : 0) }
+}
+
+/** The rows the inbox draws under its heading at a budget of `rows`: one for a note in place of entries. */
+function inboxDrawn(sel: AgentsSelected, rows: number): number {
+  const inbox = sel.inbox
+  if (inbox === null || inbox.error !== null || inbox.entries.length === 0) return 1
+  return inboxFit(inbox.entries, inbox.hidden, rows).rows
+}
+
+/** The inbox's rows it would take whole. */
+const inboxWant = (sel: AgentsSelected): number => inboxDrawn(sel, Number.POSITIVE_INFINITY)
+
+/** The transcript's lines to window: 0 when a note stands in for them. */
+const linesOf = (sel: AgentsSelected | null): number => {
+  const t = sel?.transcript
+  return t && t.readable ? t.lines.length : 0
+}
+
+/** The transcript's window and footer in `room` rows (at least one): every line when they fit, else the footer takes a row. */
+function linesIn(count: number, room: number): { linesRows: number; linesFooter: boolean } {
+  if (count <= room) return { linesRows: Math.max(1, count), linesFooter: false }
+  if (room < 2) return { linesRows: 1, linesFooter: false }
+  return { linesRows: Math.floor(room) - 1, linesFooter: true }
+}
+
+/** The rows the transcript draws under its heading: its window and footer, or one note. */
+const linesDrawn = (sel: AgentsSelected, plan: AgentsPlan): number => (linesOf(sel) === 0 ? 1 : plan.linesRows + (plan.linesFooter ? 1 : 0))
+
+/** The rows the ended notice and its [This session's agents], the notice and the problems take: drawn above the picker. */
+function topRows(body: AgentsBody, cols: number): number {
+  let n = 0
+  if (body.ended) n += textRows(noticeText({ level: 'warning', text: body.ended }), cols) + 1
+  if (body.notice) n += textRows(noticeText(body.notice), cols)
+  for (const x of body.problems) n += textRows(noticeText({ level: 'warning', text: x }), cols)
+  return n
+}
+
+/** The composer's rows: its field (or the line saying where messages are typed) and its Buttons. */
+function composerRows(body: AgentsBody, ctx: AgentsCtx): number {
+  if (!body.composer) return 0
+  const labels = [body.composer.to !== null && body.selected !== null ? 'Send' : '', body.broadcast !== null ? `Broadcast to ${body.broadcast}` : ''].filter(l => l !== '')
+  return (ctx.surface === 'mobile' ? 1 : fieldRows(ctx.surface, true)) + buttonRows(labels, ctx.bodyColumns)
+}
+
+/** The ended teams' line under the picker: drawn while some are hidden, or [Show all] is on. */
+const hiddenLineRows = (body: AgentsBody): number => (body.hiddenTeams > 0 || body.showAll ? 1 : 0)
+
+/** No picker at all: this session is the only choice, and no ended team was left out. */
+const noChoice = (body: AgentsBody): boolean => body.options.length <= 1 && body.hiddenTeams === 0 && !body.showAll
+
+/** The picker's rows in a form: none with no choice; one folded; the strip's Buttons wrapping past `Show`; the list under its heading, the ended line, the roster's heading. */
+function pickerHeight(body: AgentsBody, ctx: AgentsCtx, form: AgentsPlan['picker'], rows: number): number {
+  const cols = ctx.bodyColumns
+  if (noChoice(body)) return 0
+  if (form === 'folded') return 1
+  // `Show` and a gap, then the Buttons wrapping in what's left.
+  if (form === 'strip') return Math.max(1, buttonRows(body.options.map(o => o.label), Number.isFinite(cols) ? cols - 5 : cols)) + hiddenLineRows(body)
+  return 1 + listPlace(pickerSpec(body, rows), ctx).height + hiddenLineRows(body) + 1
+}
+
+/** The roster's rows at a window of `rows`: the list's, or the line in place of none. */
+const rosterHeight = (body: AgentsBody, ctx: AgentsCtx, rows: number): number => (body.rows.length === 0 ? 1 : listPlace(rosterSpec(body, rows), ctx).height)
+
+/**
+ * The plan: what every layout draws in full first (the first line, the
+ * notices, [Stop], the composer, the headings), then the picker (folded on
+ * a short or inline body, unless [Change] opened it), then the roster's
+ * three rows, a row of the inbox and the transcript's six lines, then the
+ * rest: the roster up to 8, the inbox up to 8, the transcript all it has
+ * (the rest of the body: the wheel moves its window), the inbox, the roster
+ * again. Inline, nothing bounds it: the roster's window is 8, the
+ * transcript's 8, the inbox whole. Pure.
+ */
+export function agentsPlan(body: AgentsBody, ctx: AgentsCtx): AgentsPlan {
+  const cols = ctx.bodyColumns
+  const sel = body.selected
+  const many = body.options.length > STRIP_CHOICES
+  const unfolded: AgentsPlan['picker'] = many ? 'list' : 'strip'
+  const lines = linesOf(sel)
+  const bounded = ctx.placement === 'dock' && Number.isFinite(ctx.rows)
+  if (!bounded) {
+    const window = lines <= LINES_INLINE ? { linesRows: Math.max(1, lines), linesFooter: false } : { linesRows: LINES_INLINE, linesFooter: true }
+    return { picker: body.picking ? unfolded : 'folded', pickerRows: Math.min(PICKER_ROWS, body.options.length), rosterRows: ROSTER_ROWS, inboxRows: Number.POSITIVE_INFINITY, ...window }
+  }
+  let fixed = 1 + topRows(body, cols) + composerRows(body, ctx)
+  if (body.hiddenRows > 0) fixed += 1
+  if (sel?.stop) fixed += 1
+  if (sel) fixed += 2
+  const count = body.rows.length
+  const iWant = sel ? inboxWant(sel) : 0
+  // The transcript's least: six lines and the footer, or every line when there are fewer; a note's one row.
+  const lMin = !sel ? 0 : lines === 0 ? 1 : lines <= LINES_MIN ? lines : LINES_MIN + 1
+  const mins = (b: number): number => rosterHeight(body, ctx, b) + (sel ? Math.min(1, iWant) + lMin : 0)
+
+  let picker: AgentsPlan['picker'] = ctx.rows < SHORT_ROWS && !body.picking ? 'folded' : unfolded
+  let pickerRows = Math.min(PICKER_ROWS, body.options.length)
+  const rosterMin = Math.max(1, Math.min(count, ROSTER_MIN))
+  // A list picker gives up rows, then folds, before the roster goes under its three.
+  while (picker === 'list' && pickerRows > 2 && ctx.rows - fixed - pickerHeight(body, ctx, picker, pickerRows) < mins(rosterMin)) pickerRows--
+  if (picker !== 'folded' && !body.picking && ctx.rows - fixed - pickerHeight(body, ctx, picker, pickerRows) < mins(rosterMin)) picker = 'folded'
+  let left = ctx.rows - fixed - pickerHeight(body, ctx, picker, pickerRows)
+
+  let rosterRows = rosterMin
+  left -= rosterHeight(body, ctx, rosterRows)
+  let inboxRows = sel ? Math.min(1, iWant) : 0
+  left -= inboxRows
+  // What the transcript has, at least a row: less than six when the body is that short.
+  let linesRoom = sel ? Math.max(1, Math.min(lMin, left)) : 0
+  left -= linesRoom
+  // The roster grows a row at a time while the rows it takes fit: up to 8 with an agent selected, else all.
+  const grow = (cap: number): void => {
+    while (rosterRows < Math.min(count, cap)) {
+      const more = rosterHeight(body, ctx, rosterRows + 1) - rosterHeight(body, ctx, rosterRows)
+      if (more > left) break
+      left -= more
+      rosterRows++
+    }
+  }
+  grow(sel ? ROSTER_ROWS : count)
+  if (sel) {
+    const i = Math.max(0, Math.min(Math.min(iWant, INBOX_FIRST) - inboxRows, left))
+    inboxRows += i
+    left -= i
+    if (lines > 0) {
+      // Every line, with no footer, else all the rest (and the footer takes a row of it).
+      const t = Math.max(0, Math.min(lines - linesRoom, left))
+      linesRoom += t
+      left -= t
+    }
+    const j = Math.max(0, Math.min(iWant - inboxRows, left))
+    inboxRows += j
+    left -= j
+    grow(count)
+  }
+  return { picker, pickerRows: Math.max(1, pickerRows), rosterRows: Math.max(1, rosterRows), inboxRows, ...linesIn(lines, Math.max(1, linesRoom)) }
+}
+
+/**
+ * Where the scrolled parts start, in rows from the body's first, and the
+ * rows each takes: the picker's list (null unless it's a list), the roster's
+ * (null with no rows) and the transcript's window (null with nothing to
+ * window). Kept in step with renderAgentsPane, part by part: the wheel's
+ * hit test (onAgentsScroll) reads it. Pure.
+ */
+export type AgentsTops = {
+  plan: AgentsPlan
+  picker: { top: number; height: number } | null
+  roster: { top: number; height: number } | null
+  lines: { top: number; height: number } | null
+}
+
+export function agentsTops(body: AgentsBody, ctx: AgentsCtx): AgentsTops {
+  const plan = agentsPlan(body, ctx)
+  const cols = ctx.bodyColumns
+  const sel = body.selected
+  // The first line, then what needs you.
+  let at = 1 + topRows(body, cols)
+  // The picker's list sits under its `Show` heading.
+  const picker = plan.picker === 'list' ? { top: at + 1, height: listPlace(pickerSpec(body, plan.pickerRows), ctx).height } : null
+  at += pickerHeight(body, ctx, plan.picker, plan.pickerRows)
+  const rosterRows = rosterHeight(body, ctx, plan.rosterRows)
+  const roster = body.rows.length > 0 ? { top: at, height: rosterRows } : null
+  at += rosterRows
+  if (body.hiddenRows > 0) at += 1
+  if (!sel) return { plan, picker, roster, lines: null }
+  if (sel.stop) at += 1
+  // The inbox's heading and rows, then the transcript's heading.
+  at += 1 + inboxDrawn(sel, plan.inboxRows) + 1
+  const lines = linesOf(sel) > 0 ? { top: at, height: linesDrawn(sel, plan) } : null
+  return { plan, picker, roster, lines }
+}
+
+/** A heading whose title ends in a name drawn in the name color (WP-DF; the chrome's heading has one color): `team <name>`, `Inbox · <name>`. */
+function namedHeading(el: PaneElements, label: string, name: string, columns: number, note?: string | null): RenderElement {
+  const { Box, Text } = el
+  const whole = `${label}${name}`
+  const plan = headingPlan(whole, columns, note ?? null)
+  const title =
+    plan.title === whole ? (
+      <Box flexDirection="row">
+        <Text bold color={STYLE.heading}>
+          {label}
+        </Text>
+        <Text bold color={STYLE.name}>
+          {name}
+        </Text>
+      </Box>
+    ) : (
+      <Text bold color={STYLE.heading} wrap="truncate-end">
+        {plan.title}
+      </Text>
+    )
+  return (
+    <Box flexDirection="row" columnGap={1}>
+      {title}
+      {Number.isFinite(plan.rule) ? (
+        <Text color={STYLE.faint}>{RULE.repeat(plan.rule)}</Text>
+      ) : (
+        <Box flexGrow={1} width={0} minWidth={MIN_RULE} height={1} overflow="hidden">
+          <Text color={STYLE.faint} wrap="wrap">
+            {RULE.repeat(400)}
+          </Text>
+        </Box>
+      )}
+      {plan.note !== null ? (
+        <Text color={STYLE.muted} wrap="truncate-end">
+          {plan.note}
+        </Text>
+      ) : null}
+      {plan.note !== null ? <Text color={STYLE.faint}>{RULE.repeat(RULE_TAIL)}</Text> : null}
+    </Box>
+  )
+}
 
 /** Agents' body renderer (ui/pane.tsx calls it with the agentsPane atom under the hub's chrome). Pure. */
 export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElements, ctx: BodyContext): RenderElement {
   const el = tableFor(resolved, ctx.surface)
   const { Box, Text } = el
   const body = view?.body
-  if (!body) {
+  if (!body) return empty(el, 'nothing to show yet', { command: '/litter agents', does: "opens this session's agents" })
+  const plan = agentsPlan(body, ctx)
+  const cols = ctx.bodyColumns
+  const sel = body.selected
+  return (
+    <Box flexDirection="column">
+      {body.head.team === null ? heading(el, 'this session', cols, body.head.note) : namedHeading(el, 'team ', body.head.team, cols, body.head.note)}
+      {body.ended ? (
+        <Box flexDirection="column">
+          {notice(el, 'warning', body.ended)}
+          {/* Its own key: the picker's strip has this session's too, and a key is drawn once. */}
+          {actions(el, [{ key: `agents:leave:${SESSION_SCOPE}`, label: "This session's agents", primary: true }])}
+        </Box>
+      ) : null}
+      {body.notice ? notice(el, body.notice.level, body.notice.text) : null}
+      {body.problems.map(x => notice(el, 'warning', x))}
+      {pickerPart(el, body, plan, ctx)}
+      {rosterPart(el, body, plan, ctx)}
+      {body.hiddenRows > 0 ? <Text color={STYLE.muted}>{`${body.hiddenRows} more not shown`}</Text> : null}
+      {sel ? stopPart(el, body.scope, sel) : null}
+      {sel ? inboxPart(el, sel, plan.inboxRows, cols) : null}
+      {sel ? transcriptPart(el, sel, plan, ctx) : null}
+      {composerPart(el, body, ctx)}
+    </Box>
+  )
+}
+
+// `h` and `Fragment` are the environment's JSX factory, so no name here takes them.
+
+/** The picker: one line with [Change] when folded, a strip of Buttons for a few choices, else the chrome's list; then the ended teams it left out, with [Show all]. */
+function pickerPart(el: PaneElements, body: AgentsBody, plan: AgentsPlan, ctx: BodyContext): RenderElement | null {
+  const { Box, Text } = el
+  if (noChoice(body)) return null
+  const shown = body.options.find(o => o.value === body.scope)
+  if (plan.picker === 'folded') {
+    const others = body.options.length - 1
+    const note = [others > 0 ? plural(others, 'other') : '', body.hiddenTeams > 0 ? `${body.hiddenTeams} ended hidden` : ''].filter(x => x !== '').join(', ')
     return (
-      <Box flexDirection="column">
-        <Text bold>litter · agents</Text>
-        <Text dimColor>nothing to show yet: /litter agents opens this session's agents</Text>
+      <Box flexDirection="row" columnGap={1}>
+        <Text color={STYLE.muted}>Show</Text>
+        <Text color={body.head.team === null ? STYLE.label : STYLE.name} wrap="truncate-end">
+          {shown?.label ?? (body.head.team ?? 'this session')}
+        </Text>
+        {note !== '' ? <Text color={STYLE.muted} wrap="truncate-end">{`· ${note}`}</Text> : null}
+        {actions(el, [{ key: 'agents:picker:open', label: 'Change' }])}
       </Box>
     )
   }
-  const scope = typeof body.scope === 'string' ? body.scope : SESSION_SCOPE
-  const rows = body.rows ?? []
-  const sel = body.selected ?? null
-  const session = scope === SESSION_SCOPE
+  const hidden =
+    body.hiddenTeams > 0 || body.showAll ? (
+      <Box flexDirection="row" columnGap={1}>
+        <Text color={STYLE.muted} wrap="truncate-end">
+          {body.showAll ? 'every team shown, the ended ones too' : `${plural(body.hiddenTeams, 'ended team')} hidden`}
+        </Text>
+        {actions(el, [body.showAll ? { key: 'agents:teams:running', label: 'Running only' } : { key: 'agents:teams:all', label: 'Show all' }])}
+      </Box>
+    ) : null
+  if (plan.picker === 'strip') {
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={STYLE.muted}>Show</Text>
+          {actions(
+            el,
+            body.options.map(o => ({ key: `agents:scope:${o.value}`, label: o.label, primary: o.value === body.scope })),
+          )}
+        </Box>
+        {hidden}
+      </Box>
+    )
+  }
   return (
     <Box flexDirection="column">
-      {header(el, body.title, body.notice ?? null)}
-      {pickerPart(el, scope, body.options ?? [])}
-      {section(el, session ? 'Agents' : 'Members')}
-      {rows.length === 0 && <Text dimColor>{session ? 'no agent in this session yet' : 'no member to show'}</Text>}
-      {rows.map(r => rowPart(el, scope, r, sel?.key === r.key))}
-      {(body.hiddenRows ?? 0) > 0 && <Text dimColor>{`${body.hiddenRows} more not shown`}</Text>}
-      {(body.problems ?? []).map(x => (
-        <Text color={STYLE.warning} wrap="wrap">{`! ${x}`}</Text>
-      ))}
-      {sel === null && rows.length > 0 && <Text dimColor>press a row for its inbox, its transcript and the composer</Text>}
-      {sel && inboxPart(el, sel)}
-      {sel && transcriptPart(el, scope, sel)}
-      {sel && stopPart(el, scope, sel)}
-      {composerPart(el, body, scope)}
+      {heading(el, 'Show', ctx.bodyColumns, plural(body.options.length - 1, 'team'))}
+      {list(el, pickerSpec(body, plan.pickerRows), ctx)}
+      {hidden}
+      {heading(el, body.scope === SESSION_SCOPE ? 'Agents' : 'Members', ctx.bodyColumns)}
     </Box>
   )
 }
 
-/** A heading, with the agent's name in the name color (the user's convention: cyan for names). */
-function heading(el: PaneElements, label: string, name: string | null, aside?: string): RenderElement {
+/** The roster: the chrome's list, or the empty state that names the next step. */
+function rosterPart(el: PaneElements, body: AgentsBody, plan: AgentsPlan, ctx: BodyContext): RenderElement {
+  const { Text } = el
+  if (body.rows.length === 0) {
+    return body.scope === SESSION_SCOPE ? (
+      empty(el, 'no agent in this session yet', { command: '/litter swarms', does: 'builds a swarm to launch; agents the model starts show here too' })
+    ) : (
+      <Text color={STYLE.muted}>no member to show</Text>
+    )
+  }
+  return list(el, rosterSpec(body, plan.rosterRows), ctx)
+}
+
+/** [Stop], with its confirm: the first press arms it for 5 s (decision 6). Only for an agent that runs or waits, so never beside a finished one. */
+function stopPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderElement | null {
+  if (!sel.stop) return null
   const { Box, Text } = el
-  return (
-    <Box flexDirection="row" marginTop={1}>
-      <Text bold>{label}</Text>
-      {name !== null && <Text bold>{' · '}</Text>}
-      {name !== null && (
-        <Text bold color={STYLE.name}>
-          {name}
-        </Text>
-      )}
-      {aside !== undefined && <Text dimColor>{`  ${aside}`}</Text>}
-    </Box>
-  )
-}
-
-/** The picker: a Select where the surface draws one, else a button per choice. */
-function pickerPart(el: PaneElements, scope: string, options: readonly SwarmOption[]): RenderElement | null {
-  if (options.length === 0) return null
-  if ('Select' in el) return select(el, { key: 'agents:scope', label: 'Show', value: scope, options })
-  const { Box, Text } = el
-  return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-      <Text>Show</Text>
-      {options.map(o => button(el, { key: `agents:scope:${o.value}`, label: o.label, ...(o.value === scope ? { primary: true } : {}) }))}
-    </Box>
-  )
-}
-
-/** One row: its name (a plain Button: a press selects it), its type, its status as glyph and word, and its unread count. */
-function rowPart(el: PaneElements, scope: string, r: AgentsRow, selected: boolean): RenderElement {
-  const { Box, Button, Text } = el
-  const st = r.status
   return (
     <Box flexDirection="row" columnGap={1}>
-      <Text>{selected ? '›' : ' '}</Text>
-      <Button key={`agents:select:${rowArg(scope, r.key)}`} label={r.name} plain onPress={noop} />
-      {r.type !== '' && <Text dimColor>{r.type}</Text>}
-      <Text color={st.color} dimColor={st.dim === true} wrap="truncate-end">
-        {st.glyph ? `${st.glyph} ${st.text}` : st.text}
-      </Text>
-      {r.unread !== null && r.unread > 0 && <Text color={STYLE.warning}>{`✉ ${r.unread}`}</Text>}
+      {actions(el, [{ key: `agents:stop:${rowArg(scope, sel.key)}`, label: 'Stop', primary: sel.stop.armed }])}
+      {sel.stop.armed ? <Text color={STYLE.warning} wrap="truncate-end">{`[Stop] again to stop ${sel.name}`}</Text> : null}
     </Box>
   )
 }
 
-function inboxPart(el: PaneElements, sel: AgentsSelected): RenderElement {
+/** The inbox under its heading: its newest entries that fit `rows` (inboxFit; one line counts what's left out). */
+function inboxPart(el: PaneElements, sel: AgentsSelected, rows: number, columns: number): RenderElement {
   const { Box, Text } = el
   const inbox = sel.inbox
-  if (inbox === null) {
+  // The inbox is an unread queue: an empty one isn't "nothing was ever sent".
+  const head = namedHeading(el, 'Inbox · ', sel.name, columns, 'unread only')
+  if (inbox === null || inbox.error !== null || inbox.entries.length === 0) {
     return (
       <Box flexDirection="column">
-        {heading(el, 'Inbox', sel.name)}
-        <Text dimColor>no inbox: only a team's members have one</Text>
+        {head}
+        {inbox === null ? (
+          <Text color={STYLE.muted}>no inbox: only a team's members have one</Text>
+        ) : inbox.error !== null ? (
+          // One line: the problems above say it whole.
+          <Text color={NOTICE_STYLE.error.color} wrap="truncate-end">{`${NOTICE_STYLE.error.glyph} it couldn't be read: ${inbox.error}`}</Text>
+        ) : (
+          <Text color={STYLE.muted}>nothing pending</Text>
+        )}
       </Box>
     )
   }
+  const { kept, left, leftLine } = inboxFit(inbox.entries, inbox.hidden, rows)
   return (
     <Box flexDirection="column">
-      {heading(el, 'Inbox', sel.name)}
-      {/* The inbox is an unread queue: an empty one isn't "nothing was ever sent". */}
-      <Text dimColor wrap="wrap">
-        only what's unread: the engine drops a message once it's delivered
-      </Text>
-      {inbox.error !== null && <Text color={STYLE.failed} wrap="wrap">{`✕ it couldn't be read: ${inbox.error}`}</Text>}
-      {inbox.error === null && inbox.entries.length === 0 && <Text dimColor>nothing pending</Text>}
-      {inbox.hidden > 0 && <Text dimColor>{`${inbox.hidden} earlier not shown`}</Text>}
-      {inbox.entries.map(x => (
+      {head}
+      {leftLine ? <Text color={STYLE.muted}>{`${left} earlier not shown`}</Text> : null}
+      {kept.map(x => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
             <Text color={STYLE.name}>{x.from}</Text>
-            <Text dimColor>{`· ${x.at} ·`}</Text>
+            <Text color={STYLE.muted}>{`· ${x.at} ·`}</Text>
             <Text wrap="truncate-end">{x.lines[0] ?? ''}</Text>
           </Box>
           {x.lines.slice(1).map(l => (
@@ -250,60 +694,70 @@ function inboxPart(el: PaneElements, sel: AgentsSelected): RenderElement {
   )
 }
 
-function transcriptPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderElement {
+/**
+ * The transcript under its heading: a window of its lines, each its spans,
+ * ending at the newest unless the wheel moved it (the hub's offset,
+ * `agents:lines`, counted from the newest), and a muted footer saying what
+ * lies each way. Where no wheel reaches (mobile, the web), the footer is
+ * Buttons that page it.
+ */
+function transcriptPart(el: PaneElements, sel: AgentsSelected, plan: AgentsPlan, ctx: BodyContext): RenderElement {
   const { Box, Text } = el
+  const columns = ctx.bodyColumns
   const t = sel.transcript
-  if (t === null) {
+  if (t === null || !t.readable || t.lines.length === 0) {
     return (
       <Box flexDirection="column">
-        {heading(el, 'Transcript', sel.name)}
-        <Text dimColor>not in this session: its transcript is its own session's</Text>
+        {namedHeading(el, 'Transcript · ', sel.name, columns)}
+        <Text color={STYLE.muted}>{t === null ? "not in this session: its transcript is its own session's" : !t.readable ? "its transcript can't be read here" : 'nothing yet'}</Text>
       </Box>
     )
   }
+  const w = linesWindow(t.lines.length, ctx.lists?.[LINES_LIST] ?? 0, plan.linesRows)
+  const note = t.total > t.lines.length ? `last ${t.lines.length} of ${t.total}` : plural(t.total, 'line')
+  const footer = plan.linesFooter && (w.earlier > 0 || w.newer > 0)
   return (
     <Box flexDirection="column">
-      {heading(el, 'Transcript', sel.name, t.readable && t.total > 0 ? `last ${t.lines.length} of ${t.total}` : undefined)}
-      {!t.readable && <Text dimColor>its transcript can't be read here</Text>}
-      {t.readable && t.total === 0 && <Text dimColor>nothing yet</Text>}
-      {t.lines.map(l => line(el, [l]))}
-      {(t.more || t.total > t.lines.length) && buttons(el, [{ key: `agents:more:${rowArg(scope, sel.key)}`, label: t.more ? 'Less' : 'More' }])}
+      {namedHeading(el, 'Transcript · ', sel.name, columns, note)}
+      {t.lines.slice(w.start, w.end).map(l => spansLine(el, l, columns))}
+      {footer ? (
+        wheeled(ctx.surface) ? (
+          <Text color={STYLE.muted} wrap="truncate-end">
+            {linesFooterText(w)}
+          </Text>
+        ) : (
+          actions(el, [w.earlier > 0 && { key: `${LINES_LIST}:up`, label: `↑ ${w.earlier} earlier` }, w.newer > 0 && { key: `${LINES_LIST}:down`, label: `↓ ${w.newer} newer` }])
+        )
+      ) : null}
     </Box>
   )
 }
 
-/** [Stop], with its confirm: the first press arms it for 5 s (decision 6). */
-function stopPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderElement | null {
-  if (!sel.stop) return null
-  const { Box, Text } = el
-  return (
-    <Box flexDirection="row" columnGap={1} marginTop={1}>
-      {button(el, { key: `agents:stop:${rowArg(scope, sel.key)}`, label: 'Stop', ...(sel.stop.armed ? { primary: true } : {}) })}
-      {sel.stop.armed && <Text color={STYLE.warning} wrap="truncate-end">{`[Stop] again to stop ${sel.name}`}</Text>}
-    </Box>
-  )
-}
-
-/** The composer: [Send] to the selected row, and [Broadcast to <team>] in a team's view, over one field. */
-function composerPart(el: PaneElements, body: AgentsBody, scope: string): RenderElement | null {
+/**
+ * The composer (the user's item 3): a field labelled `To <name>` (or `To
+ * every member of <team>`) with a short placeholder, its caption one muted
+ * line under the frame saying how it's sent; [Send] primary (but while a
+ * [Stop] is armed), [Broadcast to <team>] secondary. With no Input, where
+ * messages are typed.
+ */
+function composerPart(el: PaneElements, body: AgentsBody, ctx: BodyContext): RenderElement | null {
   const c = body.composer
   if (!c) return null
   const { Box, Text } = el
-  const sel = body.selected ?? null
-  const team = body.broadcast ?? null
+  const sel = body.selected
+  const team = body.broadcast
+  const label = c.to !== null ? `To ${c.to}` : `To every member of ${team ?? 'the team'}`
+  const caption = c.to !== null ? (sel?.sendNote ?? null) : `one message to each member, each reported; press a member to write to it alone`
   return (
     <Box flexDirection="column">
-      {heading(el, 'Message', c.to)}
-      {c.to !== null && sel?.sendNote && <Text dimColor wrap="wrap">{sel.sendNote}</Text>}
-      {c.to === null && team !== null && <Text dimColor wrap="wrap">{`press a member to message it, or send the same text to every member of ${team}`}</Text>}
       {'Input' in el ? (
-        input(el, { key: c.key, label: '', value: c.text, placeholder: c.to !== null ? `a message for ${c.to}` : `a message for every member of ${team}`, submitLabel: 'send' })
+        field(el, { key: c.key, label, value: c.text, placeholder: 'message', submitLabel: 'send' }, caption, { surface: ctx.surface, isFocused: ctx.isFocused, focused: ctx.focused })
       ) : (
-        <Text dimColor>messages are typed on the terminal or the desktop</Text>
+        <Text color={STYLE.muted}>messages are typed on the terminal or the desktop</Text>
       )}
-      {buttons(el, [
-        c.to !== null && sel !== null && { key: `agents:send:${rowArg(scope, sel.key)}`, label: 'Send', primary: true },
-        team !== null && { key: `agents:broadcast:${scope}`, label: `Broadcast to ${team}` },
+      {actions(el, [
+        c.to !== null && sel !== null && { key: `agents:send:${rowArg(body.scope, sel.key)}`, label: 'Send', primary: !sel.stop?.armed },
+        team !== null && { key: `agents:broadcast:${body.scope}`, label: `Broadcast to ${team}` },
       ])}
     </Box>
   )
@@ -348,7 +802,7 @@ async function rowFor(p: Ports, arg: string): Promise<RowFacts | null> {
   if (!row) {
     p.toast(`${oneLine(a.key, 40)} isn't listed any more, so that was ignored`)
     const cur = agentsNavOf()!
-    if (cur.selected === a.key) setAgentsNav({ ...cur, selected: null, more: false, armed: null })
+    if (cur.selected === a.key) setAgentsNav({ ...cur, selected: null, armed: null })
   }
   return row
 }
@@ -459,12 +913,140 @@ async function stop(p: Ports, arg: string): Promise<void> {
   say('ok', `stopped ${row.name}: ${typeof message === 'string' && message !== '' ? message : text || 'TaskStop answered with no message'}`)
 }
 
-/** A scope picked: the Select's value, or a button's where there's no Select. Selection, [More] and an armed stop go with the old scope. */
+/** A scope picked: a row of the picker's list, or a Button of its strip. Selection and an armed stop go with the old scope. */
 function pickScope(token: string): void {
   const t = teamOfScope(token)
   const n = agentsNavOf()
-  if (!t || !n || t.team === n.team) return
-  setAgentsNav({ ...n, team: t.team, selected: null, more: false, armed: null })
+  if (!t || !n) return
+  // A pick folds a picker [Change] opened, whichever it picked.
+  if (t.team === n.team) {
+    if (n.picking) setAgentsNav({ ...n, picking: false })
+    return
+  }
+  setAgentsNav({ ...n, team: t.team, selected: null, armed: null, picking: false })
+}
+
+/** The last view this module wrote: a footer's page on a surface the hub notes no drawing for (ui/drawn.ts notes the terminal's only). */
+let lastView: AgentsPaneView | null = null
+
+/** A context for a list's page where nothing was noted: unbounded, so the plan's windows are the inline ones. */
+const NOMINAL: AgentsCtx = { surface: 'desktop', bodyColumns: 100, rows: Number.POSITIVE_INFINITY, placement: 'dock', focused: null, lists: {} }
+
+/** The body and the context the lists were last drawn at: the terminal's drawing, else the last view written at NOMINAL. */
+function drawnBody(): { body: AgentsBody; ctx: AgentsCtx } | null {
+  const d = lastDrawn()
+  const noted = d && d.shown === 'agents' ? ((d.view as AgentsPaneView | null)?.body ?? null) : null
+  if (noted && d) return { body: noted, ctx: d.ctx }
+  return lastView?.body ? { body: lastView.body, ctx: NOMINAL } : null
+}
+
+/** What the wheel or a footer moves: the picker's list, the roster's, or the transcript's window. */
+export type AgentsScrolled = 'picker' | 'roster' | 'lines'
+
+/** The list a wheel tick or a footer moves: the picker's (while it's a list), else the roster's. */
+function listFor(body: AgentsBody, ctx: AgentsCtx, which: 'picker' | 'roster', plan = agentsPlan(body, ctx)): ListSpec | null {
+  if (which === 'picker') return plan.picker === 'list' ? pickerSpec(body, plan.pickerRows) : null
+  return body.rows.length > 0 ? rosterSpec(body, plan.rosterRows) : null
+}
+
+/**
+ * Moves one of the three by `by` rows (toward the top when negative) and
+ * answers whether it moved; at its edge, or with nothing there, it didn't.
+ * The transcript's offset counts from the newest line, so a tick down (by
+ * > 0) brings it nearer.
+ */
+async function moveBy(p: Ports, body: AgentsBody, ctx: AgentsCtx, which: AgentsScrolled, by: number): Promise<boolean> {
+  const plan = agentsPlan(body, ctx)
+  if (which === 'lines') {
+    const count = linesOf(body.selected)
+    if (count === 0) return false
+    const w = linesWindow(count, listOffset(LINES_LIST), plan.linesRows)
+    return moveList(p, LINES_LIST, w.offset - Math.trunc(by), w.max)
+  }
+  const spec = listFor(body, ctx, which, plan)
+  if (!spec) return false
+  const place = listPlace(spec, ctx)
+  return moveList(p, spec.id, scrolled(place.count, listOffset(spec.id), place.budget, by), place.window.max)
+}
+
+/** The rows a page moves: the window less one, so a row stays in sight. */
+function pageRows(body: AgentsBody, ctx: AgentsCtx, which: AgentsScrolled): number {
+  const plan = agentsPlan(body, ctx)
+  return pageOf(which === 'lines' ? plan.linesRows : which === 'picker' ? plan.pickerRows : plan.rosterRows)
+}
+
+/** A footer's [↑ n above] or [↓ n more] (the lists'), or the transcript's where no wheel reaches: its window a page that way. */
+async function pageList(p: Ports, which: AgentsScrolled, dir: string): Promise<void> {
+  const drawn = drawnBody()
+  if (!drawn || (dir !== 'up' && dir !== 'down')) return
+  await moveBy(p, drawn.body, drawn.ctx, which, (dir === 'up' ? -1 : 1) * pageRows(drawn.body, drawn.ctx, which))
+}
+
+/**
+ * Which part a body row is in: the picker's list, the roster's, the
+ * transcript's window, or none (agentsTops; the hit test COMMON-5B asks for
+ * where a body has two scrolled things). Pure.
+ */
+export function agentsHit(tops: AgentsTops, row: number): AgentsScrolled | null {
+  const inside = (part: { top: number; height: number } | null): boolean => part !== null && row >= part.top && row < part.top + part.height
+  if (inside(tops.picker)) return 'picker'
+  if (inside(tops.roster)) return 'roster'
+  if (inside(tops.lines)) return 'lines'
+  return null
+}
+
+/**
+ * The wheel (ui.scroll, routed by the hub). A tick over the picker's list,
+ * the roster or the transcript moves that one, the row it's over told by
+ * what the terminal last drew (ui/drawn.ts: the body's top, the pane's
+ * offset) and agentsTops; over the rest of the body it passes on. The scroll
+ * keys carry no pointer: they move the list the ring is in, else the
+ * transcript, else the roster, a page at most. At an edge the tick passes on.
+ */
+export const onAgentsScroll: PortHook<UiScrollHook> = async (p, e, next) => {
+  const d = lastDrawn()
+  if (!d || d.shown !== 'agents' || e.by === 0) return next(e)
+  const body = (d.view as AgentsPaneView | null)?.body
+  if (!body) return next(e)
+  const tops = agentsTops(body, d.ctx)
+  let which: AgentsScrolled | null
+  let by = e.by
+  if (e.pointer) {
+    const cols = d.ctx.bodyColumns
+    if (e.pointer.column < 0 || (Number.isFinite(cols) && e.pointer.column >= cols)) return next(e)
+    which = agentsHit(tops, d.scrollOffset + e.pointer.row - d.bodyTop)
+  } else {
+    const ring = d.ctx.focused ?? ''
+    which = ring.startsWith('agents:scope:') || ring.startsWith(`${PICKER_LIST}:`) ? 'picker' : ring.startsWith('agents:select:') ? 'roster' : tops.lines ? 'lines' : 'roster'
+    const page = pageRows(body, d.ctx, which)
+    by = Math.sign(e.by) * Math.min(Math.abs(e.by), page)
+  }
+  if (which === null) return next(e)
+  return (await moveBy(p, body, d.ctx, which, by)) ? {} : next(e)
+}
+
+/**
+ * The transcript stays where the person left it (the user's ask, 2026-10-07):
+ * pinned at the newest line while its offset is 0; scrolled up, it's moved
+ * by the lines that came in since, so what's shown stays still; another row
+ * selected starts at the newest again. The row and the line count last seen
+ * are module memory: after a reload the window starts at the newest.
+ */
+let seenLines: { row: string; total: number } | null = null
+
+async function keepLinesPlace(p: Ports, view: AgentsPaneView): Promise<void> {
+  const sel = view.body?.selected ?? null
+  const t = sel?.transcript
+  const was = seenLines
+  seenLines = sel && t && t.readable ? { row: sel.key, total: t.total } : null
+  const offset = listOffset(LINES_LIST)
+  if (offset === 0) return
+  if (!was || !seenLines || was.row !== seenLines.row) {
+    await moveList(p, LINES_LIST, 0, 0)
+    return
+  }
+  const came = seenLines.total - was.total
+  if (came > 0) await moveList(p, LINES_LIST, offset + came, Math.max(0, (t?.lines.length ?? 1) - 1))
 }
 
 /** One press: the action on rows read again, then the redraw. */
@@ -482,20 +1064,46 @@ export async function pressAgents(p: Ports, key: string): Promise<void> {
   try {
     switch (k.action) {
       case 'scope':
+      case 'leave':
+        // A picker's row or Button; [This session's agents] under an ended team's notice.
         pickScope(k.arg)
         break
-      case 'select': {
+      case 'select':
+      case 'message': {
+        // A row's press, or its menu's Message: it's selected, so the composer writes to it.
         const row = await rowFor(p, k.arg)
         const n = agentsNavOf()!
-        if (row && n.selected !== row.key) setAgentsNav({ ...n, selected: row.key, more: false, armed: null })
+        if (row && n.selected !== row.key) setAgentsNav({ ...n, selected: row.key, armed: null })
         break
       }
-      case 'more': {
+      case 'transcript': {
+        // The menu's Transcript: selected, its transcript at its newest line.
         const row = await rowFor(p, k.arg)
         const n = agentsNavOf()!
-        if (row) setAgentsNav({ ...n, selected: row.key, more: !(n.more && n.selected === row.key) })
+        if (!row) break
+        if (n.selected !== row.key) setAgentsNav({ ...n, selected: row.key, armed: null })
+        await moveList(p, LINES_LIST, 0, 0)
         break
       }
+      case 'teams': {
+        const n = agentsNavOf()!
+        if (k.arg === 'all' || k.arg === 'running') setAgentsNav({ ...n, showAll: k.arg === 'all' })
+        break
+      }
+      case 'picker': {
+        const n = agentsNavOf()!
+        if (k.arg === 'open') setAgentsNav({ ...n, picking: true })
+        break
+      }
+      case 'scopes':
+        await pageList(p, 'picker', k.arg)
+        break
+      case 'roster':
+        await pageList(p, 'roster', k.arg)
+        break
+      case 'lines':
+        await pageList(p, 'lines', k.arg)
+        break
       case 'send': {
         const row = await rowFor(p, k.arg)
         if (row) await send(p, row, agentsNavOf()!.text, 'button')
@@ -555,9 +1163,9 @@ async function selectAgents(p: Ports, key: string, value: string): Promise<void>
   await drawAgents(p)
 }
 
-/** The pane's ui.message, ui.press, ui.input and ui.select; anything not keyed `agents:` passes on. */
+/** The pane's ui.message, ui.press, ui.input, ui.select and ui.scroll; anything not keyed `agents:` passes on. */
 export const onAgentsUi: PaneUiHandlers = {
-  // The pane draws no Client, so nothing of its own posts.
+  // The roster's Client posts to the hub, which presses its keys here (ui/hub.ts, listPost); nothing else posts.
   message: async (p, e, next) => next(e),
   press: async (p, e, next) => {
     if (!parseKey(e.element)) return next(e)
@@ -574,6 +1182,8 @@ export const onAgentsUi: PaneUiHandlers = {
     await selectAgents(p, e.element, e.value)
     return { element: e.element, value: e.value }
   },
+  // Reached once the hub's agents section forwards ui.scroll (a hub.ts line, WP-DB's; the report has it).
+  scroll: async (p, e, next) => onAgentsScroll(p, e, next),
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +1206,8 @@ export async function refreshAgents(p: Ports): Promise<void> {
 export function resetAgentsPaneForTests(): void {
   viewSeq = 0
   lastKey = null
+  lastView = null
+  seenLines = null
   savedRev = -1
   resetAgentsNavForTests()
 }

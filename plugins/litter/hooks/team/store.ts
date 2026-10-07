@@ -27,6 +27,23 @@
 //   writes `{ ...entry, msgV, msg_id, type: 'message', read: false }` by an
 //   atomic write. Entries (`Xe`, :360425): from, text, timestamp, type?,
 //   read?, color?, summary?, from_plugin?; a read entry is dropped.
+//
+// What 2.1.291 does with running sessions (cli_formatted_2.1.291.js; WP-DF):
+// - a team's config (`x`, :1568756) is `{ name, createdAt, leadAgentId,
+//   leadSessionId, members: [{ agentId, name, agentType, joinedAt, cwd, … }] }`,
+//   createdAt in ms, the lead member `team-lead` with the lead's cwd;
+// - the registry of running sessions is `<configDir>/sessions/<pid>.json`
+//   (`kG`, :108870). registerSession (`OL`, :136452) writes it as a session
+//   starts: pid, sessionId, cwd, startedAt, procStart, kind, status later.
+//   It moves `sessionId` to the new id on a /clear or a resume (`Td`,
+//   :136542) and `cwd` with the session's. The process removes it at exit
+//   (`process.on("exit")` and a cleanup, :136464-136479); a session that
+//   died without exiting leaves it, until a later session's count
+//   (`OCt`, :136832) finds the pid dead (kill 0: ESRCH) and deletes it,
+//   where the registry's sweep is permitted. A teammate's own process and a
+//   child session don't register (`kc`, :136646). So a lead session id with
+//   no entry has ended (or /clear'd away from the team); an entry can
+//   outlive a crash until the next sweep. The pane only shows what it says.
 
 import type { Ports, RunResult } from '../ports'
 import type { InboxEntry, TaskFile, TaskListRef, TaskPatch, TeamInfo, TeamMember, WriteResult } from '../uitypes'
@@ -82,19 +99,35 @@ const short = (s: string, max = 200): string => (s.length > max ? `${s.slice(0, 
 // ---------------------------------------------------------------------------
 // Teams and lists
 
+/**
+ * A team as the store reads it: TeamInfo, and, when its config has them,
+ * when it was made (`createdAt`, ms) and the lead member's folder
+ * (`leadCwd`), which the agents pane names for a team whose lead ended
+ * (WP-DF). Absent, not null, when the config has neither, so a TeamInfo
+ * compares equal.
+ */
+export type TeamRecord = TeamInfo & { createdAt?: number; leadCwd?: string }
+
 /** A team's config.json as TeamInfo, its members as the engine keeps them (a name each); null when it isn't one. */
-function teamOf(raw: unknown, dir: string, mtimeMs: number): TeamInfo | null {
+function teamOf(raw: unknown, dir: string, mtimeMs: number): TeamRecord | null {
   if (!isObject(raw)) return null
   const members: TeamMember[] = (Array.isArray(raw.members) ? raw.members : []).flatMap(m =>
     isObject(m) && typeof m.name === 'string' && m.name !== ''
       ? [{ name: m.name, agentId: strOrNull(m.agentId), agentType: strOrNull(m.agentType), color: strOrNull(m.color) }]
       : [],
   )
-  return { name: strOrNull(raw.name) ?? dir, dir, leadSessionId: strOrNull(raw.leadSessionId), members, mtimeMs }
+  const info: TeamRecord = { name: strOrNull(raw.name) ?? dir, dir, leadSessionId: strOrNull(raw.leadSessionId), members, mtimeMs }
+  if (typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)) info.createdAt = raw.createdAt
+  // The lead member: the config's leadAgentId, else the engine's lead name.
+  const all = Array.isArray(raw.members) ? raw.members.filter(isObject) : []
+  const lead = all.find(m => typeof raw.leadAgentId === 'string' && m.agentId === raw.leadAgentId) ?? all.find(m => m.name === 'team-lead')
+  const cwd = strOrNull(lead?.cwd)
+  if (cwd !== null) info.leadCwd = cwd
+  return info
 }
 
 /** Each team in `<configDir>/teams/` with a readable config.json, newest first. */
-export async function teams(p: Ports): Promise<TeamInfo[]> {
+export async function teams(p: Ports): Promise<TeamRecord[]> {
   let root: string
   try {
     root = `${await p.configDir()}/teams`
@@ -107,7 +140,7 @@ export async function teams(p: Ports): Promise<TeamInfo[]> {
     p.log(`team store: ${root} wasn't listed: ${errText(err)}`)
     return []
   })
-  const out: TeamInfo[] = []
+  const out: TeamRecord[] = []
   for (const e of entries) {
     // A folder of its own: never a link, which could lead outside teams/.
     if (e.kind !== 'dir' || e.isLink || e.name.startsWith('.') || e.name.includes('/')) continue
@@ -153,6 +186,63 @@ export async function taskLists(p: Ports): Promise<TaskListRef[]> {
   for (const t of all) {
     if (out.length > TEAM_LISTS) break
     add(t.name, t.name, false)
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// The registry of running sessions (read only; see the header)
+
+/** One running session as its registry file says: what the agents pane shows, nothing it acts on. */
+export type RunningSession = { pid: number; sessionId: string; cwd: string | null; startedAt: number | null; status: string | null }
+
+const PID_FILE = /^[0-9]{1,10}\.json$/
+/** Registry files read at most, and the most of each: the engine's are a few hundred bytes. */
+export const REGISTRY_FILES = 400
+const REGISTRY_BYTES = 64 * 1024
+
+/**
+ * The sessions `<configDir>/sessions/<pid>.json` lists as running (WP-DF):
+ * each file that parses with a pid and a session id, in pid order. Null when
+ * the folder can't be listed (absent included: this session registers
+ * itself, so a missing folder says the registry isn't kept here), or holds
+ * more than REGISTRY_FILES entries (one left unread could be a lead's), so a
+ * caller tells "nobody runs it" from "can't tell". Never throws.
+ */
+export async function runningSessions(p: Ports): Promise<RunningSession[] | null> {
+  let dir: string
+  try {
+    dir = `${await p.configDir()}/sessions`
+    if (!(await p.fs.exists(dir))) return null
+  } catch {
+    return null
+  }
+  let names: string[]
+  try {
+    names = (await p.fs.list(dir)).filter(e => e.kind === 'file' && !e.isLink && PID_FILE.test(e.name)).map(e => e.name)
+  } catch (err) {
+    p.log(`team store: ${dir} wasn't listed: ${errText(err)}`)
+    return null
+  }
+  if (names.length > REGISTRY_FILES) return null
+  names.sort((a, b) => Number(a.slice(0, -5)) - Number(b.slice(0, -5)))
+  const out: RunningSession[] = []
+  for (const name of names) {
+    try {
+      const st = await p.fs.stat(`${dir}/${name}`)
+      if (st.kind !== 'file' || st.isLink || st.size > REGISTRY_BYTES) continue
+      const raw: unknown = JSON.parse(await p.fs.read(`${dir}/${name}`))
+      if (!isObject(raw) || typeof raw.sessionId !== 'string' || raw.sessionId === '' || typeof raw.pid !== 'number') continue
+      out.push({
+        pid: raw.pid,
+        sessionId: raw.sessionId,
+        cwd: strOrNull(raw.cwd),
+        startedAt: typeof raw.startedAt === 'number' && Number.isFinite(raw.startedAt) ? raw.startedAt : null,
+        status: strOrNull(raw.status),
+      })
+    } catch {
+      // Gone between the listing and the read, or half written: not a session the pane can name.
+    }
   }
   return out
 }
