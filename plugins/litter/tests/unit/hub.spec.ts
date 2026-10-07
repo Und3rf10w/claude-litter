@@ -390,6 +390,8 @@ describe('/litter [section] [arg]', () => {
     expect(await run('runs 20261006-exec')).toEqual({ text: 'runs(20261006-exec)' })
     expect(await run('RUNS execute')).toEqual({ text: 'runs(execute)' })
     expect(await run('swarms alpha')).toEqual({ text: 'swarms(alpha)' })
+    expect(await run('swarms alpha fixer#2')).toEqual({ text: 'swarms(alpha fixer#2)' })
+    expect(await run('swarms alpha fixer #2')).toEqual({ text: 'swarms(alpha fixer #2)' })
     expect(await run('rules')).toEqual({ text: 'rules()' })
     expect(await run('tasks team a')).toEqual({ text: 'tasks(team a)' })
     expect(await run('agents team-a')).toEqual({ text: 'agents(team-a)' })
@@ -399,7 +401,7 @@ describe('/litter [section] [arg]', () => {
   })
 
   test('anything else is the one-line usage, with no prefix of litter\'s own', async () => {
-    for (const args of ['board', 'litter-board', 'runs a b', 'rules extra', 'home now', 'doctor a b', 'help']) expect(await run(args)).toEqual({ text: USAGE })
+    for (const args of ['board', 'litter-board', 'runs a b', 'swarms a b c d', 'rules extra', 'home now', 'doctor a b', 'help']) expect(await run(args)).toEqual({ text: USAGE })
     expect(USAGE.startsWith('litter: ')).toBe(false)
     expect(USAGE.includes('\n')).toBe(false)
   })

@@ -32,7 +32,8 @@ import {
   resetAgentsPaneForTests,
 } from '../../hooks/agents/pane'
 import { AGENTS_STORE_KEY, agentsNavOf, deps, rowArg, scopeOf } from '../../hooks/agents/view'
-import { LITTER_PANE, listOffset, moveList, resetHubForTests } from '../../hooks/ui/hub'
+import type { NodeBinding } from '../../hooks/swarm/types'
+import { LITTER_PANE, listOffset, moveList, resetHubForTests, sections } from '../../hooks/ui/hub'
 import { noteDrawn, resetDrawnForTests } from '../../hooks/ui/drawn'
 import { nodePorts, type TestPorts } from './support/node-ports'
 
@@ -767,5 +768,51 @@ describe('the tick, and surviving a rebuild and a module reset', () => {
     expect(p.views.agents).toBeNull()
     await refreshAgents(p)
     expect(view(p).v).toBe(v + 1)
+  })
+})
+
+describe('a swarm node', () => {
+  const node: NodeBinding = {
+    agentId: 'a-fix1',
+    swarm: 'alpha',
+    launch: '20261007-010203',
+    node: 'fixer',
+    n: 1,
+    kind: 'worker',
+    of: null,
+    parent: null,
+    type: 'litter:sw-alpha-fixer',
+    cwd: '/repo',
+    branch: null,
+    token: 't',
+    revision: 1,
+    generation: 1,
+    boundAt: 0,
+    adopted: false,
+  }
+
+  test("[Open in Swarms] shows its swarm's browser with the node picked (`<swarm> <agentId>`), in this pane; a row that's no node opens nothing", async () => {
+    fakeStore()
+    deps.binding = id => (id === node.agentId ? node : null)
+    deps.bindings = () => [node]
+    deps.launchOf = () => node.launch
+    deps.litterDir = () => '/repo/.claude/litter'
+    deps.launchLedger = async () => ({ records: [], head: { seq: 0, sha: 'sha' }, tampered: null, brokenTail: null })
+    const p = ports([agent('a-fix1', { type: 'litter:sw-alpha-fixer' }), agent('a-help')])
+    const loads: unknown[] = []
+    const real = sections.swarms
+    sections.swarms = { ...real, load: async (_q, arg) => (loads.push(arg), { text: 'Swarms shows alpha' }) }
+    try {
+      await open(p)
+      await press(p, `agents:select:${rowArg(S, 'a-fix1')}`)
+      expect(body(p).selected?.swarm?.name).toBe('alpha')
+      const key = `agents:open-swarm:${rowArg(S, 'a-fix1')}`
+      expect(await press(p, key)).toEqual({ element: key })
+      expect(loads).toEqual(['alpha a-fix1'])
+      await press(p, `agents:open-swarm:${rowArg(S, 'a-help')}`)
+      expect(loads).toEqual(['alpha a-fix1'])
+    } finally {
+      sections.swarms = real
+    }
   })
 })

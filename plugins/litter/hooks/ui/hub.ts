@@ -395,7 +395,7 @@ export async function factsNow(p: Ports): Promise<HubFacts> {
     }
   }
   const swarms = safe('the live swarms', () => deps.liveSwarms(), [])
-  const questions = safe('the open questions', () => swarms.flatMap(s => deps.openQuestions(s.name).map(q => ({ swarm: s.name, node: q.node, text: q.text }))), [])
+  const questions = safe('the open questions', () => swarms.flatMap(s => deps.openQuestions(s.name).map(q => ({ swarm: s.name, node: q.node, text: q.text, agentId: q.agentId, to: q.to ?? null }))), [])
   const proposals = safe('the proposals', () => swarms.flatMap(s => deps.pendingProposals(s.name).map(n => ({ swarm: s.name, n }))), [])
   const shownTasks = safe('the tasks', () => deps.tasksShown(), null)
   const rules = safe('the rules', () => deps.rulesCounts(), null)
@@ -581,10 +581,10 @@ export async function showSection(p: Ports, id: HubSection, arg?: SectionArg): P
 // ---------------------------------------------------------------------------
 // `/litter [section] [arg]`
 
-export const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name] | rules | tasks [list] | agents [team] | doctor [swarm]]'
+export const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | doctor [swarm]]'
 export const ARGUMENT_HINT = '[home | runs | swarms | rules | tasks | agents | doctor] [arg]'
-/** How many words after the section each takes (tasks and agents take a name that may have spaces). */
-const MAX_WORDS: Record<HubSection, number> = { home: 0, runs: 1, swarms: 1, rules: 0, tasks: Number.POSITIVE_INFINITY, agents: Number.POSITIVE_INFINITY, doctor: 1 }
+/** How many words after the section each takes (tasks and agents take a name that may have spaces; swarms a node after its name, `fixer#2` or `fixer #2`). */
+const MAX_WORDS: Record<HubSection, number> = { home: 0, runs: 1, swarms: 3, rules: 0, tasks: Number.POSITIVE_INFINITY, agents: Number.POSITIVE_INFINITY, doctor: 1 }
 
 /**
  * command.run on `litter`. Bare, Home: what needs you first, and every

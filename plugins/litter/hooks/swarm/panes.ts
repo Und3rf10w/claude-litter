@@ -101,7 +101,7 @@ const andList = (ns: readonly number[]): string => (ns.length < 2 ? ns.join('') 
 // ---------------------------------------------------------------------------
 // The commands
 
-/** `/litter swarms [name]` (ui/hub.ts's litterCommand): shows Swarms in the `litter` pane, answering with a one-line `text`. */
+/** `/litter swarms [name [node]]` (ui/hub.ts's litterCommand): shows Swarms in the `litter` pane, answering with a one-line `text`. */
 export const swarmCommand: PortHook<CommandRunHook> = async (p, e, next) => ({ text: (await openSection(p, 'swarms', (e.args ?? '').trim(), { focus: true })).text })
 
 /** `/litter doctor [swarm]`: shows Doctor, checking that swarm's spec (else the builder's, else none). */

@@ -98,6 +98,26 @@ describe('homeOf', () => {
     expect(long.length).toBeLessThanOrEqual(' asks: '.length + 200)
   })
 
+  test("a question with its asker opens on that node (`<swarm> <agentId>`), and says where it went: the lead, a parent, or not recorded", () => {
+    const home = homeOf(
+      facts({
+        questions: [
+          { swarm: 'a', node: 'port', text: 'which port?', agentId: 'a-port', to: 'lead' },
+          { swarm: 'a', node: 'fixer', text: 'tabs?', agentId: 'a-fix1', to: 'port' },
+          { swarm: 'a', node: 'old', text: 'kept from before?', agentId: 'a-old' },
+          { swarm: 'a', node: 'odd', text: 'an id no key can carry', agentId: 'a b/c' },
+        ],
+      }),
+    )
+    expect(home.needsYou.map(r => [r.open, said(r)])).toEqual([
+      ['home:open:swarms:a a-port', '⚑ needs you | port asks the lead: which port?'],
+      ['home:open:swarms:a a-fix1', '⚑ needs you | fixer asks port: tabs?'],
+      ['home:open:swarms:a a-old', '⚑ needs you | old asks: kept from before?'],
+      ['home:open:swarms:a', '⚑ needs you | odd asks: an id no key can carry'],
+    ])
+    expect(homeTarget('home:open:swarms:a a-port')).toEqual({ section: 'swarms', arg: 'a a-port' })
+  })
+
   test('a question names its swarm only when more than one swarm has something waiting', () => {
     const home = homeOf(
       facts({
@@ -148,6 +168,8 @@ describe("[Open]'s key", () => {
     expect(homeTarget('home:open:swarms:review#2')).toEqual({ section: 'swarms', arg: 'review' })
     expect(homeTarget('home:open:swarms:review/6')).toEqual({ section: 'swarms', arg: 'review', proposal: 6 })
     expect(homeTarget('home:open:swarms:review/12#3')).toEqual({ section: 'swarms', arg: 'review', proposal: 12 })
+    expect(homeTarget('home:open:swarms:review a-fix1#2')).toEqual({ section: 'swarms', arg: 'review a-fix1' })
+    expect(homeTarget('home:open:swarms:review reviewer@team-a')).toEqual({ section: 'swarms', arg: 'review reviewer@team-a' })
     expect(homeTarget('home:open:tasks#3')).toEqual({ section: 'tasks' })
     expect(homeTarget('home:open:doctor')).toEqual({ section: 'doctor' })
     for (const k of [
@@ -167,6 +189,10 @@ describe("[Open]'s key", () => {
       'home:open:swarms:review/',
       'home:open:swarms:review/2/3',
       'home:open:swarms:review/99999999999999999',
+      'home:open:swarms:Bad a-fix1',
+      'home:open:swarms:review a b',
+      'home:open:swarms:review a-fix1/2',
+      'home:open:swarms:review ../x',
     ]) {
       expect(homeTarget(k)).toBeNull()
     }

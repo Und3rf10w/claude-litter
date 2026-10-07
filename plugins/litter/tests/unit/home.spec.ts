@@ -137,17 +137,17 @@ describe("Home's needs-you rows land where their reason is", () => {
     expect(p.toasts).toEqual([])
   })
 
-  test("a node's question is its row, in its first line, and its [Open] lands on the swarm's browser, the node waiting with it", async () => {
+  test("a node's question is its row, in its first line, and its [Open] lands on the swarm's browser with the node picked, waiting", async () => {
     await liveWithProposals()
     dropProposal(SWARM, 1)
     dropProposal(SWARM, 2)
     state.noteQuestion('o1', '\nWhich port should I use, 8080 or 8443?\nEither works for me.', NOW - 1_000)
     await openSection(p, 'home', '', { focus: true })
-    expect(said()).toEqual([['home:open:swarms:alpha', 'port asks: Which port should I use, 8080 or 8443?']])
-    await press('home:open:swarms:alpha')
+    expect(said()).toEqual([['home:open:swarms:alpha o1', 'port asks: Which port should I use, 8080 or 8443?']])
+    await press('home:open:swarms:alpha o1')
     expect(shownSection()).toBe('swarms')
     const shown = p.views.swarm as SwarmBrowserView
-    expect([shown.view, shown.swarm]).toEqual(['browser', SWARM])
+    expect([shown.view, shown.swarm, shown.selected]).toEqual(['browser', SWARM, 'o1'])
     expect(shown.rows.find(r => r.agentId === 'o1')).toEqual(expect.objectContaining({ status: 'waiting', statusGlyph: '⚑' }))
   })
 

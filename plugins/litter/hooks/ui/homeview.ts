@@ -30,8 +30,12 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n =
 // ---------------------------------------------------------------------------
 // The facts, and Home's rows from them
 
-/** An open question of a live swarm's node, oldest first. */
-export type HomeQuestion = { swarm: string; node: string; text: string }
+/**
+ * An open question of a live swarm's node, oldest first: the agent that asked
+ * (its [Open] picks it in the browser) and where it went (`lead`, or the
+ * parent node's id; absent when not recorded), as swarm/state.ts keeps them.
+ */
+export type HomeQuestion = { swarm: string; node: string; text: string; agentId?: string; to?: string | null }
 /** A live swarm's lead proposal waiting for your review: its number, as swarm/view.ts's pendingProposals lists it. */
 export type HomeProposal = { swarm: string; n: number }
 
@@ -52,8 +56,14 @@ export type HomeFacts = {
   endedMinutes: number
 }
 
-/** An [Open]'s key: `home:open:<section>[:<arg>]`; a proposal's is `home:open:swarms:<swarm>/<n>`. */
+/** An [Open]'s key: `home:open:<section>[:<arg>]`; a proposal's is `home:open:swarms:<swarm>/<n>`, a question's `home:open:swarms:<swarm> <agentId>`. */
 const openKey = (section: HubSection, arg?: string): string => `home:open:${section}${arg !== undefined ? `:${arg}` : ''}`
+
+/** An agent id a key can carry after its swarm's name: what `$.agent.list()` and teammates' `name@team` ids are made of. */
+const AGENT_ID = /^[A-Za-z0-9@._-]{1,128}$/
+
+/** Who a question went to, in its row: `asks the lead:`, `asks part-a:`, or `asks:` when not recorded (as the browser's asksWhom says it). */
+const asksWords = (to: string | null | undefined): string => (to === 'lead' ? ' asks the lead:' : to ? ` asks ${oneLine(to, 40)}:` : ' asks:')
 
 /** Where a band line's [Open] goes: its run's board, or its swarm's browser. */
 const lineOpen = (l: BandLine): string => openKey(l.kind === 'swarm' ? 'swarms' : 'runs', l.name)
@@ -80,7 +90,8 @@ function decisionSpans(l: BandLine): SwarmSpan[] {
  *
  * Each needs-you row says which thing waits and opens on it (the user's live
  * look, 2026-10-07: every ⚑ is explained by the first thing where its [Open]
- * lands): a question, `port asks: <its first line>`, on its swarm's browser;
+ * lands): a question, `port asks the lead: <its first line>`, on its swarm's
+ * browser with the asker picked (WP-DG's `<swarm> <node>`);
  * a proposal, `the lead's proposal 6 for <swarm>`, on the proposal view
  * (hub.ts steps Swarms there); the rules, on Rules; a run, on its board. A
  * question names its swarm (`port in review asks: …`) only when more than one
@@ -100,7 +111,8 @@ export function homeOf(f: HomeFacts): HomeView {
   const waiting = new Set([...f.questions.map(q => q.swarm), ...proposals.map(pr => pr.swarm)])
   for (const q of f.questions) {
     const where = waiting.size > 1 ? [{ text: ' in ' }, nameSpan(q.swarm)] : []
-    needsYou.push(row(openKey('swarms', q.swarm), needsMark, [{ text: oneLine(q.node, 40), color: STYLE.name }, ...where, { text: ` asks: ${firstLine(q.text, 200)}` }]))
+    const asker = q.agentId !== undefined && AGENT_ID.test(q.agentId) ? `${q.swarm} ${q.agentId}` : q.swarm
+    needsYou.push(row(openKey('swarms', asker), needsMark, [{ text: oneLine(q.node, 40), color: STYLE.name }, ...where, { text: `${asksWords(q.to)} ${firstLine(q.text, 200)}` }]))
   }
   for (const pr of proposals) {
     needsYou.push(row(openKey('swarms', `${pr.swarm}/${pr.n}`), needsMark, [{ text: `the lead's proposal ${pr.n} for ` }, nameSpan(pr.swarm)]))
@@ -142,10 +154,11 @@ const SECTION_WORDS: readonly HubSection[] = ['runs', 'swarms', 'rules', 'tasks'
 
 /**
  * Where a Home key opens: the section, and the item for Runs (a run id) and
- * Swarms (a swarm's name, and a lead proposal's number after `/`), each
- * checked as layout.ts checks them. Null for a key that isn't an [Open],
- * names no section, or carries an argument that isn't one. A drawn key is
- * data from the engine, so nothing else is trusted.
+ * Swarms (a swarm's name, then a lead proposal's number after `/` or the
+ * asking agent's id after a space), each checked as layout.ts checks them.
+ * Null for a key that isn't an [Open], names no section, or carries an
+ * argument that isn't one. A drawn key is data from the engine, so nothing
+ * else is trusted.
  */
 export function homeTarget(key: string): { section: HubSection; arg?: string; proposal?: number } | null {
   const m = /^home:open:([a-z]+)(?::([^#/]+)(?:\/([1-9][0-9]{0,15}))?)?(?:#[0-9]+)?$/.exec(key)
@@ -155,6 +168,8 @@ export function homeTarget(key: string): { section: HubSection; arg?: string; pr
   const arg = m[2]
   if (arg === undefined) return { section }
   if (section === 'runs' && RUN_ID.test(arg) && m[3] === undefined) return { section, arg }
+  const asker = /^(\S+) (\S+)$/.exec(arg)
+  if (section === 'swarms' && asker && m[3] === undefined) return SWARM_NAME.test(asker[1]!) && AGENT_ID.test(asker[2]!) ? { section, arg } : null
   if (section !== 'swarms' || !SWARM_NAME.test(arg)) return null
   if (m[3] === undefined) return { section, arg }
   const proposal = Number(m[3])

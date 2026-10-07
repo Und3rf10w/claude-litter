@@ -38,7 +38,7 @@ import { MARK, NOTICE_STYLE, STYLE, type NoticeLevel } from '../ui/style'
 import { actions, empty, field, fieldRows, heading, headingPlan, MIN_RULE, notice, packItems, RULE, RULE_TAIL, spansLine, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
 import { list, listPlace, pageOf, scrolled, type ListAction, type ListSpec } from '../ui/list'
 import { lastDrawn } from '../ui/drawn'
-import { listOffset, moveList, openSection } from '../ui/hub'
+import { listOffset, moveList, openSection, showSection } from '../ui/hub'
 import {
   SESSION_SCOPE,
   agentsNavOf,
@@ -352,7 +352,7 @@ function slotRows(sel: AgentsSelected, rows: number): number {
   return inboxFit(inbox.entries, inbox.hidden, rows).rows
 }
 
-/** The rows drawn under the inbox's heading: its slot's, and a swarm node's "see /litter swarms" line. */
+/** The rows drawn under the inbox's heading: its slot's, and a swarm node's [Open in Swarms] row. */
 const inboxDrawn = (sel: AgentsSelected, rows: number): number => slotRows(sel, rows) + (sel.swarm ? 1 : 0)
 
 /** The inbox's rows it would take whole. */
@@ -434,7 +434,7 @@ export function agentsPlan(body: AgentsBody, ctx: AgentsCtx): AgentsPlan {
   if (body.hiddenRows > 0) fixed += 1
   if (sel?.stop) fixed += 1
   if (sel) fixed += 2
-  // A swarm node's "see /litter swarms" line, under its messages.
+  // A swarm node's [Open in Swarms] row, under its messages.
   if (sel?.swarm) fixed += 1
   const count = body.rows.length
   const iWant = sel ? inboxWant(sel) : 0
@@ -600,7 +600,7 @@ export function renderAgentsPane(view: AgentsPaneView | null, resolved: PaneElem
       {rosterPart(el, body, plan, ctx)}
       {body.hiddenRows > 0 ? <Text color={STYLE.muted}>{`${body.hiddenRows} more not shown`}</Text> : null}
       {sel ? stopPart(el, body.scope, sel) : null}
-      {sel ? inboxPart(el, sel, plan.inboxRows, cols) : null}
+      {sel ? inboxPart(el, body.scope, sel, plan.inboxRows, cols) : null}
       {sel ? transcriptPart(el, sel, plan, ctx) : null}
       {composerPart(el, body, ctx)}
     </Box>
@@ -690,14 +690,14 @@ function stopPart(el: PaneElements, scope: string, sel: AgentsSelected): RenderE
  * A swarm node's messages in the inbox's place (WP-DF): under "Messages ·
  * <node>", the newest that fit `rows`, each `from → to · when · its first
  * line`, the names in the name color; "no messages yet" for none, or what
- * couldn't be read; then where the swarm is shown in full. (Swarms can't be
- * opened on a node yet: its load takes a swarm's name only.)
+ * couldn't be read; then [Open in Swarms], which opens the swarm's browser
+ * with this node picked (`/litter swarms <swarm> <agentId>`, WP-DG).
  */
-function messagesPart(el: PaneElements, m: NonNullable<AgentsSelected['swarm']>, rows: number, columns: number): RenderElement {
+function messagesPart(el: PaneElements, m: NonNullable<AgentsSelected['swarm']>, openKey: string, rows: number, columns: number): RenderElement {
   const { Box, Text } = el
   const total = m.messages.length + m.hidden
   const head = namedHeading(el, 'Messages · ', m.node, columns, total > 0 ? plural(total, 'message') : null)
-  const see = <Text color={STYLE.muted} wrap="truncate-end">{`see /litter swarms ${m.name}`}</Text>
+  const see = actions(el, [{ key: openKey, label: 'Open in Swarms' }])
   if (m.messages.length === 0) {
     return (
       <Box flexDirection="column">
@@ -732,9 +732,9 @@ function messagesPart(el: PaneElements, m: NonNullable<AgentsSelected['swarm']>,
 }
 
 /** The inbox under its heading: its newest entries that fit `rows` (inboxFit; one line counts what's left out); a swarm node's messages in its place. */
-function inboxPart(el: PaneElements, sel: AgentsSelected, rows: number, columns: number): RenderElement {
+function inboxPart(el: PaneElements, scope: string, sel: AgentsSelected, rows: number, columns: number): RenderElement {
   const { Box, Text } = el
-  if (sel.swarm) return messagesPart(el, sel.swarm, rows, columns)
+  if (sel.swarm) return messagesPart(el, sel.swarm, `agents:open-swarm:${rowArg(scope, sel.key)}`, rows, columns)
   const inbox = sel.inbox
   // The inbox is an unread queue: an empty one isn't "nothing was ever sent".
   const head = namedHeading(el, 'Inbox · ', sel.name, columns, 'unread only')
@@ -1194,6 +1194,14 @@ export async function pressAgents(p: Ports, key: string, surface?: string): Prom
       case 'stop':
         await stop(p, k.arg)
         break
+      case 'open-swarm': {
+        // A swarm node's [Open in Swarms]: its swarm's browser, the node picked (WP-DG's `<swarm> <agentId>`), in this pane.
+        const row = await rowFor(p, k.arg)
+        const b = row?.swarm?.binding
+        if (!b) break
+        await showSection(p, 'swarms', `${b.swarm} ${b.agentId}`)
+        return
+      }
       default:
         break
     }

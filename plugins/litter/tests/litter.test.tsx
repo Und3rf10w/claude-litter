@@ -19,7 +19,7 @@ const SESSION = 'tier1-litter'
 const NOW = 1_800_000_000_000
 /** The machine is busy: a test that runs several commands gets room. */
 const SLOW = { timeoutMs: 30_000 }
-const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name] | rules | tasks [list] | agents [team] | doctor [swarm]]'
+const USAGE = 'usage: /litter [home | runs [run | execute | design] | swarms [name [node]] | rules | tasks [list] | agents [team] | doctor [swarm]]'
 const HINT = '[home | runs | swarms | rules | tasks | agents | doctor] [arg]'
 const OLD = ['litter-board', 'litter-rules', 'litter-swarm', 'litter-doctor', 'litter-tasks', 'litter-agents']
 const STRIP = ['home', 'runs', 'swarms', 'rules', 'tasks', 'agents', 'doctor'] as const

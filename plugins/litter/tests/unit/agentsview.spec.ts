@@ -915,7 +915,7 @@ describe("a live swarm's nodes", () => {
     const b = await body(p, nav({ selected: 'a-fix1' }))
     for (const columns of [100, 60]) {
       const tops = agentsTops(b, { surface: 'terminal', bodyColumns: columns, placement: 'dock', rows: 40, focused: null, lists: {} })
-      // Under the roster: [Stop], the Messages heading, its three, "see /litter swarms …", the transcript's heading.
+      // Under the roster: [Stop], the Messages heading, its three, [Open in Swarms], the transcript's heading.
       expect(tops.lines!.top).toBe(tops.roster!.top + tops.roster!.height + 1 + 1 + 3 + 1 + 1)
       expect(tops.lines!.top + tops.lines!.height).toBeLessThanOrEqual(40)
     }
