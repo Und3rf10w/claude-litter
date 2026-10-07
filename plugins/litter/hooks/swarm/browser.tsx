@@ -22,11 +22,11 @@ import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmUnsettledView } from '../../types/index'
-import { empty, field, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
+import { empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
 import { list, listPlace, type ListAction, type ListSpec } from '../ui/list'
 import { MARK, STYLE } from '../ui/style'
 import { cells } from '../band/view'
-import { actionRow, choose, drawsClient, headed, noticeRow, renderBuilder, renderProposal, renderStart, tableFor, titleRow } from './builder'
+import { actionRow, choose, drawsClient, headed, needsRow, needsRowCount, noticeRow, renderBuilder, renderProposal, renderStart, tableFor, titleRow } from './builder'
 
 /**
  * The keys a view adds to the keys line, before the hub's: the builder's
@@ -148,12 +148,40 @@ export function rosterList(view: SwarmBrowserView, client: boolean): ListSpec {
   }
 }
 
-/** The exceptions, above everything (COMMON-5B, "Order"): ownership, the questions waiting on you, a used-up budget, the flags. */
+/**
+ * [Review] on the browser's banner: the browser's `builder` action, the
+ * proposal's number after the swarm. swarm/panes.ts opens the builder for
+ * it today, whose first line is the same proposal with its own [Review];
+ * the report's contract change opens the proposal itself.
+ */
+export const reviewKey = (swarm: string, n: number): string => `swarm:browser:builder:${swarm}/${n}`
+
+/**
+ * What needs you, the first thing under the first line (the user's "It says
+ * it needs me, but where", 2026-10-07: wherever the hub raises ⚑ the section
+ * shows why): each current proposal of the lead's with [Review], then each
+ * open question, who asks and its first line, with [Answer] (it selects the
+ * asker, so the composer goes to it). Pure.
+ */
+export function browserNeeds(view: SwarmBrowserView): { text: string; action: Action | null }[] {
+  const s = view.swarm
+  const live = !view.readOnly && !view.lost
+  return [
+    ...(view.proposals ?? []).map(n => ({ text: `the lead's proposal ${n} waits on you`, action: { key: reviewKey(s, n), label: 'Review' } })),
+    ...view.rows
+      .filter(r => r.question !== null)
+      .map(r => ({
+        text: `${r.name} asks: ${r.question}`,
+        action: live && r.agentId !== null && r.agentId !== view.selected ? { key: `swarm:browser:select:${s}/${r.agentId}`, label: 'Answer' } : null,
+      })),
+  ]
+}
+
+/** The exceptions, under what needs you (COMMON-5B, "Order"): ownership, a used-up budget, the flags. */
 function exceptions(el: PaneElements, view: SwarmBrowserView, columns: number): RenderElement {
   const { Box, Text } = el
   const s = view.swarm
   const live = !view.readOnly && !view.lost
-  const askers = view.rows.filter(r => r.question !== null)
   return (
     <Box flexDirection="column">
       {view.owner && (
@@ -169,16 +197,6 @@ function exceptions(el: PaneElements, view: SwarmBrowserView, columns: number): 
           {view.owner.canTakeOver && actionRow(el, [{ key: `swarm:browser:takeover:${s}`, label: 'Take over', primary: true, autoFocus: true }], columns)}
         </Box>
       )}
-      {askers.map(r => (
-        <Box flexDirection="row" columnGap={1}>
-          {notice(el, 'needsYou', `${r.name} asks: ${r.question}`)}
-          {live && r.agentId !== null && r.agentId !== view.selected && (
-            <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: 'Answer' })}>
-              {actionRow(el, [{ key: `swarm:browser:select:${s}/${r.agentId}`, label: 'Answer' }], 12)}
-            </Box>
-          )}
-        </Box>
-      ))}
       {view.budget && view.budget.note !== null && notice(el, 'warning', view.budget.note)}
       {view.flags.map(f => (
         <Box flexDirection="column">
@@ -259,15 +277,13 @@ const noticeRows = (text: string, columns: number): number => textRows(`! ${text
 export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface' | 'focused' | 'lists'>): number {
   const c = ctx.bodyColumns
   const live = !view.readOnly && !view.lost
-  let rows = 1 + (view.notice ? noticeRows(view.notice.text, c) : 0)
+  let rows = 1
+  for (const x of browserNeeds(view)) rows += needsRowCount(x.text, x.action?.label ?? null, c)
+  if (view.notice) rows += noticeRows(view.notice.text, c)
   if (view.owner) {
     rows += noticeRows(`${view.lost ? 'this session lost it: ' : 'read-only: '}${view.owner.text}`, c)
     if (view.owner.why !== null) rows += textRows(view.owner.why, Number.isFinite(c) ? c - 2 : c)
     if (view.owner.canTakeOver) rows += 1
-  }
-  for (const r of view.rows.filter(x => x.question !== null)) {
-    const answer = live && r.agentId !== null && r.agentId !== view.selected
-    rows += Math.max(1, noticeRows(`${r.name} asks: ${r.question}`, answer && Number.isFinite(c) ? c - 1 - buttonWidth('Answer') : c))
   }
   if (view.budget && view.budget.note !== null) rows += noticeRows(view.budget.note, c)
   for (const f of view.flags) rows += noticeRows(f.text, c) + (live ? actionRows(['That was me', ...(f.running.length > 0 ? ['Stop them'] : [])], c) : 0)
@@ -467,26 +483,54 @@ function composer(el: PaneElements, view: SwarmBrowserView, e: BodyContext, colu
   )
 }
 
-/** The events, evidence: muted, last, the time and who first (they drop first on a narrow body). */
+/** The widest the events' who column gets; a longer name is cut with `…`. */
+const EVENT_WHO_MAX = 20
+/** The fewest cells an event's own text keeps beside the time and who; with less, who goes, then the time. */
+const EVENT_TEXT_MIN = 24
+
+/**
+ * The events' columns at `columns` (the user's live look, 2026-10-07: the
+ * time and who cells wrapped, `00:4` over `7`): the time and who are fixed
+ * widths that never shrink or wrap, the widest of each (who at most
+ * EVENT_WHO_MAX); the event's text takes the rest and wraps in its own
+ * column. On a narrow body who goes first, then the time. Pure.
+ */
+export function eventColumns(list: readonly { at: string; who: string }[], columns: number): { at: number; who: number } {
+  const at = Math.max(0, ...list.map(ev => cells(ev.at)))
+  const who = Math.min(EVENT_WHO_MAX, Math.max(0, ...list.map(ev => cells(ev.who))))
+  if (!Number.isFinite(columns)) return { at, who }
+  const room = (a: number, w: number) => columns - (a > 0 ? a + 1 : 0) - (w > 0 ? w + 1 : 0)
+  if (room(at, who) >= EVENT_TEXT_MIN) return { at, who }
+  if (room(at, 0) >= EVENT_TEXT_MIN) return { at, who: 0 }
+  return { at: 0, who: 0 }
+}
+
+/** The events, evidence: muted, last; each row the time and who in fixed cells, then the event, wrapping in its column. */
 function events(el: PaneElements, view: SwarmBrowserView, columns: number): RenderElement {
   const { Box, Text } = el
+  const w = eventColumns(view.events, columns)
+  const cell = (text: string, width: number) => (
+    <Box width={width} minWidth={width} flexShrink={0}>
+      <Text color={STYLE.muted} wrap="truncate-end">
+        {fitCell(text, width)}
+      </Text>
+    </Box>
+  )
   return (
     <Box flexDirection="column">
       {headed(el, 'Events', columns, view.events.length > 0 ? `the last ${view.events.length}` : null)}
-      {view.events.length === 0 ? (
-        <Text color={STYLE.muted}>none yet</Text>
-      ) : (
-        rows(
-          el,
-          [{ drop: 2 }, { drop: 1 }, { drop: 0, fill: true }],
-          view.events.map(ev => [
-            { text: ev.at, color: STYLE.muted },
-            { text: ev.who, color: STYLE.muted },
-            { text: ev.text, color: ev.color ?? STYLE.muted },
-          ]),
-          columns,
-        )
-      )}
+      {view.events.length === 0 && <Text color={STYLE.muted}>none yet</Text>}
+      {view.events.map(ev => (
+        <Box flexDirection="row" columnGap={1}>
+          {w.at > 0 && cell(ev.at, w.at)}
+          {w.who > 0 && cell(ev.who, w.who)}
+          <Box flexGrow={1} flexShrink={1}>
+            <Text color={ev.color ?? STYLE.muted} wrap="wrap">
+              {ev.text}
+            </Text>
+          </Box>
+        </Box>
+      ))}
     </Box>
   )
 }
@@ -503,9 +547,11 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: BodyContext)
     { key: `swarm:browser:builder:${s}`, label: 'Builder' },
     ...(live && view.state === 'live' ? [{ key: `swarm:browser:end:${s}`, label: 'End swarm' }] : []),
   ]
+  // What's above the transcript keeps to browserTranscriptTop's rows.
   return (
     <Box flexDirection="column">
       {titleRow(el, view.title, columns)}
+      {browserNeeds(view).map(x => needsRow(el, x.text, x.action))}
       {noticeRow(el, view.notice)}
       {exceptions(el, view, columns)}
       {view.budget && budgetRow(el, view.budget)}

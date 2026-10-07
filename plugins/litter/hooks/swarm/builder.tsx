@@ -244,6 +244,27 @@ export function noticeRow(el: PaneElements, n: SwarmNotice | null): RenderElemen
   return n ? noticeLine(el, n.level, n.text) : null
 }
 
+/** A line that needs you (or a proposal that can't be read): the chrome's notice at its level, wrapping beside its action, a Button that never shrinks. */
+export function needsRow(el: PaneElements, text: string, a: Action | null, level: 'needsYou' | 'error' = 'needsYou'): RenderElement {
+  const { Box } = el
+  return (
+    <Box flexDirection="row" columnGap={1}>
+      {noticeLine(el, level, text)}
+      {a && (
+        <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: a.label })}>
+          {action(el, a)}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+/** The rows needsRow takes at `columns`: its notice wrapped beside the Button. For the wheel's hit tests. */
+export function needsRowCount(text: string, label: string | null, columns: number): number {
+  const room = label !== null && Number.isFinite(columns) ? Math.max(1, columns - 1 - itemWidth({ kind: 'button', label })) : columns
+  return textRows(`${NOTICE_STYLE.needsYou.glyph} ${text}`, room)
+}
+
 /** A short, fixed choice (COMMON-5B item 2): a Select where the surface draws one, else its value's label as text. */
 export function choose(el: PaneElements, f: { key: string; label: string; value: string; options: readonly SwarmOption[] }): RenderElement {
   const { Box, Text } = el
@@ -657,26 +678,13 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Bo
       {briefPanel(el, view, rightColumns)}
     </Box>
   )
+  // What needs you first, under the first line (the ⚑ rule): the lead's current proposals, then those J can't read.
   return (
     <Box flexDirection="column">
       {titleRow(el, view.title, columns)}
+      {view.proposals.map(n => needsRow(el, `the lead's proposal ${n} waits on you`, { key: `swarm:builder:proposal:${s}/${n}`, label: 'Review' }))}
+      {view.unreadable.map(u => needsRow(el, `the lead's proposal ${u.n} can't be read: ${u.error}`, { key: `swarm:builder:reject:${s}/${u.n}`, label: 'Reject' }, 'error'))}
       {noticeRow(el, view.notice)}
-      {view.proposals.map(n => (
-        <Box flexDirection="row" columnGap={1}>
-          {noticeLine(el, 'needsYou', `the lead's proposal ${n} waits on you`)}
-          <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: 'Review' })}>
-            {action(el, { key: `swarm:builder:proposal:${s}/${n}`, label: 'Review' })}
-          </Box>
-        </Box>
-      ))}
-      {view.unreadable.map(u => (
-        <Box flexDirection="row" columnGap={1}>
-          {noticeLine(el, 'error', `the lead's proposal ${u.n} can't be read: ${u.error}`)}
-          <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: 'Reject' })}>
-            {action(el, { key: `swarm:builder:reject:${s}/${u.n}`, label: 'Reject' })}
-          </Box>
-        </Box>
-      ))}
       <Box flexDirection="row" columnGap={1}>
         <Box flexShrink={0} minWidth={4}>
           <Text color={STYLE.muted}>Goal</Text>
@@ -701,7 +709,40 @@ export function renderBuilder(view: SwarmPaneView, resolved: PaneElements, e: Bo
         </Box>
       )}
       {checks(el, view, columns)}
+      {olderProposals(el, view, columns)}
       {askLead(el, view, e, columns)}
+    </Box>
+  )
+}
+
+/** [Reject all older]'s key: swarm/panes.ts's builder action for it is the report's contract change. */
+export const rejectOlderKey = (swarm: string): string => `swarm:builder:reject-older:${swarm}`
+
+/**
+ * The undecided proposals a later decision or revision superseded: muted
+ * under their heading, each with [Reject] (J's rejectProposal, `accepted:
+ * 'none'`), and [Reject all older] for two or more. They don't need you, so
+ * they sit with the lead's other business, after the checks.
+ */
+function olderProposals(el: PaneElements, view: SwarmBuilderView, columns: number): RenderElement | null {
+  const { Box, Text } = el
+  if (view.superseded.length === 0) return null
+  const s = view.swarm
+  return (
+    <Box flexDirection="column">
+      {headed(el, 'Older proposals, superseded', columns, `${view.superseded.length}`)}
+      <Text color={STYLE.muted} wrap="wrap">
+        a later proposal was decided, or a revision saved, after these were staged
+      </Text>
+      {view.superseded.map(n => (
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={STYLE.muted} wrap="truncate-end">{`the lead's proposal ${n}`}</Text>
+          <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: 'Reject' })}>
+            {action(el, { key: `swarm:builder:reject:${s}/${n}`, label: 'Reject' })}
+          </Box>
+        </Box>
+      ))}
+      {view.superseded.length > 1 && actionRow(el, [{ key: rejectOlderKey(s), label: 'Reject all older' }], columns)}
     </Box>
   )
 }
@@ -809,9 +850,39 @@ export function templateListCtx<C extends Pick<BodyContext, 'bodyColumns'>>(view
  * added here.
  */
 export function startListTop(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface'>): number {
+  const needs = startNeeds(view).reduce((n, x) => n + needsRowCount(x.text, x.action.label, ctx.bodyColumns), 0)
   const notice = view.notice ? textRows(`${NOTICE[view.notice.level].glyph} ${view.notice.text}`, ctx.bodyColumns) : 0
   const headed = 2
-  return notice + fieldRows(ctx.surface, true) + headed + fieldRows(ctx.surface, true) + headed
+  return needs + notice + fieldRows(ctx.surface, true) + headed + fieldRows(ctx.surface, true) + headed
+}
+
+/** `2, 5 and 6`. */
+const andList = (ns: readonly number[]): string => (ns.length < 2 ? ns.join('') : `${ns.slice(0, -1).join(', ')} and ${ns[ns.length - 1]}`)
+
+/**
+ * The start screen's needs-you lines (WP-DD, "wherever ⚑ is raised, the
+ * section shows it"), first in its body: for each saved swarm that needs
+ * you, its current proposals with [Review], and a live one's first open
+ * question (who asks, its first line) with [Answer]. Each opens the swarm,
+ * its builder or its browser when live, where the same lines come first
+ * with their own actions. Pure.
+ */
+export function startNeeds(view: Pick<SwarmStartView, 'needsYou'>): { text: string; action: Action }[] {
+  const out: { text: string; action: Action }[] = []
+  for (const x of view.needsYou ?? []) {
+    const open = `swarm:start:open:${x.swarm}`
+    const ns = x.proposals
+    if (ns.length > 0) {
+      const what = ns.length === 1 ? `the lead's proposal ${ns[0]} waits on you` : `the lead's proposals ${andList(ns)} wait on you`
+      out.push({ text: `${x.swarm}: ${what}`, action: { key: open, label: 'Review' } })
+    }
+    const q = x.questions[0]
+    if (q) {
+      const more = x.questions.length > 1 ? ` (+${x.questions.length - 1} more)` : ''
+      out.push({ text: `${x.swarm}: ${q.who} asks: ${q.text}${more}`, action: { key: open, label: 'Answer' } })
+    }
+  }
+  return out
 }
 
 /** A field with an action beside it, the action on the frame's middle row where the field is framed; the action never shrinks, the field takes the rest. */
@@ -889,9 +960,10 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Bod
   const listColumns = listCtx.bodyColumns
   const picker = list(el, templates, listCtx)
   const form = t ? panels(el, [{ title: t.name, body: templateForm(el, t, primary === 'template', e, wide ? columns - listColumns - 5 : columns - 4) }], false) : null
-  // What's above the list keeps to startListTop's rows.
+  // What's above the list keeps to startListTop's rows: what needs you first (the ⚑ rule), then the notice.
   return (
     <Box flexDirection="column">
+      {startNeeds(view).map(x => needsRow(el, x.text, x.action))}
       {noticeRow(el, view.notice)}
       {field(el, { key: 'swarm:start:name', label: 'Name', value: view.name }, NAME_CAPTION, at)}
       {headed(el, 'Ask the lead', columns)}
