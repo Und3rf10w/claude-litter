@@ -21,7 +21,12 @@
 #  - /litter agents <team>, for a team made for the case that this session
 #    doesn't lead (teams/<team>/config.json, members m1 and m2), the
 #    composer's text and [ Broadcast to <team> ]: each member's inbox file
-#    holds the message, from user (hooks/teamfile.sh's locked append);
+#    holds the message, from user (hooks/teamfile.sh's locked append).
+#    Agents offers a composer only for a team that runs (WP-DF §0: its lead
+#    session is in the engine's registry, <config>/sessions/<pid>.json), so
+#    the case writes its team's lead an entry there under this script's own
+#    pid, alive while it drives (the engine's sweep keeps a live pid's), and
+#    removes it with the team;
 #  - /litter agents, a click on the sleeper's row, and [ Stop ] twice: the
 #    first arms it, the second stops it through TaskStop.
 # The case's team is removed at the end.
@@ -59,12 +64,17 @@ case $TEAM in litter-t4-agents-[0-9]*) ;; *) echo "$0: no case team in $H_DIR/te
 # The messages: one direct, one broadcast, each a word no other text holds.
 DIRECT=tier4-direct-${TEAM##*-}
 CAST=tier4-cast-${TEAM##*-}
-PANE='litter · agents'
+# The `litter` pane's header, as the hub draws it on Agents.
+PANE='litter · Agents'
+# The case team's lead: no session of this run, but listed as running.
+LEAD=tier4-lead-${TEAM##*-}
+REG=$CFG/sessions/$$.json
 
 if [ -z "${H_CHECKS:-}" ]; then
-  mkdir -p "$TD" || exit 1
-  trap 'rm -rf "$TD"' EXIT
-  jq -n --arg t "$TEAM" '{name: $t, leadSessionId: "tier4-not-this-session", members: [{name: "m1"}, {name: "m2"}]}' >|"$TD/config.json" || exit 1
+  mkdir -p "$TD" "$CFG/sessions" || exit 1
+  trap 'rm -rf "$TD" "$REG"' EXIT
+  jq -n --arg t "$TEAM" --arg l "$LEAD" '{name: $t, leadSessionId: $l, members: [{name: "m1"}, {name: "m2"}]}' >|"$TD/config.json" || exit 1
+  jq -n --arg l "$LEAD" --argjson p "$$" '{pid: $p, sessionId: $l, cwd: "/tmp", startedAt: (now * 1000 | floor), kind: "interactive", entrypoint: "cli"}' >|"$REG" || exit 1
 
   agents3="[ \$(jq -s '[.[] | select(.ev == \"PostToolUse\" and .tool == \"Agent\")] | length' $LOG 2>/dev/null) -ge 3 ]"
   cat >|"$H_DIR/steps.txt" <<EOF
@@ -73,14 +83,14 @@ $(h_tool_steps "$H_DIR/debug.txt")
 wait 600 $agents3
 sleep 20
 send /litter agents
-wait 30 $UI shows $H_DIR '$PANE · this session · [0-9]+ agents'
+wait 30 $UI shows $H_DIR 'this session ─+ [0-9]+ agents?'
 sleep 3
 until $UI mark $H_DIR session
-# A message to alpha, from the composer.
+# A message to alpha, from the composer: a click on its row (the roster's Client), then in the field.
 click $UI at $H_DIR 'alpha' '$PANE'
-wait 20 $UI shows $H_DIR 'a message for alpha'
+wait 20 $UI shows $H_DIR 'To alpha: '
 sleep 2
-click $UI at $H_DIR 'a message for alpha' '$PANE'
+click $UI at $H_DIR 'To alpha: ' '$PANE'
 sleep 2
 type $DIRECT
 sleep 1
@@ -97,7 +107,7 @@ send /litter agents $TEAM
 wait 30 $UI shows $H_DIR 'Broadcast to $TEAM'
 sleep 2
 until $UI mark $H_DIR team
-click $UI at $H_DIR 'a message for every member' '$PANE'
+click $UI at $H_DIR 'To every member of ' '$PANE'
 sleep 2
 type $CAST
 sleep 2
@@ -109,7 +119,7 @@ until $UI mark $H_DIR cast
 key esc
 sleep 2
 send /litter agents
-wait 30 $UI shows $H_DIR '$PANE · this session · [0-9]+ agents'
+wait 30 $UI shows $H_DIR 'this session ─+ [0-9]+ agents?'
 sleep 2
 click $UI at $H_DIR 'sleeper' '$PANE'
 wait 20 $UI shows $H_DIR '\[ Stop \]'
@@ -166,7 +176,8 @@ c_spawned() {
   [ -n "$(sleeper_id)" ] || { echo "no Agent call launched the sleeper in the background (async_launched)"; return 1; }
   marked session || return 1
   # The sleeper is live either way: running, or waiting when it put its sleep in a background shell (agents/view.ts).
-  for r in 'sleeper .*(▸ running|· waiting)' 'alpha teammate' 'beta teammate'; do saidat session "$r" || return 1; done
+  # The roster's rows: each cell padded to its column.
+  for r in 'sleeper .*(▸ running|· waiting)' 'alpha +teammate' 'beta +teammate'; do saidat session "$r" || return 1; done
 }
 c_direct() {
   marked direct-sent || return 1
