@@ -817,7 +817,13 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
     return ended === null ? yield* next(e) : yield* refusal(`swarm ${ended} has ended`)
   }
   if (state.isRefusedTurn(id, e.turnId)) return yield* refusal(NOT_ADMITTED_LATER)
-  if (state.status(id) === 'running') return yield* next(e)
+  // An admitted step's usage counts at once, so the browser's tokens move mid-turn (turn.complete settles them).
+  const counted = async function* () {
+    const r = yield* next(e)
+    state.addStep(id, e.turnId, r?.usage)
+    return r
+  }
+  if (state.status(id) === 'running') return yield* counted()
   const wake = admitWake(b)
   if (!wake.ok) {
     state.refuseTurn(id, e.turnId)
@@ -842,7 +848,7 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
       return yield* refusal(reason)
     }
   }
-  return yield* next(e)
+  return yield* counted()
 }
 
 // ---------------------------------------------------------------------------

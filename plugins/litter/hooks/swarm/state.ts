@@ -158,6 +158,8 @@ const shellsById = new Map<string, Shell>()
 const stoppedAgents = new Set<string>()
 const reports = new Map<string, NodeReport>()
 const tokenCounts = new Map<string, TokenCount>()
+/** The turns under way, by agent then turn id: model requests so far and their usage (turn.step), until that turn's turn.complete. Not mirrored. */
+const inTurn = new Map<string, Map<string, { steps: number; tokens: TokenCount }>>()
 let questionList: Question[] = []
 const directBySwarm = new Map<string, string[]>()
 const refused = new Map<string, string[]>()
@@ -377,6 +379,7 @@ function forget(name: string): void {
     stoppedAgents.delete(id)
     reports.delete(id)
     tokenCounts.delete(id)
+    inTurn.delete(id)
     refused.delete(id)
   }
   for (const [k, a] of admission) if (a.swarm === name) admission.delete(k)
@@ -461,6 +464,7 @@ export function dropBinding(agentId: string): void {
   admission.delete(agentId)
   reports.delete(agentId)
   tokenCounts.delete(agentId)
+  inTurn.delete(agentId)
   refused.delete(agentId)
   stoppedAgents.delete(agentId)
   questionList = questionList.filter(q => q.agentId !== agentId)
@@ -758,31 +762,70 @@ export const lastReport = (agentId: string): NodeReport | null => reports.get(ag
 
 const ZERO: TokenCount = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, turns: 0 }
 
-/** One turn's usage (turn.complete's `e.usage`; none for an interrupted turn, which still counts as a turn). */
-export function addTokens(agentId: string, usage: TurnUsage | null | undefined): void {
+/** `t` with one request's or one turn's usage added; `turns` as given. */
+const withUsage = (t: TokenCount, usage: TurnUsage | null | undefined, turns: number): TokenCount => ({
+  input: t.input + (usage?.input_tokens ?? 0),
+  output: t.output + (usage?.output_tokens ?? 0),
+  cacheRead: t.cacheRead + (usage?.cache_read_input_tokens ?? 0),
+  cacheCreation: t.cacheCreation + (usage?.cache_creation_input_tokens ?? 0),
+  turns,
+})
+
+const plus = (a: TokenCount, b: TokenCount): TokenCount => ({
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cacheRead: a.cacheRead + b.cacheRead,
+  cacheCreation: a.cacheCreation + b.cacheCreation,
+  turns: a.turns + b.turns,
+})
+
+/**
+ * One turn's usage (turn.complete's `e.usage`, the sum of its requests), in
+ * place of what that turn's steps counted. An interrupted turn has none, so
+ * it keeps what its steps counted; it still counts as a turn.
+ */
+export function addTokens(agentId: string, usage: TurnUsage | null | undefined, turnId?: string): void {
   const t = tokenCounts.get(agentId) ?? { ...ZERO }
-  tokenCounts.set(agentId, {
-    input: t.input + (usage?.input_tokens ?? 0),
-    output: t.output + (usage?.output_tokens ?? 0),
-    cacheRead: t.cacheRead + (usage?.cache_read_input_tokens ?? 0),
-    cacheCreation: t.cacheCreation + (usage?.cache_creation_input_tokens ?? 0),
-    turns: t.turns + 1,
-  })
+  const turns = inTurn.get(agentId)
+  const open = turnId === undefined ? undefined : turns?.get(turnId)
+  if (turnId !== undefined) turns?.delete(turnId)
+  if (turns?.size === 0) inTurn.delete(agentId)
+  tokenCounts.set(agentId, usage || !open ? withUsage(t, usage, t.turns + 1) : { ...plus(t, open.tokens), turns: t.turns + 1 })
   changed(swarmOfAgent(agentId))
 }
 
-/** One agent's tokens, or a live swarm's summed over its bindings (a live swarm's name is tried first). */
+/**
+ * One model request of a node's turn (turn.step's `usage`), so its tokens move
+ * while the turn runs: a subagent's whole task is one turn, and turn.complete
+ * comes only at its end.
+ */
+export function addStep(agentId: string, turnId: string, usage: TurnUsage | null | undefined): void {
+  const turns = inTurn.get(agentId) ?? new Map<string, { steps: number; tokens: TokenCount }>()
+  const now = turns.get(turnId) ?? { steps: 0, tokens: { ...ZERO } }
+  turns.set(turnId, { steps: now.steps + 1, tokens: withUsage(now.tokens, usage, 0) })
+  inTurn.set(agentId, turns)
+  changed(swarmOfAgent(agentId))
+}
+
+/** The latest turn under way: its model requests so far, or null between turns. */
+export const turnSteps = (agentId: string): number | null => [...(inTurn.get(agentId)?.values() ?? [])].pop()?.steps ?? null
+
+/**
+ * One agent's tokens, or a live swarm's summed over its bindings (a live
+ * swarm's name is tried first): its finished turns' and those under way.
+ * `turns` counts the finished ones.
+ */
 export function tokens(agentIdOrSwarm: string): TokenCount {
-  if (!swarms.has(agentIdOrSwarm)) return { ...(tokenCounts.get(agentIdOrSwarm) ?? ZERO) }
-  const sum = { ...ZERO }
+  const of = (id: string): TokenCount | null => {
+    const t = tokenCounts.get(id)
+    const open = [...(inTurn.get(id)?.values() ?? [])].reduce<TokenCount | null>((sum, x) => (sum ? plus(sum, x.tokens) : x.tokens), null)
+    return t && open ? plus(t, open) : (t ?? open ?? null)
+  }
+  if (!swarms.has(agentIdOrSwarm)) return { ...(of(agentIdOrSwarm) ?? ZERO) }
+  let sum = { ...ZERO }
   for (const b of bindings(agentIdOrSwarm)) {
-    const t = tokenCounts.get(b.agentId)
-    if (!t) continue
-    sum.input += t.input
-    sum.output += t.output
-    sum.cacheRead += t.cacheRead
-    sum.cacheCreation += t.cacheCreation
-    sum.turns += t.turns
+    const t = of(b.agentId)
+    if (t) sum = plus(sum, t)
   }
   return sum
 }
@@ -1081,6 +1124,7 @@ export function resetForTests(): void {
   stoppedAgents.clear()
   reports.clear()
   tokenCounts.clear()
+  inTurn.clear()
   questionList = []
   directBySwarm.clear()
   refused.clear()

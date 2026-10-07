@@ -325,7 +325,7 @@ export async function observeNodeTurn(p: Ports, e: Parameters<TurnCompleteHook>[
   const bound = boundIn(agentId)
   if (!bound) return
   const { b, s } = bound
-  state.addTokens(agentId, e.usage)
+  state.addTokens(agentId, e.usage, e.turnId)
   state.closeCalls(agentId)
   if (b.kind !== 'child') {
     const now = await p.now()

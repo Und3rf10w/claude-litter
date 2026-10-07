@@ -414,6 +414,30 @@ describe("reports and the lead's view", () => {
     expect(state.tokens('nobody')).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, turns: 0 })
   })
 
+  test("a turn's steps count while it runs; its turn.complete settles them, and an interrupted turn keeps them", () => {
+    state.putLiveSwarm(swarm())
+    state.putBinding(bind('w1'))
+    state.putBinding(bind('w2'))
+    const usage = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 1, model: 'm' }
+    state.addStep('w1', 'T1', usage)
+    state.addStep('w1', 'T1', usage)
+    expect(state.tokens('w1')).toEqual({ input: 20, output: 10, cacheRead: 4, cacheCreation: 2, turns: 0 })
+    expect(state.turnSteps('w1')).toBe(2)
+    // turn.complete's usage is the turn's whole, so it replaces the steps' count rather than adding to it.
+    state.addTokens('w1', { ...usage, input_tokens: 21 }, 'T1')
+    expect(state.tokens('w1')).toEqual({ input: 21, output: 5, cacheRead: 2, cacheCreation: 1, turns: 1 })
+    expect(state.turnSteps('w1')).toBeNull()
+    // Each turn counts apart: one whose turn.complete hasn't come keeps its count, and an interrupted turn (no usage) keeps its steps'.
+    state.addStep('w2', 'T1', usage)
+    state.addStep('w2', 'T2', usage)
+    expect(state.turnSteps('w2')).toBe(1)
+    state.addTokens('w2', null, 'T1')
+    expect(state.tokens('w2')).toEqual({ input: 20, output: 10, cacheRead: 4, cacheCreation: 2, turns: 1 })
+    expect(state.tokens('alpha')).toEqual({ input: 41, output: 15, cacheRead: 6, cacheCreation: 3, turns: 2 })
+    state.dropBinding('w2')
+    expect(state.turnSteps('w2')).toBeNull()
+  })
+
   test('questions open and close per agent; an unbound agent has none', () => {
     state.putBinding(bind('w1'))
     expect(state.noteQuestion('ghost', 'why?', NOW)).toBeNull()

@@ -148,13 +148,13 @@ const tool = async (input: Record<string, unknown>, agentId?: string) =>
 
 const stepE = (agentId: string | undefined, turnId: string, index: number) => ({ turnId, index, model: 'm', messageCount: 2, ...(agentId ? { agentId } : {}) })
 
-/** Runs admitStep, answering its chunks and result, and whether it called `next`. */
-async function step(e: ReturnType<typeof stepE>) {
+/** Runs admitStep, answering its chunks and result, and whether it called `next`; the model's request costs `usage`. */
+async function step(e: ReturnType<typeof stepE>, usage: Record<string, unknown> | null = null) {
   let called = false
   const next = async function* () {
     called = true
     yield { kind: 'text' as const, index: 0, text: 'model says hi' }
-    return { turnId: e.turnId, index: e.index, answer: 'model says hi', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    return { turnId: e.turnId, index: e.index, answer: 'model says hi', toolUses: [], stopReason: 'end_turn' as const, usage }
   }
   const gen = admit.admitStep(p, e as never, next as never) as AsyncGenerator<unknown, unknown>
   const chunks: unknown[] = []
@@ -571,6 +571,21 @@ describe('engine wakes (turn.step)', () => {
     expect((await step(stepE('w1', 'T4', 1))).called).toBe(true)
     expect((await step(stepE(undefined, 'L1', 0))).called).toBe(true)
     expect((await step(stepE('not-a-node', 'X1', 0))).called).toBe(true)
+  })
+
+  test("an admitted step's usage counts at once; a refused one's doesn't", async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    const usage = { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'm' }
+    await step(stepE('w1', 'T6', 0), usage)
+    await step(stepE('w1', 'T6', 1), usage)
+    expect(state.tokens('w1')).toEqual({ input: 200, output: 40, cacheRead: 0, cacheCreation: 0, turns: 0 })
+    expect(state.turnSteps('w1')).toBe(2)
+    await put(w2(), false)
+    state.stop('alpha', ['w2'], 'you stopped it')
+    expect((await step(stepE('w2', 'T7', 0), usage)).called).toBe(false)
+    expect(state.tokens('w2').input).toBe(0)
+    expect(state.turnSteps('w2')).toBeNull()
   })
 
   test('a wake while it settles (parked, or a stranded message) keeps its place', async () => {
