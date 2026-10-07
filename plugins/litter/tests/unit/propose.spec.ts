@@ -311,3 +311,67 @@ describe('a proposal over a draft', () => {
     expect((await readSaved(p, litterDir, 'alpha'))!.spec.nodes[0]!.spawns).toBeUndefined()
   })
 })
+
+describe('a proposal over revision 0', () => {
+  /** Nothing saved; your draft has rev1's nodes and a third orchestrator, extra, with its brief. */
+  async function draftWithExtra(): Promise<void> {
+    const mine = rev1()
+    mine.nodes.push(lead('extra', { brief: 'briefs/extra.md' }))
+    await writeDraft(p, litterDir, 'alpha', {
+      base: 0,
+      edits: [{ path: 'nodes.extra', at: 1 }],
+      spec: mine,
+      briefs: { ...REV1_BRIEFS, extra: 'Help out.\n' },
+      updatedAt: 1,
+    })
+  }
+
+  test('a draft node the proposal leaves out is removed, with its brief, and accept all drops it', async () => {
+    await draftWithExtra()
+    const r = await propose({ swarm: 'alpha', baseRevision: 0, spec: rev1(), briefs: REV1_BRIEFS, changes: [{ path: 'nodes.extra', reason: 'not needed' }] })
+    expect(r).toEqual(expect.objectContaining({ ok: true, proposal: 1, diff: expect.objectContaining({ removed: 1 }) }))
+    const v = (await readProposal(p, litterDir, 'alpha', 1))!
+    expect(v.changes.find(c => c.path === 'nodes.extra')).toEqual({
+      path: 'nodes.extra',
+      node: 'extra',
+      kind: 'removed',
+      before: expect.objectContaining({ id: 'extra' }),
+      reason: 'not needed',
+      conflict: false,
+    })
+    expect(v.briefs.find(b => b.node === 'extra')).toEqual({ node: 'extra', kind: 'removed', lines: [{ op: '-', text: 'Help out.' }], reason: 'not needed', conflict: false })
+
+    expect(await acceptProposal(p, litterDir, 'alpha', 1, 'all')).toEqual({ ok: true, revision: 1 })
+    const saved = (await readSaved(p, litterDir, 'alpha'))!
+    expect(saved.spec.nodes.map(n => n.id)).toEqual(['part-a', 'reviewer'])
+    expect(saved.briefs.extra).toBeUndefined()
+    expect(existsSync(swarm('briefs', 'extra.md'))).toBe(false)
+  })
+
+  test('a pick that leaves the removal out keeps the draft node', async () => {
+    await draftWithExtra()
+    const theirs = rev1()
+    theirs.goal = 'Review both branches'
+    expect((await propose({ swarm: 'alpha', baseRevision: 0, spec: theirs, briefs: REV1_BRIEFS, changes: [{ path: 'goal', reason: 'clearer' }] })).ok).toBe(true)
+    const v = (await readProposal(p, litterDir, 'alpha', 1))!
+    expect(v.changes.filter(c => c.kind === 'removed').map(c => c.path)).toEqual(['nodes.extra'])
+    expect(await acceptProposal(p, litterDir, 'alpha', 1, ['goal'])).toEqual({ ok: true, revision: 1 })
+    const saved = (await readSaved(p, litterDir, 'alpha'))!
+    expect(saved.spec.goal).toBe('Review both branches')
+    expect(saved.spec.nodes.map(n => n.id)).toEqual(['part-a', 'reviewer', 'extra'])
+    expect(saved.briefs.extra).toBe('Help out.\n')
+  })
+
+  test('over a saved revision, a node you added since stays yours', async () => {
+    await saveRev1()
+    const mine = rev1()
+    mine.nodes.push(lead('part-b', { brief: 'briefs/part-b.md' }))
+    await writeDraft(p, litterDir, 'alpha', { base: 1, edits: [{ path: 'nodes.part-b', at: 1 }], spec: mine, briefs: { ...REV1_BRIEFS, 'part-b': 'Own b.\n' }, updatedAt: 1 })
+    const theirs = rev1()
+    theirs.goal = 'Review both branches'
+    expect((await propose({ swarm: 'alpha', baseRevision: 1, spec: theirs, changes: [{ path: 'goal', reason: 'clearer' }] })).ok).toBe(true)
+    const v = (await readProposal(p, litterDir, 'alpha', 1))!
+    expect(v.changes.map(c => c.path)).toEqual(['goal'])
+    expect(v.briefs).toEqual([])
+  })
+})

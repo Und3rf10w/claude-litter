@@ -374,11 +374,19 @@ const briefOf = (side: Side, l: Leaves, node: string): string | undefined =>
 /**
  * The proposal `prop` against its base, each change and brief marked
  * conflicting where your draft changed it from the base too, to something else.
+ *
+ * `fromNothing`, a proposal over revision 0: nothing saved is there for the
+ * lead to read, so the draft (swarm_read, draft: true) is what it proposed
+ * over. A draft node its whole spec leaves out is one it removes, so it's
+ * `removed` from the draft's node, with its brief: the lead's one way to drop
+ * a node that's only in the draft. Over a saved revision, a node you added
+ * since may be one the lead never read, so it stays yours.
  */
-function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly ProposedChange[]): { changes: ProposalChange[]; briefs: BriefDiff[] } {
+function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly ProposedChange[], fromNothing = false): { changes: ProposalChange[]; briefs: BriefDiff[] } {
   const lb = leavesOf(base.spec)
   const lp = leavesOf(prop.spec)
   const ld = leavesOf(draft.spec)
+  const dropped = fromNothing ? [...ld.nodes.keys()].filter(id => !lb.nodes.has(id) && !lp.nodes.has(id)) : []
   const changes: ProposalChange[] = []
   const entry = (path: string, node: string | undefined, before: unknown, after: unknown): void => {
     if (same(before, after)) return
@@ -403,10 +411,11 @@ function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly Propos
     else for (const path of new Set([...bn.fields.keys(), ...pn.fields.keys()])) entry(path, id, bn.fields.get(path), pn.fields.get(path))
   }
   for (const [id, bn] of lb.nodes) if (!lp.nodes.has(id)) entry(`nodes.${id}`, id, bn.node, undefined)
+  for (const id of dropped) entry(`nodes.${id}`, id, ld.nodes.get(id)!.node, undefined)
 
   const briefs: BriefDiff[] = []
-  for (const id of new Set([...lp.nodes.keys(), ...lb.nodes.keys()])) {
-    const before = briefOf(base, lb, id)
+  for (const id of new Set([...lp.nodes.keys(), ...lb.nodes.keys(), ...dropped])) {
+    const before = dropped.includes(id) ? briefOf(draft, ld, id) : briefOf(base, lb, id)
     const after = briefOf(prop, lp, id)
     if (before === after) continue
     const yours = briefOf(draft, ld, id)
@@ -485,7 +494,7 @@ async function diffOf(p: Ports, litterDir: string, name: string, loaded: Loaded)
   const base = await baseSide(p, litterDir, name, loaded.body.baseRevision)
   const prop = proposedSide(loaded, base)
   const draft = await currentSide(p, litterDir, name)
-  return { base, prop, draft, ...diffSides(base, prop, draft, loaded.body.changes) }
+  return { base, prop, draft, ...diffSides(base, prop, draft, loaded.body.changes, loaded.body.baseRevision === 0) }
 }
 
 /**
