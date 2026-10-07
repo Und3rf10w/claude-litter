@@ -35,7 +35,8 @@ import type { Loaded } from '../ui/hub'
 import { tableFor } from '../swarm/builder'
 import { clean, oneLine } from '../swarm/view'
 import { MARK, NOTICE_STYLE, STYLE, type NoticeLevel } from '../ui/style'
-import { actions, empty, field, fieldRows, heading, headingPlan, MIN_RULE, notice, packItems, RULE, RULE_TAIL, spansLine, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
+import { actions, empty, field, fieldRows, fitCell, heading, headingPlan, MIN_RULE, notice, packItems, RULE, RULE_TAIL, spansLine, textRows, type BodyContext, type SectionMeta } from '../ui/chrome'
+import { cells } from '../band/view'
 import { list, listPlace, pageOf, scrolled, type ListAction, type ListSpec } from '../ui/list'
 import { lastDrawn } from '../ui/drawn'
 import { listOffset, moveList, openSection, showSection } from '../ui/hub'
@@ -713,20 +714,46 @@ function messagesPart(el: PaneElements, m: NonNullable<AgentsSelected['swarm']>,
   }
   const { kept, left, leftLine } = inboxFit(messageEntries(m), m.hidden, rows)
   const shown = m.messages.slice(m.messages.length - kept.length)
+  const fromW = nameWidth(shown.map(x => x.from), columns)
+  const toW = nameWidth(shown.map(x => x.to), columns)
   return (
     <Box flexDirection="column">
       {head}
       {leftLine ? <Text color={STYLE.muted}>{`${left} earlier not shown`}</Text> : null}
       {shown.map(x => (
         <Box flexDirection="row" columnGap={1}>
-          <Text color={STYLE.name}>{x.from}</Text>
-          <Text color={STYLE.muted}>→</Text>
-          <Text color={STYLE.name}>{x.to}</Text>
-          <Text color={STYLE.muted}>{`· ${x.at} ·`}</Text>
-          <Text wrap="truncate-end">{x.line}</Text>
+          {fixed(el, fitCell(x.from, fromW), STYLE.name)}
+          {fixed(el, '→', STYLE.muted)}
+          {fixed(el, fitCell(x.to, toW), STYLE.name)}
+          {fixed(el, `· ${x.at} ·`, STYLE.muted)}
+          {rest(el, x.line)}
         </Box>
       ))}
       {see}
+    </Box>
+  )
+}
+
+/** A name column's width: its widest name, at most a fifth of the row (at least 6), so a longer one is cut (`…`) rather than wrapped. */
+const nameWidth = (names: readonly string[], columns: number): number =>
+  Math.min(Math.max(1, ...names.map(cells)), Math.max(6, Math.floor(columns / 5)))
+
+/** A cell of a message row that keeps its width: the row's text gives way, never a name. */
+function fixed(el: PaneElements, text: string, color: string): RenderElement {
+  const { Box, Text } = el
+  return (
+    <Box flexShrink={0}>
+      <Text color={color}>{text}</Text>
+    </Box>
+  )
+}
+
+/** The rest of a message row: one line, cut at its end. */
+function rest(el: PaneElements, text: string): RenderElement {
+  const { Box, Text } = el
+  return (
+    <Box flexGrow={1} width={0} height={1} overflow="hidden">
+      <Text wrap="truncate-end">{text}</Text>
     </Box>
   )
 }
@@ -754,6 +781,7 @@ function inboxPart(el: PaneElements, scope: string, sel: AgentsSelected, rows: n
     )
   }
   const { kept, left, leftLine } = inboxFit(inbox.entries, inbox.hidden, rows)
+  const fromW = nameWidth(kept.map(x => x.from), columns)
   return (
     <Box flexDirection="column">
       {head}
@@ -761,9 +789,9 @@ function inboxPart(el: PaneElements, scope: string, sel: AgentsSelected, rows: n
       {kept.map(x => (
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
-            <Text color={STYLE.name}>{x.from}</Text>
-            <Text color={STYLE.muted}>{`· ${x.at} ·`}</Text>
-            <Text wrap="truncate-end">{x.lines[0] ?? ''}</Text>
+            {fixed(el, fitCell(x.from, fromW), STYLE.name)}
+            {fixed(el, `· ${x.at} ·`, STYLE.muted)}
+            {rest(el, x.lines[0] ?? '')}
           </Box>
           {x.lines.slice(1).map(l => (
             <Text wrap="truncate-end">{`    ${l}`}</Text>

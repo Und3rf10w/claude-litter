@@ -514,7 +514,7 @@ const TEAM_ROWS = (columns: number): [string, string][] => [
   ['  right-click a row for its actions', 'inactive'],
   [ruled('Inbox · writer', columns, 'unread only'), NAMED],
   ['team-lead · HH:MM · the spec moved: see G2', 'cyan_FOR_SUBAGENTS_ONLY, inactive, default'],
-  ['checker · HH:MM · G3 fails on main', 'cyan_FOR_SUBAGENTS_ONLY, inactive, default'],
+  ['checker   · HH:MM · G3 fails on main', 'cyan_FOR_SUBAGENTS_ONLY, inactive, default'],
   ['    the log is in /tmp/g3.log', 'default'],
   [ruled('Transcript · writer', columns), 'suggestion bold, cyan_FOR_SUBAGENTS_ONLY bold, subtle'],
   ["not in this session: its transcript is its own session's", 'inactive'],
@@ -563,6 +563,90 @@ describe('the drawings', () => {
       expect(body).toContain('◆ step 60')
       expect(body.some(r => /^↑ \d+ earlier$/.test(r))).toBe(true)
       expect(rows.at(-1)).toMatch(/^ctrl\+x tab gives the pane the keys/)
+    })
+  }
+})
+
+/**
+ * A swarm node selected (WP-DF): in the inbox's place its messages from the
+ * launch ledger. The view is fed to the pane through a state.get hook
+ * beneath, as swarm-panes.test.tsx feeds its own, since a swarm's binding
+ * isn't this test's world.
+ */
+function nodeView(): AgentsPaneView {
+  const messages = [
+    { from: 'port', to: 'lead', at: '03:52', line: 'port, on codex-rs/core: the session loop now builds and its tests pass' },
+    { from: 'implementer', to: 'port', at: '03:55', line: 'the sandbox crate next, please' },
+    { from: 'lead', to: 'implementer', at: '03:58', line: 'hold until port reports' },
+  ]
+  return {
+    view: 'agents',
+    v: 1,
+    body: {
+      head: { team: null, note: '1 agent · 1 running' },
+      notice: null,
+      ended: null,
+      scope: 'session',
+      options: [{ value: 'session', label: 'this session', members: null, active: true, description: '' }],
+      hiddenTeams: 0,
+      showAll: false,
+      picking: false,
+      rows: [
+        {
+          key: 'a-port',
+          name: 'port',
+          type: 'litter:sw-codex-port',
+          status: { text: 'running', glyph: '▸', color: 'background' },
+          unread: null,
+          description: '',
+          can: { message: true, transcript: true, stop: true },
+          swarm: { name: 'codex', said: '' },
+        },
+      ],
+      hiddenRows: 0,
+      selected: {
+        key: 'a-port',
+        name: 'port',
+        inbox: null,
+        transcript: { readable: true, lines: [], total: 0 },
+        sendNote: 'sent through the engine: it reads it at its next turn',
+        stop: null,
+        swarm: { name: 'codex', node: 'port', messages, hidden: 2, error: null },
+      },
+      composer: { key: 'agents:text:0', text: '', to: 'port' },
+      broadcast: null,
+      problems: [],
+    },
+  }
+}
+
+describe("a swarm node's messages", () => {
+  for (const [columns, from, to] of [
+    [100, 'implementer', 'implementer'],
+    [40, 'impleme…', 'impleme…'],
+  ] as const) {
+    test(`at ${columns} columns: each one line, the names whole or cut in their own columns, never wrapped`, async ($, on) => {
+      world(on)
+      const view = nodeView()
+      on('state.get', async (_$, e, next) => {
+        if (e.key === 'hub') return { value: { value: { view: 'hub', v: 1, section: 'agents', live: [], tabs: [] }, version: 0 } }
+        if (e.key === 'agentsPane') return { value: { value: view, version: 0 } }
+        return next(e)
+      })
+      const ui = await mountAgents($, 'terminal', { bodyColumns: columns, bodyRows: 40 })
+      const rows = drawText(await ui.drawn(), columns)
+      const at = rows.findIndex(r => r.startsWith('Messages · port'))
+      const end = rows.findIndex(r => r.startsWith('[ Open in Swarms ]'))
+      expect(at).toBeGreaterThanOrEqual(0)
+      const shown = rows.slice(at + 1, end).map(r => r.trimEnd())
+      const w = from.length
+      expect(shown).toHaveLength(4)
+      expect(shown[0]).toBe('2 earlier not shown')
+      expect(shown[1]).toStartWith(`${'port'.padEnd(w)} → ${'lead'.padEnd(w)} · 03:52 · port, on`)
+      expect(shown[2]).toStartWith(`${from} → ${'port'.padEnd(w)} · 03:55 · the sand`)
+      expect(shown[3]).toBe(`${'lead'.padEnd(w)} → ${to} · 03:58 · ${columns >= 100 ? 'hold until port reports' : 'hold unti…'}`)
+      for (const r of shown) expect(r.length).toBeLessThanOrEqual(columns)
+      expect((await ui.find({ type: 'Text', text: from }))?.props.color).toBe('cyan_FOR_SUBAGENTS_ONLY')
     })
   }
 })
