@@ -111,7 +111,7 @@ import { instantiate, listTemplates, loadTemplate, saveTemplate, templateOffers 
 import { launchSwarm } from './launch'
 import { handover, readOwner } from './owner'
 import { recoveryCard, requestResume, resumeTargets } from './recover'
-import { cancelQueued, sendFromBrowser } from './admit'
+import { cancelQueued, dismissQuestion, sendFromBrowser, sendQueuedNow } from './admit'
 import { endSwarm, settleProgress, stopNode } from './end'
 import { ackBranchMoved } from './observe'
 import { parseSummary, plainText, summaryOf } from './summary'
@@ -149,6 +149,8 @@ export type Owners = {
   resumeTargets: typeof resumeTargets
   sendFromBrowser: typeof sendFromBrowser
   cancelQueued: typeof cancelQueued
+  sendQueuedNow: typeof sendQueuedNow
+  dismissQuestion: typeof dismissQuestion
   stopNode: typeof stopNode
   endSwarm: typeof endSwarm
   settleProgress: typeof settleProgress
@@ -185,6 +187,8 @@ export function owners(): Owners {
     resumeTargets,
     sendFromBrowser,
     cancelQueued,
+    sendQueuedNow,
+    dismissQuestion,
     stopNode,
     endSwarm,
     settleProgress,

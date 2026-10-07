@@ -717,9 +717,17 @@ function senderOf(e: Parameters<PortHook<SessionSendHook>>[1], fromB: NodeBindin
   return { from: `plugin:${e.origin.name}`, label: `the ${e.origin.name} plugin` }
 }
 
-/** The first line of a message that asks something: the node's question (WP-L's reading of "open questions"). */
-function questionIn(text: string): string | null {
-  const line = text.split('\n').map(l => l.trim()).find(l => l.endsWith('?') || /\?\s/.test(l))
+/** A line that ends asking: its last `?` closes it, closing quotes, brackets and emphasis aside. */
+const ASKS = /\?[\s"'`*_)\]]*$/
+
+/**
+ * The first line of a message that asks something: the node's question
+ * (WP-L's reading of "open questions"). A line asks when it ends with its
+ * `?`: one with words after it ("does the child start it? No. The role
+ * override…") answered itself (the user's live look, 2026-10-07).
+ */
+export function questionIn(text: string): string | null {
+  const line = text.split('\n').map(l => l.trim()).find(l => ASKS.test(l))
   return line ? cut(line, 400) : null
 }
 
@@ -733,6 +741,8 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
   }
   if (!toLead && !toParent) return
   state.noteReport(b.agentId, text, 'message', at)
+  // Its newer message stands for it: a question it asked before is closed, and this one's, if it asks, opens.
+  state.closeQuestion(b.agentId, at)
   const q = questionIn(text)
   // Where it went (WP-DG: "How do I know who I need to reply to?"): the lead, or the parent node, which the browser names.
   const to = toLead || b.parent === null ? 'lead' : (state.binding(b.parent)?.node ?? b.parent)
@@ -1247,6 +1257,48 @@ export async function cancelQueued(p: Ports, id: string): Promise<boolean> {
   waitingRoom.delete(id)
   await swarmEvent(p, state.liveSwarm(m.swarm), { kind: 'queue-cancelled', node: m.node, agentId: m.agentId, id })
   return true
+}
+
+/**
+ * [Send now] on a queued message (the user's live look, 2026-10-07: a
+ * message queued for an orchestrator that ran for hours waited "forever"):
+ * the node's queued messages go now as one interject, which a running node
+ * reads at its next step, and leave the queue once delivered. A node that
+ * isn't running keeps them: litter hands them on when it's idle.
+ */
+export async function sendQueuedNow(p: Ports, id: string, budget?: WaitBudget): Promise<SendOutcome> {
+  const wait = budget ?? (await waitBudget(p))
+  await state.ready(p, await wait.left())
+  const m = state.queued().find(q => q.id === id)
+  if (!m) return { kind: 'refused', reason: 'that message was sent or cancelled already', canQueue: false }
+  const s = state.liveSwarm(m.swarm)
+  const b = state.binding(m.agentId)
+  if (!s || !b) return { kind: 'refused', reason: `${m.node} is no longer in a live swarm`, canQueue: false }
+  if (state.status(b.agentId) !== 'running') return { kind: 'refused', reason: `${instanceName(b)} isn't running: litter sends it once it's idle`, canQueue: false }
+  const all = state.queued(m.swarm, m.agentId)
+  const j = joinQueued(all)
+  const routed = await routeSend(
+    p,
+    { to: b, text: j.text, raw: j.raw, sender: null, from: j.from, label: j.label, route: 'direct', delivery: 'interject' },
+    (t, x) => sendOwn(p, t, x),
+    wait,
+  )
+  const o = routed.outcome
+  if (o.kind === 'refused') return o
+  for (const q of all) {
+    state.dequeue(q.id)
+    handed.delete(q.id)
+    waitingRoom.delete(q.id)
+    // Settling since the check, it was queued again as one message: the old ones go without a `queue-sent`.
+    if (o.kind !== 'queued') await swarmEvent(p, s, { kind: 'queue-sent', node: b.node, agentId: b.agentId, id: q.id })
+  }
+  return o
+}
+
+/** [Dismiss] on a node's open question: closed, for one it answered itself or no longer waits on. How many closed. */
+export async function dismissQuestion(p: Ports, swarm: string, agentId: string): Promise<number> {
+  if (!state.openQuestions(swarm).some(q => q.agentId === agentId)) return 0
+  return state.closeQuestion(agentId, await p.now())
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import type { RenderElement } from 'claude-code'
 import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmSpan, SwarmUnsettledView } from '../../types/index'
-import { empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
+import { action, empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
 import { list, listPlace, type ListAction, type ListSpec } from '../ui/list'
 import { MARK, STYLE } from '../ui/style'
 import { cells } from '../band/view'
@@ -176,9 +176,11 @@ export const reviewKey = (swarm: string, n: number): string => `swarm:browser:bu
  * open question, who asks, whom (WP-DG: "How do I know who I need to reply
  * to?", so you know you can answer in the lead's session or here) and its
  * first line, with [Answer] (it selects the asker, so the composer goes to
- * it). Only these, from the swarm's state: never the summary's text. Pure.
+ * it) and [Dismiss] (one it answered itself, the user's live look of
+ * 2026-10-07, or no longer waits on). Only these, from the swarm's state:
+ * never the summary's text. Pure.
  */
-export function browserNeeds(view: SwarmBrowserView): { text: string; action: Action | null }[] {
+export function browserNeeds(view: SwarmBrowserView): { text: string; action: Action | null; dismiss?: Action }[] {
   const s = view.swarm
   const live = !view.readOnly && !view.lost
   return [
@@ -188,9 +190,13 @@ export function browserNeeds(view: SwarmBrowserView): { text: string; action: Ac
       .map(r => ({
         text: `${asksWhom(r.name, r.questionTo)} ${r.question}`,
         action: live && r.agentId !== null && r.agentId !== view.selected ? { key: `swarm:browser:select:${s}/${r.agentId}`, label: 'Answer' } : null,
+        ...(live && r.agentId !== null ? { dismiss: { key: `swarm:browser:dismiss-question:${s}/${r.agentId}`, label: 'Dismiss' } } : {}),
       })),
   ]
 }
+
+/** A needs row's Buttons: its action, then [Dismiss] when it has one. */
+const needsActions = (x: { action: Action | null; dismiss?: Action }): Action[] => [x.action, x.dismiss ?? null].filter((a): a is Action => a !== null)
 
 /**
  * [That was me, all n] under the flags (WP-DG: one answer for several moves),
@@ -306,7 +312,7 @@ export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyConte
   const c = ctx.bodyColumns
   const live = !view.readOnly && !view.lost
   let rows = 1
-  for (const x of browserNeeds(view)) rows += needsRowCount(x.text, x.action?.label ?? null, c)
+  for (const x of browserNeeds(view)) rows += needsRowCount(x.text, needsActions(x).map(a => a.label), c)
   if (view.notice) rows += noticeRows(view.notice.text, c)
   if (view.owner) {
     rows += noticeRows(`${view.lost ? 'this session lost it: ' : 'read-only: '}${view.owner.text}`, c)
@@ -392,7 +398,7 @@ function roster(el: PaneElements, view: SwarmBrowserView, e: BodyContext, column
   const leadMark = lead ? (lead.running ? MARK.running : MARK.idle) : null
   const client = drawsClient(el, e.surface)
   const sel = view.rows.find(r => r.agentId !== null && r.agentId === view.selected) ?? null
-  const queued = view.rows.flatMap(r => r.queued.map(q => ({ name: r.name, ...q })))
+  const queued = view.rows.flatMap(r => r.queued.map(q => ({ name: r.name, running: r.running, ...q })))
   // What's above the transcript keeps to browserTranscriptTop's rows.
   return (
     <Box flexDirection="column">
@@ -407,13 +413,17 @@ function roster(el: PaneElements, view: SwarmBrowserView, e: BodyContext, column
         </Box>
       )}
       {queued.map(q => (
+        // A queued message waits for its node's turn to end, which for an orchestrator can be hours (the user's
+        // live look, 2026-10-07: "stuck forever"): the row says so, and [Send now] interjects it while it runs.
         <Box flexDirection="row" columnGap={1}>
-          <Text color={STYLE.warning} wrap="truncate-end">{`queued for ${q.name}: ${q.text}`}</Text>
-          {!view.readOnly && !view.lost && (
-            <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: 'Cancel' })}>
-              {actionRow(el, [{ key: `swarm:browser:cancel:${s}/${q.id}`, label: 'Cancel' }], 12)}
-            </Box>
-          )}
+          <Text color={STYLE.warning} wrap="truncate-end">{`queued for ${q.name}${q.running ? ' until its turn ends' : ''}: ${q.text}`}</Text>
+          {!view.readOnly &&
+            !view.lost &&
+            [...(q.running ? [{ key: `swarm:browser:send-queued:${s}/${q.id}`, label: 'Send now' }] : []), { key: `swarm:browser:cancel:${s}/${q.id}`, label: 'Cancel' }].map(a => (
+              <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: a.label })}>
+                {action(el, a)}
+              </Box>
+            ))}
         </Box>
       ))}
       {transcriptBox(el, view, e, columns)}
@@ -514,7 +524,7 @@ function summary(el: PaneElements, view: SwarmBrowserView, compact: boolean, col
 /** Where a message goes and how, the composer's caption: "to reader · interjects now · direct". Pure. */
 export function composerCaption(c: Pick<SwarmComposer, 'to' | 'targets' | 'when' | 'route' | 'routes'>): string {
   const to = c.to === null ? 'pick who it goes to' : `to ${c.targets.find(t => t.value === c.to)?.label ?? c.to}`
-  const when = c.when === 'queue' ? 'queues until it settles' : 'interjects now'
+  const when = c.when === 'queue' ? 'queues until its turn ends' : 'interjects now'
   const route = c.routes.find(r => r.value === c.route)?.label ?? c.route
   return `${to} · ${when} · ${route}`
 }
@@ -653,7 +663,7 @@ function renderBrowser(view: SwarmBrowserView, el: PaneElements, e: BodyContext)
   return (
     <Box flexDirection="column">
       {titleRow(el, view.title, columns)}
-      {browserNeeds(view).map(x => needsRow(el, x.text, x.action))}
+      {browserNeeds(view).map(x => needsRow(el, x.text, needsActions(x)))}
       {noticeRow(el, view.notice)}
       {exceptions(el, view, columns)}
       {view.budget && budgetRow(el, view.budget)}

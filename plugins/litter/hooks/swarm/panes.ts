@@ -1487,6 +1487,20 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
       else notice(r.value ? 'ok' : 'info', r.value ? 'cancelled the queued message' : 'that message was already sent or cancelled')
       return true
     }
+    case 'send-queued': {
+      const r = await call(p, `sendQueuedNow ${arg}`, () => o.sendQueuedNow(p, arg, input.budget))
+      if (!r.ok) failed(p, 'Send now', r.error)
+      else if (r.value.kind === 'refused') notice('warning', `not sent: ${r.value.reason}`)
+      else if (r.value.kind === 'queued') notice('info', 'it was finishing its turn, so it stays queued: litter sends it when it settles')
+      else notice('ok', 'sent: it reads it at its next step')
+      return true
+    }
+    case 'dismiss-question': {
+      const r = await call(p, `dismissQuestion ${name} ${arg}`, () => o.dismissQuestion(p, name, arg))
+      if (!r.ok) failed(p, 'Dismiss', r.error)
+      else notice(r.value > 0 ? 'ok' : 'info', r.value > 0 ? 'dismissed the question: it no longer waits on you' : 'that question was already answered or dismissed')
+      return true
+    }
     case 'stop':
     case 'hard-stop': {
       const how = k.action === 'stop' ? 'soft' : 'hard'

@@ -211,6 +211,27 @@ describe("messages from you (15.4's table)", () => {
     expect((await events()).map(e => e.kind)).toEqual(['queued', 'message', 'queue-sent'])
   })
 
+  // The user's live look (2026-10-07): a message queued for an orchestrator that ran for hours waited "forever".
+  test("[Send now]: the node's queued messages go now as one interject while it runs, and leave the queue; an idle node's stay", async () => {
+    await put(o1(), true)
+    const first = (await browser('part-a', 'rebase on main when done', 'queue', 'direct')) as { id: string }
+    await browser('part-a', 'then tag it', 'queue', 'direct')
+    expect(state.queued().length).toBe(2)
+    expect(await admit.sendQueuedNow(p, first.id)).toEqual({ kind: 'delivered' })
+    expect(p.sent).toEqual([{ to: 'o1', text: expect.stringMatching(/^2 messages queued while you were busy, oldest first\.\n\nFrom the user:\n\nrebase on main when done\n\nFrom the user:\n\nthen tag it$/) }])
+    expect(state.queued()).toEqual([])
+    expect((await events()).map(e => e.kind)).toEqual(['queued', 'queued', 'message', 'queue-sent', 'queue-sent'])
+    expect(await admit.sendQueuedNow(p, first.id)).toEqual(expect.objectContaining({ kind: 'refused', reason: 'that message was sent or cancelled already' }))
+  })
+
+  test('[Send now] on an idle node: refused, the message kept for litter to hand on', async () => {
+    await put(o1(), true)
+    const { id } = (await browser('part-a', 'later', 'queue', 'direct')) as { id: string }
+    await settle('o1')
+    expect(await admit.sendQueuedNow(p, id)).toEqual(expect.objectContaining({ kind: 'refused', reason: "part-a isn't running: litter sends it once it's idle" }))
+    expect(state.queued().map(q => q.id)).toEqual([id])
+  })
+
   test('direct, queue: sent at once to an idle node', async () => {
     await put(o1(), false)
     expect(await browser('part-a', 'rebase on main', 'queue', 'direct')).toEqual({ kind: 'delivered' })
@@ -378,6 +399,41 @@ describe("a node's messages", () => {
       ['o1', 'lead'],
       ['w2', 'lead'],
     ])
+  })
+
+  // The user's live look (2026-10-07): "This was a question it answered itself. Why is this stuck in my answer queue?"
+  test('a line asks when its `?` ends it: one with words after its `?` answered itself', () => {
+    expect(admit.questionIn('Which port should I use, 8080 or 8443?\nEither works for me.')).toBe('Which port should I use, 8080 or 8443?')
+    expect(admit.questionIn('Done with part 1.\nShall I merge it? **')).toBe('Shall I merge it? **')
+    expect(admit.questionIn('Is it `main`?`')).toBe('Is it `main`?`')
+    expect(admit.questionIn('Keep the old API (yes?)')).toBe('Keep the old API (yes?)')
+    expect(admit.questionIn('2. Role [mcp_servers.litter] — does the child start it? No. The role override layer never carries mcp_servers (see 1).')).toBeNull()
+    expect(admit.questionIn('Why? Because the cache was stale.')).toBeNull()
+    expect(admit.questionIn('All done.')).toBeNull()
+  })
+
+  test("a node's newer message stands for it: the question it asked before closes, and a new one opens only if it asks again", async () => {
+    await put(o1(), true)
+    const { next } = sendNext()
+    await send(sendE('main', 'Should I bump the version?', 'o1'), next)
+    expect(state.openQuestions('alpha').map(q => q.text)).toEqual(['Should I bump the version?'])
+    p.clock.now = NOW + 1000
+    await send(sendE('main', 'I bumped it to 2.1; tests pass.', 'o1'), next)
+    expect(state.openQuestions('alpha')).toEqual([])
+    p.clock.now = NOW + 2000
+    await send(sendE('main', 'Tag it too?', 'o1'), next)
+    expect(state.openQuestions('alpha').map(q => q.text)).toEqual(['Tag it too?'])
+  })
+
+  test('[Dismiss] closes an open question of the swarm; another swarm, or none open, closes nothing', async () => {
+    await put(o1(), true)
+    const { next } = sendNext()
+    await send(sendE('main', 'Should I bump the version?', 'o1'), next)
+    expect(await admit.dismissQuestion(p, 'beta', 'o1')).toBe(0)
+    expect(state.openQuestions('alpha')).toHaveLength(1)
+    expect(await admit.dismissQuestion(p, 'alpha', 'o1')).toBe(1)
+    expect(state.openQuestions('alpha')).toEqual([])
+    expect(await admit.dismissQuestion(p, 'alpha', 'o1')).toBe(0)
   })
 
   test("while the swarm is ending, a node's send passes only to its parent", async () => {

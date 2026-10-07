@@ -947,7 +947,7 @@ describe('WP-DD: the roster', () => {
     ]
     const targets = [{ value: 'w1', label: 'reader' }]
     expect(composerCaption({ to: 'w1', targets, when: 'interject', route: 'direct', routes })).toBe('to reader · interjects now · direct')
-    expect(composerCaption({ to: null, targets, when: 'queue', route: 'lead', routes })).toBe('pick who it goes to · queues until it settles · via the lead')
+    expect(composerCaption({ to: null, targets, when: 'queue', route: 'lead', routes })).toBe('pick who it goes to · queues until its turn ends · via the lead')
   })
 })
 
@@ -1348,6 +1348,23 @@ describe('WP-DG: who asks, and whom; the summary says who is blocked, never that
     expect(answer.key).toBe(`swarm:browser:select:${SWARM}/w1`)
     await handle(p, answer.key, {})
     expect(shown<SwarmBrowserView>().composer?.to).toBe('w1')
+  })
+
+  // The user's live look (2026-10-07): "This was a question it answered itself. Why is this stuck in my answer queue?"
+  test('each question row has [Dismiss], selected or not; its press closes that question alone', async () => {
+    goLive()
+    state.noteQuestion('o1', 'Which branch do I base on?', NOW - 3_000, 'lead')
+    state.noteQuestion('w1', 'Do I keep the old API?', NOW - 2_000, 'part-a')
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    expect(browserNeeds(shown<SwarmBrowserView>()).map(x => [x.action?.label ?? null, x.dismiss?.key ?? null])).toEqual([
+      [null, `swarm:browser:dismiss-question:${SWARM}/o1`],
+      ['Answer', `swarm:browser:dismiss-question:${SWARM}/w1`],
+    ])
+    await handle(p, `swarm:browser:dismiss-question:${SWARM}/w1`, {})
+    expect(state.openQuestions(SWARM).map(q => q.agentId)).toEqual(['o1'])
+    expect(browserNeeds(shown<SwarmBrowserView>()).map(x => x.text)).toEqual(['part-a asks the lead: Which branch do I base on?'])
+    expect(shown<SwarmBrowserView>().notice).toEqual(expect.objectContaining({ level: 'ok', text: 'dismissed the question: it no longer waits on you' }))
   })
 
   test("a Blocked line naming a sibling draws no ⚑ and adds nothing to what needs you", async () => {

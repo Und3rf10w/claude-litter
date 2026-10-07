@@ -130,23 +130,26 @@ export function noticeRow(el: PaneElements, n: SwarmNotice | null): RenderElemen
 }
 
 /** A line that needs you (or a proposal that can't be read): the chrome's notice at its level, wrapping beside its action, a Button that never shrinks. */
-export function needsRow(el: PaneElements, text: string, a: Action | null, level: 'needsYou' | 'error' = 'needsYou'): RenderElement {
+export function needsRow(el: PaneElements, text: string, a: Action | readonly Action[] | null, level: 'needsYou' | 'error' = 'needsYou'): RenderElement {
   const { Box } = el
+  const list: readonly Action[] = a === null ? [] : 'key' in a ? [a] : a
   return (
     <Box flexDirection="row" columnGap={1}>
       {noticeLine(el, level, text)}
-      {a && (
-        <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: a.label })}>
-          {action(el, a)}
+      {list.map(x => (
+        <Box flexShrink={0} minWidth={itemWidth({ kind: 'button', label: x.label })}>
+          {action(el, x)}
         </Box>
-      )}
+      ))}
     </Box>
   )
 }
 
-/** The rows needsRow takes at `columns`: its notice wrapped beside the Button. For the wheel's hit tests. */
-export function needsRowCount(text: string, label: string | null, columns: number): number {
-  const room = label !== null && Number.isFinite(columns) ? Math.max(1, columns - 1 - itemWidth({ kind: 'button', label })) : columns
+/** The rows needsRow takes at `columns`: its notice wrapped beside the Buttons. For the wheel's hit tests. */
+export function needsRowCount(text: string, label: string | readonly string[] | null, columns: number): number {
+  const labels = label === null ? [] : typeof label === 'string' ? [label] : label
+  const used = labels.reduce((n, l) => n + 1 + itemWidth({ kind: 'button', label: l }), 0)
+  const room = labels.length > 0 && Number.isFinite(columns) ? Math.max(1, columns - used) : columns
   return textRows(`${NOTICE_STYLE.needsYou.glyph} ${text}`, room)
 }
 

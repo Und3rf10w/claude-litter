@@ -655,6 +655,17 @@ describe('the swarm panes draw every view', () => {
     })
   }
 
+  // The user's live looks (2026-10-07): "My queued message has been stuck forever"; "a question it answered itself".
+  test("a running node's queued message says what it waits for, with [Send now] and [Cancel]; a question row has [Dismiss]", async ($, on) => {
+    mock.store(on)
+    views(on, BROWSER)
+    const ui = await mountSwarm($, 'terminal')
+    expect((await ui.find({ type: 'Text', text: 'queued for fixer until its turn ends: also the lexer' }))?.props.color).toBe('warning')
+    expect(await ui.find({ type: 'Button', key: 'swarm:browser:send-queued:demo/q1' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:browser:cancel:demo/q1' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:browser:dismiss-question:demo/o1' })).toBeDefined()
+  })
+
   test('a read-only swarm has no composer and no stop buttons', async ($, on) => {
     mock.store(on)
     views(on, READ_ONLY)
