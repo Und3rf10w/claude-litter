@@ -12,20 +12,40 @@ import { projectTemplatesDir, swarmBriefPath, swarmProposalDir } from '../../hoo
 import { appendLaunchRecord, readLaunchLedger, readSpecLedger } from '../../hooks/records/swarm'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
-import { readDraft, readProposal, readSaved, saveRevision, stageProposal, writeDraft } from '../../hooks/swarm/store'
+import { acceptProposal, proposalStanding, readDraft, readProposal, readSaved, rejectProposal, saveRevision, stageProposal, writeDraft } from '../../hooks/swarm/store'
 import { asTemplate, loadTemplate, parameterize, templateOffers } from '../../hooks/swarm/templates'
 import { requestResume } from '../../hooks/swarm/recover'
 import { others as endOthers, resetEndForTests } from '../../hooks/swarm/end'
 import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
 import type { Owners } from '../../hooks/swarm/view'
-import { blankNav, changeWords, clean, composerKey, failingFirst, messageSpans, messageText, nav, resetViewForTests, setNav, setOwnersForTests, swarmView, toolLine, valueWords } from '../../hooks/swarm/view'
-import { builderPrimary, startListTop, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
+import {
+  blankNav,
+  changeWords,
+  clean,
+  composerKey,
+  failingFirst,
+  messageSpans,
+  messageText,
+  nav,
+  pendingProposals,
+  resetViewForTests,
+  setNav,
+  setOwnersForTests,
+  supersededProposals,
+  swarmView,
+  toolLine,
+  valueWords,
+} from '../../hooks/swarm/view'
+import { builderPrimary, startListTop, startNeeds, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
 import {
   TRANSCRIPT_INLINE_ROWS,
   TRANSCRIPT_MIN_ROWS,
+  browserNeeds,
   browserTranscriptTop,
   browserWheel,
   composerCaption,
+  eventColumns,
+  reviewKey,
   rosterActions,
   rosterDescription,
   rosterList,
@@ -865,6 +885,7 @@ describe('WP-DD: the roster', () => {
     composer: null,
     transcript: null,
     selected: null,
+    proposals: [],
     ...over,
   })
 
@@ -964,7 +985,7 @@ describe('WP-DD: the primary per state, the start list top, Doctor', () => {
   })
 
   test('the rows above the template list, at 100 and 60 columns, framed and not, with a notice', () => {
-    const start: SwarmStartView = { view: 'start', v: 1, title: [], notice: null, blocked: null, name: '', ask: '', templates: [], template: null, swarms: [] }
+    const start: SwarmStartView = { view: 'start', v: 1, title: [], notice: null, blocked: null, name: '', ask: '', templates: [], template: null, swarms: [], needsYou: [] }
     // Name (3 framed + its caption), a gap and "Ask the lead", the ask (3 + caption), a gap and "From a template".
     expect(startListTop(start, { bodyColumns: 100, surface: 'terminal' })).toBe(12)
     expect(startListTop(start, { bodyColumns: 60, surface: 'terminal' })).toBe(12)
@@ -972,6 +993,13 @@ describe('WP-DD: the primary per state, the start list top, Doctor', () => {
     const long = { ...start, notice: { level: 'warning' as const, text: 'name the swarm first: a-z, 0-9 and -, up to 24, not starting with -' } }
     expect(startListTop(long, { bodyColumns: 100, surface: 'terminal' })).toBe(13)
     expect(startListTop(long, { bodyColumns: 60, surface: 'terminal' })).toBe(14)
+    // What needs you comes first: a line per swarm's proposals, one for its questions, each beside its Button.
+    const needs = { ...start, needsYou: [{ swarm: 'nightly', live: true, proposals: [2, 6], questions: [{ who: 'part-a', text: 'which branch?' }] }] }
+    expect(startNeeds(needs).map(x => [x.text, x.action.label, x.action.key])).toEqual([
+      ["nightly: the lead's proposals 2 and 6 wait on you", 'Review', 'swarm:start:open:nightly'],
+      ['nightly: part-a asks: which branch?', 'Answer', 'swarm:start:open:nightly'],
+    ])
+    expect(startListTop(needs, { bodyColumns: 100, surface: 'terminal' })).toBe(14)
     // With a template picked past 100 columns the list takes its share, its form's box the rest; narrower, the body's.
     const picked = { template: { id: 'builtin:x', name: 'x', description: '', params: [], errors: [] } }
     expect(templateListCtx(picked, { bodyColumns: 100 }).bodyColumns).toBe(45)
@@ -1009,5 +1037,108 @@ describe('WP-DD: the primary per state, the start list top, Doctor', () => {
   test("the keys a view adds: the builder's tree and a roster's right-click", () => {
     expect(swarmKeys(null)).toEqual([])
     expect(swarmKeys({ view: 'history', v: 1, title: [], notice: null, swarm: 'demo', entries: [] }).length).toBe(0)
+  })
+})
+
+describe('WP-DD: what needs you is shown where ⚑ is raised, and a superseded proposal never raises it', () => {
+  const stage = (baseRevision: number, goal: string) =>
+    stageProposal(p, litterDir, SWARM, { baseRevision, spec: { ...rev1(), goal }, briefs: baseRevision === 0 ? REV1_BRIEFS : {}, changes: [{ path: 'goal', reason: 'x' }] })
+  const save = (goal: string, over: Partial<{ from: 'save' | 'proposal'; proposal: number }> = {}) =>
+    saveRevision(p, litterDir, SWARM, { spec: { ...rev1(), goal }, briefs: REV1_BRIEFS }, { from: 'save', changes: [], ...over })
+  const standing = () => proposalStanding(p, litterDir, SWARM)
+
+  test('neither a later decision nor a later revision: every undecided proposal is current', async () => {
+    await saveRev1()
+    await stage(1, 'One')
+    await stage(1, 'Two')
+    expect(await standing()).toEqual({ current: [1, 2], superseded: [] })
+  })
+
+  test('a later proposal decided supersedes the undecided ones staged before it, accepted or rejected', async () => {
+    await saveRev1()
+    await stage(1, 'One')
+    await stage(1, 'Two')
+    await stage(1, 'Three')
+    await rejectProposal(p, litterDir, SWARM, 2)
+    expect(await standing()).toEqual({ current: [3], superseded: [1] })
+  })
+
+  test('a revision saved after a proposal was staged supersedes it; one staged after the revision is current', async () => {
+    await saveRev1()
+    await stage(1, 'One')
+    await save('Mine')
+    await stage(2, 'Two')
+    expect(await standing()).toEqual({ current: [2], superseded: [1] })
+    // A revision a proposal's own accept wrote, its decision not yet recorded (a crash between): not one that supersedes it.
+    await save('Two', { from: 'proposal', proposal: 2 })
+    expect(await standing()).toEqual({ current: [2], superseded: [1] })
+  })
+
+  test("the user's case: proposals 2 and 3 over revision 0, then 4 and 5 accepted, need nobody", async () => {
+    for (const goal of ['One', 'Two', 'Three', 'Four']) await stage(0, goal)
+    await rejectProposal(p, litterDir, SWARM, 1)
+    expect((await acceptProposal(p, litterDir, SWARM, 4, 'all')).ok).toBe(true)
+    await stage(1, 'Five')
+    expect((await acceptProposal(p, litterDir, SWARM, 5, 'all')).ok).toBe(true)
+    expect(await standing()).toEqual({ current: [], superseded: [2, 3] })
+    // The pane's lists, from the ledger: no ⚑, the builder's older ones with [Reject].
+    setNav(blankNav('builder', SWARM))
+    await paneTick(p)
+    expect(pendingProposals(SWARM)).toEqual([])
+    expect(supersededProposals(SWARM)).toEqual([2, 3])
+    const b = shown<SwarmBuilderView>()
+    expect(b.proposals).toEqual([])
+    expect(b.superseded).toEqual([2, 3])
+    // [Reject] on an older one records `accepted: 'none'`, and it leaves the list.
+    await handle(p, 'swarm:builder:reject:alpha/2', {})
+    const decided = (await readSpecLedger(p, litterDir, SWARM)).records.filter(r => r.kind === 'swarm.proposal.decided').map(r => r.body)
+    expect(decided.at(-1)).toEqual({ proposal: 2, accepted: 'none' })
+    expect(shown<SwarmBuilderView>().superseded).toEqual([3])
+  })
+
+  test("the browser's banner: a current proposal with [Review], which reaches it; one superseded in this session stops counting by the next draw", async () => {
+    await saveRev1()
+    await stage(1, 'One')
+    goLive()
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    expect(shown<SwarmBrowserView>().proposals).toEqual([1])
+    expect(browserNeeds(shown<SwarmBrowserView>())[0]).toEqual({ text: "the lead's proposal 1 waits on you", action: { key: reviewKey(SWARM, 1), label: 'Review' } })
+    // A revision saved since: proposal 1 is superseded, so neither the hub's count nor the banner has it.
+    await save('Mine')
+    await stage(2, 'Two')
+    await paneTick(p)
+    expect(pendingProposals(SWARM)).toEqual([2])
+    expect(shown<SwarmBrowserView>().proposals).toEqual([2])
+    // [Review]: the builder, whose first line is the same proposal with its own [Review] (the proposal itself, once swarm/panes.ts routes it).
+    await handle(p, reviewKey(SWARM, 2), {})
+    if (nav()?.view === 'builder') {
+      expect(shown<SwarmBuilderView>().proposals).toEqual([2])
+      expect(shown<SwarmBuilderView>().superseded).toEqual([1])
+      await handle(p, 'swarm:builder:proposal:alpha/2', {})
+    }
+    expect(nav()).toEqual(expect.objectContaining({ view: 'proposal', proposal: 2 }))
+  })
+
+  test('the start screen names each saved swarm that needs you; none for a superseded proposal', async () => {
+    await saveRev1()
+    await stage(1, 'One')
+    setNav(blankNav('start', null))
+    await paneTick(p)
+    expect(shown<SwarmStartView>().needsYou).toEqual([{ swarm: SWARM, live: false, proposals: [1], questions: [] }])
+    await save('Mine')
+    // The next draw (the start screen's tick redraws on its own changes, not a saved swarm's ledger: see the report).
+    expect(((await swarmView(p)) as SwarmStartView).needsYou).toEqual([])
+  })
+
+  test("the events' time and who are fixed cells; who goes first on a narrow body, then the time", () => {
+    const list = [
+      { at: '00:47', who: 'summary' },
+      { at: '09:30', who: 'you → part-a' },
+    ]
+    expect(eventColumns(list, 100)).toEqual({ at: 5, who: 12 })
+    expect(eventColumns(list, 40)).toEqual({ at: 5, who: 0 })
+    expect(eventColumns(list, 28)).toEqual({ at: 0, who: 0 })
+    expect(eventColumns([{ at: '09:30', who: 'x'.repeat(40) }], 100).who).toBe(20)
   })
 })

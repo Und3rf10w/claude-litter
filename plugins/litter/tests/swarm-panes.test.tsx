@@ -74,6 +74,7 @@ const START: SwarmStartView = {
     errors: [],
   },
   swarms: [{ name: 'demo', goal: 'ship the parser', revision: 2, nodes: 3, live: false }],
+  needsYou: [],
 }
 
 const BUILDER: SwarmBuilderView = {
@@ -146,6 +147,7 @@ const BUILDER: SwarmBuilderView = {
   saveAs: null,
   proposals: [1],
   unreadable: [],
+  superseded: [],
 }
 
 const PROPOSAL: SwarmProposalView = {
@@ -322,6 +324,7 @@ const BROWSER: SwarmBrowserView = {
     ],
   },
   selected: 'w1',
+  proposals: [],
 }
 
 /** A repair swarm (2b-2): its run in the header, its budget row with a part used up, and its gate and budget events. */
@@ -1194,6 +1197,92 @@ describe('a press opens a saved swarm', () => {
     const ui = await mountAt($, 100)
     await ui.press({ key: 'swarm:start:open:demo' })
     expect(drawn.at(-1)).toEqual(expect.objectContaining({ view: 'builder', swarm: 'demo' }))
+  })
+})
+
+describe('what needs you is the first thing in the body (the user\'s "It says it needs me, but where")', () => {
+  test("the browser with a current proposal: the banner under the first line, before the roster and the summary, with [Review]", async ($, on) => {
+    mock.store(on)
+    views(on, { ...BROWSER, proposals: [6] })
+    const ui = await mountAt($, 100)
+    const rows = drawText(await ui.drawn(), 100)
+    const first = rows.findIndex(r => r.startsWith('demo · ▸ live'))
+    expect(rows[first + 1]).toBe(`⚑ the lead's proposal 6 waits on you [ Review ]`)
+    expect(rows[first + 2]).toMatch(/^⚑ part-a asks: which branch\? \[ Answer \]/)
+    expect(rows.findIndex(r => r.startsWith('Agents '))).toBeGreaterThan(first + 2)
+    expect((await ui.find({ type: 'Text', text: "⚑ the lead's proposal 6 waits on you" }))?.props.color).toBe('permission')
+    // Not a second primary: [Send] stays the one.
+    expect((await ui.find({ type: 'Button', key: 'swarm:browser:builder:demo/6' }))?.props.dimColor).toBe(true)
+  })
+
+  test('[Review] on the browser reaches the proposal: the builder, whose first line is it with its own [Review]', async ($, on) => {
+    mock.store(on, navStore({ view: 'browser', swarm: 'demo' }))
+    mock.clock(on, { now: 1_800_000_000_000 })
+    world(on)
+    views(on, { ...BROWSER, proposals: [6] })
+    on('session.id', async () => ({ value: SESSION }))
+    watch(on)
+    const drawn: SwarmPaneView[] = []
+    on('state.set', async (_$, e, next) => {
+      const set = await next(e)
+      if (e.key === 'swarmPane') drawn.push(e.value as SwarmPaneView)
+      return set
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    const ui = await mountAt($, 100)
+    await ui.press({ key: 'swarm:browser:builder:demo/6' })
+    // This world has no live swarm and no ledger, so the builder is drawn; tier 2 walks it to the proposal.
+    expect(drawn.at(-1)).toEqual(expect.objectContaining({ view: 'builder', swarm: 'demo' }))
+  })
+
+  test('only superseded proposals: no ⚑ anywhere; the builder lists them under "Older proposals", muted, each with [Reject]', async ($, on) => {
+    mock.store(on)
+    views(on, { ...BUILDER, proposals: [], superseded: [2, 3] })
+    const ui = await mountAt($, 100)
+    const rows = drawText(await ui.drawn(), 100)
+    expect(rows.some(r => r.includes('⚑'))).toBe(false)
+    expect(rowWith(rows, 'Older proposals, superseded')).toMatch(/^Older proposals, superseded ─+ 2 ──$/)
+    expect((await ui.find({ type: 'Text', text: "the lead's proposal 2" }))?.props.color).toBe('inactive')
+    expect(await ui.find({ type: 'Button', key: 'swarm:builder:reject:demo/2' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'swarm:builder:reject:demo/3' })).toBeDefined()
+    expect((await ui.find({ type: 'Button', key: 'swarm:builder:reject-older:demo' }))?.text).toBe('Reject all older')
+    expect(await ui.find({ key: 'swarm:builder:proposal:demo/2' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Button' })).filter(b => b.props.variant === 'primary').map(b => b.key)).toEqual(['swarm:builder:launch:demo'])
+  })
+
+  test('the start screen: each saved swarm that needs you, first, with [Review] or [Answer]', async ($, on) => {
+    mock.store(on)
+    views(on, {
+      ...START,
+      notice: null,
+      swarms: [...START.swarms, { name: 'nightly', goal: 'triage', revision: 5, nodes: 4, live: true }],
+      needsYou: [{ swarm: 'nightly', live: true, proposals: [6], questions: [{ who: 'part-a', text: 'which branch?' }] }],
+    })
+    const ui = await mountAt($, 100)
+    const rows = drawText(await ui.drawn(), 100)
+    const nav = rows.findIndex(r => r.startsWith('Home '))
+    expect(rows[nav + 2]).toBe(`⚑ nightly: the lead's proposal 6 waits on you [ Review ]`)
+    expect(rows[nav + 3]).toBe('⚑ nightly: part-a asks: which branch? [ Answer ]')
+    expect(rows.findIndex(r => r.includes('Name:'))).toBeGreaterThan(nav + 3)
+  })
+
+  test("the events' time and who never wrap: fixed cells, the event wrapping in its own column", async ($, on) => {
+    mock.store(on)
+    const long = 'goal: the parser first, then the formatter, with a review of each part before it lands on main'
+    views(on, {
+      ...BROWSER,
+      events: [
+        { at: '00:47', who: 'summary', text: long, color: null },
+        { at: '09:30', who: 'you → part-a', text: 'direct, interject: "go"', color: null },
+      ],
+    })
+    const ui = await mountAt($, 60)
+    const rows = drawText(await ui.drawn(), 60)
+    const at = rows.findIndex(r => r.startsWith('00:47 summary      goal: the parser'))
+    expect(at).toBeGreaterThan(0)
+    // The rest of the event under its own column, past the time and who cells.
+    expect(rows[at + 1]).toMatch(/^ {19}\S/)
+    expect(rowWith(rows, '09:30 you → part-a')).toMatch(/^09:30 you → part-a direct, interject: "go"$/)
   })
 })
 
