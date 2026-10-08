@@ -22,10 +22,16 @@ export type SessionInfo = {
   swarmToolsRefused: string | null
   /** True once session.start has finished its steps. */
   ready: boolean
+  /**
+   * Which host runs litter: Claude Code (the mod), or Codex (litterd, design
+   * D2). On Codex litter's agents are sessions litterd starts with their own
+   * sandbox, which the lead's permission mode doesn't reach (D4).
+   */
+  host: 'claude-code' | 'codex'
 }
 
 let options: LitterOptions = normalizeOptions(undefined)
-let info: SessionInfo = { litterDir: null, litterDirError: null, toolsRefused: null, swarmToolsRefused: null, ready: false }
+let info: SessionInfo = { litterDir: null, litterDirError: null, toolsRefused: null, swarmToolsRefused: null, ready: false, host: 'claude-code' }
 
 export const getOptions = (): LitterOptions => options
 export const setOptions = (raw: Readonly<Record<string, unknown>> | undefined): void => {

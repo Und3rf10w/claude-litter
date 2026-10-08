@@ -737,21 +737,47 @@ async function isolationLoss(p: Ports, ref: RunRef): Promise<string | null> {
   return `${what}; ${ISOLATION_CAUSE}`
 }
 
-async function settleNotification(p: Ports, n: Notification): Promise<void> {
-  const ref = (await p.store.get(taskKey(n.taskId))) as RunRef | undefined
-  if (!ref || typeof ref.runDir !== 'string') return
+/** The open workflow generation a task id names, with its run; null when there's none (or the ledger is tampered). */
+async function taskGeneration(p: Ports, taskId: string): Promise<{ ref: RunRef; st: RunState; gen: Generation } | null> {
+  const ref = (await p.store.get(taskKey(taskId))) as RunRef | undefined
+  if (!ref || typeof ref.runDir !== 'string') return null
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) {
-    p.log(`run ${ref.run}: ledger tampered at ${ledger.tampered.seq}; its notification isn't acted on`)
-    return
+    p.log(`run ${ref.run}: ledger tampered at ${ledger.tampered.seq}; its task's end isn't acted on`)
+    return null
   }
   const st = runState(ledger.records)
   // A repair generation has no workflow task: no notification is its, and its swarm ends it (2b-2).
-  const gen = st.generations.find(g => g.repair === null && g.taskId === n.taskId)
-  if (!gen || gen.end) return
+  const gen = st.generations.find(g => g.repair === null && g.taskId === taskId)
+  if (!gen || gen.end) return null
+  return { ref, st, gen }
+}
+
+async function settleNotification(p: Ports, n: Notification): Promise<void> {
+  const found = await taskGeneration(p, n.taskId)
+  if (!found) return
+  const { ref, gen } = found
   let end = await notificationEnd(p, n)
   if (end?.status === 'completed' && end.result === undefined) end = (await engineSnapshot(p, ref.litterDir, gen)) ?? end
   if (!end) return
+  await settleGeneration(p, found, end)
+}
+
+/**
+ * A workflow task's end, from a host that runs the script itself (Codex's
+ * workflow host, design D3) and so has no task notification: what a
+ * notification with that end does. False when the task has no open generation.
+ */
+export async function settleTaskEnd(p: Ports, taskId: string, end: EngineEnd): Promise<boolean> {
+  const found = await taskGeneration(p, taskId)
+  if (!found) return false
+  await settleGeneration(p, found, end)
+  return true
+}
+
+/** A generation's end: a kill settles as a stop; anything else is decoded into its run.end. */
+async function settleGeneration(p: Ports, found: { ref: RunRef; st: RunState; gen: Generation }, end: EngineEnd): Promise<void> {
+  const { ref, st, gen } = found
   if (end.status === 'killed') {
     await markStopping(p, ref, gen)
     await trySettle(p, ref)
@@ -1821,7 +1847,10 @@ export async function modeRefusal(p: Ports, litterDir: string): Promise<{ mode: 
         'allowManagedHooksOnly), send any prompt, and launch again',
     }
   }
-  if ((REFUSED_MODES as readonly string[]).includes(mode)) {
+  // On Codex the lead's mode never reaches litter's agents: each is a session litterd starts in its own
+  // sandbox (D4), and exec reports bypassPermissions for every session (L4). The recorded mode still shows
+  // that litter's hooks ran in the lead.
+  if ((REFUSED_MODES as readonly string[]).includes(mode) && session().host !== 'codex') {
     return {
       mode,
       refusal: `litter: the session is in ${mode} mode, where litter's agents would ${mode === 'acceptEdits' ? 'stall on Bash prompts' : 'skip every check'}; switch to auto or default mode with shift+tab, then launch again`,
