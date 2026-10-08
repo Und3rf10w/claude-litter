@@ -110,16 +110,51 @@ def base: split("/") | last | ascii_downcase;
 # takes seconds.
 def dequote: split("\"") | join("") | split([39] | implode) | join("") | split("\\") | join("");
 def cuts($seps): reduce $seps[] as $sep ([.]; [.[] | split($sep)[]]);
-def words: [cuts([" ", "\t"])[] | dequote | select(. != "")];
-def segs: cuts(["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"]) | map(words) | map(select(length > 0));
+# A redirection is a word of its own (redsplit): a word with < or > in it is
+# cut before the first one, unless what comes before is a descriptor number,
+# so git push>x reads as git, push and >x, and 2>x stays one word.
+def redsplit: ([indices(">")[0], indices("<")[0]] | map(select(. != null)) | min) as $i
+  | if $i == null or $i == 0 or (.[:$i] | test("^[0-9]+$")) then . else .[:$i], .[$i:] end;
+def words: [cuts([" ", "\t"])[] | dequote | select(. != "") | redsplit];
+# >| (noclobber), >& and <& (descriptor copies) are redirections, never a
+# pipe or a background &: they become > and < before the command is cut.
+# &> is left to the cut, so a shell that reads it as & then > runs what
+# follows as a command of its own, and that command is checked.
+def segs: split(">|") | join(">") | split(">&") | join(">") | split("<&") | join("<")
+  | cuts(["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"]) | map(words) | map(select(length > 0));
+def isassign: test("^[A-Za-z_][A-Za-z0-9_]*=");
+# A redirection operator alone (its target is the next word), or one with its target.
+def redirop: test("^[0-9]*(<<-|[<>]+)$");
+def isredir: test("^[0-9]*[<>]");
+# The index of a simple command word, past the assignments and redirections
+# before it, wherever they come; null when there is none.
+def cmdat: . as $w
+  | first(foreach range(0; $w | length) as $k ({skip: false};
+      if .skip then {skip: false}
+      elif ($w[$k] | isassign) then {skip: false}
+      elif ($w[$k] | redirop) then {skip: true}
+      elif ($w[$k] | isredir) then {skip: false}
+      else {at: $k} end;
+      select(.at != null) | .at)) // null;
+# The simple command from its command word on, or [] when it has none.
+def lead: cmdat as $i | if $i == null then [] else .[$i:] end;
+# A cd (pushd, popd) command: the folder it goes to, its first word after cd
+# that is no redirection; "" for none.
+def cdto: .[1:] as $w
+  | first(foreach range(0; $w | length) as $k ({skip: false};
+      if .skip then {skip: false}
+      elif ($w[$k] | redirop) then {skip: true}
+      elif ($w[$k] | isredir) then {skip: false}
+      else {at: $k} end;
+      select(.at != null) | $w[.at])) // "";
 def wrappers: ["env", "sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "timeout",
   "gtimeout", "stdbuf", "ionice", "eval", "xargs", "watch", "setsid", "chroot", "flock", "unbuffer",
   "caffeinate", "then", "else", "elif", "do", "if", "while", "until", "!", "sh", "bash", "zsh", "dash",
   "ksh", "ash", "mksh", "busybox", "su", "runuser", "find", "parallel", "script", "strace"];
-# A simple command, past its assignments, and after a wrapper each later word
-# in $hs (an object: name to true) with the rest of the command after it, or
-# "many" when there are more than 32 of those.
-def cmds($hs): (map(test("^[A-Za-z_][A-Za-z0-9_]*=")) | index(false)) as $i
+# A simple command, past its assignments and redirections, and after a
+# wrapper each later word in $hs (an object: name to true) with the rest of
+# the command after it, or "many" when there are more than 32 of those.
+def cmds($hs): cmdat as $i
   | if $i == null then empty
     else .[$i:] as $c
     | $c, (if ($c[0] | base | oneof(wrappers)) then
@@ -137,8 +172,8 @@ def first1: (pos | .[0]) // "";
 
 # git past its global options; -c and --config-env are noted, and so is every
 # -C, --git-dir and --work-tree, as [option, value] in loc. One pass by index:
-# each option is an event, and the first word that is no option is the
-# subcommand, which ends the pass.
+# each option is an event, and the first word that is no option (nor a
+# redirection) is the subcommand, which ends the pass.
 def gitsub:
   . as $w
   | [label $out | foreach range(0; $w | length) as $k ({at: 0, ev: null};
@@ -150,7 +185,8 @@ def gitsub:
         elif ($x | startswith("--git-dir=")) or ($x | startswith("--work-tree=")) then
           .at = $k + 1 | .ev = {loc: [($x | split("=") | .[0]), ($x | sub("^[^=]*="; ""))]}
         elif ($x | oneof(["--namespace", "--super-prefix", "--attr-source"])) then .at = $k + 2 | .ev = null
-        elif ($x | startswith("-")) then .at = $k + 1 | .ev = null
+        elif ($x | redirop) then .at = $k + 2 | .ev = null
+        elif ($x | startswith("-")) or ($x | isredir) then .at = $k + 1 | .ev = null
         else .ev = {sub: $k} end
       end;
       if .ev == null then empty elif .ev.sub != null then (.ev, break $out) else .ev end)] as $evs
@@ -193,7 +229,7 @@ def fanoutcmdwhy($cmd; $wcwd):
   | ([$ws[][] | select(test("^(HUSKY|HUSKY_SKIP_HOOKS|SKIP|PRE_COMMIT_ALLOW_NO_CONFIG|LEFTHOOK|LEFTHOOK_EXCLUDE|OVERCOMMIT_DISABLE|GIT_[A-Za-z0-9_]*)="))] | .[0]) as $var
   | if $var != null then
       "a fanout commit or index write runs with your repository hooks and git environment as they are: drop \($var | split("=") | .[0])"
-    elif any($ws[]; (.[0] | base | oneof(["cd", "pushd", "popd"])) and (((.[1] // "") | rtrimstr("/")) != $wcwd)) then
+    elif any($ws[] | lead | select((.[0] // "") | base | oneof(["cd", "pushd", "popd"])); ((cdto | rtrimstr("/")) != $wcwd)) then
       "git commit and index writes run only in your own worktree \($wcwd): run them there, without cd"
     else empty end;
 def configwrite: .args as $a | ($a | first1) as $p1
@@ -532,7 +568,7 @@ def nodecmdwhy($cmd; $dir):
   [$cmd | segs[]] as $ws
   | ([$ws[][] | select(test("^GIT_[A-Za-z0-9_]*="))] | .[0]) as $var
   | if $var != null then "a commit or index write runs with git as your directory sets it up: drop \($var | split("=") | .[0])"
-    elif any($ws[]; (.[0] | base | oneof(["cd", "pushd"])) and (((.[1] // "") | within($dir)) | not)) then
+    elif any($ws[] | lead | select((.[0] // "") | base | oneof(["cd", "pushd"])); (cdto | within($dir)) | not) then
       "git commit and index writes run only in your directory \($dir): run them there, without cd elsewhere"
     else empty end;
 # bash.deny: an entry is a command prefix, matched word for word against each

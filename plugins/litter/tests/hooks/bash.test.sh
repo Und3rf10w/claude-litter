@@ -40,6 +40,24 @@ case_commits_and_history() {
     'git pull' 'git am < p' 'git symbolic-ref HEAD refs/heads/x' 'git commit-tree abc -p HEAD'
 }
 
+# A redirection may come before the command word, among its assignments,
+# between git and its subcommand, or stuck to a word: the shell runs the same
+# command, so the guard finds the same command word.
+case_redirections() {
+  setup executor
+  denied executor 'git push is denied' \
+    '>/dev/null git push origin HEAD' '> /dev/null git push origin HEAD' '2>/dev/null git push origin HEAD' \
+    '2>&1 git push' '</dev/null git push' 'FOO=1 >/dev/null git push' '>x 2>&1 git push' 'git >/dev/null push' \
+    '>&2 git push' '&>/dev/null git push' '2> /dev/null git push' '>>log git push' '>|log git push' \
+    'X=1 >/dev/null Y=2 git push' '<<EOF git push' 'git push>/dev/null' 'git 2>/dev/null push' \
+    'sudo >/dev/null git push' "sh -c '>/dev/null git push'" 'true; 1>&2 git push' 'ls&>x git push'
+  denied executor 'git commit is denied' \
+    '>/dev/null git commit -m wip' '> /dev/null git commit -m wip' '2>&1 git commit -m wip' '</dev/null git commit -m wip' \
+    'git commit>/dev/null -m wip' 'cd src && >/dev/null git commit -m wip'
+  passes executor 'git status >/dev/null' 'git log --oneline -5 2>/dev/null' '2>/dev/null git status' \
+    '>/dev/null git diff HEAD' 'git status 2>&1 | head -5' 'echo "a > b"'
+}
+
 case_index_writes() {
   setup executor
   denied executor 'writes the real index' \
@@ -162,6 +180,7 @@ case_too_long() {
 }
 
 t "commits, pushes and history rewrites are denied" case_commits_and_history
+t "git with a redirection before it, among its assignments, before its subcommand or stuck to a word is still denied; with one after, reads pass" case_redirections
 t "git commands that write the real index are denied" case_index_writes
 t "checkout, switch and bisect are denied" case_checkout_moves
 t "-c, force flags, clean -f, branch, tag, worktree and config writes are denied" case_overrides_and_force

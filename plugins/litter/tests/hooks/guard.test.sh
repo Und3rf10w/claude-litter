@@ -418,6 +418,10 @@ case_writer_commit_elsewhere_denied() {
   assert_deny "runs only in your own worktree $W"
   wbash "cd $(real_project) && git commit -m x"
   assert_deny "run them there, without cd"
+  wbash "cd 2>/dev/null $(real_project) && git commit -m x"
+  assert_deny "run them there, without cd"
+  wbash "2>/dev/null cd $(real_project) && git commit -m x"
+  assert_deny "run them there, without cd"
   wbash "git --git-dir=$(real_project)/.git add a"
   assert_deny 'without -C to another folder, --git-dir or --work-tree'
   wbash "git --work-tree $W add a"

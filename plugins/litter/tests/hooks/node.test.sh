@@ -276,7 +276,9 @@ case_node_commit_true() {
     'git --work-tree=/x add a.txt'
   deny_each 'drop GIT_DIR' 'GIT_DIR=/x/.git git commit -m x'
   deny_each 'drop GIT_INDEX_FILE' 'GIT_INDEX_FILE=/x/index git add a.txt'
-  deny_each 'without cd elsewhere' 'cd /tmp && git commit -m x' 'cd && git add a.txt'
+  deny_each 'without cd elsewhere' 'cd /tmp && git commit -m x' 'cd && git add a.txt' \
+    'cd 2>/dev/null /tmp && git commit -m x' '>/dev/null cd /tmp && git commit -m x' 'cd > /dev/null /tmp && git add a.txt'
+  deny_each 'git push is denied to swarm nodes' '>/dev/null git push' '2>&1 git push' 'git 2>/dev/null push'
 }
 
 case_node_bound_branch() {
