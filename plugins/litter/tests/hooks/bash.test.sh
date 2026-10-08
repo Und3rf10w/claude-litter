@@ -69,8 +69,18 @@ case_quoted_words() {
 y" git push' 'git \
 push'
   denied executor 'git commit is denied' 'GIT_AUTHOR_NAME="a b" git commit -m x' "X='a b' >\"c d\" git commit -m x"
+  # A stray quote on one line (a comment, a heredoc body) hides no later line,
+  # and in ANSI-C quotes a backslash escapes a quote.
+  denied executor 'git push is denied' "# don't
+A=\"x y\" git push" "A=\$'x\\' y' git push" "echo \$'a\\'b' && A=\"x y\" git push"
+  denied executor 'git commit is denied' "cat <<'EOF' >msg
+don't stop
+EOF
+GIT_AUTHOR_NAME=\"A B\" git commit -F msg" "# don't
+A=\"x y\" git commit -m x"
   passes executor 'echo "a > b"' "git log --format='%H<%an>'" "grep -c '>' README" "echo \"it's fine\"" \
-    'A="x y" git status' "git log --grep='a b'" "echo 'x; y'"
+    'A="x y" git status' "git log --grep='a b'" "echo 'x; y'" "echo \$'a b\\n'" "# don't
+git status"
 }
 
 case_index_writes() {

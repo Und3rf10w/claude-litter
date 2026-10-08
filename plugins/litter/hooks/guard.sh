@@ -125,31 +125,41 @@ def words: [rawwords[] | redsplit];
 # follows as a command of its own, and that command is checked.
 def norm: split(">|") | join(">") | split(">&") | join(">") | split("<&") | join("<");
 def seps: ["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"];
-# The command read two ways, and the simple commands of both checked:
+# The command read three ways, and the simple commands of all three checked:
 #  - plainsegs cuts it at every separator, even inside quotes, since
 #    sh -c "a; b" runs both, then each piece at its blanks;
 #  - quotedsegs keeps a quoted or backslash-escaped part whole, as the
 #    shell does, so A="x y" git push, >"a b" git push and A="x;y" git push
 #    have git as their command word. qprotect swaps each blank and
 #    separator character in such a part for a private-use character
-#    (U+E000 plus its code), and unprotect swaps it back in each word.
+#    (U+E000 plus its code), and unprotect swaps it back in each word;
+#  - linesegs does the same one line at a time, so a stray quote (an
+#    apostrophe in a comment or a heredoc body) hides no later line.
 # One pass over the characters, no regex; a backslash-newline outside single
-# quotes joins two lines, as in the shell.
+# quotes joins two lines, as in the shell, and in ANSI-C quotes (a $, then
+# a single quote) a backslash escapes the next character, a quote too.
 def plainsegs: norm | cuts(seps) | map(rawwords) | map(select(length > 0));
 def pcodes: [32, 9, 10, 13, 59, 38, 124, 40, 41, 123, 125, 96, 36];
 def qprotect: (reduce pcodes[] as $c ([range(0; 128) | false]; .[$c] = true)) as $pt
+  # q: 0 outside quotes, 39 in single, 34 in double, 1 in ANSI-C quotes;
+  # e: the last character was an escaping backslash; d: an unquoted $.
   | [foreach explode[] as $c ({q: 0, e: false, o: null};
       if .e then {q: .q, e: false, o: (if $c == 10 then null elif $c < 128 and $pt[$c] then 57344 + $c else $c end)}
       elif .q == 39 then {q: (if $c == 39 then 0 else 39 end), e: false, o: (if $c != 39 and $c < 128 and $pt[$c] then 57344 + $c else $c end)}
+      elif .q == 1 and $c == 92 then {q: 1, e: true, o: null}
+      elif .q == 1 then {q: (if $c == 39 then 0 else 1 end), e: false, o: (if $c != 39 and $c < 128 and $pt[$c] then 57344 + $c else $c end)}
       elif $c == 92 then {q: .q, e: true, o: null}
       elif .q == 34 then {q: (if $c == 34 then 0 else 34 end), e: false, o: (if $c != 34 and $c < 128 and $pt[$c] then 57344 + $c else $c end)}
+      elif $c == 39 and .d == true then {q: 1, e: false, o: $c}
       elif $c == 34 or $c == 39 then {q: $c, e: false, o: $c}
-      else {q: 0, e: false, o: $c} end;
+      else {q: 0, e: false, o: $c, d: ($c == 36)} end;
       .o // empty)] | implode;
 def unprotect: reduce pcodes[] as $c (.; ([57344 + $c] | implode) as $ph | if contains($ph) then split($ph) | join([$c] | implode) else . end);
-def quotedsegs: norm | qprotect | cuts(seps) | map([rawwords[] | unprotect]) | map(select(length > 0));
+def qsegs: cuts(seps) | map([rawwords[] | unprotect]) | map(select(length > 0));
+def quotedsegs: norm | qprotect | qsegs;
+def linesegs: norm | [split("\n")[] | qprotect] | join("\n") | qsegs;
 def splitreds: map([.[] | redsplit]);
-def segs: plainsegs as $pa | ($pa + quotedsegs) | splitreds;
+def segs: plainsegs as $pa | ($pa + quotedsegs + linesegs) | splitreds;
 def isassign: test("^[A-Za-z_][A-Za-z0-9_]*=");
 # A redirection operator alone (its target is the next word), or one with its target.
 def redirop: test("^[0-9]*(<<-|[<>]+)$");
@@ -381,7 +391,7 @@ def bashparse($cmd; $extra):
   else ($cmd | plainsegs) as $pa
   # The words as the command has them, before redsplit cuts any further.
   | if ([$pa[] | length] | add // 0) > 4000 then {why: toolong}
-    else (($pa + ($cmd | quotedsegs)) | splitreds) as $ss
+    else (($pa + ($cmd | quotedsegs) + ($cmd | linesegs)) | splitreds) as $ss
     | cmdheads($extra) as $hs
     | [$ss[] | cmds($hs)] as $cs
     | if any($cs[]; . == "many") then
