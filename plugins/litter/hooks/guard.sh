@@ -93,8 +93,10 @@ def other($in; $id; $tool; $ti; $sub):
 # Bash, read as a heuristic (section 9, "Bash"): the role tools allowlist and
 # the classifier are the other two layers. A command is split into simple
 # commands at every separator, even inside quotes, since sh -c "a; b" runs
-# both; quotes and backslashes are then dropped from each word. A command's
-# first word counts, and after a wrapper (sudo, env, sh -c, find -exec, xargs,
+# both; quotes and backslashes are then dropped from each word. It is also
+# read with each quoted part kept whole, as the shell reads it, and the
+# simple commands of both readings are checked (segs). A command's first
+# word past its assignments and redirections counts, and after a wrapper (sudo, env, sh -c, find -exec, xargs,
 # …) every later word that names a command some rule checks (git, a writer, a
 # deploy or install tool, a bash.deny entry) starts one too.
 #
@@ -115,13 +117,39 @@ def cuts($seps): reduce $seps[] as $sep ([.]; [.[] | split($sep)[]]);
 # so git push>x reads as git, push and >x, and 2>x stays one word.
 def redsplit: ([indices(">")[0], indices("<")[0]] | map(select(. != null)) | min) as $i
   | if $i == null or $i == 0 or (.[:$i] | test("^[0-9]+$")) then . else .[:$i], .[$i:] end;
-def words: [cuts([" ", "\t"])[] | dequote | select(. != "") | redsplit];
+def rawwords: [cuts([" ", "\t"])[] | dequote | select(. != "")];
+def words: [rawwords[] | redsplit];
 # >| (noclobber), >& and <& (descriptor copies) are redirections, never a
 # pipe or a background &: they become > and < before the command is cut.
 # &> is left to the cut, so a shell that reads it as & then > runs what
 # follows as a command of its own, and that command is checked.
-def segs: split(">|") | join(">") | split(">&") | join(">") | split("<&") | join("<")
-  | cuts(["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"]) | map(words) | map(select(length > 0));
+def norm: split(">|") | join(">") | split(">&") | join(">") | split("<&") | join("<");
+def seps: ["$(", "`", ";", "&", "|", "\n", "\r", "(", ")", "{", "}"];
+# The command read two ways, and the simple commands of both checked:
+#  - plainsegs cuts it at every separator, even inside quotes, since
+#    sh -c "a; b" runs both, then each piece at its blanks;
+#  - quotedsegs keeps a quoted or backslash-escaped part whole, as the
+#    shell does, so A="x y" git push, >"a b" git push and A="x;y" git push
+#    have git as their command word. qprotect swaps each blank and
+#    separator character in such a part for a private-use character
+#    (U+E000 plus its code), and unprotect swaps it back in each word.
+# One pass over the characters, no regex; a backslash-newline outside single
+# quotes joins two lines, as in the shell.
+def plainsegs: norm | cuts(seps) | map(rawwords) | map(select(length > 0));
+def pcodes: [32, 9, 10, 13, 59, 38, 124, 40, 41, 123, 125, 96, 36];
+def qprotect: (reduce pcodes[] as $c ([range(0; 128) | false]; .[$c] = true)) as $pt
+  | [foreach explode[] as $c ({q: 0, e: false, o: null};
+      if .e then {q: .q, e: false, o: (if $c == 10 then null elif $c < 128 and $pt[$c] then 57344 + $c else $c end)}
+      elif .q == 39 then {q: (if $c == 39 then 0 else 39 end), e: false, o: (if $c != 39 and $c < 128 and $pt[$c] then 57344 + $c else $c end)}
+      elif $c == 92 then {q: .q, e: true, o: null}
+      elif .q == 34 then {q: (if $c == 34 then 0 else 34 end), e: false, o: (if $c != 34 and $c < 128 and $pt[$c] then 57344 + $c else $c end)}
+      elif $c == 34 or $c == 39 then {q: $c, e: false, o: $c}
+      else {q: 0, e: false, o: $c} end;
+      .o // empty)] | implode;
+def unprotect: reduce pcodes[] as $c (.; ([57344 + $c] | implode) as $ph | if contains($ph) then split($ph) | join([$c] | implode) else . end);
+def quotedsegs: norm | qprotect | cuts(seps) | map([rawwords[] | unprotect]) | map(select(length > 0));
+def splitreds: map([.[] | redsplit]);
+def segs: plainsegs as $pa | ($pa + quotedsegs) | splitreds;
 def isassign: test("^[A-Za-z_][A-Za-z0-9_]*=");
 # A redirection operator alone (its target is the next word), or one with its target.
 def redirop: test("^[0-9]*(<<-|[<>]+)$");
@@ -350,9 +378,11 @@ def cmdheads($extra): [deploys[][0], installs[][0], writers[], "git", "sed", "pe
 # reason it cannot be checked}: the sizes first, before any parse.
 def bashparse($cmd; $extra):
   if ($cmd | utf8bytelength) > 32768 then {why: toolong}
-  else [$cmd | segs[]] as $ss
-  | if ([$ss[] | length] | add // 0) > 4000 then {why: toolong}
-    else cmdheads($extra) as $hs
+  else ($cmd | plainsegs) as $pa
+  # The words as the command has them, before redsplit cuts any further.
+  | if ([$pa[] | length] | add // 0) > 4000 then {why: toolong}
+    else (($pa + ($cmd | quotedsegs)) | splitreds) as $ss
+    | cmdheads($extra) as $hs
     | [$ss[] | cmds($hs)] as $cs
     | if any($cs[]; . == "many") then
         {why: "this command has too many words that may start a command (over 32 after a wrapper) for the guard to check; split it"}

@@ -58,6 +58,21 @@ case_redirections() {
     '>/dev/null git diff HEAD' 'git status 2>&1 | head -5' 'echo "a > b"'
 }
 
+# A quoted or escaped word with a blank or a separator in it is one word to
+# the shell: the command word after it is still found.
+case_quoted_words() {
+  setup executor
+  denied executor 'git push is denied' \
+    'A="x y" git push' "A='x y' git push" '>"a b" git push' "> 'a b' git push" 'A=x\ y git push' \
+    "A=\"it's x\" git push" "A='say \"hi\" now' git push" 'A="x;y" git push' 'A="a \" b" git push' \
+    "A='x|y' B=\"p&q\" git push" 'A="x
+y" git push' 'git \
+push'
+  denied executor 'git commit is denied' 'GIT_AUTHOR_NAME="a b" git commit -m x' "X='a b' >\"c d\" git commit -m x"
+  passes executor 'echo "a > b"' "git log --format='%H<%an>'" "grep -c '>' README" "echo \"it's fine\"" \
+    'A="x y" git status' "git log --grep='a b'" "echo 'x; y'"
+}
+
 case_index_writes() {
   setup executor
   denied executor 'writes the real index' \
@@ -177,10 +192,14 @@ case_too_long() {
   assert_deny 'too many words that may start a command'
   [ $((tl_t1 - tl_t0)) -le 10 ] || fail "a command at the limit took $((tl_t1 - tl_t0)) s"
   passes executor "echo $(awk 'BEGIN { for (i = 0; i < 3990; i++) printf "a " }')"
+  # Words are counted as the command has them, before a redirection is cut off one.
+  passes executor "echo $(awk 'BEGIN { for (i = 0; i < 3000; i++) printf "a>b<c " }')" \
+    "echo '$(awk 'BEGIN { for (i = 0; i < 3000; i++) printf "a>b<c " }')'"
 }
 
 t "commits, pushes and history rewrites are denied" case_commits_and_history
 t "git with a redirection before it, among its assignments, before its subcommand or stuck to a word is still denied; with one after, reads pass" case_redirections
+t "git after a quoted or escaped word with a blank or separator in it is still denied; quoted text in reads passes" case_quoted_words
 t "git commands that write the real index are denied" case_index_writes
 t "checkout, switch and bisect are denied" case_checkout_moves
 t "-c, force flags, clean -f, branch, tag, worktree and config writes are denied" case_overrides_and_force
