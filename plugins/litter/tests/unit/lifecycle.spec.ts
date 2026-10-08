@@ -7,7 +7,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
-import type { RunEndBody, RunStartReply, Workflow } from '../../hooks/records/run'
+import type { RunDriver, RunEndBody, RunLaunchBody, RunStartReply, Workflow } from '../../hooks/records/run'
 import type { EngineEnd, RunRef } from '../../hooks/lifecycle'
 import {
   consumeLifecycle,
@@ -24,6 +24,7 @@ import {
   recordRunEnd,
   recordRunStart,
   runState,
+  settleTaskEnd,
   taskKey,
   trySettle,
 } from '../../hooks/lifecycle'
@@ -476,6 +477,82 @@ describe('TaskStop settling', () => {
     const w = await world()
     await launched(w)
     expect(await observeStop(w.p, 'not-ours')).toBe(false)
+  })
+
+  test('a stop that settles later carries the warnings trySettle is given', async () => {
+    const w = await world()
+    const r = await launched(w)
+    // An agent's lines name the project folder; the engine's snapshot is then expected and not written yet, so the stop holds.
+    const sctx = { p: w.p, litterDir: w.litterDir, sessionId: 'session-a' }
+    await consumeLifecycle(sctx, line('start', 'ag1', w))
+    mkdirSync(join(w.projectDir, 'session-a', 'workflows'), { recursive: true })
+    expect(await observeStop(w.p, r.taskId)).toBe(true)
+    await consumeLifecycle(sctx, line('stop', 'ag1', w))
+    expect(await trySettle(w.p, r.ref, ['x'])).toBe(false)
+    expect(await lastEnd(w, r.ref)).toBeUndefined()
+
+    await atomicWriteJson(w.p, join(w.projectDir, 'session-a', 'workflows', `${r.runId}.json`), { status: 'killed' })
+    expect(await trySettle(w.p, r.ref, ['x'])).toBe(true)
+    expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'stopped', settled: true, source: 'taskstop', warnings: ['x'] }))
+    expect(await w.p.fs.read(summaryPath(r.ref.runDir))).toContain('## Warnings\n\n- x')
+    await released(w, r)
+  })
+})
+
+// A host that runs the script itself (Codex's litterd) ends a task with no
+// notification, may name the litterd driving the generation, and may hand
+// run.end warnings for summary.md. Claude Code sets neither.
+describe("a task's end without a notification, drivers and warnings", () => {
+  const WARNINGS = ['notes/creds.txt holds the value of ANTHROPIC_API_KEY', '.env.local holds the value of GH_TOKEN']
+
+  test('settleTaskEnd writes run.end with its warnings, in order, and summary.md lists each', async () => {
+    const w = await world()
+    const r = await launched(w)
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'completed', result: { halted: null }, warnings: WARNINGS })).toBe(true)
+    const end = await lastEnd(w, r.ref)
+    expect(end).toEqual(expect.objectContaining({ generation: 1, taskId: r.taskId, status: 'done', source: 'notification' }))
+    expect(end?.warnings).toEqual(WARNINGS)
+    await released(w, r)
+    const summary = await w.p.fs.read(summaryPath(r.ref.runDir))
+    expect(summary).toContain(`## Warnings\n\n${WARNINGS.map(x => `- ${x}`).join('\n')}\n`)
+    // Once: the task is no longer the run's.
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'completed', result: { halted: null } })).toBe(false)
+  })
+
+  test('a killed task settles as a stop and carries them too', async () => {
+    const w = await world()
+    const r = await launched(w)
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'killed', warnings: WARNINGS })).toBe(true)
+    expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'stopped', settled: true, warnings: WARNINGS }))
+    expect(await w.p.fs.read(summaryPath(r.ref.runDir))).toContain('## Warnings')
+  })
+
+  test.each([
+    ['none', undefined],
+    ['an empty list', []],
+  ] as const)('with %s, run.end has no warnings key and summary.md no Warnings section', async (_name, warnings) => {
+    const w = await world()
+    const r = await launched(w)
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'completed', result: { halted: null }, ...(warnings ? { warnings: [...warnings] } : {}) })).toBe(true)
+    const end = await lastEnd(w, r.ref)
+    expect(end?.status).toBe('done')
+    expect(end && 'warnings' in end).toBe(false)
+    expect(await w.p.fs.read(summaryPath(r.ref.runDir))).not.toContain('## Warnings')
+    // A launch given no driver records none.
+    const launch = (await ledgerOf(w, r.ref)).find(x => x.kind === 'run.launch')?.body as RunLaunchBody | undefined
+    expect(launch && 'driver' in launch).toBe(false)
+  })
+
+  test("openGeneration records the driver it's given in run.launch", async () => {
+    const w = await world()
+    const r = await started(w)
+    const pending = (await getPending(w.p, w.litterDir))!
+    stopLease(pending.oid)
+    await w.p.store.delete(`litter.pending.${w.litterDir}`)
+    const driver: RunDriver = { pid: 4242, socket: join(w.litterDir, 'litterd.sock'), startedAt: 1_760_000_000_000, procStart: null }
+    expect(await openGeneration(w.p, r.ref, 'run.launch', { taskId: 'task-1', runId: 'wf_abc123', scriptPath: null, driver }, 'session-a', pending.oid)).toBe(1)
+    const launch = (await ledgerOf(w, r.ref)).find(x => x.kind === 'run.launch')?.body as RunLaunchBody | undefined
+    expect(launch).toEqual({ taskId: 'task-1', runId: 'wf_abc123', scriptPath: null, driver, generation: 1, session: 'session-a', oid: pending.oid })
   })
 })
 

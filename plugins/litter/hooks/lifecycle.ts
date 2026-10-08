@@ -23,6 +23,7 @@ import type {
   LockForcedBody,
   LockRecoveredBody,
   RepairSettings,
+  RunDriver,
   RunEndBody,
   RunJson,
   RunLaunchBody,
@@ -560,7 +561,7 @@ async function recordEnd(p: Ports, ref: RunRef, st: RunState, body: RunEndBody, 
 // ---------------------------------------------------------------------------
 // The completion decoder (plan section 9, "Run lifecycle", the table)
 
-export type EngineEnd = { status: 'completed' | 'failed' | 'killed'; result?: unknown; error?: string | null }
+export type EngineEnd = { status: 'completed' | 'failed' | 'killed'; result?: unknown; error?: string | null; warnings?: string[] }
 export type Decoded = { status: RunStatus; reason: string | null; payload?: Record<string, unknown> }
 
 const MISSING_ROLE = /agent type 'litter:[^']*' not found/
@@ -780,7 +781,7 @@ async function settleGeneration(p: Ports, found: { ref: RunRef; st: RunState; ge
   const { ref, st, gen } = found
   if (end.status === 'killed') {
     await markStopping(p, ref, gen)
-    await trySettle(p, ref)
+    await trySettle(p, ref, end.warnings)
     return
   }
   const workflow = await workflowOf(p, ref, st)
@@ -795,6 +796,7 @@ async function settleGeneration(p: Ports, found: { ref: RunRef; st: RunState; ge
     reason: d.reason,
     ...(d.payload ? { payload: d.payload } : {}),
     source: 'notification',
+    ...(end.warnings?.length ? { warnings: end.warnings } : {}),
   })
   await afterEnd(p, ref, workflow, out)
 }
@@ -1123,7 +1125,7 @@ async function snapshotExpected(p: Ports, litterDir: string, gen: Generation): P
 }
 
 /** A stopping run settles to run.end stopped once nothing of it is live (plan section 9, "Settled means"). */
-export async function trySettle(p: Ports, ref: RunRef): Promise<boolean> {
+export async function trySettle(p: Ports, ref: RunRef, warnings?: string[]): Promise<boolean> {
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return false
   const st = runState(ledger.records)
@@ -1140,6 +1142,7 @@ export async function trySettle(p: Ports, ref: RunRef): Promise<boolean> {
     ...(d?.payload ? { payload: d.payload } : {}),
     source: 'taskstop',
     settled: true,
+    ...(warnings?.length ? { warnings } : {}),
   })
   return true
 }
@@ -2903,6 +2906,7 @@ export async function writeSummary(p: Ports, ref: RunRef): Promise<void> {
   lines.push(`- Started: ${iso(st.startedAt)}`)
   if (end && records.length > 0) lines.push(`- Ended: ${iso(records.filter(r => r.kind === 'run.end').at(-1)?.at)}`)
   if (end?.payload) lines.push('', '## Result', '', '```json', JSON.stringify(end.payload, null, 2), '```')
+  if (end?.warnings?.length) lines.push('', '## Warnings', '', ...end.warnings.map(w => `- ${w}`))
 
   if (workflow === 'execute') {
     // AB's execute part (phase 3): attempts, verdicts, the halt, rules and proposals.
@@ -3221,7 +3225,7 @@ export async function openGeneration(
   p: Ports,
   ref: RunRef,
   kind: 'run.launch' | 'run.resume',
-  launched: { taskId: string; runId: string; scriptPath: string | null },
+  launched: { taskId: string; runId: string; scriptPath: string | null; driver?: RunDriver },
   sessionId: string,
   oid: string,
 ): Promise<number> {

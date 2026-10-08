@@ -298,7 +298,25 @@ export type RunStartBody = {
   repair?: RepairSettings
 }
 
-export type RunLaunchBody = { taskId: string; runId: string; scriptPath: string | null; generation: number; session: string; oid: string }
+/**
+ * On Codex, the litterd that drives a generation (host/runs.ts,
+ * reconcileGone): its pid, its socket, when it began serving, and its
+ * process's start time as the OS tells it (null when it can't). One litter
+ * directory can have a litterd per data folder, so a generation another
+ * litterd isn't driving is ended only once this one is gone.
+ */
+export type RunDriver = { pid: number; socket: string; startedAt: number; procStart: string | null }
+
+export type RunLaunchBody = {
+  taskId: string
+  runId: string
+  scriptPath: string | null
+  generation: number
+  session: string
+  oid: string
+  /** Codex's litterd only; absent on Claude Code. */
+  driver?: RunDriver
+}
 export type RunResumeBody = RunLaunchBody
 export type RunStoppingBody = { taskId: string; generation: number }
 export type RunEndBody = {
@@ -311,6 +329,13 @@ export type RunEndBody = {
   payload?: Record<string, unknown>
   source: 'notification' | 'taskstop' | 'reconcile' | 'launcher' | 'mod'
   settled?: boolean
+  /**
+   * What the user should know about the run's end beyond its status: on
+   * Codex, a file the run left in its checkout that holds one of the lead's
+   * forwarded credentials (host/leaks.ts), never the value. summary.md lists
+   * them. Absent when there's none.
+   */
+  warnings?: string[]
 }
 
 /**
