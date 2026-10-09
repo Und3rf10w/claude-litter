@@ -14,7 +14,18 @@ import { remove, serial, sha256 } from './fsx'
 /** `$.store` key for a run's ledger head, by its absolute runDir: the store is shared by every project. */
 export const headKey = (runDir: string) => `litter.head.${runDir}`
 
-export type Head = { seq: number; sha: string }
+/**
+ * The last record's seq and file hash. `pending` is appendRecord's intent,
+ * set before it writes a record's file: the one record readLedger adopts past
+ * the head (a crash between the write and the head's move). Anything else past
+ * the head was added by something other than appendRecord. Before a run's
+ * first record the head is `{ seq: 0, sha: '' }` with the intent.
+ */
+export type Head = { seq: number; sha: string; pending?: { seq: number; sha: string } }
+
+const sameHead = (a: Head | undefined, b: Head | undefined): boolean =>
+  a === b ||
+  (!!a && !!b && a.seq === b.seq && a.sha === b.sha && a.pending?.seq === b.pending?.seq && a.pending?.sha === b.pending?.sha)
 
 export type AppendInput<B> = { run: string; kind: string; by: Author; body: B }
 
@@ -56,9 +67,11 @@ const bytes = (text: string) => new TextEncoder().encode(text).length
 
 /**
  * Appends one record to the run's ledger and returns it as stored. Appends to
- * one run are serialised in this module instance; the file is written before
- * the head moves, so a crash between the two leaves a valid record past the
- * head, which readLedger accepts and adopts.
+ * one run are serialised in this module instance. The head first takes the
+ * record's intent (`pending`), then the file is written, then the head moves:
+ * a crash after the write leaves a record past the head that the intent
+ * names, which readLedger adopts; a crash before it leaves an intent with no
+ * file, which the next append replaces.
  */
 export function appendRecord<B>(p: Ports, runDir: string, input: AppendInput<B>): Promise<StoredRecord<B>> {
   return serial(`ledger:${runDir}`, async () => {
@@ -78,8 +91,11 @@ export function appendRecord<B>(p: Ports, runDir: string, input: AppendInput<B>)
     const text = `${JSON.stringify(rec)}\n`
     const n = bytes(text)
     if (n > RECORD_MAX_BYTES) throw new RecordTooLarge(n, largestField(input.body))
+    const sha = await sha256(text)
+    const pending = { seq: rec.seq, sha }
+    await p.store.set(headKey(runDir), (head ? { ...head, pending } : { seq: 0, sha: '', pending }) satisfies Head)
     await p.fs.write(`${ledgerDir(runDir)}/${ledgerFileName(rec.seq, rec.kind)}`, text)
-    await p.store.set(headKey(runDir), { seq: rec.seq, sha: await sha256(text) } satisfies Head)
+    await p.store.set(headKey(runDir), { seq: rec.seq, sha } satisfies Head)
     return rec
   })
 }
@@ -102,11 +118,63 @@ export type LedgerRead = {
  *  - a `prev` that isn't the previous file's sha256;
  *  - a gap in seq;
  *  - fewer records than the stored head says (a record removed from the end),
- *    or a different hash at the head's seq.
+ *    or a different hash at the head's seq;
+ *  - a record past the stored head that its `pending` doesn't name (seq and
+ *    hash): one appended by anything but appendRecord. A head without
+ *    `pending` (between appends, and every head from before intents) adopts
+ *    none.
+ * With no stored head at all (a lost store) every record is adopted, and the
+ * head is set to the last unless the store changed meanwhile. The record a
+ * pending intent names is adopted, and the head is left as it is, intent and
+ * all, for the next append to move: `$.store` has no compare-and-set, so a
+ * read that wrote it could land after a later append's intent and drop it.
+ * For the same reason an intent with no file is left for the next append to
+ * replace: a read outside `serial` may be in the middle of that append.
+ *
+ * The head is taken before the files are listed, so an append that writes
+ * its file in between leaves a record past it that it doesn't name. Such a
+ * record is tampered only while the head stands where the read took it. When
+ * the head has moved, the read starts over from the new one; after
+ * READ_TRIES walks it ends before that record instead, as a read made a
+ * moment earlier would, and the next read judges it.
  */
 export async function readLedger(p: Ports, runDir: string, run: string): Promise<LedgerRead> {
+  let stored = (await p.store.get(headKey(runDir))) as Head | undefined
+  for (let tries = 1; ; tries++) {
+    const walk = await walkLedger(p, runDir, run, stored)
+    if (walk.added) {
+      const now = (await p.store.get(headKey(runDir))) as Head | undefined
+      if (!sameHead(now, stored)) {
+        if (tries < READ_TRIES) {
+          stored = now
+          continue
+        }
+        walk.tampered = null
+      }
+    }
+    const { records, prevSha, tampered, brokenTail } = walk
+    const head: Head | null = records.length > 0 && prevSha ? { seq: records.length, sha: prevSha } : null
+    if (!tampered && head && !stored) {
+      // Only while there is still none: a read slower than the first append
+      // must not move the head back, nor drop that append's intent.
+      if ((await p.store.get(headKey(runDir))) === undefined) await p.store.set(headKey(runDir), head)
+    }
+    return { records, head, tampered, brokenTail }
+  }
+}
+
+/** How many times readLedger walks the files while appends keep moving the head. */
+const READ_TRIES = 8
+
+type Walk = Omit<LedgerRead, 'head'> & {
+  prevSha: string | null
+  /** The walk stopped at a record past `stored` that its intent doesn't name. */
+  added: boolean
+}
+
+/** One pass over the files against `stored`. */
+async function walkLedger(p: Ports, runDir: string, run: string, stored: Head | undefined): Promise<Walk> {
   const dir = ledgerDir(runDir)
-  const stored = (await p.store.get(headKey(runDir))) as Head | undefined
   const names = (await p.fs.exists(dir))
     ? (await p.fs.list(dir)).filter(e => e.kind === 'file' && /^[0-9]{6}-.+\.json$/.test(e.name)).map(e => e.name).sort()
     : []
@@ -114,6 +182,7 @@ export async function readLedger(p: Ports, runDir: string, run: string): Promise
   let prevSha: string | null = null
   let tampered: LedgerRead['tampered'] = null
   let brokenTail: string | null = null
+  let added = false
   for (let i = 0; i < names.length; i++) {
     const name = names[i]!
     const seq = i + 1
@@ -142,13 +211,16 @@ export async function readLedger(p: Ports, runDir: string, run: string): Promise
       tampered = { seq, reason: `record ${name} isn't the record the head names` }
       break
     }
+    if (stored && seq > stored.seq && !(seq === stored.seq + 1 && stored.pending?.seq === seq && stored.pending.sha === sha)) {
+      tampered = { seq, reason: `record ${name} was added after the head ${stored.seq}` }
+      added = true
+      break
+    }
     records.push(rec)
     prevSha = sha
   }
   if (!tampered && stored && records.length < stored.seq) {
     tampered = { seq: records.length + 1, reason: `the ledger ends at ${records.length}, but its head is ${stored.seq}` }
   }
-  const head: Head | null = records.length > 0 && prevSha ? { seq: records.length, sha: prevSha } : null
-  if (!tampered && head && (!stored || stored.seq < head.seq)) await p.store.set(headKey(runDir), head)
-  return { records, head, tampered, brokenTail }
+  return { records, prevSha, tampered, brokenTail, added }
 }

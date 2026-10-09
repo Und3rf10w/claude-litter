@@ -175,8 +175,8 @@ describe('the card in a row', () => {
 const hex = (buf: ArrayBuffer): string => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('')
 const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
 
-/** A run's ledger, as ledgercore writes it: one file per record, each chained to the sha256 of the one before. */
-async function ledger(files: Map<string, string>, run: string, records: { kind: string; body: Record<string, unknown> }[]): Promise<void> {
+/** A run's ledger, as ledgercore writes it: one file per record, each chained to the sha256 of the one before. Its head, as appendRecord leaves it. */
+async function ledger(files: Map<string, string>, run: string, records: { kind: string; body: Record<string, unknown> }[]): Promise<{ seq: number; sha: string }> {
   let prev: string | null = null
   for (const [i, r] of records.entries()) {
     const seq = i + 1
@@ -184,6 +184,7 @@ async function ledger(files: Map<string, string>, run: string, records: { kind: 
     files.set(`${LITTER}/${run}/ledger/${String(seq).padStart(6, '0')}-${r.kind}.json`, text)
     prev = await sha256(text)
   }
+  return { seq: records.length, sha: prev ?? '' }
 }
 
 /** $.fs from a map and git as a plain checkout at /repo answers it (phase3wiring.test.ts's world); what opened and what was written. */
@@ -254,7 +255,7 @@ function world(on: On): { files: Map<string, string>; opened: string[]; cardsWri
   return { files, opened, cardsWritten }
 }
 
-async function recordRun(files: Map<string, string>, ended = true): Promise<void> {
+async function recordRun(files: Map<string, string>, ended = true): Promise<{ seq: number; sha: string }> {
   const base = 'a'.repeat(40)
   files.set(
     `${LITTER}/${RUN}/run.json`,
@@ -283,7 +284,7 @@ async function recordRun(files: Map<string, string>, ended = true): Promise<void
       created: NOW,
     })}\n`,
   )
-  await ledger(files, RUN, [
+  return ledger(files, RUN, [
     { kind: 'run.start', body: { workflow: 'execute', base, ref: `refs/heads/litter/${RUN}`, checkout: '/repo', oid: 'd'.repeat(40), session: SESSION } },
     { kind: 'run.launch', body: { taskId: 'task-1', runId: 'wf_task1', scriptPath: null, generation: 1, session: SESSION, oid: 'd'.repeat(40) } },
     { kind: 'land', body: { gate: 'G1', verify_id: 'v1', commit: '1'.repeat(40), tree: 'c'.repeat(40), old: base, ref: `refs/heads/litter/${RUN}` } },
@@ -319,7 +320,18 @@ describe('a recorded run, end to end', () => {
   })
 
   test("a run still open at session.start gets its card at its notification's prompt.submit, and the row draws it", async ($, on) => {
-    mock.store(on)
+    // The store in memory, as mock.store keeps it, so the test can move the ledger's head as the mod's append would.
+    const store = new Map<string, unknown>()
+    on('store.get', async (_$, e) => ({ value: store.get(e.key) }))
+    on('store.set', async (_$, e) => {
+      store.set(e.key, e.value === undefined ? undefined : JSON.parse(JSON.stringify(e.value)))
+      return { value: undefined }
+    })
+    on('store.delete', async (_$, e) => {
+      store.delete(e.key)
+      return { value: undefined }
+    })
+    on('store.keys', async () => ({ value: [...store.keys()] }))
     mock.clock(on, { now: NOW + 10 * 60_000 })
     const { files, cardsWritten } = world(on)
     on('prompt.submit', async (_$, e) => ({ text: e.text }))
@@ -332,8 +344,8 @@ describe('a recorded run, end to end', () => {
     expect(await before.find({ type: 'Text', text: `engine: ${NOTIFICATION.text}` })).toBeDefined()
     await before.unmount()
 
-    // The end lands (here written as the notification's settle would have written it), then the notification is submitted.
-    await recordRun(files, true)
+    // The end lands (here written as the notification's settle would have written it, the head moved with it), then the notification is submitted.
+    store.set(`litter.head.${LITTER}/${RUN}`, await recordRun(files, true))
     const text = '<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>Dynamic workflow "litter:execute-run" completed</summary>\n</task-notification>'
     await $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
     expect(cardsWritten).toHaveLength(1)

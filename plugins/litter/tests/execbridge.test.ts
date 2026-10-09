@@ -68,15 +68,37 @@ type Author = { source: 'mod' } | { source: 'agent'; agentId: string; agentType:
 const MOD: Author = { source: 'mod' }
 const agent = (agentId: string, agentType: string): Author => ({ source: 'agent', agentId, agentType })
 
-/** Appends a record to a ledger in the map, chained to the last one as ledgercore.ts writes them. */
-async function append(files: Map<string, string>, dir: string, run: string, kind: string, by: Author, body: Record<string, unknown>): Promise<number> {
+/**
+ * Appends a record to a ledger in the map, chained to the last one as
+ * ledgercore.ts writes them, and with `store` moves the ledger's head there
+ * as appendRecord does: past a head the mod stored, a record it doesn't name
+ * is tampered.
+ */
+async function append(files: Map<string, string>, dir: string, run: string, kind: string, by: Author, body: Record<string, unknown>, store?: Map<string, unknown>): Promise<number> {
   const ledger = `${dir}/ledger/`
   const names = [...files.keys()].filter(k => k.startsWith(ledger) && /^\d{6}-/.test(k.slice(ledger.length))).sort()
   const seq = names.length + 1
   const prev = names.length > 0 ? await sha256(files.get(names.at(-1)!)!) : null
   const text = `${JSON.stringify({ v: 1, seq, kind, run, at: 1_791_028_800_000 + seq, by, prev, body })}\n`
   files.set(`${ledger}${String(seq).padStart(6, '0')}-${kind}.json`, text)
+  store?.set(`litter.head.${dir}`, { seq, sha: await sha256(text) })
   return seq
+}
+
+/** `$.store` from a map in memory, as mock.store keeps it, so the test can move a ledger's head as the mod would. */
+function memoryStore(on: On, entries: Record<string, unknown>): Map<string, unknown> {
+  const store = new Map<string, unknown>(Object.entries(entries))
+  on('store.get', async (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    store.set(e.key, e.value === undefined ? undefined : JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', async (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', async () => ({ value: [...store.keys()] }))
+  return store
 }
 
 const verifyBody = (verifyId: string, gate: string, attempt: number, tree: string) => ({
@@ -311,6 +333,8 @@ function world(on: On, files: Map<string, string>): Git {
 type Seen = { text: string; context: readonly string[] }
 type World = {
   files: Map<string, string>
+  /** The plugin's `$.store`. */
+  store: Map<string, unknown>
   git: Git
   clock: MockClock
   seen: Seen[]
@@ -323,7 +347,7 @@ type World = {
 
 /** session.start in the world above, interactive, as tier1-session: the run is open, its task generation 1's. */
 async function started($: Engine, on: On, o: Opts): Promise<World> {
-  mock.store(on, {
+  const store = memoryStore(on, {
     [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER },
     ...(o.executorGap ? { [`litter.agent.${EXECUTOR.agentId}`]: EXECUTOR } : {}),
   })
@@ -360,7 +384,7 @@ async function started($: Engine, on: On, o: Opts): Promise<World> {
     return { model: 'test-model', agentId: `ag-${e.tool_use_id}` }
   })
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
-  return { files, git, clock, seen, logs, types, spawned }
+  return { files, store, git, clock, seen, logs, types, spawned }
 }
 
 const noticeOf = (halt: string) =>
@@ -410,12 +434,12 @@ const land = async ($: Engine, agentId: string, verifyId: string, id = verifyId)
   parse(await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: `land-${id}`, agentId, kind: 'land', gate: 'G2', verify_id: verifyId }))
 const notLanded = (reason: string) => ({ ok: true, landed: false, retry: false, reason })
 
-/** A verify of G2 and its verdict in the repair generation, as the gate records them (a rejection carries its round). */
+/** A verify of G2 and its verdict in the repair generation, as the gate records them (a rejection carries its round), the head moved with them. */
 async function judged(w: World, n: number, by: Author, o: { approved: boolean; round: number | null }): Promise<string> {
   const id = `G2-${n}-${String(n).repeat(10)}`
-  await append(w.files, RUN_DIR, RUN, 'verify', by, verifyBody(id, 'G2', n, ATTEMPT_TREE))
+  await append(w.files, RUN_DIR, RUN, 'verify', by, verifyBody(id, 'G2', n, ATTEMPT_TREE), w.store)
   const dims = { plan_adherence: o.approved ? pass('plan.md:7-9 against the diff') : failed('the defaults are merged over the settings'), tests_green: pass(`verify ${id} exit 0`), no_regressions: pass('searched the callers'), rules: pass('none apply') }
-  await append(w.files, RUN_DIR, RUN, 'verdict', by, { verify_id: id, ...dims, plan_gap: '', rule_clash: '', proposed_rules: [], gate: 'G2', attempt: n, approved: o.approved, round: o.round })
+  await append(w.files, RUN_DIR, RUN, 'verdict', by, { verify_id: id, ...dims, plan_gap: '', rule_clash: '', proposed_rules: [], gate: 'G2', attempt: n, approved: o.approved, round: o.round }, w.store)
   return id
 }
 
