@@ -76,14 +76,21 @@ function workflowGeneration(generations: readonly Generation[]): Generation | nu
 const WHEN: Record<string, string> = { launch: 'before Launch', run: 'during the run' }
 
 /**
- * The run's widened gates (WP-AO): the files you added, before Launch or
+ * The run's widened gates (WP-AO): for an amend run, the files its
+ * amendment added to the gate's Files; the files you added, before Launch or
  * during the run, then each file a critic accepted under `widen: critic`,
- * then what a land changed outside its gate's Files with neither, for you
- * to review. Nothing when there's none of them.
+ * then what a land changed outside its gate's Files with none of those, for
+ * you to review. Nothing when there's none of them.
  */
 function widenLines(json: RunJson | null, records: readonly StoredRecord[]): string[] {
   const out: string[] = []
   const files = (v: unknown): string => (Array.isArray(v) ? v.filter((f): f is string => typeof f === 'string').join(', ') : '')
+  // An amend run's gate, with the files its amendment added to its Files (run.json's amendOf, from gate.amend).
+  const am = json?.amendOf
+  if (am && files(am.filesAdded) !== '') {
+    const why = named(am.reason) ? `: ${oneLine(am.reason, 500)}` : ''
+    out.push(`- ${am.gate}: ${files(am.filesAdded)}, added to its Files by the amendment of run ${am.run}${why}`)
+  }
   for (const r of records) {
     if (r.kind !== 'gate.widen' || typeof r.body.gate !== 'string') continue
     const why = named(r.body.why) ? `: ${oneLine(r.body.why, 500)}` : ''

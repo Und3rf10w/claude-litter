@@ -368,7 +368,12 @@ const sameText = (a: string, b: string): boolean => a.replace(/\r\n?/g, '\n').tr
  * read as exactly one section with that id and nothing around it. Refused
  * when `before` is given and isn't the section's current text, or when the
  * gate has landed in the chain. Stored in `run`'s ledger, with the path
- * written and the previous file.
+ * written and the previous file, and with the change to the gate's Files:
+ * `filesAdded` (in `after`'s order) and `filesRemoved` (in the old section's),
+ * each only when there is one. The mod computes those from the two sections;
+ * they aren't GateAmendInput fields, so a caller's own never reach the record.
+ * An amend run of this gate carries `filesAdded` into its run.json
+ * (lifecycle.ts, amendOf), and its summary.md names them (execsummary.ts).
  */
 export const recordGateAmend: RecordHandler = async (ctx, input) => {
   if (typeof input.gate !== 'string' || !GATE_ID.test(input.gate)) return fail("litter: 'gate' must be the gate id being amended, like G2", 'gate')
@@ -426,6 +431,10 @@ export const recordGateAmend: RecordHandler = async (ctx, input) => {
     const wrote = await writePlanVersion(ctx.p, chain.rootDir, text)
     const body: Record<string, unknown> = { gate, after, reason: input.reason, root: chain.rootRun, path: wrote.path, previous: wrote.previous }
     if (input.before !== undefined) body.before = input.before
+    const filesAdded = amended.files.filter(f => !g.files.includes(f))
+    const filesRemoved = g.files.filter(f => !amended.files.includes(f))
+    if (filesAdded.length > 0) body.filesAdded = filesAdded
+    if (filesRemoved.length > 0) body.filesRemoved = filesRemoved
     return store(ctx, input, body, { path: wrote.path, previous: wrote.previous })
   })
 }

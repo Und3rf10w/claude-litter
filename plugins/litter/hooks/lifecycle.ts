@@ -18,6 +18,7 @@ import type { AgentPolicy, Policy, RolePolicy, SpoolConsumer } from './hookfiles
 import type { Author, RecordError, RecordHandler, RecordInput, StoredRecord } from './records/core'
 import type { GateWidenBody, VerifyBody } from './records/execute'
 import type {
+  AmendOf,
   FanoutTaskInput,
   LockBlob,
   LockForcedBody,
@@ -2133,6 +2134,22 @@ type Prepared = {
   barText: string | null
   /** The accepted rule versions selection delivered (phase 3), for run.json's `rules`. */
   rules: RuleRef[]
+  /** An amend's original run and gate, for run.json and run.start, with what its amendment added (amendNote). */
+  amendOf: AmendOf | null
+}
+
+/**
+ * An amend's `amendOf` as run.json keeps it: the files the original run's
+ * latest gate.amend of the gate added to its Files (plan.ts, `filesAdded`),
+ * and that amendment's reason on one line, when it added any. A text-only
+ * amendment, or one recorded before the mod kept them, adds neither.
+ */
+function amendNote(a: { run: string; gate: string }, amended: Member | null): AmendOf {
+  const last = amended ? [...amended.records].reverse().find(r => r.kind === 'gate.amend' && r.body.gate === a.gate) : undefined
+  const added = Array.isArray(last?.body.filesAdded) ? (last.body.filesAdded as unknown[]).filter((f): f is string => typeof f === 'string') : []
+  if (added.length === 0) return { run: a.run, gate: a.gate }
+  const reason = last!.body.reason
+  return { run: a.run, gate: a.gate, filesAdded: added, ...(typeof reason === 'string' && reason.trim() !== '' ? { reason: oneLine(reason, 500) } : {}) }
 }
 
 const SNAPSHOT_IDENTITY = {
@@ -2291,6 +2308,7 @@ async function prepare(
         warnings,
         barText,
         rules,
+        amendOf: null,
       },
     }
   }
@@ -2508,6 +2526,7 @@ async function prepare(
       warnings,
       barText: null,
       rules: selection.versions,
+      amendOf: spec.amendOf ? amendNote(spec.amendOf, amended) : null,
     },
   }
 }
@@ -2664,7 +2683,7 @@ async function startHeld(
     isolate: spec.isolate,
     previousBranch: prep.previousBranch,
     continueOf: spec.continueOf,
-    amendOf: spec.amendOf,
+    amendOf: prep.amendOf,
     rules: prep.rules,
     planPath: prep.plan?.path ?? null,
     planSha256: prep.plan?.sha ?? null,
@@ -2742,7 +2761,7 @@ async function startHeld(
       authorized: spec.authorized,
       mode,
       continueOf: spec.continueOf,
-      amendOf: spec.amendOf,
+      amendOf: prep.amendOf,
       planSha256: prep.plan?.sha ?? null,
       argsSha256: await sha256(JSON.stringify(args)),
       runJsonSha256: await sha256(jsonText),

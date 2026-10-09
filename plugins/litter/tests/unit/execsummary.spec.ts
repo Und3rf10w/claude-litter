@@ -370,4 +370,25 @@ describe("files outside the gates' Files", () => {
     deps.proposalsOf = async () => []
     expect(await summary(json(), l.records)).not.toContain(HEADING)
   })
+
+  test("an amend run: the files its amendment added to the gate's Files, first, and alone they make the section", async () => {
+    const l = ledger()
+    l.start(), l.launch(), l.verify('G2', 1), l.verdict('G2', 1), l.land('G2', C1), l.end('done', null)
+    deps.proposalsOf = async () => []
+    const amendOf = { run: '20261002-execute-0a0b0c', gate: 'G2', filesAdded: ['gen.sh', 'lib/'], reason: 'b.txt is generated' }
+    const lines = await summary(json({ amendOf }), l.records)
+    expect(section(lines, HEADING)).toEqual([HEADING, '', '- G2: gen.sh, lib/, added to its Files by the amendment of run 20261002-execute-0a0b0c: b.txt is generated', ''])
+    // With your widening after it, in the same list; with no reason, none is given.
+    l.add('gate.widen', { gate: 'G2', files: ['x.sh'], why: 'w', by: 'you', at: 'run', plans: [] })
+    const { reason: _reason, ...noReason } = amendOf
+    expect(section(await summary(json({ amendOf: noReason }), l.records), HEADING)).toEqual([
+      HEADING,
+      '',
+      '- G2: gen.sh, lib/, added to its Files by the amendment of run 20261002-execute-0a0b0c',
+      '- G2: x.sh, added by you during the run: w',
+      '',
+    ])
+    // An amend whose amendment added nothing has no section.
+    expect(await summary(json({ amendOf: { run: amendOf.run, gate: 'G2' } }), l.records.filter(r => r.kind !== 'gate.widen'))).not.toContain(HEADING)
+  })
 })

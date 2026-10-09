@@ -228,6 +228,14 @@ export type RunStartReply = {
   warnings?: string[]
 }
 
+/**
+ * An amend run's original run and gate, in its run.json and run.start. When
+ * that run's latest gate.amend of the gate added files to its Files (plan.ts),
+ * the mod adds them, with the amendment's reason on one line, so the amend
+ * run's summary.md names them (execsummary.ts). A launch can't give them.
+ */
+export type AmendOf = { run: string; gate: string; filesAdded?: string[]; reason?: string }
+
 /** run.json, written by run.start (plan section 10, "On disk"). */
 export type RunJson = {
   v: 1
@@ -250,7 +258,7 @@ export type RunJson = {
   /** The branch the checkout was on before step 3 switched it. */
   previousBranch: string | null
   continueOf: string | null
-  amendOf: { run: string; gate: string } | null
+  amendOf: AmendOf | null
   /** The accepted rule versions selection delivered anywhere in the run (section 16.1; decision 19), shown as `id@version`. */
   rules: RuleRef[]
   /** The plan file as given, and the sha256 of the text step 2 parsed. */
@@ -295,7 +303,7 @@ export type RunStartBody = {
   authorized: string[]
   mode: string
   continueOf: string | null
-  amendOf: { run: string; gate: string } | null
+  amendOf: AmendOf | null
   planSha256: string | null
   argsSha256: string
   runJsonSha256: string
