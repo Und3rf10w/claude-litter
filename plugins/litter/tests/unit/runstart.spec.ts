@@ -8,7 +8,9 @@ import { existsSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
 import type { RunJson, RunStartReply } from '../../hooks/records/run'
-import { recordRunStart, getPending, endRun, runState } from '../../hooks/lifecycle'
+import { WORKFLOWS, workflowName } from '../../hooks/records/run'
+import { recordRunStart, getPending, endRun, launchStep, runState } from '../../hooks/lifecycle'
+import { updateSession } from '../../hooks/session'
 import { acquireLock, readLock, releaseLock, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { activePath, leasePath, modePath, planPath, policyPath, runDir, runJsonPath, RUN_ID } from '../../hooks/layout'
@@ -454,6 +456,59 @@ describe('run.start: the fenced transaction', () => {
     expect((await w.git('rev-parse', 'HEAD')).trim()).toBe(base)
     expect(await litterRefs(w)).toBe('')
   })
+})
+
+// Design D9: the reply says which host this is and what the lead does next,
+// so one skill text serves Claude Code and Codex.
+describe("run.start: the host and the launch step it names in 'next'", () => {
+  afterEach(() => updateSession({ host: 'claude-code' }))
+
+  test('on Claude Code: Workflow with the run kind, in the checkout where it runs', async () => {
+    const w = await world()
+    const r = okReply(await execute(w))
+    expect(r.host).toBe('claude-code')
+    expect(r.next).toBe(launchStep('claude-code', 'execute', r.run, r.checkout, false))
+    expect(r.next).toContain("name: 'litter:execute-run'")
+    expect(r.next).not.toContain('EnterWorktree')
+  })
+
+  test('on Claude Code with isolate: EnterWorktree into the run worktree first', async () => {
+    const w = await world()
+    const r = okReply(await execute(w, { isolate: true }))
+    expect(r.next).toBe(launchStep('claude-code', 'execute', r.run, r.checkout, true))
+    expect(r.next.startsWith(`First call EnterWorktree with \`path\` set to ${r.checkout}`)).toBe(true)
+  })
+
+  test("on Codex: litter's run tool, to launch and wait, and no Workflow or TaskStop", async () => {
+    updateSession({ host: 'codex' })
+    const w = await world()
+    const r = okReply(await execute(w))
+    expect(r.host).toBe('codex')
+    expect(r.next).toBe(launchStep('codex', 'execute', r.run, r.checkout, false))
+    expect(r.next).toContain(`{ op: 'launch', run: '${r.run}' }`)
+    expect(r.next).toContain(`{ op: 'wait', run: '${r.run}' }`)
+    expect(r.next).not.toContain('Workflow')
+    expect(r.next).not.toContain('TaskStop')
+  })
+
+  test.each(WORKFLOWS.flatMap(wf => (['claude-code', 'codex'] as const).flatMap(host => [false, true].map(isolate => [wf, host, isolate] as const))))(
+    'launchStep for %s on %s (isolate %p): the workflow name on Claude Code, the run id on Codex, no litter: prefix',
+    (wf, host, isolate) => {
+      const run = `20261008-${wf}-abc123`
+      const text = launchStep(host, wf, run, '/repo/checkout', isolate)
+      // Claude Code's Workflow call takes the run in its args, so only Codex's text names it.
+      if (host === 'claude-code') {
+        expect(text).toContain(`name: '${workflowName(wf)}'`)
+        expect(text.startsWith('First call EnterWorktree')).toBe(isolate)
+      } else {
+        expect(text).toContain(run)
+        expect(text).not.toContain(workflowName(wf))
+      }
+      // The checkout is named where the lead must act on it: Codex's agents' folder, or Claude Code's EnterWorktree.
+      expect(text.includes('/repo/checkout')).toBe(host === 'codex' || isolate)
+      expect(text.startsWith('litter: ')).toBe(false)
+    },
+  )
 })
 
 describe('run.start: isolate, design, plan, fanout', () => {

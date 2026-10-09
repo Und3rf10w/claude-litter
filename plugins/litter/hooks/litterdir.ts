@@ -10,6 +10,8 @@ import type { Ports } from './ports'
 import type { RecordHandler } from './records/core'
 import type { RunJson, Workflow } from './records/run'
 import { fail } from './records/core'
+import { configuredOptions } from './options'
+import { getOptions } from './session'
 import { hooksDir, pointerPath, RUN_ID, runDir, runJsonPath } from './layout'
 import { atomicWrite, readJson } from './fsx'
 import { readLedger } from './ledgercore'
@@ -238,7 +240,11 @@ async function runStatus(p: Ports, dir: string, run: string): Promise<{ status: 
 const repoOf = (litterDir: string) =>
   litterDir.endsWith('/.claude/litter') ? litterDir.slice(0, -'/.claude/litter'.length) : litterDir.slice(0, litterDir.lastIndexOf('/'))
 
-/** `run.find { run?, workflow? }`: absolute paths, newest first, writes nothing. */
+/**
+ * `run.find { run?, workflow?, options? }`: absolute paths, newest first,
+ * writes nothing. With `options: true` the reply adds the configured options a
+ * skill shows (design D9); without it the reply is as it always was.
+ */
 export const recordRunFind: RecordHandler = async (ctx, input) => {
   if (!ctx.litterDir) return fail("litter: this session has no litter directory, so there's no run to find")
   const want = input.run
@@ -249,6 +255,7 @@ export const recordRunFind: RecordHandler = async (ctx, input) => {
   if (wf !== undefined && (typeof wf !== 'string' || !(WORKFLOWS as readonly string[]).includes(wf))) {
     return fail("litter: 'workflow' must be one of the allowed values, or left out", 'workflow', WORKFLOWS)
   }
+  if (input.options !== undefined && typeof input.options !== 'boolean') return fail("litter: 'options' must be true, or left out", 'options')
   const litterDir = ctx.litterDir
   const names = (await ctx.p.fs.exists(litterDir))
     ? (await ctx.p.fs.list(litterDir)).filter(e => e.kind === 'dir' && RUN_ID.test(e.name) && (want === undefined || e.name === want)).map(e => e.name)
@@ -273,5 +280,5 @@ export const recordRunFind: RecordHandler = async (ctx, input) => {
     runs.push({ run, runDir: dir, checkout: ref ? (byBranch.get(ref) ?? null) : null, workflow: json.workflow, status, started })
   }
   runs.sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || b.run.localeCompare(a.run))
-  return { ok: true, litterDir, runs }
+  return input.options === true ? { ok: true, litterDir, runs, options: configuredOptions(getOptions()) } : { ok: true, litterDir, runs }
 }

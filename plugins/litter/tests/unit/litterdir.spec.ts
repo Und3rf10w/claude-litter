@@ -10,7 +10,8 @@ import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/cor
 import { appendRecord } from '../../hooks/ledgercore'
 import { hooksDir, ledgerDir, pointerPath, runDir, runJsonPath } from '../../hooks/layout'
 import { LITTER_GITIGNORE, recordRunFind, resolveLitterDir, writeGitignore, type FoundRun, type LitterDirResult } from '../../hooks/litterdir'
-import { normalizeOptions } from '../../hooks/options'
+import { normalizeOptions, type ConfiguredOptions } from '../../hooks/options'
+import { setOptions } from '../../hooks/session'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 let p: TestPorts
@@ -281,6 +282,42 @@ describe('run.find', () => {
     expect(wf.allowed).toEqual(['execute', 'fanout', 'design', 'plan'])
     expect((await recordRunFind(ctxFor(null), { kind: 'run.find' })).ok).toBe(false)
     expect(await recordRunFind(ctxFor(litterDir), { kind: 'run.find' })).toEqual({ ok: true, litterDir, runs: [] })
+  })
+
+  // Design D9: a skill shows the configured options from run.find, where ${user_config.*} gave them before.
+  describe("with 'options: true', the configured options", () => {
+    afterEach(() => setOptions(undefined))
+
+    test('the options a skill shows, null where unset, and none of the UI and log settings', async () => {
+      const main = await repo('main')
+      const litterDir = ok(await resolveLitterDir(p, main)).litterDir
+      // verify is a `multiple: true` option: it arrives as its argument list.
+      setOptions({ verify: ['npm', 'test'], maxAttempts: 5, widen: 'critic', summaryModel: 'claude-haiku-4-5-20251001', bandEndedMinutes: 3 })
+      const r = await recordRunFind(ctxFor(litterDir), { kind: 'run.find', options: true })
+      expect(r).toEqual({ ok: true, litterDir, runs: [], options: expect.any(Object) })
+      const options = (r as RecordOk & { options: ConfiguredOptions }).options
+      expect(options.verify).toEqual(['npm', 'test'])
+      expect(options.maxAttempts).toBe(5)
+      expect(options.widen).toBe('critic')
+      expect(options.goalCheck).toBeNull()
+      expect(options.setup).toBeNull()
+      expect(Object.keys(options).sort()).toEqual([
+        'goalCheck', 'linkDirs', 'maxAttempts', 'maxRounds', 'repair', 'repairAgents', 'repairRounds', 'setup', 'trailers', 'verify', 'verifyTimeoutMs', 'widen',
+      ])
+    })
+
+    test("left out or false, the reply is as it was; anything else is refused, naming 'options'", async () => {
+      const main = await repo('main')
+      const litterDir = ok(await resolveLitterDir(p, main)).litterDir
+      setOptions({ verify: ['npm', 'test'] })
+      expect(await recordRunFind(ctxFor(litterDir), { kind: 'run.find', options: false })).toEqual({ ok: true, litterDir, runs: [] })
+      for (const options of ['yes', 'true', 1, null]) {
+        const e = (await recordRunFind(ctxFor(litterDir), { kind: 'run.find', options })) as RecordError
+        expect(e.ok).toBe(false)
+        expect(e.field).toBe('options')
+        expect(e.error).toBe("litter: 'options' must be true, or left out")
+      }
+    })
   })
 
   test('a tampered ledger shows as ledger_tampered, and a run.json that does not parse is skipped', async () => {

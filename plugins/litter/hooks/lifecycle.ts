@@ -42,7 +42,7 @@ import type { SessionRebindBody } from './records/swarm'
 import type { RepairBudget, RunLink } from './swarm/types'
 import type { DesignSpec } from './design/launch'
 import { fail } from './records/core'
-import { DESIGN_BYS, DESIGN_OUTCOMES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS } from './records/run'
+import { DESIGN_BYS, DESIGN_OUTCOMES, REPAIR_MODES, RUN_STATUSES, WORKFLOWS, workflowName } from './records/run'
 import { readLaunchLedger } from './records/swarm'
 import { REPAIR_AGENTS, REPAIR_ROUNDS, WIDEN_MODES } from './options'
 import { parseGates } from './gates'
@@ -2600,6 +2600,27 @@ async function widenRoot(p: Ports, rootDir: string, widened: readonly WideningIn
   })
 }
 
+/** run.start's `next` (design D9): the host's launch step, so one skill text serves both hosts. */
+export function launchStep(host: 'claude-code' | 'codex', workflow: Workflow, run: string, checkout: string, isolate: boolean): string {
+  if (host === 'codex') {
+    return [
+      `Call \`mcp__litter__run\` with \`{ op: 'launch', run: '${run}' }\`. If it refuses, show the reason and stop.`,
+      `Tell the user in two or three lines what launched.`,
+      `Then call \`mcp__litter__run\` with \`{ op: 'wait', run: '${run}' }\`, and again each time it answers that the run is still running, until it answers that the run has ended.`,
+      `Its answer carries the run's \`status\`, \`reason\`, \`summary\` and the workflow's return value as \`result\`.`,
+      `To stop the run, call it with \`{ op: 'stop', run: '${run}' }\`.`,
+      `litter's agents work in ${checkout} themselves, so stay in your own directory.`,
+    ].join(' ')
+  }
+  return [
+    ...(isolate ? [`First call EnterWorktree with \`path\` set to ${checkout}. Don't call it with a name.`] : []),
+    `Call Workflow with \`name: '${workflowName(workflow)}'\` and the \`args\` above, as a JSON object rather than a string. If it returns an error, show it; the mod records the failed launch.`,
+    `Tell the user in two or three lines what launched, then end your turn.`,
+    `The completion notification will come to you, so don't sleep, poll or re-read run files.`,
+    `To stop the run, call TaskStop with the task id from the launch result.`,
+  ].join(' ')
+}
+
 /** Steps 1 to 5 with the lock held. Every refusal before step 3 writes nothing; one after it records launch_failed and rolls back. */
 async function startHeld(
   p: Ports,
@@ -2761,7 +2782,8 @@ async function startHeld(
     }
     const pending: Pending = { ...ref, checkout: prep.checkout, oid: held.oid, session: sessionId, workflow: spec.workflow, at: await p.now() }
     await p.store.set(pendingKey(litterDir), pending)
-    const reply: RunStartReply = { ok: true, run, runDir: ref.runDir, checkout: prep.checkout, args }
+    const host = session().host
+    const reply: RunStartReply = { ok: true, run, runDir: ref.runDir, checkout: prep.checkout, args, host, next: launchStep(host, spec.workflow, run, prep.checkout, spec.isolate) }
     if (prep.foreignCommits.length > 0) reply.foreignCommits = prep.foreignCommits
     if (prep.warnings.length > 0) reply.warnings = prep.warnings
     return reply

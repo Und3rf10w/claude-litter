@@ -96,6 +96,8 @@ describe('the spec', () => {
     expect(schema.properties.tasks?.type).toBe('array')
     expect(schema.properties.amendOf?.type).toBe('object')
     expect(schema.properties.adversary?.type).toBe('boolean')
+    // run.find's opt-in (design D9): a model's "true" is decoded before the handler's check.
+    expect(schema.properties.options?.type).toBe('boolean')
     expect(schema.properties.maxAttempts?.type).toBe('integer')
     expect(schema.additionalProperties).toBe(true)
   })

@@ -181,7 +181,16 @@ describe('a design run.start through the record tool', () => {
       }),
     )
     expect(git.unknown).toEqual([])
-    expect(r).toEqual({ ok: true, run: expect.stringMatching(/^[0-9]{8}-design-[0-9a-f]{6}$/), runDir: `${LITTER}/${r.run}`, checkout: '/repo', args: expect.any(Object) })
+    expect(r).toEqual({
+      ok: true,
+      run: expect.stringMatching(/^[0-9]{8}-design-[0-9a-f]{6}$/),
+      runDir: `${LITTER}/${r.run}`,
+      checkout: '/repo',
+      args: expect.any(Object),
+      // Design D9: the host, and the launch step the skill follows.
+      host: 'claude-code',
+      next: expect.stringContaining("Call Workflow with `name: 'litter:design-run'`"),
+    })
     const { template: _template, prior: _prior, ...args } = r.args!
     expect(args).toEqual({
       run: r.run,

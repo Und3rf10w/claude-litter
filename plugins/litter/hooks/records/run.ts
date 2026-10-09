@@ -215,6 +215,14 @@ export type RunStartReply = {
   checkout: string
   /** The workflow args the Workflow hook swaps in (plan section 9, step 5). */
   args: Record<string, unknown>
+  /** Which host this session runs on (session().host). */
+  host: 'claude-code' | 'codex'
+  /**
+   * What the lead does next to launch and follow the run, in this host's
+   * terms, with the run id, checkout and workflow filled in (design D9). The
+   * skills say "do what `next` says"; nothing else reads it.
+   */
+  next: string
   foreignCommits?: string[]
   /** What the launch card should say (an old git's unfenced switch, for one). */
   warnings?: string[]

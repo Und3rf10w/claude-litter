@@ -46,6 +46,38 @@ export type LitterOptions = {
   bandEndedMinutes: number
 }
 
+/** The configured options a skill shows (design D9), from getOptions(); null where unset. */
+export type ConfiguredOptions = {
+  verify: readonly string[] | null
+  goalCheck: readonly string[] | null
+  setup: readonly string[] | null
+  linkDirs: readonly string[]
+  verifyTimeoutMs: number
+  maxAttempts: number
+  maxRounds: number
+  repair: RepairMode
+  repairRounds: number
+  repairAgents: number
+  widen: WidenMode
+  trailers: readonly string[]
+}
+
+/** run.find's `options` (litterdir.ts): what a skill shows, without the UI and log settings. */
+export const configuredOptions = (o: LitterOptions): ConfiguredOptions => ({
+  verify: o.verify ?? null,
+  goalCheck: o.goalCheck ?? null,
+  setup: o.setup ?? null,
+  linkDirs: o.linkDirs,
+  verifyTimeoutMs: o.verifyTimeoutMs,
+  maxAttempts: o.maxAttempts,
+  maxRounds: o.maxRounds,
+  repair: o.repair,
+  repairRounds: o.repairRounds,
+  repairAgents: o.repairAgents,
+  widen: o.widen,
+  trailers: o.trailers,
+})
+
 /**
  * One commit trailer line litter writes (section 9, "Commit message"):
  * `Key: value` on one line, never litter's own `Litter-Run`. land.ts's
