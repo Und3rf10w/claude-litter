@@ -334,7 +334,16 @@ export type RunLaunchBody = {
   driver?: RunDriver
 }
 export type RunResumeBody = RunLaunchBody
-export type RunStoppingBody = { taskId: string; generation: number }
+export type RunStoppingBody = {
+  taskId: string
+  generation: number
+  /**
+   * The stop's warnings for its run.end (RunEndBody's), kept here so that
+   * whoever settles the run (an agent's stop line, the stopper, reconcile)
+   * records the same end. Absent when there's none.
+   */
+  warnings?: string[]
+}
 export type RunEndBody = {
   taskId: string | null
   /** 0 for a launch that never opened a generation. */

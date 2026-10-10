@@ -216,7 +216,8 @@ export type Generation = {
   oid: string
   openedAt: number
   end: RunEndBody | null
-  stopping: { at: number } | null
+  /** Its first run.stopping: when, and the stop's warnings for the run.end (empty when there's none). */
+  stopping: { at: number; warnings: string[] } | null
   /**
    * A repair generation's `run.repair` (2b-2): the swarm that works in it
    * and its budget at launch. Null for a workflow's (run.launch, run.resume).
@@ -311,7 +312,7 @@ export function runState(records: readonly StoredRecord[]): RunState {
     } else if (r.kind === 'run.stopping') {
       const b = r.body as unknown as RunStoppingBody
       const g = [...generations].reverse().find(x => x.taskId === b.taskId)
-      if (g && !g.stopping) g.stopping = { at: r.at }
+      if (g && !g.stopping) g.stopping = { at: r.at, warnings: Array.isArray(b.warnings) ? b.warnings.filter(x => typeof x === 'string') : [] }
     } else if (r.kind === 'run.end') {
       const b = r.body as unknown as RunEndBody
       if (b.generation === 0) launchEnd ??= b
@@ -790,7 +791,7 @@ export async function settleTaskEnd(p: Ports, taskId: string, end: EngineEnd): P
 async function settleGeneration(p: Ports, found: { ref: RunRef; st: RunState; gen: Generation }, end: EngineEnd): Promise<void> {
   const { ref, st, gen } = found
   if (end.status === 'killed') {
-    await markStopping(p, ref, gen)
+    await markStopping(p, ref, gen, end.warnings)
     await trySettle(p, ref, end.warnings)
     return
   }
@@ -1089,13 +1090,14 @@ async function reconcileRepair(p: Ports, ref: RunRef, gen: Generation): Promise<
 // ---------------------------------------------------------------------------
 // Stopping and settling
 
-async function markStopping(p: Ports, ref: RunRef, gen: Generation): Promise<void> {
+/** run.stopping, once, with the stop's `warnings` for whoever settles the run (trySettle), and stopping in the policy. */
+async function markStopping(p: Ports, ref: RunRef, gen: Generation, warnings?: string[]): Promise<void> {
   if (!gen.stopping) {
     await appendRecord<RunStoppingBody>(p, ref.runDir, {
       run: ref.run,
       kind: 'run.stopping',
       by: MOD,
-      body: { taskId: gen.taskId, generation: gen.n },
+      body: { taskId: gen.taskId, generation: gen.n, ...(warnings?.length ? { warnings } : {}) },
     })
   }
   await patchRunPolicy(p, ref.litterDir, ref.run, r => ({ ...r, stopping: true }))
@@ -1142,9 +1144,11 @@ async function snapshotExpected(p: Ports, litterDir: string, gen: Generation): P
 /**
  * A stopping run settles to run.end stopped once nothing of it is live (plan
  * section 9, "Settled means"). Never one this store doesn't own: what keeps it
- * live is in its owner's store, so here it would settle at once.
+ * live is in its owner's store, so here it would settle at once. The run.end
+ * carries the warnings its run.stopping kept, then any of `given` not among
+ * them, so an agent's stop line settles it as the stopper would.
  */
-export async function trySettle(p: Ports, ref: RunRef, warnings?: string[]): Promise<boolean> {
+export async function trySettle(p: Ports, ref: RunRef, given?: string[]): Promise<boolean> {
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return false
   if ((await owned(p, ref.runDir, ledger)) !== 'mine') return false
@@ -1154,6 +1158,7 @@ export async function trySettle(p: Ports, ref: RunRef, warnings?: string[]): Pro
   if ((await unsettled(p, ref, ledger.records, gen)).length > 0) return false
   const snap = await engineSnapshot(p, ref.litterDir, gen)
   const d = snap && snap.status !== 'killed' ? decodeReturn(await workflowOf(p, ref, st), snap) : null
+  const warnings = [...gen.stopping.warnings, ...(given ?? []).filter(x => !gen.stopping!.warnings.includes(x))]
   await endRun(p, ref, {
     taskId: gen.taskId,
     generation: gen.n,
@@ -1162,7 +1167,7 @@ export async function trySettle(p: Ports, ref: RunRef, warnings?: string[]): Pro
     ...(d?.payload ? { payload: d.payload } : {}),
     source: 'taskstop',
     settled: true,
-    ...(warnings?.length ? { warnings } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   })
   return true
 }

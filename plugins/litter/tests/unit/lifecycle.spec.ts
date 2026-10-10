@@ -7,7 +7,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
-import type { RunDriver, RunEndBody, RunLaunchBody, RunStartReply, Workflow } from '../../hooks/records/run'
+import type { RunDriver, RunEndBody, RunLaunchBody, RunStartReply, RunStoppingBody, Workflow } from '../../hooks/records/run'
 import type { EngineEnd, RunRef } from '../../hooks/lifecycle'
 import {
   consumeLifecycle,
@@ -495,6 +495,52 @@ describe('TaskStop settling', () => {
     expect(await trySettle(w.p, r.ref, ['x'])).toBe(true)
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ status: 'stopped', settled: true, source: 'taskstop', warnings: ['x'] }))
     expect(await w.p.fs.read(summaryPath(r.ref.runDir))).toContain('## Warnings\n\n- x')
+    await released(w, r)
+  })
+
+  // A host's killed task (settleTaskEnd) with an agent still live: the agent's stop line settles it, with the stop's warnings.
+  test.each([
+    ['with warnings', ['notes/creds.txt holds the value of ANTHROPIC_API_KEY', '.env.local holds the value of GH_TOKEN']],
+    ['with none', undefined],
+  ] as const)('a stop %s, settled by an agent\'s stop line, ends with what its run.stopping kept', async (_name, warnings) => {
+    const w = await world()
+    const r = await launched(w)
+    const sctx = { p: w.p, litterDir: w.litterDir, sessionId: 'session-a' }
+    await consumeLifecycle(sctx, line('start', 'ag1', w))
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'killed', ...(warnings ? { warnings: [...warnings] } : {}) })).toBe(true)
+    expect(await lastEnd(w, r.ref)).toBeUndefined()
+    const stopping = (await ledgerOf(w, r.ref)).find(x => x.kind === 'run.stopping')?.body as RunStoppingBody | undefined
+    expect(stopping?.warnings).toEqual(warnings ? [...warnings] : undefined)
+    expect(stopping && 'warnings' in stopping).toBe(!!warnings)
+
+    await consumeLifecycle(sctx, line('stop', 'ag1', w))
+    const end = await lastEnd(w, r.ref)
+    expect(end).toEqual(expect.objectContaining({ status: 'stopped', settled: true, source: 'taskstop' }))
+    const summary = await w.p.fs.read(summaryPath(r.ref.runDir))
+    if (warnings) {
+      expect(end?.warnings).toEqual([...warnings])
+      expect(summary).toContain(`## Warnings\n\n${warnings.map(x => `- ${x}`).join('\n')}\n`)
+    } else {
+      expect(end && 'warnings' in end).toBe(false)
+      expect(summary).not.toContain('## Warnings')
+    }
+    await released(w, r)
+  })
+
+  test("trySettle's own warnings follow its run.stopping's, without repeats", async () => {
+    const w = await world()
+    const r = await launched(w)
+    const sctx = { p: w.p, litterDir: w.litterDir, sessionId: 'session-a' }
+    await consumeLifecycle(sctx, line('start', 'ag1', w))
+    // The engine's snapshot is expected and not written yet, so the agent's stop line doesn't settle it.
+    mkdirSync(join(w.projectDir, 'session-a', 'workflows'), { recursive: true })
+    expect(await settleTaskEnd(w.p, r.taskId, { status: 'killed', warnings: ['a', 'b'] })).toBe(true)
+    await consumeLifecycle(sctx, line('stop', 'ag1', w))
+    expect(await lastEnd(w, r.ref)).toBeUndefined()
+
+    await atomicWriteJson(w.p, join(w.projectDir, 'session-a', 'workflows', `${r.runId}.json`), { status: 'killed' })
+    expect(await trySettle(w.p, r.ref, ['b', 'c'])).toBe(true)
+    expect((await lastEnd(w, r.ref))?.warnings).toEqual(['a', 'b', 'c'])
     await released(w, r)
   })
 })
