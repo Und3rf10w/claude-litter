@@ -797,7 +797,7 @@ describe('a swarm node', () => {
     deps.bindings = () => [node]
     deps.launchOf = () => node.launch
     deps.litterDir = () => '/repo/.claude/litter'
-    deps.launchLedger = async () => ({ records: [], head: { seq: 0, sha: 'sha' }, tampered: null, brokenTail: null })
+    deps.launchLedger = async () => ({ records: [], head: { seq: 0, sha: 'sha' }, tampered: null, brokenTail: null, anchor: 'head' })
     const p = ports([agent('a-fix1', { type: 'litter:sw-alpha-fixer' }), agent('a-help')])
     const loads: unknown[] = []
     const real = sections.swarms

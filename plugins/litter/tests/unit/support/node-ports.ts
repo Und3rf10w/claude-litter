@@ -35,6 +35,7 @@ import type {
   SubagentLimitName,
   ToolCallResult,
 } from '../../../hooks/ports'
+import { claudeLedgerOwner } from '../../../hooks/ledgerowner'
 
 const MAX_BYTES = 4 * 1024 * 1024
 
@@ -436,6 +437,8 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
       set: async (key, value) => void storeMap.set(key, clone(value)),
       delete: async key => void storeMap.delete(key),
     },
+    // Claude Code's answer, as register.tsx's ports give it.
+    ledgerOwner: claudeLedgerOwner,
     sessionId: async () => options.sessionId ?? 'test-session',
     cwd: async () => options.cwd ?? process.cwd(),
     pluginRoot: options.pluginRoot ?? join(import.meta.dir, '..', '..', '..'),

@@ -764,7 +764,7 @@ function fakeSwarm(bs: readonly NodeBinding[], ledger: StoredRecord[] | Error, o
   deps.launchLedger = async (_p, _dir, name, launch) => {
     reads.push(`${name}/${launch}`)
     if (ledger instanceof Error) throw ledger
-    return { records: structuredClone(ledger), head: { seq: ledger.length, sha: 'sha' }, tampered: over.tampered ?? null, brokenTail: null }
+    return { records: structuredClone(ledger), head: { seq: ledger.length, sha: 'sha' }, tampered: over.tampered ?? null, brokenTail: null, anchor: 'head' }
   }
   return reads
 }

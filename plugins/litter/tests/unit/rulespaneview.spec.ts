@@ -108,6 +108,7 @@ beforeEach(() => {
     head: null,
     tampered: null,
     brokenTail: null,
+    anchor: 'none',
   })
   viewDeps.lsFiles = async () => tracked
   viewDeps.matches = (pattern, path) => (pattern.endsWith('/**') ? path.startsWith(pattern.slice(0, -2)) : pattern === path)

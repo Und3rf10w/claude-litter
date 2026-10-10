@@ -44,6 +44,7 @@ import type { BandRenderCatch, CardRenderCatch } from './hooktypes'
 import { getOptions, session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
+import { claudeLedgerOwner } from './ledgerowner'
 import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from './policy'
 import { activePath } from './layout'
 import { registerRoles } from './roles'
@@ -162,6 +163,7 @@ function enginePorts($: EngineInterface): Ports {
       set: (key, value) => $.store.set(key, value),
       delete: key => $.store.delete(key),
     },
+    ledgerOwner: claudeLedgerOwner,
     sessionId: () => $.session.id(),
     cwd: () => $.session.cwd(),
     pluginRoot: $.plugin.root,

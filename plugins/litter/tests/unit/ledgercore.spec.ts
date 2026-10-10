@@ -4,7 +4,18 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { writeFileSync, unlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { appendRecord, type Head, headKey, type LedgerRead, LedgerTampered, readLedger, RecordTooLarge } from '../../hooks/ledgercore'
+import {
+  appendRecord,
+  type Head,
+  headKey,
+  LedgerNotOwned,
+  type LedgerRead,
+  LedgerTampered,
+  type Owner,
+  owned,
+  readLedger,
+  RecordTooLarge,
+} from '../../hooks/ledgercore'
 import { sha256 } from '../../hooks/fsx'
 import { ledgerDir, ledgerFileName } from '../../hooks/layout'
 import type { Ports } from '../../hooks/ports'
@@ -76,7 +87,7 @@ describe('ledgercore', () => {
     expect(files()).toEqual(['000001-finding.json', '000002-verify.json'])
   })
 
-  test('a valid record past a head with no intent (from before intents) is tampered, not adopted', async () => {
+  test('a valid record past a v2 head with no intent is tampered, not adopted', async () => {
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
     const head = p.storeMap.get(headKey(dir))
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
@@ -141,9 +152,9 @@ describe('ledgercore: the intent before each append', () => {
     const q: Ports = { ...p, store: { ...p.store, set: async (k, v) => (seen.push(v), p.store.set(k, v)) } }
     const second = await appendRecord(q, dir, { run: RUN, kind: 'verify', by, body: {} })
     const sha = await sha256(await p.fs.read(join(ledgerDir(dir), '000002-verify.json')))
-    expect(seen).toEqual([{ ...first, pending: { seq: 2, sha } }, { seq: 2, sha }])
+    expect(seen).toEqual([{ ...first, pending: { seq: 2, sha } }, { v: 2, seq: 2, sha }])
     expect(second).toMatchObject({ seq: 2, prev: first.sha })
-    expect(head()).toEqual({ seq: 2, sha })
+    expect(head()).toEqual({ v: 2, seq: 2, sha })
   })
 
   test("a run's first record has an intent too, over seq 0", async () => {
@@ -151,7 +162,7 @@ describe('ledgercore: the intent before each append', () => {
     const q: Ports = { ...p, store: { ...p.store, set: async (k, v) => (seen.push(v), p.store.set(k, v)) } }
     await appendRecord(q, dir, { run: RUN, kind: 'run.start', by, body: {} })
     const sha = await sha256(await p.fs.read(join(ledgerDir(dir), '000001-run.start.json')))
-    expect(seen).toEqual([{ seq: 0, sha: '', pending: { seq: 1, sha } }, { seq: 1, sha }])
+    expect(seen).toEqual([{ v: 2, seq: 0, sha: '', pending: { seq: 1, sha } }, { v: 2, seq: 1, sha }])
   })
 
   test('a crash after the file was written, before the head moved: the record the intent names is adopted, and the next append moves the head past it', async () => {
@@ -167,7 +178,7 @@ describe('ledgercore: the intent before each append', () => {
     expect(head()).toEqual(crashed)
     const third = await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
     expect(third).toMatchObject({ seq: 3, prev: r.head!.sha })
-    expect(head()).toEqual({ seq: 3, sha: expect.any(String) })
+    expect(head()).toEqual({ v: 2, seq: 3, sha: expect.any(String) })
     expect((await readLedger(p, dir, RUN)).tampered).toBeNull()
   })
 
@@ -194,7 +205,7 @@ describe('ledgercore: the intent before each append', () => {
     expect(head()?.pending?.seq).toBe(2)
     const next = await appendRecord(p, dir, { run: RUN, kind: 'verify', by, body: { again: true } })
     expect(next.seq).toBe(2)
-    expect(head()).toEqual({ seq: 2, sha: await sha256(await p.fs.read(join(ledgerDir(dir), '000002-verify.json'))) })
+    expect(head()).toEqual({ v: 2, seq: 2, sha: await sha256(await p.fs.read(join(ledgerDir(dir), '000002-verify.json'))) })
     expect((await readLedger(p, dir, RUN)).tampered).toBeNull()
   })
 
@@ -222,28 +233,31 @@ describe('ledgercore: the intent before each append', () => {
     expect(files()).toEqual(['000001-finding.json', '000002-finding.json'])
   })
 
-  test('a head from before intents, with nothing past it, reads as before and is left as it was', async () => {
+  test('a v2 head with nothing past it reads whole, anchor head, and the read writes nothing', async () => {
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
     await appendRecord(p, dir, { run: RUN, kind: 'verify', by, body: {} })
-    const old = head()!
-    expect(old).toEqual({ seq: 2, sha: expect.any(String) })
+    const at = head()!
+    expect(at).toEqual({ v: 2, seq: 2, sha: expect.any(String) })
     const writes: unknown[] = []
     const q: Ports = { ...p, store: { ...p.store, set: async (k, v) => (writes.push(v), p.store.set(k, v)) } }
     const r = await readLedger(q, dir, RUN)
-    expect(r).toEqual({ records: r.records, head: old, tampered: null, brokenTail: null })
+    expect(r).toEqual({ records: r.records, head: at, tampered: null, brokenTail: null, anchor: 'head' })
     expect(r.records.map(x => x.kind)).toEqual(['finding', 'verify'])
     expect(writes).toEqual([])
   })
 
-  test('with no stored head at all (a lost store), every record is adopted, as before', async () => {
+  test('with no stored head (another store, or a lost one), every record is adopted, anchor none, and nothing is written', async () => {
     await appendRecord(p, dir, { run: RUN, kind: 'finding', by, body: {} })
     await appendRecord(p, dir, { run: RUN, kind: 'verify', by, body: {} })
-    const was = head()
     p.storeMap.delete(headKey(dir))
-    const r = await readLedger(p, dir, RUN)
+    const writes: unknown[] = []
+    const q: Ports = { ...p, store: { ...p.store, set: async (k, v) => (writes.push(v), p.store.set(k, v)) } }
+    const r = await readLedger(q, dir, RUN)
     expect(r.tampered).toBeNull()
+    expect(r.anchor).toBe('none')
     expect(r.records).toHaveLength(2)
-    expect(head()).toEqual(was!)
+    expect(writes).toEqual([])
+    expect(head()).toBeUndefined()
   })
 
   test('reads during an append in flight, before and after its file is written, never see it as tampered', async () => {
@@ -322,5 +336,107 @@ describe('ledgercore: the intent before each append', () => {
     expect(r.tampered).toBeNull()
     expect(r.records.map(x => x.seq)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1))
     expect(head()).toEqual(r.head!)
+  })
+})
+
+// A ledger's head lives in one store, its owner's: only appendRecord writes it, and a ledger with records and no head here is
+// appended to only when the host says this store owns it, or the caller adopts it.
+describe('ledgercore: one store owns a ledger', () => {
+  const head = () => p.storeMap.get(headKey(dir)) as Head | undefined
+  const append = (q: Ports, kind = 'finding', options?: { adopt?: boolean }) => appendRecord(q, dir, { run: RUN, kind, by, body: {} }, options)
+
+  /** Another store over the same files, with no host answer: `owned` is `mine` for a v2 head only. */
+  function otherStore(): TestPorts {
+    const q = nodePorts()
+    delete q.ledgerOwner
+    return q
+  }
+
+  test("two stores, one ledger: B reads A's appends headless and untampered, refuses to append, and with adopt races A", async () => {
+    for (let i = 0; i < 3; i++) await append(p)
+    const b = otherStore()
+    let r = await readLedger(b, dir, RUN)
+    expect([r.anchor, r.tampered, r.records.length]).toEqual(['none', null, 3])
+    await append(p)
+    r = await readLedger(b, dir, RUN)
+    expect([r.anchor, r.tampered, r.records.length]).toEqual(['none', null, 4])
+    expect(b.storeMap.size).toBe(0)
+    const err = await append(b).catch(e => e)
+    expect(err).toBeInstanceOf(LedgerNotOwned)
+    expect((err as LedgerNotOwned).owner).toBe('other')
+    expect(files()).toHaveLength(4)
+    // With adopt, B appends and holds a v2 head of its own; to A that record was added past its head.
+    expect((await append(b, 'run.end', { adopt: true })).seq).toBe(5)
+    expect(b.storeMap.get(headKey(dir))).toMatchObject({ v: 2, seq: 5 })
+    expect((await readLedger(p, dir, RUN)).tampered).toEqual({ seq: 5, reason: 'record 000005-run.end.json was added after the head 4' })
+  })
+
+  test("the host's answer decides a headless ledger with records: mine appends, other and lost refuse, and adopt overrides", async () => {
+    await append(p)
+    p.storeMap.delete(headKey(dir))
+    const asked: unknown[] = []
+    const as = (owner: Owner): Ports => ({ ...p, ledgerOwner: async (runDir, read) => (asked.push([runDir, read.anchor, read.records.length]), owner) })
+    for (const owner of ['other', 'lost'] as const) {
+      const err = await append(as(owner)).catch(e => e)
+      expect(err).toBeInstanceOf(LedgerNotOwned)
+      expect((err as LedgerNotOwned).owner).toBe(owner)
+    }
+    expect(asked).toEqual([
+      [dir, 'none', 1],
+      [dir, 'none', 1],
+    ])
+    expect(head()).toBeUndefined()
+    expect((await append(as('lost'), 'finding', { adopt: true })).seq).toBe(2)
+    expect(head()).toMatchObject({ v: 2, seq: 2 })
+    // With a v2 head here, the host isn't asked.
+    expect((await append(as('other'))).seq).toBe(3)
+    expect(asked).toHaveLength(2)
+  })
+
+  test('with no records, an append creates the ledger and this store becomes its owner, whatever the host would say', async () => {
+    const b = otherStore()
+    expect((await append(b, 'run.start')).seq).toBe(1)
+    expect(b.storeMap.get(headKey(dir))).toMatchObject({ v: 2, seq: 1 })
+    expect(await owned(b, dir, await readLedger(b, dir, RUN))).toBe('mine')
+    expect(await owned(b, dir, await readLedger(otherStore(), dir, RUN))).toBe('other')
+  })
+
+  test("a legacy head adopts what's past it, catches a rewrite below it, and the owner's next append marks it v2", async () => {
+    for (let i = 0; i < 2; i++) await append(p)
+    const { sha } = head()!
+    // A head from before versions, at record 1: what an old append or read left.
+    p.storeMap.set(headKey(dir), { seq: 1, sha: await sha256(await p.fs.read(join(ledgerDir(dir), '000001-finding.json'))) })
+    const writes: unknown[] = []
+    const q: Ports = { ...p, store: { ...p.store, set: async (k, v) => (writes.push(v), p.store.set(k, v)) } }
+    let r = await readLedger(q, dir, RUN)
+    expect([r.anchor, r.tampered, r.records.length, r.head?.sha]).toEqual(['legacy', null, 2, sha])
+    expect(writes).toEqual([])
+    // A rewrite at or below the legacy head is still caught.
+    const first = join(ledgerDir(dir), '000001-finding.json')
+    const good = await p.fs.read(first)
+    writeFileSync(first, good.replace('"body":{}', '"body":{"n":9}'))
+    expect((await readLedger(p, dir, RUN)).tampered?.seq).toBe(1)
+    writeFileSync(first, good)
+    // The owner's append writes a v2 head; from then on an extra record is tampered.
+    expect((await append(p)).seq).toBe(3)
+    expect(head()).toMatchObject({ v: 2, seq: 3 })
+    r = await readLedger(p, dir, RUN)
+    expect([r.anchor, r.tampered]).toEqual(['head', null])
+    const extra = { v: 1, seq: 4, kind: 'run.end', run: RUN, at: 1, by, prev: r.head!.sha, body: {} }
+    writeFileSync(join(ledgerDir(dir), ledgerFileName(4, 'run.end')), `${JSON.stringify(extra)}\n`)
+    expect((await readLedger(p, dir, RUN)).tampered).toEqual({ seq: 4, reason: 'record 000004-run.end.json was added after the head 3' })
+  })
+
+  test("owned without a host answer: mine for a v2 head, other for a legacy head or none; Claude Code's answer is mine for every ledger, for now", async () => {
+    await append(p)
+    const bare = otherStore()
+    bare.storeMap.set(headKey(dir), p.storeMap.get(headKey(dir)))
+    expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('mine')
+    bare.storeMap.set(headKey(dir), { seq: 1, sha: head()!.sha })
+    expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('other')
+    bare.storeMap.delete(headKey(dir))
+    expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('other')
+    p.storeMap.delete(headKey(dir))
+    expect(await owned(p, dir, await readLedger(p, dir, RUN))).toBe('mine')
   })
 })

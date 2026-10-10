@@ -25,6 +25,7 @@ import type {
   ToolSpec,
 } from 'claude-code'
 import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
+import type { LedgerRead, Owner } from './ledgercore'
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
@@ -146,6 +147,12 @@ export interface Ports {
     set(key: string, value: unknown): Promise<void>
     delete(key: string): Promise<void>
   }
+  /**
+   * The host's answer to ledgercore's `owned`: whether this store owns the
+   * ledger at `runDir`, as read. Without it, `owned` calls a v2 head `mine`
+   * and anything less `other`.
+   */
+  ledgerOwner?(runDir: string, read: LedgerRead): Promise<Owner>
   /** The current session id. It changes at /clear and when a session is backgrounded. */
   sessionId(): Promise<string>
   /** The session's working directory, absolute (`$.session.cwd()`). It moves with EnterWorktree. */
