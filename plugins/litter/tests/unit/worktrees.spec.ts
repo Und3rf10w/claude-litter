@@ -29,6 +29,7 @@ import { normalizeOptions } from '../../hooks/options'
 import { readPolicy, writePolicy } from '../../hooks/policy'
 import { endRun } from '../../hooks/lifecycle'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { LOOKS_INSIDE, filteredSubmodule } from './support/submodule'
 
 // Each test runs dozens of real git commands, slow on a busy machine.
 setDefaultTimeout(120_000)
@@ -525,6 +526,44 @@ describe("addModWorktree: the mod's own worktrees", () => {
       expect(r.ok).toBe(false)
     }
     expect(await kinds()).toEqual([])
+  })
+})
+
+// An agent that writes a worktree can write a nested repository's .git/config;
+// a git status that looks inside that submodule's work tree runs its filters.
+describe("addModWorktree's git status never looks inside a submodule", () => {
+  const outside = (name: string) => join(repo, '..', name)
+
+  test("after the setup: a populated submodule's filter doesn't run, and the create is recorded", async () => {
+    const sub = await filteredSubmodule(p, outside('prebuilt'), outside('filter.ran'))
+    await sub.arm()
+    // A setup that leaves a populated submodule, as `git submodule update --init` would; the copy's stat is new.
+    const setup = `mkdir -p vendor && cp -R '${sub.path}' vendor/sub && git update-index --add --cacheinfo 160000,${sub.commit},vendor/sub`
+    const spec = integrationSpec({ setup: ['sh', '-c', setup] })
+    const r = await addModWorktree(p, options(), spec)
+    expect(r).toEqual({ ok: true, path: spec.path, ignored: [] })
+    expect(sub.ran()).toBe(false)
+    expect(await kinds()).toEqual([`worktree.intent:${spec.name}`, `worktree.create:${spec.name}`])
+    // The control: a status that does look inside runs it.
+    await p.run(['git', '-C', spec.path, ...LOOKS_INSIDE])
+    expect(sub.ran()).toBe(true)
+  })
+
+  test('a cut-off checkout holding one is replaced without running its filter', async () => {
+    const spec = integrationSpec()
+    await appendRecord(p, runDir, { run: RUN, kind: 'worktree.intent', by: MOD, body: { run: RUN, name: spec.name, path: spec.path, branch: spec.branch, base, disposable: false } })
+    await git('worktree', 'add', '-q', '-b', spec.branch, '--', spec.path, base)
+    const sub = await filteredSubmodule(p, join(spec.path, 'vendor', 'sub'), outside('filter.ran'))
+    await p.run(['git', '-C', spec.path, 'update-index', '--add', '--cacheinfo', `160000,${sub.commit},vendor/sub`])
+    await sub.arm()
+    await p.run(['git', '-C', spec.path, ...LOOKS_INSIDE])
+    expect(sub.ran()).toBe(true)
+
+    const r = await addModWorktree(p, options(), spec)
+    expect(r.ok).toBe(true)
+    expect(sub.ran()).toBe(false)
+    expect(existsSync(sub.path)).toBe(false)
+    expect((await p.run(['git', '-C', spec.path, 'status', '--porcelain'])).stdout).toBe('')
   })
 })
 

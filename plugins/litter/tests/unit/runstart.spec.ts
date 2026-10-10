@@ -18,6 +18,7 @@ import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
 import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { LOOKS_INSIDE, filteredSubmodule } from './support/submodule'
 
 // Each test runs a few dozen real git commands; a loaded machine takes seconds.
 setDefaultTimeout(120_000)
@@ -522,6 +523,24 @@ describe('run.start: isolate, design, plan, fanout', () => {
     const kinds = (await readLedger(w.p, r.runDir, r.run)).records.map(x => x.kind)
     expect(kinds).toEqual(['run.start', 'worktree.intent', 'worktree.create'])
     expect((JSON.parse(await w.p.fs.read(runJsonPath(r.runDir))) as RunJson).checkout).toBe(wt)
+  })
+
+  // An agent can write a nested repository's .git/config; a status that looks inside its work tree runs its filters.
+  test("isolate whose setup leaves a populated submodule: the worktree.create's status doesn't run its filter", async () => {
+    const s = scratch()
+    cleanups.push(s.cleanup)
+    const sub = await filteredSubmodule(nodePorts(), join(s.dir, 'prebuilt'), join(s.dir, 'filter.ran'))
+    await sub.arm()
+    // As `git submodule update --init` would leave it; the copy's stat is new.
+    const setup = `mkdir -p vendor && cp -R '${sub.path}' vendor/sub && git update-index --add --cacheinfo 160000,${sub.commit},vendor/sub`
+    const w = await world({ verify: ['true'], setup: ['sh', '-c', setup] })
+    const r = okReply(await execute(w, { isolate: true }))
+    const kinds = (await readLedger(w.p, r.runDir, r.run)).records.map(x => x.kind)
+    expect(kinds).toEqual(['run.start', 'worktree.intent', 'worktree.create'])
+    expect(sub.ran()).toBe(false)
+    // The control: a status that does look inside runs it.
+    await w.p.run(['git', '-C', r.checkout, ...LOOKS_INSIDE])
+    expect(sub.ran()).toBe(true)
   })
 
   test('isolate with a failing setup: setup_failed, launch_failed, the worktree and branch removed', async () => {

@@ -33,7 +33,7 @@ import { LedgerTampered, appendRecord, readLedger } from './ledgercore'
 import { integrationBranch, integrationName } from './layout'
 import { serial } from './fsx'
 import { SNAPSHOT_PATHSPEC } from './snapshot'
-import { addModWorktree, recordedWorktrees, worktreeRootFor } from './worktrees'
+import { NOT_INTO_SUBMODULES, addModWorktree, recordedWorktrees, worktreeRootFor } from './worktrees'
 import { writeOut } from './output'
 import { attribution } from './options'
 import { MOD, OID, type RunFacts, agentOf, ledgerFailure, loadRun, message, roleOf, runClosed } from './verify'
@@ -80,10 +80,15 @@ async function diffNames(p: Ports, dir: string, from: string, to: string): Promi
   return r.code === 0 ? { ok: true, paths: [...new Set(nul(r.stdout))].sort() } : { ok: false, why: said(r) }
 }
 
-/** A worktree's uncommitted changes, tracked or new, the mod's own paths left out; null when the folder is gone. */
+/**
+ * A worktree's uncommitted changes, tracked or new, the mod's own paths left
+ * out; null when the folder is gone. A submodule's moved commit is one; what's
+ * inside its work tree isn't looked at (the land's and verify's snapshots name
+ * a dirty submodule).
+ */
 async function uncommitted(p: Ports, path: string): Promise<{ paths: string[] } | { error: string } | null> {
   if (!(await p.fs.exists(path))) return null
-  const r = await git(p, path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--', ...SNAPSHOT_PATHSPEC])
+  const r = await git(p, path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', NOT_INTO_SUBMODULES, '--', ...SNAPSHOT_PATHSPEC])
   if (r.code !== 0) return { error: said(r) }
   return { paths: [...new Set(nul(r.stdout).map(e => e.slice(3)))].sort() }
 }
@@ -530,7 +535,8 @@ async function integrate(ctx: RecordCtx, f: RunFacts): Promise<RecordReply> {
     // A conflict is the outcome: the merge is left in progress as evidence, and
     // the run halts with its paths (plan 15.11). Anything else stops the integration.
     const mergeHead = await commitOf(p, where, 'MERGE_HEAD')
-    const u = await git(p, where, ['diff', '--name-only', '-z', '--diff-filter=U', '--'])
+    // An unmerged entry, a submodule's included, is listed whatever --ignore-submodules says.
+    const u = await git(p, where, ['diff', '--name-only', '-z', '--diff-filter=U', NOT_INTO_SUBMODULES, '--'])
     const files = u.code === 0 ? [...new Set(nul(u.stdout))].sort() : []
     if (mergeHead !== checked.commit || files.length === 0) return stop(`git merge of ${checked.branch} failed without a conflict: ${said(m)}`)
     const rec = await append<IntegrateConflictBody>('integrate.conflict', { task: task.id, branch: checked.branch, files })

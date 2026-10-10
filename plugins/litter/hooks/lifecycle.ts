@@ -74,7 +74,7 @@ import { snapshot } from './snapshot'
 import { shellQuote } from './quote'
 import { reconcileLands } from './land'
 import { getOptions, session } from './session'
-import { cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
+import { NOT_INTO_SUBMODULES, cleanupRun, litterWorktreeRoot, worktreeSummary } from './worktrees'
 import { fanoutSummary } from './integrate'
 import { continueAsRepair, repairSummary } from './repair'
 import { executeSummary } from './execsummary'
@@ -2650,7 +2650,7 @@ async function addRunWorktree(p: Ports, options: LitterOptions, s: Started): Pro
       return `the setup command ${shellQuote(s.prep.setup)} failed in the run worktree (exit ${r.code}); its output is in ${log}`
     }
   }
-  const status = await p.run(['git', '-C', path, 'status', '--porcelain', '--ignored', '-z'])
+  const status = await p.run(['git', '-C', path, 'status', '--porcelain', '--ignored', '-z', NOT_INTO_SUBMODULES])
   const ignored = status.stdout.split('\0').filter(l => l.startsWith('!! ')).map(l => l.slice(3))
   await appendRecord(p, s.ref.runDir, { run: s.ref.run, kind: 'worktree.create', by: MOD, body: { ...body, ignored } })
   return null

@@ -49,6 +49,14 @@ export async function isSparse(p: Ports, checkout: string): Promise<boolean> {
  * Submodules with tracked changes (`M`) or untracked files (`U`) inside, from
  * `git status --porcelain=v2 -z --ignore-submodules=none`. One call covers
  * every depth: a change two levels down shows on the top-level entry.
+ *
+ * It looks inside on purpose, so, unlike the calls given NOT_INTO_SUBMODULES
+ * (worktrees.ts), it runs a child git in each populated submodule, which reads
+ * that submodule's own config and runs its filter drivers. In a checkout an
+ * agent can write, a submodule's .git/config may be the agent's. A residual:
+ * verify, land, run.start and repair hold a tree clean only with no dirty
+ * submodule, so the check stays. The parent's `-c` settings reach the child,
+ * so a host could override each `filter.<name>.*` the submodules name.
  */
 export async function dirtySubmodules(p: Ports, checkout: string): Promise<string[]> {
   const out = await gitIn(p, checkout)(['status', '--porcelain=v2', '-z', '--ignore-submodules=none'])
@@ -141,6 +149,10 @@ export async function snapshot(p: Ports, checkout: string): Promise<Snapshot> {
     const head = await p.run(['git', '-C', checkout, 'rev-parse', '--verify', '-q', 'HEAD^{tree}'])
     await git(head.code === 0 ? ['read-tree', 'HEAD'] : ['read-tree', '--empty'], { env })
     const { spec, ignored } = await addSpec(p, checkout)
+    // `add -A` runs the clean filters the checkout's own config names, not a
+    // submodule's (it adds a gitlink as its HEAD). An agent's .gitattributes
+    // alone names no driver, and on Codex an agent can't write the checkout's
+    // .git/config (it's protected), so this is low.
     if (sparse) {
       const absent = await absentSkipWorktree(p, git, checkout)
       if (absent.length > 0) {

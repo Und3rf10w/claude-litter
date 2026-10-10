@@ -141,11 +141,21 @@ export async function listedAt(p: Ports, list: readonly Listed[], path: string):
   return list.find(w => want.has(nfc(w.path)))
 }
 
+/**
+ * For a `git status` or `git diff` of a work tree that's only after its own
+ * changes: a submodule whose commit moved still shows (git reads its HEAD),
+ * but git doesn't look inside a populated submodule's work tree. That look
+ * runs a child git there, with the submodule's own config and so its filter
+ * drivers, which an agent that writes the checkout may have written. Given on
+ * the command line, a .gitmodules `ignore` doesn't undo it.
+ */
+export const NOT_INTO_SUBMODULES = '--ignore-submodules=dirty'
+
 export type Status = { changes: string[]; ignored: string[] }
 
 /** `git status --porcelain --ignored -z` in a worktree: what's uncommitted, and the ignored paths, apart. */
 export async function statusOf(p: Ports, path: string): Promise<Status | null> {
-  const r = await git(p, path, ['status', '--porcelain', '--ignored', '-z'])
+  const r = await git(p, path, ['status', '--porcelain', '--ignored', '-z', NOT_INTO_SUBMODULES])
   if (r.code !== 0) return null
   const fields = r.stdout.split('\0')
   const out: Status = { changes: [], ignored: [] }
@@ -521,7 +531,7 @@ export async function place(p: Ports, spec: ModWorktreeSpec, created: boolean): 
   if (at && dirThere) {
     if (at.branch !== ref) return `${spec.path} is a worktree on ${at.branch ? at.branch.replace(/^refs\/heads\//, '') : 'a detached HEAD'}, not ${spec.branch}`
     // Nothing in it was handed to an agent before its create, so a checkout cut off part way is replaced.
-    const st = await git(p, spec.path, ['status', '--porcelain', '-z'])
+    const st = await git(p, spec.path, ['status', '--porcelain', '-z', NOT_INTO_SUBMODULES])
     if (st.code === 0 && st.stdout === '') return null
     const rm = await git(p, repo, ['worktree', 'remove', '--force', '--', spec.path], SLOW_GIT_MS)
     if (rm.code !== 0) return `git worktree remove failed: ${firstLine(rm.stderr)}`

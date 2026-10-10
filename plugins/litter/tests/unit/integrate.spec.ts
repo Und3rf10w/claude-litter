@@ -6,7 +6,7 @@
 // appended directly, as packages F and E would leave them.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fanoutSummary, recordIntegrate } from '../../hooks/integrate'
 import { appendRecord, headKey, readLedger } from '../../hooks/ledgercore'
@@ -18,6 +18,7 @@ import type { Caller, RecordCtx, RecordError, StoredRecord } from '../../hooks/r
 import type { RunJson } from '../../hooks/records/run'
 import type { IntegrateConflictBody, IntegrateDoneBody, IntegrateMergeBody, IntegrateReply, WorktreeCreateBody } from '../../hooks/records/fanout'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { LOOKS_INSIDE, filteredSubmodule } from './support/submodule'
 
 const RUN = '20261002-fan'
 const REF = `refs/heads/litter/${RUN}`
@@ -177,6 +178,8 @@ const kinds = async () => (await records()).map(r => r.kind)
 const ofKind = async <B>(kind: string) => (await records()).filter(r => r.kind === kind) as StoredRecord<B>[]
 const tipOf = async (ref: string) => (await git('rev-parse', ref)).trim()
 const outFile = () => JSON.parse(readFileSync(outPath(litterDir, RELAY.agentId!), 'utf8'))
+/** Where a submodule's filter writes: beside the worktrees' root, in no repository. */
+const marker = () => join(root, '..', '..', 'filter.ran')
 const mergeHead = async () => (await p.run(['git', 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd: integration })).stdout.trim()
 
 describe('integrate: clean merges', () => {
@@ -369,6 +372,29 @@ describe('integrate: what is merged, and what is skipped', () => {
     expect(r.reason).toBe(`worktree ${WF}-4 at ${stray.path} has uncommitted changes (pkgA/x.ts), and no writer was bound to it`)
   })
 
+  // A writer can write a nested repository's .git/config; a status that looks inside its work tree runs its filters.
+  test("a recorded worktree's moved submodule blocks the land, and its filter never runs", async () => {
+    await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
+    await writer('b', 2, { 'pkgB/b.ts': 'b\n' })
+    await writer('c', 3, { 'docs/c.md': 'c, done\n' })
+    const stray = await writer('a', 4, {}, { commit: false, bind: false, status: null })
+    const sub = await filteredSubmodule(p, join(stray.path, 'pkgA', 'sub'), marker())
+    await gitIn(stray.path, 'update-index', '--add', '--cacheinfo', `160000,${sub.commit},pkgA/sub`)
+    await gitIn(stray.path, 'commit', '-q', '-m', 'the submodule')
+    // Its HEAD moves past the gitlink: the change git finds without looking inside.
+    await sub.move()
+    await sub.arm()
+    const r = await integrate()
+    expect(r.status).toBe('refused')
+    expect(r.reason).toBe(
+      `worktree ${WF}-4 at ${stray.path} has 1 commit(s) past base on litter/${RUN}-w4 and uncommitted changes (pkgA/sub), and no writer was bound to it`,
+    )
+    expect(sub.ran()).toBe(false)
+    // The control: a status that does look inside runs it.
+    await gitIn(stray.path, ...LOOKS_INSIDE)
+    expect(sub.ran()).toBe(true)
+  })
+
   test("a result from a writer bound elsewhere isn't merged", async () => {
     const w = await writer('a', 1, { 'pkgA/a.ts': 'a\n' }, { status: null })
     await result('a', 'someone-else', 'done')
@@ -437,6 +463,29 @@ describe('integrate: a conflict is final', () => {
     expect(await integrate()).toEqual(r)
     expect(await kinds()).toEqual(before)
     expect(await tipOf(IB)).toBe(tip)
+  })
+
+  test("its paths are read without looking inside a submodule an earlier merge brought in", async () => {
+    await writeRun(OVERLAP, ['a', 'b', 'c'])
+    // Populated in the integration worktree, and kept out of its status until a's merge brings in the gitlink.
+    const sub = await filteredSubmodule(p, join(integration, 'pkgA', 'sub'), marker())
+    mkdirSync(join(dir, '.git', 'info'), { recursive: true })
+    appendFileSync(join(dir, '.git', 'info', 'exclude'), 'pkgA/sub\n')
+    const a = await writer('a', 1, { 'shared.ts': 'export const v = 2 // a\n', 'pkgA/a.ts': 'a\n' }, { commit: false })
+    mkdirSync(join(a.path, 'pkgA', 'sub'))
+    await gitIn(a.path, 'add', '-A')
+    await gitIn(a.path, 'update-index', '--add', '--cacheinfo', `160000,${sub.commit},pkgA/sub`)
+    await gitIn(a.path, 'commit', '-q', '-m', `${RUN} a`)
+    const b = await writer('b', 2, { 'shared.ts': 'export const v = 3 // b\n', 'pkgB/b.ts': 'b\n' })
+    await writer('c', 3, { 'docs/c.md': 'c, done\n' })
+    await sub.arm()
+    const r = await integrate()
+    expect(r.status).toBe('conflict')
+    expect(r.merged).toEqual(['a'])
+    expect(r.conflict).toEqual({ task: 'b', branch: b.branch, files: ['shared.ts'] })
+    expect(sub.ran()).toBe(false)
+    await gitIn(integration, ...LOOKS_INSIDE)
+    expect(sub.ran()).toBe(true)
   })
 })
 
