@@ -44,11 +44,12 @@ export type Owner = 'mine' | 'other' | 'lost'
 
 /** appendRecord on a ledger with records and no head here, which `owned` doesn't call this store's. */
 export class LedgerNotOwned extends Error {
-  constructor(
-    readonly runDir: string,
-    readonly owner: Owner,
-  ) {
+  readonly runDir: string
+  readonly owner: Owner
+  constructor(runDir: string, owner: Owner) {
     super(`${runDir}'s ledger has records but no head in this store, so another host or store drives it${owner === 'lost' ? ', or its store was lost' : ''}; nothing is appended here`)
+    this.runDir = runDir
+    this.owner = owner
   }
 }
 
