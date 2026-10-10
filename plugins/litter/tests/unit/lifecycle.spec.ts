@@ -561,10 +561,11 @@ describe('reconcile at session.start', () => {
     const w = await world()
     const r = await started(w)
     const oid = (await getPending(w.p, w.litterDir))!.oid
-    // The session died: the lock went (a crash after a manual cleanup), the store kept nothing.
+    // The session died: the lock went (a crash after a manual cleanup), the store kept nothing but the ledger's head
+    // (with no head the run isn't this store's, and reconcile leaves it alone: ledgerowner.spec.ts).
     stopLease()
     await w.p.run(['git', '-C', w.dir, 'update-ref', '-d', 'refs/litter-active', oid])
-    w.p.storeMap.clear()
+    for (const key of [...w.p.storeMap.keys()]) if (!key.startsWith('litter.head.')) w.p.storeMap.delete(key)
     w.sid.value = 'session-b'
     await reconcileRuns(w.p, w.litterDir)
     expect(await lastEnd(w, r.ref)).toEqual(expect.objectContaining({ generation: 0, status: 'launch_failed', source: 'reconcile' }))

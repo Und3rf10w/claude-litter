@@ -26,7 +26,7 @@ import type {
   WorktreeSetupFailedBody,
 } from './records/fanout'
 import { RESUMABLE } from './records/run'
-import { appendRecord, readLedger } from './ledgercore'
+import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
 import {
   integrationName,
   ledgerDir,
@@ -345,9 +345,15 @@ export const consumeWorktrees: SpoolConsumer = async (ctx, line) => {
   if (!json || json.v !== 1 || json.run !== line.run) return skip(`there's no run ${line.run} in ${litterDir}`)
   const kind = STEP_KIND[line.step]
   const created = await serial(`worktrees:${dir}`, async (): Promise<boolean> => {
-    const { records, tampered } = await readLedger(p, dir, line.run)
+    const read = await readLedger(p, dir, line.run)
+    const { records, tampered } = read
     if (tampered) {
       skip(`the run's ledger is tampered at ${tampered.seq}`)
+      return false
+    }
+    // A spool this session drained can hold another host's lines (policy.ts, drainAllSpools).
+    if ((await owned(p, dir, read)) !== 'mine') {
+      skip(elsewhere(line.run))
       return false
     }
     const st = runState(records)
@@ -930,9 +936,14 @@ async function decide(p: Ports, repo: string, cwd: string, list: readonly Listed
 
 /** Applies the rules to the run's recorded worktrees still on disk. Resolves how many outcomes it recorded. */
 async function cleanup(p: Ports, ref: WorktreeRun, status: RunStatus): Promise<number> {
-  const { records, tampered } = await readLedger(p, ref.runDir, ref.run)
+  const read = await readLedger(p, ref.runDir, ref.run)
+  const { records, tampered } = read
   if (tampered) {
     p.log(`worktree cleanup for ${ref.run}: the ledger is tampered at ${tampered.seq}; nothing removed`)
+    return 0
+  }
+  if ((await owned(p, ref.runDir, read)) !== 'mine') {
+    p.log(`worktree cleanup for ${ref.run}: ${elsewhere(ref.run)}; nothing removed`)
     return 0
   }
   const targets = [...tracked(records).values()].filter(t => t.outcome !== 'removed')
@@ -999,13 +1010,14 @@ async function runsWithWorktrees(p: Ports, litterDir: string): Promise<string[]>
   return out.sort()
 }
 
-/** At session.start: recorded worktrees of ended runs still on disk get the same cleanup. */
+/** At session.start: recorded worktrees of ended runs still on disk get the same cleanup; another store's runs get theirs from it. */
 export async function cleanupLeftovers(p: Ports, litterDir: string): Promise<void> {
   for (const run of await runsWithWorktrees(p, litterDir)) {
     const ref: WorktreeRun = { run, runDir: runDirOf(litterDir, run), litterDir }
     try {
-      const { records, tampered } = await readLedger(p, ref.runDir, run)
-      if (tampered) continue
+      const read = await readLedger(p, ref.runDir, run)
+      const { records, tampered } = read
+      if (tampered || (await owned(p, ref.runDir, read)) !== 'mine') continue
       const st = runState(records)
       const end = st.latest ? st.latest.end : st.launchEnd
       if (!st.ended || !end) continue

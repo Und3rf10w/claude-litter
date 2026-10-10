@@ -86,8 +86,13 @@ const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256',
 
 type Seed = { kind: string; by?: Record<string, unknown>; body: Record<string, unknown> }
 
-/** run.json and its run.start (with run.json's sha256), the launch, then `records`, each chained to the one before; no stored head, so it's accepted. */
-async function seedRun(files: Map<string, string>, records: Seed[]): Promise<void> {
+/**
+ * run.json and its run.start (with run.json's sha256), the launch, then
+ * `records`, each chained to the one before. Answers the head this session's
+ * appends left in `$.store`, for mock.store: with no head there the ledger is
+ * another store's, and the mod leaves it alone.
+ */
+async function seedRun(files: Map<string, string>, records: Seed[]): Promise<Record<string, unknown>> {
   const json = { v: 1, run: RUN, workflow: 'design', args: { run: RUN, deliverable: 'plan', bar: BAR, empiricalUnknowns: [] }, ref: `refs/litter/${RUN}/base`, base: '0'.repeat(40), checkout: '/repo', isolate: false, linkDirs: [], rules: [] }
   const jsonText = `${JSON.stringify(json, null, 2)}\n`
   files.set(`${RUN_DIR}/run.json`, jsonText)
@@ -103,6 +108,7 @@ async function seedRun(files: Map<string, string>, records: Seed[]): Promise<voi
     files.set(`${RUN_DIR}/ledger/${String(seq).padStart(6, '0')}-${r.kind}.json`, text)
     prev = await sha256(text)
   }
+  return { [`litter.head.${RUN_DIR}`]: { v: 2, seq: all.length, sha: prev } }
 }
 
 /** The author's v1 as the mod stored it, and the critic's verdict on it. */
@@ -144,11 +150,10 @@ function watchNext(on: On, files: Map<string, string>, after: number): Seen[] {
 
 describe("a design run's completion notification", () => {
   test('records run.end, then design.deliver and plan.md, then the final summary.md, all before next(e)', async ($, on) => {
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 1_800_000_000_000 })
     const files = world(on)
     const { sha, records } = await proposalAndVerdict(files, 'APPROVED')
-    await seedRun(files, records)
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...(await seedRun(files, records)) })
+    mock.clock(on, { now: 1_800_000_000_000 })
     const seen = watchNext(on, files, 4)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     await $.prompt.submit({ text: notice({ stopped: null, outcome: 'approved', by: 'approved', version: 'v1' }), origin: { kind: 'task-notification' }, wait: false })
@@ -173,11 +178,10 @@ describe("a design run's completion notification", () => {
   })
 
   test('a holding return delivers nothing: design.deliver says why, no plan.md, and the summary says it', async ($, on) => {
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 1_800_000_000_000 })
     const files = world(on)
     const { records } = await proposalAndVerdict(files, 'HOLDING')
-    await seedRun(files, records)
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...(await seedRun(files, records)) })
+    mock.clock(on, { now: 1_800_000_000_000 })
     const seen = watchNext(on, files, 4)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     await $.prompt.submit({ text: notice({ stopped: null, outcome: 'holding', by: 'max-rounds', version: 'v1' }), origin: { kind: 'task-notification' }, wait: false })

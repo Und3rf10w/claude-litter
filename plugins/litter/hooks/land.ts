@@ -29,7 +29,7 @@ import type {
 import type { IntegrateDoneBody } from './records/fanout'
 import { fail } from './records/core'
 import { FANOUT_GATE } from './records/fanout'
-import { appendRecord, readLedger } from './ledgercore'
+import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
 import { integrationBranch, runJsonPath } from './layout'
 import { readJson, serial } from './fsx'
 import { snapshot } from './snapshot'
@@ -285,6 +285,8 @@ async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
   if (ledger.tampered) {
     return { problems: [`the run's ledger is tampered at record ${ledger.tampered.seq} (${ledger.tampered.reason})`] }
   }
+  // Another store's land may be in the middle of its steps: its owner reconciles it.
+  if ((await owned(p, runDir, ledger)) !== 'mine') return { problems: [`${elsewhere(run)}, so its lands are reconciled there`] }
   if (json.workflow === 'fanout') return reconcileFanout(p, f, ledger.records)
   const listed = await listLanded(p, json)
   if (!listed.ok) {

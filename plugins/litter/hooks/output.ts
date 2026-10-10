@@ -15,7 +15,7 @@ import type { DesignResultBody } from './records/design'
 import type { RunJson } from './records/run'
 import type { TaskResultBody } from './records/fanout'
 import type { CriticProposal } from './records/rules'
-import { appendRecord, readLedger } from './ledgercore'
+import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
 import { outPath, runDir, runJsonPath } from './layout'
 import { atomicWriteJson, readJson, serial } from './fsx'
 import { agentInfo } from './policy'
@@ -144,9 +144,15 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   const by: Author = { source: 'agent', agentId: info.agentId, agentType: info.agentType }
   // The check for an earlier copy and the append must not interleave with another drain of this run.
   await serial(`output:${dir}`, async () => {
-    const { records, tampered } = await readLedger(ctx.p, dir, run)
+    const read = await readLedger(ctx.p, dir, run)
+    const { records, tampered } = read
     if (tampered) {
       ctx.p.log(`output ${line.tool_use_id}: run ${run}'s ledger is tampered at ${tampered.seq}; not recorded`)
+      return
+    }
+    // A spool this session drained can hold another host's lines (policy.ts, drainAllSpools).
+    if ((await owned(ctx.p, dir, read)) !== 'mine') {
+      ctx.p.log(`output ${line.tool_use_id}: ${elsewhere(run)}; not recorded`)
       return
     }
     if (designResult) {

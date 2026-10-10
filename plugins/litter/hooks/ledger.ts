@@ -18,7 +18,8 @@ import type { SwarmGateCall } from './swarm/gate'
 import { fail, RECORD_MAX_BYTES } from './records/core'
 import { KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, USER_ONLY_KINDS } from './records/design'
 import { KIND_HANDLERS, SPOOL_CONSUMERS } from './registry'
-import { LedgerTampered, readLedger, RecordTooLarge } from './ledgercore'
+import { elsewhere, LedgerNotOwned, LedgerTampered, owned, readLedger, RecordTooLarge } from './ledgercore'
+import { NotOnCodex } from './ledgerowner'
 import { agentInfo, drainOwnSpools } from './policy'
 import { RUN_ID, runDir, runJsonPath } from './layout'
 import { readJson } from './fsx'
@@ -289,11 +290,17 @@ export async function dispatchRecord(
         return fail(`litter: there's no run ${input.run} in ${litterDir}; run.find lists the runs`, 'run')
       }
     }
-    // A broken chain stops the run's records before the handler does any work (section 9, "Chained").
+    // A broken chain stops the run's records before the handler does any work (section 9, "Chained"), and so
+    // does another store's run (plan.write would write its file first). run.end's handler asks about a run with
+    // no head here; a rule.propose only names its run.
     if (typeof input.run === 'string') {
-      const { tampered } = await readLedger(p, runDir(litterDir, input.run), input.run)
-      if (tampered) {
-        return fail(`litter: run ${input.run}'s ledger is tampered at record ${tampered.seq} (${tampered.reason}); nothing more is recorded for it`, 'run')
+      const dir = runDir(litterDir, input.run)
+      const read = await readLedger(p, dir, input.run)
+      if (read.tampered) {
+        return fail(`litter: run ${input.run}'s ledger is tampered at record ${read.tampered.seq} (${read.tampered.reason}); nothing more is recorded for it`, 'run')
+      }
+      if (kind !== 'run.end' && kind !== 'rule.propose' && (await owned(p, dir, read)) !== 'mine') {
+        return fail(`litter: ${elsewhere(input.run)}; nothing is recorded for it here`, 'run')
       }
     }
   }
@@ -326,6 +333,7 @@ async function answer(kind: KnownKind, run: unknown, handle: () => Promise<Recor
     if (err instanceof LedgerTampered) {
       return fail(`litter: ${typeof run === 'string' ? `run ${run}'s ` : 'the run '}${err.message}; nothing more is recorded for it`, 'run')
     }
+    if (err instanceof LedgerNotOwned || err instanceof NotOnCodex) return fail(`litter: ${err.message}`)
     throw err
   }
   if (!reply || typeof reply !== 'object' || typeof (reply as { ok?: unknown }).ok !== 'boolean') {

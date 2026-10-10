@@ -84,9 +84,11 @@ const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256',
  * (its `prev` the sha256 of that file's text): run.launch (generation 1), then
  * the bodies given. With no stored head the ledger is accepted. run.json has
  * the repair setting a 2b-2 run.start writes; there is no run.start, so
- * session.start's reconcile leaves the run be.
+ * session.start's reconcile leaves the run be. Answers the head this
+ * session's appends left in `$.store`, for mock.store: with no head there the
+ * ledger is another store's, and the mod leaves it alone.
  */
-async function seedFanout(files: Map<string, string>, more: { kind: string; body: Record<string, unknown> }[] = []): Promise<void> {
+async function seedFanout(files: Map<string, string>, more: { kind: string; body: Record<string, unknown> }[] = []): Promise<Record<string, unknown>> {
   const json = {
     v: 1,
     run: RUN,
@@ -108,6 +110,7 @@ async function seedFanout(files: Map<string, string>, more: { kind: string; body
     files.set(`${RUN_DIR}/ledger/${String(seq).padStart(6, '0')}-${r.kind}.json`, text)
     prev = await sha256(text)
   }
+  return { [`litter.head.${RUN_DIR}`]: { v: 2, seq: all.length, sha: prev } }
 }
 
 const HALTED_NOTICE =
@@ -135,11 +138,10 @@ const at = (timeline: Timeline, match: string) => timeline.findIndex(t => t.incl
 
 describe('a halted fanout notice and the repair', () => {
   test('settles before the <swarm> block: run.end, then summary.md with its Repair section, then the bridge, then the note and the engine', async ($, on) => {
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 5_000 })
     const timeline: Timeline = []
     const files = world(on, timeline)
-    await seedFanout(files)
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...(await seedFanout(files)) })
+    mock.clock(on, { now: 5_000 })
     engine(on, timeline)
     let context: readonly string[] | undefined
     on('prompt.submit', async (_$, e) => {
@@ -177,14 +179,14 @@ describe('a halted fanout notice and the repair', () => {
 
   test('a late notice for generation 1 while its repair generation is open records nothing and calls no bridge', async ($, on) => {
     // The task's key outlived its run.end (a write that failed, say): the notice still finds the run.
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 9_000 })
     const timeline: Timeline = []
     const files = world(on, timeline)
-    await seedFanout(files, [
+    const head = await seedFanout(files, [
       { kind: 'run.end', body: { taskId: TASK, generation: 1, status: 'halted', reason: 'not verified', source: 'notification' } },
       { kind: 'run.repair', body: { generation: 2, swarm: 'repair-abc123', launch: '20261003-120000', budget: { rounds: 3, agents: 6 } } },
     ])
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...head })
+    mock.clock(on, { now: 9_000 })
     const before = [...files.keys()].sort()
     const logs = engine(on, timeline)
     on('prompt.submit', async (_$, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }))

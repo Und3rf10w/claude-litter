@@ -81,7 +81,7 @@ async function append(files: Map<string, string>, dir: string, run: string, kind
   const prev = names.length > 0 ? await sha256(files.get(names.at(-1)!)!) : null
   const text = `${JSON.stringify({ v: 1, seq, kind, run, at: 1_791_028_800_000 + seq, by, prev, body })}\n`
   files.set(`${ledger}${String(seq).padStart(6, '0')}-${kind}.json`, text)
-  store?.set(`litter.head.${dir}`, { seq, sha: await sha256(text) })
+  store?.set(`litter.head.${dir}`, { v: 2, seq, sha: await sha256(text) })
   return seq
 }
 
@@ -140,9 +140,10 @@ const STOP_LINE = { v: 1, ev: 'output', ts: 2, session_id: SESSION, agent_id: EX
  * The execute run as generation 1 leaves it, still open: plan.md, run.json
  * with its repair setting, and the ledger (run.start, run.launch, G1 verified,
  * approved and landed, G2's attempt 1 with a verdict naming a plan gap). The
- * notification ends it.
+ * notification ends it. Its head is in `store`, as this session's appends left
+ * it: a ledger with no head here is another store's, and the mod leaves it alone.
  */
-async function seedRun(files: Map<string, string>, o: Opts): Promise<void> {
+async function seedRun(files: Map<string, string>, o: Opts, store: Map<string, unknown>): Promise<void> {
   files.set(`${RUN_DIR}/plan.md`, PLAN)
   files.set(`${LITTER}/hooks/mode`, 'default\n')
   const gates = ['G1', 'G2', 'G3'].map((id, i) => ({
@@ -181,7 +182,7 @@ async function seedRun(files: Map<string, string>, o: Opts): Promise<void> {
   }
   const text = `${JSON.stringify(json, null, 2)}\n`
   files.set(`${RUN_DIR}/run.json`, text)
-  const add = (kind: string, body: Record<string, unknown>, by: Author = MOD) => append(files, RUN_DIR, RUN, kind, by, body)
+  const add = (kind: string, body: Record<string, unknown>, by: Author = MOD) => append(files, RUN_DIR, RUN, kind, by, body, store)
   await add('run.start', {
     workflow: 'execute',
     base: BASE,
@@ -355,7 +356,7 @@ async function started($: Engine, on: On, o: Opts): Promise<World> {
   // Every variable unset: the launch reads none from the machine running the test.
   mock.env(on, {})
   const files = new Map<string, string>()
-  await seedRun(files, o)
+  await seedRun(files, o, store)
   const git = world(on, files)
   const logs: string[] = []
   on('ui.log', async (_$, e) => {

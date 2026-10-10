@@ -12,6 +12,7 @@ import type { PortHook, SwarmProposeHook } from '../hooktypes'
 import type { ProposedChange, SwarmProposeReply } from '../records/swarm'
 import type { SpecError, SwarmSpec } from './types'
 import { RecordTooLarge } from '../ledgercore'
+import { NotOnCodex } from '../ledgerowner'
 import { NODE_ID, SWARM_NAME } from '../layout'
 import { session } from '../session'
 import { binding, noteProposal } from './state'
@@ -136,6 +137,7 @@ export async function proposeSwarm(p: Ports, agentId: string | undefined, raw: R
     if (e instanceof RecordTooLarge) {
       return { ok: false, errors: [{ field: e.field ?? 'spec', error: `the proposal's record would be ${Math.ceil(e.bytes / 1024)} KiB, over 1 MiB; make it smaller` }] }
     }
+    if (e instanceof NotOnCodex) return { ok: false, errors: [{ field: 'swarm', error: e.message }] }
     throw e
   }
 }

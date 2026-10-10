@@ -69,12 +69,17 @@ function world(on: On): Map<string, string> {
   return files
 }
 
+const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
+const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
+
 /**
- * A fanout run with its first generation open, built by hand: run.json, the
- * run.launch record (seq 1; with no stored head the ledger is accepted) and
- * the task's index. No run.start, so session.start's reconcile leaves it be.
+ * A fanout run with its first generation open, built by hand: run.json and
+ * the run.launch record (seq 1). No run.start, so session.start's reconcile
+ * leaves it be. Answers the head this session's appends left in `$.store`,
+ * for mock.store: with no head there the ledger is another store's, and the
+ * mod leaves it alone.
  */
-function seedFanout(files: Map<string, string>): void {
+async function seedFanout(files: Map<string, string>): Promise<Record<string, unknown>> {
   const json = { v: 1, run: RUN, workflow: 'fanout', args: {}, ref: `refs/heads/litter/${RUN}`, base: '0'.repeat(40), checkout: '/repo', isolate: false, linkDirs: [] }
   files.set(`${RUN_DIR}/run.json`, `${JSON.stringify(json)}\n`)
   const launch = {
@@ -87,7 +92,9 @@ function seedFanout(files: Map<string, string>): void {
     prev: null,
     body: { taskId: TASK, runId: 'wf_abc123', scriptPath: null, generation: 1, session: 'tier1-session', oid: '1'.repeat(40) },
   }
-  files.set(`${RUN_DIR}/ledger/000001-run.launch.json`, `${JSON.stringify(launch)}\n`)
+  const text = `${JSON.stringify(launch)}\n`
+  files.set(`${RUN_DIR}/ledger/000001-run.launch.json`, text)
+  return { [`litter.head.${RUN_DIR}`]: { v: 2, seq: 1, sha: await sha256(text) } }
 }
 
 const HALTED_NOTICE =
@@ -108,10 +115,9 @@ function logged(on: On): string[] {
 
 describe('the repair wiring', () => {
   test("prompt.submit: a halted fanout's notice settles and reaches the bridge before the engine sees the prompt, its context kept", async ($, on) => {
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 5_000 })
     const files = world(on)
-    seedFanout(files)
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...(await seedFanout(files)) })
+    mock.clock(on, { now: 5_000 })
     const logs = logged(on)
     on('tool.register', async (_$, e) => ({ value: { tool: `mcp__litter__${e.name}` } }))
     on('agent.register', async (_$, e) => ({ value: { agent: `litter:${e.name}` } }))

@@ -35,6 +35,7 @@ import { localRulesDir, projectRulesDir, ruleHistoryDir, swarmsDir, SWARM_NAME, 
 import { atomicWrite, mkdirp, rename, serial, sha256 } from '../fsx'
 import { gitAt, primaryOf } from '../lifecycle'
 import { listLaunches, readLaunchLedger } from '../records/swarm'
+import { session } from '../session'
 import { appendRuleRecord, readRuleLedger, ruleLedgerDir } from './ledger'
 import { bytes, foldText, parseRule, patternProblem, renderRule, RULE_MAX_BYTES } from './format'
 
@@ -541,9 +542,12 @@ async function foldProposals(litterDir: string, ledgers: Record<RuleLedgerStore,
  * makes it a `rule.propose` in the repo rules ledger with `source: 'critic'`
  * and whatever it has of run, gate, swarm, verify_id, tool_use_id and index,
  * once per tool_use_id and index (once per verify_id and index for a
- * swarm's). A throw is logged by the caller.
+ * swarm's). A throw is logged by the caller. On Codex, where the rules
+ * ledger isn't written (ledgerowner.ts), it stays in the critic's verdict
+ * record, and the run's summary.md lists it (execsummary.ts).
  */
 export async function proposeFromCritic(p: Ports, litterDir: string, input: CriticProposal): Promise<void> {
+  if (session().host === 'codex') return
   if (bytes(input.rule) > RULE_MAX_BYTES) throw new Error(`a proposed rule over ${RULE_MAX_BYTES} bytes isn't recorded (index ${input.index})`)
   const dir = await ruleLedgerDir(p, litterDir, 'repo')
   await serial(`rules-propose:${dir}`, async () => {

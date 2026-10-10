@@ -156,14 +156,19 @@ export type LedgerRead = {
 }
 
 /**
- * Whether this store owns the ledger, for a place about to act on it: the
- * host's answer (Ports.ledgerOwner), else `mine` for a v2 head and `other`
- * for anything less. Views read without asking.
+ * Whether this store owns the ledger, for a place about to act on it: `mine`
+ * for one with no records and no head, which the first append makes its
+ * store's; otherwise the host's answer (Ports.ledgerOwner), else `mine` for a
+ * v2 head and `other` for anything less. Views read without asking.
  */
 export async function owned(p: Ports, runDir: string, read: LedgerRead): Promise<Owner> {
+  if (read.anchor === 'none' && read.records.length === 0) return 'mine'
   if (p.ledgerOwner) return p.ledgerOwner(runDir, read)
   return read.anchor === 'head' ? 'mine' : 'other'
 }
+
+/** Why a place that acts leaves a run alone when `owned` isn't `mine`. */
+export const elsewhere = (run: string): string => `run ${run} is driven by another host or Codex home, or this store lost its head`
 
 /**
  * Reads the ledger in seq order and checks the chain back from the stored

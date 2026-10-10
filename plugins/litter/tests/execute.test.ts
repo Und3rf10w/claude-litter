@@ -96,8 +96,18 @@ function engine(on: On): string[] {
 const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
 
-/** A run's run.json and its ledger, built by hand, each record chained to the one before; no stored head, so it's accepted. */
-async function seedRun(files: Map<string, string>, run: string, workflow: string, records: { kind: string; by?: Record<string, unknown>; body: Record<string, unknown> }[]) {
+/**
+ * A run's run.json and its ledger, built by hand, each record chained to the
+ * one before. Answers the head this session's appends left in `$.store`, for
+ * mock.store: with no head there the ledger is another store's, and the mod
+ * leaves it alone.
+ */
+async function seedRun(
+  files: Map<string, string>,
+  run: string,
+  workflow: string,
+  records: { kind: string; by?: Record<string, unknown>; body: Record<string, unknown> }[],
+): Promise<Record<string, unknown>> {
   const dir = `${LITTER}/${run}`
   const json = { v: 1, run, workflow, args: {}, ref: `refs/heads/litter/${run}`, base: '0'.repeat(40), checkout: '/repo', isolate: false, linkDirs: [], rules: [] }
   files.set(`${dir}/run.json`, `${JSON.stringify(json)}\n`)
@@ -108,6 +118,7 @@ async function seedRun(files: Map<string, string>, run: string, workflow: string
     files.set(`${dir}/ledger/${String(seq).padStart(6, '0')}-${r.kind}.json`, text)
     prev = await sha256(text)
   }
+  return { [`litter.head.${dir}`]: { v: 2, seq: records.length, sha: prev } }
 }
 
 const started = async ($: Engine) => $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
@@ -159,12 +170,12 @@ describe("a gate critic's StructuredOutput", () => {
   }
 
   test('drained from the spool, it is recorded as the verdict, and its verdict file is written from the cited verify', async ($, on) => {
-    mock.store(on, { 'litter.agent.gc1': CRITIC })
-    mock.clock(on, { now: 5_000 })
     const files = world(on)
+    const head = await seedRun(files, RUN, 'execute', [{ kind: 'verify', by: { source: 'agent', agentId: 'gc1', agentType: 'litter:gate-critic' }, body: VERIFY }])
+    mock.store(on, { 'litter.agent.gc1': CRITIC, ...head })
+    mock.clock(on, { now: 5_000 })
     const logs = engine(on)
     await started($)
-    await seedRun(files, RUN, 'execute', [{ kind: 'verify', by: { source: 'agent', agentId: 'gc1', agentType: 'litter:gate-critic' }, body: VERIFY }])
     const line = { v: 1, ev: 'output', ts: 2, session_id: SESSION, agent_id: 'gc1', agent_type: 'litter:gate-critic', tool_use_id: 'toolu_v1', input: VERDICT }
     files.set(`${LITTER}/hooks/spool/${SESSION}.jsonl`, `${JSON.stringify(line)}\n`)
 
@@ -196,13 +207,13 @@ describe("plan.js's return", () => {
     `<result>${result}</result>\n</task-notification>`
 
   test('questions and no gates settle the plan run as done', async ($, on) => {
-    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER } })
-    mock.clock(on, { now: 5_000 })
     const files = world(on)
-    engine(on)
-    await seedRun(files, RUN, 'plan', [
+    const head = await seedRun(files, RUN, 'plan', [
       { kind: 'run.launch', body: { taskId: TASK, runId: 'wf_p1', scriptPath: null, generation: 1, session: SESSION, oid: '1'.repeat(40) } },
     ])
+    mock.store(on, { [`litter.task.${TASK}`]: { run: RUN, runDir: RUN_DIR, litterDir: LITTER }, ...head })
+    mock.clock(on, { now: 5_000 })
+    engine(on)
     on('prompt.submit', async (_$, e) => ({ text: e.text }))
     await started($)
     const text = notice('{"gates":[],"out_of_scope":[],"assumptions":["one header format"],"questions":["Which header format is current?"]}')

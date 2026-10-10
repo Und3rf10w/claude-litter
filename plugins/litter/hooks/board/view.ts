@@ -49,8 +49,8 @@ import type {
   BoardView,
   SwarmNotice,
 } from '../../types/index'
-import { headKey, readLedger } from '../ledgercore'
-import { RUN_ID, UNKNOWN_ID, planPath, proposalPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
+import { headKey, owned, readLedger } from '../ledgercore'
+import { RUN_ID, UNKNOWN_ID, ledgerDir, planPath, proposalPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
 import { GAP_KINDS, PROBE_VERDICTS } from '../records/design'
 import { barIds, isVersion, proposalRecords, verdictRecords } from '../design/finalize'
 import { readJson } from '../fsx'
@@ -215,13 +215,16 @@ async function listRuns(p: Ports, litterDir: string, workflow?: Workflow): Promi
 
 const headOf = async (p: Ports, dir: string): Promise<string> => {
   const head = (await p.store.get(headKey(dir))) as { seq?: unknown; sha?: unknown } | undefined
-  return head && typeof head.seq === 'number' ? `${head.seq}:${String(head.sha ?? '').slice(0, 12)}` : '0'
+  if (head && typeof head.seq === 'number') return `${head.seq}:${String(head.sha ?? '').slice(0, 12)}`
+  // No head here (another store's ledger, which a read doesn't give one): its folder's mtime moves with each record.
+  const st = await p.fs.stat(ledgerDir(dir)).catch(() => null)
+  return st ? `m${st.mtimeMs}` : '0'
 }
 
 /**
  * The heads the view reads: the run's ledger, and both rules ledgers (a
  * critic's proposal arrives in the repository's; an acceptance in either).
- * Only $.store reads, so the tick stays cheap.
+ * $.store reads, and a stat for a ledger with no head here, so the tick stays cheap.
  */
 export async function boardStamp(p: Ports, litterDir: string, run: string): Promise<string> {
   const user = await p.configDir().then(
@@ -289,6 +292,8 @@ type RunFiles = {
   json: RunJson | null
   records: StoredRecord[]
   tampered: { seq: number; reason: string } | null
+  /** Its ledger isn't this store's (ledgercore's `owned`): shown, never acted on here. */
+  elsewhere: boolean
 }
 
 async function loadRunFiles(p: Ports, litterDir: string, run: string): Promise<RunFiles> {
@@ -301,7 +306,7 @@ async function loadRunFiles(p: Ports, litterDir: string, run: string): Promise<R
     p.log(`board: ${run}/run.json unreadable: ${errText(err)}`)
   }
   const ledger = await readLedger(p, dir, run)
-  return { run, dir, json, records: ledger.records, tampered: ledger.tampered }
+  return { run, dir, json, records: ledger.records, tampered: ledger.tampered, elsewhere: (await owned(p, dir, ledger)) !== 'mine' }
 }
 
 const DIMENSIONS = ['plan_adherence', 'tests_green', 'no_regressions', 'rules'] as const
@@ -566,7 +571,11 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   // What needs you first, then what runs on its own.
   attention.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'needs-you' ? -1 : 1))
 
-  const notice = refusedNotice(refused) ?? nav.notice ?? (f.json ? null : { level: 'warning' as const, text: `run.json of ${run} can't be read; the header is from the ledger` })
+  const notice =
+    refusedNotice(refused) ??
+    nav.notice ??
+    (f.elsewhere ? { level: 'warning' as const, text: "not this store's: driven by another host, or its store was lost; litter shows it and doesn't act on it here" } : null) ??
+    (f.json ? null : { level: 'warning' as const, text: `run.json of ${run} can't be read; the header is from the ledger` })
   return {
     notice,
     header,

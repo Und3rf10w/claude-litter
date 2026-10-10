@@ -49,7 +49,8 @@ import { REPAIR_AGENTS, REPAIR_ROUNDS, WIDEN_MODES } from './options'
 import { parseGates } from './gates'
 import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
 import { writePlanVersion } from './planversion'
-import { appendRecord, readLedger } from './ledgercore'
+import type { AppendOptions } from './ledgercore'
+import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
 import {
   hooksDir,
   modePath,
@@ -510,9 +511,10 @@ async function releaseRunLock(p: Ports, litterDir: string, run: string): Promise
  * Records `body` as the generation's run.end, once: a later attempt returns
  * the first record unchanged, and an end for an older generation is history
  * that changes nothing current. The current one writes summary.md, takes the
- * run off the policy files and releases the lock.
+ * run off the policy files and releases the lock. A ledger this store doesn't
+ * own refuses (ledgercore's LedgerNotOwned) unless `options` adopts it.
  */
-export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recorded: boolean; end: RunEndBody }> {
+export function endRun(p: Ports, ref: RunRef, body: RunEndBody, options: AppendOptions = {}): Promise<{ recorded: boolean; end: RunEndBody }> {
   return serial(`run:${ref.runDir}`, async () => {
     const ledger = await readLedger(p, ref.runDir, ref.run)
     const st = runState(ledger.records)
@@ -526,7 +528,7 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
       if (g.end) return { recorded: false, end: g.end }
       current = g === st.latest
     }
-    return recordEnd(p, ref, st, body, current)
+    return recordEnd(p, ref, st, body, current, options)
   })
 }
 
@@ -536,8 +538,15 @@ export function endRun(p: Ports, ref: RunRef, body: RunEndBody): Promise<{ recor
  * design's delivery (BE's finalizeDesign, decision 16), summary.md, the
  * policy files, the bindings, the lock and the indexes.
  */
-async function recordEnd(p: Ports, ref: RunRef, st: RunState, body: RunEndBody, current: boolean): Promise<{ recorded: true; end: RunEndBody }> {
-  await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body })
+async function recordEnd(
+  p: Ports,
+  ref: RunRef,
+  st: RunState,
+  body: RunEndBody,
+  current: boolean,
+  options: AppendOptions = {},
+): Promise<{ recorded: true; end: RunEndBody }> {
+  await appendRecord(p, ref.runDir, { run: ref.run, kind: 'run.end', by: body.source === 'launcher' ? LAUNCHER : MOD, body }, options)
   if (current) {
     // Cleanup first, so the summary lists what it kept (plan section 9, "Cleanup is the mod's").
     await cleanupRun(p, ref, body.status).catch(err => p.log(`worktree cleanup for ${ref.run} failed: ${errText(err)}`))
@@ -945,12 +954,17 @@ async function takeRepairLock(p: Ports, litterDir: string, blob: LockBlob): Prom
   return { ok: false, reason: "the project's run lock kept changing hands" }
 }
 
-/** A lock whose run's ledger has ended it: a crash came between that run.end and the release. Released as reconcile does. */
+/**
+ * A lock whose run's ledger has ended it: a crash came between that run.end
+ * and the release. Released as reconcile does: another store's run only once
+ * its lease is stale too.
+ */
 async function releaseIfEnded(p: Ports, litterDir: string, r: LockRefused): Promise<boolean> {
   const blob = r.holder
   if (!r.oid || !blob || !RUN_ID.test(blob.run)) return false
   const ledger = await readLedger(p, runDirOf(litterDir, blob.run), blob.run)
   if (ledger.tampered || !runState(ledger.records).ended) return false
+  if ((await owned(p, runDirOf(litterDir, blob.run), ledger)) !== 'mine' && !leaseStale(await readLease(p, litterDir, r.oid), blob, await p.now())) return false
   if (!(await releaseLock(p, repoOf(litterDir), r.oid))) return false
   await removeLease(p, litterDir, r.oid)
   p.log(`released a stale lock of ended run ${blob.run}`)
@@ -1125,10 +1139,15 @@ async function snapshotExpected(p: Ports, litterDir: string, gen: Generation): P
   return false
 }
 
-/** A stopping run settles to run.end stopped once nothing of it is live (plan section 9, "Settled means"). */
+/**
+ * A stopping run settles to run.end stopped once nothing of it is live (plan
+ * section 9, "Settled means"). Never one this store doesn't own: what keeps it
+ * live is in its owner's store, so here it would settle at once.
+ */
 export async function trySettle(p: Ports, ref: RunRef, warnings?: string[]): Promise<boolean> {
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return false
+  if ((await owned(p, ref.runDir, ledger)) !== 'mine') return false
   const st = runState(ledger.records)
   const gen = st.open
   if (!gen?.stopping) return false
@@ -1240,6 +1259,10 @@ export async function rebindRun(p: Ports, litterDir: string, from: string, to: s
       p.log(`run ${ref.run}: ledger tampered at ${ledger.tampered.seq}; session.rebind not recorded`)
       return null
     }
+    if ((await owned(p, ref.runDir, ledger)) !== 'mine') {
+      p.log(`${elsewhere(ref.run)}; session.rebind not recorded`)
+      return null
+    }
     const st = runState(ledger.records)
     if (!st.start || st.ended) return null
     const again = ledger.records.some(r => r.kind === 'session.rebind' && r.body.from === from && r.body.to === to)
@@ -1289,6 +1312,7 @@ async function reconcileHolder(
     return { freed: false, message: `litter: run ${blob.run} holds the lock, and its ledger is tampered at ${ledger.tampered.seq}; litter won't act on it` }
   }
   const st = runState(ledger.records)
+  if ((await owned(p, ref.runDir, ledger)) !== 'mine') return releaseForeign(p, litterDir, oid, blob, st, interactive)
   const now = await p.now()
   const ago = (t: number) => `${Math.round((now - t) / 1000)} s ago`
 
@@ -1387,6 +1411,34 @@ async function reconcileHolder(
     freed: false,
     message: `litter: run ${blob.run} is active (task ${gen.taskId}) and holds the project's run lock; stop it from /workflows or wait for it to end, then launch again`,
   }
+}
+
+/**
+ * A holder whose ledger this store doesn't own (`owned`). The lock is the
+ * repository's, so it's freed when its lease is stale and the run ended or
+ * never launched, or when you release it; but nothing is recorded in the
+ * holder's ledger and the run isn't ended here: its owner's reconcile ends it.
+ */
+async function releaseForeign(p: Ports, litterDir: string, oid: string, blob: LockBlob, st: RunState, interactive: boolean): Promise<Freed> {
+  const now = await p.now()
+  const lease = await readLease(p, litterDir, oid)
+  const who = `run ${blob.run} (session ${blob.session})`
+  // A launched run's lease isn't beaten, so a stale one says its host is gone only before the launch or after the end.
+  let why = 'its lease was stale'
+  if (!(leaseStale(lease, blob, now) && (st.ended || st.generations.length === 0))) {
+    const seen = Math.round((now - (lease ? lease.beatAt : blob.acquiredAt)) / 1000)
+    const question =
+      `Run ${blob.run} (session ${blob.session}) holds this project's litter run lock (last seen ${seen} s ago), and ${elsewhere(blob.run)}. ` +
+      "Release the lock? Only do this if that host is gone: nothing is recorded in the run's ledger, and its own host ends it."
+    if (!(interactive && (await askYes(p, question, 'Release it', 'Keep it')))) {
+      return { freed: false, message: `litter: ${who} holds the project's run lock, and ${elsewhere(blob.run)}; end it there, or release the lock when litter asks` }
+    }
+    why = 'you released it'
+  }
+  if (!(await releaseLock(p, repoOf(litterDir), oid))) return { freed: false, message: `litter: couldn't release run ${blob.run}'s lock; launch again` }
+  await removeLease(p, litterDir, oid)
+  p.log(`released the lock of ${who}, as ${why}; ${elsewhere(blob.run)}, so nothing was recorded in its ledger`)
+  return { freed: true }
 }
 
 /** The branch a recovered launch left behind, and the branch it switched from, for the records. */
@@ -2869,6 +2921,10 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
   const ref: RunRef = { run: input.run, runDir: runDirOf(litterDir, input.run), litterDir }
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return fail(`litter: run ${ref.run}'s ledger is tampered at ${ledger.tampered.seq}; litter won't act on it`, 'run')
+  // Another host's run ends there. One with no head here may be this store's own, lost: only your yes adopts it.
+  const foreign = (await owned(p, ref.runDir, ledger)) !== 'mine'
+  const elsewhereText = `litter: run ${ref.run} is driven by another host or Codex home; end it there`
+  if (foreign && ledger.anchor !== 'none') return fail(elsewhereText, 'run')
   const st = runState(ledger.records)
   const gen = st.generations.find(g => g.repair === null && g.taskId === input.taskId)
   // A repair generation has no task: its swarm's End closes it (2b-2), never this fallback.
@@ -2897,14 +2953,27 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
   } else {
     decoded = { status: ENGINE_WORDS[status] ?? (status as RunStatus), reason: typeof input.reason === 'string' ? input.reason : null }
   }
-  const r = await endRun(p, ref, {
-    taskId: gen.taskId,
-    generation: gen.n,
-    status: decoded.status,
-    reason: decoded.reason,
-    ...(decoded.payload ? { payload: decoded.payload } : {}),
-    source: 'launcher',
-  })
+  if (foreign) {
+    const last = ledger.records.at(-1)!
+    const question =
+      `Run ${ref.run} (session ${st.start?.session ?? 'unknown'}) has no head in this store: another host or Codex home may drive it, ` +
+      `or this store lost its head. Its last record is ${last.seq}, ${last.kind}, at ${iso(last.at)}. ` +
+      `End it here as ${decoded.status}? Only do this if this session launched it.`
+    if (!(await askYes(p, question, 'End it here', 'Leave it'))) return fail(elsewhereText, 'run')
+  }
+  const r = await endRun(
+    p,
+    ref,
+    {
+      taskId: gen.taskId,
+      generation: gen.n,
+      status: decoded.status,
+      reason: decoded.reason,
+      ...(decoded.payload ? { payload: decoded.payload } : {}),
+      source: 'launcher',
+    },
+    { adopt: foreign },
+  )
   await afterEnd(p, ref, await workflowOf(p, ref, st), r)
   return { ok: true, recorded: r.recorded, end: r.end, summary: summaryPath(ref.runDir) }
 }
@@ -3111,7 +3180,14 @@ async function repairPart(p: Ports, ref: RunRef, json: RunJson | null, records: 
 // ---------------------------------------------------------------------------
 // Reconcile at session.start (plan section 9, "Reconcile, for ends nobody saw")
 
-/** At session.start, after the spools are drained: every run without a run.end is reconciled. */
+/** The runs reconcileRuns said it leaves to their owner, so each is logged once. */
+const leftToOwner = new Set<string>()
+
+/**
+ * At session.start, after the spools are drained: every run without a
+ * run.end is reconciled, and every run's lands. A run this store doesn't own
+ * is its owner's to reconcile, and is skipped.
+ */
 export async function reconcileRuns(p: Ports, litterDir: string): Promise<void> {
   const repo = repoOf(litterDir)
   const sessionId = await p.sessionId()
@@ -3123,6 +3199,11 @@ export async function reconcileRuns(p: Ports, litterDir: string): Promise<void> 
       const ledger = await readLedger(p, ref.runDir, run)
       if (ledger.tampered) {
         p.log(`run ${run}: ledger tampered at ${ledger.tampered.seq} (${ledger.tampered.reason}); not reconciled`)
+        continue
+      }
+      if ((await owned(p, ref.runDir, ledger)) !== 'mine') {
+        if (!leftToOwner.has(ref.runDir)) p.log(`${elsewhere(run)}; not reconciled here`)
+        leftToOwner.add(ref.runDir)
         continue
       }
       const st = runState(ledger.records)
@@ -3308,10 +3389,15 @@ export async function runOfWorkflowId(p: Ports, litterDir: string, runId: string
   return null
 }
 
-/** Loads a run for the launch check: run.json, verified against the run.start record's sha256. */
+/**
+ * Loads a run for the launch check: run.json, verified against the run.start
+ * record's sha256. A run this store doesn't own is refused: a launch, a
+ * resume, a reopen for a repair and the repair's checks all start here.
+ */
 export async function loadLaunchable(p: Ports, ref: RunRef): Promise<{ ok: true; json: RunJson; st: RunState } | { ok: false; reason: string }> {
   const ledger = await readLedger(p, ref.runDir, ref.run)
   if (ledger.tampered) return { ok: false, reason: `run ${ref.run}'s ledger is tampered at ${ledger.tampered.seq}` }
+  if ((await owned(p, ref.runDir, ledger)) !== 'mine') return { ok: false, reason: `${elsewhere(ref.run)}; litter won't act on it here` }
   const st = runState(ledger.records)
   if (!st.start) return { ok: false, reason: `run ${ref.run} has no run.start record` }
   let jsonText: string

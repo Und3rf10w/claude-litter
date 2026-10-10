@@ -1,6 +1,7 @@
 // summary.md's execute part (COMMON step 1): attempts per gate, the last
 // verdict's failing dimensions, the halt and its evidence, the rules used and
-// the proposals made. Owner: phase 3, package AB.
+// the proposals made, with the critic's that never reached the rules ledger.
+// Owner: phase 3, package AB.
 //
 // From the ledger only (plan section 9: the ledger is the record of truth),
 // so the execute skill can report from summary.md even when the script's
@@ -15,6 +16,7 @@ import { VERDICT_DIMENSIONS } from './records/execute'
 import { verdictFile } from './layout'
 import { runState } from './lifecycle'
 import { proposalsOf } from './rules/store'
+import { session } from './session'
 import { verdictTarget } from './verdicts'
 
 // AD's proposals, through one table so tier 2 can stand in for them (COMMON, "Another package's module").
@@ -201,17 +203,47 @@ export async function executeSummary(p: Ports, ref: RunRef, json: RunJson | null
   // The accepted rule versions the run was given (decision 19), and what its critics proposed.
   const used = Array.isArray(json?.rules) ? json!.rules.filter(r => r && typeof r.id === 'string').map(r => `${r.id}@${r.version}`) : []
   lines.push('', '## Rules used', '', used.length > 0 ? used.join(', ') : 'none')
+  let proposals: Awaited<ReturnType<typeof proposalsOf>>
   try {
-    const proposals = await deps.proposalsOf(p, ref.litterDir, { run: ref.run })
-    if (proposals.length > 0) {
-      lines.push('', '## Rules proposed in this run', '', 'Proposed, not accepted, waiting in /litter rules:', '')
-      for (const x of proposals) {
-        const from = [x.body.source, x.body.gate].filter((s): s is string => typeof s === 'string' && s !== '').join(', ')
-        lines.push(`- ${oneLine(x.body.rule)}${from ? ` (${from})` : ''}${x.status !== 'proposed' ? `, now ${x.status}` : ''}`)
-      }
-    }
+    proposals = await deps.proposalsOf(p, ref.litterDir, { run: ref.run })
   } catch (err) {
     lines.push('', '## Rules proposed in this run', '', `The proposals couldn't be read: ${oneLine(errText(err))}. /litter rules lists them.`)
+    return lines
+  }
+  if (proposals.length > 0) {
+    lines.push('', '## Rules proposed in this run', '', 'Proposed, not accepted, waiting in /litter rules:', '')
+    for (const x of proposals) {
+      const from = [x.body.source, x.body.gate].filter((s): s is string => typeof s === 'string' && s !== '').join(', ')
+      lines.push(`- ${oneLine(x.body.rule)}${from ? ` (${from})` : ''}${x.status !== 'proposed' ? `, now ${x.status}` : ''}`)
+    }
+  }
+  // A critic's proposals that never reached the rules ledger, as on Codex, which doesn't write it yet: their texts, to add by hand.
+  const unrecorded = criticProposals(records).filter(
+    c => !proposals.some(x => x.body.source === 'critic' && x.body.tool_use_id === c.toolUseId && x.body.index === c.index),
+  )
+  if (unrecorded.length > 0) {
+    const why =
+      session().host === 'codex'
+        ? "Codex doesn't write the rules ledger yet, so /litter rules doesn't list these. To keep one, add it from Claude Code with /litter:rules add."
+        : "These didn't reach the rules ledger (the log says why), so /litter rules doesn't list them. To keep one, add it with /litter:rules add."
+    lines.push('', '## Rules the critic proposed', '', why, '')
+    for (const c of unrecorded) lines.push(`- ${oneLine(c.rule)}${c.gate ? ` (gate ${c.gate})` : ''}`)
   }
   return lines
+}
+
+/** A gate critic's proposals in its verdicts: the text, the gate of the verify it cites, and the key the rules ledger records it by (output.ts). */
+function criticProposals(records: readonly StoredRecord[]): { rule: string; gate: string | null; toolUseId: string; index: number }[] {
+  const out: { rule: string; gate: string | null; toolUseId: string; index: number }[] = []
+  for (const r of records) {
+    if (r.kind !== 'verdict' || r.by.source !== 'agent' || r.by.agentType !== 'litter:gate-critic') continue
+    const toolUseId = r.body.tool_use_id
+    if (typeof toolUseId !== 'string' || !Array.isArray(r.body.proposed_rules)) continue
+    const cited = typeof r.body.verify_id === 'string' ? records.find(v => v.kind === 'verify' && v.body.verify_id === r.body.verify_id) : undefined
+    const gate = typeof cited?.body.gate === 'string' ? cited.body.gate : null
+    r.body.proposed_rules.forEach((rule: unknown, index: number) => {
+      if (named(rule)) out.push({ rule, gate, toolUseId, index })
+    })
+  }
+  return out
 }

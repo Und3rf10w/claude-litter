@@ -30,6 +30,7 @@ import type {
   TokenCount,
 } from '../swarm/types'
 import { appendRecord, readLedger } from '../ledgercore'
+import { sharedAppend } from '../ledgerowner'
 import { launchDir, launchesDir, launchRun, LAUNCH_ID, specRun, swarmDir } from '../layout'
 import { mkdirp, serial } from '../fsx'
 
@@ -424,8 +425,12 @@ export type SwarmBodies = {
 // ---------------------------------------------------------------------------
 // The two ledgers
 
-/** Appends to the spec ledger; `by` is the mod unless a handler says otherwise. */
-export function appendSpecRecord<K extends SwarmSpecKind>(
+/**
+ * Appends to the spec ledger; `by` is the mod unless a handler says
+ * otherwise. Claude Code is the swarm ledgers' only writer: on Codex this
+ * throws NotOnCodex (ledgerowner.ts).
+ */
+export async function appendSpecRecord<K extends SwarmSpecKind>(
   p: Ports,
   litterDir: string,
   name: string,
@@ -433,11 +438,11 @@ export function appendSpecRecord<K extends SwarmSpecKind>(
   body: SwarmBodies[K],
   by: Author = MOD,
 ): Promise<StoredRecord<SwarmBodies[K]>> {
-  return appendRecord(p, swarmDir(litterDir, name), { run: specRun(name), kind, by, body })
+  return appendRecord(p, swarmDir(litterDir, name), { run: specRun(name), kind, by, body }, sharedAppend("a swarm's spec ledger"))
 }
 
-/** Appends to one launch's ledger; `by` is the mod unless a handler says otherwise (swarm.bind, swarm.end). */
-export function appendLaunchRecord<K extends SwarmLaunchKind>(
+/** Appends to one launch's ledger; `by` is the mod unless a handler says otherwise (swarm.bind, swarm.end). Claude Code's only, as the spec's. */
+export async function appendLaunchRecord<K extends SwarmLaunchKind>(
   p: Ports,
   litterDir: string,
   name: string,
@@ -446,7 +451,7 @@ export function appendLaunchRecord<K extends SwarmLaunchKind>(
   body: SwarmBodies[K],
   by: Author = MOD,
 ): Promise<StoredRecord<SwarmBodies[K]>> {
-  return appendRecord(p, launchDir(litterDir, name, launch), { run: launchRun(name, launch), kind, by, body })
+  return appendRecord(p, launchDir(litterDir, name, launch), { run: launchRun(name, launch), kind, by, body }, sharedAppend("a swarm launch's ledger"))
 }
 
 /** The spec ledger, checked as a run's is (`tampered` stops acting on it). */

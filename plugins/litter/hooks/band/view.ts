@@ -640,7 +640,10 @@ async function seed(p: Ports, t: Tracking): Promise<void> {
 const headOf = async (p: Ports, dir: string): Promise<string> => {
   try {
     const head = (await p.store.get(headKey(dir))) as { seq?: unknown; sha?: unknown } | undefined
-    return head && typeof head.seq === 'number' ? `${head.seq}:${String(head.sha ?? '').slice(0, 12)}` : '0'
+    if (head && typeof head.seq === 'number') return `${head.seq}:${String(head.sha ?? '').slice(0, 12)}`
+    // No head here (another store's ledger, which a read doesn't give one): its folder's mtime moves with each record.
+    const st = await p.fs.stat(ledgerDir(dir)).catch(() => null)
+    return st ? `m${st.mtimeMs}` : '0'
   } catch {
     return '?'
   }

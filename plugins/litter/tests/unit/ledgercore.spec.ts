@@ -17,6 +17,7 @@ import {
   RecordTooLarge,
 } from '../../hooks/ledgercore'
 import { sha256 } from '../../hooks/fsx'
+import { claudeLedgerOwner } from '../../hooks/ledgerowner'
 import { ledgerDir, ledgerFileName } from '../../hooks/layout'
 import type { Ports } from '../../hooks/ports'
 import { RECORD_MAX_BYTES } from '../../hooks/records/core'
@@ -316,8 +317,8 @@ describe('ledgercore: the intent before each append', () => {
     const slow: Ports = { ...p, fs: { ...p.fs, read: f => (++reads === 2 ? g.pass(() => p.fs.read(f)) : p.fs.read(f)) } }
     const read = readLedger(slow, dir, RUN)
     await g.reached
-    // Meanwhile an append adopts 1 and 2, sets its intent for 3 and stops before the file.
-    await expect(appendRecord(crashing({ write: 1 }), dir, { run: RUN, kind: 'verify', by, body: {} })).rejects.toThrow('crash')
+    // Meanwhile an append adopts 1 and 2 (the store was lost, and you said so), sets its intent for 3 and stops before the file.
+    await expect(appendRecord(crashing({ write: 1 }), dir, { run: RUN, kind: 'verify', by, body: {} }, { adopt: true })).rejects.toThrow('crash')
     const intent = head()!
     expect(intent).toMatchObject({ seq: 2, pending: { seq: 3 } })
     g.release()
@@ -427,16 +428,35 @@ describe('ledgercore: one store owns a ledger', () => {
     expect((await readLedger(p, dir, RUN)).tampered).toEqual({ seq: 4, reason: 'record 000004-run.end.json was added after the head 3' })
   })
 
-  test("owned without a host answer: mine for a v2 head, other for a legacy head or none; Claude Code's answer is mine for every ledger, for now", async () => {
-    await append(p)
+  test("owned without a host answer: mine for a v2 head, other for a legacy head or none; a ledger with no records is anyone's", async () => {
     const bare = otherStore()
+    expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('mine')
+    await append(p)
     bare.storeMap.set(headKey(dir), p.storeMap.get(headKey(dir)))
     expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('mine')
     bare.storeMap.set(headKey(dir), { seq: 1, sha: head()!.sha })
     expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('other')
     bare.storeMap.delete(headKey(dir))
     expect(await owned(bare, dir, await readLedger(bare, dir, RUN))).toBe('other')
+  })
+
+  test("Claude Code's answer: mine for a v2 head, and for a legacy head unless a launch shows litterd driving the run; other with no head", async () => {
+    const launch = (body: Record<string, unknown>) => appendRecord(p, dir, { run: RUN, kind: 'run.launch', by, body })
+    const asLegacy = () => p.storeMap.set(headKey(dir), { seq: head()!.seq, sha: head()!.sha })
+    const answer = async () => owned(p, dir, await readLedger(p, dir, RUN))
+    await launch({ taskId: 'wf-task' })
+    expect(await answer()).toBe('mine')
+    asLegacy()
+    expect(await answer()).toBe('mine')
+    await launch({ taskId: 'codex-7' })
+    asLegacy()
+    expect(await answer()).toBe('other')
     p.storeMap.delete(headKey(dir))
-    expect(await owned(p, dir, await readLedger(p, dir, RUN))).toBe('mine')
+    expect(await answer()).toBe('other')
+    // A driver says litterd, whatever the task id.
+    const read = await readLedger(p, dir, RUN)
+    const driven = { ...read.records[0]!, body: { taskId: 'wf-task', driver: { pid: 1, socket: '/s', startedAt: 0, procStart: null } } }
+    expect(await claudeLedgerOwner(dir, { ...read, anchor: 'legacy', records: [driven] })).toBe('other')
+    expect(await claudeLedgerOwner(dir, { ...read, anchor: 'legacy', records: [read.records[0]!] })).toBe('mine')
   })
 })
