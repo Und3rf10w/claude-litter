@@ -51,6 +51,8 @@ import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
 import { writePlanVersion } from './planversion'
 import type { AppendOptions } from './ledgercore'
 import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
+import type { RunJsonRefusal } from './runjson'
+import { checkedRunJson } from './runjson'
 import {
   hooksDir,
   modePath,
@@ -331,15 +333,30 @@ export function runState(records: readonly StoredRecord[]): RunState {
   return { start, startedAt, generations, launchEnd, latest, open, ended, oid: latest?.oid || start?.oid || null }
 }
 
-export type Loaded = { json: RunJson | null; records: StoredRecord[]; tampered: { seq: number; reason: string } | null }
+export type Loaded = {
+  json: RunJson | null
+  records: StoredRecord[]
+  tampered: { seq: number; reason: string } | null
+  /** Under `checked`: why run.json wasn't read, when the run exists but it's tampered, another store's or changed. */
+  refused?: string
+}
 
 /**
  * A run's run.json (null unless it's this run's, version 1) and its ledger's
- * records, up to a tamper point if there is one. Exported for the design
- * launch's prior run and the design end (phase 4, BD and BE).
+ * records, up to a tamper point if there is one. `checked` reads run.json
+ * only as run.start wrote it (runjson.ts), for a caller that acts on it.
+ * Exported for the design launch's prior run and the design end (phase 4, BD
+ * and BE).
  */
-export async function loadRun(p: Ports, litterDir: string, run: string): Promise<Loaded> {
+export async function loadRun(p: Ports, litterDir: string, run: string, opts: { checked?: boolean } = {}): Promise<Loaded> {
   const dir = runDirOf(litterDir, run)
+  if (opts.checked) {
+    const ledger = await readLedger(p, dir, run)
+    const c = await checkedRunJson(p, { run, runDir: dir }, ledger)
+    const json = c.ok && c.json.v === 1 && c.json.run === run ? c.json : null
+    const refused = !c.ok && c.why !== 'unstarted' && c.why !== 'missing' ? { refused: c.reason } : {}
+    return { json, records: ledger.records, tampered: ledger.tampered, ...refused }
+  }
   const [json, ledger] = await Promise.all([
     readJson<RunJson>(p, runJsonPath(dir)).catch(() => undefined),
     readLedger(p, dir, run),
@@ -729,9 +746,9 @@ async function notificationEnd(p: Ports, n: Notification): Promise<EngineEnd | n
   return { status: 'completed', result: undefined }
 }
 
-async function workflowOf(p: Ports, ref: RunRef, st: RunState): Promise<Workflow> {
-  const json = await readJson<RunJson>(p, runJsonPath(ref.runDir)).catch(() => undefined)
-  return json?.workflow ?? st.start?.workflow ?? 'execute'
+/** The run's workflow, from its run.start record: chained in the ledger, unlike run.json, which an agent past the guard could rewrite. */
+function workflowOf(st: RunState): Workflow {
+  return st.start?.workflow ?? 'execute'
 }
 
 const ISOLATION_CAUSE =
@@ -795,7 +812,7 @@ async function settleGeneration(p: Ports, found: { ref: RunRef; st: RunState; ge
     await trySettle(p, ref, end.warnings)
     return
   }
-  const workflow = await workflowOf(p, ref, st)
+  const workflow = workflowOf(st)
   let d = decodeReturn(workflow, end)
   // A run that lost an agent's isolation halts, whatever its script returned (section 14).
   const lost = d.status === 'stopped' ? null : await isolationLoss(p, ref)
@@ -1157,7 +1174,7 @@ export async function trySettle(p: Ports, ref: RunRef, given?: string[]): Promis
   if (!gen?.stopping) return false
   if ((await unsettled(p, ref, ledger.records, gen)).length > 0) return false
   const snap = await engineSnapshot(p, ref.litterDir, gen)
-  const d = snap && snap.status !== 'killed' ? decodeReturn(await workflowOf(p, ref, st), snap) : null
+  const d = snap && snap.status !== 'killed' ? decodeReturn(workflowOf(st), snap) : null
   const warnings = [...gen.stopping.warnings, ...(given ?? []).filter(x => !gen.stopping!.warnings.includes(x))]
   await endRun(p, ref, {
     taskId: gen.taskId,
@@ -1401,7 +1418,7 @@ async function reconcileHolder(
 
   const snap = await engineSnapshot(p, litterDir, gen)
   if (snap) {
-    const d = decodeReturn(await workflowOf(p, ref, st), snap)
+    const d = decodeReturn(workflowOf(st), snap)
     await endRun(p, ref, { taskId: gen.taskId, generation: gen.n, status: d.status, reason: d.reason, ...(d.payload ? { payload: d.payload } : {}), source: 'reconcile' })
     return { freed: true }
   }
@@ -1446,17 +1463,19 @@ async function releaseForeign(p: Ports, litterDir: string, oid: string, blob: Lo
   return { freed: true }
 }
 
-/** The branch a recovered launch left behind, and the branch it switched from, for the records. */
-async function leftBranch(p: Ports, ref: RunRef): Promise<{ branch: string | null; previousBranch: string | null }> {
-  const json = await readJson<RunJson>(p, runJsonPath(ref.runDir)).catch(() => undefined)
+/**
+ * The branch a recovered launch left behind, and the branch it switched from,
+ * for the records: run.start's, chained in the ledger, never run.json's.
+ */
+async function leftBranch(p: Ports, ref: RunRef, st: RunState): Promise<{ branch: string | null; previousBranch: string | null }> {
   const name = `refs/heads/litter/${ref.run}`
   const r = await p.run(['git', '-C', repoOf(ref.litterDir), 'rev-parse', '-q', '--verify', name])
-  return { branch: r.code === 0 ? `litter/${ref.run}` : null, previousBranch: json?.previousBranch ?? null }
+  return { branch: r.code === 0 ? `litter/${ref.run}` : null, previousBranch: st.start?.previousBranch ?? null }
 }
 
 /** An orphan: recorded as lock.recovered (and launch_failed when run.start was), then compare-and-delete. */
 async function recoverOrphan(p: Ports, ref: RunRef, oid: string, blob: LockBlob, st: RunState): Promise<void> {
-  const left = await leftBranch(p, ref)
+  const left = await leftBranch(p, ref, st)
   await appendRecord<LockRecoveredBody>(p, ref.runDir, {
     run: ref.run,
     kind: 'lock.recovered',
@@ -1995,41 +2014,54 @@ export type Member = { run: string; json: RunJson; records: StoredRecord[] }
  * its landed and halted context, lands nothing, and is on its own
  * `refs/litter/<run>/base`, not the chain's branch (phase 3, AB's finding).
  */
-export async function resolveChain(p: Ports, litterDir: string, run: string): Promise<{ ok: true; root: Member; members: Member[] } | RecordError> {
+export async function resolveChain(
+  p: Ports,
+  litterDir: string,
+  run: string,
+  opts: { checked?: boolean } = {},
+): Promise<{ ok: true; root: Member; members: Member[] } | RecordError> {
+  // A view (the board) reads the chain as it stands; everything else acts on it, so on run.json as run.start wrote it.
+  const checked = opts.checked !== false
   const cache = new Map<string, Loaded>()
   const load = async (r: string): Promise<Loaded> => {
     let l = cache.get(r)
     if (!l) {
-      l = await loadRun(p, litterDir, r)
+      l = await loadRun(p, litterDir, r, { checked })
       cache.set(r, l)
     }
     return l
   }
-  const parentOf = (j: RunJson): string | null => j.continueOf ?? j.amendOf?.run ?? null
+  const startOf = (l: Loaded) => runState(l.records).start
+  // The run it continues or amends; undefined: no run. Checked, from its run.start (chained), so a changed run.json moves no run into or out of a chain.
+  const parentOf = (l: Loaded): string | null | undefined => {
+    const start = startOf(l)
+    if (!checked) return l.json ? (l.json.continueOf ?? l.json.amendOf?.run ?? null) : undefined
+    return start ? (start.continueOf ?? start.amendOf?.run ?? null) : undefined
+  }
   const rootOf = async (r: string): Promise<string | null> => {
     const seen = new Set<string>()
     let cur = r
     for (;;) {
       if (seen.has(cur) || seen.size > 100) return null
       seen.add(cur)
-      const l = await load(cur)
-      if (!l.json) return null
-      const up = parentOf(l.json)
-      if (!up) return cur
+      const up = parentOf(await load(cur))
+      if (up === undefined) return null
+      if (up === null) return cur
       cur = up
     }
   }
   const named = await load(run)
-  if (!named.json) return fail(`litter: no run ${run} in ${litterDir} (no run.json)`, 'continueOf')
+  if (!named.json) return fail(`litter: ${named.refused ?? `no run ${run} in ${litterDir} (no run.json)`}`, 'continueOf')
   const rootRun = await rootOf(run)
   if (!rootRun) return fail(`litter: run ${run}'s chain doesn't lead back to an original run`, 'continueOf')
   const members: Member[] = []
   for (const r of await listRuns(p, litterDir)) {
     if ((await rootOf(r)) !== rootRun) continue
     const l = await load(r)
-    if (l.json?.workflow === 'plan' && r !== rootRun) continue
+    if ((l.json?.workflow ?? startOf(l)?.workflow) === 'plan' && r !== rootRun) continue
     if (l.tampered) return fail(`litter: run ${r} in this chain has a tampered ledger (at ${l.tampered.seq}); litter won't continue it`, 'continueOf')
-    members.push({ run: r, json: l.json!, records: l.records })
+    if (!l.json) return fail(`litter: ${l.refused ?? `run ${r} in this chain has no run.json`}`, 'continueOf')
+    members.push({ run: r, json: l.json, records: l.records })
   }
   const root = members.find(m => m.run === rootRun)!
   const stray = members.find(m => m.json.ref !== root.json.ref)
@@ -2954,7 +2986,7 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
     decoded =
       result === undefined
         ? { status: 'failed', reason: 'unrecognized result: the launcher reported the run complete without its result' }
-        : decodeReturn(await workflowOf(p, ref, st), { status: 'completed', result })
+        : decodeReturn(workflowOf(st), { status: 'completed', result })
   } else {
     decoded = { status: ENGINE_WORDS[status] ?? (status as RunStatus), reason: typeof input.reason === 'string' ? input.reason : null }
   }
@@ -2979,7 +3011,7 @@ export const recordRunEnd: RecordHandler = async (ctx, input) => {
     },
     { adopt: foreign },
   )
-  await afterEnd(p, ref, await workflowOf(p, ref, st), r)
+  await afterEnd(p, ref, workflowOf(st), r)
   return { ok: true, recorded: r.recorded, end: r.end, summary: summaryPath(ref.runDir) }
 }
 
@@ -3280,7 +3312,7 @@ async function reconcileOpen(p: Ports, ref: RunRef, st: RunState, gen: Generatio
       await trySettle(p, ref)
       return
     }
-    const d = decodeReturn(await workflowOf(p, ref, st), snap)
+    const d = decodeReturn(workflowOf(st), snap)
     await endRun(p, ref, { taskId: gen.taskId, generation: gen.n, status: d.status, reason: d.reason, ...(d.payload ? { payload: d.payload } : {}), source: 'reconcile' })
     return
   }
@@ -3288,8 +3320,10 @@ async function reconcileOpen(p: Ports, ref: RunRef, st: RunState, gen: Generatio
   await p.store.set(taskKey(gen.taskId), ref)
   await p.store.set(wfKey(gen.runId), ref)
   if (!(await patchRunPolicy(p, ref.litterDir, ref.run, r => ({ ...r, launching: false }), sessionId))) {
-    const json = await readJson<RunJson>(p, runJsonPath(ref.runDir)).catch(() => undefined)
-    if (json) await activate(p, ref.litterDir, json, sessionId, { runIds: [...new Set(st.generations.map(g => g.runId))], launching: false })
+    // The policy is built from run.json, so only from the one run.start wrote.
+    const c = await checkedRunJson(p, ref)
+    if (c.ok) await activate(p, ref.litterDir, c.json, sessionId, { runIds: [...new Set(st.generations.map(g => g.runId))], launching: false })
+    else p.log(`reconcile ${ref.run}: ${c.reason}; its policy isn't restored`)
   }
 }
 
@@ -3399,18 +3433,10 @@ export async function runOfWorkflowId(p: Ports, litterDir: string, runId: string
  * record's sha256. A run this store doesn't own is refused: a launch, a
  * resume, a reopen for a repair and the repair's checks all start here.
  */
-export async function loadLaunchable(p: Ports, ref: RunRef): Promise<{ ok: true; json: RunJson; st: RunState } | { ok: false; reason: string }> {
-  const ledger = await readLedger(p, ref.runDir, ref.run)
-  if (ledger.tampered) return { ok: false, reason: `run ${ref.run}'s ledger is tampered at ${ledger.tampered.seq}` }
-  if ((await owned(p, ref.runDir, ledger)) !== 'mine') return { ok: false, reason: `${elsewhere(ref.run)}; litter won't act on it here` }
-  const st = runState(ledger.records)
-  if (!st.start) return { ok: false, reason: `run ${ref.run} has no run.start record` }
-  let jsonText: string
-  try {
-    jsonText = await p.fs.read(runJsonPath(ref.runDir))
-  } catch {
-    return { ok: false, reason: `run ${ref.run} has no run.json` }
-  }
-  if ((await sha256(jsonText)) !== st.start.runJsonSha256) return { ok: false, reason: `run ${ref.run}'s run.json changed since run.start` }
-  return { ok: true, json: JSON.parse(jsonText) as RunJson, st }
+export async function loadLaunchable(
+  p: Ports,
+  ref: RunRef,
+): Promise<{ ok: true; json: RunJson; st: RunState } | { ok: false; reason: string; why: RunJsonRefusal }> {
+  const c = await checkedRunJson(p, ref)
+  return c.ok ? { ok: true, json: c.json, st: runState(c.ledger.records) } : { ok: false, reason: c.reason, why: c.why }
 }

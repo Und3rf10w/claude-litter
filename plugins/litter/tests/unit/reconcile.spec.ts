@@ -14,6 +14,7 @@ import type { Caller, RecordCtx } from '../../hooks/records/core'
 import type { RunJson } from '../../hooks/records/run'
 import type { LandBlockedBody, LandBody, LandIntentBody, LandMode, LandReply, VerifyBody, VerifyReply } from '../../hooks/records/execute'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-crash'
 const REF = `refs/heads/litter/${RUN}`
@@ -69,7 +70,7 @@ beforeEach(async () => {
     session: 'test-session',
     created: 0,
   }
-  await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+  await writeRun(json)
 })
 afterEach(() => cleanups.forEach(c => c()))
 
@@ -108,7 +109,10 @@ const moveIndex = (commit: string) => git('read-tree', '-m', '-i', base, commit)
 const swap = (commit: string) => git('update-ref', REF, commit, base)
 const resync = (commit: string) => git('read-tree', '-m', '-i', commit, 'HEAD')
 
-const records = async () => (await readLedger(p, runDir, RUN)).records
+/** The run's records after the run.start the run.json's writer left (seq 1). */
+const records = async () => (await readLedger(p, runDir, RUN)).records.filter(r => r.kind !== 'run.start')
+/** run.json as if the run had started with it: rechain keeps the ledger's records after a run.start that names it. */
+const writeRun = (j: RunJson) => startedRunJson(p, runDir, j, JSON.stringify(j), { rechain: true })
 const kinds = async () => (await records()).map(r => r.kind)
 const tip = async () => (await git('rev-parse', REF)).trim()
 const status = async () => (await git('status', '--porcelain')).trimEnd()
@@ -287,7 +291,7 @@ describe('reconcile: anything else is refused with the facts', () => {
   })
 
   test('a design or plan run has nothing to reconcile', async () => {
-    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, workflow: 'design', ref: '' }))
+    await writeRun({ ...json, workflow: 'design', ref: '' })
     expect(await reconcileLands(p, runDir, RUN)).toEqual({ problems: [] })
     expect(await kinds()).toEqual([])
   })
@@ -367,7 +371,7 @@ describe('reconcile, fanout (checkout mode)', () => {
 
 describe('reconcile, a fanout run: by the intent commit, never by trailers', () => {
   beforeEach(async () => {
-    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, workflow: 'fanout', args: { tasks: [], mergeOrder: [] } }))
+    await writeRun({ ...json, workflow: 'fanout', args: { tasks: [], mergeOrder: [] } })
   })
 
   /** The integration tip: a merge-like commit on base with the integration's files, and no trailer. */

@@ -20,6 +20,7 @@ import type { RecordError, RecordReply, StoredRecord } from '../../hooks/records
 import type { CriticProposal } from '../../hooks/records/rules'
 import type { LandReply, SwarmGateVerdictBody, VerifyReply } from '../../hooks/records/execute'
 import type { NodeBinding } from '../../hooks/swarm/types'
+import type { RunJson } from '../../hooks/records/run'
 import { appendRecord } from '../../hooks/ledgercore'
 import { summaryPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
@@ -34,6 +35,7 @@ import { ADDED_NOTE } from '../../hooks/widen'
 import { standInVerify, verifyCalls } from './repair-harness'
 import { NOW, world, type World } from './swarmlaunch-harness'
 import { BRANCH, REF, RUN, declinedReason, executeRun, runRecords, write, type Exec, type ExecOpts } from './execbridge-harness'
+import { startedRunJson } from './support/runjson'
 
 setDefaultTimeout(120_000)
 
@@ -785,8 +787,9 @@ describe("the spawn's budget line (spawn.ts; WP-AG)", () => {
   test("a run.json the gates can't read denies the spawn, recording no instance and starting nothing", async () => {
     await bridged()
     const s = liveSwarm(x.name)!
-    const json = JSON.parse(readFileSync(join(x.runDir, 'run.json'), 'utf8')) as Record<string, unknown>
-    await w.p.fs.write(join(x.runDir, 'run.json'), JSON.stringify({ ...json, base: 'not-a-commit' }))
+    const json = JSON.parse(readFileSync(join(x.runDir, 'run.json'), 'utf8')) as RunJson
+    // As if run.start had written it, so the gates' own check of the base is what refuses.
+    await startedRunJson(w.p, x.runDir, { ...json, base: 'not-a-commit' }, undefined, { rechain: true })
     const { r, prompts } = await spawnExecutor()
     expect(r.deny).toBe(`litter: executor couldn't be prepared: run ${RUN}'s run.json has no valid base commit; it's written by run.start, and no record call can fix it`)
     expect(prompts).toEqual([])

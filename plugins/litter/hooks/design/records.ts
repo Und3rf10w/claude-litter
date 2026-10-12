@@ -12,8 +12,9 @@ import { fail } from '../records/core'
 import { authorOf, bareBacktickPaths, bodyOf, CRITERION_VERDICTS, GAP_KINDS, needText, OVERALLS, PROBE_VERDICTS, scoped, store } from '../records/design'
 import { DELIVERABLES } from '../records/run'
 import { appendRecord, readLedger } from '../ledgercore'
-import { proposalPath, runJsonPath, UNKNOWN_ID } from '../layout'
-import { atomicWrite, readJson, serial, sha256 } from '../fsx'
+import { proposalPath, UNKNOWN_ID } from '../layout'
+import { atomicWrite, serial, sha256 } from '../fsx'
+import { runJsonForRecord } from '../runjson'
 import { writeOut } from '../output'
 import { snapshot } from '../snapshot'
 import { renderProposal } from './proposal'
@@ -48,7 +49,9 @@ export const recordProposal: RecordHandler = async (ctx, input) => {
     return fail("litter: 'delta' must be a list of changes from the previous version, or one text", 'delta')
   }
   const { run, runDir: dir } = scoped(ctx, input)
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined)
+  // It records from run.json, so only from run.start's (runjson.ts).
+  const json = await runJsonForRecord(ctx.p, { run, runDir: dir })
+  if (typeof json === 'string') return fail(json, 'run')
   const deliverable = json?.args?.deliverable
   if (!(DELIVERABLES as readonly unknown[]).includes(deliverable)) {
     return fail(`litter: run ${run}'s run.json names no deliverable (${DELIVERABLES.join(', ')}), so the proposal can't be rendered; nothing was recorded`, 'run')
@@ -178,7 +181,9 @@ export const recordVerdict: RecordHandler = async (ctx, input) => {
   if (input.version !== latest.version) {
     return fail(`litter: 'version' must name the run's latest proposal, ${latest.version}`, 'version', [latest.version])
   }
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(dir))
+  // It records from run.json, so only from run.start's (runjson.ts).
+  const json = await runJsonForRecord(ctx.p, { run, runDir: dir })
+  if (typeof json === 'string') return fail(json, 'run')
   const bar = barIds(json)
   const criteria = input.criteria
   if (!Array.isArray(criteria) || criteria.length === 0) {

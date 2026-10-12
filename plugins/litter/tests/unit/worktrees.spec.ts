@@ -25,10 +25,13 @@ import {
 } from '../../hooks/worktrees'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { integrationBranch, integrationName, runDir as runDirOf, runJsonPath, setupLogPart, summaryPath, worktreePolicyPath, writerBranch } from '../../hooks/layout'
+import type { Ports } from '../../hooks/ports'
+import { runJsonChanged } from '../../hooks/runjson'
 import { normalizeOptions } from '../../hooks/options'
 import { readPolicy, writePolicy } from '../../hooks/policy'
 import { endRun } from '../../hooks/lifecycle'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 import { LOOKS_INSIDE, filteredSubmodule } from './support/submodule'
 
 // Each test runs dozens of real git commands, slow on a busy machine.
@@ -133,8 +136,7 @@ async function makeRun(run: string, workflow: RunJson['workflow'], wf: string): 
     session: 'test-session',
     created: 0,
   }
-  await p.fs.write(runJsonPath(dir), JSON.stringify(json))
-  await appendRecord(p, dir, { run, kind: 'run.start', by: { source: 'launcher' }, body: { workflow, base, ref: json.ref, checkout: repo } })
+  await startedRunJson(p, dir, json)
   await appendRecord(p, dir, { run, kind: 'run.launch', by: MOD, body: { taskId: `task-${run}`, runId: wf, scriptPath: null, generation: 1, session: 'test-session', oid: '' } })
 }
 
@@ -609,6 +611,25 @@ describe('cleanup after run.end', () => {
     expect(await branchExists(wt.branch)).toBe(false)
     expect(await outcomes()).toEqual([{ kind: 'worktree.removed', name: wt.name, path: wt.path, branch: wt.branch, forced: false }])
     expect(await branchExists(`litter/${RUN}`)).toBe(true)
+  })
+
+  test('a run.json changed after run.start removes nothing, calls no git, and logs why', async () => {
+    const wt = await recordedWriter(1)
+    const json = JSON.parse(readFileSync(runJsonPath(runDir), 'utf8')) as RunJson
+    writeFileSync(runJsonPath(runDir), JSON.stringify({ ...json, base: 'HEAD', ref: 'refs/heads/main' }))
+    const calls: string[][] = []
+    const run: Ports['run'] = p.run
+    p.run = async (argv, init) => {
+      calls.push([...argv])
+      return run(argv, init)
+    }
+    await cleanupRun(p, { run: RUN, runDir, litterDir }, 'halted')
+    p.run = run
+    expect(calls).toEqual([])
+    expect(existsSync(wt.path)).toBe(true)
+    expect(await branchExists(wt.branch)).toBe(true)
+    expect(await outcomes()).toEqual([])
+    expect(p.logs).toContain(`worktree cleanup for ${RUN}: ${runJsonChanged(RUN)}; nothing removed`)
   })
 
   test("a design's prober worktrees are discarded, an untracked scratch file and a lock included; one with a commit is kept", async () => {

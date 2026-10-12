@@ -26,6 +26,7 @@ import type { RunJson } from '../../hooks/records/run'
 import type { VerifyBody, VerifyReply } from '../../hooks/records/execute'
 import type { WorktreeCreateBody } from '../../hooks/records/fanout'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-verify'
 const CRITIC: Caller = { agentId: 'critic-1', agentType: 'litter:gate-critic' }
@@ -85,7 +86,8 @@ async function writeRun(patch: Partial<RunJson> = {}): Promise<void> {
     created: 0,
     ...patch,
   }
-  await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+  // As if the run had started with this run.json: each verify here names its own argv (rechain keeps the ledger's records).
+  await startedRunJson(p, runDir, json, JSON.stringify(json), { rechain: true })
 }
 
 const ctx = (caller: Caller = CRITIC, options: Record<string, unknown> = {}): RecordCtx => ({
@@ -108,7 +110,8 @@ const err = (r: unknown): RecordError => {
   expect((r as { ok: boolean }).ok).toBe(false)
   return r as RecordError
 }
-const records = async () => (await readLedger(p, runDir, RUN)).records
+/** The run's records after the run.start writeRun keeps (seq 1). */
+const records = async () => (await readLedger(p, runDir, RUN)).records.filter(r => r.kind !== 'run.start')
 const lastVerify = async (): Promise<VerifyBody> => (await records()).filter(r => r.kind === 'verify').at(-1)!.body as VerifyBody
 const headTree = async () => (await git('rev-parse', 'HEAD^{tree}')).trim()
 const parts = (verifyId: string) => readdirSync(verifyLogDir(runDir, verifyId)).sort()

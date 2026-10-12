@@ -722,7 +722,8 @@ async function gateRows(
 
 async function chainMembers(p: Ports, litterDir: string, run: string): Promise<{ run: string; json: RunJson; records: StoredRecord[] }[]> {
   try {
-    const chain = await resolveChain(p, litterDir, run)
+    // A view: the chain as its run.json files say, checked or not.
+    const chain = await resolveChain(p, litterDir, run, { checked: false })
     return chain.ok ? chain.members : []
   } catch (err) {
     p.log(`board: run ${run}'s chain unreadable: ${errText(err)}`)

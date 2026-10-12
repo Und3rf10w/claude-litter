@@ -12,6 +12,7 @@ import { fanoutSummary, recordIntegrate } from '../../hooks/integrate'
 import { appendRecord, headKey, readLedger } from '../../hooks/ledgercore'
 import { normalizeOptions } from '../../hooks/options'
 import { outPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { writePolicy } from '../../hooks/policy'
 import type { Policy } from '../../hooks/hookfiles'
 import type { Caller, RecordCtx, RecordError, StoredRecord } from '../../hooks/records/core'
@@ -19,6 +20,7 @@ import type { RunJson } from '../../hooks/records/run'
 import type { IntegrateConflictBody, IntegrateDoneBody, IntegrateMergeBody, IntegrateReply, WorktreeCreateBody } from '../../hooks/records/fanout'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 import { LOOKS_INSIDE, filteredSubmodule } from './support/submodule'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-fan'
 const REF = `refs/heads/litter/${RUN}`
@@ -104,8 +106,11 @@ async function writeRun(tasks: Task[] = TASKS, mergeOrder = ['b', 'a', 'c']): Pr
     session: 'test-session',
     created: 0,
   }
-  await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+  await rewriteRun(json)
 }
+
+/** run.json as if the run had started with it: rechain keeps the ledger's records after a run.start that names it. */
+const rewriteRun = (json: RunJson, at = runDir) => startedRunJson(p, at, json, JSON.stringify(json), { rechain: true })
 
 const ctx = (caller: Caller): RecordCtx => ({ p, caller, litterDir, options: normalizeOptions({}) })
 const agent = (id: string) => ({ source: 'agent' as const, agentId: id, agentType: 'litter:executor' })
@@ -174,7 +179,8 @@ async function integrate(caller: Caller = RELAY): Promise<IntegrateReply> {
 }
 
 const records = async () => (await readLedger(p, runDir, RUN)).records
-const kinds = async () => (await records()).map(r => r.kind)
+/** The kinds after the run.start rewriteRun keeps. */
+const kinds = async () => (await records()).filter(r => r.kind !== 'run.start').map(r => r.kind)
 const ofKind = async <B>(kind: string) => (await records()).filter(r => r.kind === kind) as StoredRecord<B>[]
 const tipOf = async (ref: string) => (await git('rev-parse', ref)).trim()
 const outFile = () => JSON.parse(readFileSync(outPath(litterDir, RELAY.agentId!), 'utf8'))
@@ -225,7 +231,7 @@ describe('integrate: clean merges', () => {
   test("each merge ends with run.json's trailers, and only the trailer lines", async () => {
     const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
     const trailers = ['Co-Authored-By: A Person <a@example.com>', 'not a trailer', 'Signed-off-by: B <b@example.com>']
-    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, trailers }))
+    await rewriteRun({ ...json, trailers })
     await writer('a', 1, { 'pkgA/a.ts': 'a\n' })
     await writer('b', 2, { 'pkgB/b.ts': 'b\n' })
     await writer('c', 3, { 'docs/c.md': 'c2\n' })
@@ -500,9 +506,9 @@ describe('integrate: who may call, and when', () => {
 
   test('not in an execute run, a closed run, or a tampered ledger', async () => {
     const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
-    await p.fs.write(join(runDir, 'run.json'), JSON.stringify({ ...json, workflow: 'execute' }))
-    expect(await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })).toMatchObject({ ok: false, field: 'run' })
-    await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+    await rewriteRun({ ...json, workflow: 'execute' })
+    expect(await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })).toMatchObject({ ok: false, field: 'run', error: expect.stringContaining('only a fanout integrates') })
+    await rewriteRun(json)
     await appendRecord(p, runDir, { run: RUN, kind: 'run.end', by: MOD, body: { status: 'halted' } })
     const closed = await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })
     expect((closed as RecordError).error).toMatch(/has ended/)
@@ -515,7 +521,7 @@ describe('integrate: who may call, and when', () => {
     const run2 = '20261002-fan-two'
     const dir2 = join(litterDir, run2)
     const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
-    await p.fs.write(join(dir2, 'run.json'), JSON.stringify({ ...json, run: run2, ref: `refs/heads/litter/${run2}` }))
+    await rewriteRun({ ...json, run: run2, ref: `refs/heads/litter/${run2}` }, dir2)
     const policy: Policy = {
       v: 1,
       session: 'test-session',
@@ -615,5 +621,27 @@ describe('integrate: summary.md', () => {
     expect(text).toContain("- the integration verify integration-1-abc isn't green (exit 1); its full log is in verify/integration-1-abc/ beside this summary")
     expect(text).toContain('- the verifier failed task b: pkgB/b.ts:1 calls a() with two arguments; pkgA/a.ts:1 takes one')
     expect(text).not.toContain('the verifier failed task a')
+  })
+})
+
+describe('integrate: a run.json changed after run.start (handoff: run.json as run.start wrote it)', () => {
+  test('its checkout rewritten to a repository with a clean filter: refused, nothing merged, the filter never runs', async () => {
+    await writer('a', 1, { 'pkgA/a.ts': 'export const a = 1\n' })
+    const sub = await filteredSubmodule(p, join(root, '..', '..', 'nested'), marker())
+    await sub.arm()
+    await p.run(['git', ...LOOKS_INSIDE], { cwd: sub.path })
+    expect(sub.ran()).toBe(true)
+    const json = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunJson
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...json, checkout: sub.path }))
+    const tip = await tipOf(IB)
+    expect(await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })).toEqual({ ok: false, error: `litter: ${runJsonChanged(RUN)}`, field: 'run' })
+    expect(sub.ran()).toBe(false)
+    expect(await tipOf(IB)).toBe(tip)
+    expect(await kinds()).not.toContain('integrate.merge')
+  })
+
+  test("a run.start whose run.json was never written says there's no run.json", async () => {
+    rmSync(join(runDir, 'run.json'))
+    expect(await recordIntegrate(ctx(RELAY), { kind: 'integrate', run: RUN })).toEqual({ ok: false, error: `litter: run ${RUN} has no run.json`, field: 'run' })
   })
 })

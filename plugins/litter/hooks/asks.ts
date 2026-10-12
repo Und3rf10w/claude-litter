@@ -42,8 +42,9 @@ import type { AgentPolicy, NodePolicy, SpoolConsumer, SpoolCtx, SpoolLine } from
 import type { RunJson } from './records/run'
 import type { AskEntry } from './uitypes'
 import { agentInfo, readPolicy, roleOf } from './policy'
-import { agentPolicyPath, runDir, runJsonPath, RUN_ID } from './layout'
+import { agentPolicyPath, runDir, RUN_ID } from './layout'
 import { readJson } from './fsx'
+import { checkedRunJson } from './runjson'
 import { ROLE_POLICIES, isRoleName } from './roles'
 import { shellQuote } from './quote'
 import { oneLine } from './swarm/view'
@@ -189,13 +190,14 @@ async function readAgentPolicy(p: Ports, litterDir: string, agentId: string): Pr
   }
 }
 
-async function readRunJson(p: Ports, litterDir: string, run: string): Promise<RunJson | null> {
-  try {
-    const json = await readJson<RunJson>(p, runJsonPath(runDir(litterDir, run)))
-    return json?.v === 1 ? json : null
-  } catch {
-    return null
-  }
+/**
+ * run.json as run.start wrote it (runjson.ts): you approve what it shows, so
+ * a changed one, or one under a tampered ledger, shows only why it isn't read.
+ */
+async function readRunJson(p: Ports, litterDir: string, run: string): Promise<{ json: RunJson | null; refused: string | null }> {
+  const c = await checkedRunJson(p, { run, runDir: runDir(litterDir, run) }).catch(() => null)
+  if (c?.ok) return { json: c.json.v === 1 ? c.json : null, refused: null }
+  return { json: null, refused: c && (c.why === 'changed' || c.why === 'tampered') ? c.reason : null }
 }
 
 /** An execute agent's gate, from its label in the agent list; null when it isn't listed or has none. */
@@ -217,10 +219,12 @@ async function describe(ctx: SpoolCtx, agentId: string, agentType: string | null
   const role = info?.role ?? roleOf(agentType ?? '')
   let run = info?.run ?? policy?.run ?? null
   if (run === null && role !== null) run = (await readPolicy(p, litterDir).catch(() => undefined))?.run?.run ?? null
-  const json = run !== null && RUN_ID.test(run) ? await readRunJson(p, litterDir, run) : null
+  const { json, refused } = run !== null && RUN_ID.test(run) ? await readRunJson(p, litterDir, run) : { json: null, refused: null }
   const gate = role !== null && json?.workflow === 'execute' ? await gateOf(p, agentId) : null
   const name = (x: string | null) => (x === null ? null : oneLine(x, NAME_MAX))
-  return { run: name(run), role: name(role), gate, swarm: name(swarm), node: name(node), authorized: authorizedFor(role, json, gate, policy) }
+  // A node's scope and a task's files are its policy's; only a role's line comes from run.json.
+  const authorized = refused !== null && !policy?.node && !policy?.task ? oneLine(refused, AUTHORIZED_MAX) : authorizedFor(role, json, gate, policy)
+  return { run: name(run), role: name(role), gate, swarm: name(swarm), node: name(node), authorized }
 }
 
 // ---------------------------------------------------------------------------

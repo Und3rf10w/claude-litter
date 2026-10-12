@@ -22,6 +22,7 @@ import {
 import { acquireLock, readLock, releaseLock, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { leasePath, modePath, runJsonPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
@@ -195,7 +196,7 @@ describe('the launch: refusals', () => {
     const path = runJsonPath(r.runDir)
     await w.p.fs.write(path, (await w.p.fs.read(path)).replace('"verify"', '"verify" ').replace('"true"', '"rm"'))
     const { calls, next } = engine()
-    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toContain('changed since run.start')
+    expect(denied(await workflowCheck(w.p, wf({ name: 'litter:execute-run', args: { run: r.run } }), next))).toBe(`litter: ${runJsonChanged(r.run)}`)
     expect(calls).toHaveLength(0)
   })
 

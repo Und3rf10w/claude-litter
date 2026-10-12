@@ -30,8 +30,8 @@ import type { IntegrateDoneBody } from './records/fanout'
 import { fail } from './records/core'
 import { FANOUT_GATE } from './records/fanout'
 import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
-import { integrationBranch, runJsonPath } from './layout'
-import { readJson, serial } from './fsx'
+import { integrationBranch } from './layout'
+import { serial } from './fsx'
 import { snapshot } from './snapshot'
 import { attribution } from './options'
 import { withInflight } from './inflight'
@@ -384,9 +384,9 @@ async function reconcileIn(p: Ports, f: RunFacts): Promise<ReconcileResult> {
  */
 export function reconcileLands(p: Ports, runDir: string, run: string): Promise<ReconcileResult> {
   return serial(landKey(runDir), async () => {
-    // Only execute and fanout land; a design or plan run has no branch to account for.
-    const stored = await readJson<RunJson>(p, runJsonPath(runDir)).catch(() => undefined)
-    if (stored?.workflow === 'design' || stored?.workflow === 'plan') return { problems: [] }
+    // Only execute and fanout land; a design or plan run has no branch to account for. Its run.start says which (run.json may not be run.start's).
+    const workflow = (await readLedger(p, runDir, run)).records.find(r => r.kind === 'run.start')?.body.workflow
+    if (workflow === 'design' || workflow === 'plan') return { problems: [] }
     const facts = await readRunFacts(p, runDir, run)
     if ('ok' in facts) {
       p.log(`reconcile ${run}: ${facts.error}`)

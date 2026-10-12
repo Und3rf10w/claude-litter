@@ -13,10 +13,11 @@ import type { Author, RecordError, RecordOk, RecordReply } from '../../hooks/rec
 import type { RunJson } from '../../hooks/records/run'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
-import { agentPolicyPath, integrationBranch, integrationName, outPath, runDir as runDirOf, runJsonPath, writerBranch } from '../../hooks/layout'
+import { agentPolicyPath, integrationBranch, integrationName, outPath, runDir as runDirOf, writerBranch } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-fanout-b1nd00'
 const WF = 'wf_1a2b3c4d-567'
@@ -61,8 +62,7 @@ beforeEach(async () => {
     ref: `refs/heads/litter/${RUN}`,
     checkout: dir,
   }
-  await p.fs.write(runJsonPath(runDir), JSON.stringify(json))
-  await appendRecord(p, runDir, { run: RUN, kind: 'run.start', by: { source: 'launcher' }, body: { workflow: 'fanout', base: BASE } })
+  await startedRunJson(p, runDir, json)
   await appendRecord(p, runDir, { run: RUN, kind: 'run.launch', by: MOD, body: { taskId: 't', runId: WF, generation: 1 } })
   await writePolicy(p, litterDir, policy())
   wt1 = await created(`${WF}-1`, writerBranch(RUN, 1))

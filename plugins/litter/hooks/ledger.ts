@@ -22,7 +22,6 @@ import { elsewhere, LedgerNotOwned, LedgerTampered, owned, readLedger, RecordToo
 import { NotOnCodex } from './ledgerowner'
 import { agentInfo, drainOwnSpools } from './policy'
 import { RUN_ID, runDir, runJsonPath } from './layout'
-import { readJson } from './fsx'
 import { getOptions, session } from './session'
 import { binding, ready as swarmReady } from './swarm/state'
 import { isSwarmGateKind, swarmGateRecord } from './swarm/gate'
@@ -166,9 +165,9 @@ const callerMay = (rule: KindRule, agent: boolean) => rule.by === 'any' || rule.
 /** An executor of a fanout run with no task.bind of its own yet: it may record only task.bind. */
 async function unboundWriter(p: Ports, litterDir: string, run: string, agentId: string): Promise<boolean> {
   const dir = runDir(litterDir, run)
-  const json = await readJson<{ workflow?: unknown }>(p, runJsonPath(dir)).catch(() => undefined)
-  if (json?.workflow !== 'fanout') return false
   const { records } = await readLedger(p, dir, run)
+  // The workflow from run.start, chained in the ledger: run.json may have been changed since.
+  if (records.find(r => r.kind === 'run.start')?.body.workflow !== 'fanout') return false
   return !records.some(r => r.kind === 'task.bind' && r.by.source === 'agent' && r.by.agentId === agentId)
 }
 

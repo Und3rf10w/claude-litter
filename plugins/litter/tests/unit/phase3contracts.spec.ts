@@ -34,6 +34,7 @@ import { deps as gateDeps } from '../../hooks/swarm/gate'
 import { stopLease, readLock } from '../../hooks/lock'
 import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 import { criticVerifies, judge, B_FAILS, repairWorld, teardown, useStandIn, RUN as REPAIR_RUN, SWARM, typeOf, type World as RepairWorld } from './repair-harness'
 
 // run.start, verify and land run real git in scratch repos; a loaded machine takes seconds.
@@ -656,7 +657,7 @@ async function landWorld(patch: Record<string, unknown> = {}): Promise<LandWorld
     created: 0,
     ...patch,
   }
-  await p.fs.write(join(rd, 'run.json'), JSON.stringify(json))
+  await startedRunJson(p, rd, json as Partial<RunJson>)
   return { p, dir, litterDir, runDir: rd, git, ctx: caller => ({ p, caller, litterDir, options: normalizeOptions({}) }) }
 }
 
@@ -691,7 +692,7 @@ describe("verify: AB's critique flag", () => {
       throw new Error('policy.json is locked')
     }
     await expect(recordVerify(w.ctx(CRITIC), { kind: 'verify', run: LAND_RUN, gate: 'G1', attempt: 1 })).rejects.toThrow('policy.json is locked')
-    expect((await readLedger(w.p, w.runDir, LAND_RUN)).records).toEqual([])
+    expect((await readLedger(w.p, w.runDir, LAND_RUN)).records.map(r => r.kind)).toEqual(['run.start'])
   })
 })
 

@@ -22,6 +22,7 @@ import type { RunJson } from '../../hooks/records/run'
 import type { IntegrateConflictBody, IntegrateReply, WorktreeCreateBody, WorktreeKeptBody } from '../../hooks/records/fanout'
 import type { LandBody, LandIntentBody, LandReply, VerifyBody, VerifyReply } from '../../hooks/records/execute'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-fanland'
 const REF = `refs/heads/litter/${RUN}`
@@ -100,7 +101,8 @@ async function writeRun(patch: Partial<RunJson> = {}): Promise<void> {
     created: 0,
     ...patch,
   }
-  await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+  // As if the run had started with this run.json (rechain keeps the ledger's records).
+  await startedRunJson(p, runDir, json, JSON.stringify(json), { rechain: true })
 }
 
 const ctx = (caller: Caller): RecordCtx => ({ p, caller, litterDir, options: normalizeOptions({}) })
@@ -391,9 +393,8 @@ describe('fanout land: the destination checkout', () => {
 // fanout.js steps 5 and 6). Its end runs the real cleanup before summary.md.
 
 describe('a fanout that ends without landing keeps everything', () => {
-  /** run.start and run.launch, as /litter:fanout and the Workflow hook leave them, so the run can end. */
+  /** run.launch, as the Workflow hook leaves it after writeRun's run.start, so the run can end. */
   async function launched(): Promise<void> {
-    await appendRecord(p, runDir, { run: RUN, kind: 'run.start', by: { source: 'launcher' }, body: { workflow: 'fanout', base, ref: REF, checkout: dir } })
     await appendRecord(p, runDir, {
       run: RUN,
       kind: 'run.launch',

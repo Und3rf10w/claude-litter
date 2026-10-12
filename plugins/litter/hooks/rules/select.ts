@@ -9,13 +9,12 @@
 import type { Ports } from '../ports'
 import type { RecordReply } from '../records/core'
 import type { LoadedRule, RuleDoc, RuleRef, RuleScope, SelectInput, SelectUnit, Selection } from '../records/rules'
-import type { BarItem, RunJson, Workflow } from '../records/run'
+import type { BarItem, Workflow } from '../records/run'
 import type { LiveSwarm, RunLink, SwarmNode } from '../swarm/types'
 import { fail } from '../records/core'
 import { emptySelection } from '../records/rules'
 import { WORKFLOWS } from '../records/run'
-import { runJsonPath } from '../layout'
-import { readLedger } from '../ledgercore'
+import { checkedRunJson } from '../runjson'
 import { parseGates } from '../gates'
 import { runGateFiles } from '../widen'
 import { git } from '../worktrees'
@@ -496,15 +495,17 @@ async function whereIs(p: Ports, dir: string): Promise<{ top: string; prefix: st
  * For a swarm whose run is an execute run (the bridge's plan template): the
  * Files of the run's gates with no land, with your widenings during the run,
  * and the run's checkout. Null for
- * any other run. Records past a broken chain don't count, so a gate landed
- * there still brings its rules.
+ * any other run. Its checkout and Files go into a spawn's prompt, so they
+ * come from run.json as run.start wrote it (runjson.ts), which also means an
+ * untampered ledger; a run.json that isn't throws, as an unreadable one did.
  */
 async function linkedExecute(p: Ports, link: RunLink): Promise<{ files: string[]; checkout: string } | null> {
-  const json = JSON.parse(await p.fs.read(runJsonPath(link.runDir))) as RunJson
+  const checked = await checkedRunJson(p, link)
+  if (!checked.ok) throw new Error(checked.reason)
+  const { json, ledger } = checked
   if (json.workflow !== 'execute') return null
   const gates = Array.isArray(json.args?.gates) ? (json.args.gates as { id?: unknown; files?: unknown }[]) : []
-  const ledger = await readLedger(p, link.runDir, link.run)
-  const before = ledger.records.filter(r => ledger.tampered === null || r.seq < ledger.tampered.seq)
+  const before = ledger.records
   const landed = new Set(before.filter(r => r.kind === 'land').map(r => r.body.gate))
   // With the files you added during the run (gate.widen, WP-AO), so a node spawned after it gets their rules.
   const files = gates

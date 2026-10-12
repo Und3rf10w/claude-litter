@@ -13,6 +13,7 @@ import type { RunEndBody } from '../../hooks/records/run'
 import type { RunRef } from '../../hooks/lifecycle'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { planPath, proposalPath, runDir, runJsonPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { sha256 } from '../../hooks/fsx'
 import { finalizeDesign, ledgerApproval } from '../../hooks/design/finalize'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
@@ -298,7 +299,7 @@ describe('a refusal records its reason, writes no plan.md, and leaves an existin
         return approved('v1')
       },
       version: 'v1',
-      refused: 'run.json changed since run.start',
+      refused: runJsonChanged(RUN),
     },
   ]
 

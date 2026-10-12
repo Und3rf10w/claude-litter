@@ -20,6 +20,7 @@ import { KIND_HANDLERS } from '../../hooks/registry'
 import { runClosed } from '../../hooks/verify'
 import * as state from '../../hooks/swarm/state'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 // ---------------------------------------------------------------------------
 // The gate's stub, watched: each call is kept, and answered by the real stub
@@ -55,8 +56,12 @@ beforeEach(async () => {
   p = nodePorts()
   ;({ dir, cleanup } = scratch())
   env = { litterDir: dir, litterDirError: null, ready: true, options: normalizeOptions(undefined) }
-  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify({ v: 1, run: RUN, workflow: 'fanout', args: {}, ref: `litter/${RUN}` })}\n`)
+  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify(RUN_JSON)}\n`)
 })
+
+const RUN_JSON = { v: 1, run: RUN, workflow: 'fanout', args: {}, ref: `litter/${RUN}` } as const
+/** The run.start that run.json's writer leaves, for a call the run handler reads run.json for. */
+const started = () => startedRunJson(p, runDir(dir, RUN), RUN_JSON, `${JSON.stringify(RUN_JSON)}\n`)
 afterEach(() => {
   state.resetForTests()
   cleanup()
@@ -215,6 +220,7 @@ describe("a bound swarm node's verify, verdict and land", () => {
 
 describe("a run agent's", () => {
   test('verify goes to the run handler as before, never the gate', async () => {
+    await started()
     await startAgent('v1', 'litter:verifier', RUN)
     const e = asError(await call({ kind: 'verify', gate: 'integration' }, 'v1'))
     expect(e.error).toContain("run.json has no valid base commit")
@@ -222,6 +228,7 @@ describe("a run agent's", () => {
   })
 
   test('verify goes to the run handler even when a binding names it too', async () => {
+    await started()
     await startAgent('v1', 'litter:verifier', RUN)
     bindNode('v1')
     expect(asError(await call({ kind: 'verify', gate: 'integration' }, 'v1')).error).toContain('no valid base commit')

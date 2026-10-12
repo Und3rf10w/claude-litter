@@ -7,7 +7,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordCtx, RecordInput } from '../../hooks/records/core'
-import type { RunDriver, RunEndBody, RunLaunchBody, RunStartReply, RunStoppingBody, Workflow } from '../../hooks/records/run'
+import type { RunDriver, RunEndBody, RunJson, RunLaunchBody, RunStartReply, RunStoppingBody, Workflow } from '../../hooks/records/run'
 import type { EngineEnd, RunRef } from '../../hooks/lifecycle'
 import {
   consumeLifecycle,
@@ -30,7 +30,7 @@ import {
 } from '../../hooks/lifecycle'
 import { readLock, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
-import { activePath, agentPolicyPath, leasePath, ledgerDir, modePath, policyPath, runDir, summaryPath } from '../../hooks/layout'
+import { activePath, agentPolicyPath, leasePath, ledgerDir, modePath, policyPath, runDir, runJsonPath, summaryPath } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { agentInfo, consumeAgents, readPolicy, stopInterrupted } from '../../hooks/policy'
 import { updateSession } from '../../hooks/session'
@@ -641,6 +641,21 @@ describe('reconcile at session.start', () => {
     const kinds = (await ledgerOf(w, r.ref)).map(x => x.kind)
     expect(kinds).toEqual(['run.start', 'lock.recovered', 'run.end'])
     expect((await ledgerOf(w, r.ref))[1]!.body).toEqual(expect.objectContaining({ branch: `litter/${r.run}`, previousBranch: 'refs/heads/main' }))
+  })
+
+  test("an orphan's recovery names the branch run.start recorded it switched from, whatever run.json says now", async () => {
+    const w = await world()
+    const r = await started(w)
+    const oid = (await getPending(w.p, w.litterDir))!.oid
+    stopLease()
+    const json = JSON.parse(await w.p.fs.read(runJsonPath(r.ref.runDir))) as RunJson
+    await w.p.fs.write(runJsonPath(r.ref.runDir), JSON.stringify({ ...json, previousBranch: 'refs/heads/elsewhere' }))
+    await atomicWriteJson(w.p, leasePath(w.litterDir, oid), { oid, run: r.run, session: 'session-a', beatAt: 0 })
+    w.sid.value = 'session-b'
+    await reconcileRuns(w.p, w.litterDir)
+    expect(await readLock(w.p, w.dir)).toBeNull()
+    const recovered = (await ledgerOf(w, r.ref)).find(x => x.kind === 'lock.recovered')!
+    expect(recovered.body).toEqual(expect.objectContaining({ branch: `litter/${r.run}`, previousBranch: 'refs/heads/main' }))
   })
 
   test("an open generation the engine's snapshot says completed is ended from it", async () => {

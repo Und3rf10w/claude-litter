@@ -12,14 +12,14 @@
 
 import type { RecordCtx, RecordError, RecordHandler } from './records/core'
 import type { GateWidenBody, PlannedGate } from './records/execute'
-import type { RunJson } from './records/run'
 import type { Ports } from './ports'
 import type { Gate } from './gates'
 import { fail } from './records/core'
 import { needText, store } from './records/design'
 import { parseGates } from './gates'
-import { planPath, runDir as runDirOf, runJsonPath, RUN_ID } from './layout'
-import { readJson, serial } from './fsx'
+import { planPath, runDir as runDirOf, RUN_ID } from './layout'
+import { serial } from './fsx'
+import { runJsonForRecord } from './runjson'
 import { chainLanded, gitAt, repoOf, resolveChain } from './lifecycle'
 import { writePlanVersion } from './planversion'
 import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
@@ -292,7 +292,9 @@ export const recordPlanWrite: RecordHandler = async (ctx, input) => {
   if (!Array.isArray(gates)) return gates
   const run = input.run as string
   const runDir = runDirOf(ctx.litterDir!, run)
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(runDir)).catch(() => undefined)
+  // It writes files and records from run.json, so only from run.start's (runjson.ts).
+  const json = await runJsonForRecord(ctx.p, { run, runDir })
+  if (typeof json === 'string') return fail(json, 'run')
   if (json?.workflow !== 'plan') {
     return fail(`litter: plan.write writes a plan run's gates, and run ${run} is ${json ? `a ${json.workflow} run` : 'unreadable'}; name the plan run that proposed them`, 'run')
   }
@@ -465,7 +467,9 @@ export const recordGateWiden: RecordHandler = async (ctx, input) => {
   const w = parsed.value
   const run = input.run as string
   const runDir = runDirOf(ctx.litterDir!, run)
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(runDir)).catch(() => undefined)
+  // It writes files and records from run.json, so only from run.start's (runjson.ts).
+  const json = await runJsonForRecord(ctx.p, { run, runDir })
+  if (typeof json === 'string') return fail(json, 'run')
   if (json?.workflow !== 'execute') {
     return fail(`litter: a gate is widened in the execute run working it, and run ${run} is ${json ? `a ${json.workflow} run` : 'unreadable'}`, 'run')
   }

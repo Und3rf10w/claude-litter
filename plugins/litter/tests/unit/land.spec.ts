@@ -3,9 +3,11 @@
 // records"; section 12's verify/land cases).
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { landFields, recordLand } from '../../hooks/land'
+import { landFields, reconcileLands, recordLand } from '../../hooks/land'
+import { runJsonPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { recordVerify } from '../../hooks/verify'
 import { appendRecord, headKey, readLedger } from '../../hooks/ledgercore'
 import { normalizeOptions } from '../../hooks/options'
@@ -14,6 +16,8 @@ import type { RunJson } from '../../hooks/records/run'
 import type { LandBody, LandIntentBody, LandReply, VerifyReply } from '../../hooks/records/execute'
 import type { Ports } from '../../hooks/ports'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
+import { LOOKS_INSIDE, filteredSubmodule, type FilteredSubmodule } from './support/submodule'
 
 const RUN = '20261002-land'
 const REF = `refs/heads/litter/${RUN}`
@@ -81,7 +85,8 @@ async function writeRun(patch: Partial<RunJson> = {}): Promise<void> {
     created: 0,
     ...patch,
   }
-  await p.fs.write(join(runDir, 'run.json'), JSON.stringify(json))
+  // As if the run had started with this run.json (rechain keeps the ledger's records).
+  await startedRunJson(p, runDir, json, JSON.stringify(json), { rechain: true })
 }
 
 const ctx = (caller: Caller): RecordCtx => ({ p, caller, litterDir, options: normalizeOptions({}) })
@@ -126,7 +131,8 @@ async function land(verifyId: string, gate = 'G1', caller: Caller = RELAY): Prom
 const tip = async (ref = REF) => (await git('rev-parse', ref)).trim()
 const status = async () => (await git('status', '--porcelain')).trimEnd()
 const staged = async () => (await git('diff', '--cached', '--name-only')).trim()
-const kinds = async () => (await readLedger(p, runDir, RUN)).records.map(r => r.kind)
+/** The kinds after the run.start writeRun keeps (seq 1). */
+const kinds = async () => (await readLedger(p, runDir, RUN)).records.filter(r => r.kind !== 'run.start').map(r => r.kind)
 const blobOf = async (text: string) => (await p.run(['git', 'hash-object', '-w', '--stdin'], { cwd: dir, stdin: text })).stdout.trim()
 const indexEntry = async (path: string) => (await git('ls-files', '-s', '--', path)).trim()
 
@@ -166,7 +172,7 @@ describe('land: the six steps', () => {
     const msg = await git('log', '-1', '--format=%B', r.commit)
     expect(msg).toBe(`G1: Add the parser\n\nRefs: .claude/litter/${RUN}/plan.md:3-9\nLitter-Run: ${RUN} G1 ${verifyId}\n\n`)
     expect((await git('log', '-1', '--format=%(trailers:key=Litter-Run,valueonly)', r.commit)).trim()).toBe(`${RUN} G1 ${verifyId}`)
-    const recs = (await readLedger(p, runDir, RUN)).records
+    const recs = (await readLedger(p, runDir, RUN)).records.filter(x => x.kind !== 'run.start')
     expect(recs.map(x => x.kind)).toEqual(['verify', 'verdict', 'land.intent', 'land'])
     expect(recs[2]!.by).toEqual(MOD)
     expect(recs[2]!.body).toEqual({ gate: 'G1', verify_id: verifyId, tree: verified.tree_after, old: base, ref: REF, mode: 'index' } satisfies LandIntentBody)
@@ -427,9 +433,10 @@ describe('land: each precondition refused on its own, nothing moved', () => {
   test('a tampered ledger', async () => {
     const verifyId = await approvedChange()
     p.storeMap.set(headKey(runDir), { seq: 2, sha: 'not-the-hash' })
-    const r = await land(verifyId)
-    expect(r).toMatchObject({ landed: false, retry: false })
-    if (!r.landed) expect(r.reason).toMatch(/tampered/)
+    // A tampered ledger can't vouch for run.json, so the land is refused before it reads the checkout.
+    const r = await recordLand(ctx(RELAY), { kind: 'land', run: RUN, gate: 'G1', verify_id: verifyId })
+    expect(r.ok).toBe(false)
+    expect((r as RecordError).error).toMatch(/tampered/)
     expect(await tip()).toBe(base)
   })
 
@@ -635,5 +642,74 @@ describe('land: files outside the gate', () => {
     await withFiles()
     expect(await land(await approvedChange())).toMatchObject({ landed: true })
     expect((await bodyOf('land'))[0]).not.toHaveProperty('outside')
+  })
+})
+
+describe('a run.json changed after run.start (handoff: run.json as run.start wrote it)', () => {
+  let sub: FilteredSubmodule
+
+  /**
+   * run.json as an agent past the guard could leave it: its checkout a
+   * repository whose clean filter writes a marker once a git looks inside;
+   * run.start keeps the first run.json's sha256.
+   */
+  async function rewritten(): Promise<void> {
+    const outDir = join(litterDir, '..', '..')
+    sub = await filteredSubmodule(p, join(outDir, 'nested'), join(outDir, 'filter.ran'))
+    await sub.arm()
+    const json = JSON.parse(readFileSync(runJsonPath(runDir), 'utf8')) as RunJson
+    writeFileSync(runJsonPath(runDir), JSON.stringify({ ...json, checkout: sub.path }))
+  }
+  const refusal = { ok: false as const, error: `litter: ${runJsonChanged(RUN)}`, field: 'run' }
+
+  test('the control: a git that looks inside the rewritten checkout runs its filter', async () => {
+    await rewritten()
+    await p.run(['git', ...LOOKS_INSIDE], { cwd: sub.path })
+    expect(sub.ran()).toBe(true)
+  })
+
+  test('verify refuses it, and runs nothing there', async () => {
+    write('src/parser.ts', 'export const parse = (s: string) => s.split(",")\n')
+    await rewritten()
+    expect(await recordVerify(ctx(CRITIC), { kind: 'verify', run: RUN, gate: 'G1', attempt: 1 })).toEqual(refusal)
+    expect(sub.ran()).toBe(false)
+    expect(await kinds()).toEqual([])
+  })
+
+  test('land refuses it: the run ref stays, and nothing runs there', async () => {
+    const verifyId = await approvedChange()
+    await rewritten()
+    expect(await recordLand(ctx(RELAY), { kind: 'land', run: RUN, gate: 'G1', verify_id: verifyId })).toEqual(refusal)
+    expect(sub.ran()).toBe(false)
+    expect(await tip()).toBe(base)
+    expect(await kinds()).toEqual(['verify', 'verdict'])
+  })
+
+  test('reconcileLands calls no git and logs the refusal', async () => {
+    await approvedChange()
+    await rewritten()
+    const calls: string[][] = []
+    const run: Ports['run'] = p.run
+    p.run = async (argv, init) => {
+      calls.push([...argv])
+      return run(argv, init)
+    }
+    expect(await reconcileLands(p, runDir, RUN)).toEqual({ problems: [refusal.error] })
+    expect(calls).toEqual([])
+    expect(p.logs).toContain(`reconcile ${RUN}: ${refusal.error}`)
+    expect(sub.ran()).toBe(false)
+  })
+
+  test('an unchanged run.json is read and acted on', async () => {
+    expect(await land(await approvedChange())).toMatchObject({ landed: true })
+  })
+
+  test("a run.start whose run.json was never written: verify and land say there's no run.json", async () => {
+    const verifyId = await approvedChange()
+    rmSync(runJsonPath(runDir))
+    const none = { ok: false as const, error: `litter: run ${RUN} has no run.json`, field: 'run' }
+    expect(await recordVerify(ctx(CRITIC), { kind: 'verify', run: RUN, gate: 'G1', attempt: 2 })).toEqual(none)
+    expect(await recordLand(ctx(RELAY), { kind: 'land', run: RUN, gate: 'G1', verify_id: verifyId })).toEqual(none)
+    expect(await tip()).toBe(base)
   })
 })

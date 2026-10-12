@@ -17,7 +17,7 @@ import type { RunRef } from '../../hooks/lifecycle'
 import { fail } from '../../hooks/records/core'
 import { dispatchRecord, RECORD_TOOL, type DispatchEnv } from '../../hooks/ledger'
 import { readLedger } from '../../hooks/ledgercore'
-import { designVerdictPath, ledgerDir, modePath, probePath, PROPOSAL_VERSION, proposalPath, runDir, runJsonPath, summaryPath, RUN_ID, UNKNOWN_ID } from '../../hooks/layout'
+import { designVerdictPath, modePath, probePath, PROPOSAL_VERSION, proposalPath, runDir, runJsonPath, summaryPath, RUN_ID, UNKNOWN_ID } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, readPolicy, writePolicy } from '../../hooks/policy'
 import { KIND_RULES, MOD_ONLY_KINDS } from '../../hooks/records/design'
@@ -30,6 +30,7 @@ import { readLock, stopLease } from '../../hooks/lock'
 import { updateSession } from '../../hooks/session'
 import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 // run.start runs real git in scratch repos; a loaded machine takes seconds.
 setDefaultTimeout(120_000)
@@ -99,7 +100,8 @@ async function toolWorld(workflow: Workflow = 'design'): Promise<ToolWorld> {
   const s = scratch()
   cleanups.push(s.cleanup)
   const dir = s.dir
-  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify({ v: 1, run: RUN, workflow, args: { deliverable: 'research', bar: BAR }, ref: `litter/${RUN}` })}\n`)
+  const json = { v: 1 as const, run: RUN, workflow, args: { deliverable: 'research', bar: BAR }, ref: `litter/${RUN}` }
+  await startedRunJson(p, runDir(dir, RUN), json, `${JSON.stringify(json)}\n`)
   await writePolicy(p, dir, policyFor(dir, RUN, workflow))
   return { p, dir, env: { litterDir: dir, litterDirError: null, ready: true, options: normalizeOptions(undefined) } }
 }
@@ -114,8 +116,8 @@ async function startAgent(w: ToolWorld, id: string, role: string): Promise<void>
 const call = (w: ToolWorld, fields: Record<string, unknown>, agentId?: string) =>
   dispatchRecord(w.p, agentId, { tool: 'mcp__litter__record', tool_use_id: 'tu1', ...fields }, w.env)
 
-const ledgerFiles = (w: ToolWorld) => (existsSync(ledgerDir(runDir(w.dir, RUN))) ? readdirSync(ledgerDir(runDir(w.dir, RUN))) : [])
-const recordsOf = async (w: ToolWorld) => (await readLedger(w.p, runDir(w.dir, RUN), RUN)).records
+/** The run's records after its run.start, which toolWorld writes. */
+const recordsOf = async (w: ToolWorld) => (await readLedger(w.p, runDir(w.dir, RUN), RUN)).records.filter(r => r.kind !== 'run.start')
 
 describe('design.result and design.deliver', () => {
   test("are the mod's, with a run", () => {
@@ -137,7 +139,7 @@ describe('design.result and design.deliver', () => {
         expect(e.allowed).not.toContain('design.deliver')
       }
     }
-    expect(ledgerFiles(w)).toEqual([])
+    expect(await recordsOf(w)).toEqual([])
   })
 })
 
@@ -499,12 +501,12 @@ describe("a design's author and reframer results", () => {
       await startAgent(w, role, role)
       await consumeOutput(ctxOf(w), output(role, `litter:${role}`, { report: 'r', version: 'v1' }))
     }
-    expect(ledgerFiles(w)).toEqual([])
+    expect(await recordsOf(w)).toEqual([])
 
     const ex = await toolWorld('execute')
     await startAgent(ex, 'au', 'author')
     await consumeOutput(ctxOf(ex), output('au', 'litter:author', AUTHOR))
-    expect(ledgerFiles(ex)).toEqual([])
+    expect(await recordsOf(ex)).toEqual([])
   })
 
   test('a result from an agent the map lacks, or that contradicts it, is logged and skipped', async () => {
@@ -514,7 +516,7 @@ describe("a design's author and reframer results", () => {
     await consumeOutput(ctxOf(w), output('au', 'litter:reframer', REFRAMER))
     expect(w.p.logs).toContain('output from agent ghost (litter:author), which has no start; not recorded')
     expect(w.p.logs).toContain('output from agent au as litter:reframer contradicts litter:author; not recorded')
-    expect(ledgerFiles(w)).toEqual([])
+    expect(await recordsOf(w)).toEqual([])
   })
 })
 

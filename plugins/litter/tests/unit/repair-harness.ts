@@ -30,6 +30,7 @@ import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
 import * as admit from '../../hooks/swarm/admit'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 export const RUN = '20261003-repair'
 export const REF = `refs/heads/litter/${RUN}`
@@ -138,7 +139,7 @@ async function writeRun(w: Pick<World, 'p' | 'runDir' | 'base' | 'dir'>): Promis
     created: 0,
     repair: { mode: 'auto', rounds: 3, agents: 6 },
   }
-  await w.p.fs.write(join(w.runDir, 'run.json'), JSON.stringify(json))
+  await startedRunJson(w.p, w.runDir, json)
 }
 
 /**

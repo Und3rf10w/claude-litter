@@ -98,7 +98,8 @@ const sha256 = async (text: string) => hex(await crypto.subtle.digest('SHA-256',
 
 /**
  * A run's run.json and its ledger, built by hand, each record chained to the
- * one before. Answers the head this session's appends left in `$.store`, for
+ * one before: its run.start (seq 1, with run.json's sha256), then `records`.
+ * Answers the head this session's appends left in `$.store`, for
  * mock.store: with no head there the ledger is another store's, and the mod
  * leaves it alone.
  */
@@ -106,11 +107,14 @@ async function seedRun(
   files: Map<string, string>,
   run: string,
   workflow: string,
-  records: { kind: string; by?: Record<string, unknown>; body: Record<string, unknown> }[],
+  given: { kind: string; by?: Record<string, unknown>; body: Record<string, unknown> }[],
 ): Promise<Record<string, unknown>> {
   const dir = `${LITTER}/${run}`
   const json = { v: 1, run, workflow, args: {}, ref: `refs/heads/litter/${run}`, base: '0'.repeat(40), checkout: '/repo', isolate: false, linkDirs: [], rules: [] }
-  files.set(`${dir}/run.json`, `${JSON.stringify(json)}\n`)
+  const jsonText = `${JSON.stringify(json)}\n`
+  files.set(`${dir}/run.json`, jsonText)
+  const start = { workflow, base: json.base, ref: json.ref, checkout: json.checkout, isolate: false, runJsonSha256: await sha256(jsonText) }
+  const records = [{ kind: 'run.start', by: { source: 'launcher' }, body: start }, ...given]
   let prev: string | null = null
   for (const [i, r] of records.entries()) {
     const seq = i + 1
@@ -171,7 +175,11 @@ describe("a gate critic's StructuredOutput", () => {
 
   test('drained from the spool, it is recorded as the verdict, and its verdict file is written from the cited verify', async ($, on) => {
     const files = world(on)
-    const head = await seedRun(files, RUN, 'execute', [{ kind: 'verify', by: { source: 'agent', agentId: 'gc1', agentType: 'litter:gate-critic' }, body: VERIFY }])
+    // Launched, or session.start's reconcile would end it as never launched.
+    const head = await seedRun(files, RUN, 'execute', [
+      { kind: 'run.launch', body: { taskId: 'task-e1', runId: 'wf_e1', scriptPath: null, generation: 1, session: SESSION, oid: '1'.repeat(40) } },
+      { kind: 'verify', by: { source: 'agent', agentId: 'gc1', agentType: 'litter:gate-critic' }, body: VERIFY },
+    ])
     mock.store(on, { 'litter.agent.gc1': CRITIC, ...head })
     mock.clock(on, { now: 5_000 })
     const logs = engine(on)
@@ -183,7 +191,7 @@ describe("a gate critic's StructuredOutput", () => {
     const r = await $.tool.call({ tool: 'mcp__litter__record', tool_use_id: 'r1', kind: 'run.find' })
     expect(JSON.parse(String(r.result)).ok).toBe(true)
 
-    const rec = JSON.parse(files.get(`${RUN_DIR}/ledger/000002-verdict.json`) ?? 'null') as { by: unknown; body: Record<string, unknown> } | null
+    const rec = JSON.parse(files.get(`${RUN_DIR}/ledger/000004-verdict.json`) ?? 'null') as { by: unknown; body: Record<string, unknown> } | null
     expect(rec?.by).toEqual({ source: 'agent', agentId: 'gc1', agentType: 'litter:gate-critic' })
     expect(rec?.body).toEqual({ ...VERDICT, tool_use_id: 'toolu_v1' })
     const file = files.get(`${RUN_DIR}/verdicts/G1-1.md`) ?? ''
@@ -191,7 +199,7 @@ describe("a gate critic's StructuredOutput", () => {
     expect(file).toContain('- Verify: G1-1-aa, exit 0, green')
     expect(file).toContain('- Verdict: rejected, failing plan_adherence')
     expect(file).toContain('- Agent: gc1 (litter:gate-critic)')
-    expect(file).toContain('- Ledger seq: 2')
+    expect(file).toContain('- Ledger seq: 4')
     expect(file).toContain('## plan_adherence: fail\n\nEvidence: the version field is not parsed\n\nGaps:\n- src/a.ts:3 skips the version')
     expect(logs.filter(l => l.includes('verdict'))).toEqual([])
   })
@@ -218,7 +226,7 @@ describe("plan.js's return", () => {
     await started($)
     const text = notice('{"gates":[],"out_of_scope":[],"assumptions":["one header format"],"questions":["Which header format is current?"]}')
     await $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
-    const end = JSON.parse(files.get(`${RUN_DIR}/ledger/000002-run.end.json`) ?? 'null') as { body?: Record<string, unknown> } | null
+    const end = JSON.parse(files.get(`${RUN_DIR}/ledger/000003-run.end.json`) ?? 'null') as { body?: Record<string, unknown> } | null
     expect(end?.body).toEqual(expect.objectContaining({ generation: 1, status: 'done', reason: null, source: 'notification' }))
   })
 })

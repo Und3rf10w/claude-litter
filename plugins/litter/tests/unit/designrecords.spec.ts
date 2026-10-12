@@ -11,9 +11,10 @@ import { join } from 'node:path'
 import type { Policy } from '../../hooks/hookfiles'
 import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/core'
 import type { AuthorGate } from '../../hooks/records/design'
+import type { RunJson } from '../../hooks/records/run'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
 import { readLedger } from '../../hooks/ledgercore'
-import { designVerdictPath, hooksDir, outPath, probePath, proposalPath, runDir, runJsonPath } from '../../hooks/layout'
+import { designVerdictPath, hooksDir, outPath, probePath, proposalPath, runDir } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
 import { GAP_KINDS, PROBE_VERDICTS } from '../../hooks/records/design'
@@ -21,6 +22,7 @@ import { renderProposal } from '../../hooks/design/proposal'
 import { snapshot } from '../../hooks/snapshot'
 import { sha256 } from '../../hooks/fsx'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 // Real git in a scratch repo; a loaded machine takes seconds.
 setDefaultTimeout(120_000)
@@ -59,7 +61,8 @@ async function baseCommit(): Promise<string> {
 async function makeRun(args: Record<string, unknown> = {}, fields: Record<string, unknown> = {}): Promise<string> {
   const base = await baseCommit()
   const json = { v: 1, run: RUN, workflow: 'design', args: { deliverable: 'plan', bar: BAR, ...args }, base, ref: `refs/litter/${RUN}/base`, checkout: repo, ...fields }
-  await p.fs.write(runJsonPath(dir()), `${JSON.stringify(json)}\n`)
+  // Each call starts the run anew, as a test that changes the run.json before its records does.
+  await startedRunJson(p, dir(), json as Partial<RunJson>, `${JSON.stringify(json)}\n`, { fresh: true })
   const policy: Policy = {
     v: 1,
     session: 'test-session',
@@ -104,7 +107,8 @@ const asOk = (r: RecordReply): RecordOk => {
   return r
 }
 
-const records = async () => (await readLedger(p, dir(), RUN)).records
+/** The run's records after the run.start makeRun wrote. */
+const records = async () => (await readLedger(p, dir(), RUN)).records.filter(r => r.kind !== 'run.start')
 const outOf = (agentId: string) => JSON.parse(readFileSync(outPath(litterDir, agentId), 'utf8'))
 
 const PROSE = '# Retry once\n\n## The retry\n\nRetry the refresh once, in `src/in_prose.py`.\n'
@@ -343,7 +347,8 @@ describe('probe', () => {
   test('stored as given; probes/U1.md comes from the latest record for U1', async () => {
     await makeRun()
     const first = asOk(await call({ kind: 'probe', unknown_id: 'U1', report: 'first run: untested, no network', verdict: 'untested' }, 'pr'))
-    expect(first).toEqual({ ok: true, kind: 'probe', run: RUN, seq: 1 })
+    // After makeRun's run.start, seq 1.
+    expect(first).toEqual({ ok: true, kind: 'probe', run: RUN, seq: 2 })
     asOk(await call({ kind: 'probe', unknown_id: 'U2', report: 'U2 holds', verdict: 'confirmed' }, 'pr'))
     asOk(await call({ kind: 'probe', unknown_id: 'U1', report: '## Commands\ncurl -I\n\n## Verdict\nrefuted', verdict: 'refuted', commands: ['curl -I'] }, 'pr'))
     expect((await records()).map(r => r.body)).toEqual([
@@ -353,7 +358,7 @@ describe('probe', () => {
     ])
     const u1 = readFileSync(probePath(dir(), 'U1'), 'utf8')
     expect(u1).toContain('- Verdict: refuted')
-    expect(u1).toContain('- Ledger seq: 3')
+    expect(u1).toContain('- Ledger seq: 4')
     expect(u1).toContain('## Commands\ncurl -I\n\n## Verdict\nrefuted\n')
     expect(u1).not.toContain('first run')
     expect(readFileSync(probePath(dir(), 'U2'), 'utf8')).toContain('U2 holds')

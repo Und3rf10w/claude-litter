@@ -5,13 +5,14 @@
 // (WP-BC); the rest of the kinds this file validates are below.
 
 import type { Author, Caller, RecordCtx, RecordError, RecordHandler, RecordInput, RecordReply, StoredRecord } from './core'
-import type { RunJson } from './run'
 import type { BoundWorktree, TaskBindBody, WorktreeCreateBody } from './fanout'
 import type { AgentPolicy } from '../hookfiles'
+import type { LedgerRead } from '../ledgercore'
 import { fail } from './core'
 import { appendRecord, readLedger } from '../ledgercore'
-import { agentPolicyPath, integrationName, outPath, runDir, runJsonPath, wikiPath } from '../layout'
-import { atomicWrite, atomicWriteJson, readJson, remove, serial } from '../fsx'
+import { checkedRunJson } from '../runjson'
+import { agentPolicyPath, integrationName, outPath, runDir, wikiPath } from '../layout'
+import { atomicWrite, atomicWriteJson, remove, serial } from '../fsx'
 import { safeFileName, writeOut } from '../output'
 import { agentInfo } from '../policy'
 import { recordedWorktrees } from '../worktrees'
@@ -319,10 +320,15 @@ export function bareBacktickPaths(text: string): string[] {
 
 type BindTask = { id: string; bind: string; files: string[] }
 
-/** The writing tasks run.start put in run.json's args, each with its `bind` token (section 7, fanout.js step 2). */
-async function bindTasks(ctx: RecordCtx, dir: string): Promise<BindTask[]> {
-  const json = await readJson<RunJson>(ctx.p, runJsonPath(dir))
-  const tasks = json?.args?.tasks
+/**
+ * The writing tasks run.start put in run.json's args, each with its `bind`
+ * token (section 7, fanout.js step 2): from run.json as run.start wrote it,
+ * else why not.
+ */
+async function bindTasks(ctx: RecordCtx, run: string, dir: string, ledger: LedgerRead): Promise<BindTask[] | { refused: string }> {
+  const c = await checkedRunJson(ctx.p, { run, runDir: dir }, ledger)
+  if (!c.ok) return { refused: c.reason }
+  const tasks = c.json.args?.tasks
   if (!Array.isArray(tasks)) return []
   return tasks.flatMap(t => {
     const task = t as { id?: unknown; bind?: unknown; files?: unknown }
@@ -394,14 +400,17 @@ const taskBind: RecordHandler = async (ctx, input) => {
 }
 
 async function bindWriter(ctx: RecordCtx, input: RecordInput, run: string, dir: string, agentId: string): Promise<BindOutcome> {
-  const { records } = await readLedger(ctx.p, dir, run)
+  const read = await readLedger(ctx.p, dir, run)
+  const { records } = read
   const bindings = bindingsOf(records)
   const mine = bindings.filter(b => b.agent === agentId).at(-1)
   const refuse = (error: string, field?: string): BindOutcome => ({ reply: fail(error, field), bound: mine !== undefined })
 
   const missing = needText(input, 'token', 'the bind value from your <task>, exactly')
   if (missing) return { reply: missing, bound: mine !== undefined }
-  const task = (await bindTasks(ctx, dir)).find(t => t.bind === input.token)
+  const tasks = await bindTasks(ctx, run, dir, read)
+  if (!Array.isArray(tasks)) return refuse(`litter: ${tasks.refused}`)
+  const task = tasks.find(t => t.bind === input.token)
   if (!task) return refuse("litter: no task of this run has that bind value; copy it exactly from the bind attribute of your <task>", 'token')
   const me = await agentInfo(ctx.p, agentId)
   if (!me) return refuse(`litter: agent ${agentId} has no recorded start yet, so its worktree isn't known; call task.bind again`)

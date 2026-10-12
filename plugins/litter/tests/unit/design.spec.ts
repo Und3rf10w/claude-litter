@@ -7,9 +7,10 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Policy } from '../../hooks/hookfiles'
 import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/core'
+import type { RunJson } from '../../hooks/records/run'
 import { dispatchRecord, type DispatchEnv } from '../../hooks/ledger'
 import { readLedger } from '../../hooks/ledgercore'
-import { agentPolicyPath, outPath, proposalPath, runDir, runJsonPath } from '../../hooks/layout'
+import { agentPolicyPath, outPath, proposalPath, runDir } from '../../hooks/layout'
 import { normalizeOptions } from '../../hooks/options'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
 import { readRuleLedger } from '../../hooks/rules/ledger'
@@ -17,6 +18,7 @@ import { sha256 } from '../../hooks/fsx'
 import { bareBacktickPaths, KIND_RULES, KNOWN_KINDS, MOD_ONLY_KINDS, recordGeneric } from '../../hooks/records/design'
 import { wikiPath } from '../../hooks/layout'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 // A verdict's snapshot runs real git; a loaded machine takes seconds.
 setDefaultTimeout(120_000)
@@ -68,7 +70,8 @@ function policyFor(run: string): Policy {
 // A research design unless the args say otherwise: its proposals are their text, with no gates (designproposal.spec.ts renders a plan's).
 async function makeRun(args: Record<string, unknown>) {
   const json = { v: 1, run: RUN, workflow: 'design', args: { deliverable: 'research', ...args }, ref: `litter/${RUN}`, ...runFields }
-  await p.fs.write(runJsonPath(runDir(dir, RUN)), `${JSON.stringify(json)}\n`)
+  // Each call starts the run anew, as a test that changes the run.json before its records does.
+  await startedRunJson(p, runDir(dir, RUN), json as Partial<RunJson>, `${JSON.stringify(json)}\n`, { fresh: true })
 }
 
 async function startAgent(id: string, role: string, cwd = `/work/${id}`) {
@@ -90,7 +93,8 @@ const asOk = (r: RecordReply) => {
   return r as RecordOk
 }
 
-const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records
+/** The run's records after the run.start makeRun wrote (seq 1). */
+const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records.filter(r => r.kind !== 'run.start')
 const ruleRecords = async () => (await readRuleLedger(p, dir, 'repo')).records
 
 describe('KIND_RULES', () => {
@@ -114,7 +118,7 @@ describe("the investigators' reports", () => {
       expect(asError(await call({ kind }, 'a1')).field).toBe('report')
       expect(asError(await call({ kind, report: '   ' }, 'a1')).field).toBe('report')
       const r = await call({ kind, report: '## Result\nnothing', confidence: 'high' }, 'a1')
-      expect(r).toEqual(expect.objectContaining({ ok: true, kind, run: RUN, seq: 1 }))
+      expect(r).toEqual(expect.objectContaining({ ok: true, kind, run: RUN, seq: 2 }))
       const [rec] = await records()
       expect(rec!.body).toEqual({ report: '## Result\nnothing', confidence: 'high' })
       expect(rec!.by).toEqual({ source: 'agent', agentId: 'a1', agentType: `litter:${role}` })

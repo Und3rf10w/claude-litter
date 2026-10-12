@@ -16,8 +16,9 @@ import type { RunJson } from './records/run'
 import type { TaskResultBody } from './records/fanout'
 import type { CriticProposal } from './records/rules'
 import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
-import { outPath, runDir, runJsonPath } from './layout'
-import { atomicWriteJson, readJson, serial } from './fsx'
+import { checkedRunJson } from './runjson'
+import { outPath, runDir } from './layout'
+import { atomicWriteJson, serial } from './fsx'
 import { agentInfo } from './policy'
 import { planGates, verifyBody } from './verify'
 import { writeVerdictFile } from './verdicts'
@@ -132,10 +133,6 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
   const designResult = DESIGN_RESULT_ROLES.includes(info.role)
   if (!writer && !designResult && !VERDICT_ROLES.includes(info.role)) return
   const dir = runDir(ctx.litterDir, run)
-  // A writer's result is a fanout task's or an execute gate's; no other workflow runs one. An author or reframer runs only in a design.
-  const json = writer || designResult ? await readJson<RunJson>(ctx.p, runJsonPath(dir)).catch(() => undefined) : undefined
-  if (writer && json?.workflow !== 'fanout' && json?.workflow !== 'execute') return
-  if (designResult && json?.workflow !== 'design') return
   const input = line.input
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     ctx.p.log(`output from ${info.role} ${line.agent_id} (${line.tool_use_id}) carries no result; not recorded`)
@@ -154,6 +151,19 @@ export const consumeOutput: SpoolConsumer = async (ctx, line) => {
     if ((await owned(ctx.p, dir, read)) !== 'mine') {
       ctx.p.log(`output ${line.tool_use_id}: ${elsewhere(run)}; not recorded`)
       return
+    }
+    // A writer's result is a fanout task's or an execute gate's; no other workflow runs one. An author or reframer runs only in a design.
+    // Which, and an execute run's gates, from run.json as run.start wrote it (runjson.ts).
+    let json: RunJson | undefined
+    if (writer || designResult) {
+      const c = await checkedRunJson(ctx.p, { run, runDir: dir }, read)
+      if (!c.ok) {
+        ctx.p.log(`output ${line.tool_use_id}: ${c.reason}; not recorded`)
+        return
+      }
+      json = c.json
+      if (writer && json.workflow !== 'fanout' && json.workflow !== 'execute') return
+      if (designResult && json.workflow !== 'design') return
     }
     if (designResult) {
       if (records.some(r => r.kind === 'design.result' && r.body.tool_use_id === line.tool_use_id)) return

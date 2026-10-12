@@ -195,7 +195,8 @@ async function freshLaunch(p: Ports, e: E, next: Next, litterDir: string, workfl
     return deny("litter: the project's run lock was lost since run.start (another session recovered it); start again with run.start")
   }
   const loaded = await loadLaunchable(p, ref)
-  if (!loaded.ok) return deny(`litter: ${loaded.reason}; start again with run.start`)
+  // A changed run.json's text already says what to do.
+  if (!loaded.ok) return deny(`litter: ${loaded.reason}${loaded.why === 'changed' ? '' : '; start again with run.start'}`)
 
   // worktree.sh waits for a litter run id while `launching` is set.
   await patchRunPolicy(p, litterDir, ref.run, r => ({ ...r, launching: true }))

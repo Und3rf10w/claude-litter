@@ -12,8 +12,9 @@ import type { RunJson } from './records/run'
 import type { VerifyBody, VerifyReply } from './records/execute'
 import { fail } from './records/core'
 import { RUN_ID, runDir as runDirOf, runJsonPath, verifyLogDir, verifyLogPart } from './layout'
-import { mkdirp, randomId, readJson } from './fsx'
+import { mkdirp, randomId } from './fsx'
 import { LedgerTampered, RecordTooLarge, appendRecord, readLedger } from './ledgercore'
+import { checkedRunJson } from './runjson'
 import { snapshot } from './snapshot'
 import { writeOut } from './output'
 import { integrationWorktree } from './integrate'
@@ -69,14 +70,20 @@ export async function loadRun(ctx: RecordCtx, input: Record<string, unknown>): P
   return readRunFacts(ctx.p, runDirOf(ctx.litterDir, run), run)
 }
 
+/**
+ * run.json as run.start wrote it (runjson.ts), then the facts checked: land,
+ * verify, integrate and the swarm gates act on it, and the verify argv runs
+ * from it.
+ */
 export async function readRunFacts(p: Ports, runDir: string, run: string): Promise<RunFacts | RecordError> {
-  let json: RunJson | undefined
-  try {
-    json = await readJson<RunJson>(p, runJsonPath(runDir))
-  } catch (err) {
-    return fail(`litter: run ${run}'s run.json doesn't parse (${message(err)})`, 'run')
+  const c = await checkedRunJson(p, { run, runDir })
+  if (!c.ok) {
+    if (c.why === 'tampered') return ledgerFailure(new LedgerTampered(c.ledger.tampered!.seq, c.ledger.tampered!.reason))
+    // Neither run.start nor run.json: no such run. A run.start without its run.json (run.start stopped between them) says so.
+    if (c.why === 'unstarted' && !(await p.fs.exists(runJsonPath(runDir)))) return fail(`litter: no run '${run}' at ${runDir}`, 'run')
+    return fail(`litter: ${c.reason}`, 'run')
   }
-  if (json === undefined) return fail(`litter: no run '${run}' at ${runDir}`, 'run')
+  const json = c.json
   const bad = runJsonProblem(json, run)
   if (bad) return fail(`litter: run ${run}'s run.json ${bad}; it's written by run.start, and no record call can fix it`, 'run')
   return { run, runDir, json }

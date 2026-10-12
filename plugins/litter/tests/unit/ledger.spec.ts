@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Policy } from '../../hooks/hookfiles'
 import type { RecordError, RecordReply } from '../../hooks/records/core'
+import type { Workflow } from '../../hooks/records/run'
 import { dispatchRecord, RECORD_TOOL, recordFailed, registerRecordTool, type DispatchEnv } from '../../hooks/ledger'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { ledgerDir, runDir, runJsonPath, spoolPath } from '../../hooks/layout'
@@ -15,6 +16,7 @@ import { agentInfo, consumeAgents, writePolicy } from '../../hooks/policy'
 import { KNOWN_KINDS, MOD_ONLY_KINDS } from '../../hooks/records/design'
 import { RECORD_MAX_BYTES } from '../../hooks/records/core'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-sample'
 
@@ -294,9 +296,11 @@ describe('bounds', () => {
 })
 
 describe('an unbound fanout writer', () => {
-  /** run.json for a run of `workflow`. */
-  const runOf = (run: string, workflow: string) =>
-    p.fs.write(runJsonPath(runDir(dir, run)), `${JSON.stringify({ v: 1, run, workflow, args: { tasks: [{ id: 'T1', bind: 'tok-1', files: ['a/'] }] }, ref: `litter/${run}` })}\n`)
+  /** run.json and run.start for a run of `workflow`: the workflow is run.start's. */
+  const runOf = (run: string, workflow: Workflow) => {
+    const json = { v: 1, run, workflow, args: { tasks: [{ id: 'T1', bind: 'tok-1', files: ['a/'] }] }, ref: `litter/${run}` } as const
+    return startedRunJson(p, runDir(dir, run), json, `${JSON.stringify(json)}\n`)
+  }
   const propose = (agentId: string) => call({ kind: 'rule.propose', rule: 'When a task owns a folder, keep its tests in it.' }, agentId)
 
   test('records only task.bind until it has bound, whatever the kind', async () => {

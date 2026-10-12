@@ -11,7 +11,9 @@ import { hooksDir, ledgerDir, outPath, runDir } from '../../hooks/layout'
 import { consumeOutput, safeFileName, writeOut } from '../../hooks/output'
 import { consumeAgents, writePolicy } from '../../hooks/policy'
 import { readRuleLedger } from '../../hooks/rules/ledger'
+import type { Workflow } from '../../hooks/records/run'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 const RUN = '20261002-output'
 
@@ -79,10 +81,11 @@ const output = (id: string, type: string, input: Record<string, unknown> | undef
   ...(input ? { input } : {}),
 })
 
-const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records
+/** The records after the run.start the run.json helpers keep. */
+const records = async () => (await readLedger(p, runDir(dir, RUN), RUN)).records.filter(r => r.kind !== 'run.start')
 const ruleRecords = async () => (await readRuleLedger(p, dir, 'repo')).records
 /** run.json as much as consumeOutput reads of it: the workflow. */
-const runJson = (workflow: string) => p.fs.write(join(runDir(dir, RUN), 'run.json'), JSON.stringify({ v: 1, run: RUN, workflow }))
+const runJson = (workflow: Workflow) => startedRunJson(p, runDir(dir, RUN), { v: 1, run: RUN, workflow }, undefined, { rechain: true })
 
 const VERDICT = {
   verify_id: 'vf1',
@@ -205,7 +208,7 @@ describe('consumeOutput', () => {
   test("a researcher's result, and a plan or design run's executor, record nothing", async () => {
     await startAgent('ex', 'litter:executor')
     await startAgent('rs', 'litter:researcher')
-    for (const wf of ['plan', 'design']) {
+    for (const wf of ['plan', 'design'] as const) {
       await runJson(wf)
       await consumeOutput(ctx(), output('ex', 'litter:executor', { status: 'done' }, `tu-${wf}`))
     }
@@ -217,7 +220,7 @@ describe('consumeOutput', () => {
   describe("an execute gate's executor (WP-AH)", () => {
     /** run.json as much as consumeOutput reads of an execute run: its workflow and gates. */
     const executeJson = () =>
-      p.fs.write(join(runDir(dir, RUN), 'run.json'), JSON.stringify({ v: 1, run: RUN, workflow: 'execute', args: { gates: [{ id: 'G1' }, { id: 'G2' }] } }))
+      startedRunJson(p, runDir(dir, RUN), { v: 1, run: RUN, workflow: 'execute', args: { gates: [{ id: 'G1' }, { id: 'G2' }] } })
     const critic = { source: 'agent' as const, agentId: 'gc', agentType: 'litter:gate-critic' }
     const verify = (gate: string, attempt: number) =>
       appendRecord(p, runDir(dir, RUN), { run: RUN, kind: 'verify', by: critic, body: { verify_id: `${gate}-${attempt}-aa`, gate, attempt, tree_after: 't' } })

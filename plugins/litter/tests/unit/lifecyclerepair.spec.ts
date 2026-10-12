@@ -31,6 +31,7 @@ import {
 import { acquireLock, readLock, releaseLock, removeLease, stopLease } from '../../hooks/lock'
 import { appendRecord, readLedger } from '../../hooks/ledgercore'
 import { activePath, integrationBranch, integrationName, launchDir, launchRun, modePath, runDir as runDirOf, runJsonPath, summaryPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { normalizeOptions } from '../../hooks/options'
 import { readPolicy } from '../../hooks/policy'
 import { sha256 } from '../../hooks/fsx'
@@ -243,7 +244,7 @@ describe('run.start: the repair setting (COMMON 2b-2, step 1)', () => {
     expect(runState(await records(w, ref)).start?.runJsonSha256).toBe(await sha256(text))
     expect((await loadLaunchable(w.p, ref)).ok).toBe(true)
     await w.p.fs.write(runJsonPath(ref.runDir), text.replace('"mode": "off"', '"mode": "auto"'))
-    expect(await loadLaunchable(w.p, ref)).toEqual({ ok: false, reason: `run ${ref.run}'s run.json changed since run.start` })
+    expect(await loadLaunchable(w.p, ref)).toEqual({ ok: false, reason: runJsonChanged(ref.run), why: 'changed' })
   })
 
   test.each([
@@ -401,7 +402,7 @@ describe('reopenForRepair', () => {
     expect(await why({ ...OPEN, launch: 'later' })).toContain("'later' isn't a launch id")
     const text = await w.p.fs.read(runJsonPath(h.ref.runDir))
     await w.p.fs.write(runJsonPath(h.ref.runDir), text.replace('"rounds": 2', '"rounds": 9'))
-    expect(await why({ ...OPEN, budget: { rounds: 2, agents: 4 } })).toContain('changed since run.start')
+    expect(await why({ ...OPEN, budget: { rounds: 2, agents: 4 } })).toContain(runJsonChanged(h.ref.run))
     expect((await records(w, h.ref)).some(r => r.kind === 'run.repair')).toBe(false)
     expect(await readLock(w.p, w.dir)).toBeNull()
   })

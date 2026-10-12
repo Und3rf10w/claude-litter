@@ -9,11 +9,13 @@
 
 import type { Ports } from '../ports'
 import type { RunRef } from '../lifecycle'
-import type { RunEndBody, RunJson, RunStartBody } from '../records/run'
+import type { RunEndBody, RunJson } from '../records/run'
 import type { Author, StoredRecord } from '../records/core'
 import type { DesignCriterion, DesignDeliverBody, DesignVerdictBody } from '../records/design'
+import type { LedgerRead } from '../ledgercore'
 import { appendRecord, readLedger } from '../ledgercore'
-import { planPath, PROPOSAL_VERSION, proposalPath, runJsonPath } from '../layout'
+import { checkedRunJson } from '../runjson'
+import { planPath, PROPOSAL_VERSION, proposalPath } from '../layout'
 import { atomicWrite, remove, sha256 } from '../fsx'
 
 const MOD: Author = { source: 'mod' }
@@ -100,14 +102,11 @@ export function ledgerApproval(end: RunEndBody, records: readonly StoredRecord[]
 
 type Checked = { ok: true; json: RunJson } | { ok: false; why: string }
 
-/** run.json as run.start wrote it: its sha256 is the run.start record's (lifecycle.ts's loadLaunchable checks it the same way). */
-async function checkedJson(p: Ports, ref: RunRef, records: readonly StoredRecord[]): Promise<Checked> {
-  const start = records.find(r => r.kind === 'run.start')?.body as Partial<RunStartBody> | undefined
-  const path = runJsonPath(ref.runDir)
-  if (!(await p.fs.exists(path))) return { ok: false, why: "run.json is missing, so litter can't tell what the run delivers" }
-  const text = await p.fs.read(path)
-  if (!start || (await sha256(text)) !== start.runJsonSha256) return { ok: false, why: 'run.json changed since run.start' }
-  return { ok: true, json: JSON.parse(text) as RunJson }
+/** run.json as run.start wrote it (runjson.ts, as loadLaunchable reads it). */
+async function checkedJson(p: Ports, ref: RunRef, ledger: LedgerRead): Promise<Checked> {
+  const c = await checkedRunJson(p, ref, ledger)
+  if (c.ok) return { ok: true, json: c.json }
+  return { ok: false, why: c.why === 'missing' ? "run.json is missing, so litter can't tell what the run delivers" : c.reason }
 }
 
 /** The frozen bar's ids, from run.json's args; null when it has no bar. */
@@ -162,12 +161,13 @@ async function deliver(p: Ports, ref: RunRef, a: Extract<Approval, { ok: true }>
  * the run isn't a plan, so it's refused rather than skipped.
  */
 export async function finalizeDesign(p: Ports, ref: RunRef, end: RunEndBody): Promise<void> {
-  const { records, tampered } = await readLedger(p, ref.runDir, ref.run)
+  const read = await readLedger(p, ref.runDir, ref.run)
+  const { records, tampered } = read
   if (tampered) throw new Error(`run ${ref.run}'s ledger is tampered at ${tampered.seq}; nothing is delivered`)
   const at = endSeqOf(records, end.generation)
   if (at === null) throw new Error(`run ${ref.run} has no run.end for generation ${end.generation}`)
   if (records.some(r => r.kind === 'design.deliver' && r.seq > at)) return
-  const json = await checkedJson(p, ref, records)
+  const json = await checkedJson(p, ref, read)
   if (json.ok && json.json.args?.deliverable !== 'plan') return
   const approval = ledgerApproval(end, records.filter(r => r.seq < at), json.ok ? barIds(json.json) : null)
   let body: DesignDeliverBody

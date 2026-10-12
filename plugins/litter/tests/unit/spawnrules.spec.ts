@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentSpawnInput, AgentSpawnResult } from 'claude-code'
 import type { LoadedRule, ProposalRef, RuleDoc, RuleProposeBody, RuleStatus } from '../../hooks/records/rules'
-import { pendingPath, runDir as runDirOf, runJsonPath, swarmOwnWorktreeName } from '../../hooks/layout'
+import { pendingPath, runDir as runDirOf, swarmOwnWorktreeName } from '../../hooks/layout'
 import { newLaunchId } from '../../hooks/records/swarm'
 import { appendRecord } from '../../hooks/ledgercore'
 import { updateSession } from '../../hooks/session'
@@ -22,6 +22,7 @@ import { deps as spawnDeps, PROPOSALS_MAX, swarmSpawn } from '../../hooks/swarm/
 import { deps as selectDeps, RULES_CAP } from '../../hooks/rules/select'
 import type { LiveSwarm, SwarmSpec } from '../../hooks/swarm/types'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+import { startedRunJson } from './support/runjson'
 
 setDefaultTimeout(120_000)
 
@@ -285,16 +286,13 @@ describe("a node's rules", () => {
 describe("a plan-template node (an execute run's bridge)", () => {
   async function bridged(): Promise<void> {
     const rd = runDirOf(litterDir, RUN)
-    await p.fs.write(
-      runJsonPath(rd),
-      JSON.stringify({
-        v: 1,
-        run: RUN,
-        workflow: 'execute',
-        checkout: real,
-        args: { gates: [{ id: 'G1', files: ['a/x.ts'] }, { id: 'G2', files: ['b/y.ts'] }, { id: 'G3', files: ['c/'] }] },
-      }),
-    )
+    await startedRunJson(p, rd, {
+      v: 1,
+      run: RUN,
+      workflow: 'execute',
+      checkout: real,
+      args: { gates: [{ id: 'G1', files: ['a/x.ts'] }, { id: 'G2', files: ['b/y.ts'] }, { id: 'G3', files: ['c/'] }] },
+    })
     await appendRecord(p, rd, { run: RUN, kind: 'land', by: { source: 'mod' }, body: { gate: 'G1', verify_id: 'v1', commit: 'c'.repeat(40) } })
     const s: SwarmSpec = {
       name: 'alpha',
@@ -361,7 +359,7 @@ describe("a plan-template node (an execute run's bridge)", () => {
   test("a fanout repair swarm's nodes are plain swarm nodes: swarm rules only, and every rule by directory", async () => {
     await bridged()
     const rd = runDirOf(litterDir, RUN)
-    await p.fs.write(runJsonPath(rd), JSON.stringify({ v: 1, run: RUN, workflow: 'fanout', checkout: real, args: {} }))
+    await startedRunJson(p, rd, { v: 1, run: RUN, workflow: 'fanout', checkout: real, args: {} }, undefined, { rechain: true })
     const landed = doc('P-a', { paths: ['/a/**'] })
     const executeOnly = doc('P-execute', { workflows: ['execute'] })
     const critic = doc('P-critic', { roles: ['gate-critic'] })

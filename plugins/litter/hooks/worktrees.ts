@@ -27,6 +27,7 @@ import type {
 } from './records/fanout'
 import { RESUMABLE } from './records/run'
 import { appendRecord, elsewhere, owned, readLedger } from './ledgercore'
+import { checkedRunJson } from './runjson'
 import {
   integrationName,
   ledgerDir,
@@ -963,7 +964,13 @@ async function cleanup(p: Ports, ref: WorktreeRun, status: RunStatus): Promise<n
   }
   const targets = [...tracked(records).values()].filter(t => t.outcome !== 'removed')
   if (targets.length === 0) return 0
-  const json = await readJson<RunJson>(p, runJsonPath(ref.runDir)).catch(() => undefined)
+  // It removes worktrees and branches, so only on run.json as run.start wrote it; one never written (a launch cut short) is none.
+  const checked = await checkedRunJson(p, ref, read)
+  if (!checked.ok && checked.why !== 'missing') {
+    p.log(`worktree cleanup for ${ref.run}: ${checked.reason}; nothing removed`)
+    return 0
+  }
+  const json = checked.ok ? checked.json : undefined
   const facts = runFacts(records, json, ref, status, await worktreeRootFor(p, ref.litterDir, ref.run))
   const repo = repoOf(ref.litterDir)
   const cwd = await realOf(p, await p.cwd())

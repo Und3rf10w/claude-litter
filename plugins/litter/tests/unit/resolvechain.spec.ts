@@ -14,6 +14,7 @@ import { endRun, recordRunStart, resolveChain } from '../../hooks/lifecycle'
 import { stopLease } from '../../hooks/lock'
 import { appendRecord } from '../../hooks/ledgercore'
 import { modePath, runJsonPath } from '../../hooks/layout'
+import { runJsonChanged } from '../../hooks/runjson'
 import { normalizeOptions } from '../../hooks/options'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
@@ -120,5 +121,36 @@ describe("a chain with a re-split's planning run", () => {
     const r = await resolveChain(w.p, w.litterDir, plan.run)
     if (!r.ok) throw new Error(r.error)
     expect(r.members.map(m => m.run)).toEqual([plan.run])
+  })
+})
+
+describe('a chain member whose run.json changed after its run.start', () => {
+  test("the chain is refused, and a continuation on it, naming the member; the board's raw read still resolves it", async () => {
+    const w = await world()
+    const root = okReply(await start(w, { workflow: 'execute', planPath: 'plan.md' }))
+    await ended(w, root)
+    const next = okReply(await start(w, { workflow: 'execute', continueOf: root.run }))
+    await ended(w, next)
+    // The base feeds `git log <base>..<ref>` (chainLanded) and the continuation's start.
+    const json = JSON.parse(await w.p.fs.read(runJsonPath(root.runDir))) as RunJson
+    await w.p.fs.write(runJsonPath(root.runDir), JSON.stringify({ ...json, base: '--output=/tmp/litter-chain' }))
+    const refused = { ok: false as const, error: `litter: ${runJsonChanged(root.run)}`, field: 'continueOf' }
+    expect(await resolveChain(w.p, w.litterDir, next.run)).toEqual(refused)
+    expect(await resolveChain(w.p, w.litterDir, root.run)).toEqual(refused)
+    expect(await start(w, { workflow: 'execute', continueOf: next.run })).toMatchObject({ ok: false, error: expect.stringContaining(runJsonChanged(root.run)) })
+    const raw = await resolveChain(w.p, w.litterDir, next.run, { checked: false })
+    if (!raw.ok) throw new Error(raw.error)
+    expect(raw.members.map(m => m.run).sort()).toEqual([root.run, next.run].sort())
+  })
+
+  test("a continuation's run.json rewritten to leave its chain: run.start's continueOf still makes it a member, and it's refused", async () => {
+    const w = await world()
+    const root = okReply(await start(w, { workflow: 'execute', planPath: 'plan.md' }))
+    await ended(w, root)
+    const next = okReply(await start(w, { workflow: 'execute', continueOf: root.run }))
+    await ended(w, next)
+    const json = JSON.parse(await w.p.fs.read(runJsonPath(next.runDir))) as RunJson
+    await w.p.fs.write(runJsonPath(next.runDir), JSON.stringify({ ...json, continueOf: null }))
+    expect(await resolveChain(w.p, w.litterDir, root.run)).toEqual({ ok: false as const, error: `litter: ${runJsonChanged(next.run)}`, field: 'continueOf' })
   })
 })
