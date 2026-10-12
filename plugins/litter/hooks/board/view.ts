@@ -16,7 +16,8 @@
 // pane.tsx's refreshBoard draws the view again from the ledger.
 //
 // Every text from the ledger, run.json, a plan or git is cleaned and cut
-// (swarm/view.ts, clean): a record holds model text.
+// (swarm/view.ts, clean): a record holds model text. A host that redacts
+// what it shows passes its redactor (Redact), which runs before either.
 
 import type { Ports } from '../ports'
 import type { StoredRecord } from '../records/core'
@@ -81,6 +82,31 @@ export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 export const RECORD_ROWS = 30
 /** A section's text: under the engine's 10000-character bound for Code. */
 const SECTION_MAX = 8000
+
+/**
+ * A host's redactor: litterd's takes the values it forwards to role sessions
+ * out of a text. buildBoard applies it to each text it reads (run.json, the
+ * ledgers, a plan, a proposal, a verdict file, git's output, the notices)
+ * before anything cleans or cuts it, since a cut inside a value leaves its
+ * start, which no longer matches the value whole. Claude Code passes none.
+ */
+export type Redact = (text: string) => string
+
+/** The redactor as the build applies it: `text` for one string, `deep` for every string in a JSON value, object keys included (a record's line can show its keys). */
+type Shown = { text: (s: string) => string; deep: <T>(v: T) => T }
+
+const AS_READ: Shown = { text: s => s, deep: v => v }
+
+function shownBy(redact: Redact | undefined): Shown {
+  if (!redact) return AS_READ
+  const deep = (v: unknown): unknown => {
+    if (typeof v === 'string') return redact(v)
+    if (Array.isArray(v)) return v.map(deep)
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [redact(k), deep(x)]))
+    return v
+  }
+  return { text: redact, deep: <T>(v: T): T => deep(v) as T }
+}
 
 // ---------------------------------------------------------------------------
 // The navigation
@@ -159,9 +185,10 @@ export async function saveBoardNav(p: Ports): Promise<void> {
 // Caches (module memory; none is a fact anyone else reads)
 
 let viewSeq = 0
-let cached: { key: string; view: BoardView } | null = null
-/** `git diff --stat` of a land: commits never change, so once per pair. */
-const diffs = new Map<string, string>()
+/** The last view, for the build it answers: its key and its redactor (another redactor builds again). */
+let cached: { key: string; redact: Redact | undefined; view: BoardView } | null = null
+/** `git diff --stat` of a land, as git printed it: commits never change, so once per pair. */
+const diffs = new Map<string, { code: number; stdout: string; stderr: string }>()
 
 export function resetBoardForTests(): void {
   boardNav = null
@@ -296,17 +323,19 @@ type RunFiles = {
   elsewhere: boolean
 }
 
-async function loadRunFiles(p: Ports, litterDir: string, run: string): Promise<RunFiles> {
+/** The run's run.json and records, each text in them through the redactor once they're read and checked. */
+async function loadRunFiles(p: Ports, litterDir: string, run: string, shown: Shown): Promise<RunFiles> {
   const dir = runDir(litterDir, run)
   let json: RunJson | null = null
   try {
     const j = await readJson<RunJson>(p, runJsonPath(dir))
-    json = j && j.v === 1 && j.run === run ? j : null
+    json = j && j.v === 1 && j.run === run ? shown.deep(j) : null
   } catch (err) {
     p.log(`board: ${run}/run.json unreadable: ${errText(err)}`)
   }
   const ledger = await readLedger(p, dir, run)
-  return { run, dir, json, records: ledger.records, tampered: ledger.tampered, elsewhere: (await owned(p, dir, ledger)) !== 'mine' }
+  const elsewhere = (await owned(p, dir, ledger)) !== 'mine'
+  return { run, dir, json, records: shown.deep(ledger.records), tampered: ledger.tampered, elsewhere }
 }
 
 const DIMENSIONS = ['plan_adherence', 'tests_green', 'no_regressions', 'rules'] as const
@@ -415,9 +444,9 @@ function earlierLands(json: RunJson | null): { id: string; commit: string }[] {
   )
 }
 
-async function readText(p: Ports, path: string): Promise<string | null> {
+async function readText(p: Ports, path: string, shown: Shown): Promise<string | null> {
   try {
-    return (await p.fs.exists(path)) ? await p.fs.read(path) : null
+    return (await p.fs.exists(path)) ? shown.text(await p.fs.read(path)) : null
   } catch (err) {
     p.log(`board: ${path} unreadable: ${errText(err)}`)
     return null
@@ -431,35 +460,40 @@ async function readText(p: Ports, path: string): Promise<string | null> {
  * The view of `run` as /litter runs's argument gives it: a run id; `execute`
  * or `design`, the newest run of that workflow; or null, the active run, else
  * the newest. `v` increases on every rebuild; `body.stamp` is the ledger head
- * it read. A build whose run, heads and navigation are those of the last one
- * answers the last view, unchanged.
+ * it read. A build whose run, heads, navigation and redactor are those of the
+ * last one answers the last view, unchanged. `opts.redact` is the host's
+ * redactor (Redact); with none, every text is shown as read.
  */
-export async function buildBoard(p: Ports, litterDir: string, run: string | null): Promise<BoardView> {
+export async function buildBoard(p: Ports, litterDir: string, run: string | null, opts: { redact?: Redact } = {}): Promise<BoardView> {
+  const shown = shownBy(opts.redact)
   const nav = boardNav ?? blankBoardNav(run)
   const picked = await resolveRun(p, litterDir, run)
   const refused = session().toolsRefused
+  const hit = (key: string) => (cached?.key === key && cached.redact === opts.redact ? cached.view : null)
   if (picked.run === null) {
-    const newest = await newestRun(p, litterDir)
+    const newest = await newestRun(p, litterDir, shown)
     const key = `none|${picked.why}|${rev}|${refused}|${newest?.run ?? ''}`
-    if (cached?.key === key) return cached.view
-    const view: BoardView = { view: 'board', v: ++viewSeq, run: null, body: emptyBody(picked.why ?? 'no run to show', run, newest, nav, refused) }
-    cached = { key, view }
+    const last = hit(key)
+    if (last) return last
+    const view: BoardView = { view: 'board', v: ++viewSeq, run: null, body: emptyBody(shown.text(picked.why ?? 'no run to show'), run, newest, nav, refused, shown) }
+    cached = { key, redact: opts.redact, view }
     return view
   }
   const stamp = await boardStamp(p, litterDir, picked.run)
   const key = `${picked.run}|${stamp}|${rev}|${refused}`
-  if (cached?.key === key) return cached.view
-  const body = await runBody(p, litterDir, picked.run, nav, stamp, refused)
+  const last = hit(key)
+  if (last) return last
+  const body = await runBody(p, litterDir, picked.run, nav, stamp, refused, shown)
   const view: BoardView = { view: 'board', v: ++viewSeq, run: picked.run, body }
-  cached = { key, view }
+  cached = { key, redact: opts.redact, view }
   return view
 }
 
 /** The newest run of any workflow (run.find's order), for an empty board's [Open]; null when there's none or the list fails. */
-async function newestRun(p: Ports, litterDir: string): Promise<{ run: string; workflow: string } | null> {
+async function newestRun(p: Ports, litterDir: string, shown: Shown): Promise<{ run: string; workflow: string } | null> {
   try {
     const first = (await listRuns(p, litterDir))[0]
-    return first && typeof first.run === 'string' && RUN_ID.test(first.run) ? { run: first.run, workflow: oneLine(first.workflow ?? 'run', 16) } : null
+    return first && typeof first.run === 'string' && RUN_ID.test(first.run) ? { run: first.run, workflow: oneLine(shown.text(first.workflow ?? 'run'), 16) } : null
   } catch (err) {
     p.log(`board: the runs couldn't be listed: ${errText(err)}`)
     return null
@@ -495,9 +529,9 @@ export function emptyOf(why: string, arg: string | null, newest: { run: string; 
   return { what: why, next: start ? [start] : [...SHOW_NEWEST], newest }
 }
 
-function emptyBody(why: string, arg: string | null, newest: { run: string; workflow: string } | null, nav: BoardNav, refused: string | null): BoardBody {
+function emptyBody(why: string, arg: string | null, newest: { run: string; workflow: string } | null, nav: BoardNav, refused: string | null, shown: Shown): BoardBody {
   return {
-    notice: refusedNotice(refused) ?? nav.notice,
+    notice: refusedNotice(refused, shown) ?? navNotice(nav, shown),
     header: null,
     attention: [],
     gates: null,
@@ -514,15 +548,17 @@ function emptyBody(why: string, arg: string | null, newest: { run: string; workf
 }
 
 /** Under a managed allowedMcpServers the record tool is refused, and every litter launch with it (12, "managed policy"). */
-const refusedNotice = (refused: string | null): SwarmNotice | null => (refused ? { level: 'error', text: oneLine(refused, 300) } : null)
+const refusedNotice = (refused: string | null, shown: Shown): SwarmNotice | null => (refused ? { level: 'error', text: oneLine(shown.text(refused), 300) } : null)
+/** The pane's own notice (an action's outcome), through the redactor too. */
+const navNotice = (nav: BoardNav, shown: Shown): SwarmNotice | null => (nav.notice ? { ...nav.notice, text: shown.text(nav.notice.text) } : null)
 
-async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, stamp: string, refused: string | null): Promise<BoardBody> {
-  const f = await loadRunFiles(p, litterDir, run)
+async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, stamp: string, refused: string | null, shown: Shown): Promise<BoardBody> {
+  const f = await loadRunFiles(p, litterDir, run, shown)
   const st = runState(f.records)
   const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
   const header = headerOf(f, st)
-  const planText = await readText(p, planPath(f.dir))
-  const plan = workflow === 'design' ? await designPlan(p, f, planText) : planText !== null ? { title: 'plan.md', path: planPath(f.dir), text: planText, scroll: true } : null
+  const planText = await readText(p, planPath(f.dir), shown)
+  const plan = workflow === 'design' ? await designPlan(p, f, planText, shown) : planText !== null ? { title: 'plan.md', path: planPath(f.dir), text: planText, scroll: true } : null
 
   let gates: BoardBody['gates'] = null
   let detail: BoardGateDetail | null = null
@@ -532,7 +568,7 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   const attention: BoardAttention[] = []
   const gateCtx: GateContext = { ended: st.open === null && st.ended, open: st.open !== null, repairSwarm: header.repairSwarm, more: nav.more }
   if (workflow === 'execute') {
-    const table = await gateRows(p, litterDir, f, st, planText)
+    const table = await gateRows(p, litterDir, f, st, planText, shown)
     const selected = table.rows.some(r => r.id === nav.selected) ? nav.selected! : defaultSelection(table.rows)
     gates = { run, rows: table.rows, selected }
     selectedRow = table.rows.find(r => r.id === selected) ?? null
@@ -549,8 +585,8 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
     records = recordRows(f.records)
   }
 
-  const [rules, proposals] = await Promise.all([ruleRows(p, litterDir, f.json), proposalRows(p, litterDir, run, f.records)])
-  const section = await sectionOf(p, litterDir, f, nav, plan, gates)
+  const [rules, proposals] = await Promise.all([ruleRows(p, litterDir, f.json, shown), proposalRows(p, litterDir, run, f.records, shown)])
+  const section = await sectionOf(p, litterDir, f, nav, plan, gates, shown)
 
   const buttons: BoardButton[] = []
   // A design's [Plan] is its delivered plan.md, else its latest proposal; for a deliverable that isn't a plan, that proposal.
@@ -572,8 +608,8 @@ async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, 
   attention.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'needs-you' ? -1 : 1))
 
   const notice =
-    refusedNotice(refused) ??
-    nav.notice ??
+    refusedNotice(refused, shown) ??
+    navNotice(nav, shown) ??
     (f.elsewhere ? { level: 'warning' as const, text: "not this store's: driven by another host, or its store was lost; litter shows it and doesn't act on it here" } : null) ??
     (f.json ? null : { level: 'warning' as const, text: `run.json of ${run} can't be read; the header is from the ledger` })
   return {
@@ -628,6 +664,7 @@ async function gateRows(
   f: RunFiles,
   st: RunState,
   planText: string | null,
+  shown: Shown,
 ): Promise<{ rows: BoardGateRow[]; facts: Map<string, RowFacts> }> {
   const facts = gateFacts(f.records)
   const maxAttempts = typeof f.json?.args?.maxAttempts === 'number' ? (f.json.args.maxAttempts as number) : getOptions().maxAttempts
@@ -645,7 +682,7 @@ async function gateRows(
   const ended = st.open === null && st.ended
 
   // The chain's earlier lands: the run that landed each, read from its own ledger.
-  const members = earlier.length > 0 ? await chainMembers(p, litterDir, f.run) : []
+  const members = earlier.length > 0 ? await chainMembers(p, litterDir, f.run, shown) : []
   const earlierRows = new Map<string, BoardGateRow>()
   for (const l of earlier) {
     const m = members.find(x => x.run !== f.run && x.records.some(r => r.kind === 'land' && r.body.gate === l.id))
@@ -720,11 +757,11 @@ async function gateRows(
   return { rows, facts: rowFacts }
 }
 
-async function chainMembers(p: Ports, litterDir: string, run: string): Promise<{ run: string; json: RunJson; records: StoredRecord[] }[]> {
+async function chainMembers(p: Ports, litterDir: string, run: string, shown: Shown): Promise<{ run: string; json: RunJson; records: StoredRecord[] }[]> {
   try {
     // A view: the chain as its run.json files say, checked or not.
     const chain = await resolveChain(p, litterDir, run, { checked: false })
-    return chain.ok ? chain.members : []
+    return chain.ok ? chain.members.map(m => ({ run: m.run, json: shown.deep(m.json), records: shown.deep(m.records) })) : []
   } catch (err) {
     p.log(`board: run ${run}'s chain unreadable: ${errText(err)}`)
     return []
@@ -1045,7 +1082,7 @@ function designOf(json: RunJson | null, records: readonly StoredRecord[]): Board
 /** What a design's [Plan] opens (decision 10): plan.md once a delivery is recorded, else the latest proposals/vN.md. */
 type PlanFile = { title: string; path: string; text: string | null; scroll: boolean }
 
-async function designPlan(p: Ports, f: RunFiles, planText: string | null): Promise<PlanFile | null> {
+async function designPlan(p: Ports, f: RunFiles, planText: string | null, shown: Shown): Promise<PlanFile | null> {
   const delivered = f.records.filter(r => r.kind === 'design.deliver' && typeof r.body.path === 'string' && r.body.refused === undefined).at(-1)
   if (delivered && planText !== null) {
     const v = isVersion(delivered.body.version) ? `${delivered.body.version}, ` : ''
@@ -1055,7 +1092,7 @@ async function designPlan(p: Ports, f: RunFiles, planText: string | null): Promi
   const latest = proposalRecords(f.records).at(-1)?.body.version as string | undefined
   if (!latest) return null
   const path = proposalPath(f.dir, latest)
-  return { title: `proposal ${latest}`, path, text: await readText(p, path), scroll: false }
+  return { title: `proposal ${latest}`, path, text: await readText(p, path, shown), scroll: false }
 }
 
 // The rules
@@ -1063,7 +1100,7 @@ async function designPlan(p: Ports, f: RunFiles, planText: string | null): Promi
 const STANDING_COLOR: Record<string, string> = { accepted: STYLE.done, 'accepted (committed)': STYLE.done, unverified: STYLE.warning }
 
 /** `run.json.rules` as `id@v` (decision 19), each with its standing now (AD's loadRules). */
-async function ruleRows(p: Ports, litterDir: string, json: RunJson | null): Promise<BoardRuleRow[]> {
+async function ruleRows(p: Ports, litterDir: string, json: RunJson | null, shown: Shown): Promise<BoardRuleRow[]> {
   const used = Array.isArray(json?.rules) ? json!.rules.filter(r => r && typeof r.id === 'string' && Number.isInteger(r.version)) : []
   if (used.length === 0) return []
   let loaded: LoadedRule[] | null = null
@@ -1075,7 +1112,8 @@ async function ruleRows(p: Ports, litterDir: string, json: RunJson | null): Prom
   return used.map(u => {
     const ref = `${oneLine(u.id, 80)}@${u.version}`
     if (loaded === null) return { ref, standing: "standing unknown: the rules couldn't be read", color: STYLE.warning }
-    const found = loaded.find(r => r.doc.id === u.id)
+    // The ids as run.json's came through the redactor.
+    const found = loaded.find(r => shown.text(r.doc.id) === u.id)
     if (!found) return { ref, standing: 'no longer in force', color: STYLE.muted }
     const inForce = found.delivered
     if (!inForce) return { ref, standing: 'unverified now', color: STYLE.warning }
@@ -1097,11 +1135,12 @@ const PROPOSAL_LABEL: Record<RuleStatus, string> = {
  * run-ledger `rule.propose` records written before phase 3, which stay
  * where they are (decision 16), each marked "proposed, not accepted".
  */
-async function proposalRows(p: Ports, litterDir: string, run: string, records: readonly StoredRecord[]): Promise<BoardProposalRow[]> {
+async function proposalRows(p: Ports, litterDir: string, run: string, records: readonly StoredRecord[], shown: Shown): Promise<BoardProposalRow[]> {
   const rows: BoardProposalRow[] = []
   let found: { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }[] = []
   try {
-    found = await deps.proposalsOf(p, litterDir, { run })
+    // Through the redactor, as the run's records are, so the two are told apart by the same key.
+    found = shown.deep(await deps.proposalsOf(p, litterDir, { run }))
   } catch (err) {
     p.log(`board: the run's proposals couldn't be read: ${errText(err)}`)
   }
@@ -1140,6 +1179,7 @@ async function sectionOf(
   nav: BoardNav,
   plan: PlanFile | null,
   gates: BoardBody['gates'],
+  shown: Shown,
 ): Promise<BoardSection | null> {
   const s = nav.section
   if (!s) return null
@@ -1158,15 +1198,15 @@ async function sectionOf(
       text: clean(shown, SECTION_MAX),
     }
   }
-  if (s.kind === 'verdict') return verdictSection(p, gates, s.gate)
-  return diffSection(p, litterDir, f, s.gate)
+  if (s.kind === 'verdict') return verdictSection(p, gates, s.gate, shown)
+  return diffSection(p, litterDir, f, s.gate, shown)
 }
 
 /** The menu's critic note: the row's verdict file (AB's verdicts.ts), cleaned and cut as the plan is. */
-async function verdictSection(p: Ports, gates: BoardBody['gates'], gate: string): Promise<BoardSection> {
+async function verdictSection(p: Ports, gates: BoardBody['gates'], gate: string, shown: Shown): Promise<BoardSection> {
   const file = gates?.rows.find(r => r.id === gate)?.verdictFile ?? null
   if (file === null) return { kind: 'verdict', title: `${gate} has no critic note`, path: null, text: '' }
-  const text = await readText(p, file)
+  const text = await readText(p, file, shown)
   if (text === null) return { kind: 'verdict', title: `${gate}'s critic note isn't there`, path: file, text: '' }
   return { kind: 'verdict', title: `critic note on ${gate}`, path: file, text: clean(text, SECTION_MAX) }
 }
@@ -1176,7 +1216,7 @@ async function verdictSection(p: Ports, gates: BoardBody['gates'], gate: string)
  * from the land record's oids (an earlier land's parent, `<commit>^`), each
  * checked as a full object id first.
  */
-async function diffSection(p: Ports, litterDir: string, f: RunFiles, gate: string): Promise<BoardSection> {
+async function diffSection(p: Ports, litterDir: string, f: RunFiles, gate: string, shown: Shown): Promise<BoardSection> {
   const facts = gateFacts(f.records)
   const land = facts.lands.get(gate)
   let old: string | null = null
@@ -1193,13 +1233,14 @@ async function diffSection(p: Ports, litterDir: string, f: RunFiles, gate: strin
   }
   if (!commit || !old) return { kind: 'diff', title: `${gate} has no land with a commit to diff`, path: null, text: '' }
   const pair = `${old}..${commit}`
-  let text = diffs.get(pair)
-  if (text === undefined) {
+  let r = diffs.get(pair)
+  if (r === undefined) {
     const where = primaryOf(litterDir) ?? repoOf(litterDir)
-    const r = await p.run(['git', '-C', where, 'diff', '--stat', '--no-color', '--end-of-options', old, commit, '--'])
-    if (r.code !== 0) return { kind: 'diff', title: `git diff --stat for ${gate} failed`, path: null, text: oneLine(r.stderr, 300) }
-    text = clean(r.stdout, SECTION_MAX)
-    diffs.set(pair, text)
+    const ran = await p.run(['git', '-C', where, 'diff', '--stat', '--no-color', '--end-of-options', old, commit, '--'])
+    r = { code: ran.code, stdout: ran.stdout, stderr: ran.stderr }
+    // A failure isn't kept: the next look runs it again.
+    if (r.code === 0) diffs.set(pair, r)
   }
-  return { kind: 'diff', title: `${gate}: git diff --stat ${old.slice(0, 7)}${old.endsWith('^') ? '^' : ''} ${commit.slice(0, 7)}`, path: null, text }
+  if (r.code !== 0) return { kind: 'diff', title: `git diff --stat for ${gate} failed`, path: null, text: oneLine(shown.text(r.stderr), 300) }
+  return { kind: 'diff', title: `${gate}: git diff --stat ${old.slice(0, 7)}${old.endsWith('^') ? '^' : ''} ${commit.slice(0, 7)}`, path: null, text: clean(shown.text(r.stdout), SECTION_MAX) }
 }
