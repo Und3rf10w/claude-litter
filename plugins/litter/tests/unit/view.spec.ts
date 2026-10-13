@@ -545,6 +545,19 @@ describe('the browser', () => {
     expect(v.composer?.routes.map(r => r.value)).toEqual(['direct', 'lead'])
   })
 
+  test('a re-spawned orchestrator shows the workers the earlier one started under it', async () => {
+    goLive()
+    state.markSettled('o1')
+    state.putBinding(bind('o1r', { node: 'part-a', n: 2, kind: 'orchestrator', parent: null, type: 'litter:sw-demo-part-a', boundAt: NOW + 1 }))
+    const v = await view<SwarmBrowserView>('browser')
+    expect(v.rows.map(r => [r.agentId, r.depth])).toEqual([
+      [null, 0],
+      ['o1', 1],
+      ['o1r', 1],
+      ['w1', 2],
+    ])
+  })
+
   test("the composer's idle-worker case: Direct reads via its parent, and Via parent is offered", async () => {
     goLive()
     const v = await view<SwarmBrowserView>('browser', { selected: 'w1' })

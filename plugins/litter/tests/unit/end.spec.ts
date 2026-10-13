@@ -223,6 +223,14 @@ describe('stopNode', () => {
     expect(p.sent).toEqual([])
   })
 
+  test("a re-spawned orchestrator's stop takes the workers the earlier one started with it", async () => {
+    live()
+    state.putBinding(bindingOf('a-boss2', { node: 'boss', kind: 'orchestrator', parent: null, type: 'litter:sw-alpha-boss', n: 2 }))
+    await stopNode(p, 'alpha', 'a-boss2', 'soft')
+    expect((await bodyOf('swarm.stop')).at(-1)).toEqual({ nodes: ['a-boss2', 'a-fix1'], how: 'soft' })
+    expect(state.isStopped('a-boss')).toBe(false)
+  })
+
   test('Hard stop calls TaskStop with the agentId first, then stops the same way', async () => {
     live()
     await stopNode(p, 'alpha', 'a-fix1', 'hard')

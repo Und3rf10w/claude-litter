@@ -313,6 +313,19 @@ describe('the type and count rules', () => {
     expect((await run(spawnE(T('scout'), a), next)).deny).toBe(`litter: part-b (${a}) already runs 3 of its max 3 scout at once; wait for one to finish`)
   })
 
+  test("a re-spawned orchestrator counts the earlier one's workers, and the earlier one starts nothing", async () => {
+    const a = await orchestrator('part-b')
+    const { next } = engine()
+    for (let i = 0; i < 2; i++) expect((await run(spawnE(T('scout'), a), next)).agentId).toBeDefined()
+    state.markSettled(a)
+    const b = await orchestrator('part-b')
+    expect(state.binding(b)!.n).toBe(2)
+    expect((await run(spawnE(T('scout'), b), next)).agentId).toBeDefined()
+    expect((await run(spawnE(T('scout'), b), next)).deny).toBe(`litter: part-b (${b}) already runs 3 of its max 3 scout at once; wait for one to finish`)
+    expect((await run(spawnE(T('scout'), a), next)).deny).toBe(`litter: part-b (${a}) was replaced by a re-spawned part-b (${b}); it starts nothing`)
+    expect((await run(spawnE('Explore', a), next)).deny).toBe(`litter: part-b (${a}) was replaced by a re-spawned part-b (${b}); it starts nothing`)
+  })
+
   test('every spawn gets its node directory (inherit included), background, and the spec model', async () => {
     const { next, calls } = engine()
     const a = (await run(spawnE(T('part-a')), next)).agentId!

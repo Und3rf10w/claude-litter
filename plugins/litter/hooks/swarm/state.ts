@@ -548,10 +548,40 @@ export function dropBinding(agentId: string): void {
   changed(swarm)
 }
 
-/** The bindings whose `parent` is this agent: its workers and children. */
-export const childrenOf = (agentId: string): NodeBinding[] => [...bindingsById.values()].filter(b => b.parent === agentId)
+/**
+ * The orchestrator instance that replaced `b`: the newest of its node in its
+ * launch, when that isn't `b`. An orchestrator runs once at a time (spawn.ts),
+ * so a newer one was spawned after `b` held no place: a re-spawn. Null for
+ * the newest, and for a worker or child, whose instances run side by side.
+ */
+export function replacedBy(b: NodeBinding): NodeBinding | null {
+  if (b.kind !== 'orchestrator') return null
+  let newest: NodeBinding | null = null
+  for (const x of bindingsById.values()) {
+    if (x.kind !== 'orchestrator' || x.swarm !== b.swarm || x.launch !== b.launch || x.node !== b.node || x.n <= b.n) continue
+    if (!newest || x.n > newest.n) newest = x
+  }
+  return newest
+}
 
-/** Every binding below this agent, by `parent`, children of children included; not the agent itself. */
+/** The agent that stands for `agentId` now: the orchestrator that replaced it, else itself (null: the lead). */
+export function standsFor(agentId: string | null): string | null {
+  if (agentId === null) return null
+  const b = bindingsById.get(agentId)
+  return b ? (replacedBy(b)?.agentId ?? agentId) : agentId
+}
+
+/**
+ * The agent `b` reports to now: its parent, or the orchestrator that replaced
+ * it, which takes over the workers and children the one before it started
+ * (the lead's ask, 2026-10-13). Null: the lead.
+ */
+export const parentOf = (b: NodeBinding): string | null => standsFor(b.parent)
+
+/** The bindings this agent stands for as parent (`parentOf`): its workers and children, a replaced one's included. */
+export const childrenOf = (agentId: string): NodeBinding[] => [...bindingsById.values()].filter(b => parentOf(b) === agentId)
+
+/** Every binding below this agent, by `parentOf`, children of children included; not the agent itself. */
 export function descendantsOf(agentId: string): NodeBinding[] {
   const out: NodeBinding[] = []
   const seen = new Set([agentId])
@@ -689,9 +719,15 @@ function places(swarm: string): (AdmissionPlace & { scope: WriteScope | null; ag
   return out
 }
 
-/** Running, settling, parked and reserved instances of `node` under `parent` (null: the lead). Children don't count. */
-export const countFor = (swarm: string, parent: string | null, node: string): number =>
-  places(swarm).filter(x => x.kind !== 'child' && x.node === node && x.parent === parent).length
+/**
+ * Running, settling, parked and reserved instances of `node` under `parent`
+ * (null: the lead), each parent read as `standsFor` reads it, so a re-spawned
+ * orchestrator counts the workers the one it replaced started. Children don't count.
+ */
+export function countFor(swarm: string, parent: string | null, node: string): number {
+  const under = standsFor(parent)
+  return places(swarm).filter(x => x.kind !== 'child' && x.node === node && standsFor(x.parent) === under).length
+}
 
 /** Running, settling, parked and reserved agents of the swarm, children included (`maxAgentsAtOnce`). */
 export const countSwarm = (swarm: string): number => places(swarm).length

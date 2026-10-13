@@ -87,6 +87,7 @@ import {
   liveSwarms,
   modelsSeen,
   openQuestions,
+  parentOf,
   roundsUsed,
   spawnsUsed,
   status as admissionStatus,
@@ -2023,7 +2024,8 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
       flagged: flaggedNodes.has(b.node) && st.running,
       ...modelOf(b, s?.spec.nodes.find(x => x.id === b.node) ?? null),
     })
-    for (const c of sorted.filter(x => x.parent === b.agentId)) add(c, depth + 1, myColor)
+    // Under the agent it reports to now: a re-spawned orchestrator shows the workers it took over.
+    for (const c of sorted.filter(x => parentOf(x) === b.agentId)) add(c, depth + 1, myColor)
   }
   for (const b of sorted.filter(x => x.parent === null)) add(b, 1, null)
   // Anything whose parent isn't bound (a reload, a binding pruned) still gets a row.
@@ -2134,7 +2136,8 @@ function swarmEventRow(at: string, e: SwarmEventBody, all: readonly NodeBinding[
       return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `${how}: "${oneLine(e.text, 80)}"`, color: null }
     }
     case 'readdressed':
-      return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `sent via its parent ${whoOf(e.parent, all)}: ${oneLine(e.why, 60)}`, color: COLOR.subtle }
+      // `why` says whether it went through the parent or on to the orchestrator a re-spawn put in its place.
+      return { at, who: `${whoOf(e.from, all)} → ${whoOf(e.to, all)}`, text: `sent via ${whoOf(e.parent, all)}: ${oneLine(e.why, 60)}`, color: COLOR.subtle }
     case 'queued':
       return { at, who, text: `queued a message from ${whoOf(e.from, all)}`, color: COLOR.waiting }
     case 'queue-sent':
@@ -2752,10 +2755,13 @@ async function buildHistory(p: Ports, n: SwarmNav): Promise<SwarmHistoryView | S
   }
 }
 
-/** The orchestrator instance a bound worker (or a worker's worker) works under, by its bindings' parents. */
+/** The orchestrator instance a bound worker (or a worker's worker) works under, by `parentOf`. */
 function orchestratorOf(agentId: string): NodeBinding | null {
   let b = binding(agentId)
-  for (let i = 0; b && b.kind !== 'orchestrator' && i < 16; i++) b = b.parent ? binding(b.parent) : null
+  for (let i = 0; b && b.kind !== 'orchestrator' && i < 16; i++) {
+    const up = parentOf(b)
+    b = up ? binding(up) : null
+  }
   return b && b.kind === 'orchestrator' ? b : null
 }
 

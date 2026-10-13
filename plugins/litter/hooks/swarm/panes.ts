@@ -1625,7 +1625,8 @@ async function send(p: Ports, name: string, shown: string, budget?: WaitBudget):
       break
     case 'readdressed':
       sent()
-      notice('info', `sent to ${out.parentNode}, its parent, instead: ${out.why}`)
+      // `why` says how it got there: through its parent, or on to the orchestrator that replaced it.
+      notice('info', `sent to ${out.parentNode} instead: ${out.why}`)
       break
     case 'refused':
       notice('error', `not sent: ${out.reason}`)

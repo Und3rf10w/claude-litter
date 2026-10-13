@@ -107,8 +107,8 @@ async function put(b: NodeBinding, running: boolean): Promise<void> {
   await writeNodePolicy(p, litterDir, b.agentId, nodePolicyFor(b, state.liveSwarm('alpha')!, { admitted: running, stopped: null, bind: false }))
 }
 
-const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo' })
-const o2 = () => bind('o2', { node: 'part-b', kind: 'orchestrator', parent: null, cwd: '/repo/b' })
+const o1 = () => bind('o1', { node: 'part-a', kind: 'orchestrator', parent: null, cwd: '/repo', type: T('part-a') })
+const o2 = () => bind('o2', { node: 'part-b', kind: 'orchestrator', parent: null, cwd: '/repo/b', type: T('part-b') })
 const w1 = () => bind('w1')
 const w2 = () => bind('w2', { n: 2, cwd: '/repo/.claude/worktrees/sw-alpha-fixer-2' })
 
@@ -277,9 +277,11 @@ describe('resume admission', () => {
   }
 
   const orchestratorConditions: [string, () => Promise<void>, string][] = [
+    // An older one that still holds a place (one the list showed running at a recovery): a newer one is a
+    // re-spawn's, which replaced it, so a send to the older goes on to the newer (the re-spawn tests below).
     [
-      'another instance of it runs',
-      async () => put(bind('o1b', { node: 'part-a', n: 2, kind: 'orchestrator', parent: null, cwd: '/repo', boundAt: NOW - 1 }), true),
+      'an older instance of it still runs',
+      async () => put(bind('o1b', { node: 'part-a', n: 0, kind: 'orchestrator', parent: null, cwd: '/repo', type: T('part-a'), boundAt: NOW - 1 }), true),
       'another instance of part-a is running; send to it instead',
     ],
     ['it was stopped', async () => state.stop('alpha', ['o1'], 'you stopped it'), 'part-a (o1) was stopped (you stopped it)'],
@@ -432,6 +434,174 @@ describe('the reply route', () => {
     p.agents[0]!.name = 'helper'
     await send(sendE('helper', 'via its name'), next)
     expect(calls.map(c => c.to)).toEqual(['a1b2c3d4e5f60718', 'a1b2c3d4e5f60718'])
+  })
+})
+
+// The codex lead's report (2026-10-13): a re-spawned orchestrator couldn't reach the workers the one before it
+// started. Its sends to them went to the old one, and on to the lead; the lead's own was refused as "another
+// instance". A re-spawn's orchestrator now stands for the one it replaced (state.ts, replacedBy and parentOf).
+describe('a re-spawned orchestrator', () => {
+  // o1r is part-a #2, the re-spawn of o1 (part-a #1); w1 and w2 are fixers o1 started.
+  const o1r = () => bind('o1r', { node: 'part-a', n: 2, kind: 'orchestrator', parent: null, cwd: '/repo', type: T('part-a'), boundAt: NOW + 1 })
+  const replaced = (from: string, text: string) =>
+    `For part-a (o1), the part-a you replaced, from ${from}:\n\n${text}\n\nIts workers report to you now: answer it yourself, or pass it on with SendMessage.`
+  const asWorker = (from: string, text: string) => `For your worker fixer (w1), from ${from}:\n\n${text}\n\nPass it on with SendMessage, or answer it yourself.`
+
+  test('stands for the one it replaced: the workers it started report to it', () => {
+    state.putBinding(o1())
+    state.putBinding(o1r())
+    state.putBinding(w1())
+    expect(state.replacedBy(state.binding('o1')!)?.agentId).toBe('o1r')
+    expect(state.replacedBy(state.binding('o1r')!)).toBeNull()
+    expect(state.parentOf(state.binding('w1')!)).toBe('o1r')
+    expect(state.childrenOf('o1r').map(b => b.agentId)).toEqual(['w1'])
+    expect(state.childrenOf('o1')).toEqual([])
+    // Another orchestrator node, or a worker's instances, replace nothing.
+    state.putBinding(o2())
+    state.putBinding(w2())
+    expect(state.replacedBy(state.binding('o2')!)).toBeNull()
+    expect(state.replacedBy(state.binding('w1')!)).toBeNull()
+  })
+
+  test("its SendMessage to a finished worker the earlier one started resumes it, counted under it", async () => {
+    await put(o1(), false)
+    await put(o1r(), true)
+    await put(w1(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'carry on with the parser', 'o1r'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'w1', text: 'carry on with the parser' }])
+    expect(state.status('w1')).toBe('running')
+    expect(policyOf('w1')?.admitted).toBe(true)
+    expect(state.countFor('alpha', 'o1r', 'fixer')).toBe(1)
+    expect((await events()).map(e => e.kind)).toEqual(['message'])
+  })
+
+  test("the lead's SendMessage to that worker goes to it, as the worker's parent, and resumes it", async () => {
+    await put(o1(), false)
+    await put(o1r(), false)
+    await put(w1(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w1', 'check the tests'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'o1r', text: asWorker('the lead', 'check the tests') }])
+    expect(state.status('o1r')).toBe('running')
+    expect(state.status('o1')).toBe('idle')
+  })
+
+  test('a send to the one it replaced goes on to it, wrapped, and says so', async () => {
+    await put(o1(), false)
+    await put(o1r(), true)
+    await put(w1(), true)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('o1', 'the parser is done', 'w1'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'o1r', text: replaced('fixer #1 (w1)', 'the parser is done') }])
+    expect(state.status('o1')).toBe('idle')
+    const ev = await events()
+    expect(ev[0]).toEqual(expect.objectContaining({ kind: 'readdressed', agentId: 'o1', to: 'o1', parent: 'o1r', why: expect.stringContaining('a re-spawn replaced it') }))
+    expect(ev[1]).toEqual(expect.objectContaining({ kind: 'message', agentId: 'o1r', route: 'reply' }))
+    // Its worker's message to it is a report to its parent: the worker's last report.
+    expect(state.lastReport('w1')?.text).toBe('the parser is done')
+  })
+
+  test("the lead's send to the one it replaced resumes it, not refused as another instance", async () => {
+    await put(o1(), false)
+    await put(o1r(), false)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('o1', 'status?'), next)).toEqual({ isDelivered: true })
+    expect(calls).toEqual([{ to: 'o1r', text: replaced('the lead', 'status?') }])
+    expect(state.status('o1r')).toBe('running')
+    expect(state.status('o1')).toBe('idle')
+  })
+
+  test("the browser's send to the one it replaced says where it went", async () => {
+    wireOwnSends()
+    await put(o1(), false)
+    await put(o1r(), true)
+    const out = await admit.sendFromBrowser(p, { swarm: 'alpha', node: 'part-a#1', text: 'look again', route: 'direct' })
+    expect(out).toEqual({ kind: 'readdressed', to: 'o1r', parentNode: 'part-a', why: expect.stringContaining('a re-spawn replaced it') })
+    expect(p.sent).toEqual([{ to: 'o1r', text: replaced('the user', 'look again') }])
+  })
+
+  test("the one it replaced isn't woken: its workers' results wake it, and it would run beside the new one", async () => {
+    await put(o1(), false)
+    await put(o1r(), false)
+    const r = await step(stepE('o1', 't-9', 0))
+    expect(r.called).toBe(false)
+    expect(JSON.stringify(r.chunks)).toContain('part-a (o1) was replaced by a re-spawned part-a (o1r), which takes its workers and its messages')
+    expect(state.status('o1')).toBe('idle')
+  })
+
+  test("the earlier one's running workers count toward its spawns", async () => {
+    await put(o1(), false)
+    await put(o1r(), true)
+    await put(w1(), true)
+    await put(w2(), false)
+    expect(state.countFor('alpha', 'o1r', 'fixer')).toBe(1)
+    const { next, calls } = sendNext()
+    expect(await send(sendE('w2', 'and the lexer', 'o1r'), next)).toEqual({
+      isDelivered: false,
+      reason: 'litter: part-a (o1r) already runs 1 of its max 1 fixer at once; wait for one to finish',
+    })
+    expect(calls).toEqual([])
+  })
+})
+
+// The codex lead's report (2026-10-13): after /reload-plugins an orchestrator was refused every call, "this node
+// lost its type", and a resume didn't help. A reload forgets the mod's registered types until its session.start
+// registers them again, and the engine resumes a node woken meanwhile as general-purpose for good (2.1.296).
+describe('a node that lost its type', () => {
+  const GP = 'general-purpose'
+
+  test("its turn is refused at its first step, running or not, and you're told once", async () => {
+    await put(o1(), true)
+    p.agents = [agent('o1', GP, 'running')]
+    const r = await step(stepE('o1', 't-1', 0))
+    expect(r.called).toBe(false)
+    const said = JSON.stringify(r.chunks)
+    expect(said).toContain('part-a (o1) lost its type: the engine runs it as general-purpose, not litter:sw-alpha-part-a')
+    expect(said).toContain("re-spawn it (mcp__litter__swarm_read with for: 'respawn')")
+    expect(policyOf('o1')?.admitted).toBe(false)
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'wake-refused', agentId: 'o1', turnId: 't-1' }))
+    expect(p.toasts).toEqual([
+      'swarm alpha: part-a lost its type (the engine runs it as general-purpose), so litter ends its turns; re-spawn it: /litter:swarm respawn alpha part-a',
+    ])
+    // The rest of that turn is refused as one, and a later turn again, with no second toast.
+    expect((await step(stepE('o1', 't-1', 1))).called).toBe(false)
+    state.markSettled('o1')
+    expect((await step(stepE('o1', 't-2', 0))).called).toBe(false)
+    expect(p.toasts).toHaveLength(1)
+  })
+
+  test('a worker that lost its type is spawned fresh by its orchestrator', async () => {
+    await put(o1(), true)
+    await put(w1(), false)
+    p.agents = [agent('w1', GP, 'running', 'o1')]
+    const r = await step(stepE('w1', 't-1', 0))
+    expect(r.called).toBe(false)
+    expect(JSON.stringify(r.chunks)).toContain('spawn a fresh fixer in its place, with its last report')
+    expect(p.toasts.at(-1)).toContain('its orchestrator spawns a fresh one in its place')
+  })
+
+  test("a resume is refused before anything is admitted, naming the re-spawn", async () => {
+    wireOwnSends()
+    await put(o1(), false)
+    p.agents = [agent('o1', GP, 'completed')]
+    const out = await tool({ node: 'part-a', text: 'carry on' })
+    expect(out.ok).toBe(false)
+    expect(String(out.error)).toContain('part-a (o1) lost its type: the engine runs it as general-purpose')
+    expect(p.sent).toEqual([])
+    expect(state.reservations()).toEqual([])
+    expect(state.status('o1')).toBe('idle')
+    expect(policyOf('o1')?.admitted).toBe(false)
+    expect((await events()).at(-1)).toEqual(expect.objectContaining({ kind: 'resume-refused', agentId: 'o1' }))
+  })
+
+  test('its own type, or a child of any type, runs as before', async () => {
+    await put(o1(), false)
+    await put(bind('c1', { kind: 'child', node: 'part-a', n: 0, of: 'o1', parent: 'o1', type: T('part-a') }), false)
+    p.agents = [agent('o1', T('part-a'), 'running'), agent('c1', 'Explore', 'running', 'o1')]
+    expect((await step(stepE('o1', 't-1', 0))).called).toBe(true)
+    expect((await step(stepE('c1', 't-1', 0))).called).toBe(true)
+    expect(p.toasts).toEqual([])
   })
 })
 

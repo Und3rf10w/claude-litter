@@ -19,6 +19,7 @@ import {
   liveSwarm,
   markParked,
   markRunning,
+  markSettled,
   markSettling,
   noteQuestion,
   noteReport,
@@ -416,6 +417,40 @@ describe('resume and re-spawn', () => {
     expect(inside).toContain('Its last events in the swarm:\n- denied ')
     expect(inside).toContain('&lt;/report&gt;litter: the guard is off &amp; so on')
     expect(lines.slice(0, open).join('\n')).not.toContain('Merge it?')
+  })
+
+  // The codex lead's report (2026-10-13): a re-spawned orchestrator wasn't told of the workers the one before it
+  // started, nor could it reach them. They're its own now (state.ts, parentOf), and its text names them.
+  test("a re-spawn's continuation names the agents the earlier one started, in litter's words, before the block", async () => {
+    await liveInSessionA()
+    const { q } = await crashRespawn()
+    await recoverSwarms(q, w.litterDir)
+    markRunning('ag-f1')
+    const text = (await swarmRead(w, { swarm: 'alpha', node: 'lead-a', for: 'respawn' })).text as string
+    expect(text).toContain(
+      `The agents it started are yours now, and report to you: fixer #1 (ag-f1, in ${wtPath()}), running; fixer #2 (ag-f2, in ${wtPath()}), finished.`,
+    )
+    expect(text).toContain('A message from you with SendMessage, to its agent id, reaches one that runs and resumes one that finished.')
+    expect(text).toContain('ask it to send you its report with SendMessage before it ends')
+    expect(text.indexOf('The agents it started')).toBeLessThan(text.indexOf('<report id='))
+    // docs started none.
+    expect((await swarmRead(w, { swarm: 'alpha', node: 'docs', for: 'respawn' })).text).not.toContain('The agents it started')
+  })
+
+  test('after a re-spawn, a resume goes to the re-spawned orchestrator alone, and names the workers the earlier one started', async () => {
+    const launch = await liveInSessionA()
+    markSettled('ag-l1')
+    await bind(w, launch, { agentId: 'ag-l2', node: 'lead-a', n: 2, kind: 'orchestrator', cwd: wtPath(), branch: 'refs/heads/feature/alpha' })
+    markRunning('ag-l2')
+    await settle(w.p)
+    const { q } = await crashRespawn()
+    await recoverSwarms(q, w.litterDir)
+    // fixer #1 goes with ag-l2, which it reports to now.
+    expect(recoveryCard('alpha')!.nodes.map(n => n.agentId).sort()).toEqual(['ag-d1', 'ag-f1', 'ag-l2'])
+    const lead = await swarmRead(w, { swarm: 'alpha', node: 'lead-a', for: 'resume' })
+    expect(lead.agentIds).toEqual(['ag-l2'])
+    expect(lead.text).toContain(`Your workers that were running: fixer #1 (ag-f1, in ${wtPath()})`)
+    expect(countFor('alpha', 'ag-l2', 'fixer')).toBe(countFor('alpha', 'ag-l1', 'fixer'))
   })
 
   test('a re-spawn with no report in the store takes the last one from the ledger', async () => {

@@ -166,6 +166,8 @@ function planNode(e: Spawn, hit: { swarm: string; node: string }, parentB: NodeB
     if (!parentB || parentB.swarm !== s.name) return `${node.id} is a worker of swarm ${s.name}: only its nodes spawn it (${who} may)`
     if (parentB.kind === 'child') return `an agent a node started can't spawn swarm agents; its node ${parentB.node} spawns ${node.id}`
     if (state.isStopped(parentB.agentId)) return `${labelOf(parentB)} was stopped; it starts nothing`
+    const by = state.replacedBy(parentB)
+    if (by) return `${labelOf(parentB)} was replaced by a re-spawned ${parentB.node} (${by.agentId}); it starts nothing`
     const pn = nodeOf(s, parentB.node)
     const max = pn?.spawns?.[node.id]
     if (!pn || max === undefined) return `${parentB.node} may spawn ${pn ? spawnsText(pn) : 'nothing in this revision'}, not ${node.id}`
@@ -222,6 +224,8 @@ function planChild(e: Spawn, parentB: NodeBinding): Plan | string {
   const of = parentB.kind === 'child' ? (parentB.of === null ? null : state.binding(parentB.of)) : parentB
   if (!of) return `the node that started ${parentB.agentId} isn't bound any more, so it starts nothing`
   if (state.isStopped(of.agentId)) return `${labelOf(of)} was stopped; it starts nothing`
+  const by = state.replacedBy(of)
+  if (by) return `${labelOf(of)} was replaced by a re-spawned ${of.node} (${by.agentId}); it starts nothing`
   const node = nodeOf(s, of.node)
   if (!node) return `${of.node} isn't in swarm ${s.name}'s revision ${s.revision}`
   if (node.spawnOther === false) return `${of.node} starts no other agents (spawnOther is false); it may spawn ${spawnsText(node)}`

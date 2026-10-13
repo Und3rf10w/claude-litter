@@ -31,7 +31,7 @@ import type { BrowserSend, ClearKill, ClearReason, Effort, LiveSwarm, NodeBindin
 import { fail } from '../records/core'
 import { appendLaunchRecord, readLaunchLedger } from '../records/swarm'
 import { agentLive } from '../ports'
-import { agentPolicyPath, hooksDir } from '../layout'
+import { agentPolicyPath, hooksDir, nodeTypeName } from '../layout'
 import { readJson } from '../fsx'
 import { session } from '../session'
 import { renderSlots } from '../prompts/slots'
@@ -141,13 +141,14 @@ export function scopesOverlap(a: WriteScope, b: WriteScope): boolean {
   return a.paths.some(x => b.paths!.some(y => meets(x, y)))
 }
 
-/** An agent and every binding above it, by `parent`: the instances a spawn or resume delegates from. */
+/** An agent and every binding above it, by `parentOf`: the instances a spawn or resume delegates from. */
 export function lineageOf(agentId: string | null): Set<string> {
   const out = new Set<string>()
   let id = agentId
   while (id !== null && !out.has(id)) {
     out.add(id)
-    id = state.binding(id)?.parent ?? null
+    const b = state.binding(id)
+    id = b ? state.parentOf(b) : null
   }
   return out
 }
@@ -237,10 +238,11 @@ export function parentCountRefusal(s: LiveSwarm, parentId: string, node: string,
   const k = state.countFor(s.name, parentId, node)
   if (k < max) return null
   const parent = state.binding(parentId)
+  const under = state.standsFor(parentId)
   const parked = parkedClause(
     state
       .parkedIn(s.name)
-      .filter(x => x.kind !== 'child' && x.parent === parentId && x.node === node)
+      .filter(x => x.kind !== 'child' && state.standsFor(x.parent) === under && x.node === node)
       .map(x => x.agentId),
   )
   return countRefusal(`${parent ? labelOf(parent) : parentId} already runs ${k} of its max ${max} ${node} at once`, parked)
@@ -277,6 +279,10 @@ const claiming = new Set<string>()
 /** agentId → the row the last `<swarm>` block showed for it. */
 const shown = new Map<string, string>()
 let lastBlockAt = 0
+/** agentId → the turn whose type admitStep checked last: a type can't change inside a turn. */
+const typeChecked = new Map<string, string>()
+/** The nodes you were told lost their types, once each. */
+const lostTold = new Set<string>()
 
 /** A fresh module's memory, for tests (with state.ts's resetForTests). */
 export function resetForTests(): void {
@@ -287,6 +293,8 @@ export function resetForTests(): void {
   claiming.clear()
   shown.clear()
   lastBlockAt = 0
+  typeChecked.clear()
+  lostTold.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +306,8 @@ type Verdict =
   | { kind: 'resume'; key: string }
   /** The reply route: to the parent (null: the lead). */
   | { kind: 'reply'; parent: NodeBinding | null }
+  /** An orchestrator a re-spawn replaced: on to the one that replaced it. */
+  | { kind: 'replaced'; by: NodeBinding }
   | { kind: 'refuse'; reason: string }
 
 const refuse = (reason: string): Verdict => ({ kind: 'refuse', reason })
@@ -314,8 +324,11 @@ function resumeRefusal(s: LiveSwarm, b: NodeBinding): string | null {
   if (!specOf(s, b)) return `${b.node} isn't in swarm ${s.name}'s revision ${s.revision}`
   const stop = state.stopped(s.name).find(x => x.agentId === b.agentId)
   if (stop) return `${labelOf(b)} was stopped (${stop.reason})`
+  const by = state.replacedBy(b)
+  if (by) return `${labelOf(b)} was replaced by a re-spawned ${b.node} (${by.agentId}), which takes its workers and its messages`
   if (b.kind === 'worker') {
-    const parent = b.parent === null ? null : state.binding(b.parent)
+    const parentId = state.parentOf(b)
+    const parent = parentId === null ? null : state.binding(parentId)
     const pn = parent ? nodeOf(s, parent.node) : null
     if (!pn?.spawns?.[b.node]) return `${b.node} isn't in ${parent?.node ?? 'its parent'}'s spawns in revision ${s.revision}`
   }
@@ -330,20 +343,21 @@ function resumeRefusal(s: LiveSwarm, b: NodeBinding): string | null {
  */
 function placeRefusal(s: LiveSwarm, b: NodeBinding, scope: WriteScope | null): string | null {
   const parked = state.isParked(b.agentId)
+  const parentId = state.parentOf(b)
   if (!parked) {
     if (b.kind === 'orchestrator' && state.countFor(s.name, null, b.node) > 0) {
       return `another instance of ${b.node} is running; send to it instead`
     }
-    if (b.kind === 'worker' && b.parent !== null) {
-      const parent = state.binding(b.parent)
-      const full = parentCountRefusal(s, b.parent, b.node, parent ? (nodeOf(s, parent.node)?.spawns?.[b.node] ?? 0) : 0)
+    if (b.kind === 'worker' && parentId !== null) {
+      const parent = state.binding(parentId)
+      const full = parentCountRefusal(s, parentId, b.node, parent ? (nodeOf(s, parent.node)?.spawns?.[b.node] ?? 0) : 0)
       if (full) return full
     }
     const cap = capRefusal(s)
     if (cap) return cap
   }
   if (scope) {
-    const above = parked ? delegatorsOf(b.agentId) : delegatorsOf(b.parent)
+    const above = parked ? delegatorsOf(b.agentId) : delegatorsOf(parentId)
     if (parked) for (const d of state.descendantsOf(b.agentId)) above.add(d.agentId)
     const hit = scopeConflict(s.name, scope, above)
     if (hit) return `another ${hit.node} is writing in ${hit.dir}; wait for it, or use own worktrees`
@@ -357,6 +371,34 @@ const instanceScope = (s: LiveSwarm, b: NodeBinding): WriteScope | null => {
   return node ? scopeOf(node, b.cwd) : null
 }
 
+/** A node's own type, as its policy file names it for the guard (guard.ts, nodePolicyFor). */
+function ownType(b: NodeBinding): string {
+  if (b.type !== '') return b.type
+  return state.liveSwarm(b.swarm)?.types[b.node] ?? `litter:${nodeTypeName(b.swarm, b.node)}`
+}
+
+/**
+ * The type the engine runs node `b` as when it isn't its own, else null (a
+ * child, or an agent the list doesn't show). A reload of the mod forgets the
+ * types it registered until its session.start registers them again; a node
+ * the engine wakes in between is resumed as `general-purpose`, which the
+ * engine then keeps for it, so no later resume gives its type back
+ * (2.1.296: the resume's lookup falls back to it, and the agent's metadata
+ * is written with it). The guard denies its every call; only a re-spawn helps.
+ */
+async function lostType(p: Ports, b: NodeBinding): Promise<{ runsAs: string; own: string } | null> {
+  if (b.kind === 'child') return null
+  const row = (await p.listAgents()).find(a => a.id === b.agentId)
+  const own = ownType(b)
+  return row && row.type !== '' && row.type !== own ? { runsAs: row.type, own } : null
+}
+
+/** Why a node that lost its type can't run, and what helps: a re-spawn, the lead's for an orchestrator, its parent's for a worker. */
+function lostTypeText(b: NodeBinding, t: { runsAs: string; own: string }): string {
+  const fix = b.kind === 'orchestrator' ? "re-spawn it (mcp__litter__swarm_read with for: 'respawn')" : `spawn a fresh ${b.node} in its place, with its last report`
+  return `${labelOf(b)} lost its type: the engine runs it as ${t.runsAs}, not ${t.own}, and no resume gives it back (a node woken while a plugin reload had dropped litter's node types keeps the type it was woken with); ${fix}`
+}
+
 /**
  * Judges a send to bound agent `b` from `sender` (the sending loop; null for
  * the main loop: the lead, the browser, a plugin), and reserves a resume's
@@ -364,31 +406,37 @@ const instanceScope = (s: LiveSwarm, b: NodeBinding): WriteScope | null => {
  * waits; any other is a resume, readdressed to its parent when the sender
  * isn't it (15.4, "A resumed worker keeps reporting to its parent"; for an
  * orchestrator, whose parent is the lead, any main-loop sender is the lead).
+ * The parent is `parentOf`'s: a re-spawned orchestrator stands for the one it
+ * replaced, and an idle one a re-spawn replaced passes what comes to it on.
  */
 function judge(b: NodeBinding, sender: string | null, at: number): Verdict {
   const s = state.liveSwarm(b.swarm)
   const st = state.status(b.agentId)
   const off = swarmRefusal(s, b.swarm, false)
   // While the swarm ends, a node's report still reaches its parent, if that parent runs (never a resume).
-  const reportUp = sender !== null && state.binding(sender)?.parent === b.agentId
+  const from = sender !== null ? state.binding(sender) : null
+  const reportUp = from !== null && state.parentOf(from) === b.agentId
   const ending = s !== null && s.state === 'stopping' && !s.readOnly && !s.lost
   if (off && !(ending && reportUp && st !== 'idle')) return refuse(off)
   if (!s) return refuse(`swarm ${b.swarm} isn't live`)
   if (st === 'running' || resuming(b.agentId)) return { kind: 'deliver' }
   if (st === 'settling') return { kind: 'settling' }
+  const by = state.replacedBy(b)
+  if (by) return { kind: 'replaced', by }
   const why = resumeRefusal(s, b)
   if (why) return refuse(why)
-  if (sender !== b.parent) {
-    if (b.parent === null) return { kind: 'reply', parent: null }
-    const parent = state.binding(b.parent)
-    if (!parent) return refuse(`${labelOf(b)} was started by ${b.parent}, which isn't bound any more; send to its orchestrator`)
+  const parentId = state.parentOf(b)
+  if (sender !== parentId) {
+    if (parentId === null) return { kind: 'reply', parent: null }
+    const parent = state.binding(parentId)
+    if (!parent) return refuse(`${labelOf(b)} was started by ${parentId}, which isn't bound any more; send to its orchestrator`)
     return { kind: 'reply', parent }
   }
   const scope = instanceScope(s, b)
   const room = placeRefusal(s, b, scope)
   if (room) return refuse(room)
   const key = resumeKey(b.agentId)
-  state.reserve({ key, swarm: s.name, node: b.node, parent: b.parent, kind: b.kind, n: b.kind === 'child' ? null : b.n, scope, at, agentId: b.agentId })
+  state.reserve({ key, swarm: s.name, node: b.node, parent: parentId, kind: b.kind, n: b.kind === 'child' ? null : b.n, scope, at, agentId: b.agentId })
   return { kind: 'resume', key }
 }
 
@@ -514,6 +562,7 @@ async function routeSend(p: Ports, req: SendReq, deliver: Deliver, budget: WaitB
     return refused(v.reason)
   }
   if (v.kind === 'reply') return replyRoute(p, s!, req, v.parent, deliver, budget, depth)
+  if (v.kind === 'replaced') return replacedRoute(p, s!, req, v.by, deliver, budget, depth)
   if (v.kind === 'resume') return resumeNow(p, s!, req, v.key, deliver, at)
   // Running, or still finishing its turn after the wait: it goes now all the same. A finishing node's task finds
   // the message waiting as it ends and the engine resumes the node with it (2.1.293's stranded messages); that wake
@@ -533,6 +582,14 @@ async function resumeNow(p: Ports, s: LiveSwarm, req: SendReq, key: string, deli
     // A step that already took the place (the agent runs) keeps it.
     if (!state.release(key) || !dir) return
     await patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted: ${errText(err)}`))
+  }
+  // A node that lost its type would run as another type, its every call denied: refused before it's resumed.
+  const lost = await lostType(p, b)
+  if (lost) {
+    state.release(key)
+    const reason = lostTypeText(b, lost)
+    await swarmEvent(p, s, { kind: 'resume-refused', node: b.node, agentId: b.agentId, from: req.from, reason })
+    return refused(reason)
   }
   try {
     if (!dir) throw new Error('this session has no litter directory')
@@ -576,6 +633,23 @@ async function replyRoute(p: Ports, s: LiveSwarm, req: SendReq, parent: NodeBind
   if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`)
   const up = await routeSend(p, { ...req, to: parent, text: wrapped, raw: wrapped, route: 'reply' }, deliver, budget, depth + 1)
   if (up.outcome.kind === 'delivered') return { result: up.result, outcome: { kind: 'readdressed', to: parent.agentId, parentNode: parent.node, why: REPLY_WHY } }
+  return up
+}
+
+const REPLACED_WHY = 'a re-spawn replaced it, so the instance that replaced it takes its messages and its workers'
+
+/**
+ * To an orchestrator a re-spawn replaced: the message goes to the one that
+ * replaced it, wrapped, and through admission there (a send from one of the
+ * workers it took over resumes it, as a report to its parent does).
+ */
+async function replacedRoute(p: Ports, s: LiveSwarm, req: SendReq, by: NodeBinding, deliver: Deliver, budget: WaitBudget, depth: number): Promise<Routed> {
+  const b = req.to
+  const wrapped = `For ${labelOf(b)}, the ${b.node} you replaced, from ${req.label}:\n\n${req.raw}\n\nIts workers report to you now: answer it yourself, or pass it on with SendMessage.`
+  await swarmEvent(p, s, { kind: 'readdressed', node: b.node, agentId: b.agentId, from: req.from, to: b.agentId, parent: by.agentId, why: REPLACED_WHY })
+  if (depth >= 8) return refused(`${labelOf(b)}'s parents form a loop`)
+  const up = await routeSend(p, { ...req, to: by, text: wrapped, raw: wrapped, route: 'reply' }, deliver, budget, depth + 1)
+  if (up.outcome.kind === 'delivered') return { result: up.result, outcome: { kind: 'readdressed', to: by.agentId, parentNode: by.node, why: REPLACED_WHY } }
   return up
 }
 
@@ -712,7 +786,8 @@ async function noteFromNode(p: Ports, b: NodeBinding, toLead: boolean, toParent:
   state.closeQuestion(b.agentId, at)
   const q = questionIn(text)
   // Where it went (WP-DG: "How do I know who I need to reply to?"): the lead, or the parent node, which the browser names.
-  const to = toLead || b.parent === null ? 'lead' : (state.binding(b.parent)?.node ?? b.parent)
+  const parentId = state.parentOf(b)
+  const to = toLead || parentId === null ? 'lead' : (state.binding(parentId)?.node ?? parentId)
   if (q && state.noteQuestion(b.agentId, q, at, to)) await swarmEvent(p, s, { kind: 'question', node: b.node, agentId: b.agentId, text: q, to })
 }
 
@@ -735,7 +810,9 @@ export const admitSend: PortHook<SessionSendHook> = async (p, e, next) => {
   }
   if (!toB && !fromB) return (await endedRefusal(p, e.to)) ?? next(e)
   kick(p)
-  const toParent = fromB !== null && (fromB.parent === null ? isMain(e.to) : toB?.agentId === fromB.parent)
+  // To its parent, or to the orchestrator a re-spawn replaced, which passes it on to the one that stands for it now.
+  const parentId = fromB !== null ? state.parentOf(fromB) : null
+  const toParent = fromB !== null && (parentId === null ? isMain(e.to) : toB !== null && state.standsFor(toB.agentId) === parentId)
   const toLead = fromB !== null && !toB && isMain(e.to)
   if (fromB) {
     const s = state.liveSwarm(fromB.swarm)
@@ -796,6 +873,26 @@ export const admitStep: PortStreamHook<TurnStepHook> = async function* (p, e, ne
     return ended === null ? yield* next(e) : yield* refusal(`swarm ${ended} has ended`)
   }
   if (state.isRefusedTurn(id, e.turnId)) return yield* refusal(NOT_ADMITTED_LATER)
+  // Its type, at a turn's first step it reaches: one that lost its type (lostType) runs nothing, admitted or
+  // not, since recovery marks a node the list shows running as running. You're told once.
+  if (typeChecked.get(id) !== e.turnId) {
+    const lost = await lostType(p, b)
+    if (lost) {
+      state.refuseTurn(id, e.turnId)
+      const reason = lostTypeText(b, lost)
+      const cleared = ownSwarm(b.swarm) ? unadmit(p, b, 'after it lost its type') : null
+      const s = state.liveSwarm(b.swarm)
+      await swarmEvent(p, s, { kind: 'wake-refused', node: b.node, agentId: id, turnId: e.turnId, reason })
+      if (s && !lostTold.has(id)) {
+        lostTold.add(id)
+        const fix = b.kind === 'orchestrator' ? `re-spawn it: /litter:swarm respawn ${s.name} ${b.node}` : 'its orchestrator spawns a fresh one in its place'
+        p.toast(`swarm ${s.name}: ${instanceName(b)} lost its type (the engine runs it as ${lost.runsAs}), so litter ends its turns; ${fix}`)
+      }
+      await cleared
+      return yield* refusal(reason)
+    }
+    typeChecked.set(id, e.turnId)
+  }
   // An admitted step's usage counts at once, so the browser's tokens move mid-turn (turn.complete settles them).
   // It goes with the model and effort you set for the node (WP-DI), and the browser shows what it named.
   const counted = async function* () {
@@ -1191,7 +1288,8 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: Wai
   let raw = text
   let route: Route = 'direct'
   if (input.route === 'parent') {
-    const parent = b.parent === null ? null : state.binding(b.parent)
+    const parentId = state.parentOf(b)
+    const parent = parentId === null ? null : state.binding(parentId)
     if (!parent) return { kind: 'refused', reason: `${instanceName(b)} has no parent node to route through; send it directly or via the lead` }
     to = parent
     raw = wrapFor(b, 'the user', text)
@@ -1200,7 +1298,7 @@ export async function sendFromBrowser(p: Ports, input: BrowserSend, budget?: Wai
   const routed = await routeSend(p, { to, text: raw, raw, sender: null, from: 'user', label: 'the user', route }, (t, x) => sendOwn(p, t, x), wait)
   const o = routed.outcome
   noteDirectSend(b, text, o)
-  if (o.kind === 'readdressed' && input.route === 'direct') return { ...o, why: "via parent (it's idle)" }
+  if (o.kind === 'readdressed' && input.route === 'direct' && o.why === REPLY_WHY) return { ...o, why: "via parent (it's idle)" }
   return o
 }
 
