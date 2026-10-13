@@ -3,7 +3,7 @@
 // sibling submodules, a separate git dir, a forged record, a bare repository,
 // and a non-repo. Then run.find over the runs it finds there.
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordError, RecordOk, RecordReply } from '../../hooks/records/core'
@@ -13,6 +13,9 @@ import { LITTER_GITIGNORE, recordRunFind, resolveLitterDir, writeGitignore, type
 import { normalizeOptions, type ConfiguredOptions } from '../../hooks/options'
 import { setOptions } from '../../hooks/session'
 import { nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
+
+// Real git in every test, submodules and worktrees among them; a loaded machine takes seconds.
+setDefaultTimeout(120_000)
 
 let p: TestPorts
 let root: string
