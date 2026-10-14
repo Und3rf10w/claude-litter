@@ -23,6 +23,7 @@ import { recordRepairBudget, recordRepairStart } from './repair'
 import { recordGateAmend, recordGateWiden, recordPlanWrite } from './plan'
 import { consumeInflight } from './inflight'
 import { consumeAsks } from './asks'
+import { consumeExecutorGate } from './widen'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
 import { recordProbe, recordProposal, recordVerdict } from './design/records'
 
@@ -108,12 +109,14 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
  * 5, decision 1), which read the agent map and pair an ask with a call start;
  * the swarm's consumer next, so its in-flight table sees a call before
  * anything acts on it; the worktree records before the outputs, so a
- * writer's result finds its worktree.
+ * writer's result finds its worktree. An execute executor's gate (A8) needs
+ * only the agent map.
  */
 export const SPOOL_CONSUMERS: readonly SpoolConsumer[] = [
   consumeAgents,
   consumeInflight,
   consumeAsks,
+  consumeExecutorGate,
   consumeSwarm,
   consumeWorktrees,
   consumeOutput,

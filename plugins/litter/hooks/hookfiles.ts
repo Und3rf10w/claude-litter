@@ -12,7 +12,8 @@
 //            pending/<tool_use_id> (phase 2b: written and removed by the spawn check, L)
 //   hooks -> bind/<id>, mode, wt/<name>, spool/<session>.jsonl, spool/blobs/*,
 //            done/<agent_id> (phase 2b: watch.sh at a hand-back, hold.sh at a stop it lets go),
-//            hold/<agent_id> (phase 2b: hold.sh), shells/<agent_id> (phase 2b: watch.sh)
+//            hold/<agent_id> (phase 2b: hold.sh), shells/<agent_id> (phase 2b: watch.sh),
+//            told/<agent_id> (WP-EB: guard.sh)
 // worktree.sh also writes setup logs under the run's verify/setup-<name>/.
 // The mod replaces its files atomically (temp file + mv, fsx.atomicWrite).
 // The hooks write bind/ and mode through a temp file + mv too, and append
@@ -189,7 +190,23 @@ export type RunPolicy = {
   worktreeRoot?: string
   /** Phase 2. worktree.sh's own limit for one setup run, under the hook's 600 s. */
   setupTimeoutSec?: number
+  /**
+   * WP-EB (A8), an execute run's: your widenings during the run (gate.widen
+   * at 'run'), in the order recorded, each with its record's seq. The guard
+   * tells each to the gate's executors at their next tool call, once
+   * (told/<agent_id>).
+   */
+  widened?: { seq: number; gate: string; files: string[]; why: string }[]
+  /** WP-EB (A8), an execute run's: each executor's gate, by agent_id, from its start line (widen.ts). */
+  executors?: Record<string, string>
 }
+
+/**
+ * told/<agent_id>: written by guard.sh once it told an execute executor of
+ * your widenings (RunPolicy.widened): `seq` is the last of the run's it was
+ * told of, so each is told once. Never read by the mod.
+ */
+export type ToldMarker = { v: 1; run: string; seq: number }
 
 /**
  * worktree.json: your merged worktree settings, kept whether or not anything
