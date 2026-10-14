@@ -283,6 +283,46 @@ case_pointer_bad() {
   assert_code 1
 }
 
+# A session started below its checkout's top: CLAUDE_PROJECT_DIR is that folder
+# (2.1.299), and hooks/ is the top's, the first folder up with a .git. A stale
+# hooks/ below the top doesn't count, and a repository nested inside doesn't take
+# the outer one's.
+case_subdir_session() {
+  active_run
+  mkdir -p "$T_DIR/project/.git" "$T_DIR/project/src/deep" "$T_DIR/project/nested/.git" "$T_DIR/project/nested/lib"
+  CLAUDE_PROJECT_DIR=$T_DIR/project/src/deep
+  export CLAUDE_PROJECT_DIR
+  run_hook guard.sh <"$T_DIR/in.litter"
+  assert_deny 'git push is denied'
+  run_hook guard.sh <"$T_DIR/in.main"
+  assert_pass
+  CLAUDE_PROJECT_DIR=$T_DIR/project/src/deep/
+  run_hook guard.sh <"$T_DIR/in.litter"
+  assert_deny 'git push is denied'
+  mkdir -p "$T_DIR/project/src/.claude/litter/hooks"
+  printf 'default\n' >|"$T_DIR/project/src/.claude/litter/hooks/mode"
+  run_hook guard.sh <"$T_DIR/in.litter"
+  assert_deny 'git push is denied'
+  # watch.sh records the mode in the top's hooks/, and makes none below it.
+  rm -rf "$T_DIR/project/src/.claude"
+  run_hook watch.sh prompt <"$T_DIR/in.prompt"
+  assert_code 0
+  assert_eq plan "$(cat "$(hooks_dir)/mode")" "the mode, in the top's hooks/"
+  assert_no_file "$T_DIR/project/src/deep/.claude"
+  CLAUDE_PROJECT_DIR=$T_DIR/project/nested/lib
+  run_hook guard.sh <"$T_DIR/in.litter"
+  assert_pass
+  # Below a linked worktree's top, its pointer is followed.
+  mkdir -p "$T_DIR/linked/.claude/litter/hooks" "$T_DIR/linked/pkg"
+  : >|"$T_DIR/linked/.git"
+  printf '%s\n' "$T_DIR/project/.claude/litter" >|"$T_DIR/linked/.claude/litter/hooks/pointer"
+  CLAUDE_PROJECT_DIR=$T_DIR/linked/pkg
+  run_hook guard.sh <"$T_DIR/in.litter"
+  assert_deny 'git push is denied'
+  run_hook guard.sh <"$T_DIR/in.main"
+  assert_pass
+}
+
 # A copy of the scripts without lib.sh beside them.
 case_no_lib() {
   active_run
@@ -406,6 +446,7 @@ t "a broken git changes no decision, and the hooks never run it" case_git_fails
 t "an unset or relative CLAUDE_PROJECT_DIR refuses litter agents and agents in a swarm worktree only" case_project_dir_bad
 t "the pointer from a linked worktree is followed, in both forms" case_pointer_followed
 t "a bad pointer refuses litter agents and agents in a swarm worktree only" case_pointer_bad
+t "a session started in a subfolder finds its checkout top's hooks/, stopping at a .git" case_subdir_session
 t "without lib.sh, a run refuses (guard, output) or reports (identity, watch)" case_no_lib
 t "a read that doesn't end in 3 s refuses the call" case_read_times_out
 t "an input over 8 MiB is cut, and refuses a litter agent" case_input_too_big

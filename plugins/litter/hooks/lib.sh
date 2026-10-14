@@ -37,6 +37,12 @@ LT_CUT=
 # hooks/ from $CLAUDE_PROJECT_DIR, following the mod's pointer when the session
 # started in a linked worktree. Sets LT_DIR, or LT_DIR_ERR and fails. Builtins
 # only, since this runs before every tool call.
+#
+# CLAUDE_PROJECT_DIR is the folder the session started in, which can be below
+# its checkout's top. The mod keeps litter's folder, or the pointer, at the
+# top, so hooks/ is the first folder up with a .git's (the start folder's when
+# none has one). A hooks/ below the top is never used: watch.sh used to make
+# one in the start folder.
 lt_locate() {
   LT_DIR=
   LT_DIR_ERR=
@@ -44,7 +50,12 @@ lt_locate() {
     /*) ;;
     *) LT_DIR_ERR='CLAUDE_PROJECT_DIR is not an absolute path'; return 1 ;;
   esac
-  LT_DIR=${CLAUDE_PROJECT_DIR%/}/.claude/litter/hooks
+  lt_pd=${CLAUDE_PROJECT_DIR%/}
+  while [ -n "$lt_pd" ] && [ ! -e "$lt_pd/.git" ]; do
+    lt_pd=${lt_pd%/*}
+  done
+  [ -n "$lt_pd" ] || lt_pd=${CLAUDE_PROJECT_DIR%/}
+  LT_DIR=$lt_pd/.claude/litter/hooks
   [ -e "$LT_DIR/pointer" ] || return 0
   lt_ptr=
   if [ -r "$LT_DIR/pointer" ]; then
