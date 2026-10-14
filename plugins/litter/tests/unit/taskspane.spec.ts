@@ -17,10 +17,12 @@ import type { TasksBody, TasksPaneView } from '../../types/index'
 import type { TaskFile, TaskListRef } from '../../hooks/uitypes'
 import type { BodyContext } from '../../hooks/ui/chrome'
 import {
+  EDITOR_WINDOW,
   LISTS_LIST,
   ROWS_INLINE,
   ROWS_LIST,
   SUBJECT_MIN,
+  editorParts,
   onTasksScroll,
   onTasksUi,
   pickerSpec,
@@ -522,8 +524,59 @@ describe('the layout: the rows at 100 and 60 columns, the plan, the hit test (WP
   })
 })
 
+describe('the editor in a short dock (A17)', () => {
+  /** The body's rows down to [Save] [Revert], part by part as the render draws them: the tasks' end, the editor's heading, its parts or their window and its footer, the actions. */
+  const actionsEnd = (b: TasksBody, ctx: BodyContext): number => {
+    const plan = tasksPlan(b, ctx)
+    const rows = tasksTops(b, ctx).rows!
+    const parts = editorParts(b, ctx)
+    const shown = plan.fields ? parts.slice(plan.fields.start, plan.fields.end) : parts
+    return rows.top + rows.height + 1 + shown.reduce((n, x) => n + x.rows, 0) + (plan.fields ? 1 : 0) + 1
+  }
+
+  test('[Save] [Revert] keeps to the rows at every height down to the floor: the tasks give up rows to one, then the fields above are windowed', async () => {
+    const { p } = await opened()
+    await press(p, 'tasks:select:team-a/3')
+    const b = body(p)
+    // Subject and Description framed with their captions, Status, Owner.
+    expect(editorParts(b, dock(40)).map(x => [x.rows, x.key])).toEqual([
+      [4, 'tasks:subject:team-a/3'],
+      [4, 'tasks:description:team-a/3'],
+      [1, 'tasks:status:team-a/3'],
+      [1, 'tasks:owner:team-a/3'],
+    ])
+    for (const columns of [100, 60]) {
+      // The floor: the first line, the folded picker, the filters and the sort, one task and its Client's line, the heading, the footer, the actions.
+      for (let rows = 40; rows >= 9; rows--) expect({ columns, rows, over: actionsEnd(b, dock(rows, columns)) > rows }).toEqual({ columns, rows, over: false })
+      expect(actionsEnd(b, dock(9, columns))).toBe(9)
+    }
+    // Tall enough for it all once the tasks are down to one row: no window.
+    expect(tasksPlan(b, dock(18))).toEqual({ picker: 'folded', pickerRows: 2, rows: 1 })
+    // A row short: Subject and Description, with [↓] to Status and Owner.
+    expect(tasksPlan(b, dock(17)).fields).toEqual({ start: 0, end: 2, count: 4, max: 1, up: null, down: 1 })
+    // Under a framed field's four rows, the window starts at Status: the two above can't be reached at this height, and the rows left go to the tasks.
+    expect(tasksPlan(b, dock(12))).toEqual({ picker: 'folded', pickerRows: 2, rows: 2, fields: { start: 2, end: 4, count: 4, max: 2, up: null, down: null } })
+    // No window where nothing bounds the body, or with no editor open.
+    expect(tasksPlan(b, dock(12, 100, { placement: 'inline', rows: Number.POSITIVE_INFINITY })).fields).toBeUndefined()
+    const { p: other } = await opened()
+    expect(tasksPlan(body(other), dock(12)).fields).toBeUndefined()
+  })
+
+  test("the window starts at the hub's offset, clamped to its last start, and keeps the part holding the ring in it", async () => {
+    const { p } = await opened()
+    await press(p, 'tasks:select:team-a/3')
+    const b = body(p)
+    expect(tasksPlan(b, dock(17, 100, { lists: { [EDITOR_WINDOW]: 1 } })).fields).toEqual({ start: 1, end: 4, count: 4, max: 1, up: 0, down: null })
+    expect(tasksPlan(b, dock(17, 100, { lists: { [EDITOR_WINDOW]: 9 } })).fields?.start).toBe(1)
+    // The ring on Owner, past the window at its first part: the window moves to end with it.
+    expect(tasksPlan(b, dock(17, 100, { focused: 'tasks:owner:team-a/3' })).fields).toEqual({ start: 1, end: 4, count: 4, max: 1, up: 0, down: null })
+    // On Subject, before a window at Description: it moves back to it.
+    expect(tasksPlan(b, dock(17, 100, { lists: { [EDITOR_WINDOW]: 1 }, focused: 'tasks:subject:team-a/3' })).fields?.start).toBe(0)
+  })
+})
+
 const BODY_TOP = 4
-const tick = (by: number, row?: number, column = 5) => ({ component: 'Pane', requestId: TASKS_PANE, offset: 0, by, bodyRows: 60, contentRows: 60, origin: { kind: 'person' }, ...(row !== undefined ? { pointer: { row, column } } : {}) }) as never
+const tick =(by: number, row?: number, column = 5) => ({ component: 'Pane', requestId: TASKS_PANE, offset: 0, by, bodyRows: 60, contentRows: 60, origin: { kind: 'person' }, ...(row !== undefined ? { pointer: { row, column } } : {}) }) as never
 const passOn = (async (e: unknown) => ({ passed: e })) as never
 
 describe('the wheel and the footers', () => {

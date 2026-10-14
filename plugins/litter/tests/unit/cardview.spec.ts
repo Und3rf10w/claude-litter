@@ -11,9 +11,11 @@
 // run's line as the band and Home draw it (the status's mark and word, then
 // `litter` muted), then the recorded outcome, then the evidence: the gate
 // that didn't land with its verdict's dimensions in plain words, the land.
+// A15: a repair generation, which has no row, shows on the card of the
+// generation it took over from, rebuilt on the tick as it records.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { chmodSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CardRender } from '../../hooks/hooktypes'
 import type { CardView, CardsView, SwarmSpan } from '../../types/index'
@@ -40,6 +42,8 @@ let cleanup: () => void
 let writes: CardsView[]
 let boards: (string | null)[]
 let boardAnswer: boolean
+/** The runs the live repair swarms work on, as swarm/state.ts would list them. */
+let links: { runDir: string; run: string; generation: number }[]
 const saved = { ...deps }
 
 beforeEach(() => {
@@ -63,6 +67,8 @@ beforeEach(() => {
     boards.push(run as string)
     return { placed: boardAnswer, text: '' }
   }
+  links = []
+  deps.repairRuns = () => links
 })
 
 afterEach(() => {
@@ -77,11 +83,23 @@ afterEach(() => {
 
 type Rec = { kind: string; body: Record<string, unknown> }
 
-/** Each record through ledgercore, one minute apart on the fake clock. */
+let moves = 0
+/**
+ * A new mtime for a run's ledger folder, later than any before: the file
+ * system keeps whole milliseconds, and a test can append twice in one, where
+ * the card would see no change.
+ */
+function moveLedger(run: string): void {
+  const at = new Date(Date.now() + ++moves * 1000)
+  utimesSync(ledgerDir(runDir(litterDir, run)), at, at)
+}
+
+/** Each record through ledgercore, one minute apart on the fake clock, its folder's mtime moved. */
 async function record(run: string, recs: readonly Rec[]): Promise<void> {
   for (const r of recs) {
     p.clock.now = (p.clock.now ?? NOW) + MIN
     await appendRecord(p, runDir(litterDir, run), { run, kind: r.kind, by: MOD, body: r.body })
+    moveLedger(run)
   }
 }
 
@@ -553,12 +571,14 @@ describe('restoreCards and refreshCards', () => {
     expect(new Set(ledgerReads).size).toBe(CARD_RUNS)
 
     const byTask = last().byTask
-    // The newest 18 of the 25 by their start, and the two newer runs; the repair generation has no task, so no card.
+    // The newest 18 of the 25 by their start, and the two newer runs; the repair generation has no task, so no card of its own.
     const starts = Array.from({ length: 25 }, (_, i) => ({ i, at: i % 2 === 0 ? i : 100 - i })).sort((a, b) => b.at - a.at)
     const kept = starts.slice(0, 18).map(s => `t-${s.i}`)
     expect(Object.keys(byTask).sort()).toEqual([...kept, 't-rep', 't-res1', 't-res2'].sort())
     for (const s of starts.slice(18)) expect(byTask[`t-${s.i}`]).toBeUndefined()
-    expect(linesOf(byTask['t-rep']!)).toEqual(['the integration verify is red'])
+    // The generation it took over from shows it: its end, the repair label, and whose it was.
+    expect(textOf(byTask['t-rep']!.title)).toBe(`✓ done · litter · fanout ${rep} · repair · 1m 0s`)
+    expect(linesOf(byTask['t-rep']!)).toEqual(['repair swarm fix-1 took over when generation 1 halted: the integration verify is red'])
     expect(textOf(byTask['t-res2']!.title)).toContain(' · generation 2 · ')
     expect(textOf(byTask['t-res1']!.title)).not.toContain('generation')
     // Oldest first, so the cap drops the oldest: the newest run's cards come last.
@@ -630,6 +650,147 @@ describe('restoreCards and refreshCards', () => {
     await executeDone('20261005-new', 't-new', NOW + 100 * MIN)
     await noteCards(p, submit(notice('t-new')))
     expect(Object.keys(last().byTask)).toEqual(['t-old', 't-new'])
+  })
+})
+
+describe('a repair generation, on the card of the generation it took over from (A15)', () => {
+  const repair = (generation: number, swarm: string): Rec => ({ kind: 'run.repair', body: { generation, swarm, launch: `l-${swarm}`, budget: { rounds: 2, agents: 3 } } })
+
+  /** An execute run halted at G2 with a plan gap (its own card four lines), then its repair swarm's generation opened. */
+  async function haltedThenRepairing(run: string, taskId: string): Promise<void> {
+    await record(run, [
+      start('execute', run),
+      launch(taskId),
+      verify('r1', 'G1', 1, true),
+      verdict('r1'),
+      land('G1', 'r1', C1),
+      verify('r2a', 'G2', 1, false),
+      verdict('r2a', ['tests_green'], { plan_gap: 'which retry wins?' }),
+      end(taskId, 1, 'halted', 'G2: out of attempts'),
+      repair(2, 'fix-g2'),
+    ])
+    writeRunJson(run, 'execute', { gates: GATES, maxAttempts: 1 })
+  }
+
+  test("while it's open the card says the swarm works on it; once its end is recorded the tick shows that end, labelled repair, with no notification", async () => {
+    const run = '20261005-mend'
+    await haltedThenRepairing(run, 't-mend')
+    await noteCards(p, submit(notice('t-mend')))
+    const open = cardOf('t-mend')
+    expect(textOf(open.title)).toBe(`⚑ halted · litter · execute ${run} · 6m 0s`)
+    // What came after the row's own generation is always said: the gates line makes room for it.
+    expect(linesOf(open)).toEqual(['G2: out of attempts', 'G2, attempt 1: plan ✓ tests ✕ regressions ✓ rules ✓', 'plan gap: which retry wins?', 'repair swarm fix-g2 is working on it'])
+    expect(open.lines.at(-1)).toEqual([{ text: 'repair swarm fix-g2 is working on it', color: 'background' }])
+
+    // A ledger that hasn't moved: one stat a tick, nothing read, nothing written.
+    const touched = spyFs()
+    await cardsTick(p)
+    expect(touched).toEqual([ledgerDir(runDir(litterDir, run))])
+    expect(writes).toHaveLength(1)
+
+    await record(run, [verify('r2b', 'G2', 2, true), verdict('r2b'), land('G2', 'r2b', C2), verify('r3', 'G3', 1, true), verdict('r3'), land('G3', 'r3', C3), end(null, 2, 'done')])
+    await cardsTick(p)
+    expect(writes).toHaveLength(2)
+    const done = cardOf('t-mend')
+    expect(textOf(done.title)).toBe(`✓ done · litter · execute ${run} · repair · 7m 0s`)
+    expect(done.title[0]).toEqual({ text: '✓ done', color: 'success', bold: true })
+    expect(linesOf(done)).toEqual(['3/3 gates landed · last land 3333333', 'repair swarm fix-g2 took over when generation 1 halted: G2: out of attempts'])
+    expect(done.lines.at(-1)![0]!.color).toBe('inactive')
+
+    // Ended, it isn't watched: the next tick reads nothing.
+    touched.length = 0
+    await cardsTick(p)
+    expect(touched).toEqual([])
+    expect(writes).toHaveLength(2)
+    expect(p.logs).toEqual([])
+  })
+
+  test('a repair started after the card was built: the live repair swarm names its run, so the tick reads it; a link to another folder is left alone', async () => {
+    const run = '20261005-later'
+    await record(run, [start('fanout', run), launch('t-later'), end('t-later', 1, 'halted', 'the integration verify is red')])
+    writeRunJson(run, 'fanout', { tasks: [] })
+    await noteCards(p, submit(notice('t-later')))
+    expect(linesOf(cardOf('t-later'))).toEqual(['the integration verify is red'])
+    // Nothing open when it was read: the tick reads nothing.
+    const touched = spyFs()
+    await cardsTick(p)
+    expect(touched).toEqual([])
+
+    // The person asked for the repair (repair.start), and its swarm went live; another folder's link is never read.
+    await record(run, [repair(2, 'fix-1')])
+    links = [
+      { runDir: runDir(litterDir, run), run, generation: 2 },
+      { runDir: join(dir, 'elsewhere', run), run: '20261005-other', generation: 2 },
+    ]
+    await cardsTick(p)
+    expect(touched.filter(t => t.includes('elsewhere') || t.includes('20261005-other'))).toEqual([])
+    expect(writes).toHaveLength(2)
+    expect(linesOf(cardOf('t-later'))).toEqual(['the integration verify is red', 'repair swarm fix-1 is working on it'])
+
+    // It ended halted: its own reason first, then whose it was.
+    await record(run, [end(null, 2, 'halted', 'repair swarm fix-1 ended without a land')])
+    await cardsTick(p)
+    const halted = cardOf('t-later')
+    expect(textOf(halted.title)).toBe(`⚑ halted · litter · fanout ${run} · repair · 1m 0s`)
+    expect(linesOf(halted)).toEqual(['repair swarm fix-1 ended without a land', 'repair swarm fix-1 took over when generation 1 halted: the integration verify is red'])
+
+    // The swarm gone: the next tick reads nothing.
+    links = []
+    touched.length = 0
+    await cardsTick(p)
+    expect(touched).toEqual([])
+    expect(writes).toHaveLength(3)
+  })
+
+  test("a later generation's notification rebuilds the run's earlier card too, where it stands", async () => {
+    const run = '20261005-again'
+    await record(run, [start('execute', run), launch('t-g1'), end('t-g1', 1, 'halted', 'G1: out of attempts')])
+    writeRunJson(run, 'execute', { gates: GATES.slice(0, 1) })
+    await noteCards(p, submit(notice('t-g1')))
+    await executeDone('20261005-between', 't-between')
+    await noteCards(p, submit(notice('t-between')))
+    // Repaired in another session (nothing here watched it), then resumed.
+    await record(run, [repair(2, 'fix-1'), end(null, 2, 'halted', 'repair swarm fix-1 ended without a land'), launch('t-g3', 3, 'run.resume'), end('t-g3', 3, 'done')])
+    await noteCards(p, submit(notice('t-g3')))
+    expect(Object.keys(last().byTask)).toEqual(['t-g1', 't-between', 't-g3'])
+    expect(textOf(cardOf('t-g1').title)).toBe(`⚑ halted · litter · execute ${run} · repair · 1m 0s`)
+    expect(textOf(cardOf('t-g3').title)).toBe(`✓ done · litter · execute ${run} · generation 3 · 1m 0s`)
+    // A resumed generation has its own row: it isn't on the earlier card.
+    expect(linesOf(cardOf('t-g1')).join('\n')).not.toContain('generation 3')
+  })
+
+  test("a watched run's ledger that can't be read: one log line, its card kept, not read again until it changes; a tampered one stops the watch", async () => {
+    const run = '20261005-sick'
+    await haltedThenRepairing(run, 't-sick')
+    await noteCards(p, submit(notice('t-sick')))
+    const before = cardOf('t-sick')
+    const ledger = ledgerDir(runDir(litterDir, run))
+    const file = join(ledger, readdirSync(ledger).sort()[1]!)
+    chmodSync(file, 0o000)
+    try {
+      writeFileSync(join(ledger, 'stray.tmp'), '')
+      await cardsTick(p)
+      expect(p.logs).toEqual([expect.stringMatching(new RegExp(`^card: run ${run}'s cards weren't rebuilt: `))])
+      expect(writes).toHaveLength(1)
+      // One stat a tick while it's unchanged, and no second log line.
+      const touched = spyFs()
+      await cardsTick(p)
+      expect(touched).toEqual([ledger])
+      expect(p.logs).toHaveLength(1)
+    } finally {
+      chmodSync(file, 0o644)
+    }
+    // Record 4 rewritten, and the folder's mtime moved: the chain breaks at record 5. The card stays, and the run isn't watched after.
+    const forged = join(ledger, readdirSync(ledger).filter(n => n.endsWith('.json')).sort()[3]!)
+    writeFileSync(forged, readFileSync(forged, 'utf8').replace('"verify_id"', '"verify_id" '))
+    moveLedger(run)
+    await cardsTick(p)
+    expect(p.logs.at(-1)).toBe(`card: run ${run}'s ledger is tampered at 5, so its cards aren't rebuilt`)
+    expect(writes).toHaveLength(1)
+    expect(cardOf('t-sick')).toEqual(before)
+    const touched = spyFs()
+    await cardsTick(p)
+    expect(touched).toEqual([])
   })
 })
 

@@ -530,6 +530,63 @@ describe('the windows', () => {
   })
 })
 
+// A17: a short dock with the editor open clipped [Save]. VS Code draws the rows as Buttons (tests/drawing.ts draws a
+// Client as one row), so the drawing's rows are the dock's; the terminal's arithmetic is taskspane.spec.ts's.
+describe('the editor in a short dock (A17)', () => {
+  const saveShown = (rows: readonly string[]): boolean => rows.some(r => r.includes('[ Save ] [ Revert ]'))
+
+  test('[Save] [Revert] stays in view at every dock height down to the floor, the fields above it windowed', async ($, on) => {
+    const w = world(on)
+    await run($, 'team-a')
+    const tall = await mountTasks($, 'vscode', { bodyColumns: 100, bodyRows: 40 })
+    await tall.press({ key: 'tasks:select:team-a/3' })
+    expect(last(w).editor?.id).toBe('3')
+    await tall.unmount()
+    // The floor: the hub's header, strip and gap; the body's first line, the folded picker, the filters, the sort, one task
+    // and its footer, the editor's heading, its footer and its actions.
+    const windowed: number[] = []
+    for (let bodyRows = 40; bodyRows >= 13; bodyRows--) {
+      const ui = await mountTasks($, 'vscode', { bodyColumns: 100, bodyRows })
+      const rows = drawText(await ui.drawn(), 100)
+      expect({ bodyRows, save: saveShown(rows), within: rows.length <= bodyRows }).toEqual({ bodyRows, save: true, within: true })
+      if (await ui.find({ type: 'Text', text: /^Task #3$/ })) {
+        if ((await ui.find({ type: 'Button', key: 'tasks:editor:down' })) || (await ui.find({ type: 'Text', text: /too tall for this dock/ }))) windowed.push(bodyRows)
+      }
+      await ui.unmount()
+    }
+    // Windowed only once the tasks are down to one row.
+    expect(windowed.length).toBeGreaterThan(0)
+    expect(Math.max(...windowed)).toBeLessThan(25)
+  })
+
+  test("its footer moves the window a field at a time, and Assign to… starts it where Owner shows", async ($, on) => {
+    const w = world(on)
+    await run($, 'team-a')
+    const ui = await mountTasks($, 'vscode', { bodyColumns: 100, bodyRows: 17 })
+    await ui.press({ key: 'tasks:select:team-a/3' })
+    // Subject and Description, Status and Owner behind [↓ 2 more].
+    expect(await ui.find({ type: 'Input', key: 'tasks:subject:team-a/3' })).toBeDefined()
+    expect(await ui.find({ type: 'Select', key: 'tasks:status:team-a/3' })).toBeUndefined()
+    expect((await ui.find({ type: 'Button', key: 'tasks:editor:down' }))?.text).toBe('↓ 2 more')
+    expect(await ui.find({ type: 'Button', key: 'tasks:editor:up' })).toBeUndefined()
+    expect(await ui.press({ key: 'tasks:editor:down' })).toEqual(expect.objectContaining({ element: 'tasks:editor:down' }))
+    expect(await ui.find({ type: 'Input', key: 'tasks:subject:team-a/3' })).toBeUndefined()
+    expect(await ui.find({ type: 'Select', key: 'tasks:status:team-a/3' })).toBeDefined()
+    expect((await ui.find({ type: 'Button', key: 'tasks:editor:up' }))?.text).toBe('↑ 1 above')
+    expect(saveShown(drawText(await ui.drawn(), 100))).toBe(true)
+    await ui.press({ key: 'tasks:editor:up' })
+    expect(await ui.find({ type: 'Input', key: 'tasks:subject:team-a/3' })).toBeDefined()
+    // Another task's editor starts at its first field; its Assign to… where Owner is in the window.
+    await $.ui.focus({ component: 'Pane', requestId: 'litter', plugin: 'litter', element: 'tasks:select:team-a/1', origin: { kind: 'person' } })
+    await ui.press({ key: 'tasks:assign:team-a/1' })
+    expect(last(w).editor?.id).toBe('1')
+    expect(await ui.find({ type: 'Select', key: 'tasks:owner:team-a/1' })).toBeDefined()
+    expect(saveShown(drawText(await ui.drawn(), 100))).toBe(true)
+    await ui.press({ key: 'tasks:select:team-a/1' })
+    expect(await ui.find({ type: 'Input', key: 'tasks:subject:team-a/1' })).toBeDefined()
+  })
+})
+
 /** The body as drawn: its first line to its last, the hub's chrome left out. */
 function bodyOf(rows: readonly string[], first: string, lastLine: string): string[] {
   const from = rows.findIndex(r => r.startsWith(first))

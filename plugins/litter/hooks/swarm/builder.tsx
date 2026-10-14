@@ -728,20 +728,59 @@ export function templateListCtx<C extends Pick<BodyContext, 'bodyColumns'>>(view
   return { ...ctx, bodyColumns: Math.max(30, Math.floor(columns * PICKED_LIST_SHARE)) }
 }
 
+/** One of the start screen's parts above its template list: the rows it takes, and its drawing. */
+export type StartPart = { rows: number; draw: (el: PaneElements, e: BodyContext) => RenderElement | null }
+
 /**
- * The rows the start screen draws above its template list at `ctx` (the hit
- * test for a wheel tick over the list, swarm/panes.ts's onUiScroll): the
+ * What the start screen draws above its template list at `ctx`, in order,
+ * each part with its rows (A20): what needs you first (the ⚑ rule), the
  * notice wrapped, the Name field and its caption, "Ask the lead" (a gap and
  * its heading) and its field with its caption ([Ask the lead] beside it is
- * no taller), then "From a template" (a gap and its heading, [Blank]
- * beside it). Kept in step with renderStart: a row added above the list is
- * added here.
+ * no taller), then "From a template" (a gap and its heading, [Blank] beside
+ * it). renderStart draws these and nothing else above the list, and
+ * startListTop sums their rows, so a part added here moves the wheel's hit
+ * test with it. Pure.
  */
+export function startAbove(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface'>): StartPart[] {
+  const columns = ctx.bodyColumns
+  const at = (e: BodyContext) => ({ surface: e.surface, isFocused: e.isFocused, focused: e.focused })
+  // "or [ Blank ]" beside the template heading: its cells off the heading's.
+  const blank = 3 + itemWidth({ kind: 'button', label: 'Blank' })
+  const n = view.notice
+  return [
+    ...startNeeds(view).map((x): StartPart => ({ rows: needsRowCount(x.text, x.action.label, columns), draw: el => needsRow(el, x.text, x.action) })),
+    ...(n ? [{ rows: textRows(`${NOTICE_STYLE[n.level].glyph} ${n.text}`, columns), draw: (el: PaneElements) => noticeRow(el, n) }] : []),
+    { rows: fieldRows(ctx.surface, true), draw: (el, e) => field(el, { key: 'swarm:start:name', label: 'Name', value: view.name }, NAME_CAPTION, at(e)) },
+    { rows: 2, draw: el => headed(el, 'Ask the lead', columns) },
+    {
+      rows: fieldRows(ctx.surface, true),
+      draw: (el, e) =>
+        fieldWith(
+          el,
+          field(el, { key: 'swarm:start:ask', value: view.ask, placeholder: 'what the swarm is for', submitLabel: 'ask' }, ASK_CAPTION, at(e)),
+          { key: 'swarm:start:ask-send', label: 'Ask the lead', primary: startPrimary(view) === 'ask' },
+          e,
+        ),
+    },
+    {
+      rows: 2,
+      draw: el => {
+        const { Box, Text } = el
+        return (
+          <Box flexDirection="row" columnGap={1} marginTop={1}>
+            {heading(el, 'From a template', Number.isFinite(columns) ? Math.max(1, columns - blank - 1) : undefined)}
+            <Text color={STYLE.muted}>or</Text>
+            {action(el, { key: 'swarm:start:blank', label: 'Blank' })}
+          </Box>
+        )
+      },
+    },
+  ]
+}
+
+/** The rows the start screen draws above its template list at `ctx` (the wheel's hit test, swarm/panes.ts's onUiScroll): startAbove's. */
 export function startListTop(view: SwarmStartView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface'>): number {
-  const needs = startNeeds(view).reduce((n, x) => n + needsRowCount(x.text, x.action.label, ctx.bodyColumns), 0)
-  const notice = view.notice ? textRows(`${NOTICE_STYLE[view.notice.level].glyph} ${view.notice.text}`, ctx.bodyColumns) : 0
-  const headed = 2
-  return needs + notice + fieldRows(ctx.surface, true) + headed + fieldRows(ctx.surface, true) + headed
+  return startAbove(view, ctx).reduce((rows, x) => rows + x.rows, 0)
 }
 
 /** `2, 5 and 6`. */
@@ -830,7 +869,7 @@ function templateForm(el: PaneElements, t: SwarmTemplateForm, primary: boolean, 
 
 export function renderStart(view: SwarmStartView, resolved: PaneElements, e: BodyContext): RenderElement {
   const el = tableFor(resolved, e.surface)
-  const { Box, Text } = el
+  const { Box } = el
   const columns = e.bodyColumns
   if (view.blocked) {
     return (
@@ -842,33 +881,16 @@ export function renderStart(view: SwarmStartView, resolved: PaneElements, e: Bod
   }
   const t = view.template
   const primary = startPrimary(view)
-  const at = { surface: e.surface, isFocused: e.isFocused, focused: e.focused }
   const wide = Number.isFinite(columns) && columns >= WIDE_COLUMNS
-  // "or [ Blank ]" beside the template heading: its cells off the heading's.
-  const blank = 3 + itemWidth({ kind: 'button', label: 'Blank' })
   const templates = templateList(view)
   const listCtx = templateListCtx(view, e)
   const listColumns = listCtx.bodyColumns
   const picker = list(el, templates, listCtx)
   const form = t ? panels(el, [{ title: t.name, body: templateForm(el, t, primary === 'template', e, wide ? columns - listColumns - 5 : columns - 4) }], false) : null
-  // What's above the list keeps to startListTop's rows: what needs you first (the ⚑ rule), then the notice.
+  // Above the list, startAbove's parts alone: the wheel's hit test counts their rows (A20).
   return (
     <Box flexDirection="column">
-      {startNeeds(view).map(x => needsRow(el, x.text, x.action))}
-      {noticeRow(el, view.notice)}
-      {field(el, { key: 'swarm:start:name', label: 'Name', value: view.name }, NAME_CAPTION, at)}
-      {headed(el, 'Ask the lead', columns)}
-      {fieldWith(
-        el,
-        field(el, { key: 'swarm:start:ask', value: view.ask, placeholder: 'what the swarm is for', submitLabel: 'ask' }, ASK_CAPTION, at),
-        { key: 'swarm:start:ask-send', label: 'Ask the lead', primary: primary === 'ask' },
-        e,
-      )}
-      <Box flexDirection="row" columnGap={1} marginTop={1}>
-        {heading(el, 'From a template', Number.isFinite(columns) ? Math.max(1, columns - blank - 1) : undefined)}
-        <Text color={STYLE.muted}>or</Text>
-        {action(el, { key: 'swarm:start:blank', label: 'Blank' })}
-      </Box>
+      {startAbove(view, e).map(x => x.draw(el, e))}
       {t && wide ? (
         <Box flexDirection="row" columnGap={1}>
           <Box flexDirection="column" width={listColumns} flexShrink={0}>

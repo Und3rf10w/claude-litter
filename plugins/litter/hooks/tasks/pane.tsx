@@ -23,8 +23,9 @@
 // save; the editor's Subject and Description framed fields captioned with
 // how they save, the changed-on-disk line a banner with [Reload]; the files
 // that couldn't be read notices above the lists. The body keeps to the rows
-// the hub gives it (tasksPlan), and the wheel moves the list it's over
-// (tasksTops, kept in step with the render).
+// the hub gives it (tasksPlan; in a dock too short for the editor, a window
+// over its fields keeps [Save] in view, A17), and the wheel moves the list
+// it's over (tasksTops, kept in step with the render).
 
 import type { RenderElement } from 'claude-code'
 import type { Ports } from '../ports'
@@ -176,6 +177,8 @@ const RELOAD_CELLS = 11
 /** The lists' ids: the hub keeps each window by it, and its footer's keys are `<id>:up` and `<id>:down`. */
 export const LISTS_LIST = 'tasks:lists'
 export const ROWS_LIST = 'tasks:rows'
+/** The editor's fields' window in a short dock (A17): the hub keeps its first part by it, and its footer's keys are `<id>:up` and `<id>:down`. */
+export const EDITOR_WINDOW = 'tasks:editor'
 
 /** Tasks to the hub (chrome.tsx's SectionMeta): its body keeps to ctx.rows; its keys. */
 export const tasksSection: SectionMeta<TasksPaneView> = {
@@ -192,8 +195,20 @@ export const tasksSection: SectionMeta<TasksPaneView> = {
 /** What the planner reads of the context. */
 export type TasksCtx = Pick<BodyContext, 'surface' | 'bodyColumns' | 'rows' | 'placement' | 'focused' | 'lists'>
 
-/** How the body shares its rows: the picker's form and window, and the tasks' window. */
-export type TasksPlan = { picker: 'none' | 'list' | 'folded'; pickerRows: number; rows: number }
+/**
+ * How the body shares its rows: the picker's form and window, the tasks'
+ * window, and, only in a dock too short for the whole editor, the window
+ * over its fields.
+ */
+export type TasksPlan = { picker: 'none' | 'list' | 'folded'; pickerRows: number; rows: number; fields?: FieldsWindow }
+
+/**
+ * The editor's parts drawn in a short dock (editorParts' [start, end)), so
+ * its actions keep their rows (A17); `max` is the last start the window
+ * takes, the one that shows the last part; `up` and `down` the starts its
+ * footer's [↑] and [↓] move to, null where no part that way fits.
+ */
+export type FieldsWindow = { start: number; end: number; count: number; max: number; up: number | null; down: number | null }
 
 /** Where Select and Input are drawn (swarm/builder.tsx's tableFor): everywhere but the mobile app. */
 const fieldsOn = (surface: string): boolean => surface !== 'mobile'
@@ -323,18 +338,77 @@ function controlsRows(body: TasksBody, ctx: TasksCtx): number {
   return buttonRows(FILTERS.map(f => filterLabel(body, f)), cols) + sort
 }
 
-/** The editor's rows: its heading, the two fields (or the line in place of one), the description's lines, Status and Owner, the banner, [Save] [Revert]. */
+/** One of the editor's parts above its actions: its rows, and the element it holds (the ring's), if any. */
+export type EditorPart = { rows: number; key: string | null }
+
+/**
+ * The editor's parts between its heading and its banner, in the order
+ * editorPart draws them: Subject and Description (or the line in place of
+ * one), the description's own lines, Status, Owner. Pure.
+ */
+export function editorParts(body: TasksBody, ctx: Pick<TasksCtx, 'surface' | 'bodyColumns'>): EditorPart[] {
+  const ed = body.editor
+  if (!ed || body.list === null) return []
+  const k = (a: string): string => `tasks:${a}:${body.list}/${ed.id}`
+  // A field with its caption; on the mobile app its value as text, then the caption.
+  const fieldH = (has: boolean): number => (!has ? 1 : fieldsOn(ctx.surface) ? fieldRows(ctx.surface, true) : 2)
+  const out: EditorPart[] = [
+    { rows: fieldH(ed.subject !== null), key: ed.subject !== null ? k('subject') : null },
+    { rows: fieldH(ed.description !== null), key: ed.description !== null ? k('description') : null },
+  ]
+  const lines = descriptionLines(ed, ctx)
+  if (lines !== null) out.push({ rows: Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, ctx.bodyColumns)), key: null })
+  out.push({ rows: 1, key: k('status') }, { rows: 1, key: k('owner') })
+  return out
+}
+
+const sum = (parts: readonly EditorPart[]): number => parts.reduce((n, x) => n + x.rows, 0)
+
+/** The editor's rows: its heading, its parts, the banner, [Save] [Revert]. */
 function editorRows(body: TasksBody, ctx: TasksCtx): number {
   const ed = body.editor
   if (!ed || body.list === null) return 0
   const cols = ctx.bodyColumns
-  // A field with its caption; on the mobile app its value as text, then the caption.
-  const fieldH = (has: boolean): number => (!has ? 1 : fieldsOn(ctx.surface) ? fieldRows(ctx.surface, true) : 2)
-  let n = 1 + fieldH(ed.subject !== null) + fieldH(ed.description !== null) + 2 + 1
-  const lines = descriptionLines(ed, ctx)
-  if (lines !== null) n += Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, cols))
+  let n = 1 + sum(editorParts(body, ctx)) + 1
   if (ed.changed) n += textRows(noticeText('warning', changedText(ed)), Number.isFinite(cols) ? cols - RELOAD_CELLS : cols)
   return n
+}
+
+/**
+ * The parts that fit in `budget` rows, from `from` (the hub's offset), the
+ * one holding the ring kept in, and none left out above that would fit at
+ * the end. A part taller than the room never starts it: the window starts
+ * at the next one that fits, and the footer moves between the starts that
+ * fit. Pure.
+ */
+function fieldsWindow(parts: readonly EditorPart[], budget: number, from: number, focused: string | null): FieldsWindow {
+  const count = parts.length
+  const fits = (i: number): boolean => parts[i]!.rows <= budget
+  // The last start whose parts all fit: past it the window would end short of the room.
+  let max = count - 1
+  for (let used = 0; max >= 0 && used + parts[max]!.rows <= budget; max--) used += parts[max]!.rows
+  max = Math.min(count - 1, max + 1)
+  const endOf = (start: number): number => {
+    let end = start
+    for (let used = 0; end < count && used + parts[end]!.rows <= budget; end++) used += parts[end]!.rows
+    return end
+  }
+  let start = Math.min(max, Math.max(0, Math.floor(from)))
+  while (start < max && !fits(start)) start++
+  const ring = focused === null ? -1 : parts.findIndex(x => x.key === focused)
+  if (ring >= 0 && fits(ring) && ring < start) start = ring
+  else if (ring >= 0 && fits(ring) && ring >= endOf(start)) {
+    // The ring's part last: as many before it as fit.
+    start = ring
+    for (let used = parts[ring]!.rows; start > 0 && used + parts[start - 1]!.rows <= budget; start--) used += parts[start - 1]!.rows
+  }
+  const end = endOf(start)
+  // The nearest start that fits, from `i` on in `step`'s way.
+  const fitting = (i: number, step: 1 | -1): number | null => {
+    for (let j = i; j >= 0 && j < count; j += step) if (fits(j)) return j
+    return null
+  }
+  return { start, end, count, max, up: fitting(start - 1, -1), down: end < count ? fitting(start + 1, 1) : null }
 }
 
 /** The tasks' rows at a window of `rows`: the list's, or its one line for none. */
@@ -346,7 +420,10 @@ const rowsHeight = (body: TasksBody, ctx: TasksCtx, rows: number): number => lis
  * or inline body, unless [Change] opened it; its window up to PICKER_ROWS,
  * given up a row at a time, then folded, before the tasks go under
  * ROWS_MIN), then the tasks' window all the rest. Inline, nothing bounds
- * it: the tasks' window is ROWS_INLINE. Pure.
+ * it: the tasks' window is ROWS_INLINE. In a dock too short for the whole
+ * editor, its actions keep their rows (A17): the tasks give up rows down to
+ * one, then the editor's parts above its actions are windowed, with a
+ * footer to move them, the one holding the ring kept in. Pure.
  */
 export function tasksPlan(body: TasksBody, ctx: TasksCtx): TasksPlan {
   const count = body.rows.length
@@ -362,13 +439,24 @@ export function tasksPlan(body: TasksBody, ctx: TasksCtx): TasksPlan {
   if (picker === 'list' && !body.picking && ctx.rows - fixed - pickerHeight(body, ctx, picker, pickerRows) < need) picker = 'folded'
   let left = ctx.rows - fixed - pickerHeight(body, ctx, picker, pickerRows) - need
   let rows = rowsMin
+  const parts = editorParts(body, ctx)
+  let fields: FieldsWindow | undefined
+  if (left < 0 && parts.length > 0) {
+    left += need - rowsHeight(body, ctx, 1)
+    rows = 1
+    if (left < 0) {
+      // The parts' rows and what's short, less the footer's row.
+      fields = fieldsWindow(parts, sum(parts) + left - 1, ctx.lists?.[EDITOR_WINDOW] ?? 0, ctx.focused)
+      left = sum(parts) + left - 1 - sum(parts.slice(fields.start, fields.end))
+    }
+  }
   while (rows < count) {
     const more = rowsHeight(body, ctx, rows + 1) - rowsHeight(body, ctx, rows)
     if (more > left) break
     left -= more
     rows++
   }
-  return { picker, pickerRows, rows }
+  return { picker, pickerRows, rows, ...(fields ? { fields } : {}) }
 }
 
 /** A scrolled part's first row in the body, and its rows. */
@@ -420,7 +508,7 @@ export function renderTasksPane(view: TasksPaneView | null, resolved: PaneElemen
       {shown !== null ? pickerPart(el, body, plan, ctx) : null}
       {shown !== null ? controlsPart(el, body) : null}
       {shown !== null ? list(el, rowsSpec(body, plan.rows, ctx), ctx) : null}
-      {shown !== null && body.editor ? editorPart(el, shown, body.editor, ctx) : null}
+      {shown !== null && body.editor ? editorPart(el, shown, body.editor, ctx, plan.fields) : null}
     </Box>
   )
 }
@@ -526,10 +614,11 @@ function reloadBanner(el: PaneElements, text: string, key: string): RenderElemen
  * saves (the Description's with what ⏎ marks too); the description's own
  * lines when it has several or its field cuts it; Status and Owner short Selects; the
  * changed-on-disk banner with [Reload]; [Save], primary while there's an
- * edit to save, and [Revert].
+ * edit to save, and [Revert]. In a short dock only the plan's window of the
+ * parts above the banner, and its footer (A17).
  */
-function editorPart(el: PaneElements, listKey: string, ed: TasksEditor, ctx: BodyContext): RenderElement {
-  const { Box, Text } = el
+function editorPart(el: PaneElements, listKey: string, ed: TasksEditor, ctx: BodyContext, fields?: FieldsWindow): RenderElement {
+  const { Box, Button, Text } = el
   const k = (a: string): string => `tasks:${a}:${listKey}/${ed.id}`
   const how = ed.via === 'tool' ? 'saves through TaskUpdate' : 'saves by a direct write: no hooks run, no assignment message'
   const cols = ctx.bodyColumns
@@ -540,22 +629,45 @@ function editorPart(el: PaneElements, listKey: string, ed: TasksEditor, ctx: Bod
       {`${NOTICE_STYLE.warning.glyph} the ${what} is too long to edit here`}
     </Text>
   )
+  // In editorParts' order, which the plan's window counts.
+  const parts: RenderElement[] = [
+    ed.subject !== null ? field(el, { key: k('subject'), label: 'Subject', value: ed.subject, submitLabel: 'keep' }, how, at) : tooLong('subject'),
+    ed.description !== null
+      ? field(el, { key: k('description'), label: 'Description', value: ed.description, placeholder: 'none', submitLabel: 'keep' }, `${LINE_MARK} marks a line break · ${how}`, at)
+      : tooLong('description'),
+    ...(lines !== null
+      ? [
+          <Box height={Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, cols))} overflow="hidden">
+            <Text color={STYLE.muted} wrap="wrap">
+              {lines}
+            </Text>
+          </Box>,
+        ]
+      : []),
+    choice(el, k('status'), 'Status', ed.status, ed.statuses),
+    choice(el, k('owner'), 'Owner', ed.owner, ed.owners),
+  ]
+  // The footer's counts, each a Button where a part that way fits, else muted text: a taller dock shows it.
+  const move = (dir: 'up' | 'down', n: number, to: number | null): RenderElement | null => {
+    if (n === 0) return null
+    const label = dir === 'up' ? `↑ ${n} above` : `↓ ${n} more`
+    if (to !== null) return <Button key={`${EDITOR_WINDOW}:${dir}`} label={label} plain dimColor onPress={noop} />
+    return (
+      <Text color={STYLE.muted} wrap="truncate-end">
+        {`${label}, too tall for this dock`}
+      </Text>
+    )
+  }
   return (
     <Box flexDirection="column">
       {heading(el, `Task #${ed.id}`, cols, ed.links !== '' ? ed.links : null)}
-      {ed.subject !== null ? field(el, { key: k('subject'), label: 'Subject', value: ed.subject, submitLabel: 'keep' }, how, at) : tooLong('subject')}
-      {ed.description !== null
-        ? field(el, { key: k('description'), label: 'Description', value: ed.description, placeholder: 'none', submitLabel: 'keep' }, `${LINE_MARK} marks a line break · ${how}`, at)
-        : tooLong('description')}
-      {lines !== null ? (
-        <Box height={Math.min(DESCRIPTION_TEXT_ROWS, textRows(lines, cols))} overflow="hidden">
-          <Text color={STYLE.muted} wrap="wrap">
-            {lines}
-          </Text>
+      {fields ? parts.slice(fields.start, fields.end) : parts}
+      {fields ? (
+        <Box flexDirection="row" columnGap={2}>
+          {move('up', fields.start, fields.up)}
+          {move('down', fields.count - fields.end, fields.down)}
         </Box>
       ) : null}
-      {choice(el, k('status'), 'Status', ed.status, ed.statuses)}
-      {choice(el, k('owner'), 'Owner', ed.owner, ed.owners)}
       {ed.changed ? reloadBanner(el, changedText(ed), k('reload')) : null}
       {actions(el, [
         { key: k('save'), label: 'Save', primary: ed.dirty && !ed.changed },
@@ -699,17 +811,27 @@ export async function pressTasks(p: Ports, key: string, surface?: string): Promi
       case 'rows':
         await pageList(p, 'rows', k.arg, surface)
         break
+      case 'editor':
+        await moveFields(p, k.arg, surface)
+        break
       case 'select':
       case 'edit': {
-        // A row's press, or its menu's Edit: selected, so the editor opens on it.
+        // A row's press, or its menu's Edit: selected, so the editor opens on it, its window (in a short dock) at its first field.
         const t = target(p, k.arg)
-        if (t) setTasksNav({ ...n, selected: t.id })
+        if (t) {
+          setTasksNav({ ...n, selected: t.id })
+          await moveList(p, EDITOR_WINDOW, 0, 0)
+        }
         break
       }
       case 'assign': {
         // Assign to…: the editor opens on it, and says where the owner is picked (no port moves the ring onto Owner).
         const t = target(p, k.arg)
-        if (t) setTasksNav({ ...n, selected: t.id, notice: { level: 'info', text: `pick #${t.id}'s owner under Owner, then [Save]` } })
+        if (t) {
+          setTasksNav({ ...n, selected: t.id, notice: { level: 'info', text: `pick #${t.id}'s owner under Owner, then [Save]` } })
+          // Owner is the editor's last part: in a short dock its window starts as late as it can, so Owner is in it.
+          await moveList(p, EDITOR_WINDOW, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+        }
         break
       }
       case 'start':
@@ -860,6 +982,14 @@ async function pageList(p: Ports, which: TasksScrolled, dir: string, surface: st
   const drawn = drawnBody(surface)
   if (!drawn || (dir !== 'up' && dir !== 'down')) return
   await moveBy(p, drawn.body, drawn.ctx, which, (dir === 'up' ? -1 : 1) * pageRows(drawn.body, drawn.ctx, which))
+}
+
+/** The editor's footer, [↑ n above] or [↓ n more] on `surface`: its window a part that way, as that surface drew it; nothing where it drew none. */
+async function moveFields(p: Ports, dir: string, surface: string | undefined): Promise<void> {
+  const drawn = drawnBody(surface)
+  const fields = drawn ? tasksPlan(drawn.body, drawn.ctx).fields : undefined
+  const to = dir === 'up' ? fields?.up : dir === 'down' ? fields?.down : null
+  if (fields && typeof to === 'number') await moveList(p, EDITOR_WINDOW, to, fields.max)
 }
 
 /** Which list a body row is in (tasksTops), or none. Pure. */

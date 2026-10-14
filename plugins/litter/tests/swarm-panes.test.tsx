@@ -1014,6 +1014,29 @@ describe('the start screen', () => {
     expect(rows.some(r => /^Or\b/.test(r))).toBe(false)
   })
 
+  // A20: the list's first row is where startListTop puts it (swarmpanes.spec.ts holds the same counts), whatever is drawn above it.
+  const LONG_NOTICE = { level: 'warning' as const, text: 'name the swarm first: a-z, 0-9 and -, up to 24, not starting with -' }
+  const NEEDS = [{ swarm: 'nightly', live: true, proposals: [2, 6], questions: [{ who: 'part-a', text: 'which branch?' }] }]
+  const ABOVE: [string, SwarmStartView, 'terminal' | 'desktop', number, number][] = [
+    ['only the fields', { ...START, notice: null }, 'terminal', 100, 12],
+    ['only the fields', { ...START, notice: null }, 'terminal', 60, 12],
+    ['only the fields', { ...START, notice: null }, 'desktop', 100, 8],
+    ['a notice', START, 'terminal', 100, 13],
+    ['a notice that wraps', { ...START, notice: LONG_NOTICE }, 'terminal', 60, 14],
+    ['what needs you', { ...START, notice: null, needsYou: NEEDS }, 'terminal', 100, 14],
+  ]
+  for (const [what, view, surface, columns, top] of ABOVE) {
+    test(`with ${what} above it, the list starts ${top} rows into the body, on the ${surface} at ${columns} columns (A20)`, async ($, on) => {
+      mock.store(on)
+      views(on, view)
+      const ui = await mountAt($, columns, 'dock', surface)
+      const rows = drawText(await ui.drawn(), columns)
+      // The body starts after the strip (its last tab is Doctor) and its gap.
+      const body = rows.findIndex(r => r.includes('Doctor')) + 2
+      expect(rows.findIndex(r => r.startsWith('› fan-out')) - body).toBe(top)
+    })
+  }
+
   test('saved swarms are a list: the name, `▸ live` when live, the rev and node count muted; the goal the focused row\'s description', async ($, on) => {
     mock.store(on)
     views(on, { ...START, swarms: [...START.swarms, { name: 'nightly', goal: 'triage the nightly failures', revision: 5, nodes: 4, live: true }] })

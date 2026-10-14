@@ -40,7 +40,7 @@ import {
   toolLine,
   valueWords,
 } from '../../hooks/swarm/view'
-import { builderPrimary, startListTop, startNeeds, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
+import { TEMPLATE_LIST, builderPrimary, startAbove, startListTop, startNeeds, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
 import {
   TRANSCRIPT_INLINE_ROWS,
   TRANSCRIPT_MIN_ROWS,
@@ -1210,6 +1210,40 @@ describe("WP-DG: WP-DD's pane contract changes", () => {
     // A row above the transcript: the pane's own scroll.
     await tick(top + 1, 4, -1)
     expect(passed.n).toBe(1)
+  })
+
+  test("a part added above the template list moves the wheel's hit test with it, at 100 and 60 columns (A20)", async () => {
+    const templates = Array.from({ length: 10 }, (_, i) => ({ id: `builtin:t${i}`, name: `t${i}`, description: 'd', scope: 'builtin' as const }))
+    const bare: SwarmStartView = { view: 'start', v: 1, title: [], notice: null, blocked: null, name: '', ask: '', templates, template: null, swarms: [], needsYou: [] }
+    // A notice that wraps at 60, and what needs you: parts the render draws above the list.
+    const notice = { level: 'warning' as const, text: 'name the swarm first: a-z, 0-9 and -, up to 24, not starting with -' }
+    const needsYou = [{ swarm: 'nightly', live: true, proposals: [2], questions: [] }]
+    for (const columns of [100, 60]) {
+      const ctx = ctxAt(columns)
+      const at = (view: SwarmStartView): number => {
+        // startListTop is startAbove's rows: the parts renderStart draws above the list.
+        expect(startListTop(view, ctx)).toBe(startAbove(view, ctx).reduce((n, x) => n + x.rows, 0))
+        return startListTop(view, ctx)
+      }
+      const top = at(bare)
+      for (const [view, more] of [
+        [{ ...bare, notice }, columns < 100 ? 2 : 1],
+        [{ ...bare, needsYou }, 1],
+        [{ ...bare, notice, needsYou }, columns < 100 ? 3 : 2],
+      ] as const) {
+        resetHubForTests()
+        passed.n = 0
+        expect({ columns, more: at(view) - top }).toEqual({ columns, more })
+        noteDrawn({ shown: 'swarms', view, ctx, bodyTop: 3, scrollOffset: 0 })
+        // The list's first row before the parts were added is now theirs (or the heading's): the pane's own scroll.
+        await tick(3 + top, 4, 1)
+        expect(passed.n).toBe(1)
+        expect(listOffset(TEMPLATE_LIST)).toBe(0)
+        // The list's first row moved down by their rows, and the tick there moves the list.
+        expect(await tick(3 + top + more, 4, 1)).toEqual({})
+        expect(listOffset(TEMPLATE_LIST)).toBe(1)
+      }
+    }
   })
 
   test('the wheel over the template list hits it at its own share of the columns, with a template picked past 100', async () => {

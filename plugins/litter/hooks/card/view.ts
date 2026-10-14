@@ -20,6 +20,14 @@
 // is there: on the ui tick once its run's ledger moved (cardsTick, WP-CH),
 // and at each prompt.submit.
 //
+// A repair generation (2b-2) runs no workflow, so no notification and no row
+// is its own: the card of the generation it took over from says how it went,
+// with the `repair` label once it ended. Its end comes with no notification
+// either, so the tick watches the ledger of a run whose repair generation is
+// open, or that a live repair swarm works on, and rebuilds the run's cards
+// once it moved. Whenever a run's ledger is read for a card, all its cards
+// are rebuilt.
+//
 // What a card says (phase 5b, WP-DB; the UI review's item 11): the title is
 // the run's line as the band and Home draw it, the status's mark and word
 // first (band/view.ts, runMark), then `litter · <workflow> <run>` and the
@@ -33,6 +41,7 @@ import type { StoredRecord } from '../records/core'
 import type { RunEndBody, RunJson } from '../records/run'
 import type { Generation, RunState } from '../lifecycle'
 import type { CardView, SwarmSpan } from '../../types/index'
+import type { RunLink } from '../swarm/types'
 import { readLedger } from '../ledgercore'
 import { ledgerDir, runDir, runJsonPath, RUN_ID } from '../layout'
 import { readJson } from '../fsx'
@@ -44,14 +53,17 @@ import { fanoutTasks } from '../integrate'
 import { barIds, proposalRecords, verdictRecords } from '../design/finalize'
 import { session } from '../session'
 import { oneLine } from '../swarm/view'
+import { liveSwarms } from '../swarm/state'
 import { markSpan, runMark } from '../band/view'
 import { openSection } from '../ui/hub'
 import { MARK, STYLE } from '../ui/style'
 
-// The `litter` pane's one opener (phase 5b, WP-DA), through one table so tier
-// 2 can stand in for it (COMMON, "Another package's module"). The mod never changes it.
+// The `litter` pane's one opener (phase 5b, WP-DA) and the runs the live
+// repair swarms work on, through one table so tier 2 can stand in for them
+// (COMMON, "Another package's module"). The mod never changes it.
 export const deps = {
   openSection: (...a: Parameters<typeof openSection>) => openSection(...a),
+  repairRuns: (): RunLink[] => liveSwarms().flatMap(s => (s.run ? [s.run] : [])),
 }
 
 /** The runs session.start and a /clear build cards for: run.find's newest (decision 8). */
@@ -82,6 +94,8 @@ const runOfTask = new Map<string, string>()
 const readMtime = new Map<string, number>()
 /** Litter tasks noted before their generation's end. */
 const waiting = new Set<string>()
+/** Runs whose repair generation was open when last read: its end will change a card. */
+const watched = new Set<string>()
 
 export function resetCardsForTests(): void {
   seq = 0
@@ -90,6 +104,7 @@ export function resetCardsForTests(): void {
   runOfTask.clear()
   readMtime.clear()
   waiting.clear()
+  watched.clear()
 }
 
 /**
@@ -124,11 +139,14 @@ export async function noteCards(p: Ports, e: Parameters<PromptSubmitHook>[1]): P
  * The ui tick's step after the band's (uitick.ts; WP-CH): each notification
  * still waiting for its generation's end, looked at again once its run's
  * ledger moved since it was last read, so the card appears when the end is
- * recorded, with no prompt.submit. Nothing waiting: nothing read. Never throws.
+ * recorded, with no prompt.submit; and each run a repair generation may still
+ * end in (A15), its cards rebuilt once its ledger moved. Nothing waiting or
+ * watched: nothing read. Never throws.
  */
 export async function cardsTick(p: Ports): Promise<void> {
-  if (waiting.size === 0) return
   try {
+    const linked = deps.repairRuns()
+    if (waiting.size === 0 && watched.size === 0 && linked.length === 0) return
     const litterDir = session().litterDir
     if (!litterDir) return
     const moved: string[] = []
@@ -139,32 +157,77 @@ export async function cardsTick(p: Ports): Promise<void> {
       moved.push(taskId)
     }
     await settleCards(p, litterDir, moved)
+    // A repair swarm can go live long after its run's card was built (a repair.start the person asked for).
+    const repaired = linked.filter(l => RUN_ID.test(l.run) && l.runDir === runDir(litterDir, l.run)).map(l => l.run)
+    for (const run of new Set([...watched, ...repaired])) {
+      const mtime = await ledgerMtime(p, litterDir, run)
+      if (mtime === null) watched.delete(run)
+      else if (readMtime.get(run) !== mtime) await refreshRun(p, litterDir, run, mtime)
+    }
   } catch (err) {
     p.log(`card: the tick failed: ${errText(err)}`)
   }
 }
 
-/** The cards of these tasks whose generation has ended, written with the others' (noteCards, cardsTick). */
+/**
+ * The cards of these tasks whose generation has ended, and their runs' other
+ * cards rebuilt with them, written with the others' (noteCards, cardsTick).
+ */
 async function settleCards(p: Ports, litterDir: string, asked: readonly string[]): Promise<void> {
   if (asked.length === 0) return
   const found = new Map<string, CardView>()
+  const rebuilt = new Map<string, CardView>()
   for (const taskId of asked) {
     try {
-      const card = await cardForTask(p, litterDir, taskId)
-      if (card) found.set(taskId, card)
+      for (const [t, card] of (await cardsOfTask(p, litterDir, taskId)) ?? []) (t === taskId ? found : rebuilt).set(t, card)
     } catch (err) {
       waiting.delete(taskId)
       p.log(`card: task ${oneLine(taskId, 80)} keeps the engine's row: ${errText(err)}`)
     }
   }
-  if (found.size === 0) return
-  // After a hot reload the other rows' cards come back first, so the write doesn't drop them;
-  // the tick and a prompt.submit can both get here, and the first to build keeps its map.
+  if (found.size > 0 || rebuilt.size > 0) await putCards(p, litterDir, found, rebuilt)
+}
+
+/**
+ * A run's cards again, once its ledger moved while a repair generation may
+ * end in it (cardsTick). A ledger that can't be read is logged once and left
+ * until it changes; its cards stay as they were.
+ */
+async function refreshRun(p: Ports, litterDir: string, run: string, mtime: number): Promise<void> {
+  let built: Map<string, CardView>
+  try {
+    const f = await loadRun(p, litterDir, run)
+    if (f.tampered) {
+      p.log(`card: run ${run}'s ledger is tampered at ${f.tampered.seq}, so its cards aren't rebuilt`)
+      return
+    }
+    built = runCards(f)
+  } catch (err) {
+    readMtime.set(run, mtime)
+    p.log(`card: run ${run}'s cards weren't rebuilt: ${errText(err)}`)
+    return
+  }
+  if (built.size > 0) await putCards(p, litterDir, new Map(), built)
+}
+
+/**
+ * Cards into the view, then the write: the ones just noted last, as the
+ * newest; the rebuilt ones where they stand (a new one last). After a hot
+ * reload the other rows' cards come back first, so the write doesn't drop
+ * them; the tick and a prompt.submit can both get here, and the first to
+ * build keeps its map.
+ */
+async function putCards(p: Ports, litterDir: string, noted: ReadonlyMap<string, CardView>, rebuilt: ReadonlyMap<string, CardView>): Promise<void> {
   if (cards === null) {
     const recent = await buildRecent(p, litterDir)
     cards ??= recent
   }
-  for (const [taskId, card] of found) {
+  for (const [taskId, card] of rebuilt) {
+    if (noted.has(taskId)) continue
+    cards.set(taskId, card)
+    waiting.delete(taskId)
+  }
+  for (const [taskId, card] of noted) {
     cards.delete(taskId)
     cards.set(taskId, card)
   }
@@ -195,10 +258,13 @@ async function write(p: Ports, force: boolean): Promise<void> {
   lastWritten = key
 }
 
-type RunFacts = { run: string; json: RunJson | null; records: StoredRecord[]; tampered: { seq: number; reason: string } | null }
+type RunFacts = { run: string; json: RunJson | null; records: StoredRecord[]; tampered: { seq: number; reason: string } | null; st: RunState }
 
-/** The card of a task's generation; null for a task that isn't litter's, or whose end isn't recorded yet (it waits). */
-async function cardForTask(p: Ports, litterDir: string, taskId: string): Promise<CardView | null> {
+/**
+ * The cards of a task's run, the task's own among them once its generation
+ * has ended (until then it waits); null for a task that isn't litter's.
+ */
+async function cardsOfTask(p: Ports, litterDir: string, taskId: string): Promise<Map<string, CardView> | null> {
   const known = runOfTask.get(taskId)
   // Either way the run is the task's: the index says so, or its ledger (up to any tamper point) does.
   const f = known !== undefined ? await loadRun(p, litterDir, known) : await findTask(p, litterDir, taskId)
@@ -208,14 +274,17 @@ async function cardForTask(p: Ports, litterDir: string, taskId: string): Promise
     p.log(`card: run ${f.run}'s ledger is tampered at ${f.tampered.seq}, so task ${oneLine(taskId, 80)} keeps the engine's row`)
     return null
   }
-  const st = runState(f.records)
-  const gen = st.generations.find(g => g.repair === null && g.taskId === taskId)
+  const gen = f.st.generations.find(g => g.repair === null && g.taskId === taskId)
   if (!gen) return null
-  if (!gen.end) {
-    waiting.add(taskId)
-    return null
-  }
-  return cardOf(f, st, gen)
+  if (!gen.end) waiting.add(taskId)
+  return runCards(f)
+}
+
+/** A run's cards: one for each workflow generation that has ended, keyed by its task, oldest first. */
+function runCards(f: RunFacts): Map<string, CardView> {
+  const out = new Map<string, CardView>()
+  for (const g of f.st.generations) if (g.repair === null && g.taskId !== '' && g.end) out.set(g.taskId, cardOf(f, g))
+  return out
 }
 
 /**
@@ -261,15 +330,21 @@ async function readRunJson(p: Ports, litterDir: string, run: string): Promise<Ru
   }
 }
 
-/** A run's run.json and ledger, each read once; its generations' task ids go into the index. */
+/**
+ * A run's run.json and ledger, each read once; its generations' task ids go
+ * into the index, and it's watched while a repair generation is open in it.
+ */
 async function loadRun(p: Ports, litterDir: string, run: string, json?: RunJson | null): Promise<RunFacts> {
   // The stamp before the read: a record appended during it reads as a change next time.
   const mtime = await ledgerMtime(p, litterDir, run)
   const j = json === undefined ? await readRunJson(p, litterDir, run) : json
   const ledger = await readLedger(p, runDir(litterDir, run), run)
   if (mtime !== null) readMtime.set(run, mtime)
-  for (const g of runState(ledger.records).generations) if (g.taskId !== '') runOfTask.set(g.taskId, run)
-  return { run, json: j, records: ledger.records, tampered: ledger.tampered }
+  const st = runState(ledger.records)
+  for (const g of st.generations) if (g.taskId !== '') runOfTask.set(g.taskId, run)
+  if (st.open?.repair && !ledger.tampered) watched.add(run)
+  else watched.delete(run)
+  return { run, json: j, records: ledger.records, tampered: ledger.tampered, st }
 }
 
 /**
@@ -295,11 +370,9 @@ async function buildRecent(p: Ports, litterDir: string): Promise<Map<string, Car
         p.log(`card: run ${run}'s ledger is tampered at ${f.tampered.seq}, so its rows keep the engine's drawing`)
         continue
       }
-      const st = runState(f.records)
-      for (const g of st.generations) {
-        if (g.repair !== null || g.taskId === '' || !g.end) continue
-        map.set(g.taskId, cardOf(f, st, g))
-        waiting.delete(g.taskId)
+      for (const [taskId, card] of runCards(f)) {
+        map.set(taskId, card)
+        waiting.delete(taskId)
       }
     } catch (err) {
       p.log(`card: run ${run}'s cards weren't built: ${errText(err)}`)
@@ -335,17 +408,45 @@ function reasonLine(end: RunEndBody): SwarmSpan[] | null {
 
 const SEP: SwarmSpan = { text: ' · ' }
 
-/** One generation's card: the run's line (its mark, `litter`, the run and its time), then the recorded outcome, then the evidence. */
-function cardOf(f: RunFacts, st: RunState, gen: Generation): CardView {
-  const end = gen.end!
-  const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
-  const endAt = f.records.find(r => r.seq === gen.endSeq)?.at
-  const title: SwarmSpan[] = [markSpan(runMark(end.status), true), SEP, { text: 'litter', color: STYLE.muted }, SEP, { text: `${oneLine(workflow, 40)} ` }, { text: f.run, color: STYLE.name }]
-  if (gen.repair) title.push(SEP, { text: 'repair' })
-  else if (gen.n > 1) title.push(SEP, { text: `generation ${gen.n}` })
-  if (typeof endAt === 'number') title.push(SEP, { text: duration(endAt - gen.openedAt), color: STYLE.muted })
+/** The repair generations right after a workflow generation, up to the next workflow generation: no row is theirs. */
+function repairsAfter(st: RunState, gen: Generation): Generation[] {
+  const out: Generation[] = []
+  for (const g of st.generations.slice(gen.n)) {
+    if (g.repair === null) break
+    out.push(g)
+  }
+  return out
+}
 
-  const endSeq = gen.endSeq ?? Infinity
+/**
+ * One workflow generation's card: the run's line (its mark, `litter`, the run
+ * and its time), then the recorded outcome, then the evidence. When repair
+ * generations took over from it, the latest that ended is what the card shows,
+ * labelled `repair`; one still open says it's working. What came after the
+ * row's own generation is always said, the evidence cut to make room.
+ */
+function cardOf(f: RunFacts, gen: Generation): CardView {
+  const st = f.st
+  const repairs = repairsAfter(st, gen)
+  const shown = repairs.filter(g => g.end).at(-1) ?? gen
+  const end = shown.end!
+  const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
+  const endAt = f.records.find(r => r.seq === shown.endSeq)?.at
+  const title: SwarmSpan[] = [markSpan(runMark(end.status), true), SEP, { text: 'litter', color: STYLE.muted }, SEP, { text: `${oneLine(workflow, 40)} ` }, { text: f.run, color: STYLE.name }]
+  if (shown.repair) title.push(SEP, { text: 'repair' })
+  else if (shown.n > 1) title.push(SEP, { text: `generation ${shown.n}` })
+  if (typeof endAt === 'number') title.push(SEP, { text: duration(endAt - shown.openedAt), color: STYLE.muted })
+
+  const later: SwarmSpan[][] = []
+  if (shown.repair) {
+    const first = gen.end!
+    const why = named(first.reason) ? `: ${first.reason}` : ''
+    later.push([{ text: oneLine(`repair swarm ${shown.repair.swarm} took over when generation ${gen.n} ${runMark(first.status).word}${why}`, 300), color: STYLE.muted }])
+  }
+  const working = repairs.at(-1)
+  if (working?.repair && !working.end) later.push([{ text: `repair swarm ${oneLine(working.repair.swarm, 40)} is working on it`, color: STYLE.running }])
+
+  const endSeq = shown.endSeq ?? Infinity
   const before = f.records.filter(r => r.seq < endSeq)
   const after = f.records.filter(r => r.seq > endSeq)
   let lines: SwarmSpan[][]
@@ -357,7 +458,7 @@ function cardOf(f: RunFacts, st: RunState, gen: Generation): CardView {
     lines = [...(reason ? [reason] : []), ...own]
   }
 
-  return { taskId: gen.taskId, run: f.run, title, lines: lines.slice(0, LINES_MAX), buttons: [{ key: `card:board:${f.run}`, label: 'Board' }] }
+  return { taskId: gen.taskId, run: f.run, title, lines: [...lines.slice(0, LINES_MAX - later.length), ...later], buttons: [{ key: `card:board:${f.run}`, label: 'Board' }] }
 }
 
 /** run.json's gate ids: the ones this run works, and a continuation's earlier lands (`args.landed`). */
