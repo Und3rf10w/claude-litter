@@ -1,6 +1,7 @@
 #!/bin/sh
 # Appends one compact line per hook input to tool-log.jsonl beside the scratch
-# repo ($CLAUDE_PROJECT_DIR/..), results cut to 4000 characters. A command hook
+# repo ($LITTER_TIER4_DIR, which lib.sh's h_claude sets; $CLAUDE_PROJECT_DIR/..
+# without it), results cut to 4000 characters. A command hook
 # runs in-process for every agent, so it sees each call's real cwd. It never
 # decides anything: no output, exit 0. A PermissionRequest line is a dialog
 # the engine was about to show (ui-ask.sh).
@@ -9,7 +10,9 @@
 # also replayed through that guard.sh as `git commit` and `git push`, the
 # agent's ids, cwd, mode and the run's policy files all as they are, and each
 # answer goes to guard-replay.jsonl. A role's agent won't try those itself.
-dir=${CLAUDE_PROJECT_DIR:?}/..
+# PreToolUse's limit in hooks.json is 60 s, not 10: on a loaded machine the
+# two guard runs can take longer than 10 s, and the engine kills the hook.
+dir=${LITTER_TIER4_DIR:-${CLAUDE_PROJECT_DIR:?}/..}
 in=$(cat)
 printf '%s\n' "$in" | jq -c '{ev: .hook_event_name, tool: .tool_name, agent_id: (.agent_id // null), agent_type: (.agent_type // null),
         session: (.session_id // null), cwd: .cwd, mode: (.permission_mode // null), input: .tool_input,

@@ -64,12 +64,13 @@ h_scratch() {
 
 # h_claude <prompt> [claude args...]: one headless session in the repo, with
 # litter and the tool log loaded. Extra args go before the prompt's options.
+# H_SUBDIR starts it in that folder of the repo instead of its top.
 h_claude() {
   hc_prompt=$1
   shift
   (
-    cd "$H_REPO" || exit 1
-    LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh claude -p --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" "$@" \
+    cd "$H_REPO/${H_SUBDIR:-}" || exit 1
+    LITTER_TIER4_DIR=$H_DIR LITTER_TIER4_GUARD=$H_DIR/litter/hooks/guard.sh claude -p --plugin-dir "$H_DIR/litter" --plugin-dir "$H_DIR/toollog" "$@" \
       --debug-file "$H_DIR/debug.txt" --output-format json --max-turns 30 "$hc_prompt" \
       </dev/null >|"$H_DIR/out.json" 2>|"$H_DIR/stderr.txt"
   )
