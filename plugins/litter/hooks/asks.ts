@@ -13,8 +13,9 @@
 // so a band row showed an ask only after it was answered. The transcript
 // stays drawn above the dialog. The row is written once per ask, paired or
 // not: never for an ask a drain opened and closed before the tick saw it, nor
-// for one session.start brings back (the mirror's, or its drain's: a reload
-// or a resume replays them, and their rows, if any, were written already).
+// for one a resume's session.start replays (its dialog went with the process
+// that's gone). A reload's keeps its dialog, so it gets its row if the earlier
+// module hadn't written it (restoreAsks).
 //
 // What 2.1.289 gives (cli_formatted_2.1.289.js):
 //  - PreToolUse runs before the permission check (:454056), so a call's start
@@ -39,6 +40,7 @@
 
 import type { Ports } from './ports'
 import type { AgentPolicy, NodePolicy, SpoolConsumer, SpoolCtx, SpoolLine } from './hookfiles'
+import type { StoredRecord } from './records/core'
 import type { RunJson } from './records/run'
 import type { AskEntry } from './uitypes'
 import { agentInfo, readPolicy, roleOf } from './policy'
@@ -62,7 +64,9 @@ export const ASKS_STORE_KEY = 'litter.asks'
  * A mirror older than this holds the asks of a process that's gone (a quit,
  * then a resume): its dialogs went with it, so its asks aren't restored. The
  * tick refreshes the mirror every HEARTBEAT_MS while an ask is open, so a
- * reload in a running session restores them.
+ * reload in a running session restores them. An ask line older than this
+ * that session.start's drain opens is a gone process's too: it gets no row
+ * (restoreAsks).
  */
 export const MIRROR_FRESH_MS = 30_000
 const HEARTBEAT_MS = 10_000
@@ -72,8 +76,6 @@ const NAME_MAX = 60
 /** The tools whose call start carries a `detail` (lib.sh's calldetail); any other pairs by tool alone. */
 const DETAILED = new Set(['Bash', 'Monitor'])
 const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
-/** A workflow agent's label, as the list shows it (execute.js: `write:G2#1`, `critic:G2#1`, `adversary:G2#1`). */
-const GATE_LABEL = /^(?:write|critic|adversary):(G[0-9]+)#/
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 const ms = (ts: number): number => Math.round(ts * 1000)
@@ -103,11 +105,15 @@ let lastSave = 0
 // ---------------------------------------------------------------------------
 // The words
 
-/** Who asks: `G2 executor`, `node fixer of swarm review`, `a child of node fixer of swarm review`. */
+/** A node's child: bound to its node, under a type of its own, not the node's `litter:sw-…`. */
+const isChild = (e: Pick<AskEntry, 'node' | 'agentType'>): boolean => e.node !== null && e.agentType !== null && !e.agentType.startsWith('litter:sw-')
+
+/** Who asks: `G2 executor`, `node fixer of swarm review`, `Explore child "find the parser" of node fixer of swarm review`. */
 export function askWho(e: AskEntry): string {
   if (e.node !== null) {
-    const child = e.agentType !== null && !e.agentType.startsWith('litter:sw-')
-    return `${child ? 'a child of node' : 'node'} ${e.node}${e.swarm !== null ? ` of swarm ${e.swarm}` : ''}`
+    const node = `node ${e.node}${e.swarm !== null ? ` of swarm ${e.swarm}` : ''}`
+    // A child by its type and its Agent call's description, as a node by its name.
+    return isChild(e) ? `${e.agentType} child${e.description !== null ? ` "${e.description}"` : ''} of ${node}` : node
   }
   const role = e.role ?? e.agentType ?? 'an agent'
   return e.gate !== null ? `${e.gate} ${role}` : role
@@ -190,24 +196,49 @@ async function readAgentPolicy(p: Ports, litterDir: string, agentId: string): Pr
   }
 }
 
+type RunRead = { json: RunJson | null; records: readonly StoredRecord[]; refused: string | null }
+
 /**
- * run.json as run.start wrote it (runjson.ts): you approve what it shows, so
- * a changed one, or one under a tampered ledger, shows only why it isn't read.
+ * run.json as run.start wrote it (runjson.ts), with the ledger it was checked
+ * against: you approve what it shows, so a changed one, or one under a
+ * tampered ledger, shows only why it isn't read.
  */
-async function readRunJson(p: Ports, litterDir: string, run: string): Promise<{ json: RunJson | null; refused: string | null }> {
+async function readRunJson(p: Ports, litterDir: string, run: string): Promise<RunRead> {
   const c = await checkedRunJson(p, { run, runDir: runDir(litterDir, run) }).catch(() => null)
-  if (c?.ok) return { json: c.json.v === 1 ? c.json : null, refused: null }
-  return { json: null, refused: c && (c.why === 'changed' || c.why === 'tampered') ? c.reason : null }
+  if (c?.ok) return { json: c.json.v === 1 ? c.json : null, records: c.ledger.records, refused: null }
+  return { json: null, records: [], refused: c && (c.why === 'changed' || c.why === 'tampered') ? c.reason : null }
 }
 
-/** An execute agent's gate, from its label in the agent list; null when it isn't listed or has none. */
-async function gateOf(p: Ports, agentId: string): Promise<string | null> {
+/**
+ * An execute run's gate in progress, which each of its agents works on:
+ * execute.js takes args.gates in order, one at a time, and moves on only once
+ * a gate lands, so it's the first with no `land` record. Not the agent's
+ * `write:G2#1` label: 2.1.299 lists no workflow agent in $.agent.list()
+ * (AgentLoop.agentId in the d.ts). Null once every gate landed.
+ */
+function gateInProgress(json: RunJson, records: readonly StoredRecord[]): string | null {
+  const gates = json.args?.gates
+  if (!Array.isArray(gates)) return null
+  const landed = new Set(records.flatMap(r => (r.kind === 'land' && typeof r.body.gate === 'string' ? [r.body.gate] : [])))
+  for (const g of gates) {
+    const id = g !== null && typeof g === 'object' ? (g as { id?: unknown }).id : undefined
+    if (typeof id === 'string' && id !== '' && !landed.has(id)) return id
+  }
+  return null
+}
+
+/** A node's child's Agent call description, as the agent list keeps it; null when it isn't listed. */
+async function childDescription(p: Ports, agentId: string): Promise<string | null> {
   const listed = (await p.listAgents().catch(() => [])).find(a => a.id === agentId)
-  return GATE_LABEL.exec(listed?.description ?? '')?.[1] ?? null
+  return typeof listed?.description === 'string' && listed.description.trim() !== '' ? listed.description : null
 }
 
-/** The asking agent's run, role, gate, swarm, node and what it was authorized, from its binding and policy. */
-async function describe(ctx: SpoolCtx, agentId: string, agentType: string | null): Promise<Pick<AskEntry, 'run' | 'role' | 'gate' | 'swarm' | 'node' | 'authorized'>> {
+/** The asking agent's run, role, gate, swarm, node, a child's description and what it was authorized, from its binding and policy. */
+async function describe(
+  ctx: SpoolCtx,
+  agentId: string,
+  agentType: string | null,
+): Promise<Pick<AskEntry, 'run' | 'role' | 'gate' | 'swarm' | 'node' | 'description' | 'authorized'>> {
   const { p, litterDir } = ctx
   const info = await agentInfo(p, agentId).catch(() => undefined)
   const policy = await readAgentPolicy(p, litterDir, agentId)
@@ -219,12 +250,13 @@ async function describe(ctx: SpoolCtx, agentId: string, agentType: string | null
   const role = info?.role ?? roleOf(agentType ?? '')
   let run = info?.run ?? policy?.run ?? null
   if (run === null && role !== null) run = (await readPolicy(p, litterDir).catch(() => undefined))?.run?.run ?? null
-  const { json, refused } = run !== null && RUN_ID.test(run) ? await readRunJson(p, litterDir, run) : { json: null, refused: null }
-  const gate = role !== null && json?.workflow === 'execute' ? await gateOf(p, agentId) : null
+  const { json, records, refused }: RunRead = run !== null && RUN_ID.test(run) ? await readRunJson(p, litterDir, run) : { json: null, records: [], refused: null }
   const name = (x: string | null) => (x === null ? null : oneLine(x, NAME_MAX))
+  const gate = role !== null && json?.workflow === 'execute' ? name(gateInProgress(json, records)) : null
+  const description = isChild({ node, agentType }) ? name(await childDescription(p, agentId)) : null
   // A node's scope and a task's files are its policy's; only a role's line comes from run.json.
   const authorized = refused !== null && !policy?.node && !policy?.task ? oneLine(refused, AUTHORIZED_MAX) : authorizedFor(role, json, gate, policy)
-  return { run: name(run), role: name(role), gate, swarm: name(swarm), node: name(node), authorized }
+  return { run: name(run), role: name(role), gate, swarm: name(swarm), node: name(node), description, authorized }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +311,15 @@ function sendNotice(p: Ports, e: Held): void {
   if (!p.notice(e.toolUseId, askLine(e))) p.log(`ask of agent ${e.agentId}: $.ui.notice threw for ${e.toolUseId}`)
 }
 
-/** The ask's one transcript row, the first time the tick sees it; a throw is logged, and the row isn't tried again. */
+/**
+ * The ask's one transcript row, the first time the tick sees it; a throw is
+ * logged, and the row isn't tried again. The tick then saves the mirror, so a
+ * reload after it doesn't write the row twice.
+ */
 function sendNote(p: Ports, e: Held): void {
   if (e.noted) return
   e.noted = true
+  dirty = true
   try {
     p.note(askLine(e))
   } catch (err) {
@@ -365,13 +402,15 @@ function asHeld(x: unknown): Held | null {
     gate: pick('gate'),
     swarm: pick('swarm'),
     node: pick('node'),
+    // A mirror an earlier version wrote has none.
+    description: typeof e.description === 'string' ? e.description : null,
     authorized: e.authorized as string,
     since: e.since,
     askTs: e.askTs,
     rawDetail: typeof e.rawDetail === 'string' ? e.rawDetail : (e.detail as string),
     noticed: Math.min(2, Math.max(0, e.noticed)),
-    // Brought back by a reload or a resume: its row, if any, is the earlier module's.
-    noted: true,
+    // Brought back by a reload: its row as the earlier module left it, written or still to write (WP-EC).
+    noted: e.noted !== false,
   }
 }
 
@@ -493,6 +532,7 @@ export function openAsks(): AskEntry[] {
       gate: e.gate,
       swarm: e.swarm,
       node: e.node,
+      description: e.description,
       authorized: e.authorized,
       since: e.since,
     }))
@@ -500,13 +540,18 @@ export function openAsks(): AskEntry[] {
 
 /**
  * session.start, after its drain: this session's open asks and calls back
- * after a reload (the drain restores them first, when it has lines). Every
- * ask held now is a replay, the mirror's or one the drain opened from lines
- * an earlier module or process spooled, so none gets a transcript row.
+ * after a reload (the drain restores them first, when it has lines). An ask
+ * the mirror brought back keeps its row as the earlier module left it. One
+ * the drain opened is a reload's when its line is under MIRROR_FRESH_MS old,
+ * as a fresh mirror is: this process spooled it, and its dialog is still up,
+ * so the tick writes its row. An older one is a replay of a process that's
+ * gone (a resume), whose dialog went with it: no row. The engine says nothing
+ * of an open dialog to a reloaded module (WP-EC).
  */
 export async function restoreAsks(p: Ports): Promise<void> {
   await ensureRestored(p)
-  for (const e of held.values()) e.noted = true
+  const now = await p.now()
+  for (const e of held.values()) if (!restored.has(e.key) && now - ms(e.askTs) > MIRROR_FRESH_MS) e.noted = true
 }
 
 /**

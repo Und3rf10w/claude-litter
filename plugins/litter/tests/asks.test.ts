@@ -7,9 +7,11 @@
 // for the same agent, tool and detail, is drained at session.start into an
 // open ask, which sends its notice for the paired call and is mirrored to
 // $.store. Its transcript row (WP-CK) goes through $.ui.log at the ui tick,
-// for an ask the drain timer opens, never for one session.start replays, and
-// the band draws no row for it. hooks.json's entry is tier 3's (ask.test.sh,
-// case_wired).
+// for an ask the drain timer opens, never for one a resume's session.start
+// replays, and the band draws no row for it. A reload's (WP-EC): an ask whose
+// line session.start's drain opens under 30 s after it was spooled gets its
+// row, its dialog being up still. hooks.json's entry is tier 3's
+// (ask.test.sh, case_wired).
 
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
@@ -133,7 +135,7 @@ describe('the permission ask line', () => {
     expect(files.has(`${LITTER}/hooks/spool/${SESSION}.jsonl`)).toBe(false)
   })
 
-  test("the transcript row (WP-CK): none for an ask session.start replays; one for an ask the drain timer opens, at the ui tick, never twice", async ($, on) => {
+  test("the transcript row (WP-CK): none for an ask a resume's session.start replays; one for an ask the drain timer opens, at the ui tick, never twice", async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on, { now: NOW })
     const files = world(on)
@@ -152,9 +154,9 @@ describe('the permission ask line', () => {
       { v: 1, ev: 'ask', ts, session_id: SESSION, agent_id: 'a1', agent_type: 'litter:executor', tool: 'Bash', detail, mode: 'default' },
     ]
     const write = (ls: unknown[]) => files.set(spool, `${ls.map(l => JSON.stringify(l)).join('\n')}\n`)
-    // A run is active, so the drain timer drains (policy.ts, tick); the spool holds an ask from before this module.
+    // A run is active, so the drain timer drains (policy.ts, tick); the spool holds an ask a process that's gone spooled a minute ago.
     files.set(`${LITTER}/hooks/active`, '')
-    write(lines(NOW / 1000 - 5, 'toolu_1', 'npm install left-pad'))
+    write(lines(NOW / 1000 - 60, 'toolu_1', 'npm install left-pad'))
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await clock.settle()
@@ -178,5 +180,34 @@ describe('the permission ask line', () => {
       props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 95, scroll: { offset: 0, bodyRows: 9 }, view: {} },
     })
     expect(await band.find({ type: 'Text', text: /asking/ })).toBeUndefined()
+  })
+
+  test("a reload (WP-EC): an ask spooled seconds before the module came back, which session.start's drain opens, gets its row at the ui tick, once", async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on, { now: NOW })
+    const files = world(on)
+    const rows: string[] = []
+    on('ui.log', async (_$, e) => {
+      if (e.to !== 'debug') rows.push(e.text)
+      return { value: undefined }
+    })
+    on('ui.notice', async () => ({ value: undefined }))
+    const spool = `${LITTER}/hooks/spool/${SESSION}.jsonl`
+    const ts = NOW / 1000 - 3
+    const lines = [
+      { v: 1, ev: 'call', ts, session_id: SESSION, agent_id: 'a1', agent_type: 'litter:executor', tool: 'Bash', tool_use_id: 'toolu_1', phase: 'start', detail: 'pwd' },
+      { v: 1, ev: 'ask', ts, session_id: SESSION, agent_id: 'a1', agent_type: 'litter:executor', tool: 'Bash', detail: 'pwd', mode: 'default' },
+    ]
+    files.set(`${LITTER}/hooks/active`, '')
+    files.set(spool, `${lines.map(l => JSON.stringify(l)).join('\n')}\n`)
+
+    // The earlier module's dialog is still up: no `end` for its call, and no mirror (it drained nothing).
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    expect(files.has(spool)).toBe(false)
+    for (let i = 0; i < 4 && rows.length === 0; i++) await clock.advance(2_000)
+    expect(rows).toEqual(['⚑ asking · executor wants Bash: pwd · authorized: writes in the checkout'])
+    for (let i = 0; i < 3; i++) await clock.advance(2_000)
+    expect(rows).toHaveLength(1)
   })
 })
