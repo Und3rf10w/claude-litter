@@ -25,6 +25,7 @@ import {
   noteReport,
   putBinding,
   status,
+  stop,
   swarmStateKey,
   withGateClosed,
 } from '../../hooks/swarm/state'
@@ -241,6 +242,56 @@ describe('recoverSwarms, a swarm this session owns', () => {
       ['ag-f1', 'gone'],
       ['ag-d1', 'gone'],
     ])
+  })
+
+  // 15.9's risk "The recovery card can hide a worker" (FIX-T 10): its orchestrator's turn was over, so it held no place.
+  test('an orchestrator whose turn was over while its worker still ran is on the card as finished, its worker under it, and its resume says so', async () => {
+    await liveInSessionA()
+    // lead-a #1 had settled, neither running nor parked; fixer #1 still ran. docs #1 had settled with no worker out.
+    markSettled('ag-l1')
+    markSettled('ag-d1')
+    await settle(w.p)
+    const { q } = await crashRespawn()
+    q.agents = [{ id: 'ag-l1', description: 'lead-a', type: 'litter:sw-alpha-lead-a', status: 'completed' }]
+    await recoverSwarms(q, w.litterDir)
+    const card = recoveryCard('alpha')!
+    expect(card.nodes.map(n => [n.agentId, n.state, n.finished === true])).toEqual([
+      ['ag-l1', 'settled', true],
+      ['ag-f1', 'gone', false],
+    ])
+    // The card's way back for it: a resume, whose text names the worker that ran and says its own turn was over.
+    const lead = await swarmRead(w, { swarm: 'alpha', node: 'lead-a', for: 'resume' })
+    expect(lead.agentIds).toEqual(['ag-l1'])
+    expect(lead.text).toContain('Your turn was over when it stopped, but a worker of yours was still running, and this message resumes you.')
+    expect(lead.text).toContain(`Your workers that were running: fixer #1 (ag-f1, in ${wtPath()})`)
+    await requestResume(q, 'alpha', ['lead-a'], 'resume')
+    expect(q.filled[0]!.split('\n')[0]).toBe('/litter:swarm resume alpha lead-a')
+    // Its worker goes with it.
+    expect(recoveryCard('alpha')).toBeNull()
+  })
+
+  test("a stopped orchestrator isn't offered back for its worker: the worker stays off the card with it", async () => {
+    await liveInSessionA()
+    markSettled('ag-l1')
+    stop('alpha', ['ag-l1'], 'stopped (browser)')
+    await settle(w.p)
+    const { q } = await crashRespawn()
+    q.agents = []
+    await recoverSwarms(q, w.litterDir)
+    expect(recoveryCard('alpha')!.nodes.map(n => n.agentId)).toEqual(['ag-d1'])
+  })
+
+  test('a swarm that was stopping lists only what was running: no finished orchestrator is added', async () => {
+    const launch = await liveInSessionA()
+    markSettled('ag-l1')
+    await settle(w.p)
+    await appendLaunchRecord(w.p, w.litterDir, 'alpha', launch, 'swarm.stopping', { by: 'browser' })
+    const { q } = await crashRespawn()
+    q.agents = []
+    await recoverSwarms(q, w.litterDir)
+    const card = recoveryCard('alpha')!
+    expect(card.stopping).toBe(true)
+    expect(card.nodes.map(n => n.agentId)).toEqual(['ag-f1', 'ag-d1'])
   })
 
   // The user's live look (2026-10-07): "get rid of the ability to queue messages". An older litter's held ones went unsent.
