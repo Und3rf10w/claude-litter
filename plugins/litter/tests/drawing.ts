@@ -4,10 +4,12 @@
 // rows; a row's items side by side with their gap, growing into free cells by
 // flexGrow and shrinking by their width when over; a border and padding
 // around; a fixed height clipped), and draws each leaf as the terminal does:
-// a Button `[ label ]` (a plain one its label alone), an Input `label: ` and
-// its value or placeholder, a Select `label: ` and its option, a Client its
-// key. An approximation, not the engine's paint: it reads the tree as the
-// mount returns it, so a test can find a row by its text and count cells.
+// a Button `[ label ]` (a plain one its label alone, or `1: label` with its
+// hotkey in `suggestion`, as 2.1.299's terminal Button draws it), an Input
+// `label: ` and its value or placeholder, a Select `label: ` and its option,
+// a Client its key. An approximation, not the engine's paint: it reads the
+// tree as the mount returns it, so a test can find a row by its text and
+// count cells.
 
 type Node = { type: string; key?: string; props?: Record<string, unknown>; children?: unknown[]; hover?: Record<string, unknown> }
 
@@ -61,7 +63,10 @@ function leafSegs(n: Node): Seg[] | null {
   switch (n.type) {
     case 'Button': {
       const style: Omit<Seg, 'text'> = p.variant === 'primary' && p.plain !== true ? { color: 'claude' } : p.dimColor === true ? { dim: true } : {}
-      return [{ ...style, text: p.plain === true ? label : `[ ${label} ]` }]
+      if (p.plain !== true) return [{ ...style, text: `[ ${label} ]` }]
+      // Plain: the hotkey in the accent, a colon, the label; without one, the label alone.
+      const hotkey = typeof p.hotkey === 'string' ? p.hotkey : ''
+      return hotkey === '' ? [{ ...style, text: label }] : [{ ...style, color: 'suggestion', text: hotkey }, { ...style, text: `: ${label}` }]
     }
     case 'Input': {
       const value = typeof p.value === 'string' ? p.value : ''

@@ -247,29 +247,38 @@ async function haltedRun(files: Map<string, string>): Promise<void> {
 const golden = (columns: number, rows: readonly (readonly [string, string])[]): string[] => rows.map(([text, colors]) => (colors === '' ? text : `${text.padEnd(columns)}  | ${colors}`))
 const filled = (rows: readonly string[]): string[] => rows.filter(r => r.trim() !== '')
 
-const QUIET_TABS = 'text bold, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle, default, subtle'
-// Eight tabs (WP-DH): at 60 columns Doctor goes to the strip's second row.
+// Focused, each tab but the shown one is its hotkey in `suggestion`, a colon and its label (A19: tests/drawing.ts draws
+// the digits, as the engine does); the shown one says its digit in its bold text; a faint │ after every tab but the last.
+const SHOWN = 'text bold, subtle'
+const TAB = 'suggestion, default, subtle'
+const LAST_TAB = 'suggestion, default'
+// Eight tabs (WP-DH): at 60 columns Agents goes to the strip's second row.
 const HEAD_QUIET = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   ['nothing running', 'inactive'],
   ...(c >= 100
-    ? ([['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Stats │ Doctor', `${QUIET_TABS}, default`]] as [string, string][])
+    ? ([['› 1: Home │ 2: Runs │ 3: Swarms │ 4: Rules │ 5: Tasks │ 6: Agents │ 7: Stats │ 8: Doctor', [SHOWN, ...Array(6).fill(TAB), LAST_TAB].join(', ')]] as [string, string][])
     : ([
-        ['› 1: Home │ Runs │ Swarms │ Rules │ Tasks │ Agents │ Stats │', QUIET_TABS],
-        ['Doctor', 'default'],
+        ['› 1: Home │ 2: Runs │ 3: Swarms │ 4: Rules │ 5: Tasks │', [SHOWN, ...Array(4).fill(TAB)].join(', ')],
+        ['6: Agents │ 7: Stats │ 8: Doctor', [TAB, TAB, LAST_TAB].join(', ')],
       ] as [string, string][])),
 ]
-// Each tab's count muted after its label, its ⚑ in the needs-you color, a faint │ after every tab but the last.
-const BUSY_TABS = 'text bold, subtle, default, inactive, subtle, default, inactive, permission, subtle, default, inactive, permission, subtle, default, inactive, subtle'
+// Each tab's count muted after its label, its ⚑ in the needs-you color.
+const COUNTED = 'suggestion, default, inactive, subtle'
+const FLAGGED = 'suggestion, default, inactive, permission, subtle'
 const HEAD_BUSY = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   // One line, cut to the pane (chrome's spansLine).
   [cut('▸ running: 1 run, 1 swarm · ⚑ needs you: 1 question, 1 proposal, 2 rules', c), 'background, default, subtle, permission'],
+  // With their digits the eight tabs are 102 cells, so at 100 Doctor goes to a second row.
   ...(c >= 100
-    ? ([['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │ Agents 2 │ Stats │ Doctor', `${BUSY_TABS}, default, inactive, subtle, default, subtle, default`]] as [string, string][])
+    ? ([
+        ['› 1: Home │ 2: Runs 1 │ 3: Swarms 1 ⚑ │ 4: Rules 2 ⚑ │ 5: Tasks 3 │ 6: Agents 2 │ 7: Stats │', [SHOWN, COUNTED, FLAGGED, FLAGGED, COUNTED, COUNTED, TAB].join(', ')],
+        ['8: Doctor', LAST_TAB],
+      ] as [string, string][])
     : ([
-        ['› 1: Home │ Runs 1 │ Swarms 1 ⚑ │ Rules 2 ⚑ │ Tasks 3 │', BUSY_TABS],
-        ['Agents 2 │ Stats │ Doctor', 'default, inactive, subtle, default, subtle, default'],
+        ['› 1: Home │ 2: Runs 1 │ 3: Swarms 1 ⚑ │ 4: Rules 2 ⚑ │', [SHOWN, COUNTED, FLAGGED, FLAGGED].join(', ')],
+        ['5: Tasks 3 │ 6: Agents 2 │ 7: Stats │ 8: Doctor', [COUNTED, COUNTED, TAB, LAST_TAB].join(', ')],
       ] as [string, string][])),
 ]
 const KEYS = (c: number): [string, string][] =>
@@ -335,9 +344,8 @@ const BUSY_BODY = (c: number): [string, string][] => [
 /**
  * MANY at 14 rows: no headings, needs you and running whole; at 100 the
  * ended runs counted (the others' line goes: focused, eight tabs with their
- * digits are 102 cells, so the strip takes two rows, though tests/drawing.ts
- * draws no digit and so one); at 60 (the strip and the keys line take two
- * rows each) the ended line goes too, left to the strip.
+ * digits are 102 cells, so the strip takes two rows); at 60 (the strip and
+ * the keys line take two rows each) the ended line goes too, left to the strip.
  */
 const MANY_14: Record<number, [string, string][]> = {
   100: [...HEAD_BUSY(100), ROW.question(100), ROW.proposal(100), ROW.rules(100), ROW.exec(100), ROW.swarm(100), ROW.fan(100), ['3 ended in the last 10 minutes', 'inactive'], ...KEYS(100)],
@@ -366,9 +374,8 @@ describe('Home with a run, a swarm and a waiting question', () => {
       const dock = await mount($, { bodyColumns: c })
       const drawn = drawWithColors(await dock.drawn(), c)
       expect(filled(drawn)).toEqual(golden(c, [...HEAD_BUSY(c), ...BUSY_BODY(c), ...KEYS(c)]))
-      // Docked, the keys line is at the pane's foot. At 100 the strip is planned two rows (its digits, which
-      // tests/drawing.ts doesn't draw, take it to 102 cells), so the drawing here is a row short of the pane.
-      expect(drawn).toHaveLength(c >= 100 ? 39 : 40)
+      // Docked, the keys line is at the pane's foot, the drawing the pane's 40 rows (at 100 the strip's digits take it to two).
+      expect(drawn).toHaveLength(40)
       await dock.unmount()
       const inline = await mount($, { bodyColumns: c, placement: 'inline' })
       expect(filled(drawWithColors(await inline.drawn(), c))).toEqual(filled(drawn))
@@ -396,9 +403,8 @@ describe('Home with more rows than fit', () => {
         const ui = await mount($, { bodyColumns: c, bodyRows: 14, placement })
         const rows = drawWithColors(await ui.drawn(), c)
         expect({ placement, rows: filled(rows) }).toEqual({ placement, rows: golden(c, MANY_14[c]!) })
-        // The 14 rows whole: the gap under the strip and the one above the keys line are the blank ones (at 100 a
-        // row short, the strip's second row being its digits', which tests/drawing.ts doesn't draw).
-        expect({ placement, height: rows.length }).toEqual({ placement, height: c >= 100 ? 13 : 14 })
+        // The 14 rows whole: the gap under the strip and the one above the keys line are the blank ones.
+        expect({ placement, height: rows.length }).toEqual({ placement, height: 14 })
         await ui.unmount()
       }
     })
