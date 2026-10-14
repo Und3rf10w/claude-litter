@@ -482,7 +482,8 @@ describe('resume and re-spawn', () => {
       `The agents it started are yours now, and report to you: fixer #1 (ag-f1, in ${wtPath()}), running; fixer #2 (ag-f2, in ${wtPath()}), finished.`,
     )
     expect(text).toContain('A message from you with SendMessage, to its agent id, reaches one that runs and resumes one that finished.')
-    expect(text).toContain('ask it to send you its report with SendMessage before it ends')
+    // One still running reports to the earlier one, and litter passes that on (admit.ts, passOnReport): no workaround to ask for.
+    expect(text).not.toContain('before it ends')
     expect(text.indexOf('The agents it started')).toBeLessThan(text.indexOf('<report id='))
     // docs started none.
     expect((await swarmRead(w, { swarm: 'alpha', node: 'docs', for: 'respawn' })).text).not.toContain('The agents it started')

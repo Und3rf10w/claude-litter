@@ -784,9 +784,6 @@ export async function continuationText(p: Ports, name: string, node: string, how
       : [
           `The agents it started are yours now, and report to you: ${shownTheirs.map(b => `${workerText(b)}, ${runs(b.agentId) ? 'running' : 'finished'}`).join('; ')}${theirs.length > shownTheirs.length ? `; and ${theirs.length - shownTheirs.length} earlier ones` : ''}.`,
           "A message from you with SendMessage, to its agent id, reaches one that runs and resumes one that finished. One that can't be resumed (No transcript found) you spawn fresh, with its last report, telling it to read its directory first.",
-          ...(theirs.some(b => runs(b.agentId))
-            ? ['One still running hands its last report to the earlier instance when its turn ends, and that one is no longer admitted to pass it on: ask it to send you its report with SendMessage before it ends.']
-            : []),
         ]
   const report = last ? (lastReport(last.agentId)?.text ?? ledgerReport(facts, last.agentId)) : null
   const questions = openQuestions(name).filter(q => ids.has(q.agentId)).map(q => `- ${q.text.replace(/\s+/g, ' ')}`)

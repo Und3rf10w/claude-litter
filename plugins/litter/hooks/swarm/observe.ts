@@ -25,6 +25,7 @@ import { errText, git, listWorktrees, OID, realOf, type Listed } from '../worktr
 import * as state from './state'
 import { others } from './end'
 import { plainText } from './summary'
+import { passOnReport } from './admit'
 
 type Line<E extends SpoolLine['ev']> = Extract<SpoolLine, { ev: E }>
 
@@ -208,6 +209,8 @@ async function onHandback(p: Ports, litterDir: string, line: Line<'handback'>): 
   if (last?.via === 'handback' && last.text === text) return
   state.noteReport(b.agentId, text, 'handback', await p.now())
   await recordEvent(p, litterDir, s, { kind: 'report', node: b.node, agentId: b.agentId, via: 'handback', text })
+  // Handed to an orchestrator a re-spawn replaced: on to the one that stands for it.
+  await passOnReport(p, b, text)
   // A worker's or child's report belongs to its parent; the engine gives it to the lead once the
   // worker's record is evicted (15.4, option B). The spool line can't say which, so the lead's
   // transcript is checked for the hand-back frame from this agent.
@@ -335,6 +338,7 @@ export async function observeNodeTurn(p: Ports, e: Parameters<TurnCompleteHook>[
     if (!e.isAborted && answer.trim() !== '' && !handedBack && (await sessionMode(p, litterDir)) !== 'auto') {
       state.noteReport(agentId, answer, 'answer', now)
       await recordEvent(p, litterDir, s, { kind: 'report', node: b.node, agentId, via: 'answer', text: cutBytes(answer, TEXT_MAX_BYTES) })
+      await passOnReport(p, b, cutBytes(answer, TEXT_MAX_BYTES))
     }
     others.noteSummaryTrigger(s.name, 'finished')
   }
