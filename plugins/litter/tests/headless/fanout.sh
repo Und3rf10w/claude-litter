@@ -6,17 +6,24 @@
 #   sh tests/headless/fanout.sh edit   # an edit to the checkout after the integration verify: the land refuses
 #   sh tests/headless/fanout.sh red    # branches that merge cleanly but fail verify together: nothing lands, nothing is lost
 #   sh tests/headless/fanout.sh stop   # TaskStop mid-run: the run ends stopped and the lock is released
+#   sh tests/headless/fanout.sh chatty # land's run, with a verify that talks for 90 s: the record hook reads it all
 #
 # The repo is lib.sh's, whose HEAD is ahead of origin/main, plus two packages
 # with a check each and a verify command (sh check.sh) that passes today.
 # One session calls run.start and launches litter:fanout-run with its args, as
 # the skill would after you confirm.
+#
+# chatty's check.sh prints 60,000 lines over about 90 s before the package
+# checks. The mod reads the verify's output stream inside the record hook,
+# which `$` calls are said to pause the hook's clock for (plan section 9,
+# HookBudget). Every verify must be green with all its output logged, and no
+# litter hook may be cut off.
 
 set -u
 . "$(dirname "$0")/lib.sh"
 
 mode=${1:-land}
-case $mode in land | edit | red | stop) ;; *) echo "usage: $0 land|edit|red|stop" >&2; exit 2 ;; esac
+case $mode in land | edit | red | stop | chatty) ;; *) echo "usage: $0 land|edit|red|stop|chatty" >&2; exit 2 ;; esac
 
 h_scratch "fanout-$mode"
 cp "$LITTER_ROOT/workflows/fanout.js" "$H_DIR/litter/workflows/fanout.js" || exit 1
@@ -29,6 +36,8 @@ printf '#!/bin/sh\n# Checks package b.\nset -e\n[ -f b/README ]\n' >|"$R/b/test.
 if [ "$mode" = red ]; then
   # Each package alone passes; together their versions must agree.
   printf '#!/bin/sh\n# The verify command: every package check, and a and b agree on the version.\nset -e\nsh a/test.sh\nsh b/test.sh\nif [ -f a/version.txt ] && [ -f b/expects.txt ]; then\n  [ "$(cat a/version.txt)" = "$(cat b/expects.txt)" ] || { echo "a ships version $(cat a/version.txt), b expects $(cat b/expects.txt)"; exit 1; }\nfi\n' >|"$R/check.sh"
+elif [ "$mode" = chatty ]; then
+  printf '#!/bin/sh\n# The verify command: 300 bursts of 200 lines, 0.3 s apart, then every package check.\nset -e\ni=0\nwhile [ "$i" -lt 300 ]; do\n  j=0\n  while [ "$j" -lt 200 ]; do echo "chatty line $i.$j: the verify keeps talking"; j=$((j + 1)); done\n  sleep 0.3\n  i=$((i + 1))\ndone\nsh a/test.sh\nsh b/test.sh\n' >|"$R/check.sh"
 else
   printf '#!/bin/sh\n# The verify command: every package check.\nset -e\nsh a/test.sh\nsh b/test.sh\n' >|"$R/check.sh"
 fi
@@ -55,6 +64,10 @@ if [ "$mode" = stop ]; then
 4. Call TaskStop with the task ID the Workflow tool returned in step 2.
 5. Run with Bash: sleep 45
 6. Reply with each step's result, verbatim."
+elif [ "$mode" = chatty ]; then
+  # The turn sleeps, since claude -p kills background work about 10 minutes after the turn ends.
+  STEPS='3. Run with Bash, with the tool'"'"'s timeout set to 600000: sleep 420
+4. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
 else
   STEPS='3. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
 fi
@@ -166,6 +179,21 @@ c_lock_free() {
   jq -e '.run == null' "$LD/hooks/policy.json" >/dev/null 2>&1 || [ ! -f "$LD/hooks/policy.json" ] || { echo "policy.json still has the run"; return 1; }
 }
 
+# chatty: every verify green with all its 2.7 MB logged, and no litter hook cut off by its budget.
+c_chatty_verifies() {
+  n=$(ledger verify | jq -s 'length')
+  [ "$n" -ge 1 ] || { echo "no verify record"; return 1; }
+  bad=$(ledger verify | jq -r 'select(.body.green != true or (.body.log_bytes // 0) < 2000000) | "\(.body.verify_id): green \(.body.green), \(.body.log_bytes) bytes logged"')
+  [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+c_hooks_kept() {
+  cut=$(grep -E 'hooks module litter@inline' "$H_DIR/debug.txt" | grep -iE 'timeout|budget|linger|outran' | head -n 3)
+  [ -z "$cut" ] || { echo "$cut"; return 1; }
+  ms=$(grep -E 'hooks module litter@inline [a-z.]+ settled in' "$H_DIR/debug.txt" | sed -n 's/.*settled in \([0-9]*\).*/\1/p' | sort -n | tail -n 1)
+  [ "${ms:-0}" -ge 90000 ] || { echo "litter's longest hook settled in ${ms:-no} ms, so none waited out the 90 s verify"; return 1; }
+  echo "the longest litter hook settled in $ms ms"
+}
+
 h_expect "run.start and the launch made a run" c_run
 h_expect "the run's base is HEAD's tree at launch, ahead of origin/main" c_base
 case $mode in
@@ -187,6 +215,13 @@ red)
   h_expect "every writer's worktree was made at base" c_worktrees_at_base
   h_expect "nothing landed" c_not_landed
   h_expect "the branches, the integration worktree, the red verify and its evidence are kept" c_kept
+  h_expect "the lock is released" c_lock_free
+  ;;
+chatty)
+  h_expect "every verify is green, with all its output logged" c_chatty_verifies
+  h_expect "no litter hook was cut off, and the record hook waited the verify out" c_hooks_kept
+  h_expect "the land moved litter/<run> to the intent's commit, with both tasks' files, and the checkout with it" c_landed
+  h_expect "the run ended done" c_status done
   h_expect "the lock is released" c_lock_free
   ;;
 stop)
