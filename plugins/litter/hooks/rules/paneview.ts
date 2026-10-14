@@ -349,7 +349,7 @@ export function diffSpans(before: readonly string[], after: readonly string[]): 
 // ---------------------------------------------------------------------------
 // The build
 
-type Proposal = { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }
+type Proposal = { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; unread?: string }
 type Batch = { seq: number; body: RuleImportBody }
 
 /** Which import batch the focus names: the `rule.import` record itself, or one of the proposals it made. */
@@ -547,6 +547,7 @@ export async function rulesView(
     const scope = target ? target.scope : (held.scope ?? b.scope ?? null)
     const inBatch = batchKeys.has(key)
     const notes: string[] = []
+    if (x.unread) notes.push(oneLine(x.unread, 300))
     if (b.import?.archived) notes.push('from an archived instance')
     if (held.scope) notes.push(`scope ${held.scope}, chosen here`)
     if (held.paths || held.type) notes.push('narrowed here: kept until you accept it')

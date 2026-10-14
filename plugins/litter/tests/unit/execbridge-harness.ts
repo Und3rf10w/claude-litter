@@ -63,7 +63,9 @@ export const PLAN_TEXT = [
  * `executor_gap_then_clash`: the executor's plan-gap stop, then a later
  * verdict naming a rule clash (the verdict is the latest event);
  * `critic_null`: the executor's attempt 1 is done, and its critic returned
- * nothing (no verify, no verdict).
+ * nothing (no verify, no verdict); `critic_null_verified`: the same, after
+ * the critic recorded its verify of attempt 1; `adversary_null`: the
+ * adversary of a done attempt 1 returned nothing.
  */
 export type Halt =
   | 'plan_gap'
@@ -72,6 +74,8 @@ export type Halt =
   | 'rule_clash'
   | 'executor_gap_then_clash'
   | 'critic_null'
+  | 'critic_null_verified'
+  | 'adversary_null'
   | 'attempts'
   | 'recritique'
   | 'abandoned'
@@ -333,6 +337,18 @@ export async function executeRun(w: World, o: ExecOpts = {}): Promise<Exec> {
       write(w.dir, 'g2.txt', 'G2 attempt 1\n')
       await add('task.result', wroteOf('G2', 1), executorOf('G2'))
       reason = 'critic for G2 returned nothing'
+      break
+    case 'critic_null_verified':
+      // Its critic recorded the verify of attempt 1, then ended without its verdict, twice.
+      write(w.dir, 'g2.txt', 'G2 attempt 1\n')
+      await add('task.result', wroteOf('G2', 1), executorOf('G2'))
+      g2.push(await verifyAs(x, 'G2', 1, critic))
+      reason = 'critic for G2 returned nothing'
+      break
+    case 'adversary_null':
+      write(w.dir, 'g2.txt', 'G2 attempt 1\n')
+      await add('task.result', wroteOf('G2', 1), executorOf('G2'))
+      reason = "adversary for G2 returned nothing; the requested check didn't run"
       break
     case 'attempts':
       for (const n of [1, 2, 3]) await attempt(n, {})

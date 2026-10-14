@@ -266,6 +266,26 @@ describe('scopes (16.6; 12:1567)', () => {
     expect(reason(await acceptRule(w.p, w.litterDir, { proposal: mine }, { scope: 'user' }))).toBe("there's no user scope: no config dir in tier 2 (set configDirValue)")
     expect((await proposalsOf(w.p, w.litterDir, { status: ['proposed'] })).map(v => v.body.rule)).toContain('Answer tersely.')
   })
+
+  // A10: your accept of the repository's proposal is in your ledger, which isn't read without the config dir.
+  test("without the config dir, a repository's proposal you accepted into your user scope reads with why it may be accepted, not as plainly pending", async () => {
+    const mine = await propose(w, { rule: 'Answer tersely.' })
+    const other = await propose(w, { rule: 'Keep a changelog.' })
+    ok(await acceptRule(w.p, w.litterDir, { proposal: mine }, { scope: 'user' }))
+    const config = w.p.configDirValue
+    w.p.configDirValue = null
+    const why = "your user rules ledger isn't read (no config dir in tier 2 (set configDirValue)), so an accept of this into your user scope wouldn't show here"
+    expect((await proposalsOf(w.p, w.litterDir, {})).map(v => [v.ref.seq, v.status, v.unread])).toEqual([
+      [mine.seq, 'proposed', why],
+      [other.seq, 'proposed', why],
+    ])
+    // With the config dir back, the accept counts again, and nothing is unread.
+    w.p.configDirValue = config
+    expect((await proposalsOf(w.p, w.litterDir, {})).map(v => [v.ref.seq, v.status, v.unread])).toEqual([
+      [mine.seq, 'accepted', undefined],
+      [other.seq, 'proposed', undefined],
+    ])
+  })
 })
 
 describe('ids, .history and info/exclude', () => {

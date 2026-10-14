@@ -23,6 +23,10 @@
 # Every call it passes from a node, a child or a run agent is spooled as a
 # `call` start, and every one it denies as a `deny`, which closes the call
 # (15.4, "Ending", step 2). The spool never changes a decision.
+#
+# An execute run's executor that's at work when you widen its gate is told
+# at its next tool call, through the hook output's additionalContext (A8;
+# GUARD_JQ_NOTE). The note never changes a decision either.
 
 set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
@@ -422,6 +426,48 @@ def bashwhy($rowhy; $noinstall; $roots; $fw; $wcwd):
     end;
 '
 
+# The note to an execute run's executor (A8): your widenings of its gate
+# during the run, which the <gate> it started with does not list. The mod
+# keeps them in policy.json (run.widened, each with its gate.widen record's
+# seq) with each executor's gate (run.executors), and told/<agent_id>
+# ($told) holds the last seq the executor was told of, so each is told once,
+# even after a rebuilt policy.json starts the list again. A pass or a plain
+# deny becomes pass-note or deny-note (lib.sh, lt_finish), with the hook
+# output and the marker to write once it is printed; any other decision is
+# left as it is, and so is every call with nothing to tell, which costs the
+# one stat of told/<agent_id>. Its last StructuredOutput call ends the
+# agent, so it gets none.
+GUARD_JQ_NOTE='
+def notedue($in; $p):
+  ($p | if ok1 and (.run | type) == "object" then .run else null end) as $r
+  | ($in.agent_id | str) as $id
+  | if $r == null or ($r.workflow | str) != "execute" or ($in.agent_type | str) != "litter:executor"
+      or ($in.tool_name | str) == "StructuredOutput" then null
+    else ($r.executors | if type == "object" then (.[$id] | str) else "" end) as $g
+    | [$r.widened | if type == "array" then .[] else empty end | select(type == "object" and (.seq | type) == "number")] as $ws
+    | (readj($told) | if ok1 and (.run | str) == ($r.run | str) and (.seq | type) == "number" then .seq else 0 end) as $s
+    | [$ws[] | select(.seq > $s and $g != "" and (.gate | str) == $g)] as $due
+    | if ($due | length) == 0 then null
+      else {seq: ([$ws[].seq] | max), run: ($r.run | str),
+        text: ("litter: during this run the user added these files to the Files of gate \($g), so you may change them for it, though the gate you were given does not list them: "
+          + ([$due[] | "\(.files | if type == "array" then map(str | line) else [] end | join(", ")) (why: \(.why | line))"] | join("; ")) + "." | .[0:4000])} end
+    end;
+def withnote($in; $p):
+  . as $d
+  | notedue($in; $p) as $due
+  | if $due == null then $d
+    else ($d | split("\n")) as $l
+    | ($in.agent_id | str) as $id
+    | ({v: 1, run: $due.run, seq: $due.seq} | tojson) as $m
+    | if $l[0] == "pass" then
+        ["pass-note", ({hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $due.text}} | tojson), ($l[1] // ""), ($l[2] // ""), $id, $m] | join("\n")
+      elif $l[0] == "deny" and ($l | length) == 4 then
+        ["deny-note", ({hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $l[1],
+          additionalContext: $due.text}} | tojson), $l[2], $l[3], $id, $m] | join("\n")
+      else $d end
+    end;
+'
+
 # A litter agent's call. First its own context (mode, binding, working
 # directory), then the rule for its tool (section 9). Prints a decision, or
 # `path` and what the script has to resolve for a write.
@@ -505,6 +551,7 @@ def taskof($p; $a):
      else deny($in; "bind first: call mcp__litter__record with kind task.bind and the bind value from your <task>") end)
   else rules($in; $p; $b; $role; $type; $tool; $ti; fanoutwriter($p; $role)) end
 | if . == "pass" then passcall($in) else . end
+| withnote($in; $p)
 '
 
 # A write, once the script resolved its target ($real, empty when it could
@@ -542,6 +589,7 @@ GUARD_JQ_PATH='
       else deny($in; "task \($task.id | str) owns only \($own | join(", ")), and \($fp) resolves to \($rel) in your worktree; change only those files, or return blocked and name the file you need") end
   else "pass" end
 | if . == "pass" then passcall($in) else . end
+| withnote($in; $p)
 '
 
 # A swarm node's or a node's child's call (plan 15.4, "The guard for nodes";
@@ -632,7 +680,7 @@ def denyprefix($deny): . as $c
 # A glob part counts when it would match the name, and a bare * or ? does not
 # (src/hooks/* passes), but for a litter part right after .claude.
 def hooknames: ["active", "policy.json", "agents", "pending", "done", "hold", "spool", "bind", "out", "mode", "pointer",
-  "worktree.json", "wt", "shells"];
+  "worktree.json", "wt", "shells", "told"];
 def isglob: test("[*?\\[]");
 def pureglob: test("^[*?]+$");
 def globmatch($name): ("^" + (gsub("(?<c>[.+^$])"; "\\\(.c)") | gsub("\\[!"; "[^") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$") as $re
@@ -948,9 +996,11 @@ guard_work() {
   lt_af=$LT_FF lt_av=$LT_FV
   lt_file "$LT_DIR/mode"
   lt_mf=$LT_FF lt_mv=$LT_FV
+  lt_file "$LT_DIR/told/$lt_id"
+  lt_tf=$LT_FF lt_tv=$LT_FV
   lt_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" \
-    "$lt_pf" pol "$lt_pv" "$lt_bf" bind "$lt_bv" "$lt_af" agent "$lt_av" "$lt_mf" mode "$lt_mv" \
-    "$LT_JQ_DEFS$GUARD_JQ_BASH$GUARD_JQ_CALL") || return 1
+    "$lt_pf" pol "$lt_pv" "$lt_bf" bind "$lt_bv" "$lt_af" agent "$lt_av" "$lt_mf" mode "$lt_mv" "$lt_tf" told "$lt_tv" \
+    "$LT_JQ_DEFS$GUARD_JQ_BASH$GUARD_JQ_NOTE$GUARD_JQ_CALL") || return 1
   case $lt_d in
     "path$LT_NL"*) ;;
     *) printf '%s\n' "$lt_d"; return 0 ;;
@@ -971,8 +1021,8 @@ guard_work() {
   fi
   echo 'step checking the resolved path'
   lt_d=$(printf '%s' "$LT_IN" | jq -r --arg GP "$LT_PREFIX" --arg cfg "$lt_cfg" "$lt_pf" pol "$lt_pv" \
-    "$lt_af" agent "$lt_av" --arg w "$lt_w" --arg real "$lt_real" --arg root "$lt_root" --arg fp "$lt_fp" \
-    "$LT_JQ_DEFS$GUARD_JQ_PATH") || return 1
+    "$lt_af" agent "$lt_av" "$lt_tf" told "$lt_tv" --arg w "$lt_w" --arg real "$lt_real" --arg root "$lt_root" --arg fp "$lt_fp" \
+    "$LT_JQ_DEFS$GUARD_JQ_NOTE$GUARD_JQ_PATH") || return 1
   printf '%s\n' "$lt_d"
 }
 

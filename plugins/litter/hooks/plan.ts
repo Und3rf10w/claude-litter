@@ -22,7 +22,7 @@ import { serial } from './fsx'
 import { runJsonForRecord } from './runjson'
 import { chainLanded, gitAt, repoOf, resolveChain } from './lifecycle'
 import { writePlanVersion } from './planversion'
-import { applyWidening, askWiden, dateOf, parseWidening } from './widen'
+import { applyWidening, askWiden, dateOf, noteWidening, parseWidening } from './widen'
 
 const GATE_ID = /^G[0-9]+$/
 const FENCE = /^[ \t]{0,3}(```|~~~)/
@@ -448,6 +448,7 @@ const withPlanLocks = <T>(rootDir: string, runDir: string, f: () => Promise<T>):
 /** Where a widening reaches the agents, as gate.widen's reply says it. */
 const WIDEN_APPLIES =
   "The gate's next critic is told of the files in its verify's reply, in a running execute workflow too, and passes them on if it sends the attempt back. " +
+  "In a running execute workflow, the gate's executor is told at its next tool call. " +
   "An agent that reads the gate from plan.md (a plan-template swarm's) sees them from its next read, and the chain's next run has them in its gates."
 
 /**
@@ -522,6 +523,10 @@ export const recordGateWiden: RecordHandler = async (ctx, input) => {
     if (rootText !== null) plans.push((await writePlanVersion(ctx.p, chain.rootDir, rootText)).path)
     const added = mine.added.length > 0 ? mine.added : preview.added
     const body: GateWidenBody = { gate: w.gate, files: added, why: w.why, by: 'you', at: 'run', plans }
-    return store(ctx, input, body, { gate: w.gate, added, plans, applies: WIDEN_APPLIES })
+    const reply = await store(ctx, input, body, { gate: w.gate, added, plans, applies: WIDEN_APPLIES })
+    // The gate's executors at work hear of it at their next tool call (A8).
+    const seq = (reply as { seq?: unknown }).seq
+    if (typeof seq === 'number') await noteWidening(ctx.p, ctx.litterDir!, run, { seq, gate: w.gate, files: added, why: w.why })
+    return reply
   })
 }

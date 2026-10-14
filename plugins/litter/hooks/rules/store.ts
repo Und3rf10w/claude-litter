@@ -68,7 +68,8 @@ const no = (reason: string): Refusal => ({ ok: false, reason })
 // Where the rules are, and the two ledgers
 
 type Folder = { scope: RuleScope; dir: string }
-type Ledger = { records: StoredRecord[]; tampered: string | null }
+/** `unread`: why yours wasn't read, when the config dir can't be found; its records are then none. */
+type Ledger = { records: StoredRecord[]; tampered: string | null; unread?: string }
 type Ctx = { primary: string | null; folders: Folder[]; ledgers: Record<RuleLedgerStore, Ledger>; userMissing: string | null; problems: string[] }
 
 async function readStore(p: Ports, litterDir: string, store: RuleLedgerStore): Promise<Ledger> {
@@ -76,7 +77,7 @@ async function readStore(p: Ports, litterDir: string, store: RuleLedgerStore): P
   return { records, tampered: tampered ? `at record ${tampered.seq}: ${tampered.reason}` : null }
 }
 
-/** Both ledgers; yours is empty when the config dir can't be found, with the reason. */
+/** Both ledgers; yours is unread when the config dir can't be found, with the reason. */
 async function readLedgers(
   p: Ports,
   litterDir: string,
@@ -88,7 +89,7 @@ async function readLedgers(
   } catch (err) {
     userMissing = errText(err)
   }
-  const user = configDir !== null ? await readStore(p, litterDir, 'user') : { records: [], tampered: null }
+  const user = configDir !== null ? await readStore(p, litterDir, 'user') : { records: [], tampered: null, unread: userMissing ?? 'the config dir is unknown' }
   return { ledgers: { repo: await readStore(p, litterDir, 'repo'), user }, configDir, userMissing }
 }
 
@@ -489,14 +490,17 @@ export function proposalText(body: RuleProposeBody): string {
 /** sha256 of the folded text, as `rule.dismiss` records it. */
 export const foldedSha = (text: string) => sha256(foldText(text))
 
-type ProposalView = { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; folded: string }
+/** `unread`: why a `proposed` one may be accepted already, in your ledger that wasn't read (A10). */
+type ProposalView = { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; folded: string; unread?: string }
 const refKey = (r: ProposalRef) => `${r.store}:${r.seq}`
 
 /**
  * Every proposal in both ledgers with its status. A step in your ledger
  * that cites the repository's proposal counts only when it names this
  * litterDir, since your ledger is shared by every repository. A tampered
- * ledger contributes nothing.
+ * ledger contributes nothing. While yours can't be read, the repository's
+ * `proposed` ones say so, since your accept of one into your user scope
+ * would be there (as loadRules' problem says your user rules aren't read).
  */
 async function foldProposals(litterDir: string, ledgers: Record<RuleLedgerStore, Ledger>): Promise<ProposalView[]> {
   const accepted = new Map<string, { store: RuleLedgerStore; seq: number; id: string; version: number }>()
@@ -533,7 +537,16 @@ async function foldProposals(litterDir: string, ledgers: Record<RuleLedgerStore,
         : dismissed.has(refKey(ref)) || dismissedText.has(folded)
           ? 'dismissed'
           : 'proposed'
-      out.push({ ref, body, status, folded })
+      const unread = ledgers.user.unread
+      out.push({
+        ref,
+        body,
+        status,
+        folded,
+        ...(store === 'repo' && status === 'proposed' && unread !== undefined
+          ? { unread: `your user rules ledger isn't read (${unread}), so an accept of this into your user scope wouldn't show here` }
+          : {}),
+      })
     }
   }
   return out
@@ -574,19 +587,21 @@ export async function proposeFromCritic(p: Ports, litterDir: string, input: Crit
  * The proposals in both rules ledgers that fit `filter` (all of them when
  * it's empty), oldest first, each with its status: `proposed` until a
  * rule.accept or rule.dismiss cites it, and `dismissed` from the start when
- * its folded text matches a dismissed one's (16.3).
+ * its folded text matches a dismissed one's (16.3). `unread` says why a
+ * repository's `proposed` one may be accepted already, while your ledger
+ * can't be read.
  */
 export async function proposalsOf(
   p: Ports,
   litterDir: string,
   filter: { run?: string; swarm?: string; status?: RuleStatus[] },
-): Promise<{ ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }[]> {
+): Promise<{ ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; unread?: string }[]> {
   const { ledgers } = await readLedgers(p, litterDir)
   for (const store of ['repo', 'user'] as const) if (ledgers[store].tampered) p.log(`rules: the ${store} rules ledger is tampered ${ledgers[store].tampered}; its proposals aren't listed`)
   return (await foldProposals(litterDir, ledgers))
     .filter(v => (filter.run === undefined || v.body.run === filter.run) && (filter.swarm === undefined || v.body.swarm === filter.swarm))
     .filter(v => !filter.status || filter.status.length === 0 || filter.status.includes(v.status))
-    .map(({ ref, body, status }) => ({ ref, body, status }))
+    .map(({ ref, body, status, unread }) => ({ ref, body, status, ...(unread !== undefined ? { unread } : {}) }))
 }
 
 // ---------------------------------------------------------------------------

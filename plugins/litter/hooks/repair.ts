@@ -301,6 +301,25 @@ function executorGap(r: StoredRecord): string | null {
   return typeof res.plan_gap === 'string' && res.plan_gap.trim() !== '' ? res.plan_gap : null
 }
 
+/** Whether an executor's result says its attempt is done, so a critic was due to judge it. */
+const executorDone = (r: StoredRecord): boolean => (r.body.result as Record<string, unknown> | null | undefined)?.status === 'done'
+
+/**
+ * The decline for a gate whose critic ended twice without its verdict
+ * (WP-BG; execute.js's "critic for <gate> returned nothing"). The attempt is
+ * still in the tree, and an amend can keep it only when a verify of it was
+ * recorded (lifecycle.ts, carryOver); a continuation needs the tree clean.
+ */
+function criticNull(gate: string, attempt: number | null, verified: boolean): Ending {
+  return {
+    ok: false,
+    why: `gate ${gate}'s critic ended twice without returning its verdict${attempt === null ? '' : ` on attempt ${attempt}`}`,
+    advice: verified
+      ? `have the attempt it left in the tree judged again in an amend that keeps it (/litter:amend ${gate}), or stash it and continue the run`
+      : `stash the attempt it left in the tree and continue the run, which writes and judges gate ${gate} again`,
+  }
+}
+
 /**
  * The execute run's ending from its ledger (decision 6), never the script's
  * reason: the first gate of `args.gates` with no land, then its latest
@@ -312,7 +331,9 @@ function executorGap(r: StoredRecord): string | null {
  * workflow's generations. A land the mod refused after its latest verdict
  * (land.abandoned or land.blocked: a retry: false refusal it recorded)
  * declines, as does every other halt; a moved branch or ref declines at the
- * baseline.
+ * baseline. A halt that would decline as a plain one declines as a critic's
+ * that returned nothing when the script's reason says so: a call that
+ * returned nothing leaves no record, and the reason only words the decline.
  */
 function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Ending {
   if (json.amendOf) return { ok: false, why: AMEND_HALT, advice: 'run /litter:design for the gate, then a new plan', alone: true }
@@ -344,13 +365,17 @@ function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Endin
   const verdicts = records.filter(r => r.seq < repairAt && r.kind === 'verdict' && gateOfVerdict(r, verifies) === first.id)
   const latest = verdicts.at(-1)
   const cited = latest && typeof latest.body.verify_id === 'string' ? (verifies.get(latest.body.verify_id) ?? null) : null
+  const nulled = endReason === `critic for ${first.id} returned nothing`
+  /** A verify of the gate recorded after `seq`: the attempt then in the tree has one. */
+  const verifiedAfter = (seq: number) => records.some(r => r.seq > seq && r.seq < repairAt && verifyBody(r)?.gate === first.id)
   // The executor's stop, before its attempt was judged: a plan gap bridges as a critic's does; a rule clash, a denied tool or red checks don't.
   // Its evidence verify is the one the gate's latest verdict cites, an earlier attempt's, when there is one.
   const wrote = records.filter(r => r.seq < repairAt && isGateResult(r) && r.body.gate === first.id).at(-1)
   if (wrote && (!latest || wrote.seq > latest.seq)) {
     const gap = executorGap(wrote)
-    if (gap === null) return halted
     const attempt = Number.isSafeInteger(wrote.body.attempt) && (wrote.body.attempt as number) > 0 ? (wrote.body.attempt as number) : null
+    // A done attempt its critic never judged.
+    if (gap === null) return nulled && executorDone(wrote) ? criticNull(first.id, attempt, verifiedAfter(wrote.seq)) : halted
     return { ok: true, failure: { kind: 'plan_gap', by: 'executor', gate: first.id, gap, attempt, verify: cited } }
   }
   // A rule clash is the user's to settle, never a swarm's (WP-AH).
@@ -376,7 +401,8 @@ function classifyExecute(json: RunJson, records: readonly StoredRecord[]): Endin
     }
     return { ok: true, failure: { kind: 'attempts', gate: first.id, count: verdicts.length, max, verify: cited } }
   }
-  return halted
+  // A critic whose attempt has an earlier verdict: a re-critique's, after a land sent the approval back.
+  return nulled ? criticNull(first.id, null, verifiedAfter(latest?.seq ?? 0)) : halted
 }
 
 /** The ending by workflow. */

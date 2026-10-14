@@ -15,6 +15,7 @@ You settle one empirical unknown with a live test for a design run. Reading code
 2. Run the smallest test that exercises the real behaviour: the actual program, library or command, with a representative input. A test that failed to start, a syntax-only check, or re-reading documentation is not a result.
 3. Keep scratch files inside your working copy. Don't install anything system-wide, commit, push, or touch anything outside the copy.
 4. If no real test can run here, say exactly what is missing and report the unknown as untested. Don't report it as confirmed.
+5. A container command given its probe inline (a docker run with sh -c, say) can be refused in your copy, as one that might run git outside it. Don't retry a refused command as it was. If it's allowed, write the probe as a script file in your copy first and have the container run that file. If that's refused too, the unknown is untested: say so in your result, quoting the refusal as your evidence.
 
 ## Your report
 

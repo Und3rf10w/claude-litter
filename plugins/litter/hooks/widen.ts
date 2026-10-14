@@ -12,16 +12,27 @@
 // end of the gate's section says you added them, and why. Every agent reads
 // the gate from that copy, so nothing else has to carry it. A continuation
 // or an amend applies the chain's widenings again to the plan it copies.
+//
+// An execute run's agents got their <gate> at the start, though, so during
+// the run your widening reaches the gate's critic in its verify's reply
+// (WP-AP), and its executors through the guard (A8): policy.json lists your
+// widenings and each executor's gate, and guard.sh adds a note to the
+// executor's next tool call, once.
 
 import type { Ports } from './ports'
 import type { RecordError, StoredRecord } from './records/core'
 import type { AddedFiles, GateWidenBody, WidenedFile } from './records/execute'
 import type { RunJson, WideningInput } from './records/run'
+import type { SpoolConsumer } from './hookfiles'
 import type { WidenMode } from './options'
 import { fail } from './records/core'
 import { parseGates } from './gates'
 import { matches } from './rules/match'
-import { SNAPSHOT_EXCLUDES } from './layout'
+import { runDir as runDirOf, SNAPSHOT_EXCLUDES } from './layout'
+import { readLedger } from './ledgercore'
+import { checkedRunJson } from './runjson'
+import { agentInfo, readPolicy } from './policy'
+import { patchRunPolicy } from './lifecycle'
 
 /** The run's widen setting; a run.json without one (written before WP-AO) is `ask`. */
 export const widenOf = (json: Pick<RunJson, 'widen'> | null | undefined): WidenMode => (json?.widen === 'critic' ? 'critic' : 'ask')
@@ -149,6 +160,60 @@ export const ADDED_NOTE =
   "The user added these files to this gate's Files after the run launched, so they're part of its expected files, even where the gate text you were given doesn't list them. " +
   'If you reject the attempt and its fix needs one of them, say in a gap that the executor may change it.'
 
+const EXECUTOR = 'litter:executor'
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/**
+ * Your widening during a run, `w` (gate.widen at 'run', with its record's
+ * seq), into the active run's policy.json (`run.widened`), so the guard
+ * tells the gate's executors of it at their next tool call (A8). A run that
+ * isn't the active one, as after its halt, has none at work. A failure is
+ * logged: the widening stands, and the gate's critic is still told at its
+ * next verify.
+ */
+export async function noteWidening(
+  p: Ports,
+  litterDir: string,
+  run: string,
+  w: { seq: number; gate: string; files: readonly string[]; why: string },
+): Promise<void> {
+  const entry = { seq: w.seq, gate: w.gate, files: [...w.files], why: w.why }
+  try {
+    await patchRunPolicy(p, litterDir, run, r => (r.workflow === 'execute' ? { ...r, widened: [...(r.widened ?? []), entry] } : r))
+  } catch (err) {
+    p.log(`gate.widen ${run} ${w.gate}: the guard can't tell its executors, since policy.json wasn't written: ${errText(err)}`)
+  }
+}
+
+/**
+ * A spool consumer (registry.ts, after consumeAgents): an execute run's
+ * executor's start line puts its gate in policy.json (`run.executors`), so
+ * the guard knows which of your widenings to tell it (A8). Its gate is the
+ * first of the run's gates with no land, as output.ts places an executor's
+ * result: execute.js runs one executor at a time, in the gates' order.
+ */
+export const consumeExecutorGate: SpoolConsumer = async (ctx, line) => {
+  if (line.ev !== 'start' || line.agent_type !== EXECUTOR) return
+  const { p, litterDir } = ctx
+  const r = (await readPolicy(p, litterDir))?.run
+  if (!r || r.workflow !== 'execute' || r.executors?.[line.agent_id] !== undefined) return
+  // consumeAgents gave it the run active at its start; another run's executor isn't this one's.
+  const info = await agentInfo(p, line.agent_id)
+  if (info && info.run !== r.run) return
+  const dir = runDirOf(litterDir, r.run)
+  const read = await readLedger(p, dir, r.run)
+  const c = await checkedRunJson(p, { run: r.run, runDir: dir }, read)
+  if (!c.ok) {
+    p.log(`executor ${line.agent_id}: its gate isn't noted for the guard: ${c.reason}`)
+    return
+  }
+  const landed = new Set(read.records.filter(x => x.kind === 'land' && typeof x.body.gate === 'string').map(x => x.body.gate as string))
+  const gates = Array.isArray(c.json.args?.gates) ? (c.json.args.gates as unknown[]) : []
+  const gate = gates.map(g => (g !== null && typeof g === 'object' ? (g as { id?: unknown }).id : undefined)).find((id): id is string => typeof id === 'string' && !landed.has(id))
+  if (gate === undefined) return
+  await patchRunPolicy(p, litterDir, r.run, x => (x.workflow === 'execute' ? { ...x, executors: { ...x.executors, [line.agent_id]: gate } } : x))
+}
+
 /** At most this many paths outside a gate's Files go into a land's body. */
 export const OUTSIDE_MAX = 200
 
@@ -247,7 +312,7 @@ export async function askWiden(
   const when =
     o.at === 'launch'
       ? 'in this run and any continuation of it'
-      : "from its critic's next verify, where litter tells the critic of them (it passes them on if it sends the attempt back), and in any continuation of the run"
+      : "from its critic's next verify, where litter tells the critic of them (it passes them on if it sends the attempt back), and in any continuation of the run; an executor at work on it is told at its next tool call"
   const question = [
     `Gate ${o.gate}${o.title ? ` ("${o.title}")` : ''}${whose} covers these files: ${o.current.join(', ')}.`,
     '',

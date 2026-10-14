@@ -219,6 +219,14 @@ describe('the fanout calls', () => {
       "The files touched are the ones the gate's expected files cover, with any your verify's reply lists in added: the user added those to the gate after the run launched.",
     )
   })
+
+  // A23: the engine's worktree guard can refuse a container command from the prober's worktree.
+  test('the prober tries a refused container probe as a script file once, and else reports its unknown untested, with the refusal', () => {
+    const text = ROLE_PROMPTS.prober
+    expect(text).toContain("Don't retry a refused command as it was.")
+    expect(text).toContain("If it's allowed, write the probe as a script file in your copy first and have the container run that file.")
+    expect(text).toContain("If that's refused too, the unknown is untested: say so in your result, quoting the refusal as your evidence.")
+  })
 })
 
 // ---------------------------------------------------------------------------

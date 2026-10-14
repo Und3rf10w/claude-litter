@@ -18,6 +18,7 @@ import { checkedRunJson } from '../runjson'
 import { parseGates } from '../gates'
 import { runGateFiles } from '../widen'
 import { git } from '../worktrees'
+import { renderRunRules } from '../lifecycle'
 import { loadRules } from './store'
 import { couldMatchUnder, expandBraceSets, isPathless, matches, specificity } from './match'
 import { rulesIntoBar, selectedRules } from '../design/bar'
@@ -48,9 +49,6 @@ const VERIFIER = '@verifier'
 const PLANNER = '@planner'
 const NODE = '@node'
 const DESIGN = '@design'
-
-/** Your run rules, as run.start renders them into args.rules (lifecycle.ts, renderRunRules). */
-const RUN_RULE = 'For this run (stated by you): '
 
 /** rule.find's design answer without your draft bar. */
 const DESIGN_IDS_NOTE =
@@ -579,7 +577,8 @@ export async function findApplicable(p: Ports, litterDir: string, applicable: Re
       goal,
       anchors,
       checkout,
-      runRules: runRules.map(r => `${RUN_RULE}${r}`),
+      // Your run rules, as run.start renders them into args.rules.
+      runRules: renderRunRules(runRules),
     }
     const sel = await select(p, input, rules)
     if (workflow === 'design') {

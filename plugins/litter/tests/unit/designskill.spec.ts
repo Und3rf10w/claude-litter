@@ -161,6 +161,14 @@ describe('settings and launch', () => {
     expect(authorized).toContain('the configured `${user_config.setup}` and `${user_config.linkDirs}` apply')
   })
 
+  // A23: the engine's worktree guard can refuse a container command from a prober's worktree.
+  test('tells the user, where it explains probes, that a container probe may not run and its unknown then ships untested', () => {
+    const authorized = settings.slice(settings.indexOf('**Authorized actions.**'), settings.indexOf('**Rules.**'))
+    expect(authorized).toContain(
+      '  - If an unknown needs a container, tell the user its probe may not run: a container command from a worktree can be refused as one that might run git, and the prober then tries the probe as a script file, or else reports that unknown as untested, with the refusal.\n',
+    )
+  })
+
   test('keeps the checkout note and asks for an explicit "Launch"', () => {
     expect(settings).toContain('the run works on the checkout as it is now, uncommitted changes included, and that editing files during the run stops it at the end of the current round')
     expect(settings).toContain('Then ask for an explicit "Launch". This is the user\'s opt-in, so ask for it even if the user didn\'t type the command.')

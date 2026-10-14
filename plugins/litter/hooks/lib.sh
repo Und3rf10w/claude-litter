@@ -11,6 +11,7 @@
 #   <hooks>/active  policy.json  worktree.json  agents/<id>.json  out/<id>.json
 #   <hooks>/bind/<id>  mode  wt/<name>  spool/<session_id>.jsonl  spool/blobs/<name>.json
 #   <hooks>/pending/<key>  done/<id>  hold/<id>  shells/<id>   (phase 2b, the swarm markers)
+#   <hooks>/told/<id>   (WP-EB, the widenings guard.sh told an execute executor)
 #   $CLAUDE_PROJECT_DIR/.claude/litter/hooks/pointer
 # and, for worktree.sh, the run's setup log and its writers' branches
 # (lt_wt_marker, lt_setup_log, lt_writer_branch below):
@@ -205,6 +206,13 @@ lt_done() {
   lt_mkdir "$LT_DIR/done" && lt_write "$LT_DIR/done/$1" "{\"v\":1,\"at\":$LT_NOW,\"via\":\"$2\"}"
 }
 
+# lt_told <agent_id> <marker>: told/<agent_id> (hookfiles.ts, ToldMarker), the
+# widenings guard.sh told that executor.
+lt_told() {
+  lt_id_ok "$1" || return 1
+  lt_mkdir "$LT_DIR/told" && lt_write "$LT_DIR/told/$1" "$2"
+}
+
 # An id that's safe as a file name: agent, session and tool_use ids.
 lt_id_ok() {
   case $1 in '' | *[!A-Za-z0-9_-]*) return 1 ;; esac
@@ -363,6 +371,10 @@ lt_take() {
 #   deny|block, reason, sid, spool lines  the lines spooled, then the deny (block: exit 2)
 #   spool, -, sid, line                   the line spooled (else refused), exit 0
 #   fill, hook output, sid, line          the line spooled (else refused), the output printed
+#   pass-note|deny-note, hook output, sid, line, agent_id, marker
+#                                         guard.sh's note to an executor (A8): the line spooled
+#                                         (a failure changes nothing), the output printed, then
+#                                         told/<agent_id>; a deny that can't be printed blocks
 # With no decision, a litter agent's call is refused naming the step, and
 # anyone else's passes.
 lt_finish() {
@@ -370,6 +382,16 @@ lt_finish() {
     pass)
       [ -z "$LT_L3" ] || lt_spool "$LT_L2" "$LT_L3" || :
       exit 0
+      ;;
+    pass-note | deny-note)
+      [ -z "$LT_L4" ] || lt_spool "$LT_L3" "$LT_L4" || :
+      if printf '%s\n' "$LT_L2"; then
+        # Once it's printed, so a note that wasn't is told again.
+        lt_told "$LT_L5" "$LT_L6" || :
+        exit 0
+      fi
+      [ "$LT_L1" = pass-note ] && exit 0
+      lt_block "litter guard failed: printing the deny; refusing"
       ;;
     deny | block)
       [ -z "$LT_L4" ] || lt_spool "$LT_L3" "$LT_L4" || :
