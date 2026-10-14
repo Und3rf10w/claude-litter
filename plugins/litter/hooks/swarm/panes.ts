@@ -470,8 +470,9 @@ export const onUiSelect: PortHook<UiSelectHook> = async (p, e, next) => {
  * `{}`, so the pane stays put. Any other (the scroll keys, a tick over the
  * rest of the body, one at the window's edge) passes on, and the pane
  * scrolls. Where each sits is what the terminal last drew (ui/drawn.ts): the
- * body's top, the pane's offset as read, and the rows above it (startListTop
- * and browserTranscriptTop, each kept in step with its renderer).
+ * body's top, the pane's offset as read, and the rows above it: startListTop,
+ * the rows of the parts renderStart draws there (builder.tsx's startAbove,
+ * A20), and browserTranscriptTop, kept in step with its renderer.
  */
 export const onUiScroll: PortHook<UiScrollHook> = async (p, e, next) => {
   const d = lastDrawn()
