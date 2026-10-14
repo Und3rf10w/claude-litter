@@ -60,7 +60,7 @@ let litterDir: string
 let cleanup: () => void
 let loaded: LoadedRule[]
 let problems: string[]
-let proposals: { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }[]
+let proposals: { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; unread?: string }[]
 let ruleRecords: StoredRecord[]
 let tracked: string[] | null
 /** Every call the stand-ins for AD's store got, without the ports and the litter directory. */
@@ -247,6 +247,15 @@ const command = () => ({ command: 'litter', args: '', origin: { kind: 'composer'
 // ---------------------------------------------------------------------------
 
 describe('the Proposed tab', () => {
+  // A10: while your ledger can't be read, a repository's proposal may be accepted into your user scope already.
+  test('a proposal the store says may be accepted in your unread ledger says so, first among its notes', async () => {
+    const why = "your user rules ledger isn't read (no HOME), so an accept of this into your user scope wouldn't show here"
+    proposals[0] = { ...proposals[0]!, unread: why }
+    const { view: v } = await rulesView(p, litterDir, blankRulesNav('proposed'))
+    expect(row(v, 'repo:3').notes).toEqual([why, 'its id is assigned when you accept it'])
+    expect(row(v, 'repo:4').notes).toEqual(['its id is assigned when you accept it'])
+  })
+
   test('proposals with where they came from, an edit as a diff, then the unverified files', async () => {
     const { view: v, shown } = await rulesView(p, litterDir, blankRulesNav('proposed'))
     expect(v.tab).toBe('proposed')
