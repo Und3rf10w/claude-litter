@@ -12,7 +12,7 @@ import type { Policy } from '../../hooks/hookfiles'
 import { agentPolicyPath, ownerLeasePath, swarmDir } from '../../hooks/layout'
 import { atomicWriteJson } from '../../hooks/fsx'
 import { readLaunchLedger } from '../../hooks/records/swarm'
-import { liveSwarm, markRunning } from '../../hooks/swarm/state'
+import { isParked, liveSwarm, markRunning } from '../../hooks/swarm/state'
 import { deps as ownerDeps, handover, ownedSwarm, ownerLost, readOwner, rebindOwnership, releaseOwnership } from '../../hooks/swarm/owner'
 import { recoverSwarms, recoveryCard, requestResume } from '../../hooks/swarm/recover'
 import {
@@ -209,6 +209,36 @@ describe('handover', () => {
     await expect(requestResume(q, 'alpha', ['lead-a'], 'resume')).rejects.toThrow('no instance this session can resume')
     await requestResume(q, 'alpha', ['lead-a'], 'respawn')
     expect(q.filled[0]!.split('\n')[0]).toBe('/litter:swarm respawn alpha lead-a')
+  })
+
+  // WP-AN's leftover (execute MERGE-NOTES:183): the poll started only at the next <swarm> block or turn.complete.
+  test('a node its recovery parks is freed by the settle poll, which the handover starts', async () => {
+    const { q } = await inSessionB()
+    q.clock.now = NOW + 120_000
+    await moveRef(w, { ...(await blobAt(w, (await refOf(w))!)), pid: await deadPid(w) })
+    // docs #1 is between turns in sess-a's copy, and this session's list shows it `waiting`.
+    q.agents = [{ id: 'ag-d1', description: 'docs', type: 'litter:sw-alpha-docs', status: 'waiting' }]
+    q.answers.push('Take over')
+    expect(await handover(q, w.litterDir, 'alpha')).toEqual({ ok: true })
+    expect(isParked('ag-d1')).toBe(true)
+    // The beat and the poll.
+    expect(q.timers.size).toBe(2)
+    q.agents = [{ id: 'ag-d1', description: 'docs', type: 'litter:sw-alpha-docs', status: 'completed' }]
+    await fireEvery(q)
+    expect(isParked('ag-d1')).toBe(false)
+    // With nothing left to settle, the poll stops; the beat goes on.
+    expect(q.timers.size).toBe(1)
+  })
+
+  test('with nothing parked or settling, the handover starts no poll', async () => {
+    const { q } = await inSessionB()
+    q.clock.now = NOW + 120_000
+    await moveRef(w, { ...(await blobAt(w, (await refOf(w))!)), pid: await deadPid(w) })
+    q.agents = [{ id: 'ag-d1', description: 'docs', type: 'litter:sw-alpha-docs', status: 'completed' }]
+    q.answers.push('Take over')
+    expect(await handover(q, w.litterDir, 'alpha')).toEqual({ ok: true })
+    expect(isParked('ag-d1')).toBe(false)
+    expect(q.timers.size).toBe(1)
   })
 
   test('from another host, it needs your word that the session is closed', async () => {

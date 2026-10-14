@@ -25,6 +25,7 @@ import { appendLaunchRecord } from '../records/swarm'
 import { liveSwarm, patchLiveSwarm, withGateClosed } from './state'
 import { heldBy, notNewer, patchSwarmPolicy, writeSwarmPolicy } from './guard'
 import { readLaunchFacts, recoverOwnedLaunch } from './recover'
+import { kick as kickSettle } from './admit'
 
 /** The ownership a launch took: `refs/litter-swarm/<name>` at its blob. */
 export type Ownership = { ref: string; oid: string; generation: number }
@@ -492,6 +493,8 @@ export async function handover(p: Ports, litterDir: string, name: string): Promi
     await remove(p, ownerLeasePath(litterDir, name, old.oid)).catch(() => {})
     // Recovery, in this session now: the old bindings keep their generation, so the card offers them for re-spawn only.
     await withGateClosed(() => recoverOwnedLaunch(p, litterDir, name, facts, { oid: took.oid, generation: took.generation, session }))
+    // A node it parked (the list shows it `waiting`) is freed by the settle poll once it ends, which nothing else starts now.
+    kickSettle(p)
   } catch (err) {
     p.log(`swarm ${name}: the handover took the ref, then failed: ${errText(err)}`)
     return { ok: false, reason: `litter: swarm ${name} is this session's now, but its recovery failed: ${errText(err)}` }

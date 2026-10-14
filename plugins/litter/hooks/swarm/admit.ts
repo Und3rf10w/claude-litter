@@ -1146,8 +1146,8 @@ function hasWork(): boolean {
   return ownBindings().some(b => state.status(b.agentId) === 'settling' || state.isParked(b.agentId))
 }
 
-/** Starts the settle poll when something settles or is parked. */
-function kick(p: Ports): void {
+/** Starts the settle poll when something settles or is parked (a handover's recovery parks too: owner.ts). */
+export function kick(p: Ports): void {
   if (poll || !hasWork()) return
   poll = p.every(SETTLE_POLL_MS, () => settleTick(p))
 }
