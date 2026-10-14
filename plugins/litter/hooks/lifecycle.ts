@@ -2116,8 +2116,8 @@ function argsGate(g: Gate, extra: Record<string, unknown> = {}): Record<string, 
   }
 }
 
-/** Your constraints for this run, first in args.rules (plan section 16.5), before the accepted rules selection adds. */
-const renderRunRules = (rules: readonly string[]): string[] => rules.map(r => `For this run (stated by you): ${r}`)
+/** Your constraints for this run, first in args.rules (plan section 16.5), before the accepted rules selection adds. rule.find renders them so too (rules/select.ts). */
+export const renderRunRules =(rules: readonly string[]): string[] => rules.map(r => `For this run (stated by you): ${r}`)
 
 /**
  * AE's selection for a launch. A failure refuses the launch before anything

@@ -16,7 +16,7 @@ import type { LoadedRule, RuleDoc, RuleScope, RuleStanding, SelectInput } from '
 import type { RunJson, RunStartReply } from '../../hooks/records/run'
 import type { LandReply, VerifyReply } from '../../hooks/records/execute'
 import { deps as selectDeps, findApplicable, RULES_CAP, selectForRun } from '../../hooks/rules/select'
-import { deps as lifecycleDeps, recordRunStart } from '../../hooks/lifecycle'
+import { deps as lifecycleDeps, recordRunStart, renderRunRules } from '../../hooks/lifecycle'
 import { recordVerify } from '../../hooks/verify'
 import { recordLand } from '../../hooks/land'
 import { appendRecord } from '../../hooks/ledgercore'
@@ -567,7 +567,9 @@ describe('rule.find { applicable }', () => {
     store(...rules)
     const before = listing(w.dir)
     const runRules = ['keep the public API']
-    const rendered = ['For this run (stated by you): keep the public API']
+    // rule.find renders your run rules with run.start's own renderer (A11).
+    const rendered = renderRunRules(runRules)
+    expect(rendered).toEqual(['For this run (stated by you): keep the public API'])
 
     const ex = okOf(await findApplicable(w.p, w.litterDir, { workflow: 'execute', planPath: 'plan.md', runRules }))
     const exSel = await selectForRun(w.p, input({ checkout: w.dir, litterDir: w.litterDir, gates: [{ id: 'G1', files: ['a.txt'] }, { id: 'G2', files: ['b/'] }], planText: PLAN, runRules: rendered }))
