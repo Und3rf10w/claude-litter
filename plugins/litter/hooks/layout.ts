@@ -49,6 +49,8 @@ export const runJsonPath = (runDir: string) => join(runDir, 'run.json')
 export const ledgerDir = (runDir: string) => join(runDir, 'ledger')
 export const ledgerFileName = (seq: number, kind: string) => `${String(seq).padStart(6, '0')}-${kind}.json`
 export const ledgerExportDir = (runDir: string) => join(runDir, 'ledger-export')
+/** One part of the ledger's export, from 1: `ledger-export/0001.jsonl` (ledgerexport.ts). */
+export const ledgerExportPart = (runDir: string, part: number) => join(ledgerExportDir(runDir), `${String(part).padStart(4, '0')}.jsonl`)
 export const verifyLogDir = (runDir: string, verifyId: string) => join(runDir, 'verify', verifyId)
 export const verifyLogPart = (runDir: string, verifyId: string, part: number) =>
   join(verifyLogDir(runDir, verifyId), `${String(part).padStart(4, '0')}.log`)

@@ -80,6 +80,7 @@ import { NOT_INTO_SUBMODULES, cleanupRun, litterWorktreeRoot, worktreeSummary } 
 import { fanoutSummary } from './integrate'
 import { continueAsRepair, repairSummary } from './repair'
 import { executeSummary } from './execsummary'
+import { scheduleExport } from './ledgerexport'
 import { selectForRun } from './rules/select'
 import { designArgs, parseDesign } from './design/launch'
 import { finalizeDesign } from './design/finalize'
@@ -573,6 +574,8 @@ async function recordEnd(
       await deps.finalizeDesign(p, ref, body).catch(err => p.log(`design delivery for ${ref.run} failed: ${errText(err)}`))
     }
     await writeSummary(p, ref).catch(err => p.log(`summary for ${ref.run} failed: ${errText(err)}`))
+    // The ledger's export, from a timer: run.end never waits for it (plan section 9, "Ledger").
+    scheduleExport(p, ref.runDir, ref.run)
     await deactivate(p, ref.litterDir, ref.run).catch(err => p.log(`policy for ${ref.run} failed: ${errText(err)}`))
     await removeRunBindings(p, ref.litterDir, run => run === ref.run).catch(err => p.log(`writer bindings of ${ref.run} not removed: ${errText(err)}`))
     await releaseRunLock(p, ref.litterDir, ref.run)
