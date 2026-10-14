@@ -18,9 +18,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 failed=0
 inconclusive=0
 for c in 'isolation.sh alone' 'isolation.sh broad' 'land.sh edit' 'land.sh clean' \
-  'fanout.sh land' 'fanout.sh edit' 'fanout.sh red' 'fanout.sh stop' 'worktrees.sh resume' 'worktrees.sh default' \
+  'fanout.sh land' 'fanout.sh edit' 'fanout.sh red' 'fanout.sh stop' 'fanout.sh chatty' \
+  'worktrees.sh resume' 'worktrees.sh default' 'worktrees.sh setup' 'subdir.sh' \
   'swarm.sh trio' 'repair.sh auto' 'repair.sh off' \
   'execute.sh basic' 'rules.sh import' 'execute.sh bridge auto' 'execute.sh bridge off' \
+  'design.sh basic' 'design.sh drift' 'export.sh' 'wiki.sh' \
   'ui-band.sh' 'ui-card.sh' 'ui-ask.sh' 'ui-tasks.sh' 'ui-agents.sh'; do
   # A word list on purpose: the script and its mode.
   # shellcheck disable=SC2086
