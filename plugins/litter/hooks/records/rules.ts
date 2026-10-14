@@ -101,8 +101,8 @@ export type RuleRef = { id: string; version: number }
 export type RuleLedgerStore = 'repo' | 'user'
 export type ProposalRef = { store: RuleLedgerStore; seq: number }
 
-/** The rules ledger's kinds (16.9). `rule.find` is read-only and records nothing; `rule.export` is phase 6. */
-export type RuleRecordKind = 'rule.propose' | 'rule.open' | 'rule.import' | 'rule.accept' | 'rule.dismiss' | 'rule.retire'
+/** The rules ledger's kinds (16.9). `rule.find` is read-only and records nothing; `rule.export` is the mod's alone. */
+export type RuleRecordKind = 'rule.propose' | 'rule.open' | 'rule.import' | 'rule.accept' | 'rule.dismiss' | 'rule.retire' | 'rule.export'
 
 // ---------------------------------------------------------------------------
 // The rules ledger's bodies (decision 17: one chain per store, each body
@@ -143,6 +143,13 @@ export type RuleProposeBody = {
   /** Its place in the verdict's `proposed_rules`. */
   index?: number
   import?: RuleImportOrigin
+  /**
+   * A hand edit of a rule's exported file, adopted from the pane (16.7;
+   * `source: 'export'`): the file and the sha256 of its bytes. Once the
+   * edit is accepted, the next export overwrites those bytes with the new
+   * version's.
+   */
+  fromExport?: { path: string; sha256: string }
 }
 
 /** `rule.open`: the pane opened on a rule id or a proposal (decision 18). */
@@ -187,6 +194,54 @@ export type RuleDismissBody = { proposal: ProposalRef; folded: string; via: 'ui'
 
 /** `rule.retire`, only from the pane. */
 export type RuleRetireBody = { id: string; version: number; via: 'ui' }
+
+/**
+ * `rule.export`, the mod's alone (16.7): one rule file it wrote as a Claude
+ * Code rule file, with the sha256 of the bytes it wrote, or `sha256: null`
+ * for one it removed. In the rule's own scope's ledger. A file is rewritten
+ * or removed only while its bytes are the ones the latest record for its
+ * path names.
+ */
+export type RuleExportBody = { id: string; version: number; scope: RuleScope; path: string; sha256: string | null; via: 'mod' }
+
+/**
+ * Where a rule stands as a Claude Code rule file (16.7), for the pane and
+ * `rule.find`:
+ * - `exported`: the file is the one the mod wrote for this version;
+ * - `edited`: its bytes aren't the mod's, so it's left alone, and its text
+ *   can be proposed as the rule's next version;
+ * - `deleted`: the mod wrote it and it's gone; it's written again only for a
+ *   new version;
+ * - `pending`: not written yet (the next sync writes it);
+ * - `off`: `export: false`;
+ * - `litter-only`: its `workflows` or `roles` name litter runs, which a
+ *   session with no run has, so it isn't exported;
+ * - `none`: this session can't export it (no config dir, a bare repository,
+ *   or a host that isn't Claude Code).
+ */
+export type RuleExportState = 'exported' | 'edited' | 'deleted' | 'pending' | 'off' | 'litter-only' | 'none'
+
+export type RuleExportView = {
+  id: string
+  version: number
+  scope: RuleScope
+  /** Absolute; null for `off`, `litter-only` and `none`. */
+  path: string | null
+  state: RuleExportState
+  /** A rule with `paths:` frontmatter: Claude Code loads it only after a Read of a matching file (S2). */
+  bindsAfterRead: boolean
+  /** What the mod would write for this version, and the file as it is (null when missing). */
+  expected: string | null
+  actual: string | null
+  /** A project rule's linked worktrees under `.claude/worktrees/` whose copy differs from `expected` (by folder name); filled only when asked. */
+  staleIn: string[]
+  /** Why it's `none` or `edited`, or a note. */
+  why?: string
+  /** The `claudeMdExcludes` pattern in your settings that keeps Claude Code from loading the file; filled only when asked. */
+  excludedBy?: string
+  /** The latest proposal adopting this file's bytes as they are now, when there's one. */
+  adoption?: { proposal: ProposalRef; status: RuleStatus }
+}
 
 // ---------------------------------------------------------------------------
 // What callers hand the store, and what the store hands back

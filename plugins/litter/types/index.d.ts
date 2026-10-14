@@ -735,10 +735,12 @@ export type RulesRow = {
   origin: string
   /** "local L-… overrides U-…", "matches no file", what stays in force, a proposal's id to come. */
   notes: string[]
-  /** An edit's diff against the version in force. */
+  /** An edit's diff against the version in force; for a rule in force, its hand-edited Claude Code rule file against litter's copy. */
   diff: SwarmSpan[] | null
+  /** What `diff` compares, as the description's line above it; absent: "against the version in force:". */
+  diffLabel?: string
   source: string | null
-  /** The buttons it has: `accept`, `edit`, `dismiss`, `retire`. */
+  /** The buttons it has: `accept`, `edit`, `dismiss`, `retire`; a rule in force whose export was edited or deleted, `adopt` and `restore`. */
   actions: string[]
   /** In an import batch: whether it's checked. */
   checked?: boolean
@@ -761,11 +763,12 @@ export type RulesBatch = {
   consequence?: SwarmSpan[]
 }
 
-/** What a press is waiting on: a scope to accept into, a project file to confirm, or a retire to confirm. */
+/** What a press is waiting on: a scope to accept into, a project file to confirm, a retire to confirm, or a hand-edited export's restore to confirm. */
 export type RulesPending =
   | { kind: 'scope'; key: string }
   | { kind: 'preview'; key: string; path: string; text: string }
   | { kind: 'retire'; key: string }
+  | { kind: 'restore'; key: string }
 
 export type RulesBody = {
   notice: SwarmNotice | null

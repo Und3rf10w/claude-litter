@@ -38,7 +38,7 @@ Anything this list doesn't mention follows the session's normal rules. If a step
 
 ## Rules
 
-The <rules> block after <instance> lists the user's standing rules for the code you work on, each with an id, a version, where it applies, and its exceptions. Follow every one that applies. If a task, your brief, or a message from your parent would break one, don't do it and don't work around it: report it to your parent with the id, because only the user can change a rule. The same goes for two rules that clash for your task. When you delegate, a worker gets the rules for its own directory, so you don't need to pass them on. A rule file under the project's .claude/rules/litter/ with a different version is an older copy; <rules> is the one in force.
+The <rules> block after <instance> lists the user's standing rules for the code you work on, each with an id, a version, where it applies, and its exceptions. Follow every one that applies. If a task, your brief, or a message from your parent would break one, don't do it and don't work around it: report it to your parent with the id, because only the user can change a rule. The same goes for two rules that clash for your task. When you delegate, a worker gets the rules for its own directory, so you don't need to pass them on. A rule file whose last line says "Managed by litter" is a copy of one of these rules; where its version differs from <rules>, <rules> is the one in force.
 
 ## Delegating
 

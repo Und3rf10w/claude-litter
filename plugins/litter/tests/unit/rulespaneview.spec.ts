@@ -16,7 +16,7 @@ import type { LedgerRead } from '../../hooks/ledgercore'
 import { headKey } from '../../hooks/ledgercore'
 import { repoRulesLedgerDir } from '../../hooks/layout'
 import type { StoredRecord } from '../../hooks/records/core'
-import type { LoadedRule, ProposalRef, RuleDoc, RuleImportBody, RuleProposeBody, RuleStatus } from '../../hooks/records/rules'
+import type { LoadedRule, ProposalRef, RuleDoc, RuleExportView, RuleImportBody, RuleProposeBody, RuleStatus } from '../../hooks/records/rules'
 import type { RulesPaneView, RulesRow } from '../../types/index'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
@@ -24,6 +24,9 @@ import { MOD } from '../../hooks/verify'
 import {
   BAN_MATCHES_NO_FILE,
   BAN_NO_PATHS,
+  EXPORT_DELETED,
+  EXPORT_DIFF,
+  EXPORT_EDITED,
   MATCHES_NO_FILE,
   NO_PATHS,
   NO_PATHS_IN_FORCE,
@@ -64,6 +67,10 @@ let tracked: string[] | null
 let calls: { fn: string; args: unknown[] }[]
 /** What acceptRule answers, by proposal key; unset, it's written. */
 let refuse: Record<string, string>
+/** What export.ts's stand-ins answer: the rules' exports and their problems, and the files a sync wrote. */
+let exportViews: RuleExportView[]
+let exportProblems: string[]
+let synced: string[]
 const savedView = { ...viewDeps }
 const savedPane = { ...paneDeps }
 
@@ -112,6 +119,25 @@ beforeEach(() => {
   })
   viewDeps.lsFiles = async () => tracked
   viewDeps.matches = (pattern, path) => (pattern.endsWith('/**') ? path.startsWith(pattern.slice(0, -2)) : pattern === path)
+  exportViews = []
+  exportProblems = []
+  viewDeps.exportsOf = async (_p, _dir, opts) => {
+    calls.push({ fn: 'exportsOf', args: [{ worktrees: opts?.worktrees, settings: opts?.settings, loaded: opts?.loaded?.rules.length }] })
+    return { views: exportViews, problems: exportProblems }
+  }
+  paneDeps.syncExports = async () => {
+    calls.push({ fn: 'syncExports', args: [] })
+    return { written: synced, removed: [], recorded: 0, problems: [] }
+  }
+  synced = []
+  paneDeps.adoptExport = async (_p, _dir, ref) => {
+    calls.push({ fn: 'adoptExport', args: [ref] })
+    return { ok: true, proposal: { store: 'repo', seq: 40 } }
+  }
+  paneDeps.restoreExport = async (_p, _dir, ref) => {
+    calls.push({ fn: 'restoreExport', args: [ref] })
+    return { ok: true, path: join(dir, '.claude', 'rules', 'litter', `${ref.id}.md`), kept: ref.id === 'P-hand' ? join(litterDir, 'rules-ledger', 'export-edits', 'P-hand@1-x.md') : null }
+  }
 
   paneDeps.acceptRule = async (_p, _dir, what, opts) => {
     calls.push({ fn: 'acceptRule', args: [what, opts] })
@@ -424,6 +450,83 @@ describe('the In force tab', () => {
     v = (await rulesView(p, litterDir, blankRulesNav('in-force'))).view
     expect(row(v, 'P-nowhere').notes).toEqual([])
   })
+
+  // Phase 6 (16.7): each rule's Claude Code rule file, as export.ts's exportsOf has it.
+  const exp = (id: string, scope: RuleExportView['scope'], version: number, over: Partial<RuleExportView>): RuleExportView => ({
+    id,
+    version,
+    scope,
+    path: null,
+    state: 'exported',
+    bindsAfterRead: false,
+    expected: null,
+    actual: null,
+    staleIn: [],
+    ...over,
+  })
+  const exportsAt = (name: string) => join(dir, '.claude', 'rules', name)
+
+  test("each rule's Claude Code rule file: where it loads from, a hand edit with its diff, a deletion, why one isn't, and the folders' problems", async () => {
+    exportViews = [
+      exp('P-tests-first', 'project', 2, { path: exportsAt('litter/P-tests-first.md'), bindsAfterRead: true, staleIn: ['wt-a'] }),
+      exp('U-theirs', 'user', 1, { state: 'edited', path: '/home/you/.claude/rules/litter/U-theirs.md', expected: '## Rule\nrule U-theirs\n', actual: '## Rule\nrule U-theirs, edited\n' }),
+      exp('L-mine', 'local', 1, { state: 'deleted', path: exportsAt('litter-local/L-mine.md') }),
+      exp('P-hand', 'project', 1, { state: 'off' }),
+      exp('P-nowhere', 'project', 1, { state: 'pending', path: exportsAt('litter/P-nowhere.md'), excludedBy: '**/rules/litter/**' }),
+    ]
+    exportProblems = ['/repo/.claude/rules/litter/P-gone.md: a rule file for P-gone that litter didn\'t write']
+    const { view: v, shown } = await rulesView(p, litterDir, blankRulesNav('in-force'))
+    // Asked once, with the rules this build loaded, for the worktrees and the excludes too.
+    expect(called('exportsOf')).toEqual([[{ worktrees: true, settings: true, loaded: 6 }]])
+    expect(row(v, 'P-tests-first').notes).toEqual([
+      'an edit of it is proposed: see the Proposed tab',
+      'exported for Claude Code: .claude/rules/litter/P-tests-first.md; it binds after a Read of a file its paths match',
+      'the copy in 1 worktree differs (wt-a): a session started there reads its own',
+    ])
+    const edited = row(v, 'U-theirs')
+    expect(edited.notes).toEqual([
+      'local L-mine overrides U-theirs',
+      `${EXPORT_EDITED} (/home/you/.claude/rules/litter/U-theirs.md), so litter leaves it: Adopt edit proposes the edit as the next version, Restore file puts litter's copy back`,
+    ])
+    expect(edited.actions).toEqual(['edit', 'retire', 'adopt', 'restore'])
+    expect([edited.diffLabel, edited.diff!.map(s => s.text)]).toEqual([EXPORT_DIFF, ['  ## Rule', '+ rule U-theirs, edited', '− rule U-theirs', '  ']])
+    expect(shown['U-theirs']!.export).toBe('edited')
+    expect(row(v, 'L-mine').notes.at(-1)).toBe(`${EXPORT_DELETED} (.claude/rules/litter-local/L-mine.md); litter writes it again for the next version, or now with Restore file`)
+    expect([row(v, 'L-mine').actions, shown['L-mine']!.export]).toEqual([['edit', 'retire', 'restore'], 'deleted'])
+    expect(row(v, 'P-hand').notes.at(-1)).toBe('not exported for Claude Code (export: false)')
+    expect(row(v, 'P-nowhere').notes).toEqual([
+      MATCHES_NO_FILE,
+      'exported for Claude Code at the next sync: .claude/rules/litter/P-nowhere.md',
+      'your claudeMdExcludes setting (**/rules/litter/**) keeps Claude Code from loading its rule file',
+    ])
+    // A hand edit, a deletion, another copy and an exclude are warnings; where it loads from isn't.
+    expect([...row(v, 'P-tests-first').notes.slice(1), ...edited.notes.slice(1), row(v, 'L-mine').notes.at(-1)!, ...row(v, 'P-nowhere').notes.slice(1)].map(flagged)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+    ])
+    expect(describeRow(edited).map(l => l.map(s => s.text).join(''))).toContain(EXPORT_DIFF)
+    expect(v.body!.problems).toEqual(['P-dup is in two scopes: project and local', "/repo/.claude/rules/litter/P-gone.md: a rule file for P-gone that litter didn't write"])
+  })
+
+  test('an adoption under way, or one you dismissed, leaves Restore file alone; an unreadable file, nothing', async () => {
+    const ref = { store: 'repo' as const, seq: 30 }
+    const edited = (adoption?: RuleExportView['adoption'], actual: string | null = 'x') =>
+      exp('U-theirs', 'user', 1, { state: 'edited', path: '/home/you/.claude/rules/litter/U-theirs.md', expected: 'y', actual, ...(adoption ? { adoption } : {}), why: 'not a plain file' })
+    for (const [view_, actions, note] of [
+      [edited({ proposal: ref, status: 'proposed' }), ['edit', 'retire', 'restore'], 'adopting the edit is proposed: see the Proposed tab'],
+      [edited({ proposal: ref, status: 'dismissed' }), ['edit', 'retire', 'restore'], "and you dismissed adopting it; Restore file puts litter's copy back"],
+      [edited(undefined, null), ['edit', 'retire'], 'or replaced: not a plain file'],
+    ] as const) {
+      exportViews = [view_]
+      const v = (await rulesView(p, litterDir, blankRulesNav('in-force'))).view
+      expect(row(v, 'U-theirs').actions).toEqual([...actions])
+      expect(row(v, 'U-theirs').notes.at(-1)).toEndWith(note)
+    }
+  })
 })
 
 describe("a row's words (WP-DE): its mark, its description, what [Accept] writes", () => {
@@ -715,6 +818,43 @@ describe('the presses reach the store once each, with what the pane showed', () 
     expect(notice()).toBe('retired P-tests-first@2; commit the removal yourself')
   })
 
+  test('an accept and a retire bring the Claude Code rule files in line, and the notice names what was written', async () => {
+    await rulesCommand(p, command(), next)
+    synced = [join(dir, '.claude', 'rules', 'litter', 'U-prefer-small-commits.md')]
+    await pressRules(p, 'rules:accept:repo:3')
+    expect(notice()).toBe('accepted into user scope: written to /home/you/.claude/litter/rules/user-rule.md; Claude Code rule files: wrote .claude/rules/litter/U-prefer-small-commits.md')
+    expect(called('syncExports')).toHaveLength(1)
+    // A press that changes nothing in force syncs nothing.
+    await pressRules(p, 'rules:dismiss:repo:4')
+    expect(called('syncExports')).toHaveLength(1)
+  })
+
+  test('[Adopt edit] proposes the edit and opens it on the Proposed tab; [Restore file] asks first over an edit, and writes a deleted one at once', async () => {
+    exportViews = [
+      { id: 'U-theirs', version: 1, scope: 'user', path: '/home/you/.claude/rules/litter/U-theirs.md', state: 'edited', bindsAfterRead: false, expected: 'a\n', actual: 'b\n', staleIn: [] },
+      { id: 'L-mine', version: 1, scope: 'local', path: join(dir, '.claude', 'rules', 'litter-local', 'L-mine.md'), state: 'deleted', bindsAfterRead: false, expected: 'a\n', actual: null, staleIn: [] },
+    ]
+    await openRulesPane(p, { id: 'U-theirs' })
+    await pressRules(p, 'rules:adopt:U-theirs')
+    expect(called('adoptExport')).toEqual([[{ id: 'U-theirs', version: 1 }]])
+    expect([view().tab, rulesNavOf()!.focus, rulesNavOf()!.selected]).toEqual(['proposed', { proposal: { store: 'repo', seq: 40 } }, 'repo:40'])
+    expect(notice()).toBe("the edit is proposed as U-theirs@2: accept it here, and the rule file becomes litter's copy of that version")
+
+    await pressRules(p, 'rules:tab:in-force')
+    await pressRules(p, 'rules:confirm-restore:U-theirs')
+    expect(called('restoreExport')).toEqual([])
+    await pressRules(p, 'rules:restore:U-theirs')
+    expect([called('restoreExport'), view().body!.pending]).toEqual([[], { kind: 'restore', key: 'U-theirs' }])
+    await pressRules(p, 'rules:confirm-restore:U-theirs')
+    expect(called('restoreExport')).toEqual([[{ id: 'U-theirs', version: 1 }]])
+    expect([notice(), view().body!.pending]).toEqual(['restored .claude/rules/litter/U-theirs.md', null])
+    await pressRules(p, 'rules:restore:L-mine')
+    expect(called('restoreExport')).toEqual([[{ id: 'U-theirs', version: 1 }], [{ id: 'L-mine', version: 1 }]])
+    expect(notice()).toBe('restored .claude/rules/litter/L-mine.md')
+    // Nothing else reached the store's acting functions.
+    expect(acting()).toEqual([])
+  })
+
   test("[Edit…] on a rule in force fills the prompt with the skill's command", async () => {
     await openRulesPane(p, { id: 'U-theirs' })
     await pressRules(p, 'rules:edit:U-theirs')
@@ -818,5 +958,14 @@ describe('nothing but a press acts (COMMON, "Only you accept")', () => {
     expect(importers).toEqual([join('rules', 'pane.tsx')])
     // And no module reaches them through a namespace import of the store.
     expect(namespaced).toEqual([])
+    // Nor export.ts's adoptExport and restoreExport (16.7): a hand edit is overwritten or proposed only from a press.
+    const exportMod = join(hooks, 'rules', 'export')
+    const exportImporters = files.filter(f => {
+      if (f.startsWith(`${exportMod}.`)) return false
+      return [...readFileSync(f, 'utf8').matchAll(/import\s+(type\s+)?([^'";]*?)\s+from\s+'([^']+)'/g)].some(
+        m => !m[1] && target(f, m[3]!) === exportMod && (/\*\s+as\s+/.test(m[2]!) || /\b(adoptExport|restoreExport)\b/.test(m[2]!)),
+      )
+    })
+    expect(exportImporters.map(f => relative(hooks, f))).toEqual([join('rules', 'pane.tsx')])
   })
 })

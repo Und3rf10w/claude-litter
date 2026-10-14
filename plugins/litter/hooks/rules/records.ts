@@ -15,6 +15,7 @@ import type {
   ProposalRef,
   RuleImportBody,
   RuleLedgerStore,
+  RuleExportView,
   RuleOpenBody,
   RuleProposeBody,
   RuleScope,
@@ -37,6 +38,7 @@ import { readDeepwork } from './import'
 import { appendRuleRecord, readRuleLedger } from './ledger'
 import { bytes, foldText, parseRule, renderRule, RULE_ID, RULE_MAX_BYTES } from './format'
 import { foldedSha, loadRules, narrowPaths, proposalsOf, proposalText } from './store'
+import { exportsOf } from './export'
 
 // The other packages' functions reached from here (the `litter` pane's
 // opener, AE's selection and matcher), through one table so tier 2 can stand
@@ -45,6 +47,7 @@ export const deps = {
   openSection: (...a: Parameters<typeof openSection>) => openSection(...a),
   findApplicable: (...a: Parameters<typeof findApplicable>) => findApplicable(...a),
   matches: (pattern: string, path: string) => matches(pattern, path),
+  exportsOf: (...a: Parameters<typeof exportsOf>) => exportsOf(...a),
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -443,6 +446,13 @@ async function findId(ctx: RecordCtx, litterDir: string, id: unknown): Promise<R
     else if (r.kind === 'rule.retire') retired.push({ version: r.body.version, at: r.at })
   }
   if (here.length === 0 && versions.size === 0) return fail(`litter: there's no rule ${id} in any scope; rule.find with status ['accepted', 'proposed'] lists them`, 'id')
+  // Its Claude Code rule files (16.7), without their texts: the file is there to Read.
+  const exported = await deps.exportsOf(ctx.p, litterDir, { id, worktrees: true, settings: true, loaded: { rules } }).catch((err: unknown) => ({
+    views: [] as RuleExportView[],
+    problems: [`its exports couldn't be read: ${errText(err)}`],
+  }))
+  const exports = exported.views.map(({ expected: _e, actual: _a, ...v }) => v)
+  const all = [...problems, ...exported.problems]
   return {
     ok: true,
     id,
@@ -450,7 +460,8 @@ async function findId(ctx: RecordCtx, litterDir: string, id: unknown): Promise<R
     versions: [...versions.values()].sort((a, b) => a.version - b.version),
     retired,
     runs: await runsUsing(ctx, id),
-    ...(problems.length ? { problems } : {}),
+    exports,
+    ...(all.length ? { problems: all } : {}),
   }
 }
 

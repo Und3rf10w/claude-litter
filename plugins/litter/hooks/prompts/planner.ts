@@ -28,7 +28,7 @@ Mark a gate for an adversarial pass when its change handles untrusted input, par
 
 Plan what the goal asks for and nothing more. Put useful extras in the out-of-scope list instead of making them gates. When there is a <goal_check>, the run succeeds only if it passes after the last gate, so plan the gates to get it there. If no command can show the goal is met, raise that as a question.
 
-Plan within the rules. Each gate's critic checks its change against every rule that applies to its files, so a gate that would break one fails however well it's built. Where a rule's How to check lines cover a gate's files, put them in that gate's done-when. If the goal can't be reached without changing a rule, don't plan the change: return a question naming the rule's id and what would have to change, because only the user can change a rule.
+Plan within the rules. Each gate's critic checks its change against every rule that applies to its files, so a gate that would break one fails however well it's built. Where a rule's How to check lines cover a gate's files, put them in that gate's done-when. If the goal can't be reached without changing a rule, don't plan the change: return a question naming the rule's id and what would have to change, because only the user can change a rule. A rule file whose last line says "Managed by litter" is a copy of one of these rules; where its version differs from <rules>, <rules> is the one in force.
 
 When re-planning after a halt, don't redo or change landed gates. Use the halted gate's evidence to re-split only the remaining work, and say what you changed and why.
 

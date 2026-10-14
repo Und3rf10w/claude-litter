@@ -129,6 +129,20 @@ export const projectRulesDir = (primary: string) => join(primary, '.litter', 'ru
 export const localRulesDir = (primary: string) => join(primary, '.litter.local', 'rules')
 /** A rule folder's earlier and retired versions, `<id>@<v>.md`; never loaded. */
 export const ruleHistoryDir = (rulesDir: string) => join(rulesDir, '.history')
+// Exported rules (16.7, phase 6): Claude Code loads these folders' rule files itself, in sessions with no litter run.
+/** A user rule's export: `<config dir>/rules/litter/<id>.md`. */
+export const userRuleExportDir = (configDir: string) => join(configDir, 'rules', 'litter')
+/** A project rule's export, committed with `.litter/`. */
+export const projectRuleExportDir = (primary: string) => join(primary, '.claude', 'rules', 'litter')
+/** A local rule's export, never committed (`/.claude/rules/litter-local/` in `<common dir>/info/exclude`). */
+export const localRuleExportDir = (primary: string) => join(primary, '.claude', 'rules', 'litter-local')
+/**
+ * Where [Confirm restore] keeps a hand-edited export it replaces,
+ * `<id>@<v>-<stamp>.md`: beside the repository's rules ledger, which the
+ * litter directory's .gitignore keeps out of git, and outside every folder
+ * Claude Code loads rules from.
+ */
+export const ruleExportEditsDir = (litterDir: string) => join(litterDir, 'rules-ledger', 'export-edits')
 /**
  * The rules ledgers (decision 17), each a ledgercore directory, so the
  * records are under its `ledger/`: the repository's holds every project and

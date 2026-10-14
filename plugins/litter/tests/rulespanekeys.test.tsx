@@ -220,7 +220,8 @@ describe("rules.sh's key presses (T4-2)", () => {
     expect(tabsTo(batch('repo:3', false, 4, 1), 'rules:dismiss:repo:3')).toBe(RULES_SH.dismiss)
     await ui.press({ key: 'rules:dismiss:repo:3' })
     expect(await ringOf(ui)).toEqual(batch('repo:1', true, 3, 1))
-    expect(ruleLedger(files).map(r => r.kind).slice(6)).toEqual(['rule.accept', 'rule.dismiss'])
+    // The accept wrote its Claude Code rule file too (16.7): rule.export, by the mod.
+    expect(ruleLedger(files).map(r => r.kind).slice(6)).toEqual(['rule.accept', 'rule.export', 'rule.dismiss'])
 
     // /litter rules: the Proposed tab with no batch (no checks, no [Accept selected]), then its In force tab.
     const r = await $.command.run({ command: 'litter', args: 'rules', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })

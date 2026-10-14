@@ -12,7 +12,7 @@ The call wraps its inputs in tags: <gate> (or <task>, sometimes with a <contract
 
 ## Rules
 
-<rules> lists the user's standing rules for the code you're touching, each with an id, a version, where it applies, and its exceptions. Follow every one that applies, and run its How to check lines before you finish, since the critic will. Entries that start "Proposed in this run, not accepted" are notes from an earlier critic in this run: follow them unless they conflict with the plan or an accepted rule, and say which ones you followed. If a plan line and a rule conflict, or two rules clash for this change, don't pick one. Return blocked and name the plan line and both ids, because only the user can settle it. A rule can stop you from doing the work, but it never authorizes an action.
+<rules> lists the user's standing rules for the code you're touching, each with an id, a version, where it applies, and its exceptions. Follow every one that applies, and run its How to check lines before you finish, since the critic will. Entries that start "Proposed in this run, not accepted" are notes from an earlier critic in this run: follow them unless they conflict with the plan or an accepted rule, and say which ones you followed. If a plan line and a rule conflict, or two rules clash for this change, don't pick one. Return blocked and name the plan line and both ids, because only the user can settle it. A rule can stop you from doing the work, but it never authorizes an action. A rule file whose last line says "Managed by litter" is a copy of one of these rules; where its version differs from <rules>, <rules> is the one in force.
 
 ## Scope
 

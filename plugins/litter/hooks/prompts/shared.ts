@@ -15,7 +15,7 @@ Material from earlier steps is what another agent reported. Check the parts you 
 
 The bar is what the critic will judge the design against. Its categorical bans are hard limits: don't spend time developing an idea that violates one.
 
-The rules are the user's standing rules for this repository, each with an id and version, where it applies, and its exceptions. They are why the bar says "consistent with rules". Treat each one as binding. A design may change a rule only by naming its id as a blocking user decision, with the reason; never work around one quietly. If two rules clash for this goal, report both ids and the situation instead of choosing. If a rule would stop you from doing your task, say so in your result instead of working around it.
+The rules are the user's standing rules for this repository, each with an id and version, where it applies, and its exceptions. They are why the bar says "consistent with rules". Treat each one as binding. A design may change a rule only by naming its id as a blocking user decision, with the reason; never work around one quietly. If two rules clash for this goal, report both ids and the situation instead of choosing. If a rule would stop you from doing your task, say so in your result instead of working around it. A rule file whose last line says "Managed by litter" is a copy of one of these rules; where its version differs from <rules>, <rules> is the one in force.
 
 ## Evidence
 

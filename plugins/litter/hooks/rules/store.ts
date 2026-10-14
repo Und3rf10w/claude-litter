@@ -58,6 +58,8 @@ const short = (oid: string) => oid.slice(0, 7)
 const norm = (text: string) => text.replace(/\r\n/g, '\n')
 /** The accept, dismiss and retire steps run one at a time per repository. */
 const stepsKey = (litterDir: string) => `rules-steps:${litterDir}`
+/** `work` in that line, as the exports' sync, restore and adopt (export.ts) run. Never from inside a step: it would wait on itself. */
+export const inRuleSteps = <T>(litterDir: string, work: () => Promise<T>): Promise<T> => serial(stepsKey(litterDir), work)
 
 type Refusal = { ok: false; reason: string }
 const no = (reason: string): Refusal => ({ ok: false, reason })
@@ -753,13 +755,16 @@ async function planAccept(p: Ports, litterDir: string, what: AcceptWhat, opts: A
 }
 
 /** The first `.litter.local/` the mod makes: `/.litter.local/` goes into `<common dir>/info/exclude`, once (16.1). */
-async function excludeLocal(p: Ports, primary: string): Promise<void> {
+const excludeLocal = (p: Ports, primary: string): Promise<void> => addExclude(p, primary, '/.litter.local/')
+
+/** `line` in `<common dir>/info/exclude`, added once: a local folder the mod makes (16.1, 16.7). */
+export async function addExclude(p: Ports, primary: string, line: string): Promise<void> {
   const r = await gitAt(p, primary)(['rev-parse', '--path-format=absolute', '--git-common-dir'])
-  if (r.code !== 0) throw new Error(`git couldn't name the common dir, so /.litter.local/ isn't excluded: ${r.stderr.trim()}`)
+  if (r.code !== 0) throw new Error(`git couldn't name the common dir, so ${line} isn't excluded: ${r.stderr.trim()}`)
   const path = `${r.stdout.trim()}/info/exclude`
   const text = (await p.fs.exists(path)) ? await p.fs.read(path) : ''
-  if (text.split('\n').some(l => l.trim() === '/.litter.local/')) return
-  await atomicWrite(p, path, `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}/.litter.local/\n`)
+  if (text.split('\n').some(l => l.trim() === line)) return
+  await atomicWrite(p, path, `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`)
 }
 
 /**

@@ -949,7 +949,12 @@ describe('every action reaches the store by its Button and by the menu, one pres
     await ui.press({ key: 'rules:accept:repo:3' })
     expect(storeCalls(logs)).toEqual(['acceptRule repo:3 local'])
     await shows(ui, /accepted into local scope/)
-    expect([...files.keys()].filter(k => k.includes('/L-'))).toEqual(['/repo/.litter.local/rules/L-never-commit-secrets.md'])
+    // The rule file, and its Claude Code rule file (16.7), written after the accept.
+    expect([...files.keys()].filter(k => k.includes('/L-'))).toEqual([
+      '/repo/.litter.local/rules/L-never-commit-secrets.md',
+      '/repo/.claude/rules/litter-local/L-never-commit-secrets.md',
+    ])
+    expect(files.get('/repo/.claude/rules/litter-local/L-never-commit-secrets.md')).toContain('Managed by litter (L-never-commit-secrets v1).')
   })
 
   test('[Accept selected] on an import batch of project bans previews exactly the checked ones, and accepts none yet', async ($, on) => {
@@ -1151,7 +1156,12 @@ describe('live: the flows still write what they wrote', () => {
     await ui.press({ key: 'rules:accept:repo:1' })
     expect(files.has('/cfg/litter/rules/U-keep-fixtures-small.md')).toBe(true)
     expect(await ui.find({ type: 'Text', text: /^✓ accepted into user scope/ })).toBeDefined()
-    expect(ruleLedger(files, USER_LEDGER).map(r => [r.kind, r.body.id, r.body.via])).toEqual([['rule.accept', 'U-keep-fixtures-small', 'ui']])
+    // And its Claude Code rule file (16.7), which the mod records as its own.
+    expect(files.get('/cfg/rules/litter/U-keep-fixtures-small.md')).toContain('Managed by litter (U-keep-fixtures-small v1).')
+    expect(ruleLedger(files, USER_LEDGER).map(r => [r.kind, r.body.id, r.body.via])).toEqual([
+      ['rule.accept', 'U-keep-fixtures-small', 'ui'],
+      ['rule.export', 'U-keep-fixtures-small', 'mod'],
+    ])
     // The ban, dismissed from its menu: the record lands before the view the press ends with.
     expect((await menuPick(w, ui, 'rules:list:main', 'rules:dismiss:repo:3')).body?.notice?.text).toMatch(/^dismissed/)
     expect(ruleLedger(files).map(r => r.kind).slice(3)).toEqual(['rule.dismiss'])
@@ -1177,7 +1187,15 @@ describe('live: the flows still write what they wrote', () => {
     await shows(ui, `retired ${id}@1; commit the removal yourself`)
     expect(files.has(`/repo/.litter/rules/${id}.md`)).toBe(false)
     expect(files.has(`/repo/.litter/rules/.history/${id}@1.md`)).toBe(true)
-    expect(ruleLedger(files).map(r => r.kind).slice(3)).toEqual(['rule.dismiss', 'rule.accept', 'rule.retire'])
+    // Its Claude Code rule file, written at the accept and untouched since, goes with it; each step is recorded.
+    expect(files.has(`/repo/.claude/rules/litter/${id}.md`)).toBe(false)
+    expect(ruleLedger(files).map(r => [r.kind, r.body.sha256 === null ? 'removed' : r.kind === 'rule.export' ? 'written' : ''] as const).slice(3)).toEqual([
+      ['rule.dismiss', ''],
+      ['rule.accept', ''],
+      ['rule.export', 'written'],
+      ['rule.retire', ''],
+      ['rule.export', 'removed'],
+    ])
     // [Edit…] on the one left fills the prompt.
     await ui.press({ key: 'rules:edit:U-keep-fixtures-small' })
     expect(filled).toEqual(['/litter:rules show U-keep-fixtures-small'])

@@ -23,6 +23,7 @@ import type {
   LoadedRule,
   ProposalRef,
   RuleDoc,
+  RuleExportView,
   RuleImportBody,
   RuleProposeBody,
   RuleScope,
@@ -41,6 +42,7 @@ import type {
   SwarmSpan,
 } from '../../types/index'
 import { SCOPE_LETTER, loadRules, proposalsOf } from './store'
+import { exportsOf } from './export'
 import { readRuleLedger } from './ledger'
 import { matches } from './match'
 import { localRulesDir, projectRulesDir, userRulesDir } from '../layout'
@@ -56,6 +58,7 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 export const deps = {
   loadRules: (...a: Parameters<typeof loadRules>) => loadRules(...a),
   proposalsOf: (...a: Parameters<typeof proposalsOf>) => proposalsOf(...a),
+  exportsOf: (...a: Parameters<typeof exportsOf>) => exportsOf(...a),
   readRuleLedger: (...a: Parameters<typeof readRuleLedger>) => readRuleLedger(...a),
   matches: (...a: Parameters<typeof matches>) => matches(...a),
   /** The primary checkout's tracked files, for "matches no file" (16.6): `git ls-files -z`, argv the mod builds. */
@@ -88,6 +91,8 @@ export type ShownRow = {
   /** The `rule.import` seq of the batch it's in, or null. */
   batch: number | null
   actions: string[]
+  /** A rule in force whose Claude Code rule file was edited by hand or deleted: [Restore file] asks first for an edit. */
+  export?: 'edited' | 'deleted'
 }
 
 export type RulesEditing = { key: string; paths: string; type: string; error: string | null }
@@ -219,8 +224,71 @@ export const MATCHES_NO_FILE = 'matches no file'
 /** A ban's paths say what must not change, so matching nothing yet isn't a warning: it reaches every gate anyway (16.5). */
 export const BAN_MATCHES_NO_FILE = 'its paths match no file yet; a ban still reaches every gate'
 
-/** A note drawn as a warning: paths that match no file, an override (16.6). */
-export const flagged = (note: string): boolean => note === MATCHES_NO_FILE || / overrides /.test(note)
+/** An exported rule with paths (16.7, S2): Claude Code loads it only after a Read. */
+export const BINDS_AFTER_READ = 'binds after a Read of a file its paths match'
+/** The export notes drawn as warnings: a hand edit, a deletion, a worktree's other copy, an exclude (16.7). */
+export const EXPORT_EDITED = 'its Claude Code rule file was edited by hand'
+export const EXPORT_DELETED = 'its Claude Code rule file was deleted'
+const STALE_COPY = 'the copy in '
+const EXCLUDED = 'your claudeMdExcludes setting'
+/** The line above a rule in force's diff: its edited export against litter's copy. */
+export const EXPORT_DIFF = "its Claude Code rule file as edited, against litter's copy:"
+
+/** A note drawn as a warning: paths that match no file, an override (16.6), an export that isn't litter's copy or doesn't load (16.7). */
+export const flagged = (note: string): boolean =>
+  note === MATCHES_NO_FILE || / overrides /.test(note) || [EXPORT_EDITED, EXPORT_DELETED, STALE_COPY, EXCLUDED].some(x => note.startsWith(x))
+
+/**
+ * A rule in force's export as the In force tab says it (16.7): where Claude
+ * Code loads it from and whether it binds only after a Read, or why it isn't
+ * exported; a hand edit or a deletion, with what Adopt edit and Restore file
+ * do; an adoption under way; the worktrees whose copy differs; an exclude in
+ * your settings. Pure.
+ */
+export function exportNotes(v: RuleExportView, litterDir: string): string[] {
+  const at = oneLine(v.path ? shownPath(v.path, litterDir) : '', 300)
+  const out: string[] = []
+  switch (v.state) {
+    case 'exported':
+      out.push(`exported for Claude Code: ${at}${v.bindsAfterRead ? `; it ${BINDS_AFTER_READ}` : ''}`)
+      break
+    case 'pending':
+      out.push(`exported for Claude Code at the next sync: ${at}`)
+      break
+    case 'edited':
+      if (v.actual === null) out.push(`${EXPORT_EDITED} or replaced: ${oneLine(v.why ?? at, 300)}`)
+      else if (v.adoption?.status === 'proposed') out.push(`${EXPORT_EDITED} (${at}); adopting the edit is proposed: see the Proposed tab`)
+      else if (v.adoption?.status === 'dismissed') out.push(`${EXPORT_EDITED} (${at}), and you dismissed adopting it; Restore file puts litter's copy back`)
+      else out.push(`${EXPORT_EDITED} (${at}), so litter leaves it: Adopt edit proposes the edit as the next version, Restore file puts litter's copy back`)
+      break
+    case 'deleted':
+      out.push(`${EXPORT_DELETED} (${at}); litter writes it again for the next version, or now with Restore file`)
+      break
+    case 'off':
+      out.push('not exported for Claude Code (export: false)')
+      break
+    case 'litter-only':
+      out.push('not exported for Claude Code: its workflows or roles keep it to litter runs')
+      break
+    case 'none':
+      out.push(`not exported for Claude Code: ${oneLine(v.why ?? 'this session has no folder for it', 300)}`)
+      break
+  }
+  if (v.staleIn.length > 0) {
+    const n = v.staleIn.length
+    out.push(`${STALE_COPY}${n} worktree${n === 1 ? '' : 's'} differs (${v.staleIn.map(x => oneLine(x, 80)).join(', ')}): a session started there reads its own`)
+  }
+  if (v.excludedBy) out.push(`${EXCLUDED} (${oneLine(v.excludedBy, 120)}) keeps Claude Code from loading its rule file`)
+  return out
+}
+
+/** What a rule in force's export offers: adopting a hand edit (unless that's proposed or dismissed) and restoring litter's copy. */
+export function exportActions(v: RuleExportView | undefined): string[] {
+  if (!v) return []
+  if (v.state === 'deleted') return ['restore']
+  if (v.state !== 'edited' || v.actual === null) return []
+  return v.adoption && (v.adoption.status === 'proposed' || v.adoption.status === 'dismissed') ? ['restore'] : ['adopt', 'restore']
+}
 
 /** An import's source, in words: its deepwork instance and who set the guardrail there (16.8). */
 export const instanceNote = (instance: string, source?: string): string =>
@@ -408,7 +476,7 @@ export function describeRow(r: RulesRow): SwarmSpan[][] {
   if (r.origin !== '') lines.push([{ text: r.origin, color: STYLE.muted }])
   for (const n of r.notes) lines.push([flagged(n) ? { text: `! ${n}`, color: STYLE.warning } : { text: n, color: STYLE.muted }])
   if (r.diff) {
-    lines.push([{ text: 'against the version in force:', color: STYLE.muted }])
+    lines.push([{ text: r.diffLabel ?? 'against the version in force:', color: STYLE.muted }])
     for (const s of r.diff) lines.push([{ text: s.text, ...(s.color ? { color: s.color } : s.dim ? { color: STYLE.muted } : {}) }])
   }
   return lines
@@ -556,9 +624,19 @@ export async function rulesView(
 
   // The In force tab: the version in force of every rule, an edited committed one's HEAD version included.
   const inForceRows: RulesRow[] = []
+  const exportProblems: string[] = []
   if (n.tab === 'in-force') {
     keys.clear()
     const files = await trackedFiles(p, litterDir)
+    // Each rule's Claude Code rule file (16.7), from the rules this build loaded.
+    let exported: RuleExportView[] = []
+    try {
+      const x = await deps.exportsOf(p, litterDir, { worktrees: true, settings: true, loaded: { rules: loaded } })
+      exported = x.views
+      exportProblems.push(...x.problems.map(s => oneLine(s, 300)))
+    } catch (err) {
+      failures.push(`the rules' Claude Code rule files couldn't be read: ${oneLine(errText(err), 240)}`)
+    }
     for (const r of loaded) {
       const doc = r.delivered
       if (!doc) continue
@@ -573,10 +651,27 @@ export async function rulesView(
         notes.push(doc.type === 'ban' ? BAN_MATCHES_NO_FILE : MATCHES_NO_FILE)
       }
       if (proposals.some(x => x.body.edits?.split('@')[0] === doc.id)) notes.push('an edit of it is proposed: see the Proposed tab')
+      const ex = exported.find(v => v.id === doc.id && v.scope === r.scope && v.version === doc.version)
+      if (ex) notes.push(...exportNotes(ex, litterDir))
       const at = r.standing === 'accepted' && doc.accepted?.at ? ` on ${oneLine(doc.accepted.at, 40)}` : ''
       const origin = r.standing === 'accepted' ? `accepted in the rules pane${at}` : 'accepted through a commit: the version at HEAD'
-      const actions = ['edit', 'retire']
-      shown[key] = { kind: 'accepted', ref: null, file: r.path, id: doc.id, version: doc.version, scope: r.scope, type: doc.type, paths: doc.applies.paths, source: null, batch: null, actions }
+      const actions = ['edit', 'retire', ...exportActions(ex)]
+      // A hand-edited export, against what litter would write.
+      const diff = ex?.state === 'edited' && ex.actual !== null && ex.expected !== null ? diffSpans(clean(ex.expected, 8000).split('\n'), clean(ex.actual, 8000).split('\n')) : null
+      shown[key] = {
+        kind: 'accepted',
+        ref: null,
+        file: r.path,
+        id: doc.id,
+        version: doc.version,
+        scope: r.scope,
+        type: doc.type,
+        paths: doc.applies.paths,
+        source: null,
+        batch: null,
+        actions,
+        ...(ex?.state === 'edited' || ex?.state === 'deleted' ? { export: ex.state } : {}),
+      }
       inForceRows.push({
         key,
         kind: 'accepted',
@@ -590,7 +685,8 @@ export async function rulesView(
         paths: doc.applies.paths.map(x => oneLine(x, 200)),
         origin,
         notes,
-        diff: null,
+        diff,
+        ...(diff ? { diffLabel: EXPORT_DIFF } : {}),
         source: null,
         actions,
       })
@@ -618,7 +714,7 @@ export async function rulesView(
       }
     : null
   const notice = n.notice ?? (canAccept ? null : { level: 'warning' as const, text: "this session isn't interactive, so nothing can be accepted here (16.3)" })
-  const problems = n.tab === 'in-force' ? [...failures, ...loadProblems] : failures
+  const problems = n.tab === 'in-force' ? [...failures, ...loadProblems, ...exportProblems] : failures
   // The row drawn with its description and actions: the one picked, else what a step waits on, else the one opened on, else the first.
   const kept = (key: string | null | undefined): string | null => (key && visible[key] ? key : null)
   const focus = kept(n.selected) ?? kept(pending?.key) ?? kept(editing?.key) ?? kept(focusKey) ?? rows[0]?.key ?? null

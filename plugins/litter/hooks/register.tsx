@@ -49,6 +49,7 @@ import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from
 import { activePath } from './layout'
 import { registerRoles } from './roles'
 import { resolveLitterDir, writeGitignore } from './litterdir'
+import { scheduleSync } from './rules/export'
 import { onSessionEnd, onTurnComplete, reconcileRuns, settleNotices } from './lifecycle'
 import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
@@ -354,6 +355,8 @@ export const register: Register = (on, options) => {
         await step(p, 'swarm spend', async () => void (await measureSpend(p)))
         await step(p, 'worktree.json', () => startWorktreePolicy(p, litterDir))
         await step(p, '.gitignore', () => writeGitignore(p, litterDir))
+        // Phase 6 (16.7): the rules in force as Claude Code rule files, on a timer, so the start never waits on git.
+        await step(p, 'rule exports', async () => scheduleSync(p, litterDir))
         await step(p, 'drain', () => drainAllSpools(p, litterDir, SPOOL_CONSUMERS))
         await step(p, 'reconcile', () => reconcileRuns(p, litterDir))
         await step(p, 'leftover worktrees', () => cleanupLeftovers(p, litterDir))

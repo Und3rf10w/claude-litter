@@ -218,6 +218,8 @@ export async function dispatchRecord(
       ['rule.propose', 'rule.open'],
     )
   }
+  // A rules-ledger kind only the mod writes (16.7): no run's kind, so it isn't in KIND_RULES.
+  if (lower === 'rule.export') return fail("litter: 'rule.export' is recorded by litter itself, never through this tool", 'kind', allowedFor(isAgent))
   const kind = KNOWN_KINDS.find(k => k.toLowerCase() === lower)
   if (!kind) return fail(`litter: '${given}' isn't a record kind`, 'kind', allowedFor(isAgent))
   const rule = KIND_RULES[kind]

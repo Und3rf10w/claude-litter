@@ -124,6 +124,17 @@ describe('the steps that are yours alone', () => {
     expect(files).toEqual(before)
     expect([...files.keys()].some(k => k.startsWith('/cfg/') || k.includes('/.litter/') || k.includes('/.litter.local/'))).toBe(false)
   })
+
+  // Phase 6 (16.7): a rule file the mod exported is recorded by the mod alone.
+  test('rule.export is refused from the main thread and from an agent, as litter records it itself', async ($, on) => {
+    const { files } = await started($, on)
+    const before = snapshot(files)
+    for (const agentId of [undefined, 'gc']) {
+      const r = await record($, { kind: 'rule.export', id: 'P-x', version: 1, scope: 'project', path: '/repo/.claude/rules/litter/P-x.md', sha256: null }, agentId)
+      expect(r).toEqual(expect.objectContaining({ ok: false, field: 'kind', error: "litter: 'rule.export' is recorded by litter itself, never through this tool" }))
+    }
+    expect(files).toEqual(before)
+  })
 })
 
 describe('rule.find', () => {

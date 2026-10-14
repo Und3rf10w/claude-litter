@@ -23,7 +23,7 @@ $ARGUMENTS
 
 ## Before you start
 
-If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and say the mod isn't loaded. Read rules only through `rule.find`, which is read-only. Don't read or edit files under `.litter/`, `.litter.local/` or `.claude/rules/litter/` yourself. A worktree's copy may be stale, and an edit doesn't change a rule; it only makes the rule unverified until the user accepts it.
+If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop and say the mod isn't loaded. Read rules only through `rule.find`, which is read-only. Don't read or edit files under `.litter/`, `.litter.local/`, `.claude/rules/litter/` or `.claude/rules/litter-local/` yourself. A worktree's copy may be stale, and an edit doesn't change a rule; it only makes the rule unverified until the user accepts it.
 
 When a `rule.open` or `rule.import` reply says the pane didn't open, tell the user to run /litter rules to see it.
 

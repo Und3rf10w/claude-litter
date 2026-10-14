@@ -10,6 +10,12 @@
 // previewAccept), and [Confirm accept] writes it; [Retire] asks for
 // [Confirm retire]. Every call into the store is logged before it's made.
 //
+// Phase 6 (16.7): after an accept or a retire, the Claude Code rule files are
+// brought in line (export.ts's syncExports). A rule in force whose rule file
+// was edited by hand has [Adopt edit], which proposes the edit, and [Restore
+// file], which asks for [Confirm restore] before litter's copy replaces it;
+// these two, too, are reached only from ui.press.
+//
 // Phase 5b (WP-DE): the rows are the chrome's in-pane lists, each row's
 // actions its right-click menu (the list's Client, whose clicks and picks the
 // hub presses here as the Buttons would be), and the picked row's
@@ -41,6 +47,7 @@ import { WIDE_COLUMNS, action, actions, empty, field, fieldRows, heading, itemWi
 import { list, listPlace, listWindow, pageOf, scrolled } from '../ui/list'
 import { listOffset, moveList, openSection } from '../ui/hub'
 import { acceptRule, dismissRule, narrowPaths, previewAccept, retireRule } from './store'
+import { adoptExport, restoreExport, syncExports } from './export'
 import {
   NO_PATHS,
   batchKey,
@@ -64,6 +71,9 @@ export const deps = {
   retireRule: (...a: Parameters<typeof retireRule>) => retireRule(...a),
   previewAccept: (...a: Parameters<typeof previewAccept>) => previewAccept(...a),
   narrowPaths: (...a: Parameters<typeof narrowPaths>) => narrowPaths(...a),
+  syncExports: (...a: Parameters<typeof syncExports>) => syncExports(...a),
+  adoptExport: (...a: Parameters<typeof adoptExport>) => adoptExport(...a),
+  restoreExport: (...a: Parameters<typeof restoreExport>) => restoreExport(...a),
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -262,7 +272,7 @@ const LABEL_MIN = 20
 const DESCRIPTION_KEEP = 3
 /** Of the body's columns from WIDE_COLUMNS, the lists' share; the detail has the rest, two cells between. */
 const LIST_SHARE = 0.55
-const ACTION_LABEL: Record<string, string> = { accept: 'Accept', edit: 'Edit…', dismiss: 'Dismiss', retire: 'Retire' }
+const ACTION_LABEL: Record<string, string> = { accept: 'Accept', edit: 'Edit…', dismiss: 'Dismiss', retire: 'Retire', adopt: 'Adopt edit', restore: 'Restore file' }
 const noop = (): void => {}
 
 /** Rules to the hub (chrome.tsx's SectionMeta): the body keeps to ctx.rows; its keys are the lists'. */
@@ -529,6 +539,9 @@ export type RulesDetail = {
   /** The retire confirm's question, while it waits. */
   retire: string | null
   retireRows: number
+  /** The restore confirm's question, while it waits: a hand-edited export about to get litter's copy back. */
+  restore: string | null
+  restoreRows: number
   /** The rows of all but the description, its heading's included. */
   fixed: number
 }
@@ -542,14 +555,15 @@ function detailOf(body: RulesBody, r: RulesRow, width: number, ctx: BodyContext,
   const editing = body.editing?.key === r.key ? body.editing : null
   const name = nameOf(r)
   const retire = pending?.kind === 'retire' ? `retire ${name}? Its file moves to .history, and no later run gets it` : null
+  const restore = pending?.kind === 'restore' ? `put litter's copy of ${name}'s Claude Code rule file back? Your edit is kept beside the rules ledger` : null
   // An edit keeps its rule's scope, so only a new rule has a scope to pick.
   const scopes = r.kind === 'proposal' && !r.edits && r.actions.includes('accept') ? scopeChoices({ source: r.source }) : null
   const scopeRows = scopes ? packWidths([cells(scopeWord(r)), ...scopes.map(s => cells(s) + (s === r.scope ? 2 : 0))], width).length : 0
-  const consequence = r.consequence && r.actions.includes('accept') && !retire ? wrapSpans(r.consequence, width) : []
+  const consequence = r.consequence && r.actions.includes('accept') && !retire && !restore ? wrapSpans(r.consequence, width) : []
   const typeRows = ctx.surface === 'mobile' ? 1 : Math.max(1, selectRows(TYPES.length))
   const editorRows = editing ? fieldRows(ctx.surface, true) + typeRows + (editing.error ? textRows(`✕ ${editing.error}`, width) : 0) : 0
   // Accept is a proposal's primary, unless a batch's [Accept selected] is; Retire never is.
-  const acts: Action[] = retire
+  const acts: Action[] = retire || restore
     ? []
     : [
         ...r.actions.map(a => ({ key: `rules:${a}:${r.key}`, label: ACTION_LABEL[a] ?? a, ...(a === 'accept' && !batchShown ? { primary: true } : {}) })),
@@ -557,8 +571,26 @@ function detailOf(body: RulesBody, r: RulesRow, width: number, ctx: BodyContext,
       ]
   const actionRows = buttonRows(acts.map(a => a.label), width)
   const retireRows = retire ? textRows(`! ${retire}`, width) + buttonRows(['Confirm retire', 'Cancel'], width) : 0
+  const restoreRows = restore ? textRows(`! ${restore}`, width) + buttonRows(['Confirm restore', 'Cancel'], width) : 0
   const lines = describeRow(r).flatMap(l => wrapSpans(l, width))
-  return { row: r, width, name, lines, scopes, scopeRows, consequence, editing, editorRows, actions: acts, actionRows, retire, retireRows, fixed: 1 + scopeRows + consequence.length + editorRows + actionRows + retireRows }
+  return {
+    row: r,
+    width,
+    name,
+    lines,
+    scopes,
+    scopeRows,
+    consequence,
+    editing,
+    editorRows,
+    actions: acts,
+    actionRows,
+    retire,
+    retireRows,
+    restore,
+    restoreRows,
+    fixed: 1 + scopeRows + consequence.length + editorRows + actionRows + retireRows + restoreRows,
+  }
 }
 
 // --- The layout
@@ -994,6 +1026,14 @@ function detailPart(el: PaneElements, body: RulesBody, layout: RulesLayout, ctx:
             { key: `rules:cancel:${r.key}`, label: 'Cancel' },
           ])}
         </Box>
+      ) : d.restore ? (
+        <Box flexDirection="column">
+          {notice(el, 'warning', d.restore)}
+          {actions(el, [
+            { key: `rules:confirm-restore:${r.key}`, label: 'Confirm restore' },
+            { key: `rules:cancel:${r.key}`, label: 'Cancel' },
+          ])}
+        </Box>
       ) : d.actions.length > 0 ? (
         actions(el, d.actions)
       ) : null}
@@ -1137,6 +1177,22 @@ const nonInteractive = (n: RulesNav): boolean => {
   return true
 }
 
+/**
+ * After a step that changed what's in force: the Claude Code rule files
+ * brought in line (16.7), as a phrase the step's notice ends with, '' when
+ * nothing changed. Its failure never undoes the step.
+ */
+async function exportAfter(p: Ports, litterDir: string): Promise<string> {
+  const r = await call(p, 'syncExports', () => deps.syncExports(p, litterDir))
+  if (!r.ok) return `; the Claude Code rule files weren't brought in line (${oneLine(r.error, 160)})`
+  const { written, removed, problems } = r.value
+  const parts: string[] = []
+  if (written.length > 0) parts.push(`wrote ${written.map(x => shownPath(x, litterDir)).join(', ')}`)
+  if (removed.length > 0) parts.push(`removed ${removed.map(x => shownPath(x, litterDir)).join(', ')}`)
+  if (problems.length > 0) parts.push(`${problems.length === 1 ? 'a problem' : `${problems.length} problems`}: ${oneLine(problems[0], 160)}`)
+  return parts.length > 0 ? `; Claude Code rule files: ${parts.join('; ')}` : ''
+}
+
 /** One acceptance, after its scope is known (and, for project scope, its file seen). */
 async function acceptOne(p: Ports, litterDir: string, key: string, row: ShownRow, scope: RuleScope): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
   const n = rulesNavOf()!
@@ -1173,7 +1229,7 @@ async function accept(p: Ports, litterDir: string, n: RulesNav, key: string): Pr
   }
   const done = await acceptOne(p, litterDir, key, row, scope)
   if (!done.ok) return say(n, 'error', `not accepted: ${done.reason}`)
-  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `accepted into ${scope} scope: ${done.text}` } })
+  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `accepted into ${scope} scope: ${done.text}${await exportAfter(p, litterDir)}` } })
 }
 
 async function confirmAccept(p: Ports, litterDir: string, n: RulesNav, key: string): Promise<void> {
@@ -1189,7 +1245,7 @@ async function confirmAccept(p: Ports, litterDir: string, n: RulesNav, key: stri
   if (scope !== 'project') return say(n, 'warning', 'its scope changed since the preview, so nothing was written: press [Accept] again')
   const done = await acceptOne(p, litterDir, key, row, scope)
   if (!done.ok) return say(n, 'error', `not accepted: ${done.reason}`)
-  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `accepted: ${done.text}` } })
+  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `accepted: ${done.text}${await exportAfter(p, litterDir)}` } })
 }
 
 /** The checked rows of a batch, in the order shown; an import's scope is project unless you picked another (16.8). */
@@ -1245,7 +1301,9 @@ async function acceptBatch(p: Ports, litterDir: string, n: RulesNav, seq: number
   }
   next = { ...next, pending: null }
   const commit = project.length > 0 && done.some(k => project.some(x => x.key === k)) ? '; commit the new .litter/rules/ files yourself' : ''
-  const text = failed.length === 0 ? `accepted ${done.length} of ${picked.length}${commit}` : `accepted ${done.length} of ${picked.length}${commit}; not accepted: ${failed.join('; ')}`
+  const exported = done.length > 0 ? await exportAfter(p, litterDir) : ''
+  const text =
+    failed.length === 0 ? `accepted ${done.length} of ${picked.length}${commit}${exported}` : `accepted ${done.length} of ${picked.length}${commit}; not accepted: ${failed.join('; ')}${exported}`
   setRulesNav({ ...next, notice: { level: failed.length === 0 ? 'ok' : done.length === 0 ? 'error' : 'warning', text: oneLine(text, 400) } })
 }
 
@@ -1273,7 +1331,56 @@ async function retire(p: Ports, litterDir: string, n: RulesNav, key: string, con
   if (!r.ok) return say(n, 'error', `not retired: ${r.error}`)
   if (!r.value.ok) return say(n, 'error', `not retired: ${r.value.reason}`)
   const where = row.scope === 'project' ? '; commit the removal yourself' : ''
-  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `retired ${row.id}@${row.version}${where}` } })
+  setRulesNav({ ...forget(n, key), notice: { level: 'ok', text: `retired ${row.id}@${row.version}${where}${await exportAfter(p, litterDir)}` } })
+}
+
+/**
+ * [Adopt edit]: a hand edit of a rule's Claude Code rule file, proposed as
+ * the rule's next version (export.ts's adoptExport). It accepts nothing: the
+ * Proposed tab opens on the proposal, with its diff, for you to accept.
+ */
+async function adopt(p: Ports, litterDir: string, n: RulesNav, key: string): Promise<void> {
+  const row = rowFor(p, n, key, 'adopt')
+  if (!row || row.id === null || row.version === null) return
+  const r = await call(p, `adoptExport ${row.id}@${row.version}`, () => deps.adoptExport(p, litterDir, { id: row.id!, version: row.version! }))
+  if (!r.ok) return say(n, 'error', `not adopted: ${r.error}`)
+  if (!r.value.ok) return say(n, 'error', `not adopted: ${r.value.reason}`)
+  const ref = r.value.proposal
+  setRulesNav({
+    ...n,
+    tab: 'proposed',
+    focus: { proposal: ref },
+    selected: `${ref.store}:${ref.seq}`,
+    pending: null,
+    editing: null,
+    more: null,
+    notice: { level: 'ok', text: `the edit is proposed as ${row.id}@${row.version + 1}: accept it here, and the rule file becomes litter's copy of that version` },
+  })
+  for (const s of drawnRules?.scrollers ?? []) await moveList(p, s.id, 0, 0)
+}
+
+/**
+ * [Restore file]: litter's copy of a rule's Claude Code rule file written
+ * again (export.ts's restoreExport). Over a hand edit it asks for [Confirm
+ * restore] first, and the edit is kept; a deleted file is written at once.
+ */
+async function restore(p: Ports, litterDir: string, n: RulesNav, key: string, confirmed: boolean): Promise<void> {
+  const row = rowFor(p, n, key, 'restore')
+  if (!row || row.id === null || row.version === null) return
+  if (row.export === 'edited' && !confirmed) {
+    setRulesNav({ ...n, pending: { kind: 'restore', key }, notice: { level: 'info', text: `press [Confirm restore] to put litter's copy of ${row.id}@${row.version}'s rule file back` } })
+    return
+  }
+  if (confirmed && (n.pending?.kind !== 'restore' || n.pending.key !== key)) {
+    p.toast('there was no restore waiting to be confirmed, so that was ignored')
+    return say(n, 'warning', 'there was no restore waiting to be confirmed, so the press was ignored')
+  }
+  const r = await call(p, `restoreExport ${row.id}@${row.version}`, () => deps.restoreExport(p, litterDir, { id: row.id!, version: row.version! }))
+  if (!r.ok) return say(n, 'error', `not restored: ${r.error}`)
+  if (!r.value.ok) return say(n, 'error', `not restored: ${r.value.reason}`)
+  const commit = row.scope === 'project' ? ', for you to commit' : ''
+  const kept = r.value.kept ? `; your edit is kept at ${shownPath(r.value.kept, litterDir)}` : ''
+  setRulesNav({ ...n, pending: null, notice: { level: 'ok', text: `restored ${shownPath(r.value.path, litterDir)}${commit}${kept}` } })
 }
 
 /** [Edit…]: a proposal's paths and type in the pane; an accepted rule's text through the skill, which drafts the edit as a proposal. */
@@ -1455,6 +1562,15 @@ async function pressNow(p: Ports, key: string): Promise<void> {
         break
       case 'confirm-retire':
         await retire(p, litterDir, n, k.arg, true)
+        break
+      case 'adopt':
+        await adopt(p, litterDir, n, k.arg)
+        break
+      case 'restore':
+        await restore(p, litterDir, n, k.arg, false)
+        break
+      case 'confirm-restore':
+        await restore(p, litterDir, n, k.arg, true)
         break
       case 'check': {
         const row = n.shown[k.arg]
