@@ -351,6 +351,8 @@ describe("register.tsx's order and its renders", () => {
       'worktree.json',
       // WP-AQ: litterDir's .gitignore, once worktree.json has made the folder.
       '.gitignore',
+      // Phase 6 (16.7): the rule exports' sync, on a timer, once litterDir is set up.
+      'rule exports',
       'drain',
       'reconcile',
       'leftover worktrees',
