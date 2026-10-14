@@ -203,8 +203,16 @@ describe('under repair: auto, the halts that decline (decision 6)', () => {
     ["a critic's rule clash, the user's to settle", { halt: 'rule_clash' }, `gate G2's critic names a rule clash, which only you can settle ("${CLASH}"), and ${THE_TWO}`],
     // The executor's earlier plan-gap stop doesn't bridge once a later verdict on the gate is the latest event.
     ["an executor's plan-gap stop, then a later verdict's rule clash", { halt: 'executor_gap_then_clash' }, `gate G2's critic names a rule clash, which only you can settle ("${CLASH}"), and ${THE_TWO}`],
-    // A done executor result after the gate's last verdict, with no verify: the critic returned nothing.
-    ['a critic that returned nothing after a done executor', { halt: 'critic_null' }, `the run halted at gate G2 (critic for G2 returned nothing), and ${THE_TWO}`],
+    // A done executor result after the gate's last verdict, with no verify: the critic returned nothing (A9).
+    [
+      'a critic that returned nothing after a done executor',
+      { halt: 'critic_null' },
+      "gate G2's critic ended twice without returning its verdict on attempt 1, and " + THE_TWO,
+    ],
+    // With the critic's verify recorded first, an amend can keep the attempt.
+    ['a critic that returned nothing after its verify', { halt: 'critic_null_verified' }, "gate G2's critic ended twice without returning its verdict on attempt 1, and"],
+    // The same records with another agent's null keep the plain halt.
+    ['an adversary that returned nothing after a done executor', { halt: 'adversary_null' }, "the run halted at gate G2 (adversary for G2 returned nothing; the requested check didn't run), and"],
     ['an agent that returned nothing', { halt: 'null_agent' }, `the run halted at gate G2 (G2: the executor returned nothing), and ${THE_TWO}`],
     ['the token budget', { halt: 'budget' }, `the run halted at gate G2 (the token budget ran out at G2), and ${THE_TWO}`],
     ['a land refused with retry: false', { halt: 'retry_false' }, `the run halted at gate G2 (G2: the land was refused: the checkout is on main, not ${BRANCH}), and ${THE_TWO}`],
@@ -474,6 +482,28 @@ describe("summary.md's Repair section for an execute run", () => {
     expect(text).toContain("A plan-template swarm can't take this on: the run halted at gate G2 (G2: the executor is blocked")
     expect(text).toContain('Instead, read the summary for why; amend the gate (/litter:amend G2)')
     expect(text).not.toContain('/litter:swarm repair')
+  })
+
+  // A9: a critic that returned nothing twice ends with its own advice, the amend only when a verify of the attempt was recorded.
+  test('a critic that returned nothing twice says so, and to stash the attempt it left in the tree and continue', async () => {
+    const x = await run({ halt: 'critic_null' })
+    await continueAsRepair(w.p, x.runDir)
+    const text = await repairSummary(w.p, x.runDir)
+    expect(text).toContain(
+      "A plan-template swarm can't take this on: gate G2's critic ended twice without returning its verdict on attempt 1. Instead, stash the attempt it left in the tree and continue the run, which writes and judges gate G2 again.",
+    )
+    expect(text).not.toContain('/litter:swarm repair')
+  })
+
+  test('after its verify of the attempt was recorded, it offers an amend that keeps the attempt, and repair.start refuses it', async () => {
+    const x = await run({ mode: 'off', halt: 'critic_null_verified' })
+    await continueAsRepair(w.p, x.runDir)
+    expect(await repairSummary(w.p, x.runDir)).toContain(
+      "gate G2's critic ended twice without returning its verdict on attempt 1. Instead, have the attempt it left in the tree judged again in an amend that keeps it (/litter:amend G2), or stash it and continue the run.",
+    )
+    const r = (await recordRepairStart(ctxOf(), { kind: 'repair.start', run: RUN })) as { ok: boolean; error?: string }
+    expect(r.error).toContain("can't continue as a swarm: gate G2's critic ended twice without returning its verdict on attempt 1")
+    expect(w.p.asked).toEqual([])
   })
 
   test("a critic's rule clash under off offers no swarm, and repair.start refuses it with where to settle it (WP-AH)", async () => {
