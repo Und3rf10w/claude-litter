@@ -88,7 +88,7 @@ import {
   uiScrollFailed,
   uiSelectFailed,
 } from './swarm/wiring'
-import { registerLitterCommand } from './uicommands'
+import { litterAutocomplete, litterSuggestions, registerLitterCommand } from './uicommands'
 import { litterCommand, onLitterUi } from './ui/hub'
 import { renderLitterPane, sectionShown } from './ui/pane'
 import { startUiTimer } from './uitick'
@@ -542,6 +542,15 @@ export const register: Register = (on, options) => {
     await rebound(p)
     return litterCommand(p, e, next)
   }).catch(litterCommandFailed)
+
+  // WP-EC: /litter's sections in the prompt box's typeahead, as its first
+  // argument is typed. Every other prompt passes on at once, before the ports.
+  on('prompt.autocomplete', async ($, e, next) => {
+    if (litterSuggestions(e).length === 0) return next(e)
+    const p = enginePorts($)
+    await rebound(p)
+    return litterAutocomplete(p, e, next)
+  }).catch(($, e, next) => next(e))
 
   // The one pane, `litter`: the hub's chrome over the shown section's body
   // (ui/pane.tsx), from the hub's atom and that section's. A render doesn't

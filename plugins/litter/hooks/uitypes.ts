@@ -21,6 +21,8 @@ export type AskEntry = {
   gate: string | null
   swarm: string | null
   node: string | null
+  /** A node's child's Agent call description, cleaned, at most 60 characters; null for anyone else, or when the list doesn't have it. */
+  description: string | null
   /** What the launch authorized, one line, at most 200 characters. */
   authorized: string
   /** When it opened, in ms. */

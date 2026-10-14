@@ -237,6 +237,18 @@ const PID_FILE = /^[0-9]{1,10}\.json$/
 /** Registry files read at most, and the most of each: the engine's are a few hundred bytes. */
 export const REGISTRY_FILES = 400
 const REGISTRY_BYTES = 64 * 1024
+/** How long a read of the registry stands while its folder's mtime holds (see `kept`). */
+export const REGISTRY_FRESH_MS = 30_000
+
+/**
+ * The registry as runningSessions last read it, by its folder and that
+ * folder's mtime then, so an unchanged registry costs one stat (WP-EC). A
+ * session that starts or ends adds or removes its file, which moves the
+ * folder's mtime. A /clear or a resume moves an entry's sessionId by
+ * rewriting its file in place (writeFile, `_n` in cli_formatted_2.1.296.js),
+ * which doesn't, so a read also lapses after REGISTRY_FRESH_MS.
+ */
+let kept: { dir: string; mtimeMs: number; at: number; sessions: RunningSession[] | null } | null = null
 
 /**
  * The sessions `<configDir>/sessions/<pid>.json` lists as running (WP-DF):
@@ -244,26 +256,41 @@ const REGISTRY_BYTES = 64 * 1024
  * the folder can't be listed (absent included: this session registers
  * itself, so a missing folder says the registry isn't kept here), or holds
  * more than REGISTRY_FILES entries (one left unread could be a lead's), so a
- * caller tells "nobody runs it" from "can't tell". Never throws.
+ * caller tells "nobody runs it" from "can't tell". Read again only when
+ * `kept` is out of date. Never throws.
  */
 export async function runningSessions(p: Ports): Promise<RunningSession[] | null> {
   let dir: string
+  let mtimeMs: number
+  let now: number
   try {
     dir = `${await p.configDir()}/sessions`
-    if (!(await p.fs.exists(dir))) return null
+    // Rejects when the folder's missing. Taken before the files are read, so a write in between moves it again.
+    const st = await p.fs.stat(dir)
+    if (st.kind !== 'dir') return null
+    mtimeMs = st.mtimeMs
+    now = await p.now()
   } catch {
     return null
+  }
+  const k = kept
+  if (k !== null && k.dir === dir && k.mtimeMs === mtimeMs && now - k.at < REGISTRY_FRESH_MS) return k.sessions === null ? null : [...k.sessions]
+  const keep = (sessions: RunningSession[] | null): RunningSession[] | null => {
+    kept = { dir, mtimeMs, at: now, sessions }
+    return sessions === null ? null : [...sessions]
   }
   let names: string[]
   try {
     names = (await p.fs.list(dir)).filter(e => e.kind === 'file' && !e.isLink && PID_FILE.test(e.name)).map(e => e.name)
   } catch (err) {
+    // Not kept: the next build tries again.
     p.log(`team store: ${dir} wasn't listed: ${errText(err)}`)
     return null
   }
-  if (names.length > REGISTRY_FILES) return null
+  if (names.length > REGISTRY_FILES) return keep(null)
   names.sort((a, b) => Number(a.slice(0, -5)) - Number(b.slice(0, -5)))
   const out: RunningSession[] = []
+  let unsure = false
   for (const name of names) {
     try {
       const st = await p.fs.stat(`${dir}/${name}`)
@@ -280,10 +307,17 @@ export async function runningSessions(p: Ports): Promise<RunningSession[] | null
         jobId: typeof raw.jobId === 'string' && SEGMENT.test(raw.jobId) ? raw.jobId : null,
       })
     } catch {
-      // Gone between the listing and the read, or half written: not a session the pane can name.
+      // Gone between the listing and the read, or half written: not a session the pane can name, this time.
+      unsure = true
     }
   }
-  return out
+  // A file caught mid-write (the engine rewrites one in place) is read again at the next build, so this read isn't kept.
+  return unsure ? out : keep(out)
+}
+
+/** A fresh module's memory, for tests: no registry read kept. */
+export function resetRegistryForTests(): void {
+  kept = null
 }
 
 // ---------------------------------------------------------------------------

