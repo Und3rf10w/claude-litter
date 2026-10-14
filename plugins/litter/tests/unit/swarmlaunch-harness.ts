@@ -23,6 +23,7 @@ import { deps as launchDeps, launchSwarm, swarmReadTool } from '../../hooks/swar
 import { deps as ownerDeps, resetOwnersForTests } from '../../hooks/swarm/owner'
 import { deps as recoverDeps, resetRecoveryForTests } from '../../hooks/swarm/recover'
 import { resetEndForTests } from '../../hooks/swarm/end'
+import { resetForTests as resetAdmitForTests } from '../../hooks/swarm/admit'
 import { fireEvery, nodePorts, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
 /** 2026-10-03 12:00:00 UTC, so a launch id is `20261003-120000`. */
@@ -191,6 +192,7 @@ function install(w: World): void {
 
 function resetModules(): void {
   resetForTests()
+  resetAdmitForTests()
   resetOwnersForTests()
   resetRecoveryForTests()
   resetEndForTests()

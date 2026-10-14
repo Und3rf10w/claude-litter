@@ -86,6 +86,8 @@ export type SwarmProposalBody = {
   /** Node id → sha256 of the staged brief. */
   briefs: Record<string, string>
   changes: ProposedChange[]
+  /** Over revision 0: sha256 of `proposals/<n>/base.json`, the draft it was made over (absent from an older litter's). */
+  base?: string
 }
 
 /** swarm.proposal.decided (J): the one decision every proposal gets, after its revision when there is one. */

@@ -5,10 +5,10 @@
 // the draft with its conflicts, accept all, accept some, and reject.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { NodeBinding, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
-import { readSpecLedger } from '../../hooks/records/swarm'
+import { appendSpecRecord, readSpecLedger } from '../../hooks/records/swarm'
 import { sha256 } from '../../hooks/fsx'
 import { updateSession } from '../../hooks/session'
 import * as state from '../../hooks/swarm/state'
@@ -123,8 +123,11 @@ describe('swarm_propose stages', () => {
     expect(r).toEqual({ ok: true, proposal: 1, diff: { added: 2, removed: 0, changed: 1, briefs: 2, conflicts: 0 } })
     expect(JSON.parse(readFileSync(swarm('proposals', '1', 'spec.json'), 'utf8'))).toEqual(rev1())
     expect(readFileSync(swarm('proposals', '1', 'briefs', 'part-a.md'), 'utf8')).toBe(REV1_BRIEFS['part-a'])
+    // With no draft, what it was made over is nothing yet: kept as the diff's base, with its sha256.
+    const base = readFileSync(swarm('proposals', '1', 'base.json'), 'utf8')
+    expect(JSON.parse(base)).toEqual({ spec: { name: 'alpha', goal: '', nodes: [] }, briefs: {} })
     expect(await bodies('swarm.proposal')).toEqual([
-      { n: 1, baseRevision: 0, spec: rev1(), briefs: { 'part-a': await sha256(REV1_BRIEFS['part-a']), reviewer: await sha256(REV1_BRIEFS.reviewer) }, changes },
+      { n: 1, baseRevision: 0, spec: rev1(), briefs: { 'part-a': await sha256(REV1_BRIEFS['part-a']), reviewer: await sha256(REV1_BRIEFS.reviewer) }, changes, base: await sha256(base) },
     ])
     expect(state.takeProposals()).toEqual([{ name: 'alpha', n: 1 }])
     expect(existsSync(swarm('briefs'))).toBe(false)
@@ -360,6 +363,81 @@ describe('a proposal over revision 0', () => {
     expect(saved.spec.goal).toBe('Review both branches')
     expect(saved.spec.nodes.map(n => n.id)).toEqual(['part-a', 'reviewer', 'extra'])
     expect(saved.briefs.extra).toBe('Help out.\n')
+  })
+
+  /** Nothing saved; your draft is rev1's, as a template leaves it; the lead's proposal changes part-a's task. */
+  async function leadChangesADraftNode(): Promise<void> {
+    await writeDraft(p, litterDir, 'alpha', { base: 0, edits: [{ path: 'nodes', at: 1 }], spec: rev1(), briefs: REV1_BRIEFS, updatedAt: 1 })
+    const theirs = rev1()
+    theirs.nodes[0]!.task = 'The lead task'
+    const r = await propose({ swarm: 'alpha', baseRevision: 0, spec: theirs, briefs: REV1_BRIEFS, changes: [{ path: 'nodes.part-a.task', reason: 'clearer' }] })
+    expect(r).toEqual({ ok: true, proposal: 1, diff: { added: 0, removed: 0, changed: 1, briefs: 0, conflicts: 0 } })
+  }
+  const leadTask = { path: 'nodes.part-a.task', node: 'part-a', kind: 'changed' as const, before: 'Review a', after: 'The lead task', reason: 'clearer' }
+
+  // UI MERGE-NOTES:22: the base was empty, so the lead's edit to a node you drafted read as a conflict.
+  test("the lead's change to a node you drafted is a change from the draft it read, and accept all takes it", async () => {
+    await leadChangesADraftNode()
+    const v = (await readProposal(p, litterDir, 'alpha', 1))!
+    expect(v.changes).toEqual([{ ...leadTask, conflict: false }])
+    expect(v.briefs).toEqual([])
+    expect(await acceptProposal(p, litterDir, 'alpha', 1, 'all')).toEqual({ ok: true, revision: 1 })
+    const saved = (await readSaved(p, litterDir, 'alpha'))!
+    expect(saved.spec.nodes.map(n => [n.id, n.task])).toEqual([
+      ['part-a', 'The lead task'],
+      ['reviewer', undefined],
+    ])
+    expect(await bodies('swarm.proposal.decided')).toEqual([{ proposal: 1, accepted: 'all', revision: 1 }])
+  })
+
+  test('only what both sides changed since the proposal conflicts: your other edits since, and a node you added, stay yours', async () => {
+    await leadChangesADraftNode()
+    // After the lead proposed: your own task for part-a, a model for reviewer, and a node it never read.
+    const mine = rev1()
+    mine.nodes[0]!.task = 'Your task'
+    mine.nodes[1]!.model = 'haiku'
+    mine.nodes.push(lead('extra', { brief: 'briefs/extra.md' }))
+    await writeDraft(p, litterDir, 'alpha', {
+      base: 0,
+      edits: [{ path: 'nodes', at: 1 }, { path: 'nodes.part-a.task', at: 2 }, { path: 'nodes.reviewer.model', at: 3 }, { path: 'nodes.extra', at: 4 }],
+      spec: mine,
+      briefs: { ...REV1_BRIEFS, extra: 'Help out.\n' },
+      updatedAt: 4,
+    })
+    const v = (await readProposal(p, litterDir, 'alpha', 1))!
+    expect(v.changes).toEqual([{ ...leadTask, conflict: true, yours: 'Your task' }])
+    expect(v.counts.conflicts).toBe(1)
+    expect(await acceptProposal(p, litterDir, 'alpha', 1, 'all')).toEqual({ ok: true, revision: 1 })
+    const saved = (await readSaved(p, litterDir, 'alpha'))!
+    expect(saved.spec.nodes.map(n => [n.id, n.task, n.model])).toEqual([
+      ['part-a', 'Your task', undefined],
+      ['reviewer', undefined, 'haiku'],
+      ['extra', undefined, undefined],
+    ])
+    expect(saved.briefs.extra).toBe('Help out.\n')
+  })
+
+  test("the copy of the draft it was made over is checked against the record's sha256, as a staged brief is: a changed or missing one isn't diffed or accepted", async () => {
+    await leadChangesADraftNode()
+    expect((await bodies('swarm.proposal'))[0]).toEqual(expect.objectContaining({ base: await sha256(readFileSync(swarm('proposals', '1', 'base.json'), 'utf8')) }))
+    // A base naming a node the proposal leaves out would have Accept all remove it from your draft.
+    writeFileSync(swarm('proposals', '1', 'base.json'), JSON.stringify({ spec: { ...rev1(), nodes: [...rev1().nodes, lead('extra')] }, briefs: REV1_BRIEFS }))
+    await expect(readProposal(p, litterDir, 'alpha', 1)).rejects.toThrow("proposal 1's copy of the draft it was made over isn't the one staged (its sha256 differs)")
+    await expect(acceptProposal(p, litterDir, 'alpha', 1, 'all')).rejects.toThrow('reject the proposal and ask the lead again')
+    rmSync(swarm('proposals', '1', 'base.json'))
+    await expect(readProposal(p, litterDir, 'alpha', 1)).rejects.toThrow('(it is gone)')
+    expect(await readSaved(p, litterDir, 'alpha')).toBeNull()
+  })
+
+  test("an older litter's proposal over revision 0, with no copy of the draft, is diffed over the draft as it is", async () => {
+    await writeDraft(p, litterDir, 'alpha', { base: 0, edits: [{ path: 'nodes', at: 1 }], spec: rev1(), briefs: REV1_BRIEFS, updatedAt: 1 })
+    const theirs = rev1()
+    theirs.nodes[0]!.task = 'The lead task'
+    const hashes = { 'part-a': await sha256(REV1_BRIEFS['part-a']), reviewer: await sha256(REV1_BRIEFS.reviewer) }
+    mkdirSync(swarm('proposals', '1', 'briefs'), { recursive: true })
+    for (const [node, text] of Object.entries(REV1_BRIEFS)) writeFileSync(swarm('proposals', '1', 'briefs', `${node}.md`), text)
+    await appendSpecRecord(p, litterDir, 'alpha', 'swarm.proposal', { n: 1, baseRevision: 0, spec: theirs, briefs: hashes, changes: [{ path: 'nodes.part-a.task', reason: 'clearer' }] })
+    expect((await readProposal(p, litterDir, 'alpha', 1))!.changes).toEqual([{ ...leadTask, conflict: false }])
   })
 
   test('over a saved revision, a node you added since stays yours', async () => {

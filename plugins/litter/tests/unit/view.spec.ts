@@ -856,6 +856,35 @@ describe('the recovery card and the unsettled report', () => {
     expect(nav()?.view).toBe('browser')
   })
 
+  // 15.9's risk "The recovery card can hide a worker": K puts its orchestrator on the card as finished.
+  test('an orchestrator on the card for its running worker reads finished, with a running worker, and [Resume all] asks for it', async () => {
+    goLive()
+    const finished: RecoveryCard = {
+      ...CARD,
+      nodes: [
+        { node: 'part-a', n: 1, agentId: 'o1', kind: 'orchestrator', state: 'settled', lastReport: null, respawnOnly: false, finished: true },
+        { node: 'fixer', n: 1, agentId: 'w1', kind: 'worker', state: 'gone', lastReport: null, respawnOnly: false },
+      ],
+    }
+    let resumable = true
+    owners({
+      recoveryCard: fake('recoveryCard', () => finished),
+      resumeTargets: fake('resumeTargets', (_s: LiveSwarm, node: string) => (resumable && node === 'part-a' ? [bind('o1', { node, kind: 'orchestrator', parent: null })] : [])),
+      requestResume: fake('requestResume', async () => {}),
+    })
+    const v = await view<SwarmRecoveryView>('recovery')
+    expect(v.rows.map(r => [r.node, r.kind, r.pickable, r.note])).toEqual([
+      ['part-a', 'orchestrator', true, 'finished, with a running worker'],
+      ['fixer', 'worker', false, 'comes back through part-a'],
+    ])
+    await handle(p, 'swarm:recovery:resume-all:demo', {})
+    expect(called('requestResume')).toEqual([[SWARM, ['part-a'], 'resume']])
+    // Bound under an older owner, it can only be re-spawned, which the note says too.
+    resumable = false
+    const again = await view<SwarmRecoveryView>('recovery')
+    expect(again.rows[0]!.note).toBe('finished, with a running worker; re-spawn only')
+  })
+
   test("after 2 minutes stopping, P's settle progress is reported; [Wait longer] puts it off 2 more minutes", async () => {
     goLive({ state: 'stopping' })
     const progress: SettleProgress = {

@@ -555,6 +555,8 @@ export type RecoveryNode = {
   lastReport: string | null
   /** Bound under an older generation: only re-spawn is offered (a handover). */
   respawnOnly: boolean
+  /** An orchestrator whose turn was over at the restart while a worker of its still ran: on the card for that worker. */
+  finished?: boolean
 }
 
 /** K's recovery card for a swarm this session owns after a restart (15.4, "Recreating a swarm"). */

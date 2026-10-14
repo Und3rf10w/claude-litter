@@ -431,8 +431,20 @@ export async function recoverOwnedLaunch(
   startOwnerBeat(p, litterDir, name)
 
   // 6. The card: each node that held a place at the crash (every one not stopped, with no mirror), by the list now.
+  // An orchestrator whose turn was over while a worker of its still held one is on it too, as finished: the
+  // worker comes back through it (15.4, "Recreating a swarm", step 4), so without it the worker would be hidden.
+  const placed = bindings(name).filter(x => x.kind !== 'child' && (mirror ? wasRunning.has(x.agentId) : !isStopped(x.agentId)))
+  const placedIds = new Set(placed.map(x => x.agentId))
+  const finished = new Set(
+    facts.stopping
+      ? []
+      : placed.flatMap(x => {
+          const o = x.kind === 'worker' ? orchestratorOf(x.agentId) : null
+          return o !== null && !placedIds.has(o) && !isStopped(o) ? [o] : []
+        }),
+  )
   const nodes: RecoveryNode[] = bindings(name)
-    .filter(x => x.kind !== 'child' && (mirror ? wasRunning.has(x.agentId) : !isStopped(x.agentId)))
+    .filter(x => placedIds.has(x.agentId) || finished.has(x.agentId))
     .sort((x, y) => x.boundAt - y.boundAt)
     .map(x => ({
       node: x.node,
@@ -442,6 +454,7 @@ export async function recoverOwnedLaunch(
       state: alive(x.agentId) ? 'alive' : list.has(x.agentId) ? 'settled' : 'gone',
       lastReport: lastReport(x.agentId)?.text ?? ledgerReport(facts, x.agentId),
       respawnOnly: x.generation < owner.generation,
+      ...(finished.has(x.agentId) ? { finished: true } : {}),
     }))
   for (const x of nodes) handled.delete(x.agentId)
   if (nodes.length > 0 || facts.stopping) cards.set(name, { swarm: name, launch: facts.launch, stopping: facts.stopping, nodes, at: await p.now() })
@@ -747,8 +760,10 @@ export async function continuationText(p: Ports, name: string, node: string, how
       .filter(b => under(ids)(b) && wasRunning(b.agentId))
       .sort((x, y) => x.boundAt - y.boundAt)
       .map(workerText)
+    // On the card for a worker of its that still ran, its own turn over.
+    const finished = card?.nodes.some(x => ids.has(x.agentId) && x.finished === true) === true
     return [
-      `litter: this session restarted, and swarm ${name} was recreated. You were running when it stopped, and this message resumes you.`,
+      `litter: this session restarted, and swarm ${name} was recreated. ${finished ? 'Your turn was over when it stopped, but a worker of yours was still running' : 'You were running when it stopped'}, and this message resumes you.`,
       'Before you go on, check your directory\'s git state (git status, the branch, the last commits): a command may have been cut short.',
       workers.length === 0
         ? 'None of your workers was running.'
@@ -769,9 +784,6 @@ export async function continuationText(p: Ports, name: string, node: string, how
       : [
           `The agents it started are yours now, and report to you: ${shownTheirs.map(b => `${workerText(b)}, ${runs(b.agentId) ? 'running' : 'finished'}`).join('; ')}${theirs.length > shownTheirs.length ? `; and ${theirs.length - shownTheirs.length} earlier ones` : ''}.`,
           "A message from you with SendMessage, to its agent id, reaches one that runs and resumes one that finished. One that can't be resumed (No transcript found) you spawn fresh, with its last report, telling it to read its directory first.",
-          ...(theirs.some(b => runs(b.agentId))
-            ? ['One still running hands its last report to the earlier instance when its turn ends, and that one is no longer admitted to pass it on: ask it to send you its report with SendMessage before it ends.']
-            : []),
         ]
   const report = last ? (lastReport(last.agentId)?.text ?? ledgerReport(facts, last.agentId)) : null
   const questions = openQuestions(name).filter(q => ids.has(q.agentId)).map(q => `- ${q.text.replace(/\s+/g, ' ')}`)

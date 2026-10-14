@@ -374,19 +374,15 @@ const briefOf = (side: Side, l: Leaves, node: string): string | undefined =>
 /**
  * The proposal `prop` against its base, each change and brief marked
  * conflicting where your draft changed it from the base too, to something else.
- *
- * `fromNothing`, a proposal over revision 0: nothing saved is there for the
- * lead to read, so the draft (swarm_read, draft: true) is what it proposed
- * over. A draft node its whole spec leaves out is one it removes, so it's
- * `removed` from the draft's node, with its brief: the lead's one way to drop
- * a node that's only in the draft. Over a saved revision, a node you added
+ * Over revision 0 the base is the draft it was proposed over (diffOf), so a
+ * draft node its whole spec leaves out is `removed`, with its brief: the
+ * lead's one way to drop a node that's only in the draft. A node you added
  * since may be one the lead never read, so it stays yours.
  */
-function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly ProposedChange[], fromNothing = false): { changes: ProposalChange[]; briefs: BriefDiff[] } {
+function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly ProposedChange[]): { changes: ProposalChange[]; briefs: BriefDiff[] } {
   const lb = leavesOf(base.spec)
   const lp = leavesOf(prop.spec)
   const ld = leavesOf(draft.spec)
-  const dropped = fromNothing ? [...ld.nodes.keys()].filter(id => !lb.nodes.has(id) && !lp.nodes.has(id)) : []
   const changes: ProposalChange[] = []
   const entry = (path: string, node: string | undefined, before: unknown, after: unknown): void => {
     if (same(before, after)) return
@@ -411,11 +407,10 @@ function diffSides(base: Side, prop: Side, draft: Side, reasons: readonly Propos
     else for (const path of new Set([...bn.fields.keys(), ...pn.fields.keys()])) entry(path, id, bn.fields.get(path), pn.fields.get(path))
   }
   for (const [id, bn] of lb.nodes) if (!lp.nodes.has(id)) entry(`nodes.${id}`, id, bn.node, undefined)
-  for (const id of dropped) entry(`nodes.${id}`, id, ld.nodes.get(id)!.node, undefined)
 
   const briefs: BriefDiff[] = []
-  for (const id of new Set([...lp.nodes.keys(), ...lb.nodes.keys(), ...dropped])) {
-    const before = dropped.includes(id) ? briefOf(draft, ld, id) : briefOf(base, lb, id)
+  for (const id of new Set([...lp.nodes.keys(), ...lb.nodes.keys()])) {
+    const before = briefOf(base, lb, id)
     const after = briefOf(prop, lp, id)
     if (before === after) continue
     const yours = briefOf(draft, ld, id)
@@ -446,9 +441,16 @@ function countsOf(changes: readonly ProposalChange[], briefs: readonly BriefDiff
 // ---------------------------------------------------------------------------
 // Proposals
 
-type Loaded = { n: number; body: SwarmProposalBody; staged: Record<string, string>; decided: SwarmProposalDecidedBody | null }
+type Loaded = {
+  n: number
+  body: SwarmProposalBody
+  staged: Record<string, string>
+  /** Over revision 0, the draft it was made over; null for an older litter's proposal, which kept none. */
+  base: Side | null
+  decided: SwarmProposalDecidedBody | null
+}
 
-/** Proposal `n` from its record, with its staged briefs, each checked against the record's sha256. */
+/** Proposal `n` from its record, with its staged briefs and base, each checked against the record's sha256. */
 async function loadProposal(p: Ports, litterDir: string, name: string, l: SpecLedger, n: number): Promise<Loaded | null> {
   const body = l.proposals.get(n)
   if (!body) return null
@@ -462,7 +464,17 @@ async function loadProposal(p: Ports, litterDir: string, name: string, l: SpecLe
     }
     staged[node] = text
   }
-  return { n, body, staged, decided: l.decided.get(n) ?? null }
+  let base: Side | null = null
+  if (typeof body.base === 'string') {
+    const file = `${swarmProposalDir(litterDir, name, n)}/base.json`
+    const text = (await p.fs.exists(file)) ? await p.fs.read(file) : null
+    const v = text !== null && (await sha256(text)) === body.base ? (JSON.parse(text) as unknown) : null
+    if (!isObj(v) || !isObj(v.spec) || !isObj(v.briefs)) {
+      throw new Error(`litter: proposal ${n}'s copy of the draft it was made over isn't the one staged (${text === null ? 'it is gone' : 'its sha256 differs'}); reject the proposal and ask the lead again`)
+    }
+    base = { spec: v.spec as unknown as SwarmSpec, briefs: v.briefs as Record<string, string> }
+  }
+  return { n, body, staged, base, decided: l.decided.get(n) ?? null }
 }
 
 async function baseSide(p: Ports, litterDir: string, name: string, revision: number): Promise<Side> {
@@ -491,10 +503,12 @@ function proposedSide(loaded: Loaded, base: Side): Side {
 }
 
 async function diffOf(p: Ports, litterDir: string, name: string, loaded: Loaded) {
-  const base = await baseSide(p, litterDir, name, loaded.body.baseRevision)
-  const prop = proposedSide(loaded, base)
   const draft = await currentSide(p, litterDir, name)
-  return { base, prop, draft, ...diffSides(base, prop, draft, loaded.body.changes, loaded.body.baseRevision === 0) }
+  // Over revision 0, the draft as it was proposed over (loadProposal), so only what both sides changed since
+  // conflicts; for an older litter's proposal, which kept no copy of it, the draft as it is now.
+  const base = loaded.body.baseRevision === 0 ? (loaded.base ?? draft) : await baseSide(p, litterDir, name, loaded.body.baseRevision)
+  const prop = proposedSide(loaded, base)
+  return { base, prop, draft, ...diffSides(base, prop, draft, loaded.body.changes) }
 }
 
 /**
@@ -519,16 +533,28 @@ export async function stageProposal(
     const briefs = Object.fromEntries(Object.entries(proposal.briefs).filter(([node]) => NODE_ID.test(node)))
     const hashes: Record<string, string> = {}
     for (const [node, text] of Object.entries(briefs)) hashes[node] = await sha256(text)
-    const body: SwarmProposalBody = { n, baseRevision: proposal.baseRevision, spec: proposal.spec, briefs: hashes, changes: proposal.changes }
+    // Over revision 0 nothing saved is there for the lead to read, so the draft (swarm_read, draft: true) is what
+    // it proposed over: kept as the diff's base, its sha256 in the record as a staged brief's is.
+    const base = proposal.baseRevision === 0 ? await currentSide(p, litterDir, name) : null
+    const baseText = base ? JSON.stringify(base) : null
+    const body: SwarmProposalBody = {
+      n,
+      baseRevision: proposal.baseRevision,
+      spec: proposal.spec,
+      briefs: hashes,
+      changes: proposal.changes,
+      ...(baseText !== null ? { base: await sha256(baseText) } : {}),
+    }
     try {
       await atomicWriteJson(p, `${dir}/spec.json`, proposal.spec)
       for (const [node, text] of Object.entries(briefs)) await atomicWrite(p, `${dir}/briefs/${node}.md`, text)
+      if (baseText !== null) await atomicWrite(p, `${dir}/base.json`, baseText)
       await appendSpecRecord(p, litterDir, name, 'swarm.proposal', body)
     } catch (err) {
       await remove(p, dir).catch(() => {})
       throw err
     }
-    const d = await diffOf(p, litterDir, name, { n, body, staged: briefs, decided: null })
+    const d = await diffOf(p, litterDir, name, { n, body, staged: briefs, base, decided: null })
     return { n, diff: countsOf(d.changes, d.briefs) }
   })
 }

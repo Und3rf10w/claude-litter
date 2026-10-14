@@ -2845,16 +2845,18 @@ async function buildRecovery(p: Ports, n: SwarmNav): Promise<SwarmRecoveryView |
       const mine = card.nodes.filter(y => y.node === x.node && y.kind === kind)
       const choice = choices.find(c => c.node === x.node)
       const under = [...new Set(mine.map(y => orchestratorOf(y.agentId)?.node).filter((v): v is string => v !== undefined))]
+      // On the card for its worker (K): its own turn was over at the restart.
+      const finished = mine.some(y => y.finished === true) && !choice?.alive ? 'finished, with a running worker' : ''
       const note =
         kind === 'worker'
           ? `comes back through ${under.length > 0 ? under.map(u => clean(u, 32)).join(', ') : 'its orchestrator'}`
           : card.stopping
             ? ''
             : !choice?.resumable
-              ? 're-spawn only'
+              ? [finished, 're-spawn only'].filter(x => x !== '').join('; ')
               : choice.alive
                 ? 'still running'
-                : ''
+                : finished
       rows.push({
         node: clean(x.node, 40),
         kind,
