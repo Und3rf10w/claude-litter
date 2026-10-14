@@ -64,6 +64,8 @@ const isFormer = (agentId: string | undefined): boolean => agentId !== undefined
  */
 export const agentSpawnFailed: SpawnCatch = async ($, e, next) => {
   if (next.called) return next(e)
+  // A resumed run (2.1.299): a deny would leave it parked, and its first step is admitted at turn.step anyway.
+  if (e.resume !== undefined) return next(e)
   if (e.subagentType.startsWith(SWARM_TYPE_PREFIX) || isBound(e.parentAgentId)) {
     return { deny: `litter guard failed: agent.spawn (${why(next)}); refusing` }
   }

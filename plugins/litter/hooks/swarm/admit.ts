@@ -24,7 +24,7 @@
 
 import type { AgentPolicy } from '../hookfiles'
 import type { AgentStatus, Ports, SessionSendResult } from '../ports'
-import type { PortHook, PortStreamHook, SessionSendHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
+import type { PortHook, PortStreamHook, SessionSendHook, SpawnHook, SwarmSendHook, TurnCompleteHook, TurnStartHook, TurnStepHook } from '../hooktypes'
 import type { RecordHandler } from '../records/core'
 import type { SwarmEventBody, SwarmInstanceBody, SwarmNodeBody, SwarmSendReply } from '../records/swarm'
 import type { BrowserSend, ClearKill, ClearReason, Effort, LiveSwarm, NodeBinding, SendOutcome, SwarmNode, WriteScope } from './types'
@@ -391,6 +391,39 @@ async function lostType(p: Ports, b: NodeBinding): Promise<{ runsAs: string; own
   const row = (await p.listAgents()).find(a => a.id === b.agentId)
   const own = ownType(b)
   return row && row.type !== '' && row.type !== own ? { runsAs: row.type, own } : null
+}
+
+/**
+ * agent.spawn for a resumed run (2.1.299 raises it with `resume`): a hook
+ * can only refuse one, and a refused wake leaves the agent parked, so it's
+ * never planned, reserved or bound as a spawn. A send that resumes a node
+ * was admitted already (judge, resumeNow), and an engine wake is admitted at
+ * its first step (admitWake). Refused here, before it runs: an agent of a
+ * swarm that has ended, an orchestrator a re-spawn replaced, and a node the
+ * engine would resume as another type, which it would then keep. Anything
+ * else passes.
+ */
+export async function resumeSpawn(p: Ports, e: Parameters<PortHook<SpawnHook>>[1], next: Parameters<PortHook<SpawnHook>>[2]): Promise<Awaited<ReturnType<PortHook<SpawnHook>>>> {
+  const id = e.resume!.agentId
+  await state.ready(p, await (await waitBudget(p, next)).left())
+  const b = state.binding(id)
+  if (!b) {
+    const ended = await endedSwarmOf(p, id)
+    return ended === null ? next(e) : { deny: `litter: swarm ${ended} has ended: ${id} was one of its agents, and isn't resumed` }
+  }
+  const by = state.replacedBy(b)
+  if (by) return { deny: `litter: ${labelOf(b)} was replaced by a re-spawned ${b.node} (${by.agentId}), which takes its workers and its messages; it isn't resumed` }
+  if (b.kind !== 'child' && e.subagentType !== '' && e.subagentType !== ownType(b)) {
+    // Listed as another type, it lost its own already; listed as its own, the resume's lookup fell back (a reload's gap).
+    const lost = await lostType(p, b)
+    if (lost) return { deny: `litter: ${lostTypeText(b, lost)}` }
+    return {
+      deny:
+        `litter: ${labelOf(b)} would resume as ${e.subagentType}, not ${ownType(b)}: a plugin reload drops litter's node types until it has finished, ` +
+        'and a node resumed as another type keeps it; it isn\'t resumed, so send it again once the reload has finished',
+    }
+  }
+  return next(e)
 }
 
 /** Why a node that lost its type can't run, and what helps: a re-spawn, the lead's for an orchestrator, its parent's for a worker. */
@@ -1024,9 +1057,19 @@ async function modelCheck(p: Ports, model: string): Promise<string | null> {
 // ---------------------------------------------------------------------------
 // turn.start, turn.complete, and the settle poll
 
-/** turn.start (the main loop only, d.ts): the lead is busy until its turn.complete. */
+/**
+ * turn.start. The lead's (no agentId): busy until its turn.complete, and its
+ * directory kept for the branch check (state.ts, leadCwd). Since 2.1.299 a
+ * subagent's or teammate's turn raises it too, with its agentId: nothing.
+ */
 export async function leadTurnStart(p: Ports, e: Parameters<TurnStartHook>[1]): Promise<void> {
+  if (e.agentId !== undefined) return
   state.setLeadBusy(true)
+  try {
+    state.noteLeadCwd(await p.cwd())
+  } catch {
+    // The branch check falls back to the directory Launch saw.
+  }
 }
 
 /**

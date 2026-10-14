@@ -14,6 +14,7 @@ import { updateSession } from '../../hooks/session'
 import { others } from '../../hooks/swarm/end'
 import { ackBranchMoved, branchTips, consumeSwarm, observeNodeTurn, resetObserveForTests } from '../../hooks/swarm/observe'
 import * as state from '../../hooks/swarm/state'
+import * as admit from '../../hooks/swarm/admit'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
 import { nodePorts, runAfters, scratch, scratchRepo, type TestPorts } from './support/node-ports'
 
@@ -487,19 +488,40 @@ describe('observeNodeTurn', () => {
       expect((await moves()).length).toBe(1)
     })
 
-    test("checked out in the lead's worktree: flagged", async () => {
+    test("checked out in the lead's worktree, as its last turn.start saw it: flagged", async () => {
       const wt = await worktree('wp-lead')
-      p.cwd = async () => `${wt}/`
       await live()
+      await admit.leadTurnStart({ ...p, cwd: async () => `${wt}/` }, { turnId: 't-lead' } as never)
       await commitIn(wt, 'a.txt')
       await observeNodeTurn(p, turn('a-fix1'))
       expect(await moves()).toEqual([expect.objectContaining({ ref: 'refs/heads/wp-lead', where: wt })])
+    })
+
+    // 2.1.299: a hook a node's loop runs in reads `$.session.cwd()` as that node's directory.
+    test("the directory a node's turn.complete reads isn't taken for the lead's", async () => {
+      const wt = await worktree('wp-lead')
+      p.cwd = async () => `${wt}/`
+      await live()
+      await admit.leadTurnStart({ ...p, cwd: async () => `${wt}/` }, { turnId: 't-node', agentId: 'a-fix1' } as never)
+      expect(state.leadCwd()).toBeNull()
+      await commitIn(wt, 'a.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([])
+    })
+
+    test("with no lead turn since the load, the lead works where Launch saw it: a move there is flagged", async () => {
+      await live({}, { cwd: '/nowhere' })
+      state.putBinding(bindingOf('a-boss', { node: 'boss', kind: 'orchestrator', parent: null, cwd: '/nowhere' }))
+      await commitIn(dir, 'a.txt')
+      await observeNodeTurn(p, turn('a-fix1'))
+      expect(await moves()).toEqual([expect.objectContaining({ ref: 'refs/heads/main', where: realpathSync(dir) })])
     })
 
     test('checked out nowhere: flagged, `where: null`', async () => {
       await git('branch', 'feature/y')
       await live({}, { cwd: '/nowhere' })
       state.putBinding(bindingOf('a-boss', { node: 'boss', kind: 'orchestrator', parent: null, cwd: '/nowhere' }))
+      await admit.leadTurnStart({ ...p, cwd: async () => '/nowhere' }, { turnId: 't-lead' } as never)
       await commitIn(dir, 'a.txt')
       await git('branch', '-f', 'feature/y', 'main')
       await observeNodeTurn(p, turn('a-fix1'))

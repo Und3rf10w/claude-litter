@@ -417,12 +417,9 @@ async function checkouts(p: Ports, s: LiveSwarm): Promise<{ where: Map<string, s
   if (!list) return null
   const where = new Map<string, string>()
   for (const w of list) if (w.branch !== null && !where.has(w.branch)) where.set(w.branch, normPath(w.path))
-  let leadCwd = s.sessionCwd
-  try {
-    leadCwd = await p.cwd()
-  } catch {
-    // The directory Launch saw.
-  }
+  // The lead's directory from its last turn.start, else the one Launch saw: this runs in a node's
+  // turn.complete too, where `$.session.cwd()` is the node's (2.1.299).
+  const leadCwd = state.leadCwd() ?? s.sessionCwd
   const ours = new Set<string>()
   for (const cwd of [leadCwd, ...new Set(state.bindings(s.name).map(x => x.cwd))]) {
     const root = await worktreeHolding(p, list, cwd)

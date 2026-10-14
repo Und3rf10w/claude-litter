@@ -443,6 +443,44 @@ describe('a parked node keeps its place (WP-AJ)', () => {
     expect(again).toEqual({ deny: 'litter: swarm alpha is at its limit of 2 agents at once (limits.maxAgentsAtOnce); wait for one to finish' })
     expect(spawned).toEqual([])
   })
+
+  // 2.1.299 raises agent.spawn for a resumed run (`resume`): never planned as a spawn, so no cap refuses it; its
+  // first step is admitted at turn.step. One the engine would resume as another type is refused (admit.ts, resumeSpawn).
+  test("a resume at the full cap reaches the engine as it came, and one as another type is refused", { timeoutMs: 20_000 }, async ($, on) => {
+    mock.store(on, PART)
+    mock.clock(on, { now: 5_000 })
+    world(on, { files: await ownedLedger(), owner: BLOB })
+    on('agent.list', async () => ({
+      value: [
+        { id: 'ag-1', description: 'the lead node', type: TYPES.lead, status: 'running' as const },
+        { id: 'ag-f1', description: 'a fixer', type: TYPES.fixer, parentId: 'ag-1', status: 'waiting' as const },
+      ],
+    }))
+    const spawned: { id: string; type: string; prompt: string }[] = []
+    on('agent.spawn', async (_$, e) => {
+      spawned.push({ id: e.resume?.agentId ?? '', type: e.subagentType, prompt: e.prompt })
+      return { model: 'test-model', agentId: e.resume?.agentId ?? 'agent-new' }
+    })
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    const resume = { ...SPAWN, tool_use_id: 'tu-resume', prompt: 'the tests pass', parentAgentId: 'ag-1', resume: { agentId: 'ag-f1' } }
+    expect(await $.agent.spawn({ ...resume, subagentType: TYPES.fixer })).toEqual({ model: 'test-model', agentId: 'ag-f1' })
+    expect(spawned).toEqual([{ id: 'ag-f1', type: TYPES.fixer, prompt: 'the tests pass' }])
+    expect(await $.agent.spawn({ ...resume, subagentType: 'general-purpose' })).toEqual({
+      deny: expect.stringContaining('litter: fixer #1 (ag-f1) would resume as general-purpose, not litter:sw-alpha-fixer'),
+    })
+    expect(spawned).toHaveLength(1)
+  })
+
+  test("a subagent's turn.start (2.1.299 raises it with agentId) passes on", async ($, on) => {
+    mock.store(on)
+    const seen: (string | undefined)[] = []
+    on('turn.start', async (_$, e) => {
+      seen.push(e.agentId)
+      return { turnId: e.turnId }
+    })
+    expect(await $.turn.start({ text: 'go', turnId: 'turn-sub', agentId: 'agent-7' })).toEqual({ turnId: 'turn-sub' })
+    expect(seen).toEqual(['agent-7'])
+  })
 })
 
 /** Drains a step's stream; answers its result. */

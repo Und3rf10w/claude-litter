@@ -130,6 +130,17 @@ describe('agent.spawn', () => {
     expect(await agentSpawnFailed($, spawn('Explore'), lead.next)).toBe(PASSED)
   })
 
+  // 2.1.299 raises agent.spawn for a resumed run: a deny would leave it parked, and its first step is admitted at
+  // turn.step (whose own catch refuses a bound node's), so a resume passes on, a swarm type's or a node's too.
+  test('a resumed run passes on, of any type, by anyone', async () => {
+    for (const [type, parent] of [['litter:sw-alpha-fixer', 'node-1'], ['litter:executor', undefined], ['Explore', 'node-1']] as const) {
+      const { next, calls } = caught()
+      const e = { ...(spawn(type, parent) as object), resume: { agentId: 'node-1' } } as never
+      expect(await agentSpawnFailed($, e, next)).toBe(PASSED)
+      expect(calls.length).toBe(1)
+    }
+  })
+
   // 2.1.292 raises agent.spawn for each agent() a workflow script starts (`workflow`, no parentAgentId), and asks
   // the catch in the hook's place for one raised beneath the hook's own frame (HookFailure 're-entry').
   test("a workflow's agent of a litter role passes, as litter's own runs start them; a workflow's of a swarm type is denied", async () => {

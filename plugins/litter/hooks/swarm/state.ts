@@ -174,6 +174,7 @@ let questionList: Question[] = []
 const directBySwarm = new Map<string, string[]>()
 const refused = new Map<string, string[]>()
 let lead = false
+let leadDir: string | null = null
 let rebind: string | null = null
 let cleared: ClearReason | null = null
 let clearKills: ClearKill[] = []
@@ -1043,6 +1044,17 @@ export function setLeadBusy(busy: boolean): void {
 
 export const leadBusy = (): boolean => lead
 
+/**
+ * The lead's directory at its last turn.start, or null before one. A hook a
+ * node's loop runs in reads `$.session.cwd()` as the node's directory
+ * (2.1.299's d.ts), so the lead's is kept from a main-loop hook.
+ */
+export function noteLeadCwd(cwd: string): void {
+  leadDir = cwd
+}
+
+export const leadCwd = (): string | null => leadDir
+
 // ---------------------------------------------------------------------------
 // Models and efforts (WP-DI): what each node's requests name, and what you set
 
@@ -1312,6 +1324,7 @@ export function resetForTests(): void {
   directBySwarm.clear()
   refused.clear()
   lead = false
+  leadDir = null
   rebind = null
   cleared = null
   clearKills = []

@@ -63,7 +63,7 @@ import { recoverSwarms } from './swarm/recover'
 import { swarmReadTool } from './swarm/launch'
 import { swarmProposeTool } from './swarm/propose'
 import { outsideTeammate, swarmSpawn } from './swarm/spawn'
-import { admitSend, admitStep, leadTurnStart, settleNode, swarmContext, swarmSendTool } from './swarm/admit'
+import { admitSend, admitStep, leadTurnStart, resumeSpawn, settleNode, swarmContext, swarmSendTool } from './swarm/admit'
 import { observeNodeTurn } from './swarm/observe'
 import { sweepNodePolicies } from './swarm/end'
 import { startPaneTimer } from './swarm/panes'
@@ -431,10 +431,12 @@ export const register: Register = (on, options) => {
   // the engine's own `next`. A rendezvous, so it keeps the spawner's context.
   // A teammate litter has no stake in passes first, waiting on no rebind, and so
   // does a workflow's agent of no swarm type (2.1.292 raises one for each agent()).
+  // 2.1.299 raises it for a resumed run too (`resume`): never a spawn to plan; admit.ts's resumeSpawn.
   on('agent.spawn', async ($, e, next) => {
     if (outsideTeammate(e) || outsideWorkflow(e)) return next(e)
     const p = enginePorts($)
     await rebound(p)
+    if (e.resume !== undefined) return resumeSpawn(p, e, next)
     const refused = roleSpawnRefusal(e)
     if (refused !== null) return { deny: refused }
     return swarmSpawn(p, e, next)
@@ -454,8 +456,9 @@ export const register: Register = (on, options) => {
     return yield* admitStep(p, e, next)
   }).catch(turnStepFailed)
 
-  // The main loop's turn (the d.ts: a subagent's raises none): the lead is busy.
+  // The main loop's turn: the lead is busy. Since 2.1.299 a subagent's or teammate's raises it too, with its agentId.
   on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     const p = enginePorts($)
     await rebound(p)
     await leadTurnStart(p, e)

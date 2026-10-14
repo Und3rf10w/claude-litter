@@ -605,6 +605,75 @@ describe('a node that lost its type', () => {
   })
 })
 
+// 2.1.299 raises agent.spawn for a resumed run, with `resume: { agentId }`. A hook can only refuse one, and a
+// refused wake leaves the agent parked, so a resume is never planned, reserved or bound as a spawn (resumeSpawn).
+describe('a resumed run (agent.spawn with resume)', () => {
+  const RAN = { model: 'm', agentId: 'ran' }
+  const resumeE = (agentId: string, subagentType: string) => ({ tool_use_id: '', prompt: 'carry on', description: 'a node', subagentType, resume: { agentId } })
+  async function resume(agentId: string, subagentType: string) {
+    let called = false
+    const next = async () => {
+      called = true
+      return RAN
+    }
+    return { r: await admit.resumeSpawn(p, resumeE(agentId, subagentType) as never, next as never), called }
+  }
+
+  test("an agent that isn't a node, a node of its own type, and a child of any type pass, and nothing is planned", async () => {
+    expect(await resume('stranger', 'Explore')).toEqual({ r: RAN, called: true })
+    await put(o1(), false)
+    await put(bind('c1', { kind: 'child', node: 'part-a', n: 0, of: 'o1', parent: 'o1', type: T('part-a') }), false)
+    p.agents = [agent('o1', T('part-a'), 'completed'), agent('c1', 'Explore', 'completed', 'o1')]
+    expect(await resume('o1', T('part-a'))).toEqual({ r: RAN, called: true })
+    expect(await resume('c1', 'Explore')).toEqual({ r: RAN, called: true })
+    expect(state.reservations()).toEqual([])
+    expect(state.bindings().map(b => b.agentId).sort()).toEqual(['c1', 'o1'])
+    expect(state.status('o1')).toBe('idle')
+    expect(policyOf('o1')?.admitted).toBe(false)
+    expect(await events()).toEqual([])
+  })
+
+  test("an agent of a swarm that has ended isn't resumed", async () => {
+    await put(w1(), false)
+    state.dropBinding('w1')
+    state.dropLiveSwarm('alpha')
+    expect(await resume('w1', T('fixer'))).toEqual({ r: { deny: "litter: swarm alpha has ended: w1 was one of its agents, and isn't resumed" }, called: false })
+  })
+
+  test("an orchestrator a re-spawn replaced isn't resumed", async () => {
+    await put(o1(), false)
+    await put(bind('o1r', { node: 'part-a', n: 2, kind: 'orchestrator', parent: null, cwd: '/repo', type: T('part-a'), boundAt: NOW + 1 }), false)
+    expect(await resume('o1', T('part-a'))).toEqual({
+      r: { deny: "litter: part-a (o1) was replaced by a re-spawned part-a (o1r), which takes its workers and its messages; it isn't resumed" },
+      called: false,
+    })
+    expect((await resume('o1r', T('part-a'))).called).toBe(true)
+  })
+
+  test('a node listed as another type has lost its own: refused, naming the re-spawn', async () => {
+    await put(o1(), false)
+    p.agents = [agent('o1', 'general-purpose', 'completed')]
+    const { r, called } = await resume('o1', 'general-purpose')
+    expect(called).toBe(false)
+    expect((r as { deny: string }).deny).toStartWith('litter: part-a (o1) lost its type: the engine runs it as general-purpose, not litter:sw-alpha-part-a')
+    expect((r as { deny: string }).deny).toContain("re-spawn it (mcp__litter__swarm_read with for: 'respawn')")
+  })
+
+  test("a node listed as its own type that would resume as another (a reload's gap) isn't resumed, so it keeps its own", async () => {
+    await put(w1(), false)
+    p.agents = [agent('w1', T('fixer'), 'completed', 'o1')]
+    expect(await resume('w1', 'general-purpose')).toEqual({
+      r: {
+        deny:
+          "litter: fixer #1 (w1) would resume as general-purpose, not litter:sw-alpha-fixer: a plugin reload drops litter's node types until it has finished, " +
+          "and a node resumed as another type keeps it; it isn't resumed, so send it again once the reload has finished",
+      },
+      called: false,
+    })
+    expect(state.status('w1')).toBe('idle')
+  })
+})
+
 describe('settling', () => {
   test("between a worker's turn.complete and its status leaving running, a send waits up to 2 s, then goes all the same", async () => {
     await put(o1(), true)
@@ -691,6 +760,13 @@ describe('settling', () => {
     expect(state.leadBusy()).toBe(true)
     await admit.settleNode(p, { turnId: 'L1', answer: 'ok', durationMs: 5, isAborted: false, reason: 'answer' } as never)
     expect(state.leadBusy()).toBe(false)
+  })
+
+  test("a subagent's turn start (2.1.299 raises it with agentId) leaves the lead's busy state alone", async () => {
+    await put(w1(), true)
+    await admit.leadTurnStart(p, { text: 'go', turnId: 'W1', agentId: 'w1' } as never)
+    expect(state.leadBusy()).toBe(false)
+    expect(state.leadCwd()).toBeNull()
   })
 })
 
