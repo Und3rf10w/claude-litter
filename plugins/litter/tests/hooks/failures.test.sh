@@ -342,6 +342,16 @@ case_no_lib() {
     assert_code "${nl_rest#*:}"
     assert_stderr_contains 'loading lib.sh'
   done
+  # From a subfolder of the checkout, guard.sh and output.sh still find the run.
+  mkdir -p "$T_DIR/project/.git" "$T_DIR/project/src"
+  CLAUDE_PROJECT_DIR=$T_DIR/project/src
+  export CLAUDE_PROJECT_DIR
+  for nl in guard.sh:litter output.sh:so; do
+    ${SHELL_UNDER_TEST:-sh} "$T_DIR/copy/${nl%%:*}" <"$T_DIR/in.${nl#*:}" >|"$T_DIR/out" 2>|"$T_DIR/err"
+    printf '%s\n' "$?" >|"$T_DIR/code"
+    assert_code 2
+    assert_stderr_contains 'loading lib.sh'
+  done
   rm "$(hooks_dir)/active"
   for nl in guard.sh output.sh identity.sh watch.sh hold.sh; do
     ${SHELL_UNDER_TEST:-sh} "$T_DIR/copy/$nl" start <"$T_DIR/in.litter" >|"$T_DIR/out" 2>|"$T_DIR/err"

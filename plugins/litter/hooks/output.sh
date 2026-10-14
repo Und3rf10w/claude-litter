@@ -23,7 +23,13 @@
 set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
 if [ ! -r "$lt_here/lib.sh" ]; then
-  [ -f "${CLAUDE_PROJECT_DIR:-/nonexistent}/.claude/litter/hooks/active" ] || exit 0
+  # hooks/ is the checkout top's, the first folder up with a .git (lib.sh's lt_locate).
+  lt_d=${CLAUDE_PROJECT_DIR:-/nonexistent}
+  lt_d=${lt_d%/}
+  lt_t=$lt_d
+  while [ -n "$lt_t" ] && [ ! -e "$lt_t/.git" ]; do lt_t=${lt_t%/*}; done
+  [ -z "$lt_t" ] || lt_d=$lt_t
+  [ -f "$lt_d/.claude/litter/hooks/active" ] || exit 0
   printf 'litter guard failed: loading lib.sh; refusing\n' >&2
   exit 2
 fi

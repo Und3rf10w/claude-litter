@@ -32,8 +32,14 @@ set -u
 case $0 in */*) lt_here=${0%/*} ;; *) lt_here=. ;; esac
 if [ ! -r "$lt_here/lib.sh" ]; then
   # No lib, no checks: refuse while a run may be active or a binding remains
-  # (lib.sh's lt_begin), pass otherwise.
-  lt_d=${CLAUDE_PROJECT_DIR:-/nonexistent}/.claude/litter/hooks
+  # (lib.sh's lt_begin), pass otherwise. hooks/ is the checkout top's, the
+  # first folder up with a .git, as lib.sh's lt_locate has it.
+  lt_d=${CLAUDE_PROJECT_DIR:-/nonexistent}
+  lt_d=${lt_d%/}
+  lt_t=$lt_d
+  while [ -n "$lt_t" ] && [ ! -e "$lt_t/.git" ]; do lt_t=${lt_t%/*}; done
+  [ -z "$lt_t" ] || lt_d=$lt_t
+  lt_d=$lt_d/.claude/litter/hooks
   lt_any=
   for lt_f in "$lt_d"/agents/*.json; do [ -e "$lt_f" ] && lt_any=1; done
   [ -f "$lt_d/active" ] || [ -n "$lt_any" ] || exit 0
