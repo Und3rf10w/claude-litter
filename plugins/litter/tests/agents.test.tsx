@@ -141,9 +141,11 @@ function world(on: On, files: Record<string, string> = {}, transcripts: Record<s
     const names = new Set([...map.keys()].filter(k => k.startsWith(`${e.path}/`)).map(k => k.slice(e.path.length + 1).split('/')[0]!))
     return { value: [...names].map(name => ({ name, kind: map.has(`${e.path}/${name}`) ? ('file' as const) : ('dir' as const), size: 0, mtimeMs: 0, isLink: false })) }
   })
+  // A folder's mtime moves as an entry comes or goes, as a real one's does (store.ts keeps the registry's read by it): here, by how many it holds.
+  const held = (path: string) => new Set([...map.keys()].filter(k => k.startsWith(`${path}/`)).map(k => k.slice(path.length + 1).split('/')[0]!)).size
   on('fs.stat', async (_$, e) => {
     if (!map.has(e.path) && !isDir(e.path)) throw new Error(`ENOENT: ${e.path}`)
-    return { value: { kind: map.has(e.path) ? 'file' : 'dir', size: map.get(e.path)?.length ?? 0, mtimeMs: NOW, isLink: false } }
+    return { value: { kind: map.has(e.path) ? 'file' : 'dir', size: map.get(e.path)?.length ?? 0, mtimeMs: map.has(e.path) ? NOW : NOW - held(e.path), isLink: false } }
   })
   on('fs.write', async (_$, e) => {
     throw new Error(`nothing is written in this test: ${e.path}`)

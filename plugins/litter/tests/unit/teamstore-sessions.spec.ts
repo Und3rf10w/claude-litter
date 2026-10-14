@@ -6,17 +6,23 @@
 // its cap; and the team's fields only when its config has them. And a
 // background job's own list (the user's 2.1.292 report): its entry's jobId
 // names the team its first session id made; no jobId, or none that matches,
-// leaves the session id's list, never another session's team.
+// leaves the session id's list, never another session's team. The registry
+// read is kept while its folder's mtime holds, for REGISTRY_FRESH_MS at most
+// (WP-EC): an unchanged registry costs one stat; a session starting or
+// ending reads it again; a file rewritten in place shows once the read
+// lapses; a read that met a half-written file, or a listing that failed,
+// isn't kept.
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { REGISTRY_FILES, ownTeam, runningSessions, taskLists, teams } from '../../hooks/team/store'
+import { REGISTRY_FILES, REGISTRY_FRESH_MS, ownTeam, resetRegistryForTests, runningSessions, taskLists, teams } from '../../hooks/team/store'
 import { nodePorts, scratch, type TestPorts } from './support/node-ports'
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
   for (const c of cleanups.splice(0)) c()
+  resetRegistryForTests()
 })
 
 function world(): { p: TestPorts; config: string } {
@@ -162,5 +168,127 @@ describe("a background job's own list (2.1.292: the user's machine)", () => {
     teamWithTask(config, 'near-miss', `${JOB}ffff-0000`)
     expect(await mine(p)).toEqual([['sess-1', 'session']])
     expect(ownTeam(await teams(p), 'sess-1', null)).toBeNull()
+  })
+})
+
+describe('the registry, kept while its folder holds (WP-EC)', () => {
+  const NOW = 1_800_000_000_000
+  const ids = (s: Awaited<ReturnType<typeof runningSessions>>) => s?.map(x => x.sessionId) ?? null
+
+  /** The fs calls under the registry's folder, in order, as `stat /`, `list /` or `read /<file>`. */
+  function counted(p: TestPorts, config: string): string[] {
+    const calls: string[] = []
+    const dir = join(config, 'sessions')
+    const { stat, list, read } = p.fs
+    const note = (what: string, path: string) => {
+      if (path === dir || path.startsWith(`${dir}/`)) calls.push(`${what} ${path.slice(dir.length) || '/'}`)
+    }
+    p.fs.stat = async (path, options) => (note('stat', path), stat(path, options))
+    p.fs.list = async path => (note('list', path), list(path))
+    p.fs.read = async path => (note('read', path), read(path))
+    return calls
+  }
+
+  /** The folder's mtime set by hand, so a test knows whether it moved. */
+  const touch = (config: string, ms: number) => utimesSync(join(config, 'sessions'), ms / 1000, ms / 1000)
+
+  test('an unchanged registry costs one stat: the second read reads no file, and answers a copy', async () => {
+    const { p, config } = world()
+    p.clock.now = NOW
+    entry(config, 312, { sessionId: 'sid-a' })
+    entry(config, 4012, { sessionId: 'sid-b' })
+    const calls = counted(p, config)
+    const first = await runningSessions(p)
+    expect(ids(first)).toEqual(['sid-a', 'sid-b'])
+    expect(calls).toEqual(['stat /', 'list /', 'stat /312.json', 'read /312.json', 'stat /4012.json', 'read /4012.json'])
+    calls.length = 0
+    first!.pop()
+    expect(ids(await runningSessions(p))).toEqual(['sid-a', 'sid-b'])
+    expect(calls).toEqual(['stat /'])
+  })
+
+  test("a session that starts or ends moves the folder's mtime, and the registry is read again", async () => {
+    const { p, config } = world()
+    p.clock.now = NOW
+    entry(config, 312, { sessionId: 'sid-a' })
+    touch(config, NOW - 60_000)
+    expect(ids(await runningSessions(p))).toEqual(['sid-a'])
+    entry(config, 4012, { sessionId: 'sid-b' })
+    touch(config, NOW - 59_000)
+    expect(ids(await runningSessions(p))).toEqual(['sid-a', 'sid-b'])
+    unlinkSync(join(config, 'sessions', '312.json'))
+    touch(config, NOW - 58_000)
+    expect(ids(await runningSessions(p))).toEqual(['sid-b'])
+    // The folder gone: null after its one stat.
+    const calls = counted(p, config)
+    rmSync(join(config, 'sessions'), { recursive: true })
+    expect(await runningSessions(p)).toBeNull()
+    expect(calls).toEqual(['stat /'])
+  })
+
+  test("an entry rewritten in place (a /clear's new session id) leaves the folder's mtime: the read stands until REGISTRY_FRESH_MS has passed", async () => {
+    const { p, config } = world()
+    p.clock.now = NOW
+    entry(config, 312, { sessionId: 'sid-a' })
+    touch(config, NOW - 60_000)
+    expect(ids(await runningSessions(p))).toEqual(['sid-a'])
+    entry(config, 312, { sessionId: 'sid-a2' })
+    touch(config, NOW - 60_000)
+    expect(statSync(join(config, 'sessions')).mtimeMs).toBe(NOW - 60_000)
+    p.clock.now = NOW + REGISTRY_FRESH_MS - 1
+    expect(ids(await runningSessions(p))).toEqual(['sid-a'])
+    p.clock.now = NOW + REGISTRY_FRESH_MS
+    expect(ids(await runningSessions(p))).toEqual(['sid-a2'])
+  })
+
+  test("a read that met a half-written file isn't kept, so the next one sees it finished; a listing that failed isn't kept; a registry past its cap is", async () => {
+    const { p, config } = world()
+    p.clock.now = NOW
+    entry(config, 1, { sessionId: 'kept' })
+    writeFileSync(join(config, 'sessions', '2.json'), '{"pid": 2, "sessionId": "ha')
+    touch(config, NOW - 60_000)
+    expect(ids(await runningSessions(p))).toEqual(['kept'])
+    // The engine finishes its write in place.
+    entry(config, 2, { sessionId: 'half' })
+    touch(config, NOW - 60_000)
+    expect(ids(await runningSessions(p))).toEqual(['kept', 'half'])
+    const calls = counted(p, config)
+    expect(ids(await runningSessions(p))).toEqual(['kept', 'half'])
+    expect(calls).toEqual(['stat /'])
+
+    // A listing that fails: null, logged, and the next read lists again.
+    resetRegistryForTests()
+    const list = p.fs.list
+    let refuse = true
+    p.fs.list = async path => {
+      if (refuse) throw new Error('EACCES: the folder')
+      return list(path)
+    }
+    expect(await runningSessions(p)).toBeNull()
+    expect(p.logs.some(l => l.includes("wasn't listed: EACCES: the folder"))).toBe(true)
+    refuse = false
+    expect(ids(await runningSessions(p))).toEqual(['kept', 'half'])
+
+    // Past the cap: can't tell, kept as such.
+    for (let i = 3; i <= REGISTRY_FILES + 1; i++) writeFileSync(join(config, 'sessions', `${i}.json`), '{}')
+    touch(config, NOW - 50_000)
+    expect(await runningSessions(p)).toBeNull()
+    calls.length = 0
+    expect(await runningSessions(p)).toBeNull()
+    expect(calls).toEqual(['stat /'])
+  })
+
+  test("another config dir's registry is its own: a read kept for one is never another's", async () => {
+    const a = world()
+    const b = world()
+    a.p.clock.now = NOW
+    b.p.clock.now = NOW
+    entry(a.config, 1, { sessionId: 'sid-a' })
+    entry(b.config, 1, { sessionId: 'sid-b' })
+    touch(a.config, NOW - 60_000)
+    touch(b.config, NOW - 60_000)
+    expect(ids(await runningSessions(a.p))).toEqual(['sid-a'])
+    expect(ids(await runningSessions(b.p))).toEqual(['sid-b'])
+    expect(ids(await runningSessions(a.p))).toEqual(['sid-a'])
   })
 })
