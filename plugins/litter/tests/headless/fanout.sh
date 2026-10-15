@@ -64,11 +64,11 @@ if [ "$mode" = stop ]; then
 4. Call TaskStop with the task ID the Workflow tool returned in step 2.
 5. Run with Bash: sleep 45
 6. Reply with each step's result, verbatim."
-elif [ "$mode" = chatty ]; then
-  # The turn waits for the run's end (lib.sh's h_wait_steps).
-  STEPS=$(h_wait_steps)
 else
-  STEPS='3. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
+  # The turn waits for the run's end (lib.sh's h_wait_steps): claude -p
+  # kills background work 10 minutes after the turn ends, and edit's run
+  # took longer than that under load.
+  STEPS=$(h_wait_steps)
 fi
 PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: $START
