@@ -91,8 +91,11 @@ until [ -f $LD/hooks/mode ]
 sleep 5
 send /litter swarms trio
 sleep 8
-# [Launch] holds the pane's focus: ctrl+x tab, then Enter presses it, and Enter again takes the ask's first option, Launch.
-key ctrl-x tab
+# /litter opens the pane with the keyboard, and [Launch] takes the focus. ctrl+x tab toggles the
+# keyboard, so it's pressed only while the pane doesn't hold it. The strip draws the tabs' digits
+# (5: Swarms) only while it does. Then Enter presses [Launch], and Enter again takes the ask's
+# first option, Launch.
+keysh 30 3 sh $H_HERE/ui.sh shows $H_DIR '[0-9]: *Swarms' 2>/dev/null && exit 1; echo ctrl-x tab
 sleep 2
 key enter
 sleep 6

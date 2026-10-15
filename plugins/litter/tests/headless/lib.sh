@@ -88,6 +88,28 @@ h_tool_steps() {
     "abortif ! grep -q 'MCP server \"litter\": Successfully connected' $1"
 }
 
+# h_wait_steps: prompt steps (from 3) that keep a headless session's turn
+# going until the run has a run.end, up to about 28 minutes. Once the turn
+# ends, claude -p waits about 10 minutes for background work and then kills
+# it ("print wind-down", 2.1.299), and a long run on a loaded machine takes
+# longer. It writes $H_DIR/wait-end.sh, which waits at most 9.5 minutes, so
+# one Bash call stays inside the tool's 10. The case needs 'Bash(sh:*)'.
+h_wait_steps() {
+  cat >|"$H_DIR/wait-end.sh" <<EOF
+#!/bin/sh
+i=0
+while [ "\$i" -lt 114 ]; do
+  ls "$H_REPO"/.claude/litter/*/ledger/*-run.end.json >/dev/null 2>&1 && { echo 'the run ended'; exit 0; }
+  sleep 5
+  i=\$((i + 1))
+done
+echo 'still running'
+EOF
+  printf '%s\n' "3. Run with Bash in the foreground, not in the background, with the tool's timeout set to 600000: sh $H_DIR/wait-end.sh" \
+    '4. If it printed still running, run it again the same way, at most twice more.' \
+    '5. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
+}
+
 # h_tool_down <drive exit code>: INCONCLUSIVE (exit 3) when the drive ended on h_tool_steps' abort.
 h_tool_down() {
   [ "$1" = 4 ] || return 0

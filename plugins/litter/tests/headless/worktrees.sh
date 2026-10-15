@@ -109,15 +109,13 @@ if [ "$mode" = setup ]; then
   PROMPT="You are running a scripted test. Do exactly these steps, in order, and nothing else.
 1. Call mcp__litter__record with exactly this input: $START
 2. Call the Workflow tool with name \"litter:fanout-run\" and args set to the args object step 1 returned, unchanged.
-3. Run with Bash, with the tool's timeout set to 600000: sleep 420
-4. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.
+$(h_wait_steps)
 If a step is refused, note the refusal verbatim and stop."
-  # Step 3 keeps the turn going: once it ends, claude -p waits about 10 minutes for
-  # background work and then kills it ("print wind-down", 2.1.299), and two
-  # 200 s setups and the run take longer than that.
+  # The turn waits for the run's end (lib.sh's h_wait_steps): two 200 s setups and the run can take
+  # longer than the 10 minutes claude -p gives background work once the turn ends.
   h_claude "$PROMPT" \
     --settings '{"pluginConfigs": {"litter": {"options": {"verify": ["sh", "check.sh"], "setup": ["sh", "-c", "sleep 200; echo setup-done"]}}}}' \
-    --allowedTools mcp__litter__record Workflow Read Glob Grep Write Edit 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)' 'Bash(sleep:*)'
+    --allowedTools mcp__litter__record Workflow Read Glob Grep Write Edit 'Bash(git:*)' 'Bash(sh:*)' 'Bash(cat:*)' 'Bash(ls:*)'
 
   RUN=$(ls "$LD" 2>/dev/null | grep -E '^[0-9]{8}-' | head -n 1)
   RD=$LD/$RUN

@@ -65,9 +65,8 @@ if [ "$mode" = stop ]; then
 5. Run with Bash: sleep 45
 6. Reply with each step's result, verbatim."
 elif [ "$mode" = chatty ]; then
-  # The turn sleeps, since claude -p kills background work about 10 minutes after the turn ends.
-  STEPS='3. Run with Bash, with the tool'"'"'s timeout set to 600000: sleep 420
-4. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
+  # The turn waits for the run's end (lib.sh's h_wait_steps).
+  STEPS=$(h_wait_steps)
 else
   STEPS='3. Wait for the workflow task notification. Then reply with each step result and the workflow result, verbatim.'
 fi
