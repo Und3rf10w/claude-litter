@@ -5,8 +5,8 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "3.8.0",
-    "description": "Claude Code Agent Team/Swarm Management Layer"
+    "version": "4.0.0",
+    "description": "Verified multi-agent runs for Claude Code: the litter plugin"
   },
   "plugins": [
     {

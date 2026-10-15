@@ -1,6 +1,6 @@
 {
   "name": "litter",
-  "version": "0.1.0",
+  "version": "4.0.0",
   "description": "Design, execute and fanout runs as Claude Code workflows, with a mod that records every step, runs verify itself and lands only verified trees",
   "author": { "name": "Und3rf10w" },
   "homepage": "https://github.com/Und3rf10w/claude-litter",
