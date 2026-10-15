@@ -1,58 +1,45 @@
 name: Release
 
+# A release for each new marketplace version: when a push to main changes
+# .claude-plugin/marketplace.json's metadata.version, CI's checks run, and
+# then the version is tagged v<version> with generated notes.
+
 on:
   push:
     branches: [main]
     paths:
-      - pyproject.toml
+      - .claude-plugin/marketplace.json
 
 jobs:
   check-version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      changed: ${{ steps.check.outputs.changed }}
+      changed: ${{ steps.version.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Extract current version
+      - name: Compare the marketplace version with the previous commit's
         id: version
         run: |
-          version=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          version=$(jq -r '.metadata.version' .claude-plugin/marketplace.json)
+          before=$(git show HEAD~1:.claude-plugin/marketplace.json 2>/dev/null | jq -r '.metadata.version' 2>/dev/null || true)
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$version" ] && [ "$version" != null ] && [ "$version" != "$before" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Check if version changed
-        id: check
-        run: |
-          git diff HEAD~1 HEAD -- pyproject.toml | grep -q '^+version' \
-            && echo "changed=true" >> "$GITHUB_OUTPUT" \
-            || echo "changed=false" >> "$GITHUB_OUTPUT"
-
-  lint:
+  checks:
     needs: [check-version]
     if: needs.check-version.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-
-  test:
-    needs: [check-version]
-    if: needs.check-version.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - run: uv run pytest tests/ -v
+    uses: ./.github/workflows/ci.yml
 
   release:
-    needs: [check-version, lint, test]
+    needs: [check-version, checks]
     if: needs.check-version.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -60,14 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Build package
-        run: uv build
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           generate_release_notes: true
-          files: dist/*
