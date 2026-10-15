@@ -6,6 +6,8 @@
 #   sh tests/headless/design.sh drift     # the checkout changes mid-round: source_changed, nothing delivered
 #   sh tests/headless/design.sh compare [both|litter|deepwork]   # by hand only: litter's design beside deepwork DESIGN
 #
+# compare's deepwork comes from the legacy-3.8 tag (lib.sh's h_deepwork).
+#
 # basic and drift: lib.sh's repo (HEAD ahead of origin/main, so a prober's
 # worktree at origin would lack the fixture) plus fixtures/design-compare's
 # repo, a small sh project (tally). One interactive session through
@@ -244,7 +246,7 @@ compare_side() {
     litter_drive "$H_DIR" "$H_REPO" '{}'
     h_tool_down $?
   else
-    cp -R "$LITTER_ROOT/../deepwork" "$H_DIR/deepwork-plugin" || exit 1
+    h_deepwork "$H_DIR/deepwork-plugin"
     cat >|"$H_DIR/until.sh" <<EOF
 #!/bin/sh
 # deepwork's end (T4-RESULTS.md, S0-D): its halt recorded (halt_reason, the
