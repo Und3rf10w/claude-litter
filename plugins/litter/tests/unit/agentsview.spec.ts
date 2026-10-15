@@ -567,7 +567,7 @@ describe('only teams that run (WP-DF §0)', () => {
 
   test("an ended team shown on purpose: one notice naming its lead's folder and start; members `ended`; inboxes read; no composer", async () => {
     const s = fakeStore({
-      teams: [team('session-ff3586a6', ['team-lead'], { leadSessionId: 'sid-gone', leadCwd: '/Users/me/flex-web', createdAt: NOW - 3 * 86_400_000 })],
+      teams: [team('session-ff3586a6', ['team-lead'], { leadSessionId: 'sid-gone', leadCwd: '/Users/me/web-app', createdAt: NOW - 3 * 86_400_000 })],
       inboxes: { 'session-ff3586a6/team-lead': [entry('left over')] },
       sessions: [running('sid-other')],
     })
@@ -576,7 +576,7 @@ describe('only teams that run (WP-DF §0)', () => {
     const b = await body(p, n)
     expect(b.head).toEqual({ team: 'session-ff3586a6', note: '1 member · ended' })
     expect(b.ended).toMatch(
-      /^session-ff3586a6 isn't running: its lead session \(\/Users\/me\/flex-web, started \d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ended\. Its inboxes stay readable; nothing here sends to it, since a message would be read by nobody\.$/,
+      /^session-ff3586a6 isn't running: its lead session \(\/Users\/me\/web-app, started \d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ended\. Its inboxes stay readable; nothing here sends to it, since a message would be read by nobody\.$/,
     )
     expect(b.rows.map(r => [r.key, r.status, r.unread, r.can])).toEqual([['team-lead', ENDED, 1, { message: false, transcript: false, stop: false }]])
     expect(s.reads).toContain('session-ff3586a6/team-lead')

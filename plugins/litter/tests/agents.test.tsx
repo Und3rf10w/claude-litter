@@ -71,7 +71,7 @@ const FILES: Record<string, string> = {
     { from: 'checker', text: 'G3 fails on main\nthe log is in /tmp/g3.log', timestamp: iso(NOW - 60_000), read: false },
   ]),
   ...Object.fromEntries(
-    [1, 2, 3].map(i => [`/cfg/teams/old-${i}/config.json`, config(`old-${i}`, `sid-gone-${i}`, [member(`old-${i}`, 'team-lead', 'team-lead', '/work/flex-web')], NOW - i * 86_400_000)]),
+    [1, 2, 3].map(i => [`/cfg/teams/old-${i}/config.json`, config(`old-${i}`, `sid-gone-${i}`, [member(`old-${i}`, 'team-lead', 'team-lead', '/work/web-app')], NOW - i * 86_400_000)]),
   ),
   '/cfg/sessions/4242.json': JSON.stringify({ pid: 4242, sessionId: 'sid-b', cwd: '/work/b', startedAt: NOW - 3_600_000, procStart: 'x', kind: 'interactive' }),
   '/cfg/sessions/4343.json': JSON.stringify({ pid: 4343, sessionId: SESSION, cwd: '/work/me', startedAt: NOW - 600_000, procStart: 'y', kind: 'interactive' }),
@@ -406,7 +406,7 @@ describe('only teams that run (WP-DF §0)', () => {
     world(on, FILES)
     expect((await run($, 'agents old-1')).text).toBe("Agents shows team old-1's 1 member")
     const ui = await mountAgents($, 'terminal')
-    expect(await ui.find({ type: 'Text', text: /^! old-1 isn't running: its lead session \(\/work\/flex-web, started \d{4}-\d\d-\d\d \d\d:\d\d\) ended\. .*read by nobody\.$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^! old-1 isn't running: its lead session \(\/work\/web-app, started \d{4}-\d\d-\d\d \d\d:\d\d\) ended\. .*read by nobody\.$/ })).toBeDefined()
     expect((await ui.find({ type: 'Button', key: 'agents:leave:session' }))?.props).toEqual(expect.objectContaining({ label: "This session's agents", variant: 'primary' }))
     expect(await ui.find({ type: 'Text', text: '1 member · ended' })).toBeDefined()
     // With nothing to send to and no menu to offer, the roster is Buttons, even on the terminal.
