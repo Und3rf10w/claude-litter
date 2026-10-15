@@ -27,8 +27,10 @@
 #    the case writes its team's lead an entry there under this script's own
 #    pid, alive while it drives (the engine's sweep keeps a live pid's), and
 #    removes it with the team;
-#  - /litter agents, a click on the sleeper's row, and [ Stop ] twice: the
-#    first arms it, the second stops it through TaskStop.
+#  - /litter agents, which reopens the team while it runs (WP-DF §0), a
+#    click on the picker's "this session", a click on the sleeper's row, and
+#    [ Stop ] twice: the first arms it, the second, within 5 s, stops it
+#    through TaskStop.
 # The case's team is removed at the end.
 #
 # The pane's elements are pressed with the pointer (drive.exp's click, where
@@ -119,15 +121,23 @@ until $UI mark $H_DIR cast
 key esc
 sleep 2
 send /litter agents
+wait 30 $UI shows $H_DIR 'Show ─+ [0-9]+ teams'
+sleep 2
+# The picker row's Button, two cells right of the row's mark: found with the
+# mark's spaces, so not in a member's "not in this session".
+click $UI at $H_DIR '  this session' '$PANE' | awk '{ print \$1 + 2, \$2 }'
 wait 30 $UI shows $H_DIR 'this session ─+ [0-9]+ agents?'
 sleep 2
 click $UI at $H_DIR 'sleeper' '$PANE'
 wait 20 $UI shows $H_DIR '\[ Stop \]'
 sleep 2
-click $UI at $H_DIR '[ Stop ]' '$PANE'
-wait 10 $UI shows $H_DIR 'again to stop sleeper'
-until $UI mark $H_DIR armed
-click $UI at $H_DIR '[ Stop ]' '$PANE'
+click $UI at $H_DIR '[ Stop ]' '$PANE' | tee $H_DIR/stop-at
+# The second press counts within 5 s of the first (agents/view.ts
+# STOP_ARM_MS), and a screen read took over 3 s under load, so the second
+# click reads none: the armed notice adds a row above the Button, one row
+# lower now. The armed mark is taken just before it, and c_stopped reads
+# the hint there.
+click $UI mark $H_DIR armed; awk '{ print \$1, \$2 + 1 }' $H_DIR/stop-at
 wait 20 $UI shows $H_DIR 'stopped sleeper'
 sleep 5
 until $UI mark $H_DIR stopped
@@ -198,8 +208,23 @@ c_broadcast() {
 }
 c_stopped() {
   marked armed || return 1
-  saidat armed '\[Stop\] again to stop sleeper' || return 1
   marked stopped || return 1
+  # The armed hint, on a screen from the armed mark on: the mark is taken
+  # about a second after the first press, before the redraw may have reached
+  # tty.txt, and the second click reads no screen.
+  a=$(cut -d' ' -f1 "$H_DIR/marks/armed")
+  z=$(cut -d' ' -f1 "$H_DIR/marks/stopped")
+  o=$a
+  hint=
+  while [ "$o" -le "$z" ]; do
+    bun "$H_FIX/screen.ts" "$H_DIR/tty.txt" "$o" 2>/dev/null | grep -q '\[Stop\] again to stop sleeper' && { hint=1; break; }
+    o=$((o + 1000))
+  done
+  [ -n "$hint" ] || { echo "no screen from the armed mark to the stopped mark shows [Stop] again to stop sleeper"; return 1; }
+  # Two presses of the sleeper's [ Stop ], then the pane's TaskStop.
+  n=$(grep -c 'ui\.press litter/agents:stop:' "$H_DIR/debug.txt" 2>/dev/null)
+  [ "${n:-0}" -eq 2 ] || { echo "the debug log has ${n:-0} presses of a [ Stop ], not 2"; return 1; }
+  grep -q 'agents pane: TaskStop .* (sleeper)' "$H_DIR/debug.txt" || { echo "the debug log has no TaskStop of the sleeper from the pane"; return 1; }
   id=$(sleeper_id)
   saidat stopped "stopped sleeper: .*${id:-no-id}" || return 1
   # The row: $.agent.list()'s killed, drawn "− stopped" (agents/view.ts).
