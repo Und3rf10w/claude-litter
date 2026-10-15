@@ -351,13 +351,13 @@ t "an agent with no node binding is never held or marked" case_not_bound
 t "an orchestrator, a child, and a worker stopping, stopped, unadmitted, handed over or of another launch are not held" case_not_held
 t "a worker with no children goes ahead, marked done" case_no_children
 t "a worker whose children are all done or gone goes ahead, marked done" case_all_done
-t "a child done during the hold's poll releases it with the block" case_poll_releases
+t_fake_sleep "a child done during the hold's poll releases it with the block" case_poll_releases
 t "under stop_hook_active a worker is held once per child" case_once_per_child
 t "the hold ends at LT_HOLD_CAP, and the stop goes ahead" case_cap
-t "a swarm that starts stopping lets the held worker go" case_lets_go
+t_fake_sleep "a swarm that starts stopping lets the held worker go" case_lets_go
 t "done/ at a stop it lets go, unless a shell or monitor of its own runs" case_done_marker
 t "the session's other shells and monitors don't keep an agent from done/" case_done_others_shells
-t "a listing a malformed binding fails is tried again on the next poll" case_listing_retried
+t_fake_sleep "a listing a malformed binding fails is tried again on the next poll" case_listing_retried
 t "a listing that keeps failing ends at the cap; a vanished binding is no failure" case_listing_cap
 t "without jq there is no hold" case_no_jq
 t "with nothing active and no binding it exits at once" case_fast_path

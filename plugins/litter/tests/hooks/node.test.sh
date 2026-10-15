@@ -872,12 +872,12 @@ t "a node binding has the record tool only" case_node_bind
 t "an unadmitted node has nothing" case_node_unadmitted
 t "a node that lost its type has nothing" case_node_lost_type
 t "a child keeps its type and gets its node's rules" case_child
-t "a binding that lands mid-wait is decided as a node" case_race_lands
+t_fake_sleep "a binding that lands mid-wait is decided as a node" case_race_lands
 t "a binding that lands after 1 s is decided as a node" case_race_lands_late
-t "a binding that never lands is denied after 2 s, and the record tool passes" case_race_never
-t "a node type no live swarm lists is not waited for" case_race_type_not_live
-t "an agent with no agent_type passes at once" case_race_fork
-t "an unrelated agent waits only while a spawn is pending" case_race_unrelated
+t_fake_sleep "a binding that never lands is denied after 2 s, and the record tool passes" case_race_never
+t_fake_sleep "a node type no live swarm lists is not waited for" case_race_type_not_live
+t_fake_sleep "an agent with no agent_type passes at once" case_race_fork
+t_fake_sleep "an unrelated agent waits only while a spawn is pending" case_race_unrelated
 t "the main thread's worktree moves are denied before, during and after a /clear rebind" case_main_rebind
 t "a live swarm overrides the run's EnterWorktree before the launch" case_main_with_run
 t "after the swarm, the main thread's worktree moves pass" case_main_after_swarm

@@ -11,6 +11,7 @@
 LITTER_ROOT=${LITTER_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 T_PASS=0
 T_FAIL=0
+T_SKIP=0
 T_ONLY=${T_ONLY:-}
 # The real date, found before any case puts one of its own on PATH (t_clock):
 # as `command -v` answers (run_hook compares that), and as a path, since a
@@ -35,8 +36,29 @@ t() {
   rm -rf "$T_DIR" "$T_DIR.log"
 }
 
+# t_fake_sleep: t, for a case that puts a fake sleep first on PATH. A shell
+# under test that runs sleep as a builtin (Ubuntu's BusyBox ash does) never
+# runs the fake, so there the case is skipped, and the line says why. It
+# runs under sh and dash.
+t_fake_sleep() {
+  case $1 in *"$T_ONLY"*) ;; *) return 0 ;; esac
+  # shellcheck disable=SC2086
+  case $(${SHELL_UNDER_TEST:-sh} -c 'type sleep' 2>/dev/null) in
+  *builtin*)
+    T_SKIP=$((T_SKIP + 1))
+    printf 'skip %s: %s runs sleep as a builtin, so the fake sleep on PATH never runs\n' "$1" "${SHELL_UNDER_TEST:-sh}"
+    return 0
+    ;;
+  esac
+  t "$@"
+}
+
 done_testing() {
-  printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$T_PASS" "$T_FAIL"
+  if [ "$T_SKIP" -gt 0 ]; then
+    printf '%s: %d passed, %d failed, %d skipped\n' "$(basename "$0")" "$T_PASS" "$T_FAIL" "$T_SKIP"
+  else
+    printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$T_PASS" "$T_FAIL"
+  fi
   [ "$T_FAIL" -eq 0 ]
 }
 
