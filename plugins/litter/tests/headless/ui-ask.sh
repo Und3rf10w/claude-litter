@@ -14,8 +14,8 @@
 # wants Bash: pwd · authorized: …` ($.ui.log, the engine's `litter: ` first;
 # WP-CK), and no screen shows a band row for it; Enter takes the dialog's
 # first option (Yes), and the call runs. ask.sh's `ask` line is read from the
-# spool as it's written (a watcher copies each into ask-seen.jsonl before the
-# mod's drain takes it), and the debug log has the hooks' run and the row's
+# spool (a watcher hard-links each spool file before the mod's drain removes
+# it; ask-seen.jsonl), and the debug log has the hooks' run and the row's
 # one `[litter] $.ui.log: ` line. The screens are read through ui.sh
 # (fixtures/screen.ts) at each mark: asking, answered (marks/).
 #
@@ -76,13 +76,10 @@ exit
 EOF
   [ "${H_DRY:-}" = 1 ] && { echo "$H_CASE: dry run, files in $H_DIR"; exit 0; }
 
-  # Every ask line ask.sh spools, copied before the drain renames the spool aside and reads it.
-  (
-    while [ ! -f "$H_DIR/drive-done" ]; do
-      cat "$LD"/hooks/spool/*.jsonl* 2>/dev/null | grep '"ev":"ask"' >>"$H_DIR/ask-seen.jsonl"
-      sleep 0.2
-    done
-  ) &
+  # Every spool file, hard-linked into spool-seen/ as it's seen, so the
+  # drain's remove leaves its lines (fixtures/spoolwatch.ts). A cat of the
+  # spool every 0.2 s missed the ask line under load.
+  bun "$H_FIX/spoolwatch.ts" "$LD/hooks/spool" "$H_DIR/spool-seen" "$H_DIR/drive-done" &
   watcher=$!
 
   START=$(jq -cn '{kind: "run.start", workflow: "execute", authorized: ["tier-4 ask probe"], planPath: "plan.md", repair: "off"}') || exit 1
@@ -103,6 +100,7 @@ If a step is refused, note the refusal verbatim and stop."
   rc=$?
   : >|"$H_DIR/drive-done"
   wait "$watcher" 2>/dev/null
+  cat "$H_DIR"/spool-seen/* 2>/dev/null | grep '"ev":"ask"' >|"$H_DIR/ask-seen.jsonl"
   printf '%s: drive exited %s\n' "$H_CASE" "$rc"
   h_tool_down "$rc"
 fi

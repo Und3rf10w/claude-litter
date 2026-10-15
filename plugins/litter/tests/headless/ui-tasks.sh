@@ -172,7 +172,8 @@ c_taskget() {
 }
 c_team_saved() {
   marked team-saved || return 1
-  saidat team-saved '#1 written directly: no hooks ran, and no assignment message was sent' || return 1
+  # The notice wraps at the pane's width: match the part that fits on one row.
+  saidat team-saved '#1 written directly: no hooks ran, and no assignment message' || return 1
   a=$H_DIR/team-task-after.json
   [ -f "$a" ] || { echo "the team's task file wasn't kept"; return 1; }
   jq -e '.status == "completed" and .owner == "alpha"' "$a" >/dev/null || { echo "the team task: $(jq -c '{status, owner}' "$a")"; return 1; }
