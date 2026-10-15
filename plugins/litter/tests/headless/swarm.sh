@@ -93,12 +93,14 @@ send /litter swarms trio
 sleep 8
 # /litter opens the pane with the keyboard, and [Launch] takes the focus. ctrl+x tab toggles the
 # keyboard, so it's pressed only while the pane doesn't hold it. The strip draws the tabs' digits
-# (5: Swarms) only while it does. Then Enter presses [Launch], and Enter again takes the ask's
-# first option, Launch.
+# (5: Swarms) only while it does. Then Enter presses [Launch]. Launch runs its checks before its
+# ask shows, which takes over 6 s on a loaded machine, so the second Enter, which takes the ask's
+# first option (Launch), waits until that option is drawn.
 keysh 30 3 sh $H_HERE/ui.sh shows $H_DIR '[0-9]: *Swarms' 2>/dev/null && exit 1; echo ctrl-x tab
 sleep 2
 key enter
-sleep 6
+wait 120 sh $H_HERE/ui.sh shows $H_DIR '❯ 1\. Launch' 2>/dev/null
+sleep 1
 key enter
 wait 120 $started
 sleep 5
