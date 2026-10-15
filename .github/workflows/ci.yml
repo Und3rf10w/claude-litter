@@ -36,7 +36,7 @@ jobs:
         with:
           node-version: 22
       # 2.1.288 or later: it resumes a hooks-worker next() in the caller's
-      # context (anthropics/claude-code#91870). The vendored types are 2.1.299's.
+      # context (anthropics/claude-code#91870). The vendored types are 2.1.300's.
       - run: npm install -g '@anthropic-ai/claude-code@>=2.1.288'
       - run: sudo apt-get update && sudo apt-get install -y dash busybox jq
       - name: Install the dev types
