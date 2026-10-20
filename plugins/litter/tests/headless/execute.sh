@@ -7,6 +7,8 @@
 #   sh tests/headless/execute.sh bridge off    # the same halt under repair: off stops, keeps the attempt and offers the routes
 #   sh tests/headless/execute.sh compare [both|litter|deepwork]   # T4-1, by hand only: one plan run beside deepwork EXECUTE
 #
+# compare's deepwork comes from the legacy-3.8 tag (lib.sh's h_deepwork).
+#
 # basic: lib.sh's repo (HEAD ahead of origin/main) plus fixtures/execute-basic:
 # lib/math.sh with add and sub, test.sh running every tests/test_*.sh, and a
 # two-gate plan.md, each gate adding one function and its test. One headless
@@ -192,7 +194,7 @@ press 6 6 esc ! sh $H_DIR/until.sh asking
 exit
 EOF
   else
-    cp -R "$LITTER_ROOT/../deepwork" "$H_DIR/deepwork-plugin" || exit 1
+    h_deepwork "$H_DIR/deepwork-plugin"
     cat >|"$H_DIR/until.sh" <<EOF
 #!/bin/sh
 # deepwork's end (T4-RESULTS.md, S0 run 3): execute-done.sentinel, or its

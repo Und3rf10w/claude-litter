@@ -12,7 +12,8 @@
 # inconclusive (exit 3: execute.sh bridge's run that didn't halt where it
 # must; run it again). The managed-settings cases need a box whose
 # /etc/claude-code they may write: container/container.sh runs them.
-# execute.sh compare and the deepwork smoke check are run by hand.
+# execute.sh compare and design.sh compare, beside deepwork from the
+# legacy-3.8 tag, are run by hand.
 
 here=$(cd "$(dirname "$0")" && pwd)
 failed=0

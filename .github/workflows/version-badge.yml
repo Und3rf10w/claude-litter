@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - pyproject.toml
+      - .claude-plugin/marketplace.json
 
 jobs:
   update-badge:
@@ -14,10 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from pyproject.toml
+      - name: Read the marketplace version
         id: version
         run: |
-          version=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          version=$(jq -r '.metadata.version' .claude-plugin/marketplace.json)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Update README badge

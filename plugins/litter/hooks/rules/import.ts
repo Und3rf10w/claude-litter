@@ -17,7 +17,7 @@ const INSTANCE = /^(?!\.\.?$)[^/\0]{1,200}$/
 type Entry = Record<string, unknown>
 
 /**
- * render_guardrails' merge (plugins/deepwork/scripts/profile-lib.sh:115-157)
+ * render_guardrails' merge (plugins/deepwork/scripts/profile-lib.sh:115-157, at the legacy-3.8 tag)
  * when an incidents.jsonl exists: state's guardrails, then the incidents,
  * the first of each `incident_ref` kept, and every entry without one.
  */

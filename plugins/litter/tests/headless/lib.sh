@@ -20,6 +20,23 @@ H_FAIL=0
 
 h_git() { git -c user.name=tier4 -c user.email=tier4@example.invalid -c commit.gpgsign=false "$@"; }
 
+# h_deepwork <dest>: the deepwork plugin for the compare cases, at <dest>.
+# It left the repo in phase 7, so it's read from the tree tagged legacy-3.8
+# (H_DEEPWORK_REF overrides the ref), or copied from H_DEEPWORK, a deepwork
+# plugin folder. Exits when neither is there.
+h_deepwork() {
+  if [ -n "${H_DEEPWORK:-}" ]; then
+    cp -R "$H_DEEPWORK" "$1" || exit 1
+    return 0
+  fi
+  dw_ref=${H_DEEPWORK_REF:-legacy-3.8}
+  git -C "$LITTER_ROOT" rev-parse -q --verify "$dw_ref^{tree}" >/dev/null ||
+    { echo "$0: no $dw_ref in this clone for deepwork (git fetch --tags, or set H_DEEPWORK to a deepwork plugin folder)" >&2; exit 2; }
+  rm -rf "$1.tmp" && mkdir -p "$1.tmp" || exit 1
+  git -C "$LITTER_ROOT" archive "$dw_ref" plugins/deepwork >|"$1.tmp/deepwork.tar" || exit 1
+  tar -x -f "$1.tmp/deepwork.tar" -C "$1.tmp" && mv "$1.tmp/plugins/deepwork" "$1" && rm -rf "$1.tmp" || exit 1
+}
+
 # h_scratch <case>: a fresh $H_DIR with the repo, its remote and the plugin copy.
 # The checkout is one commit ahead of origin/main, and only that commit has
 # README's PARENT-ONLY line and parent-only.txt. The repo pins the engine's

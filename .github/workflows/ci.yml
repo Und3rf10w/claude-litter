@@ -5,25 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # release.yml runs these checks before it tags a release.
+  workflow_call:
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - run: uv run pytest tests/ -v
-
   litter:
     runs-on: ubuntu-latest
     defaults:

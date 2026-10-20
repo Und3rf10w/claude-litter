@@ -5,47 +5,21 @@
     "email": "noemail@example.com"
   },
   "metadata": {
-    "version": "3.8.0",
-    "description": "Claude Code Agent Team/Swarm Management Layer"
+    "version": "4.0.0",
+    "description": "Verified multi-agent runs for Claude Code: the litter plugin"
   },
   "plugins": [
     {
-      "name": "team-overlord",
-      "source": "./plugins/team-overlord",
-      "description": "Multi-agent swarm management plugin for use by the Claude-litter tui manager",
+      "name": "litter",
+      "source": "./plugins/litter",
+      "description": "Design, execute and fanout runs as Claude Code workflows, and swarms of agents led from your session. A mod records every step, runs the verify command itself, guards each role's files and tools, and lands only verified work.",
       "author": {
         "name": "Und3rf10w"
       },
       "homepage": "https://github.com/Und3rf10w/claude-litter",
       "repository": "https://github.com/Und3rf10w/claude-litter",
-      "tags": [
-        "swarm",
-        "multi-agent",
-        "tmux",
-        "kitty",
-        "coordination",
-        "tasks"
-      ]
-    },
-    {
-      "name": "swarm-loop",
-      "source": "./plugins/swarm-loop",
-      "description": "Orchestrated multi-agent loops with profile-based modes. Default: persistent Teams for complex implementation. Deepplan: multi-agent planning with explore/synthesize/critique/deliver. Async: background agent orchestration for independent parallel tasks. Decomposes complex tasks into parallel subtasks, spawns agent teams, tracks progress via native TaskCreate/TaskList, and dynamically re-plans each iteration until verified completion.",
-      "author": {
-        "name": "Und3rf10w"
-      },
-      "keywords": ["ralph", "ralph wiggum", "ralph-loop", "swarm", "team", "orchestration", "deepplan", "async", "profiles", "planning"],
+      "keywords": ["workflow", "swarm", "multi-agent", "orchestration", "design", "planning", "verification", "worktrees", "rules"],
       "category": "automation"
-    },
-    {
-      "name": "deepwork",
-      "source": "./plugins/deepwork",
-      "description": "Research/design convergence via a 5-archetype oppositional team (Falsifier/Coverage/Mechanism/Reframer/Critic). Operationalizes the team pattern proven on Proposal D v3-final: written bar with categorical bans, required reframing, file:line anchors, independent cross-checks for nulls, live empiricism on load-bearing unknowns, named versioning, guardrail accumulation from incidents, default-off shipping for residual risk. Orchestrator designs the team dynamically per problem; CRITIC is the only invariant role. Delivers via ExitPlanMode; never crosses into implementation.",
-      "author": {
-        "name": "Und3rf10w"
-      },
-      "license": "private",
-      "keywords": ["deepwork", "research", "design", "convergence", "team", "oppositional", "critic", "reframer", "gate-list", "adversarial"]
     }
   ]
 }
