@@ -9,6 +9,7 @@
     "description": "Claude Code Agent Team/Swarm Management Layer"
   },
   "plugins": [
+    {
       "name": "litter",
       "source": "./plugins/litter",
       "description": "Design, execute and fanout runs as Claude Code workflows, with a mod that records every step, runs verify itself and lands only verified trees",
