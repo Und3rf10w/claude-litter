@@ -1,0 +1,78 @@
+# Run the fanout cases from the repository root (they spend tokens):
+#   claude plugin eval plugins/litter --scaffold --ablation none --runs 1 --no-publish \
+#     --allow-tools Bash Edit Write Workflow ToolSearch mcp__litter__record
+# --scaffold runs each case's scaffold.sh; --allow-tools grants the gated tools
+# the case lists (dontAsk denies the rest); --ablation none skips the
+# no-plugin arm, where /litter:fanout doesn't exist. Add --case <name> for one.
+schema_version: "1.1"
+name: fanout-launch
+description: >-
+  /litter:fanout launches a two-writer fanout in a scratch repository and,
+  when the run ends, reports it from summary.md. Each task adds one file in
+  its own package; the mod merges both branches, runs sh check.sh on the
+  result, a verifier checks each task, and the mod lands the result in the
+  checkout. The request sets repair off for the run, which run.start must
+  carry (the launch's override, plan 15.11). Needs litter's verify option set to ["sh", "check.sh"] in the
+  eval session, since $.ui.ask can't approve another command under -p. The
+  eval child reads plugin options only from settings it can't be given per
+  case, so set it in managed settings (pluginConfigs.litter.options.verify)
+  on the box that runs the eval.
+tags: [litter, fanout, launch]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 60
+  timeout_seconds: 2400
+  allowed_tools: [Skill, ToolSearch, AskUserQuestion, Read, Grep, Glob, Edit, Write, Bash, Workflow, TaskStop, mcp__litter__record]
+  prompt: |
+    /litter:fanout Two independent tasks for this repository.
+
+    Task A, titled "Hello in a": it changes files and owns a/. Add a/hello.txt holding the single line "hello from a", and extend a/test.sh so it fails unless a/hello.txt holds exactly that line.
+    Task B, titled "Hello in b": it changes files and owns b/. Add b/hello.txt holding the single line "hello from b", and extend b/test.sh so it fails unless b/hello.txt holds exactly that line.
+
+    There's no shared contract. The verify command is sh check.sh, which passes today. The worktrees need no dependencies: no setup command and no directories to link. Authorized actions: the defaults. If it fails: repair off for this run, so it stops and keeps everything. Merge order: A, then B. No extra rules for this run.
+
+    I've read the task list and these settings, and I confirm them: Launch. When the run finishes, report the result from its summary.
+runs: 1
+graders:
+  - type: tool_used
+    name: launched-litter-fanout
+    tool: Workflow
+    input_match: "litter:fanout-run"
+    min: 1
+    max: 1
+  - type: tool_used
+    name: run-start-carries-repair-off
+    tool: mcp__litter__record
+    input_match: "\"repair\"\\s*:\\s*\"off\""
+    min: 1
+    weight: 0.5
+  - type: tool_order
+    name: run-start-before-launch
+    before: { tool: mcp__litter__record, input_match: "run\\.start" }
+    after: { tool: Workflow, input_match: "litter:fanout-run" }
+  - type: tool_used
+    name: read-the-summary
+    tool: Read
+    input_match: "summary\\.md"
+    min: 1
+  - type: file_exists
+    name: a-landed-in-the-checkout
+    path: a/hello.txt
+  - type: file_exists
+    name: b-landed-in-the-checkout
+    path: b/hello.txt
+  - type: regex
+    name: says-it-landed
+    pattern: "landed (on|onto|in) `?litter/"
+    flags: i
+    weight: 0.5
+  - type: llm
+    name: reports-from-the-summary
+    weight: 2
+    criteria: |
+      The final message reports a litter fanout run that has ended, as its summary describes it:
+      - it names how the run ended, and says the combined result landed on the run's litter/<run> branch;
+      - it reports task A and task B each as verified (or, if the summary says otherwise, as failed, blocked or no result, with the reason);
+      - it gives the commit or commit range that landed, and suggests running the repository's commit hooks before merging;
+      - it doesn't claim the session did the tasks itself, and doesn't push or offer to push.

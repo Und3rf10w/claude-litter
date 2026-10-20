@@ -1,0 +1,1246 @@
+// The board's view (decision 21), built from a run's ledger and run.json
+// only: the header, the execute gate table and its detail, a record list
+// for the other workflows, the rule versions used and the proposals made.
+// Owner: phase 3, package AF. Phase 5 (package CD; COMMON decisions 9 and
+// 10): each gate row's menu items and full commit id, a design run's bar ×
+// version matrix and its records' lines, and the critic note section.
+// Phase 5b (WP-DC): what needs you (a halt, a waiting proposal) and what runs
+// on its own (a retry within its attempts, a repair swarm), each gate's
+// reason in plain words, its actions with the state's one primary, the
+// dimensions' words, and an empty board's next step.
+//
+// The navigation (the run shown, the selected row, the open section) lives
+// in module memory and is mirrored in $.store (BOARD_STORE_KEY), as the
+// swarm pane's is (swarm/view.ts, PANE_STORE_KEY), so a hot reload keeps it.
+// $.state is wiped by every session end, /clear included, so after a clear
+// pane.tsx's refreshBoard draws the view again from the ledger.
+//
+// Every text from the ledger, run.json, a plan or git is cleaned and cut
+// (swarm/view.ts, clean): a record holds model text. A host that redacts
+// what it shows passes its redactor (Redact), which runs before either.
+
+import type { Ports } from '../ports'
+import type { StoredRecord } from '../records/core'
+import type { RunJson, RunEndBody, Workflow } from '../records/run'
+import type { GateVerdictBody, LandBody, VerdictDimension, VerifyBody } from '../records/execute'
+import type { LoadedRule, ProposalRef, RuleProposeBody, RuleStatus } from '../records/rules'
+import type { DesignCriterion, DesignVerdictBody } from '../records/design'
+import type { RunState } from '../lifecycle'
+import type { FoundRun } from '../litterdir'
+import type {
+  BoardAttention,
+  BoardBody,
+  BoardButton,
+  BoardDesign,
+  BoardEmpty,
+  BoardGateAction,
+  BoardGateDetail,
+  BoardGateRow,
+  BoardGateState,
+  BoardHeader,
+  BoardMatrixCell,
+  BoardMatrixRow,
+  BoardNextStep,
+  BoardProposalRow,
+  BoardRecordRow,
+  BoardRuleRow,
+  BoardSection,
+  BoardStatus,
+  BoardVersionLine,
+  BoardView,
+  SwarmNotice,
+} from '../../types/index'
+import { headKey, owned, readLedger } from '../ledgercore'
+import { RUN_ID, UNKNOWN_ID, ledgerDir, planPath, proposalPath, repoRulesLedgerDir, runDir, runJsonPath, userRulesLedgerDir, verdictFile, verifyLogDir } from '../layout'
+import { GAP_KINDS, PROBE_VERDICTS } from '../records/design'
+import { barIds, isVersion, proposalRecords, verdictRecords } from '../design/finalize'
+import { readJson } from '../fsx'
+import { readPolicy } from '../policy'
+import { primaryOf, repoOf, resolveChain, runState } from '../lifecycle'
+import { recordRunFind } from '../litterdir'
+import { howEnded, verifyBody } from '../verify'
+import { parseGates } from '../gates'
+import { getOptions, session } from '../session'
+import { clean, oneLine } from '../swarm/view'
+import { loadRules, proposalsOf } from '../rules/store'
+import { STYLE } from '../ui/style'
+
+// AD's store, through one table so tier 2 can stand in for it (COMMON,
+// "Another package's module"). The mod never changes it.
+export const deps = {
+  loadRules: (...a: Parameters<typeof loadRules>) => loadRules(...a),
+  proposalsOf: (...a: Parameters<typeof proposalsOf>) => proposalsOf(...a),
+}
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/** The workflows `/litter runs <workflow>` takes: the newest run of it. */
+const WORKFLOW_ARGS: readonly Workflow[] = ['execute', 'design', 'fanout', 'plan']
+/** A full object id, as the land record holds it; only these reach git's argv, or the clipboard (the menu's copy). */
+export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+/** How many records the other workflows list (decision 21). */
+export const RECORD_ROWS = 30
+/** A section's text: under the engine's 10000-character bound for Code. */
+const SECTION_MAX = 8000
+
+/**
+ * A host's redactor: litterd's takes the values it forwards to role sessions
+ * out of a text. buildBoard applies it to each text it reads (run.json, the
+ * ledgers, a plan, a proposal, a verdict file, git's output, the notices)
+ * before anything cleans or cuts it, since a cut inside a value leaves its
+ * start, which no longer matches the value whole. Claude Code passes none.
+ */
+export type Redact = (text: string) => string
+
+/** The redactor as the build applies it: `text` for one string, `deep` for every string in a JSON value, object keys included (a record's line can show its keys). */
+type Shown = { text: (s: string) => string; deep: <T>(v: T) => T }
+
+const AS_READ: Shown = { text: s => s, deep: v => v }
+
+function shownBy(redact: Redact | undefined): Shown {
+  if (!redact) return AS_READ
+  const deep = (v: unknown): unknown => {
+    if (typeof v === 'string') return redact(v)
+    if (Array.isArray(v)) return v.map(deep)
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [redact(k), deep(x)]))
+    return v
+  }
+  return { text: redact, deep: <T>(v: T): T => deep(v) as T }
+}
+
+// ---------------------------------------------------------------------------
+// The navigation
+
+/** [Plan], [Diff G<n>], or the menu's critic note on a gate. */
+export type BoardSectionNav = { kind: 'plan' } | { kind: 'diff'; gate: string } | { kind: 'verdict'; gate: string }
+
+export type BoardNav = {
+  /** /litter runs's argument as given: a run id, a workflow, or null. */
+  arg: string | null
+  /** The run shown, once resolved; null when there was none. */
+  run: string | null
+  /** The selected gate; null takes the default (the gate being worked, else the last). */
+  selected: string | null
+  section: BoardSectionNav | null
+  notice: SwarmNotice | null
+  /** The selected gate's [More]: its evidence and gaps whole. A pick of another gate folds them again. */
+  more: boolean
+}
+
+/** The $.store key the navigation is mirrored under, read back only by the session that wrote it. */
+export const BOARD_STORE_KEY = 'litter.board.pane'
+
+type BoardStore = { v: 1; session: string; nav: BoardNav | null }
+
+let boardNav: BoardNav | null = null
+let restored = false
+let rev = 0
+
+export const blankBoardNav = (arg: string | null): BoardNav => ({ arg, run: null, selected: null, section: null, notice: null, more: false })
+
+/** The board's navigation, or null while it was never opened in this session. */
+export const navOf = (): BoardNav | null => boardNav
+/** Bumped by every change of the navigation: part of the rebuild check. */
+export const boardNavRev = (): number => rev
+
+export function setBoardNav(next: BoardNav | null): void {
+  boardNav = next
+  restored = true
+  rev++
+}
+
+/** After a hot reload module memory is empty: the navigation comes back from $.store, when this session wrote it. */
+export async function restoreBoardNav(p: Ports): Promise<void> {
+  if (restored) return
+  restored = true
+  try {
+    const raw = (await p.store.get(BOARD_STORE_KEY)) as Partial<BoardStore> | undefined
+    if (!raw || raw.v !== 1 || raw.session !== (await p.sessionId()) || !raw.nav || boardNav !== null) return
+    const n = raw.nav
+    boardNav = {
+      arg: typeof n.arg === 'string' ? n.arg : null,
+      run: typeof n.run === 'string' && RUN_ID.test(n.run) ? n.run : null,
+      selected: typeof n.selected === 'string' ? n.selected : null,
+      section:
+        n.section && (n.section.kind === 'plan' || ((n.section.kind === 'diff' || n.section.kind === 'verdict') && typeof n.section.gate === 'string')) ? n.section : null,
+      notice: null,
+      more: n.more === true,
+    }
+    rev++
+  } catch (err) {
+    p.log(`board: the navigation wasn't read back: ${errText(err)}`)
+  }
+}
+
+export async function saveBoardNav(p: Ports): Promise<void> {
+  try {
+    const value: BoardStore = { v: 1, session: await p.sessionId(), nav: boardNav }
+    await p.store.set(BOARD_STORE_KEY, value)
+  } catch (err) {
+    p.log(`board: the navigation wasn't saved: ${errText(err)}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Caches (module memory; none is a fact anyone else reads)
+
+let viewSeq = 0
+/** The last view, for the build it answers: its key and its redactor (another redactor builds again). */
+let cached: { key: string; redact: Redact | undefined; view: BoardView } | null = null
+/** `git diff --stat` of a land, as git printed it: commits never change, so once per pair. */
+const diffs = new Map<string, { code: number; stdout: string; stderr: string }>()
+
+export function resetBoardForTests(): void {
+  boardNav = null
+  restored = false
+  rev = 0
+  viewSeq = 0
+  cached = null
+  diffs.clear()
+}
+
+// ---------------------------------------------------------------------------
+// Which run
+
+export type PickedRun = { run: string | null; why: string | null }
+
+/**
+ * /litter runs's argument: a run id names that run; `execute` or `design`
+ * (or `fanout`, `plan`) the newest run of that workflow; nothing the active
+ * run (policy.json's), else the newest. Newest is run.find's order.
+ */
+export async function resolveRun(p: Ports, litterDir: string, arg: string | null): Promise<PickedRun> {
+  const a = (arg ?? '').trim()
+  if (a !== '' && RUN_ID.test(a)) {
+    if (await p.fs.exists(runJsonPath(runDir(litterDir, a)))) return { run: a, why: null }
+    return { run: null, why: `there's no run ${a} in ${litterDir}` }
+  }
+  if (a !== '' && !(WORKFLOW_ARGS as readonly string[]).includes(a)) {
+    return { run: null, why: `"${oneLine(a, 60)}" isn't a run id (<yyyymmdd>-<slug>) or a workflow (execute, design)` }
+  }
+  if (a === '') {
+    const active = (await readPolicy(p, litterDir).catch(() => undefined))?.run?.run
+    if (typeof active === 'string' && RUN_ID.test(active) && (await p.fs.exists(runJsonPath(runDir(litterDir, active))))) return { run: active, why: null }
+  }
+  const runs = await listRuns(p, litterDir, a === '' ? undefined : (a as Workflow))
+  if (runs.length > 0) return { run: runs[0]!.run, why: null }
+  return { run: null, why: a === '' ? 'no litter run yet' : `no ${a} run yet` }
+}
+
+/** run.find's listing, newest first: the record tool's own handler, which writes nothing. */
+async function listRuns(p: Ports, litterDir: string, workflow?: Workflow): Promise<FoundRun[]> {
+  const reply = await recordRunFind(
+    { p, caller: { agentId: null, agentType: null }, litterDir, options: getOptions() },
+    { kind: 'run.find', ...(workflow ? { workflow } : {}) },
+  )
+  if (!reply.ok) throw new Error(reply.error)
+  return Array.isArray(reply.runs) ? (reply.runs as FoundRun[]) : []
+}
+
+// ---------------------------------------------------------------------------
+// The change check
+
+const headOf = async (p: Ports, dir: string): Promise<string> => {
+  const head = (await p.store.get(headKey(dir))) as { seq?: unknown; sha?: unknown } | undefined
+  if (head && typeof head.seq === 'number') return `${head.seq}:${String(head.sha ?? '').slice(0, 12)}`
+  // No head here (another store's ledger, which a read doesn't give one): its folder's mtime moves with each record.
+  const st = await p.fs.stat(ledgerDir(dir)).catch(() => null)
+  return st ? `m${st.mtimeMs}` : '0'
+}
+
+/**
+ * The heads the view reads: the run's ledger, and both rules ledgers (a
+ * critic's proposal arrives in the repository's; an acceptance in either).
+ * $.store reads, and a stat for a ledger with no head here, so the tick stays cheap.
+ */
+export async function boardStamp(p: Ports, litterDir: string, run: string): Promise<string> {
+  const user = await p.configDir().then(
+    dir => headOf(p, userRulesLedgerDir(dir)),
+    () => '-',
+  )
+  return `${await headOf(p, runDir(litterDir, run))}|${await headOf(p, repoRulesLedgerDir(litterDir))}|${user}`
+}
+
+// ---------------------------------------------------------------------------
+// Words, colors and glyphs (15.6)
+
+const RUN_STATUS: Record<string, { color: string; glyph: string }> = {
+  running: { color: STYLE.running, glyph: '▸' },
+  repairing: { color: STYLE.running, glyph: '↻' },
+  stopping: { color: STYLE.warning, glyph: '!' },
+  pending: { color: STYLE.idle, glyph: '·' },
+  done: { color: STYLE.done, glyph: '✓' },
+  halted: { color: STYLE.warning, glyph: '⚑' },
+  needs_user: { color: STYLE.needsYou, glyph: '⚑' },
+  failed: { color: STYLE.failed, glyph: '✕' },
+  launch_failed: { color: STYLE.failed, glyph: '✕' },
+  stopped: { color: STYLE.idle, glyph: '−' },
+  interrupted: { color: STYLE.idle, glyph: '−' },
+  ledger_tampered: { color: STYLE.failed, glyph: '✕' },
+}
+
+const GATE_STATE: Record<BoardGateState, { color: string; glyph: string }> = {
+  landed: { color: STYLE.done, glyph: '✓' },
+  'in progress': { color: STYLE.running, glyph: '▸' },
+  halted: { color: STYLE.warning, glyph: '⚑' },
+  waiting: { color: STYLE.idle, glyph: '·' },
+  repairing: { color: STYLE.running, glyph: '↻' },
+}
+
+export function statusWord(text: string): BoardStatus {
+  const s = RUN_STATUS[text] ?? { color: STYLE.idle, glyph: '·' }
+  return { text, color: s.color, glyph: s.glyph }
+}
+
+/** A run's status from its ledger (runState): the open generation's, else the last end's, else `pending`. */
+export function runStatusOf(st: RunState, tampered: boolean): string {
+  if (tampered) return 'ledger_tampered'
+  if (st.open) return st.open.stopping ? 'stopping' : st.open.repair ? 'repairing' : 'running'
+  const end = st.latest?.end ?? st.launchEnd
+  return end ? end.status : 'pending'
+}
+
+/** A time in UTC, so the board reads the same wherever it's drawn. */
+export function utcAt(ms: number): string {
+  const d = new Date(ms)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC`
+}
+
+const shortSha = (v: unknown): string => (typeof v === 'string' && /^[0-9a-f]{7,64}$/.test(v) ? v.slice(0, 7) : '')
+const branchOf = (ref: unknown): string => (typeof ref === 'string' ? oneLine(ref.replace(/^refs\/heads\//, ''), 120) : '')
+
+// ---------------------------------------------------------------------------
+// One run's facts
+
+type RunFiles = {
+  run: string
+  dir: string
+  json: RunJson | null
+  records: StoredRecord[]
+  tampered: { seq: number; reason: string } | null
+  /** Its ledger isn't this store's (ledgercore's `owned`): shown, never acted on here. */
+  elsewhere: boolean
+}
+
+/** The run's run.json and records, each text in them through the redactor once they're read and checked. */
+async function loadRunFiles(p: Ports, litterDir: string, run: string, shown: Shown): Promise<RunFiles> {
+  const dir = runDir(litterDir, run)
+  let json: RunJson | null = null
+  try {
+    const j = await readJson<RunJson>(p, runJsonPath(dir))
+    json = j && j.v === 1 && j.run === run ? shown.deep(j) : null
+  } catch (err) {
+    p.log(`board: ${run}/run.json unreadable: ${errText(err)}`)
+  }
+  const ledger = await readLedger(p, dir, run)
+  const elsewhere = (await owned(p, dir, ledger)) !== 'mine'
+  return { run, dir, json, records: shown.deep(ledger.records), tampered: ledger.tampered, elsewhere }
+}
+
+const DIMENSIONS = ['plan_adherence', 'tests_green', 'no_regressions', 'rules'] as const
+
+/** A dimension's short word, for a row: "plan ✕ tests ✕", not `PA TG` (COMMON-5B, "plain words over codes"). */
+export const DIM_WORD: Record<string, string> = { plan_adherence: 'plan', tests_green: 'tests', no_regressions: 'regressions', rules: 'rules' }
+/** A dimension spelled out, for the detail. */
+export const DIM_NAME: Record<string, string> = { plan_adherence: 'plan adherence', tests_green: 'tests green', no_regressions: 'no regressions', rules: 'rules' }
+
+const wordOf = (d: string): string => DIM_WORD[d] ?? oneLine(d, 24)
+
+/** The failing dimensions as the table's cell reads them: `plan ✕ tests ✕`, or '' when none failed. */
+export const failingWords = (failing: readonly string[]): string => failing.map(d => `${wordOf(d)} ✕`).join(' ')
+
+/** Dimensions as a list in words: `plan adherence and tests green`. */
+const spelled = (failing: readonly string[]): string => {
+  const words = failing.map(d => DIM_NAME[d] ?? oneLine(d, 24))
+  return words.length <= 1 ? (words[0] ?? '') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
+}
+
+/** A verdict with execute's four dimensions, from execute.js's critic or a plan-template swarm's (gate and attempt beside them). */
+type GateVerdict = { rec: StoredRecord; body: GateVerdictBody; gate: string | null; attempt: number | null }
+
+function isDim(v: unknown): v is VerdictDimension {
+  return v !== null && typeof v === 'object' && typeof (v as { pass?: unknown }).pass === 'boolean'
+}
+
+/** Every verify, verdict and land, and the latest executor result, by gate. */
+type GateFacts = {
+  verifies: Map<string, VerifyBody[]>
+  verdicts: Map<string, GateVerdict[]>
+  lands: Map<string, LandBody>
+  /** An execute executor's latest `task.result` (output.ts, GateResultBody), whatever it says. */
+  results: Map<string, StoredRecord>
+}
+
+function gateFacts(records: readonly StoredRecord[]): GateFacts {
+  const byId = new Map<string, VerifyBody>()
+  const verifies = new Map<string, VerifyBody[]>()
+  const verdicts = new Map<string, GateVerdict[]>()
+  const lands = new Map<string, LandBody>()
+  const results = new Map<string, StoredRecord>()
+  for (const r of records) {
+    if (r.kind === 'verify') {
+      const v = verifyBody(r)
+      if (!v) continue
+      byId.set(v.verify_id, v)
+      verifies.set(v.gate, [...(verifies.get(v.gate) ?? []), v])
+    } else if (r.kind === 'verdict') {
+      const b = r.body as Partial<GateVerdictBody> & { gate?: unknown; attempt?: unknown }
+      if (!DIMENSIONS.every(d => isDim(b[d]))) continue
+      const cited = typeof b.verify_id === 'string' ? byId.get(b.verify_id) : undefined
+      const gate = typeof b.gate === 'string' ? b.gate : (cited?.gate ?? null)
+      const attempt = typeof b.attempt === 'number' ? b.attempt : (cited?.attempt ?? null)
+      if (gate === null) continue
+      verdicts.set(gate, [...(verdicts.get(gate) ?? []), { rec: r, body: b as GateVerdictBody, gate, attempt }])
+    } else if (r.kind === 'land') {
+      const b = r.body as Partial<LandBody>
+      if (typeof b.gate === 'string' && typeof b.commit === 'string' && !lands.has(b.gate)) lands.set(b.gate, b as LandBody)
+    } else if (r.kind === 'task.result' && r.body.role === 'executor' && typeof r.body.gate === 'string') {
+      results.set(r.body.gate, r)
+    }
+  }
+  return { verifies, verdicts, lands, results }
+}
+
+/** An executor's stop on a plan gap, before its attempt was judged (WP-AH). */
+type ExecutorStop = { gap: string; attempt: number }
+
+/**
+ * The gate's latest executor result, when it comes after the gate's last
+ * verdict and is a block naming a plan gap, as repair.ts (classifyExecute)
+ * and execsummary.ts (executorStop) read it; null for any other result.
+ */
+function executorStop(result: StoredRecord | undefined, verdict: GateVerdict | undefined): ExecutorStop | null {
+  if (!result || (verdict !== undefined && result.seq <= verdict.rec.seq)) return null
+  const res = result.body.result as Record<string, unknown> | null | undefined
+  if (!res || typeof res !== 'object' || res.status !== 'blocked' || typeof res.plan_gap !== 'string' || res.plan_gap.trim() === '') return null
+  const attempt = result.body.attempt
+  return { gap: res.plan_gap, attempt: Number.isSafeInteger(attempt) && (attempt as number) > 0 ? (attempt as number) : 0 }
+}
+
+const failingOf = (v: GateVerdict | undefined): string[] => (v ? DIMENSIONS.filter(d => !v.body[d].pass) : [])
+const attemptOf = (verifies: readonly VerifyBody[] | undefined): number =>
+  (verifies ?? []).reduce((n, v) => (Number.isInteger(v.attempt) && v.attempt > n ? v.attempt : n), 0)
+
+/** The gates execute.js works, from the stored args. */
+function argGates(json: RunJson | null): { id: string; title: string }[] {
+  const gates = json?.args?.gates
+  if (!Array.isArray(gates)) return []
+  return gates.flatMap(g => {
+    if (g === null || typeof g !== 'object' || typeof (g as { id?: unknown }).id !== 'string') return []
+    const { id, title } = g as { id: string; title?: unknown }
+    return [{ id, title: typeof title === 'string' ? title : '' }]
+  })
+}
+
+/** A continuation's earlier lands (`args.landed`, lifecycle.ts's chainLanded at launch). */
+function earlierLands(json: RunJson | null): { id: string; commit: string }[] {
+  const landed = json?.args?.landed
+  if (!Array.isArray(landed)) return []
+  return landed.flatMap(l =>
+    l !== null && typeof l === 'object' && typeof (l as { id?: unknown }).id === 'string' && typeof (l as { commit?: unknown }).commit === 'string'
+      ? [l as { id: string; commit: string }]
+      : [],
+  )
+}
+
+async function readText(p: Ports, path: string, shown: Shown): Promise<string | null> {
+  try {
+    return (await p.fs.exists(path)) ? shown.text(await p.fs.read(path)) : null
+  } catch (err) {
+    p.log(`board: ${path} unreadable: ${errText(err)}`)
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The build
+
+/**
+ * The view of `run` as /litter runs's argument gives it: a run id; `execute`
+ * or `design`, the newest run of that workflow; or null, the active run, else
+ * the newest. `v` increases on every rebuild; `body.stamp` is the ledger head
+ * it read. A build whose run, heads, navigation and redactor are those of the
+ * last one answers the last view, unchanged. `opts.redact` is the host's
+ * redactor (Redact); with none, every text is shown as read.
+ */
+export async function buildBoard(p: Ports, litterDir: string, run: string | null, opts: { redact?: Redact } = {}): Promise<BoardView> {
+  const shown = shownBy(opts.redact)
+  const nav = boardNav ?? blankBoardNav(run)
+  const picked = await resolveRun(p, litterDir, run)
+  const refused = session().toolsRefused
+  const hit = (key: string) => (cached?.key === key && cached.redact === opts.redact ? cached.view : null)
+  if (picked.run === null) {
+    const newest = await newestRun(p, litterDir, shown)
+    const key = `none|${picked.why}|${rev}|${refused}|${newest?.run ?? ''}`
+    const last = hit(key)
+    if (last) return last
+    const view: BoardView = { view: 'board', v: ++viewSeq, run: null, body: emptyBody(shown.text(picked.why ?? 'no run to show'), run, newest, nav, refused, shown) }
+    cached = { key, redact: opts.redact, view }
+    return view
+  }
+  const stamp = await boardStamp(p, litterDir, picked.run)
+  const key = `${picked.run}|${stamp}|${rev}|${refused}`
+  const last = hit(key)
+  if (last) return last
+  const body = await runBody(p, litterDir, picked.run, nav, stamp, refused, shown)
+  const view: BoardView = { view: 'board', v: ++viewSeq, run: picked.run, body }
+  cached = { key, redact: opts.redact, view }
+  return view
+}
+
+/** The newest run of any workflow (run.find's order), for an empty board's [Open]; null when there's none or the list fails. */
+async function newestRun(p: Ports, litterDir: string, shown: Shown): Promise<{ run: string; workflow: string } | null> {
+  try {
+    const first = (await listRuns(p, litterDir))[0]
+    return first && typeof first.run === 'string' && RUN_ID.test(first.run) ? { run: first.run, workflow: oneLine(shown.text(first.workflow ?? 'run'), 16) } : null
+  } catch (err) {
+    p.log(`board: the runs couldn't be listed: ${errText(err)}`)
+    return null
+  }
+}
+
+/** The workflows a skill starts, for an empty board's next step (a plan run comes from /litter:execute). */
+const STARTS: Record<string, BoardNextStep> = {
+  execute: { command: '/litter:execute', does: 'implements a plan, gate by gate' },
+  design: { command: '/litter:design', does: 'designs one against a written bar' },
+  fanout: { command: '/litter:fanout', does: 'runs independent tasks side by side' },
+  plan: { command: '/litter:execute', does: 'plans a goal into gates, then implements them' },
+}
+
+/** The newest run of each workflow the board is mostly opened on. */
+const SHOW_NEWEST: readonly BoardNextStep[] = [
+  { command: '/litter runs execute', does: 'shows the newest execute run' },
+  { command: '/litter runs design', does: 'shows the newest design run' },
+]
+
+/**
+ * No run to show (decision 21; COMMON-5B, "empty states name the next step"):
+ * with no run at all, the skills that start one (`/litter runs execute`
+ * would only show this again); with none of the workflow asked for, the
+ * skill that starts that one; else (a run id that isn't there, an argument
+ * that's neither) `/litter runs execute` and `design`. The newest run of any
+ * workflow gets [Open] when there is one.
+ */
+export function emptyOf(why: string, arg: string | null, newest: { run: string; workflow: string } | null): BoardEmpty {
+  const a = (arg ?? '').trim()
+  if (newest === null) return { what: why, next: [STARTS.execute!, STARTS.design!], newest: null }
+  const start = (WORKFLOW_ARGS as readonly string[]).includes(a) ? STARTS[a] : undefined
+  return { what: why, next: start ? [start] : [...SHOW_NEWEST], newest }
+}
+
+function emptyBody(why: string, arg: string | null, newest: { run: string; workflow: string } | null, nav: BoardNav, refused: string | null, shown: Shown): BoardBody {
+  return {
+    notice: refusedNotice(refused, shown) ?? navNotice(nav, shown),
+    header: null,
+    attention: [],
+    gates: null,
+    detail: null,
+    design: null,
+    records: [],
+    rules: [],
+    proposals: [],
+    section: null,
+    buttons: [],
+    empty: emptyOf(why, arg, newest),
+    stamp: '',
+  }
+}
+
+/** Under a managed allowedMcpServers the record tool is refused, and every litter launch with it (12, "managed policy"). */
+const refusedNotice = (refused: string | null, shown: Shown): SwarmNotice | null => (refused ? { level: 'error', text: oneLine(shown.text(refused), 300) } : null)
+/** The pane's own notice (an action's outcome), through the redactor too. */
+const navNotice = (nav: BoardNav, shown: Shown): SwarmNotice | null => (nav.notice ? { ...nav.notice, text: shown.text(nav.notice.text) } : null)
+
+async function runBody(p: Ports, litterDir: string, run: string, nav: BoardNav, stamp: string, refused: string | null, shown: Shown): Promise<BoardBody> {
+  const f = await loadRunFiles(p, litterDir, run, shown)
+  const st = runState(f.records)
+  const workflow = f.json?.workflow ?? st.start?.workflow ?? 'unknown'
+  const header = headerOf(f, st)
+  const planText = await readText(p, planPath(f.dir), shown)
+  const plan = workflow === 'design' ? await designPlan(p, f, planText, shown) : planText !== null ? { title: 'plan.md', path: planPath(f.dir), text: planText, scroll: true } : null
+
+  let gates: BoardBody['gates'] = null
+  let detail: BoardGateDetail | null = null
+  let design: BoardDesign | null = null
+  let records: BoardRecordRow[] = []
+  let selectedRow: BoardGateRow | null = null
+  const attention: BoardAttention[] = []
+  const gateCtx: GateContext = { ended: st.open === null && st.ended, open: st.open !== null, repairSwarm: header.repairSwarm, more: nav.more }
+  if (workflow === 'execute') {
+    const table = await gateRows(p, litterDir, f, st, planText, shown)
+    const selected = table.rows.some(r => r.id === nav.selected) ? nav.selected! : defaultSelection(table.rows)
+    gates = { run, rows: table.rows, selected }
+    selectedRow = table.rows.find(r => r.id === selected) ?? null
+    detail = selectedRow ? detailOf(table.facts.get(selectedRow.id) ?? null, selectedRow, gateCtx) : null
+    // The halted gate needs you whichever row is selected; a gate retried within its attempts is activity, not a decision.
+    for (const row of table.rows) {
+      if (row.state === 'halted') attention.push({ kind: 'needs-you', text: haltLine(row, detailOf(table.facts.get(row.id) ?? null, row, gateCtx)) })
+      else if (row.state === 'in progress' && row.attemptNow > 1) attention.push({ kind: 'activity', text: `repairing ${row.id}, try ${row.attemptNow} of ${row.maxAttempts}` })
+    }
+  } else if (workflow === 'design') {
+    design = designOf(f.json, f.records)
+    records = recordRows(f.records, recordContext(f.json))
+  } else {
+    records = recordRows(f.records)
+  }
+
+  const [rules, proposals] = await Promise.all([ruleRows(p, litterDir, f.json, shown), proposalRows(p, litterDir, run, f.records, shown)])
+  const section = await sectionOf(p, litterDir, f, nav, plan, gates, shown)
+
+  const buttons: BoardButton[] = []
+  // A design's [Plan] is its delivered plan.md, else its latest proposal; for a deliverable that isn't a plan, that proposal.
+  if (plan !== null) buttons.push({ key: 'board:plan', label: workflow === 'design' && f.json?.args?.deliverable !== 'plan' ? 'Proposal' : 'Plan' })
+  if (selectedRow && selectedRow.state === 'landed' && selectedRow.commit) buttons.push({ key: `board:diff:${selectedRow.id}`, label: `Diff ${selectedRow.id}` })
+  buttons.push({ key: 'board:rules', label: 'Rules' })
+  if (section) buttons.push({ key: 'board:close', label: 'Close' })
+
+  // A run that halted or needs you with no gate to name (a design, a fanout, a plan run): its end's reason.
+  const status = header.status.text
+  if (!attention.some(a => a.kind === 'needs-you') && (status === 'halted' || status === 'needs_user')) {
+    const reason = oneLine(st.latest?.end?.reason ?? st.launchEnd?.reason ?? '', 200)
+    attention.push({ kind: 'needs-you', text: `the run ${status === 'halted' ? 'halted' : 'needs you'}${reason ? `: ${reason}` : ''}` })
+  }
+  const waiting = proposals.filter(x => x.waiting).length
+  if (waiting > 0) attention.push({ kind: 'needs-you', text: `${waiting} rule${waiting === 1 ? '' : 's'} proposed in this run wait${waiting === 1 ? 's' : ''} for you in Rules` })
+  if (header.repairSwarm !== null) attention.push({ kind: 'activity', text: `repairing with swarm ${header.repairSwarm}, generation ${header.generation}` })
+  // What needs you first, then what runs on its own.
+  attention.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'needs-you' ? -1 : 1))
+
+  const notice =
+    refusedNotice(refused, shown) ??
+    navNotice(nav, shown) ??
+    (f.elsewhere ? { level: 'warning' as const, text: "not this store's: driven by another host, or its store was lost; litter shows it and doesn't act on it here" } : null) ??
+    (f.json ? null : { level: 'warning' as const, text: `run.json of ${run} can't be read; the header is from the ledger` })
+  return {
+    notice,
+    header,
+    attention,
+    gates,
+    detail,
+    design,
+    records,
+    rules,
+    proposals,
+    section,
+    buttons,
+    empty: null,
+    stamp,
+  }
+}
+
+function headerOf(f: RunFiles, st: RunState): BoardHeader {
+  const start = st.start
+  const json = f.json
+  const status = runStatusOf(st, f.tampered !== null)
+  const endAt = (end: RunEndBody | null | undefined, seq: number | null): number | null => {
+    if (!end) return null
+    const rec = seq !== null ? f.records.find(r => r.seq === seq) : f.records.find(r => r.kind === 'run.end' && r.body.generation === 0)
+    return rec?.at ?? null
+  }
+  const ended = st.open ? null : st.latest ? endAt(st.latest.end, st.latest.endSeq) : endAt(st.launchEnd, null)
+  const started = st.startedAt ?? json?.created ?? null
+  return {
+    run: f.run,
+    workflow: json?.workflow ?? start?.workflow ?? 'unknown',
+    status: statusWord(status),
+    generation: st.latest?.n ?? 0,
+    repairSwarm: st.open?.repair ? oneLine(st.open.repair.swarm, 60) : null,
+    branch: branchOf(json?.ref ?? start?.ref),
+    base: shortSha(json?.base ?? start?.base),
+    checkout: oneLine(json?.checkout ?? start?.checkout ?? '', 300),
+    started: started !== null ? utcAt(started) : '',
+    ended: ended !== null ? utcAt(ended) : null,
+    tampered: f.tampered ? `ledger tampered at ${f.tampered.seq}` : null,
+  }
+}
+
+/** One gate's facts, for the detail of its row. */
+type RowFacts = { verifies: VerifyBody[]; verdict: GateVerdict | undefined; stop: ExecutorStop | null; runDir: string }
+
+async function gateRows(
+  p: Ports,
+  litterDir: string,
+  f: RunFiles,
+  st: RunState,
+  planText: string | null,
+  shown: Shown,
+): Promise<{ rows: BoardGateRow[]; facts: Map<string, RowFacts> }> {
+  const facts = gateFacts(f.records)
+  const maxAttempts = typeof f.json?.args?.maxAttempts === 'number' ? (f.json.args.maxAttempts as number) : getOptions().maxAttempts
+  const worked = argGates(f.json)
+  const earlier = earlierLands(f.json).filter(l => !worked.some(g => g.id === l.id))
+  const parsed = planText !== null ? parseGates(planText) : null
+  const planned = parsed?.ok ? parsed.gates : []
+  const titleOf = (id: string, given: string) => given || planned.find(g => g.id === id)?.title || ''
+
+  const rowFacts = new Map<string, RowFacts>()
+  const rows: BoardGateRow[] = []
+  const status = runStatusOf(st, f.tampered !== null)
+  const current = worked.find(g => !facts.lands.has(g.id))?.id ?? null
+  // Replay is for a run that has ended: not running, stopping or repairing, and not before its launch (decision 9).
+  const ended = st.open === null && st.ended
+
+  // The chain's earlier lands: the run that landed each, read from its own ledger.
+  const members = earlier.length > 0 ? await chainMembers(p, litterDir, f.run, shown) : []
+  const earlierRows = new Map<string, BoardGateRow>()
+  for (const l of earlier) {
+    const m = members.find(x => x.run !== f.run && x.records.some(r => r.kind === 'land' && r.body.gate === l.id))
+    const mf = m ? gateFacts(m.records) : null
+    const verdict = mf?.verdicts.get(l.id)?.at(-1)
+    const mDir = m ? runDir(litterDir, m.run) : f.dir
+    rowFacts.set(l.id, { verifies: mf?.verifies.get(l.id) ?? [], verdict, stop: null, runDir: mDir })
+    const file = await verdictPath(p, mDir, verdict)
+    const oid = OID.test(l.commit) ? l.commit : null
+    const attempt = attemptOf(mf?.verifies.get(l.id))
+    earlierRows.set(l.id, {
+      id: l.id,
+      title: oneLine(titleOf(l.id, ''), 120),
+      state: 'landed',
+      ...GATE_STATE.landed,
+      attempt,
+      attemptNow: attempt,
+      maxAttempts: m && typeof m.json.args?.maxAttempts === 'number' ? (m.json.args.maxAttempts as number) : maxAttempts,
+      failing: failingOf(verdict),
+      verdictFile: file,
+      commit: shortSha(l.commit) || null,
+      oid,
+      earlier: m ? m.run : 'an earlier run',
+      actions: actionsOf(ended, file, oid),
+    })
+  }
+
+  const workedRows = new Map<string, BoardGateRow>()
+  for (const g of worked) {
+    const verifies = facts.verifies.get(g.id) ?? []
+    const verdict = facts.verdicts.get(g.id)?.at(-1)
+    const land = facts.lands.get(g.id)
+    // An executor that stopped on a plan gap halts its gate as a critic's plan gap does, verified or not.
+    const stop = land ? null : executorStop(facts.results.get(g.id), verdict)
+    let state: BoardGateState
+    if (land) state = 'landed'
+    else if (st.open?.repair) state = 'repairing'
+    else if (st.open) state = g.id === current ? 'in progress' : 'waiting'
+    else if (st.ended && status !== 'done' && g.id === current && (verifies.length > 0 || verdict !== undefined || stop !== null)) state = 'halted'
+    else state = 'waiting'
+    rowFacts.set(g.id, { verifies, verdict, stop, runDir: f.dir })
+    const file = await verdictPath(p, f.dir, verdict)
+    const oid = land && OID.test(land.commit) ? land.commit : null
+    // The stop's attempt is one past its verifies' (output.ts, gateResultAt): the attempt it stopped on.
+    const attempt = Math.max(attemptOf(verifies), stop?.attempt ?? 0)
+    const failing = failingOf(verdict)
+    workedRows.set(g.id, {
+      id: g.id,
+      title: oneLine(titleOf(g.id, g.title), 120),
+      state,
+      ...GATE_STATE[state],
+      attempt,
+      attemptNow: state === 'in progress' ? tryOf(attempt, maxAttempts, failing, verdict) : attempt,
+      maxAttempts,
+      failing,
+      verdictFile: file,
+      commit: land ? shortSha(land.commit) || null : null,
+      oid,
+      earlier: null,
+      actions: actionsOf(ended, file, oid),
+    })
+  }
+
+  // In the plan's order, where plan.md reads; else the earlier lands first.
+  const order = planned.map(g => g.id)
+  const all = [...earlierRows.values(), ...workedRows.values()]
+  const rank = (id: string) => {
+    const i = order.indexOf(id)
+    return i < 0 ? order.length + all.findIndex(r => r.id === id) : i
+  }
+  rows.push(...all.sort((a, b) => rank(a.id) - rank(b.id)))
+  return { rows, facts: rowFacts }
+}
+
+async function chainMembers(p: Ports, litterDir: string, run: string, shown: Shown): Promise<{ run: string; json: RunJson; records: StoredRecord[] }[]> {
+  try {
+    // A view: the chain as its run.json files say, checked or not.
+    const chain = await resolveChain(p, litterDir, run, { checked: false })
+    return chain.ok ? chain.members.map(m => ({ run: m.run, json: shown.deep(m.json), records: shown.deep(m.records) })) : []
+  } catch (err) {
+    p.log(`board: run ${run}'s chain unreadable: ${errText(err)}`)
+    return []
+  }
+}
+
+/** The verdict's file (AB's verdicts.ts), when it's there: the gate and attempt of the verify it cites. */
+async function verdictPath(p: Ports, dir: string, v: GateVerdict | undefined): Promise<string | null> {
+  if (!v || v.gate === null || v.attempt === null || !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(v.gate) || !Number.isInteger(v.attempt)) return null
+  const path = verdictFile(dir, v.gate, v.attempt)
+  return (await p.fs.exists(path).catch(() => false)) ? path : null
+}
+
+/** A row's menu items (decision 9), in the menu's order, each only where it applies. */
+function actionsOf(ended: boolean, verdictFile: string | null, oid: string | null): BoardGateAction[] {
+  const out: BoardGateAction[] = []
+  if (ended) out.push('replay')
+  if (verdictFile !== null) out.push('note')
+  if (oid !== null) out.push('copy')
+  return out
+}
+
+/** The gate being worked, else the last row. */
+function defaultSelection(rows: readonly BoardGateRow[]): string | null {
+  return (rows.find(r => r.state !== 'landed') ?? rows.at(-1))?.id ?? null
+}
+
+/** What a gate's reason and actions read beside its facts: the run ended, a generation is open, its repair swarm, [More]. */
+type GateContext = { ended: boolean; open: boolean; repairSwarm: string | null; more: boolean }
+
+/**
+ * The attempt a gate in progress is on: one past its last verify once the
+ * verdict on that attempt rejected it, else that attempt (at least the
+ * first), as the band counts it (band/view.ts, attemptOf).
+ */
+function tryOf(attempt: number, maxAttempts: number, failing: readonly string[], verdict: GateVerdict | undefined): number {
+  return Math.min(maxAttempts, rejected(attempt, failing, verdict) ? attempt + 1 : Math.max(1, attempt))
+}
+
+/** The verdict on the gate's latest attempt rejected it. */
+const rejected = (attempt: number, failing: readonly string[], verdict: GateVerdict | undefined): boolean => verdict !== undefined && failing.length > 0 && verdict.attempt === attempt
+const sentBack = (row: BoardGateRow, verdict: GateVerdict | undefined): boolean => rejected(row.attempt, row.failing, verdict)
+
+const on = (attempt: number | null): string => (attempt !== null && attempt > 0 ? ` on attempt ${attempt}` : '')
+
+/** A halted gate's needs-you line: what stopped it, in one line. */
+function haltLine(row: BoardGateRow, d: BoardGateDetail): string {
+  if (d.planGap !== '') return `${row.id} halted on a plan gap${d.gapBy?.who === 'executor' ? ' the executor named' : ''}: ${oneLine(d.planGap, 300)}`
+  if (d.ruleClash !== '') return `${row.id} halted on a rule clash: ${oneLine(d.ruleClash, 300)}`
+  if (row.failing.length > 0) return `${row.id} halted: attempt ${row.attempt} of ${row.maxAttempts} failed ${spelled(row.failing)}`
+  return `${row.id} halted${on(row.attempt)}`
+}
+
+/** Why a gate stands where it does, in plain words (report.md item 2). */
+function reasonOf(row: BoardGateRow, d: Omit<BoardGateDetail, 'reason' | 'actions' | 'more'>, ctx: GateContext, verdict: GateVerdict | undefined): string {
+  const of = `of ${row.maxAttempts}`
+  switch (row.state) {
+    case 'landed':
+      if (row.earlier !== null) return `landed${row.commit ? ` ${row.commit}` : ''} in ${row.earlier}`
+      return `landed${row.commit ? ` ${row.commit}` : ''}${row.attempt > 0 ? ` on attempt ${row.attempt} ${of}` : ''}`
+    case 'halted':
+      if (d.planGap !== '') return d.gapBy?.who === 'executor' ? `halted: the executor stopped on a plan gap${on(d.gapBy.attempt)}` : `halted: the critic named a plan gap${on(d.gapBy?.attempt ?? null)}`
+      if (d.ruleClash !== '') return `halted: the critic named a rule clash${on(d.verdictAttempt)}`
+      if (row.failing.length > 0) return `halted: attempt ${row.attempt} ${of} failed ${spelled(row.failing)}`
+      return row.attempt > 0 ? `halted on attempt ${row.attempt} ${of}` : 'halted before its first attempt was verified'
+    case 'in progress': {
+      if (sentBack(row, verdict)) {
+        const failed = `the critic sent attempt ${row.attempt} back (${spelled(row.failing)})`
+        return row.attempt < row.maxAttempts ? `${failed}, so attempt ${row.attempt + 1} ${of} is under way` : `${failed}, the last of its ${row.maxAttempts}`
+      }
+      if (row.attempt === 0) return `attempt 1 ${of} under way, not verified yet`
+      return verdict !== undefined && verdict.attempt === row.attempt ? `attempt ${row.attempt} ${of} passed the critic, landing` : `attempt ${row.attempt} ${of} verified, waiting for the critic`
+    }
+    case 'repairing':
+      return ctx.repairSwarm !== null ? `the repair swarm ${ctx.repairSwarm} is working on it` : 'a repair swarm is working on it'
+    case 'waiting':
+      return ctx.open ? 'waiting for the gates before it' : 'not reached: the run ended before it'
+  }
+}
+
+/** The detail's labels for a gate's actions. */
+const ACTION_WORD: Record<BoardGateAction, string> = { note: 'Critic note', copy: 'Copy commit', replay: 'Replay with /litter:amend' }
+
+/**
+ * A gate's actions as Buttons, each only where its row has it: the state's
+ * one primary first (a halted gate's critic note; an ended run's landed
+ * gate's copy; else none), then the critic note, copy and replay.
+ */
+export function gateButtons(row: BoardGateRow, ended: boolean): BoardButton[] {
+  const has = (a: BoardGateAction) => row.actions.includes(a)
+  const primary: BoardGateAction | null = row.state === 'halted' && has('note') ? 'note' : ended && row.state === 'landed' && has('copy') ? 'copy' : null
+  const order: BoardGateAction[] = ['note', 'copy', 'replay']
+  const list = [...(primary ? [primary] : []), ...order.filter(a => a !== primary && has(a))]
+  return list.map(a => ({ key: `board:${a}:${row.id}`, label: ACTION_WORD[a], ...(a === primary ? { primary: true } : {}) }))
+}
+
+function detailOf(facts: RowFacts | null, row: BoardGateRow, ctx: GateContext): BoardGateDetail {
+  const gate = row.id
+  const v = facts?.verdict
+  const last = facts?.verifies.at(-1)
+  const stop = facts?.stop ?? null
+  const judged = v && Number.isSafeInteger(v.attempt) && (v.attempt as number) > 0 ? (v.attempt as number) : null
+  // The executor's stop after the last verdict wins, as it does for the bridge and the summary.
+  const planGap = stop ? clean(stop.gap, 600) : v ? clean(v.body.plan_gap, 600) : ''
+  const known: Omit<BoardGateDetail, 'reason' | 'actions' | 'more'> = {
+    gate,
+    dimensions: v
+      ? DIMENSIONS.map(name => ({
+          name,
+          word: DIM_NAME[name]!,
+          pass: v.body[name].pass,
+          evidence: clean(v.body[name].evidence, 600),
+          gaps: (Array.isArray(v.body[name].gaps) ? v.body[name].gaps : []).slice(0, 10).map(g => oneLine(g, 300)),
+        }))
+      : [],
+    verdictAttempt: judged,
+    verify: last && facts ? { id: oneLine(last.verify_id, 80), ended: howEnded(last) + (last.green ? ', green' : ''), log: verifyLogDir(facts.runDir, last.verify_id) } : null,
+    planGap,
+    gapBy: planGap === '' ? null : stop ? { who: 'executor', attempt: stop.attempt > 0 ? stop.attempt : null } : { who: 'critic', attempt: judged },
+    // Absent from a verdict recorded before it (WP-AH); a blank one names none, and a later executor stop replaces it.
+    ruleClash: v && !stop ? clean(v.body.rule_clash, 600).trim() : '',
+  }
+  return { ...known, reason: reasonOf(row, known, ctx, v), actions: gateButtons(row, ctx.ended), more: ctx.more }
+}
+
+// The other workflows: a record list
+
+function field(b: Record<string, unknown>, k: string): string {
+  const v = b[k]
+  return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : ''
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** What a design run's record lines read beyond the record: the bar's ids, and each unknown's question by its id. */
+export type RecordContext = { bar: readonly string[] | null; unknowns: ReadonlyMap<string, string> }
+
+const NO_CONTEXT: RecordContext = { bar: null, unknowns: new Map() }
+
+/** A design run's context from run.json's args: the frozen bar, and the unknowns as summary.ts reads them (a bare string is `U<n>`'s question). */
+function recordContext(json: RunJson | null): RecordContext {
+  const list = Array.isArray(json?.args?.empiricalUnknowns) ? (json!.args.empiricalUnknowns as unknown[]) : []
+  const unknowns = new Map<string, string>()
+  list.forEach((u, i) => {
+    if (typeof u === 'string') unknowns.set(`U${i + 1}`, u)
+    else if (isObj(u) && typeof u.id === 'string' && UNKNOWN_ID.test(u.id) && typeof u.question === 'string') unknowns.set(u.id, u.question)
+  })
+  return { bar: barIds(json), unknowns }
+}
+
+/** A verdict's criteria with an id, the first of each id. */
+function criteriaOf(v: unknown): DesignCriterion[] {
+  const out: DesignCriterion[] = []
+  for (const c of Array.isArray(v) ? v : []) if (isObj(c) && typeof c.id === 'string' && !out.some(x => x.id === c.id)) out.push(c as unknown as DesignCriterion)
+  return out
+}
+
+/**
+ * A design critic's verdict: `v3 APPROVED · 8/8 pass`, or `v3 HOLDING · 5/8
+ * pass, open C3 C5`. Counted over the bar and every id the verdict judged, so a
+ * bar item it left out is open, as the approval reads it (design/finalize.ts).
+ */
+function designVerdictLine(b: Record<string, unknown>, bar: readonly string[] | null): string {
+  const criteria = criteriaOf(b.criteria)
+  const ids = [...new Set([...(bar ?? []), ...criteria.map(c => c.id)])]
+  const open = ids.filter(id => criteria.find(c => c.id === id)?.verdict !== 'PASS')
+  const counted = `${ids.length - open.length}/${ids.length} pass${open.length > 0 ? `, open ${open.map(id => oneLine(id, 20)).join(' ')}` : ''}`
+  return `${field(b, 'version')} ${oneLine(b.overall, 20)} · ${counted}`
+}
+
+/** One record in a line: its kind's own summary where there is one, else its first plain fields. */
+export function recordLine(r: StoredRecord, ctx: RecordContext = NO_CONTEXT): string {
+  const b = (r.body ?? {}) as Record<string, unknown>
+  const text = (() => {
+    switch (r.kind) {
+      case 'run.start':
+        return `${field(b, 'workflow')} run from ${shortSha(b.base)} on ${branchOf(b.ref)}`
+      case 'run.launch':
+      case 'run.resume':
+        return `generation ${field(b, 'generation')}${field(b, 'taskId') ? `, task ${field(b, 'taskId')}` : ''}`
+      case 'run.repair':
+        return `generation ${field(b, 'generation')}: repair swarm ${field(b, 'swarm')}`
+      case 'run.stopping':
+        return `generation ${field(b, 'generation')} stopping`
+      case 'run.end':
+        return `generation ${field(b, 'generation')}: ${field(b, 'status')}${field(b, 'reason') ? ` (${field(b, 'reason')})` : ''}`
+      case 'verify': {
+        const v = verifyBody(r)
+        return v ? `${v.gate} attempt ${v.attempt}: ${v.green ? '✓ green' : `✕ ${howEnded(v)}`}` : 'verify'
+      }
+      case 'verdict': {
+        // Three shapes, told apart before any is worded: a design critic's, a fanout's, execute's four dimensions.
+        if (Array.isArray(b.criteria) && typeof b.overall === 'string') return designVerdictLine(b, ctx.bar)
+        if (Array.isArray(b.tasks)) {
+          const tasks = b.tasks as { pass?: unknown }[]
+          return `${tasks.filter(t => t?.pass === true).length} of ${tasks.length} tasks pass${b.approved === true ? ', approved' : ''}`
+        }
+        if (DIMENSIONS.every(d => isDim(b[d]))) {
+          const failing = DIMENSIONS.filter(d => !(b[d] as VerdictDimension).pass)
+          return `on ${field(b, 'verify_id')}: ${failing.length === 0 ? '✓ passes' : `✕ ${failing.join(', ')}`}`
+        }
+        return 'verdict (unrecognized)'
+      }
+      case 'proposal': {
+        const n = Array.isArray(b.gates) ? b.gates.length : null
+        return `${field(b, 'version')}${n === null ? '' : ` · ${n} gate${n === 1 ? '' : 's'}`}`
+      }
+      case 'probe': {
+        const id = typeof b.unknown_id === 'string' && UNKNOWN_ID.test(b.unknown_id) ? b.unknown_id : null
+        // A probe recorded before the unknown and the verdict were required has only its report.
+        if (id === null) return `no unknown named: ${field(b, 'report')}`
+        const verdict = (PROBE_VERDICTS as readonly unknown[]).includes(b.verdict) ? String(b.verdict) : 'no verdict recorded'
+        const question = typeof b.question === 'string' && b.question.trim() !== '' ? b.question : (ctx.unknowns.get(id) ?? '')
+        return `${id} ${verdict}${question ? `: ${question}` : ''}`
+      }
+      case 'design.result': {
+        const res = isObj(b.result) ? b.result : {}
+        if (b.role === 'author') return `author${isVersion(res.version) ? `, ${res.version}` : ''}`
+        if (b.role !== 'reframer') return field(b, 'role')
+        const rec = typeof res.recommendation === 'string' ? oneLine(res.recommendation, 40) : ''
+        return `reframer, ${rec === '' || rec.toLowerCase() === 'none' ? 'no reframe' : `recommends ${rec}`}`
+      }
+      case 'design.deliver': {
+        const version = isVersion(b.version) ? ` ${b.version}` : ''
+        if (typeof b.refused === 'string') return `refused${version}: ${b.refused}`
+        return `delivered${version} as ${field(b, 'path')}`
+      }
+      case 'land':
+        return `${field(b, 'gate')} landed ${shortSha(b.commit)}`
+      case 'land.intent':
+        return `${field(b, 'gate')}: landing ${field(b, 'verify_id')}`
+      case 'land.blocked':
+      case 'land.abandoned':
+      case 'repair.declined':
+        return `${field(b, 'gate') ? `${field(b, 'gate')}: ` : ''}${field(b, 'reason')}`
+      case 'rule.propose':
+        return `"${field(b, 'rule')}"`
+      default:
+        return Object.keys(b)
+          .map(k => [k, field(b, k)] as const)
+          .filter(([, v]) => v !== '')
+          .slice(0, 3)
+          .map(([k, v]) => `${k} ${v}`)
+          .join(', ')
+    }
+  })()
+  return oneLine(text, 160)
+}
+
+function recordRows(records: readonly StoredRecord[], ctx: RecordContext = NO_CONTEXT): BoardRecordRow[] {
+  return records.slice(-RECORD_ROWS).map(r => ({ seq: r.seq, kind: oneLine(r.kind, 40), text: recordLine(r, ctx) }))
+}
+
+// The design view: the bar × version matrix (decision 10)
+
+/** The versions the matrix shows at most, the last ones. */
+export const MATRIX_VERSIONS = 8
+/** Ids a verdict names outside the bar get a row each, up to this many: a verdict's ids are model text. */
+const OUTSIDE_ROWS = 10
+
+const CELL: Record<string, { glyph: string; color: string }> = {
+  PASS: { glyph: '✓', color: STYLE.done },
+  CONDITIONAL: { glyph: '~', color: STYLE.warning },
+  FAIL: { glyph: '✕', color: STYLE.failed },
+}
+const NOT_JUDGED: BoardMatrixCell = { text: '·', color: STYLE.idle }
+const OVERALL_COLOR: Record<string, string> = { APPROVED: STYLE.done, HOLDING: STYLE.warning }
+
+/** The line under the matrix that spells its glyphs and the gap kinds' letters out. */
+export const MATRIX_LEGEND = `✓ PASS  ~ CONDITIONAL  ✕ FAIL  · not judged  ·  gap kind: ${GAP_KINDS.map(k => `${k[0]} ${k}`).join(', ')}`
+
+const versionNumber = (v: string): number => Number(v.slice(1))
+
+/** A criterion's cell: its glyph, then for CONDITIONAL and FAIL its gap kind's first letter. */
+function cellOf(c: DesignCriterion | undefined): BoardMatrixCell {
+  const look = c ? CELL[c.verdict] : undefined
+  if (!c || !look) return NOT_JUDGED
+  const gap = c.verdict !== 'PASS' && (GAP_KINDS as readonly unknown[]).includes(c.gap_kind) ? c.gap_kind![0]! : ''
+  return { text: `${look.glyph}${gap}`, color: look.color }
+}
+
+/**
+ * A design run's matrix: a row per bar item (run.json's bar, its rule items
+ * included, in its order), a column per version (the last 8), each cell from
+ * the latest verdict on that version; then a row for each id a shown verdict
+ * names that the bar doesn't have, and a line per version shown.
+ */
+function designOf(json: RunJson | null, records: readonly StoredRecord[]): BoardDesign {
+  const bar = (Array.isArray(json?.args?.bar) ? (json!.args.bar as unknown[]) : []).filter(
+    (b): b is { id: string; text?: unknown } => isObj(b) && typeof b.id === 'string',
+  )
+  const proposals = proposalRecords(records)
+  const verdicts = verdictRecords(records)
+  const all = [...new Set([...proposals, ...verdicts].map(r => r.body.version as string))].sort((a, b) => versionNumber(a) - versionNumber(b))
+  const versions = all.slice(-MATRIX_VERSIONS)
+  const judged = versions.map(v => {
+    const body = verdicts.filter(r => r.body.version === v).at(-1)?.body as Partial<DesignVerdictBody> | undefined
+    return body ? { body, criteria: criteriaOf(body.criteria) } : null
+  })
+  const outside: string[] = []
+  for (const j of judged) {
+    for (const c of j?.criteria ?? []) if (!bar.some(b => b.id === c.id) && !outside.includes(c.id)) outside.push(c.id)
+  }
+  const cells = (id: string) => judged.map(j => cellOf(j?.criteria.find(c => c.id === id)))
+  const rows: BoardMatrixRow[] = [
+    ...bar.map(b => ({ id: oneLine(b.id, 16), text: oneLine(b.text, 300), cells: cells(b.id), outside: false })),
+    ...outside.slice(0, OUTSIDE_ROWS).map(id => ({ id: oneLine(id, 16), text: 'not in the bar', cells: cells(id), outside: true })),
+  ]
+  const lines: BoardVersionLine[] = versions.map((version, i) => {
+    const j = judged[i]
+    const overall = j ? oneLine(j.body.overall, 20) || 'no overall' : 'not judged'
+    const sha = shortSha(proposals.find(r => r.body.version === version)?.body.sha256)
+    return { version, overall, color: OVERALL_COLOR[overall] ?? STYLE.idle, sha, sourceChanged: j?.body.source_changed === true }
+  })
+  return { versions, hidden: all.length - versions.length, rows, legend: MATRIX_LEGEND, lines }
+}
+
+/** What a design's [Plan] opens (decision 10): plan.md once a delivery is recorded, else the latest proposals/vN.md. */
+type PlanFile = { title: string; path: string; text: string | null; scroll: boolean }
+
+async function designPlan(p: Ports, f: RunFiles, planText: string | null, shown: Shown): Promise<PlanFile | null> {
+  const delivered = f.records.filter(r => r.kind === 'design.deliver' && typeof r.body.path === 'string' && r.body.refused === undefined).at(-1)
+  if (delivered && planText !== null) {
+    const v = isVersion(delivered.body.version) ? `${delivered.body.version}, ` : ''
+    return { title: `plan.md (${v}delivered)`, path: planPath(f.dir), text: planText, scroll: false }
+  }
+  // isVersion has passed it, so it names a file under proposals/.
+  const latest = proposalRecords(f.records).at(-1)?.body.version as string | undefined
+  if (!latest) return null
+  const path = proposalPath(f.dir, latest)
+  return { title: `proposal ${latest}`, path, text: await readText(p, path, shown), scroll: false }
+}
+
+// The rules
+
+const STANDING_COLOR: Record<string, string> = { accepted: STYLE.done, 'accepted (committed)': STYLE.done, unverified: STYLE.warning }
+
+/** `run.json.rules` as `id@v` (decision 19), each with its standing now (AD's loadRules). */
+async function ruleRows(p: Ports, litterDir: string, json: RunJson | null, shown: Shown): Promise<BoardRuleRow[]> {
+  const used = Array.isArray(json?.rules) ? json!.rules.filter(r => r && typeof r.id === 'string' && Number.isInteger(r.version)) : []
+  if (used.length === 0) return []
+  let loaded: LoadedRule[] | null = null
+  try {
+    loaded = (await deps.loadRules(p, litterDir)).rules
+  } catch (err) {
+    p.log(`board: the rules couldn't be loaded: ${errText(err)}`)
+  }
+  return used.map(u => {
+    const ref = `${oneLine(u.id, 80)}@${u.version}`
+    if (loaded === null) return { ref, standing: "standing unknown: the rules couldn't be read", color: STYLE.warning }
+    // The ids as run.json's came through the redactor.
+    const found = loaded.find(r => shown.text(r.doc.id) === u.id)
+    if (!found) return { ref, standing: 'no longer in force', color: STYLE.muted }
+    const inForce = found.delivered
+    if (!inForce) return { ref, standing: 'unverified now', color: STYLE.warning }
+    if (inForce.version !== u.version) return { ref, standing: `in force now as ${ref.split('@')[0]}@${inForce.version}`, color: STYLE.warning }
+    const word = found.standing === 'unverified' ? 'accepted (committed)' : found.standing
+    return { ref, standing: word, color: STANDING_COLOR[word] ?? STYLE.done }
+  })
+}
+
+const PROPOSAL_LABEL: Record<RuleStatus, string> = {
+  proposed: 'proposed, not accepted',
+  accepted: 'accepted since, in the rules pane',
+  dismissed: 'dismissed',
+  retired: 'retired',
+}
+
+/**
+ * The run's proposals as they arrive (AD's proposalsOf({ run })), and the
+ * run-ledger `rule.propose` records written before phase 3, which stay
+ * where they are (decision 16), each marked "proposed, not accepted".
+ */
+async function proposalRows(p: Ports, litterDir: string, run: string, records: readonly StoredRecord[], shown: Shown): Promise<BoardProposalRow[]> {
+  const rows: BoardProposalRow[] = []
+  let found: { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus }[] = []
+  try {
+    // Through the redactor, as the run's records are, so the two are told apart by the same key.
+    found = shown.deep(await deps.proposalsOf(p, litterDir, { run }))
+  } catch (err) {
+    p.log(`board: the run's proposals couldn't be read: ${errText(err)}`)
+  }
+  const seen = new Set<string>()
+  const keyOf = (b: { rule?: unknown; tool_use_id?: unknown; index?: unknown; verify_id?: unknown }) => `${String(b.tool_use_id ?? b.verify_id ?? '')}#${String(b.index ?? '')}#${String(b.rule ?? '')}`
+  for (const x of found) {
+    seen.add(keyOf(x.body))
+    rows.push({
+      text: oneLine(x.body.doc?.body?.rule || x.body.rule, 200),
+      source: oneLine(x.body.source, 40),
+      gate: typeof x.body.gate === 'string' ? oneLine(x.body.gate, 32) : null,
+      label: PROPOSAL_LABEL[x.status] ?? 'proposed, not accepted',
+      waiting: x.status === 'proposed',
+    })
+  }
+  for (const r of records) {
+    if (r.kind !== 'rule.propose' || typeof r.body.rule !== 'string' || seen.has(keyOf(r.body))) continue
+    rows.push({
+      text: oneLine(r.body.rule, 200),
+      source: oneLine(typeof r.body.source === 'string' ? r.body.source : 'agent', 40),
+      gate: typeof r.body.gate === 'string' ? oneLine(r.body.gate, 32) : null,
+      label: 'proposed, not accepted',
+      // Not in a rules ledger, so Rules can't accept it: history, not something waiting on you.
+      waiting: false,
+    })
+  }
+  return rows
+}
+
+// The sections [Plan], [Diff G<n>] and the menu's critic note open
+
+async function sectionOf(
+  p: Ports,
+  litterDir: string,
+  f: RunFiles,
+  nav: BoardNav,
+  plan: PlanFile | null,
+  gates: BoardBody['gates'],
+  shown: Shown,
+): Promise<BoardSection | null> {
+  const s = nav.section
+  if (!s) return null
+  if (s.kind === 'plan') {
+    if (plan === null) return { kind: 'plan', title: "plan.md isn't there", path: planPath(f.dir), text: '' }
+    if (plan.text === null) return { kind: 'plan', title: `${plan.title} isn't there`, path: plan.path, text: '' }
+    // "Scrolled to the selected gate's section": from its heading on (gates.ts's lines, 1-based).
+    const parsed = plan.scroll ? parseGates(plan.text) : null
+    const g = parsed?.ok && gates?.selected ? parsed.gates.find(x => x.id === gates.selected) : undefined
+    const from = g ? g.lines.start : 1
+    const shown = plan.text.split('\n').slice(from - 1).join('\n')
+    return {
+      kind: 'plan',
+      title: g ? `${plan.title} from ${g.id} (line ${from})` : plan.title,
+      path: plan.path,
+      text: clean(shown, SECTION_MAX),
+    }
+  }
+  if (s.kind === 'verdict') return verdictSection(p, gates, s.gate, shown)
+  return diffSection(p, litterDir, f, s.gate, shown)
+}
+
+/** The menu's critic note: the row's verdict file (AB's verdicts.ts), cleaned and cut as the plan is. */
+async function verdictSection(p: Ports, gates: BoardBody['gates'], gate: string, shown: Shown): Promise<BoardSection> {
+  const file = gates?.rows.find(r => r.id === gate)?.verdictFile ?? null
+  if (file === null) return { kind: 'verdict', title: `${gate} has no critic note`, path: null, text: '' }
+  const text = await readText(p, file, shown)
+  if (text === null) return { kind: 'verdict', title: `${gate}'s critic note isn't there`, path: file, text: '' }
+  return { kind: 'verdict', title: `critic note on ${gate}`, path: file, text: clean(text, SECTION_MAX) }
+}
+
+/**
+ * `git diff --stat <old> <commit>` for a landed gate, with argv the mod builds
+ * from the land record's oids (an earlier land's parent, `<commit>^`), each
+ * checked as a full object id first.
+ */
+async function diffSection(p: Ports, litterDir: string, f: RunFiles, gate: string, shown: Shown): Promise<BoardSection> {
+  const facts = gateFacts(f.records)
+  const land = facts.lands.get(gate)
+  let old: string | null = null
+  let commit: string | null = null
+  if (land && OID.test(land.commit) && OID.test(land.old)) {
+    old = land.old
+    commit = land.commit
+  } else {
+    const earlier = earlierLands(f.json).find(l => l.id === gate)
+    if (earlier && OID.test(earlier.commit)) {
+      commit = earlier.commit
+      old = `${earlier.commit}^`
+    }
+  }
+  if (!commit || !old) return { kind: 'diff', title: `${gate} has no land with a commit to diff`, path: null, text: '' }
+  const pair = `${old}..${commit}`
+  let r = diffs.get(pair)
+  if (r === undefined) {
+    const where = primaryOf(litterDir) ?? repoOf(litterDir)
+    const ran = await p.run(['git', '-C', where, 'diff', '--stat', '--no-color', '--end-of-options', old, commit, '--'])
+    r = { code: ran.code, stdout: ran.stdout, stderr: ran.stderr }
+    // A failure isn't kept: the next look runs it again.
+    if (r.code === 0) diffs.set(pair, r)
+  }
+  if (r.code !== 0) return { kind: 'diff', title: `git diff --stat for ${gate} failed`, path: null, text: oneLine(shown.text(r.stderr), 300) }
+  return { kind: 'diff', title: `${gate}: git diff --stat ${old.slice(0, 7)}${old.endsWith('^') ? '^' : ''} ${commit.slice(0, 7)}`, path: null, text: clean(shown.text(r.stdout), SECTION_MAX) }
+}

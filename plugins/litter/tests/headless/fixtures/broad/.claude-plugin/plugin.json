@@ -1,0 +1,1 @@
+{ "name": "broad", "version": "0.1.0", "description": "litter tier-4 fixture: a pass-through tool.call hook with no matcher, as a third-party mod might have" }

@@ -1,0 +1,110 @@
+{
+  "v": 1,
+  "session": "s1",
+  "litterDir": "@PROJECT@/.claude/litter",
+  "run": {
+    "run": "20261003-execute-ab12cd",
+    "workflow": "execute",
+    "runDir": "@PROJECT@/.claude/litter/20261003-execute-ab12cd",
+    "checkout": "@PROJECT@",
+    "base": "0000000000000000000000000000000000000000",
+    "runIds": [
+      "wf_abc123-456"
+    ],
+    "launching": false,
+    "stopping": false,
+    "inflight": "land",
+    "isolationLost": false,
+    "roots": {
+      "checkout": "@PROJECT@",
+      "litterDir": "@PROJECT@/.claude/litter",
+      "litterCopies": [
+        "@PROJECT@/.claude/litter"
+      ],
+      "ruleDirs": [
+        "@PROJECT@/.litter",
+        "@PROJECT@/.litter.local",
+        "@PROJECT@/.claude/rules/litter",
+        "@PROJECT@/.claude/rules/litter-local"
+      ],
+      "worktrees": []
+    },
+    "setup": null,
+    "linkDirs": [],
+    "worktreeRoot": "@PROJECT@/.claude/worktrees",
+    "setupTimeoutSec": 570
+  },
+  "roles": {
+    "falsifier": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "coverage": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "mechanism": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "reframer": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "prober": {
+      "write": "own-worktree",
+      "bash": "rw",
+      "isolated": true
+    },
+    "author": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "design-critic": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "gate-critic": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "executor": {
+      "write": "checkout",
+      "bash": "rw",
+      "isolated": false
+    },
+    "adversary": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "relay": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "planner": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "verifier": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    },
+    "researcher": {
+      "write": "none",
+      "bash": "ro",
+      "isolated": false
+    }
+  },
+  "swarm": null
+}

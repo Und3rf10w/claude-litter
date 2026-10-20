@@ -1,0 +1,21 @@
+{
+  "description": "litter's hooks. The command hooks for one event run concurrently (2.1.288): SubagentStop's identity.sh and hold.sh start at once, so hold.sh never depends on identity.sh having run, and writes hooks/done/<agent_id> itself at a stop it lets go. PermissionRequest's ask.sh only spools a litter agent's ask for the band, and never decides: it prints nothing, so the dialog is the engine's.",
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh"], "timeout": 30 }] },
+      { "matcher": "StructuredOutput",
+        "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/output.sh"], "timeout": 30 }] }
+    ],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/identity.sh", "start"], "timeout": 10 }] }],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/identity.sh", "stop"], "timeout": 5 }] },
+      { "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/hold.sh"], "timeout": 600 }] }
+    ],
+    "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/worktree.sh"], "timeout": 600 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "prompt"], "timeout": 10 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "post"], "timeout": 10 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/watch.sh", "post"], "timeout": 10 }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/ask.sh"], "timeout": 5 }] }]
+  }
+}

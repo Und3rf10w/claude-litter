@@ -1,0 +1,792 @@
+// The rules pane's view (16.3, 16.8): the Proposed tab (pending proposals,
+// unverified rule files, an import batch) and the In force tab (accepted
+// rules, overrides, rules that match no file, the load's problems), from
+// AD's store. Owner: phase 3, package AF.
+//
+// The pane's navigation (the tab, the focus, what [Edit…] holds for a
+// proposal until [Accept], what a press waits on) lives in module memory and
+// is mirrored in $.store (RULES_STORE_KEY), as the swarm pane's is, so a hot
+// reload keeps it. `shown` is what the last build drew for each row: a press
+// acts on what you saw (AD's store refuses one that's no longer true).
+//
+// Every text from a rule file, a proposal or the ledger is cleaned and cut
+// (swarm/view.ts, clean): a proposal holds model text.
+//
+// Phase 5b (WP-DE, report.md item 8): a proposal and a rule in force never
+// share a mark (needs you, `⚑ proposed`; done, `✓ in force`); each row says
+// where it came from (`origin`) and what [Accept] writes (`consequence`), and
+// describeRow lays out the focused row's description from the row alone.
+
+import type { Ports } from '../ports'
+import type { StoredRecord } from '../records/core'
+import type {
+  LoadedRule,
+  ProposalRef,
+  RuleDoc,
+  RuleExportView,
+  RuleImportBody,
+  RuleProposeBody,
+  RuleScope,
+  RuleStatus,
+  RuleType,
+} from '../records/rules'
+import type {
+  BoardStatus,
+  RulesBatch,
+  RulesBody,
+  RulesPaneView,
+  RulesPending,
+  RulesRow,
+  RulesTab,
+  SwarmNotice,
+  SwarmSpan,
+} from '../../types/index'
+import { SCOPE_LETTER, loadRules, proposalsOf } from './store'
+import { exportsOf } from './export'
+import { readRuleLedger } from './ledger'
+import { matches } from './match'
+import { localRulesDir, projectRulesDir, userRulesDir } from '../layout'
+import { primaryOf } from '../lifecycle'
+import { interactive } from '../swarm/state'
+import { clean, oneLine } from '../swarm/view'
+import { MARK, STYLE } from '../ui/style'
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+// AD's store and AE's matcher, through one table so tier 2 can stand in for
+// them (COMMON, "Another package's module"). The mod never changes it.
+export const deps = {
+  loadRules: (...a: Parameters<typeof loadRules>) => loadRules(...a),
+  proposalsOf: (...a: Parameters<typeof proposalsOf>) => proposalsOf(...a),
+  exportsOf: (...a: Parameters<typeof exportsOf>) => exportsOf(...a),
+  readRuleLedger: (...a: Parameters<typeof readRuleLedger>) => readRuleLedger(...a),
+  matches: (...a: Parameters<typeof matches>) => matches(...a),
+  /** The primary checkout's tracked files, for "matches no file" (16.6): `git ls-files -z`, argv the mod builds. */
+  lsFiles: async (p: Ports, primary: string): Promise<string[] | null> => {
+    const r = await p.run(['git', '-C', primary, 'ls-files', '-z'])
+    return r.code === 0 && !r.truncated ? r.stdout.split('\0').filter(Boolean) : null
+  },
+}
+
+// ---------------------------------------------------------------------------
+// The navigation
+
+/** What [Edit…] and the scope pick set on a proposal, held in the pane until [Accept] (`paths` already through narrowPaths). */
+export type HeldEdit = { scope?: RuleScope; paths?: string[]; type?: RuleType }
+
+/** What the pane drew for one row: what a press on it acts on. */
+export type ShownRow = {
+  kind: RulesRow['kind']
+  /** A proposal's. */
+  ref: ProposalRef | null
+  /** An unverified file's, absolute: accepted as it is. */
+  file: string | null
+  id: string | null
+  version: number | null
+  /** Null for a proposal with none: [Accept] asks first. */
+  scope: RuleScope | null
+  type: RuleType
+  paths: string[]
+  source: string | null
+  /** The `rule.import` seq of the batch it's in, or null. */
+  batch: number | null
+  actions: string[]
+  /** A rule in force whose Claude Code rule file was edited by hand or deleted: [Restore file] asks first for an edit. */
+  export?: 'edited' | 'deleted'
+}
+
+export type RulesEditing = { key: string; paths: string; type: string; error: string | null }
+
+export type RulesFocus = { id?: string; proposal?: ProposalRef } | null
+
+export type RulesNav = {
+  tab: RulesTab
+  focus: RulesFocus
+  /** The focused import batch's seq; found from the focus at the first build. */
+  batch: number | null
+  /** The batch whose preselection `checked` was seeded from, once. */
+  seeded: number | null
+  /** The batch's checked row keys. */
+  checked: string[]
+  pending: RulesPending | null
+  editing: RulesEditing | null
+  held: Record<string, HeldEdit>
+  notice: SwarmNotice | null
+  shown: Record<string, ShownRow>
+  /** The row picked (WP-DE): a press on its row or one of its actions, [next], [previous]. Null: the one the pane opened on, else the first. */
+  selected: string | null
+  /** What [More] opened (a row's key, or `problems`), or null. */
+  more: string | null
+}
+
+/** The $.store key the navigation is mirrored under, read back only by the session that wrote it. */
+export const RULES_STORE_KEY = 'litter.rules.pane'
+
+type RulesStore = { v: 1; session: string; nav: RulesNav | null }
+
+let rulesNav: RulesNav | null = null
+let restored = false
+let rev = 0
+
+export const blankRulesNav = (tab: RulesTab = 'proposed', focus: RulesFocus = null): RulesNav => ({
+  tab,
+  focus,
+  batch: null,
+  seeded: null,
+  checked: [],
+  pending: null,
+  editing: null,
+  held: {},
+  notice: null,
+  shown: {},
+  selected: null,
+  more: null,
+})
+
+/** The pane's navigation, or null while it was never opened in this session. */
+export const rulesNavOf = (): RulesNav | null => rulesNav
+export const rulesNavRev = (): number => rev
+
+export function setRulesNav(next: RulesNav | null): void {
+  rulesNav = next
+  restored = true
+  rev++
+}
+
+const TABS: readonly RulesTab[] = ['proposed', 'in-force']
+const SCOPES: readonly RuleScope[] = ['user', 'project', 'local']
+
+/** After a hot reload module memory is empty: the navigation comes back from $.store, when this session wrote it. */
+export async function restoreRulesNav(p: Ports): Promise<void> {
+  if (restored) return
+  restored = true
+  try {
+    const raw = (await p.store.get(RULES_STORE_KEY)) as Partial<RulesStore> | undefined
+    if (!raw || raw.v !== 1 || raw.session !== (await p.sessionId()) || !raw.nav || rulesNav !== null) return
+    const n = raw.nav
+    rulesNav = {
+      ...blankRulesNav(TABS.includes(n.tab) ? n.tab : 'proposed', n.focus ?? null),
+      batch: typeof n.batch === 'number' ? n.batch : null,
+      seeded: typeof n.seeded === 'number' ? n.seeded : null,
+      checked: Array.isArray(n.checked) ? n.checked.filter(k => typeof k === 'string') : [],
+      pending: n.pending ?? null,
+      editing: n.editing ?? null,
+      held: n.held && typeof n.held === 'object' ? n.held : {},
+      shown: n.shown && typeof n.shown === 'object' ? n.shown : {},
+      selected: typeof n.selected === 'string' ? n.selected : null,
+      more: typeof n.more === 'string' ? n.more : null,
+    }
+    rev++
+  } catch (err) {
+    p.log(`rules pane: the navigation wasn't read back: ${errText(err)}`)
+  }
+}
+
+export async function saveRulesNav(p: Ports): Promise<void> {
+  try {
+    const value: RulesStore = { v: 1, session: await p.sessionId(), nav: rulesNav }
+    await p.store.set(RULES_STORE_KEY, value)
+  } catch (err) {
+    p.log(`rules pane: the navigation wasn't saved: ${errText(err)}`)
+  }
+}
+
+let viewSeq = 0
+
+export function resetRulesViewForTests(): void {
+  rulesNav = null
+  restored = false
+  rev = 0
+  viewSeq = 0
+}
+
+// ---------------------------------------------------------------------------
+// Words, colors and glyphs (15.6: a word on every status)
+
+/**
+ * Each standing's mark (WP-DE): whatever waits on you (a proposal, a file the
+ * mod didn't write) has the needs-you mark, what's in force the done one, so
+ * a suggestion never looks like enforced policy.
+ */
+export const STATUS: Record<'proposed' | 'unverified' | 'accepted' | 'accepted (committed)', BoardStatus> = {
+  proposed: { text: 'proposed', color: MARK.needsYou.color, glyph: MARK.needsYou.glyph },
+  unverified: { text: 'unverified', color: MARK.needsYou.color, glyph: MARK.needsYou.glyph },
+  accepted: { text: 'in force', color: MARK.done.color, glyph: MARK.done.glyph },
+  'accepted (committed)': { text: 'in force (committed)', color: MARK.done.color, glyph: MARK.done.glyph },
+}
+
+export const NO_PATHS = 'no paths: applies to every gate'
+/** A rule in force with no paths. */
+export const NO_PATHS_IN_FORCE = 'no paths: applies everywhere'
+/** A ban with no paths: it reaches every gate anyway (16.5), but names nothing that must not change. */
+export const BAN_NO_PATHS = 'no paths: it reaches every gate, but protects nothing by name'
+export const MATCHES_NO_FILE = 'matches no file'
+/** A ban's paths say what must not change, so matching nothing yet isn't a warning: it reaches every gate anyway (16.5). */
+export const BAN_MATCHES_NO_FILE = 'its paths match no file yet; a ban still reaches every gate'
+
+/** An exported rule with paths (16.7, S2): Claude Code loads it only after a Read. */
+export const BINDS_AFTER_READ = 'binds after a Read of a file its paths match'
+/** The export notes drawn as warnings: a hand edit, a deletion, a worktree's other copy, an exclude (16.7). */
+export const EXPORT_EDITED = 'its Claude Code rule file was edited by hand'
+export const EXPORT_DELETED = 'its Claude Code rule file was deleted'
+const STALE_COPY = 'the copy in '
+const EXCLUDED = 'your claudeMdExcludes setting'
+/** The line above a rule in force's diff: its edited export against litter's copy. */
+export const EXPORT_DIFF = "its Claude Code rule file as edited, against litter's copy:"
+
+/** A note drawn as a warning: paths that match no file, an override (16.6), an export that isn't litter's copy or doesn't load (16.7). */
+export const flagged = (note: string): boolean =>
+  note === MATCHES_NO_FILE || / overrides /.test(note) || [EXPORT_EDITED, EXPORT_DELETED, STALE_COPY, EXCLUDED].some(x => note.startsWith(x))
+
+/**
+ * A rule in force's export as the In force tab says it (16.7): where Claude
+ * Code loads it from and whether it binds only after a Read, or why it isn't
+ * exported; a hand edit or a deletion, with what Adopt edit and Restore file
+ * do; an adoption under way; the worktrees whose copy differs; an exclude in
+ * your settings. Pure.
+ */
+export function exportNotes(v: RuleExportView, litterDir: string): string[] {
+  const at = oneLine(v.path ? shownPath(v.path, litterDir) : '', 300)
+  const out: string[] = []
+  switch (v.state) {
+    case 'exported':
+      out.push(`exported for Claude Code: ${at}${v.bindsAfterRead ? `; it ${BINDS_AFTER_READ}` : ''}`)
+      break
+    case 'pending':
+      out.push(`exported for Claude Code at the next sync: ${at}`)
+      break
+    case 'edited':
+      if (v.actual === null) out.push(`${EXPORT_EDITED} or replaced: ${oneLine(v.why ?? at, 300)}`)
+      else if (v.adoption?.status === 'proposed') out.push(`${EXPORT_EDITED} (${at}); adopting the edit is proposed: see the Proposed tab`)
+      else if (v.adoption?.status === 'dismissed') out.push(`${EXPORT_EDITED} (${at}), and you dismissed adopting it; Restore file puts litter's copy back`)
+      else out.push(`${EXPORT_EDITED} (${at}), so litter leaves it: Adopt edit proposes the edit as the next version, Restore file puts litter's copy back`)
+      break
+    case 'deleted':
+      out.push(`${EXPORT_DELETED} (${at}); litter writes it again for the next version, or now with Restore file`)
+      break
+    case 'off':
+      out.push('not exported for Claude Code (export: false)')
+      break
+    case 'litter-only':
+      out.push('not exported for Claude Code: its workflows or roles keep it to litter runs')
+      break
+    case 'none':
+      out.push(`not exported for Claude Code: ${oneLine(v.why ?? 'this session has no folder for it', 300)}`)
+      break
+  }
+  if (v.staleIn.length > 0) {
+    const n = v.staleIn.length
+    out.push(`${STALE_COPY}${n} worktree${n === 1 ? '' : 's'} differs (${v.staleIn.map(x => oneLine(x, 80)).join(', ')}): a session started there reads its own`)
+  }
+  if (v.excludedBy) out.push(`${EXCLUDED} (${oneLine(v.excludedBy, 120)}) keeps Claude Code from loading its rule file`)
+  return out
+}
+
+/** What a rule in force's export offers: adopting a hand edit (unless that's proposed or dismissed) and restoring litter's copy. */
+export function exportActions(v: RuleExportView | undefined): string[] {
+  if (!v) return []
+  if (v.state === 'deleted') return ['restore']
+  if (v.state !== 'edited' || v.actual === null) return []
+  return v.adoption && (v.adoption.status === 'proposed' || v.adoption.status === 'dismissed') ? ['restore'] : ['adopt', 'restore']
+}
+
+/** An import's source, in words: its deepwork instance and who set the guardrail there (16.8). */
+export const instanceNote = (instance: string, source?: string): string =>
+  `from deepwork instance ${oneLine(instance, 80)}${source ? `, a ${oneLine(source, 40)} guardrail` : ''}`
+
+export const proposalKey = (ref: ProposalRef): string => `${ref.store}:${ref.seq}`
+export const batchKey = (seq: number): string => `batch:${seq}`
+
+/** A proposal's key back to its ref; null for a rule id or anything else. */
+export function refOfKey(key: string): ProposalRef | null {
+  const m = /^(repo|user):([1-9][0-9]*)$/.exec(key)
+  return m ? { store: m[1] as ProposalRef['store'], seq: Number(m[2]) } : null
+}
+
+// ---------------------------------------------------------------------------
+// A rule as lines, and the diff an edit shows
+
+/** A rule's fields and sections as lines, the form an edit's diff compares. */
+export function docLines(doc: RuleDoc): string[] {
+  const out = [`type: ${doc.type}`, `paths: ${doc.applies.paths.length > 0 ? doc.applies.paths.join(', ') : 'everywhere'}`]
+  if (doc.applies.workflows?.length) out.push(`workflows: ${doc.applies.workflows.join(', ')}`)
+  if (doc.applies.roles?.length) out.push(`roles: ${doc.applies.roles.join(', ')}`)
+  out.push(`when: ${doc.applies.when}`, '## Rule', ...doc.body.rule.split('\n'))
+  if (doc.body.why) out.push('## Why', ...doc.body.why.split('\n'))
+  if (doc.body.exceptions.length > 0) out.push('## Exceptions', ...doc.body.exceptions.map(x => `- ${x}`))
+  if (doc.body.howToCheck.length > 0) out.push('## How to check', ...doc.body.howToCheck.map(x => `- ${x}`))
+  return out.map(l => oneLine(l, 300))
+}
+
+const DIFF_LINES = 120
+
+/** A line diff, old → new: `+` and `−` lines in the diff word colors, `~`-free (15.6), the rest dim. */
+export function diffSpans(before: readonly string[], after: readonly string[]): SwarmSpan[] {
+  const a = before.slice(0, 400)
+  const b = after.slice(0, 400)
+  // The longest common subsequence, then a walk.
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!)
+  const out: SwarmSpan[] = []
+  let i = 0
+  let j = 0
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      out.push({ text: `  ${a[i]}`, dim: true })
+      i++
+      j++
+    } else if (j < b.length && (i >= a.length || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) {
+      out.push({ text: `+ ${b[j]}`, color: STYLE.added })
+      j++
+    } else {
+      out.push({ text: `− ${a[i]}`, color: STYLE.removed })
+      i++
+    }
+  }
+  return out.length > DIFF_LINES ? [...out.slice(0, DIFF_LINES), { text: `… ${out.length - DIFF_LINES} more lines`, dim: true }] : out
+}
+
+// ---------------------------------------------------------------------------
+// The build
+
+type Proposal = { ref: ProposalRef; body: RuleProposeBody; status: RuleStatus; unread?: string }
+type Batch = { seq: number; body: RuleImportBody }
+
+/** Which import batch the focus names: the `rule.import` record itself, or one of the proposals it made. */
+function batchOf(imports: readonly Batch[], n: RulesNav): Batch | null {
+  if (n.batch !== null) return imports.find(b => b.seq === n.batch) ?? null
+  const ref = n.focus?.proposal
+  if (!ref || ref.store !== 'repo') return null
+  return imports.find(b => b.seq === ref.seq) ?? imports.find(b => b.body.proposals.some(x => x.store === ref.store && x.seq === ref.seq)) ?? null
+}
+
+async function readImports(p: Ports, litterDir: string): Promise<Batch[]> {
+  const ledger = await deps.readRuleLedger(p, litterDir, 'repo')
+  return ledger.records.flatMap((r: StoredRecord) => {
+    if (r.kind !== 'rule.import') return []
+    const b = r.body as Partial<RuleImportBody>
+    if (!Array.isArray(b.instances) || !Array.isArray(b.proposals) || !Array.isArray(b.preselected)) return []
+    return [{ seq: r.seq, body: b as RuleImportBody }]
+  })
+}
+
+/** Where a proposal came from, in words. */
+function provenance(b: RuleProposeBody): string {
+  if (b.import) return instanceNote(b.import.instance, b.import.source)
+  if (b.source === 'critic') {
+    const at = [b.run && `run ${oneLine(b.run, 70)}`, b.gate && `at ${oneLine(b.gate, 32)}`, b.swarm && `in swarm ${oneLine(b.swarm, 40)}`].filter(Boolean).join(' ')
+    return `proposed by a gate critic${at ? ` in ${at}` : ''}`
+  }
+  if (b.source === 'user') return 'drafted from your words (/litter:rules add)'
+  return `proposed by ${oneLine(b.source, 40)}`
+}
+
+// ---------------------------------------------------------------------------
+// What [Accept] writes (WP-DE): the one line above the button
+
+/** Where a written file is, as you'd commit it: relative to the primary checkout. */
+export function shownPath(path: string | undefined, litterDir: string): string {
+  if (!path) return ''
+  const primary = primaryOf(litterDir)
+  return primary && path.startsWith(`${primary}/`) ? path.slice(primary.length + 1) : path
+}
+
+/** Each scope's rule folder (16.1), as shownPath draws it; null where there's none (no config dir, a bare repository). */
+export type ScopeFolders = Record<RuleScope, string | null>
+
+async function scopeFolders(p: Ports, litterDir: string): Promise<ScopeFolders> {
+  const primary = primaryOf(litterDir)
+  const user = await p.configDir().then(
+    dir => userRulesDir(dir),
+    () => null,
+  )
+  return {
+    user,
+    project: primary ? shownPath(projectRulesDir(primary), litterDir) : null,
+    local: primary ? shownPath(localRulesDir(primary), litterDir) : null,
+  }
+}
+
+/**
+ * What [Accept] does to a row, in one line (report.md item 8: "highlight the
+ * consequence of Accept"): the file it writes, and who gets the rule from
+ * then on (16.5: every later run in its scope). A new rule's id is assigned
+ * at the accept, so its file is named by its scope's letter and `…`; an
+ * edit's file and version, an unverified file's path, and a preview's exact
+ * path are known. Pure.
+ */
+export function consequenceOf(c:
+  | { kind: 'no-scope' }
+  | { kind: 'new'; scope: RuleScope; folder: string | null }
+  | { kind: 'edit'; scope: RuleScope; path: string; version: number }
+  | { kind: 'file'; scope: RuleScope; path: string }
+  | { kind: 'confirm'; scope: RuleScope; path: string }): SwarmSpan[] {
+  if (c.kind === 'no-scope') return [{ text: 'Accept', bold: true }, { text: ' writes nothing until you pick a scope' }]
+  const commit = c.scope === 'project' ? ', for you to commit' : ''
+  const who: SwarmSpan = { text: `${commit}; every later run in ${c.scope} scope gets it` }
+  const at = (path: string): SwarmSpan => ({ text: path, color: STYLE.path })
+  switch (c.kind) {
+    case 'new':
+      return [{ text: 'Accept', bold: true }, { text: ' writes ' }, c.folder !== null ? at(`${c.folder}/${SCOPE_LETTER[c.scope]}-….md`) : { text: `a ${c.scope} rule file` }, who]
+    case 'edit':
+      return [{ text: 'Accept', bold: true }, { text: ' writes ' }, at(c.path), { text: ` as version ${c.version}` }, who]
+    case 'file':
+      return [{ text: 'Accept', bold: true }, { text: ' marks ' }, at(c.path), { text: ' accepted, as it stands' }, who]
+    case 'confirm':
+      return [{ text: 'Confirm accept', bold: true }, { text: ' writes ' }, at(c.path), who]
+  }
+}
+
+/**
+ * What [Accept selected] does to an import batch's checked rows, in one line:
+ * how many new files go to each scope's folder, and who gets them; with the
+ * preview open, what [Confirm accept] writes. An import's scope is project
+ * unless you picked another (16.8). Pure.
+ */
+export function batchConsequence(scopes: readonly (RuleScope | null)[], folders: ScopeFolders, confirm: boolean): SwarmSpan[] {
+  const verb: SwarmSpan = { text: confirm ? 'Confirm accept' : 'Accept selected', bold: true }
+  if (scopes.length === 0) return [verb, { text: ' writes nothing: nothing is checked' }]
+  const counts = new Map<RuleScope, number>()
+  for (const s of scopes) counts.set(s ?? 'project', (counts.get(s ?? 'project') ?? 0) + 1)
+  const out: SwarmSpan[] = [verb, { text: ' writes ' }]
+  const order = SCOPES.filter(s => counts.has(s))
+  order.forEach((s, i) => {
+    const n = counts.get(s)!
+    if (i > 0) out.push({ text: ' and ' })
+    out.push({ text: `${n} new file${n === 1 ? '' : 's'} in ` }, folders[s] !== null ? { text: `${folders[s]}/`, color: STYLE.path } : { text: `the ${s} rules` })
+  })
+  const commit = counts.has('project') ? (order.length > 1 ? ', the project ones for you to commit' : ', for you to commit') : ''
+  out.push({ text: `${commit}; every later run in ${order.join(' or ')} scope gets ${scopes.length === 1 ? 'it' : 'them'}` })
+  return out
+}
+
+/**
+ * The focused row's description (WP-DE), line by line, from the row alone:
+ * the whole wording; its type and scope; when it applies; its paths (what a
+ * ban protects), or the no-paths warning; where it came from; the notes (one
+ * that flags something in the warning color); and an edit's diff against the
+ * version in force. The pane cuts it to its rows, with [More]. Pure.
+ */
+export function describeRow(r: RulesRow): SwarmSpan[][] {
+  const lines: SwarmSpan[][] = r.rule.split('\n').map(l => [{ text: l }])
+  lines.push([{ text: r.type }, { text: ' · ', color: STYLE.faint }, r.scope ? { text: `${r.scope} scope` } : { text: '! no scope yet', color: STYLE.warning }])
+  if (r.when !== '') lines.push([{ text: 'when ', color: STYLE.muted }, { text: r.when }])
+  if (r.paths.length > 0) lines.push([{ text: r.type === 'ban' ? 'protects ' : 'paths ', color: STYLE.muted }, { text: r.paths.join(', '), color: STYLE.path }])
+  else lines.push([{ text: `! ${r.type === 'ban' ? BAN_NO_PATHS : r.kind === 'accepted' ? NO_PATHS_IN_FORCE : NO_PATHS}`, color: STYLE.warning }])
+  if (r.origin !== '') lines.push([{ text: r.origin, color: STYLE.muted }])
+  for (const n of r.notes) lines.push([flagged(n) ? { text: `! ${n}`, color: STYLE.warning } : { text: n, color: STYLE.muted }])
+  if (r.diff) {
+    lines.push([{ text: r.diffLabel ?? 'against the version in force:', color: STYLE.muted }])
+    for (const s of r.diff) lines.push([{ text: s.text, ...(s.color ? { color: s.color } : s.dim ? { color: STYLE.muted } : {}) }])
+  }
+  return lines
+}
+
+/**
+ * The view of `n.tab`, with what the navigation holds, and what each row
+ * showed (for the presses). A focused batch's preselection seeds `checked`
+ * once (`seeded`).
+ */
+export async function rulesView(
+  p: Ports,
+  litterDir: string,
+  n: RulesNav,
+): Promise<{ view: RulesPaneView; shown: Record<string, ShownRow>; batch: number | null; seeded: number | null; checked: string[] }> {
+  // What couldn't be read, on both tabs; loadRules' own problems on the In force tab.
+  const failures: string[] = []
+  const loadProblems: string[] = []
+  let loaded: LoadedRule[] = []
+  try {
+    const r = await deps.loadRules(p, litterDir)
+    loaded = r.rules
+    loadProblems.push(...r.problems.map(x => oneLine(x, 300)))
+  } catch (err) {
+    failures.push(`the rules couldn't be loaded: ${oneLine(errText(err), 240)}`)
+  }
+  let proposals: Proposal[] = []
+  try {
+    proposals = (await deps.proposalsOf(p, litterDir, { status: ['proposed'] })).filter(x => x.status === 'proposed')
+  } catch (err) {
+    failures.push(`the proposals couldn't be read: ${oneLine(errText(err), 240)}`)
+  }
+  let batch: Batch | null = null
+  if (n.batch !== null || n.focus?.proposal) {
+    try {
+      batch = batchOf(await readImports(p, litterDir), n)
+    } catch (err) {
+      failures.push(`the import batch couldn't be read: ${oneLine(errText(err), 240)}`)
+    }
+  }
+
+  const canAccept = interactive() !== false
+  const shown: Record<string, ShownRow> = {}
+  const keys = new Set<string>()
+  const fileKey = (scope: RuleScope, id: string): string => {
+    const k = keys.has(id) ? `${id}@${scope}` : id
+    keys.add(k)
+    return k
+  }
+  const inForceOf = (id: string): LoadedRule | null => loaded.find(r => r.doc.id === id && r.delivered) ?? null
+  const folders = await scopeFolders(p, litterDir)
+  /** A preview of this row's file, waiting on [Confirm accept]: its path is the exact one. */
+  const previewed = (key: string): string | null => (n.pending?.kind === 'preview' && n.pending.key === key ? shownPath(n.pending.path, litterDir) : null)
+
+  // The Proposed tab: proposals, then unverified files.
+  const batchKeys = new Set((batch?.body.proposals ?? []).map(proposalKey))
+  const checked = batch ? (n.seeded === batch.seq ? n.checked : batch.body.preselected.map(proposalKey)) : []
+  const proposalRows: RulesRow[] = []
+  for (const x of proposals) {
+    const key = proposalKey(x.ref)
+    const b = x.body
+    const held = n.held[key] ?? {}
+    const doc = b.doc
+    const type: RuleType = held.type ?? b.type ?? doc?.type ?? (b.import ? 'ban' : 'rule')
+    const paths = held.paths ?? b.paths ?? doc?.applies.paths ?? []
+    // An edit stays in its rule's scope (AD's acceptRule refuses another), so it has no scope to pick.
+    const target = b.edits ? inForceOf(b.edits.split('@')[0]!) : null
+    const scope = target ? target.scope : (held.scope ?? b.scope ?? null)
+    const inBatch = batchKeys.has(key)
+    const notes: string[] = []
+    if (x.unread) notes.push(oneLine(x.unread, 300))
+    if (b.import?.archived) notes.push('from an archived instance')
+    if (held.scope) notes.push(`scope ${held.scope}, chosen here`)
+    if (held.paths || held.type) notes.push('narrowed here: kept until you accept it')
+    if (!b.edits) notes.push('its id is assigned when you accept it')
+    let diff: SwarmSpan[] | null = null
+    if (target) diff = diffSpans(docLines(target.delivered!), doc ? docLines(doc) : clean(b.rule, 8000).split('\n'))
+    else if (b.edits) notes.push(`${oneLine(b.edits, 80)} isn't in force now`)
+    const actions = [...(canAccept ? ['accept'] : []), 'edit', 'dismiss']
+    const exact = previewed(key)
+    const consequence = !canAccept
+      ? null
+      : exact !== null && scope
+        ? consequenceOf({ kind: 'confirm', scope, path: exact })
+        : target
+          ? consequenceOf({ kind: 'edit', scope: target.scope, path: shownPath(target.path, litterDir), version: target.delivered!.version + 1 })
+          : scope
+            ? consequenceOf({ kind: 'new', scope, folder: folders[scope] })
+            : consequenceOf({ kind: 'no-scope' })
+    shown[key] = { kind: 'proposal', ref: x.ref, file: null, id: null, version: null, scope, type, paths, source: b.source, batch: inBatch ? batch!.seq : null, actions }
+    proposalRows.push({
+      key,
+      kind: 'proposal',
+      id: null,
+      version: null,
+      scope,
+      type,
+      status: STATUS.proposed,
+      when: oneLine(b.when ?? doc?.applies.when ?? '', 300),
+      rule: clean(doc?.body.rule || b.rule, 1500),
+      paths: paths.map(x => oneLine(x, 200)),
+      origin: provenance(b),
+      notes,
+      diff,
+      source: oneLine(b.source, 40),
+      actions,
+      ...(inBatch ? { checked: checked.includes(key), instance: oneLine(b.import?.instance ?? '', 80) } : {}),
+      ...(b.edits ? { edits: oneLine(b.edits, 80) } : {}),
+      ...(consequence ? { consequence } : {}),
+    })
+  }
+  // A focused batch first, grouped by instance as its record lists them.
+  const instanceRank = (r: RulesRow): number => {
+    const i = (batch?.body.instances ?? []).findIndex(inst => r.instance === oneLine(inst.id, 80))
+    return i < 0 ? Number.MAX_SAFE_INTEGER : i
+  }
+  const inBatchRows = proposalRows.filter(r => batchKeys.has(r.key)).sort((a, b) => instanceRank(a) - instanceRank(b))
+  const otherRows = proposalRows.filter(r => !batchKeys.has(r.key))
+
+  const unverifiedRows: RulesRow[] = []
+  for (const r of loaded.filter(x => x.standing === 'unverified')) {
+    const key = fileKey(r.scope, r.doc.id)
+    const id = oneLine(r.doc.id, 80)
+    const notes = [r.delivered ? `${id}@${r.delivered.version} stays in force until you accept this` : 'nothing of it is in force', `file ${oneLine(r.path, 300)}`]
+    const actions = canAccept ? ['accept'] : []
+    shown[key] = { kind: 'unverified', ref: null, file: r.path, id: r.doc.id, version: r.doc.version, scope: r.scope, type: r.doc.type, paths: r.doc.applies.paths, source: null, batch: null, actions }
+    unverifiedRows.push({
+      key,
+      kind: 'unverified',
+      id,
+      version: r.doc.version,
+      scope: r.scope,
+      type: r.doc.type,
+      status: STATUS.unverified,
+      when: oneLine(r.doc.applies.when, 300),
+      rule: clean(r.doc.body.rule, 1500),
+      paths: r.doc.applies.paths.map(x => oneLine(x, 200)),
+      origin: oneLine(r.why ?? 'its bytes are none the mod wrote when you accepted it', 300),
+      notes,
+      diff: r.delivered ? diffSpans(docLines(r.delivered), docLines(r.doc)) : null,
+      source: null,
+      actions,
+      ...(canAccept ? { consequence: consequenceOf({ kind: previewed(key) !== null ? 'confirm' : 'file', scope: r.scope, path: oneLine(previewed(key) ?? shownPath(r.path, litterDir), 300) }) } : {}),
+    })
+  }
+
+  // The In force tab: the version in force of every rule, an edited committed one's HEAD version included.
+  const inForceRows: RulesRow[] = []
+  const exportProblems: string[] = []
+  if (n.tab === 'in-force') {
+    keys.clear()
+    const files = await trackedFiles(p, litterDir)
+    // Each rule's Claude Code rule file (16.7), from the rules this build loaded.
+    let exported: RuleExportView[] = []
+    try {
+      const x = await deps.exportsOf(p, litterDir, { worktrees: true, settings: true, loaded: { rules: loaded } })
+      exported = x.views
+      exportProblems.push(...x.problems.map(s => oneLine(s, 300)))
+    } catch (err) {
+      failures.push(`the rules' Claude Code rule files couldn't be read: ${oneLine(errText(err), 240)}`)
+    }
+    for (const r of loaded) {
+      const doc = r.delivered
+      if (!doc) continue
+      const key = fileKey(r.scope, doc.id)
+      const id = oneLine(doc.id, 80)
+      const word = r.standing === 'unverified' ? 'accepted (committed)' : r.standing
+      const notes: string[] = []
+      for (const o of overrides(loaded, r)) notes.push(o)
+      if (r.standing === 'unverified') notes.push('the file has an edit you haven\'t accepted: see the Proposed tab')
+      else if (r.why) notes.push(oneLine(r.why, 300))
+      if (doc.applies.paths.length > 0 && files !== null && matchesNothing(p, doc.applies.paths, files)) {
+        notes.push(doc.type === 'ban' ? BAN_MATCHES_NO_FILE : MATCHES_NO_FILE)
+      }
+      if (proposals.some(x => x.body.edits?.split('@')[0] === doc.id)) notes.push('an edit of it is proposed: see the Proposed tab')
+      const ex = exported.find(v => v.id === doc.id && v.scope === r.scope && v.version === doc.version)
+      if (ex) notes.push(...exportNotes(ex, litterDir))
+      const at = r.standing === 'accepted' && doc.accepted?.at ? ` on ${oneLine(doc.accepted.at, 40)}` : ''
+      const origin = r.standing === 'accepted' ? `accepted in the rules pane${at}` : 'accepted through a commit: the version at HEAD'
+      const actions = ['edit', 'retire', ...exportActions(ex)]
+      // A hand-edited export, against what litter would write.
+      const diff = ex?.state === 'edited' && ex.actual !== null && ex.expected !== null ? diffSpans(clean(ex.expected, 8000).split('\n'), clean(ex.actual, 8000).split('\n')) : null
+      shown[key] = {
+        kind: 'accepted',
+        ref: null,
+        file: r.path,
+        id: doc.id,
+        version: doc.version,
+        scope: r.scope,
+        type: doc.type,
+        paths: doc.applies.paths,
+        source: null,
+        batch: null,
+        actions,
+        ...(ex?.state === 'edited' || ex?.state === 'deleted' ? { export: ex.state } : {}),
+      }
+      inForceRows.push({
+        key,
+        kind: 'accepted',
+        id,
+        version: doc.version,
+        scope: r.scope,
+        type: doc.type,
+        status: STATUS[word],
+        when: oneLine(doc.applies.when, 300),
+        rule: clean(doc.body.rule, 1500),
+        paths: doc.applies.paths.map(x => oneLine(x, 200)),
+        origin,
+        notes,
+        diff,
+        ...(diff ? { diffLabel: EXPORT_DIFF } : {}),
+        source: null,
+        actions,
+      })
+    }
+  }
+
+  const rows = n.tab === 'proposed' ? [...inBatchRows, ...otherRows, ...unverifiedRows] : inForceRows
+  const visible: Record<string, ShownRow> = {}
+  for (const r of rows) visible[r.key] = shown[r.key]!
+
+  const focusKey = n.focus?.proposal ? proposalKey(n.focus.proposal) : n.focus?.id ? (rows.find(r => r.id === n.focus!.id)?.key ?? null) : null
+  const waiting = n.pending && (visible[n.pending.key] || (batch && n.pending.key === batchKey(batch.seq))) ? n.pending : null
+  // A preview's path as you'd commit it: relative to the primary checkout.
+  const pending: RulesPending | null = waiting?.kind === 'preview' ? { ...waiting, path: shownPath(waiting.path, litterDir) } : waiting
+  const editing = n.editing && visible[n.editing.key]?.kind === 'proposal' ? n.editing : null
+  const checkedRows = inBatchRows.filter(r => r.checked === true)
+  const rulesBatch: RulesBatch | null = batch
+    ? {
+        seq: batch.seq,
+        instances: batch.body.instances.map(i => ({ id: oneLine(i.id, 80), goal: oneLine(i.goal, 200), date: i.date === null ? null : oneLine(i.date, 40), archived: i.archived === true })),
+        preselected: batch.body.preselected.map(proposalKey),
+        ...(canAccept
+          ? { consequence: batchConsequence(checkedRows.map(r => (r.scope as RuleScope | null) ?? null), folders, pending?.kind === 'preview' && pending.key === batchKey(batch.seq)) }
+          : {}),
+      }
+    : null
+  const notice = n.notice ?? (canAccept ? null : { level: 'warning' as const, text: "this session isn't interactive, so nothing can be accepted here (16.3)" })
+  const problems = n.tab === 'in-force' ? [...failures, ...loadProblems, ...exportProblems] : failures
+  // The row drawn with its description and actions: the one picked, else what a step waits on, else the one opened on, else the first.
+  const kept = (key: string | null | undefined): string | null => (key && visible[key] ? key : null)
+  const focus = kept(n.selected) ?? kept(pending?.key) ?? kept(editing?.key) ?? kept(focusKey) ?? rows[0]?.key ?? null
+  const more = n.more === 'problems' ? (problems.length > 0 ? 'problems' : null) : kept(n.more)
+  const body: RulesBody = {
+    notice,
+    counts: { proposed: proposalRows.length + unverifiedRows.length, inForce: loaded.filter(r => r.delivered).length },
+    rows,
+    batch: rulesBatch,
+    focus,
+    more,
+    problems,
+    pending,
+    editing,
+  }
+  return {
+    view: { view: 'rules', v: ++viewSeq, tab: n.tab, body },
+    shown: visible,
+    batch: batch?.seq ?? null,
+    seeded: batch?.seq ?? n.seeded,
+    checked: batch ? checked.filter(k => batchKeys.has(k)) : n.checked,
+  }
+}
+
+/** "local L-… overrides U-…" (16.6), on the local rule and on the user rule it overrides. */
+function overrides(loaded: readonly LoadedRule[], r: LoadedRule): string[] {
+  const out: string[] = []
+  const id = r.delivered?.id ?? r.doc.id
+  if (r.scope === 'local' && r.doc.overrides) {
+    const target = loaded.find(x => x.scope === 'user' && x.doc.id === r.doc.overrides)
+    if (target) out.push(`local ${oneLine(id, 80)} overrides ${oneLine(target.doc.id, 80)}`)
+  }
+  if (r.scope === 'user') {
+    for (const l of loaded) if (l.scope === 'local' && l.doc.overrides === id) out.push(`local ${oneLine(l.doc.id, 80)} overrides ${oneLine(id, 80)}`)
+  }
+  return out
+}
+
+/** The primary checkout's tracked files, once per build; null for a bare repository or when git can't say. */
+async function trackedFiles(p: Ports, litterDir: string): Promise<string[] | null> {
+  const primary = primaryOf(litterDir)
+  if (!primary) return null
+  try {
+    return await deps.lsFiles(p, primary)
+  } catch (err) {
+    p.log(`rules pane: git ls-files failed: ${errText(err)}`)
+    return null
+  }
+}
+
+/** True when none of the patterns matches a tracked file (AE's matches); a matcher that throws flags nothing. */
+function matchesNothing(p: Ports, patterns: readonly string[], files: readonly string[]): boolean {
+  try {
+    return !patterns.some(pattern => files.some(f => deps.matches(pattern, f)))
+  } catch (err) {
+    p.log(`rules pane: paths not checked against the files: ${errText(err)}`)
+    return false
+  }
+}
+
+/** The view of `tab`, focused on a rule id, a proposal or an import batch's proposals, or on nothing. */
+export async function buildRulesPane(
+  p: Ports,
+  litterDir: string,
+  tab: RulesTab,
+  focus: { id?: string; proposal?: ProposalRef } | null,
+): Promise<RulesPaneView> {
+  const n = rulesNav ?? blankRulesNav(tab, focus)
+  return (await rulesView(p, litterDir, { ...n, tab, focus })).view
+}
+
+/** The scope a proposal's [Accept] asks for, first in the list: project for an import (16.8), else user. */
+export const scopeChoices = (row: Pick<ShownRow, 'source'>): RuleScope[] =>
+  row.source === 'import' ? ['project', 'user', 'local'] : [...SCOPES]

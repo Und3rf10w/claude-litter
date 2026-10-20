@@ -1,0 +1,58 @@
+# Run from the repository root (it spends tokens), as fanout-launch says:
+#   claude plugin eval plugins/litter --scaffold --ablation none --runs 1 --no-publish \
+#     --allow-tools Bash Edit Write Workflow ToolSearch mcp__litter__record --case fanout-repair-confirm
+schema_version: "1.1"
+name: fanout-repair-confirm
+description: >-
+  /litter:fanout's launch confirmation states the repair setting (plan 15.11,
+  "Where it's set"; COMMON 2b-2, step 1), so a repair carries the user's
+  authority from their own message. The request overrides it for this run
+  (2 rounds, 4 agents) and asks to see the confirmation before launching:
+  the skill shows the tasks and settings, says in its words what a failure
+  does under auto with that budget, and launches nothing.
+tags: [litter, fanout, repair, confirmation]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: [Skill, ToolSearch, AskUserQuestion, Read, Grep, Glob, Edit, Write, Bash, Workflow, TaskStop, mcp__litter__record]
+  prompt: |
+    /litter:fanout Two independent tasks for this repository.
+
+    Task A, titled "Hello in a": it changes files and owns a/. Add a/hello.txt holding the single line "hello from a", and extend a/test.sh so it fails unless a/hello.txt holds exactly that line.
+    Task B, titled "Hello in b": it changes files and owns b/. Add b/hello.txt holding the single line "hello from b", and extend b/test.sh so it fails unless b/hello.txt holds exactly that line.
+
+    There's no shared contract. The verify command is sh check.sh, which passes today. The worktrees need no dependencies: no setup command and no directories to link. Authorized actions: the defaults. If it fails, repair it as a swarm, but with at most 2 rounds and 4 agents for this run. Merge order: A, then B. No extra rules for this run.
+
+    Don't launch yet: show me the task list and the settings you'd confirm, as text in your reply, and stop there.
+runs: 1
+graders:
+  - type: tool_used
+    name: no-launch
+    tool: Workflow
+    min: 0
+    max: 0
+  - type: tool_used
+    name: no-run-start
+    tool: mcp__litter__record
+    input_match: "run\\.start"
+    min: 0
+    max: 0
+    weight: 0.5
+  - type: regex
+    name: states-the-budget
+    pattern: "2 rounds and 4 agents"
+    flags: i
+  - type: regex
+    name: says-nothing-is-pushed
+    pattern: "nothing is pushed"
+    flags: i
+  - type: llm
+    name: states-the-repair-setting
+    weight: 2
+    criteria: |
+      The final message shows a litter fanout launch confirmation for tasks A and B, not yet launched:
+      - among the settings it states what happens if the run fails, in substance: a repair swarm takes over the integration worktree, commits fixes on the integration branch, and the mod lands the result only if it's verified and an independent check approves it, up to 2 rounds and 4 agents, and nothing is pushed;
+      - it doesn't state the default budget (3 rounds and 6 agents) as this run's;
+      - it asks for an explicit "Launch" before anything starts, and doesn't say a run was launched.

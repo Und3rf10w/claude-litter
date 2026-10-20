@@ -1,0 +1,1252 @@
+// litter's $.state contract (named in plugin.json as "types"). Self-contained:
+// no import or reference. $.state holds only what the panes draw: /clear
+// wipes it, and every run fact lives in the ledger or $.store.
+//
+// Phase 5 (WP-CA) marks five sections with begin and end banners naming
+// their owners: the board (CD), the band (CB), the cards (CC), the tasks pane
+// (CE) and the agents pane (CG). An owner edits only between its two banners;
+// every line outside them is CA's.
+//
+// Phase 5b (WP-DA) folds the six panes into one, `litter`, a section each:
+// the views below are the sections' bodies, and the hub section at the end
+// is the pane's own. Every `color` is a theme key from hooks/ui/style.ts.
+
+// ---------------------------------------------------------------------------
+// The swarm panes (package N; plan 15.5, 15.6, 15.7): the one thing in
+// $.state, and only what the panes draw (a /clear wipes it; O's rebind has N
+// draw it again). Plain data, built by hooks/swarm/view.ts from state.ts, the
+// ledgers and the other packages' read functions, and drawn by the pure
+// renderers in hooks/swarm/*.tsx. Every text
+// in a view is already cleaned (no control characters but newline) and cut;
+// every `color` is a theme key (15.6), and every status also carries a word
+// or a glyph, since dark-ansi folds several keys into one color.
+
+/** One run of text and how it's drawn. */
+export type SwarmSpan = { text: string; color?: string; dim?: boolean; bold?: boolean }
+
+/** The last action's outcome, drawn under the header. */
+export type SwarmNotice = { text: string; level: 'ok' | 'info' | 'warning' | 'error' }
+
+/** The swarm pane's views, by `view`. A read-only swarm is the browser with `readOnly`. */
+export type SwarmViewName = 'start' | 'builder' | 'proposal' | 'browser' | 'history' | 'recovery' | 'unsettled'
+
+/** One option of a view's Select. */
+export type SwarmOption = { value: string; label: string }
+
+/** What every swarm view carries. */
+export type SwarmViewCommon = {
+  /** Bumped by every write of the view. */
+  v: number
+  /**
+   * The body's first line (phase 5b, WP-DD): the swarm's name in the name
+   * color, then what the view shows and its state, muted or in a state's
+   * color with its word. The hub's header already says `litter · Swarms`.
+   */
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+}
+
+// The start screen (15.5, "Starting a swarm").
+
+export type SwarmTemplateRow = { id: string; name: string; description: string; scope: 'builtin' | 'user' | 'project' }
+export type SwarmParamField = {
+  name: string
+  list: boolean
+  description: string
+  value: string
+  /** From `git branch` and `git worktree list`, for a list parameter. */
+  suggestions: string[]
+}
+export type SwarmTemplateForm = {
+  id: string
+  name: string
+  description: string
+  /** Its parameters but `name`, which the start screen's Name fills. */
+  params: SwarmParamField[]
+  /** Why [Use template] made no draft, each `<field>: <error>`; kept until a parameter changes. */
+  errors: string[]
+}
+export type SwarmListRow = { name: string; goal: string; revision: number; nodes: number; live: boolean }
+
+/**
+ * A saved swarm that needs you (WP-DD, "wherever ⚑ is raised, the section
+ * shows it"): its current proposals (superseded ones aren't), and a live
+ * one's open questions, who asks and the first line.
+ */
+export type SwarmNeedsYou = {
+  swarm: string
+  live: boolean
+  proposals: number[]
+  /** `to` (WP-DG): where the question went, `the lead` or the parent node's name; absent or null when not recorded. */
+  questions: { who: string; text: string; to?: string | null }[]
+}
+
+export type SwarmStartView = SwarmViewCommon & {
+  view: 'start'
+  /** Why nothing here can act (no litter directory), or null. */
+  blocked: string | null
+  name: string
+  ask: string
+  templates: SwarmTemplateRow[]
+  template: SwarmTemplateForm | null
+  swarms: SwarmListRow[]
+  /** The saved swarms that need you: the banner above everything. */
+  needsYou: SwarmNeedsYou[]
+}
+
+// The builder (15.5).
+
+/** One row of the swarm tree. */
+export type SwarmTreeRow = {
+  /**
+   * The row's address: `@lead`, an orchestrator's id, or the path of ids down
+   * to a worker (`part-a/fixer`), since a worker sits under each parent that
+   * spawns it. A node nothing spawns is `~/<id>`; in a proposal, a node it
+   * removes is `−/<id>`.
+   */
+  id: string
+  /** The node's id; null for the lead. */
+  node: string | null
+  kind: 'lead' | 'orchestrator' | 'worker'
+  depth: number
+  label: string
+  detail: string
+  /** The orchestrator's identity color, which its workers take, dimmed. */
+  color: string | null
+  dim: boolean
+  /** A proposal's mark (+ added, − removed, ~ changed, ! conflict) or a problem (!), and its color. */
+  mark: string | null
+  markColor: string | null
+}
+
+/** The props of the tree's Client (hooks/swarm/tree.tsx): plain JSON. */
+export type SwarmTreeProps = {
+  /** The swarm it draws, posted back with each pick so a stale one is caught. */
+  swarm: string
+  rows: SwarmTreeRow[]
+  selected: string | null
+  /** The builder's tree: the right-click menu and the edit keys. A proposal's only selects. */
+  editable: boolean
+  /** Every worker id, for "add worker ▸". */
+  workers: string[]
+}
+
+/** Who enforces a field (15.3): `—` is an unset authority field, which nothing checks. */
+export type SwarmBadge = 'engine' | 'litter' | 'prompt' | '—'
+
+/** The inspector's groups, in its order (WP-DD): the swarm's own fields on the lead's row, a node's under the other five. */
+export type SwarmFieldGroup = 'swarm' | 'execution' | 'limits' | 'tools' | 'paths' | 'authority'
+
+/** One inspector field: a Select (its first option "not set"), an Input, or text shown only. */
+export type SwarmField = {
+  /** The element's key, `swarm:builder:<action>:<swarm>/<node>/<field>`. */
+  key: string
+  label: string
+  kind: 'select' | 'input' | 'text'
+  value: string
+  options: SwarmOption[]
+  placeholder: string
+  badge: SwarmBadge | null
+  /** What applies while it's unset ("not set: the parent's model"), or what's wrong with the value typed. */
+  note: string | null
+  noteColor: string | null
+  /** The heading it's drawn under. */
+  group: SwarmFieldGroup
+}
+
+export type SwarmInspector = { title: string; fields: SwarmField[] }
+
+export type SwarmBriefPanel = {
+  node: string
+  /** The brief's first lines, drawn as Markdown. */
+  markdown: string
+  more: boolean
+  /** A `file:` link to the saved brief, or null when it has none on disk. */
+  href: string | null
+  /** The draft's text isn't the saved file's. */
+  differs: boolean
+}
+
+export type SwarmStripRow = { glyph: string; color: string; text: string }
+
+export type SwarmSaveAsCandidate = { id: string; label: string; value: string; param: boolean }
+export type SwarmSaveAsForm = { name: string; description: string; scope: 'user' | 'project'; candidates: SwarmSaveAsCandidate[] }
+
+export type SwarmBuilderView = SwarmViewCommon & {
+  view: 'builder'
+  swarm: string
+  /** The saved revision the draft started from; 0 for a swarm never saved. */
+  base: number
+  unsaved: boolean
+  live: boolean
+  /** Why the draft can't be edited (the store can't be read), or null. */
+  blocked: string | null
+  /** The draft's goal, whole, for its own wrapping row ('' when it has none). */
+  goal: string
+  tree: SwarmTreeProps
+  inspector: SwarmInspector
+  brief: SwarmBriefPanel | null
+  /** J's validation and health rows. */
+  strip: SwarmStripRow[]
+  /** The strip waits for the next check. */
+  checking: boolean
+  askLead: string
+  saveAs: SwarmSaveAsForm | null
+  /** The lead's current proposals (staged, not decided, not superseded), by number. */
+  proposals: number[]
+  /** Those of them J can't read (a staged brief changed, its base revision gone): why, and [Reject]. */
+  unreadable: { n: number; error: string }[]
+  /**
+   * Undecided proposals a later decided proposal or a later revision
+   * superseded (J's proposalStanding): "Older proposals", muted, each with
+   * [Reject], and [Reject all older]. They don't need you.
+   */
+  superseded: number[]
+}
+
+// A lead's proposal (15.5, "Asking the lead").
+
+export type SwarmChangeRow = {
+  index: number
+  glyph: string
+  color: string
+  /** The change in words, first (WP-DD): "Add surveyor · orchestrator · delegates to reader ≤2". */
+  words: string
+  /** The raw path and value, behind [Technical diff]. */
+  path: string
+  text: string
+  reason: string | null
+  conflict: boolean
+  /** Your value, when it's a conflict: as JSON, and in words. */
+  yours: string | null
+  yoursWords: string | null
+  picked: boolean
+}
+
+export type SwarmBriefRow = {
+  node: string
+  glyph: string
+  color: string
+  reason: string | null
+  conflict: boolean
+  /** Its node is added or removed: it has no pick of its own, and `picked` is its node's (15.5). */
+  withNode: boolean
+  /** Its diff is open: `lines` holds it, base → the lead's. */
+  open: boolean
+  lines: SwarmSpan[]
+  /** A conflict's other diff, base → yours, when open; else empty. */
+  yoursLines: SwarmSpan[]
+  /** The lead's is taken. */
+  picked: boolean
+}
+
+export type SwarmProposalView = SwarmViewCommon & {
+  view: 'proposal'
+  swarm: string
+  n: number
+  /** The revision it's based on, and the one accepting it writes. */
+  from: number
+  to: number
+  tree: SwarmTreeProps
+  changes: SwarmChangeRow[]
+  briefs: SwarmBriefRow[]
+  counts: string
+  /** Its decision, once made ("accepted all", …), else null. */
+  decided: string | null
+  picked: number
+  /** [Technical diff] is open: each change's raw path and value under its words. */
+  technical: boolean
+}
+
+// The browser (15.6).
+
+export type SwarmNodeRow = {
+  /** The row's address: `lead` or the agent's id. */
+  key: string
+  /** Null for the lead. */
+  agentId: string | null
+  depth: number
+  name: string
+  /** `lead`, `orchestrator`, `worker` or `child`. */
+  role: string
+  color: string | null
+  dim: boolean
+  status: string
+  statusGlyph: string
+  statusColor: string
+  /** It's alive (running, held, settling or starting): only then are Stop and Hard stop offered. */
+  running: boolean
+  /** The call in flight, or ''. */
+  tool: string
+  /** Its finished turns; null for the lead. */
+  turns: number | null
+  /** The model requests of the turn under way (state.ts's turnSteps), or null between turns (WP-DG). */
+  steps: number | null
+  tokens: string
+  /** The last report's first line, or ''. */
+  report: string
+  /** The open question, or null (⚑). */
+  question: string | null
+  /** Where the question went (WP-DG): `the lead`, or the parent node's name; null when it wasn't recorded (an older question). */
+  questionTo: string | null
+  /** A branch-moved or rule-commit flag names it. */
+  flagged: boolean
+  /**
+   * WP-DI: the model its requests use: what you set, else what its last one
+   * named, else its spec's; null when none is known yet (and for the lead).
+   */
+  model: string | null
+  /** WP-DI: its effort, the same way; null for none known or a model that takes none. */
+  effort: string | null
+  /** WP-DI: you set its model or effort in the browser. */
+  tuned: boolean
+}
+
+export type SwarmEventRow = { at: string; who: string; text: string; color: string | null }
+
+/** A branch-moved or rule-commit event not yet acknowledged. */
+export type SwarmFlagRow = { seq: number; kind: 'branch-moved' | 'rule-commit'; text: string; running: string[] }
+
+/**
+ * O's summary, labelled as generated (WP-DG). Each progress and blocked line
+ * is spans: the members it starts with (`fixer #1 and #3:`) in the name
+ * color when they're the swarm's nodes, a progress line's leading status word
+ * in its state's color, the rest as it is (a blocked line's muted). Model
+ * text: nothing here is a ⚑ or counts as needing you; open questions and
+ * proposals do, from the swarm's state.
+ */
+export type SwarmSummaryPanel = { goal: string; progress: SwarmSpan[][]; blocked: SwarmSpan[][]; age: string; stale: boolean }
+
+export type SwarmComposer = {
+  /** The target's agentId. */
+  to: string | null
+  /** The target as sendFromBrowser takes it, `<node>#<n>`: [Send] carries it in its key. */
+  address: string | null
+  targets: SwarmOption[]
+  text: string
+  route: 'direct' | 'lead' | 'parent'
+  routes: SwarmOption[]
+}
+
+/**
+ * An agent's transcript tail, read-only: each line a row of spans (a message's
+ * first line, a tool call's name, path and outcome where the transcript holds
+ * them, "no outcome recorded" where it doesn't).
+ */
+export type SwarmTranscript = { agentId: string; name: string; readable: boolean; lines: SwarmSpan[][] }
+
+/**
+ * The Model and effort panel (WP-DI, the user's live look of 2026-10-07):
+ * opened from a node's row. What its last request named, and a select each
+ * for what you set; '' is what it was launched with.
+ */
+export type SwarmTune = {
+  agentId: string
+  name: string
+  /** What its last request named; null before its first since litter bound it. */
+  seenModel: string | null
+  seenEffort: string | null
+  model: string
+  effort: string
+  models: SwarmOption[]
+  efforts: SwarmOption[]
+  /** False on a swarm another session owns, or this one lost: the values, no selects. */
+  editable: boolean
+}
+
+/** Who owns a read-only swarm, and whether [Take over] can be offered. */
+export type SwarmOwnerPanel = { text: string; canTakeOver: boolean; why: string | null }
+
+/** One part of a repair swarm's budget: used of granted, with its word and glyph (`! … all used`, in `warning`). */
+export type SwarmBudgetPart = { used: number; of: number; text: string; glyph: string; color: string | null }
+
+/**
+ * A repair swarm's budget row (2b-2; plan 15.11, "The repair budget"): the
+ * rounds (verdicts on distinct verifies) and the agents (workers and children
+ * spawned) it used of what you approved.
+ */
+export type SwarmBudgetRow = {
+  /** The run it repairs, and the run's generation it works in. */
+  run: string
+  generation: number
+  rounds: SwarmBudgetPart
+  agents: SwarmBudgetPart
+  /** What a used-up budget means for it, or null while there's room. */
+  note: string | null
+}
+
+export type SwarmBrowserView = SwarmViewCommon & {
+  view: 'browser'
+  swarm: string
+  launch: string
+  state: 'live' | 'stopping'
+  /** Another session owns it: status, summary and transcripts only. */
+  readOnly: boolean
+  /** This session lost it to a handover. */
+  lost: boolean
+  owner: SwarmOwnerPanel | null
+  /** A repair swarm's budget (2b-2); null for any other swarm. */
+  budget: SwarmBudgetRow | null
+  summary: SwarmSummaryPanel | null
+  rows: SwarmNodeRow[]
+  flags: SwarmFlagRow[]
+  events: SwarmEventRow[]
+  /** Null when read-only or lost. */
+  composer: SwarmComposer | null
+  transcript: SwarmTranscript | null
+  /** WP-DI: the Model and effort panel, while it's open. */
+  tune: SwarmTune | null
+  /** The selected agentId. */
+  selected: string | null
+  /** The lead's current proposals for this swarm: the needs-you banner's, each with [Review]. */
+  proposals: number[]
+  /** [End swarm] was pressed: the confirm row ([Confirm end], [Cancel]) stands in for it (WP-DG). */
+  confirmEnd: boolean
+}
+
+export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }
+
+/** One instance on the recovery card: shown, never picked. */
+export type SwarmRecoveryInstance = {
+  agentId: string
+  /** `<node> #<n>`. */
+  name: string
+  state: 'alive' | 'settled' | 'gone'
+  glyph: string
+  color: string
+  report: string
+  respawnOnly: boolean
+}
+
+/**
+ * One node on the recovery card. Only an orchestrator is picked: a worker
+ * comes back through its orchestrator (15.4, "Recreating a swarm", step 4).
+ */
+export type SwarmRecoveryRow = {
+  node: string
+  kind: 'orchestrator' | 'worker'
+  pickable: boolean
+  /** It has an instance this session can resume (K's resumeTargets); else only a re-spawn. */
+  resumable: boolean
+  picked: boolean
+  /** What it needs, in words: "re-spawn only", "with part-a". */
+  note: string
+  instances: SwarmRecoveryInstance[]
+}
+
+export type SwarmRecoveryView = SwarmViewCommon & { view: 'recovery'; swarm: string; launch: string; stopping: boolean; rows: SwarmRecoveryRow[] }
+
+export type SwarmUnsettledView = SwarmViewCommon & {
+  view: 'unsettled'
+  swarm: string
+  since: string
+  nodes: { agentId: string; name: string; status: string }[]
+  calls: { name: string; tool: string; age: string }[]
+  shells: { shellId: string; name: string; age: string }[]
+  reservations: number
+}
+
+/** The Swarms section's view (the `litter` pane, phase 5b): one of the seven. */
+export type SwarmPaneView =
+  | SwarmStartView
+  | SwarmBuilderView
+  | SwarmProposalView
+  | SwarmBrowserView
+  | SwarmHistoryView
+  | SwarmRecoveryView
+  | SwarmUnsettledView
+
+// The doctor pane (15.7).
+
+export type DoctorRowView = {
+  id: string
+  glyph: string
+  color: string
+  /** The severity in a word, beside the glyph: `fails`, `warning`, `note`, `ok`. */
+  word: string
+  title: string
+  detail: string
+  /** The need, this process's value and each settings source's, one line each. */
+  values: string[]
+}
+
+export type DoctorPaneBody = {
+  /** The swarm checked, or null for none. */
+  swarm: string | null
+  title: SwarmSpan[]
+  notice: SwarmNotice | null
+  rows: DoctorRowView[]
+  errors: number
+  warnings: number
+  /** The `env` snippet for your user settings, as JSON text; null when nothing falls short. */
+  snippet: string | null
+  /** Your user settings file, for [Ask lead to add it]. */
+  settingsPath: string
+  /** The rows include [Test]'s summaryModel check. */
+  tested: boolean
+}
+
+/**
+ * The Doctor section's view (the `litter` pane). It has one view, so `view` is always
+ * `doctor`, and `body` is absent until its first check is in.
+ */
+export type DoctorPaneView = { view: string; v: number; body?: DoctorPaneBody }
+
+// ===== begin board section (owner: WP-CD) =====
+// ---------------------------------------------------------------------------
+// The board (phase 3, AF; plan section 11, decision 21): one run, drawn from
+// its ledger only, by hooks/board/view.ts. Execute runs get the gate table
+// and its detail, and the table's menu (phase 5, CD; COMMON decision 9);
+// design runs the bar × version matrix (decision 10) above their last
+// records; fanout and plan runs a header and their last records. Texts are
+// cleaned and cut, and colors are theme keys with a word or glyph beside
+// each, as in the swarm panes. Phase 5b (WP-DC): what needs you above the
+// table, each gate's reason and actions as Buttons with one primary, and
+// the empty state's next step.
+
+/** A status as drawn: its word, and the color and glyph beside it (15.6). */
+export type BoardStatus = { text: string; color: string; glyph: string }
+
+/** The run's header, left-aligned. */
+export type BoardHeader = {
+  run: string
+  workflow: string
+  /** From runState: `running`, `done`, `halted`… */
+  status: BoardStatus
+  generation: number
+  /** The repair swarm, while a repair generation is open. */
+  repairSwarm: string | null
+  /** run.json's ref, shown without `refs/heads/`. */
+  branch: string
+  /** The base commit, abbreviated. */
+  base: string
+  /** Absolute. */
+  checkout: string
+  started: string
+  ended: string | null
+  /** "ledger tampered at <seq>" when it is. */
+  tampered: string | null
+}
+
+/** A gate's state on the board. */
+export type BoardGateState = 'landed' | 'in progress' | 'halted' | 'waiting' | 'repairing'
+
+/**
+ * What the gate table's menu does for a row (COMMON decision 9): `replay`
+ * fills `/litter:amend <gate> ` into the prompt, `note` opens the critic's
+ * verdict file, `copy` copies the land's full commit id.
+ */
+export type BoardGateAction = 'replay' | 'note' | 'copy'
+
+/** One gate row: `args.gates`', or one of the chain's earlier lands (`earlier`). */
+export type BoardGateRow = {
+  id: string
+  title: string
+  state: BoardGateState
+  color: string
+  glyph: string
+  /** Counted from the gate's verifies; 0 before the first. */
+  attempt: number
+  /** The try the table shows (WP-DC): a gate in progress is on the one after a rejected attempt, and on its first before any verify; else `attempt`. */
+  attemptNow: number
+  maxAttempts: number
+  /** The last verdict's failing dimensions (`plan_adherence`…), empty when it passed or there is none. */
+  failing: string[]
+  /** Absolute: `verdicts/<gate>-<attempt>.md`, or null before a verdict. */
+  verdictFile: string | null
+  /** The land's commit, abbreviated, or null. */
+  commit: string | null
+  /** The land's full commit id (40 or 64 hex), the land record's or `args.landed`'s; null when there's none or it isn't a full id. */
+  oid: string | null
+  /** Landed by an earlier run of the chain, named here. */
+  earlier: string | null
+  /** The menu's items for this row, each only where it applies: `replay` once the run has ended, `note` with a verdict file, `copy` with an `oid`. */
+  actions: BoardGateAction[]
+}
+
+/** One cell of the gate table as the render laid it out (hooks/board/pane.tsx, gateLayout): its text padded to its column, the gap after it included, and its theme key. */
+export type BoardGateCell = { text: string; color?: string }
+
+/** The gate table laid out at the width it's drawn at: each row's cells (the id, the state, the try, the commit, the failing dimensions, the title: those that fit), and the line under the rows. */
+export type BoardGateLayout = { cells: BoardGateCell[][]; hint: string }
+
+/** The props of the gate table's Client (hooks/board/gates.tsx): plain JSON. */
+export type BoardGatesProps = {
+  /** The run it draws, posted back with each pick so a stale one is caught. */
+  run: string
+  rows: BoardGateRow[]
+  selected: string | null
+  /** Added by the render (the view has no width): the rows as the Client draws them. Absent, the module draws each row's id, state and title. */
+  layout?: BoardGateLayout
+}
+
+/** The selected gate's detail. */
+export type BoardGateDetail = {
+  gate: string
+  /** The last verdict's dimensions, in VERDICT's order, each with its word (`plan adherence`); empty before a verdict. */
+  dimensions: { name: string; word: string; pass: boolean; evidence: string; gaps: string[] }[]
+  /** The attempt the last verdict judged (the verify it cites); null before a verdict, or when the ledger doesn't say. */
+  verdictAttempt: number | null
+  /** The last verify: its id, how it ended (howEnded's words), and its log folder, absolute. */
+  verify: { id: string; ended: string; log: string } | null
+  /** The last verdict's `plan_gap`, or the executor's when it stopped on one after that verdict (WP-AH); else ''. */
+  planGap: string
+  /**
+   * Whose plan gap it is, and on which attempt: the critic's, on the attempt
+   * its verdict judged, or the executor's, on the attempt it stopped on before
+   * it was judged. Null when planGap is ''; attempt null when the ledger doesn't say.
+   */
+  gapBy: { who: 'critic' | 'executor'; attempt: number | null } | null
+  /** The last verdict's `rule_clash`, or '' when it names none (or predates it), or the executor stopped after it. */
+  ruleClash: string
+  /** Why the gate stands where it does, in plain words: "halted: the critic named a plan gap on attempt 2". */
+  reason: string
+  /**
+   * The gate's actions as the detail's Buttons (decision 9; the menu is a
+   * shortcut, not the only way): `board:<action>:<gate>`, each only where its
+   * row has it, the state's one primary first (a halted gate's critic note, an
+   * ended run's landed gate's copy), then the others in that order.
+   */
+  actions: BoardButton[]
+  /** [More] was pressed: the evidence and the gaps drawn whole, not cut to a line. */
+  more: boolean
+}
+
+/** A rule version the run delivered (`run.json.rules`), with its standing now (AD's loadRules). */
+export type BoardRuleRow = { ref: string; standing: string; color: string }
+
+/** One of the run's proposals, marked "proposed, not accepted"; `waiting` while that's so, which the needs-you line counts. */
+export type BoardProposalRow = { text: string; source: string; gate: string | null; label: string; waiting: boolean }
+
+/**
+ * A line above the table (WP-DC): what needs you (`needs-you`, drawn with
+ * `⚑`: a halt on a gate, a plan gap or a rule clash, a run that halted or
+ * needs you, a proposal of this run waiting), or what runs on its own within
+ * its budget (`activity`, drawn with `↻`: a gate being retried, a repair swarm).
+ */
+export type BoardAttention = { kind: 'needs-you' | 'activity'; text: string }
+
+/** A next step an empty board names: the command in the link color, then what it does. */
+export type BoardNextStep = { command: string; does: string }
+
+/** No run to show: why, the next steps as commands, and the newest run of any workflow for [Open], when there is one. */
+export type BoardEmpty = { what: string; next: BoardNextStep[]; newest: { run: string; workflow: string } | null }
+
+/** One record of a fanout, plan or design run: its kind and a short summary. */
+export type BoardRecordRow = { seq: number; kind: string; text: string }
+
+/**
+ * One cell of the design matrix (COMMON decision 10), from the latest verdict
+ * on that version: `✓` PASS, `~` CONDITIONAL or `✕` FAIL, the last two
+ * followed by the gap kind's first letter, or `·` not judged; with its theme key.
+ */
+export type BoardMatrixCell = { text: string; color: string }
+
+/** One bar item's row: its id, its text, a cell per version shown. `outside`: an id a verdict names that the bar doesn't have. */
+export type BoardMatrixRow = { id: string; text: string; cells: BoardMatrixCell[]; outside: boolean }
+
+/** One version's line under the matrix: its latest verdict's overall (or `not judged`), its proposal's sha256 abbreviated, and whether the checkout changed while it was judged. */
+export type BoardVersionLine = { version: string; overall: string; color: string; sha: string; sourceChanged: boolean }
+
+/** A design run's bar × version matrix, above its records. */
+export type BoardDesign = {
+  /** The versions shown, oldest first: the last 8. */
+  versions: string[]
+  /** How many earlier versions aren't shown. */
+  hidden: number
+  /** The bar's items in its order (its rule items included), then the ids outside it. */
+  rows: BoardMatrixRow[]
+  /** The glyphs and the gap kinds' letters, spelled out. */
+  legend: string
+  /** One per version shown. */
+  lines: BoardVersionLine[]
+}
+
+/** What [Plan], [Diff G<n>] or the menu's critic note opened in the pane, or null. */
+export type BoardSection = {
+  kind: 'plan' | 'diff' | 'verdict'
+  title: string
+  /** Absolute: the plan, proposal or verdict file, or null for a diff. */
+  path: string | null
+  text: string
+}
+
+/** One of the board's buttons; `primary` for the view's one main action. */
+export type BoardButton = { key: string; label: string; primary?: boolean }
+
+export type BoardBody = {
+  /** An exception (a refused record tool, an unreadable run.json) or the last action's outcome; drawn above everything. */
+  notice: SwarmNotice | null
+  /** Null when there is no run to show. */
+  header: BoardHeader | null
+  /** What needs you, then what runs on its own, in that order; drawn before the table. */
+  attention: BoardAttention[]
+  /** Execute only. */
+  gates: BoardGatesProps | null
+  detail: BoardGateDetail | null
+  /** Design only. */
+  design: BoardDesign | null
+  /** The last 30, for the other workflows; empty for execute. */
+  records: BoardRecordRow[]
+  rules: BoardRuleRow[]
+  proposals: BoardProposalRow[]
+  section: BoardSection | null
+  /** The run's material, all secondary: [Plan], [Diff G<n>] (the selected landed gate's), [Rules] and [Close], those that apply. The gate's own actions are the detail's. */
+  buttons: BoardButton[]
+  /** Set when there is no run to show (`header` null). */
+  empty: BoardEmpty | null
+  /** The run's ledger head the view was built from, so a rebuild with nothing new is skipped. */
+  stamp: string
+}
+
+/**
+ * The Runs section's view, the board (the `litter` pane). `run` is the run shown, null before one is
+ * picked; `body` is absent until the first build is in.
+ */
+export type BoardView = { view: 'board'; v: number; run: string | null; body?: BoardBody }
+// ===== end board section (owner: WP-CD) =====
+
+// ---------------------------------------------------------------------------
+// The rules pane (phase 3, AF; plan 16.3, 16.8): the only place a rule is
+// accepted, dismissed or retired. Built by hooks/rules/paneview.ts from AD's
+// store. Phase 5b (WP-DE): the rows are an in-pane list, the focused row's
+// description beside or under it, and what [Accept] writes on one line.
+
+export type RulesTab = 'proposed' | 'in-force'
+
+/** One row: a proposal, an unverified rule file, or a rule in force. */
+export type RulesRow = {
+  /** The row's own key: a proposal's `<store>:<seq>`, a file's rule id. Its elements are `rules:<action>:<key>`. */
+  key: string
+  kind: 'proposal' | 'unverified' | 'accepted'
+  /** Null for a proposal, which gets its id at [Accept]. */
+  id: string | null
+  version: number | null
+  /** A proposal's own or picked scope (an edit's is its rule's); null: none yet. */
+  scope: string | null
+  type: string
+  /** Its word, color and glyph: `proposed` or `unverified` (needs you), `in force` or `in force (committed)` (done). */
+  status: BoardStatus
+  when: string
+  rule: string
+  /** Empty: the description's no-paths warning (paneview.ts's NO_PATHS, NO_PATHS_IN_FORCE, a ban's BAN_NO_PATHS). */
+  paths: string[]
+  /** Where it came from, in words: a proposal's source, why a file reads as unverified, how a rule in force was accepted. */
+  origin: string
+  /** "local L-… overrides U-…", "matches no file", what stays in force, a proposal's id to come. */
+  notes: string[]
+  /** An edit's diff against the version in force; for a rule in force, its hand-edited Claude Code rule file against litter's copy. */
+  diff: SwarmSpan[] | null
+  /** What `diff` compares, as the description's line above it; absent: "against the version in force:". */
+  diffLabel?: string
+  source: string | null
+  /** The buttons it has: `accept`, `edit`, `dismiss`, `retire`; a rule in force whose export was edited or deleted, `adopt` and `restore`. */
+  actions: string[]
+  /** In an import batch: whether it's checked. */
+  checked?: boolean
+  /** In an import batch: the deepwork instance it came from (the batch's `instances[].id`). */
+  instance?: string
+  /** A proposal that edits a rule: the `id@version` it edits. Its scope is that rule's, so it has no scope to pick. */
+  edits?: string
+  /** What [Accept] does, as one line: the file it writes and who gets the rule. Absent where there's no [Accept]. */
+  consequence?: SwarmSpan[]
+}
+
+/** A focused import batch (16.8; decision 3). */
+export type RulesBatch = {
+  /** The `rule.import` record's seq. */
+  seq: number
+  instances: { id: string; goal: string; date: string | null; archived: boolean }[]
+  /** The row keys it preselected. */
+  preselected: string[]
+  /** What [Accept selected] (or, with its preview open, [Confirm accept]) writes for the checked rows, as one line. Absent where nothing can be accepted. */
+  consequence?: SwarmSpan[]
+}
+
+/** What a press is waiting on: a scope to accept into, a project file to confirm, a retire to confirm, or a hand-edited export's restore to confirm. */
+export type RulesPending =
+  | { kind: 'scope'; key: string }
+  | { kind: 'preview'; key: string; path: string; text: string }
+  | { kind: 'retire'; key: string }
+  | { kind: 'restore'; key: string }
+
+export type RulesBody = {
+  notice: SwarmNotice | null
+  counts: { proposed: number; inForce: number }
+  rows: RulesRow[]
+  batch: RulesBatch | null
+  /** The row picked (a press on it, [next], [previous]), else the one the pane was opened on, else the first: its description and its actions are drawn. Null with no rows. */
+  focus: string | null
+  /** What [More] opened, taking the body: a row's whole description (its key), or `problems`; null when nothing is. */
+  more: string | null
+  /** loadRules' problems, shown on the In force tab. */
+  problems: string[]
+  pending: RulesPending | null
+  /** A proposal's paths and type as the pane holds them until [Accept]; `error` is narrowPaths' reason. */
+  editing: { key: string; paths: string; type: string; error: string | null } | null
+}
+
+/** The Rules section's view (the `litter` pane); `body` is absent until the first build is in. */
+export type RulesPaneView = { view: 'rules'; v: number; tab: RulesTab; body?: RulesBody }
+
+// ===== begin band section (owner: WP-CB) =====
+// ---------------------------------------------------------------------------
+// The band above the prompt (phase 5; COMMON decisions 7, 11, 12): a row per
+// active run and live swarm. Built by hooks/band/view.ts, drawn by
+// hooks/band/render.tsx above the tree of the plugins beneath. Texts are
+// cleaned and cut; colors are theme keys with a word or glyph beside each.
+// It draws no ask rows (WP-CK): the permission ask line is a transcript row.
+
+/**
+ * One of a row's buttons: its key (`band:<action>[:<arg>]`), its label, and
+ * its hotkey digit, if any. The band sets none (decision 7: a bare digit in
+ * an empty composer would press it instead of typing).
+ */
+export type BandButton = { key: string; label: string; hotkey?: string }
+/**
+ * What a row is, so the render knows what to fold into the `+<k> more` row
+ * when the band has fewer rows than the view: the swarms. A row without a
+ * kind is kept whole, as a run's is.
+ */
+export type BandRowKind = 'run' | 'ended' | 'swarm' | 'more'
+/**
+ * One row: its key (the run's or the swarm's with its state, which [Hide]
+ * names), its text as spans, and its buttons.
+ */
+export type BandRow = { key: string; kind?: BandRowKind; spans: SwarmSpan[]; buttons: BandButton[] }
+/** The band's view; with no rows the band draws nothing of litter's. */
+export type BandView = { view: 'band'; v: number; rows: BandRow[] }
+// ===== end band section (owner: WP-CB) =====
+
+// ===== begin cards section (owner: WP-CC) =====
+// ---------------------------------------------------------------------------
+// The finished-run cards (phase 5; COMMON decision 8): a litter run's
+// task-notification row redrawn as a short verdict card, by the row's
+// `task.id`. Built by hooks/card/view.ts, drawn by hooks/card/render.tsx.
+
+/** One card: the notification's task, its run, a title, two to four lines, and [Board]. */
+export type CardView = { taskId: string; run: string; title: SwarmSpan[]; lines: SwarmSpan[][]; buttons: BandButton[] }
+/** Every card built, by the notification's `task.id`. */
+export type CardsView = { view: 'cards'; v: number; byTask: Record<string, CardView> }
+// ===== end cards section (owner: WP-CC) =====
+
+// ===== begin tasks section (owner: WP-CE) =====
+// ---------------------------------------------------------------------------
+// The tasks pane (phase 5; COMMON decisions 4, 15, 16): a task list's tasks,
+// filtered, sorted and edited in place. Built by hooks/tasks/view.ts from
+// hooks/team/store.ts, drawn by hooks/tasks/pane.tsx. Texts are cleaned and
+// cut; every status pairs its theme key with a glyph and a word. Phase 5b
+// (WP-DF): no title of its own, the first line names the list shown; the
+// picker and the tasks are the chrome's lists, a task's right-click menu
+// marks it or opens it.
+
+/** Which tasks the rows show. */
+export type TasksFilter = 'all' | 'pending' | 'in_progress' | 'completed'
+/** What the rows are sorted by (ties by id). */
+export type TasksSort = 'id' | 'status' | 'owner' | 'subject'
+
+/** One task row. Its keys carry `list`, so a press drawn for another list is caught. */
+export type TasksRow = {
+  id: string
+  /** pending `·`, in progress `▸`, completed `✓`, each in its theme key. */
+  status: BoardStatus
+  /** Null: unowned. */
+  owner: string | null
+  /** The ids it's blocked by that aren't completed (a missing one counts, as TaskList counts it); empty when it isn't blocked. */
+  blockedBy: string[]
+  /** One line, cut. */
+  subject: string
+  selected: boolean
+  /** The task's description on one line, cut; '' for none (the focused row's description, with `links`). */
+  description: string
+  /** "blocks #4 · blocked by #1 #2", or ''. */
+  links: string
+  /** Its menu's marks, each where the status isn't that already, and Assign to… where an owner can be picked (a member to pick, or one to clear). */
+  can: { start: boolean; complete: boolean; assign: boolean }
+}
+
+/** One list the picker offers: its row's key is `tasks:pick:<value>`. */
+export type TasksListOption = {
+  /** The list's name. */
+  value: string
+  /** The name, cut. */
+  label: string
+  /** "this session", "this session · team" or "team". */
+  kind: string
+  /** This session's own list (decision 15). */
+  mine: boolean
+  /** Its open tasks (pending or in progress); null when only its files were counted. */
+  open: number | null
+  /** Its task files. */
+  total: number
+  /** The focused row's description: its tasks, its team's lead and members, and its folder. */
+  description: string
+}
+
+/** The selected task's editor: the file's values, or what you typed, held in the navigation until [Save]. */
+export type TasksEditor = {
+  id: string
+  /** Null when the file's subject is too long to edit here. */
+  subject: string | null
+  /** The description in a one-line field, each line break as `⏎`; null when it's too long to edit here. */
+  description: string | null
+  /** The description as the file holds it, cleaned, when it runs past one line. */
+  descriptionText: string | null
+  status: string
+  statuses: SwarmOption[]
+  /** '' for none. */
+  owner: string
+  owners: SwarmOption[]
+  /** "blocks #4 · blocked by #1 #2", or ''. */
+  links: string
+  /** Something you typed or picked differs from the file as the edit began. */
+  dirty: boolean
+  /** The file's mtime moved since the edit began: [Save] refuses and [Reload] is offered. */
+  changed: boolean
+  /** How [Save] writes it: TaskUpdate, or the locked direct write (COMMON decision 4). */
+  via: 'tool' | 'direct'
+}
+
+export type TasksBody = {
+  /**
+   * The first line (WP-DF): "this session", or `<label><name>` with the name
+   * in the name color ("team team-a"), and its counts; `name` null for the
+   * first form.
+   */
+  head: { label: string; name: string | null; note: string | null }
+  notice: SwarmNotice | null
+  /** The list shown, by its folder name (the keys' `list`); null when there's none. */
+  list: string | null
+  /** The list picker: this session's first, then each team's. A team list with no tasks is left out, but for this session's, the one shown and the one named, until [Show all] (WP-DA2). */
+  lists: TasksListOption[]
+  /** The picker's note of the lists left out ("13 empty session teams hidden"); null for none. */
+  hidden: string | null
+  /** How many it left out. */
+  hiddenCount: number
+  /** [Show all] is on: the empty team lists are listed too. */
+  showEmpty: boolean
+  /** [Change] opened the picker where it's folded (inline, or a short dock). */
+  picking: boolean
+  /** The shown list's name. */
+  listName: string | null
+  filter: TasksFilter
+  counts: Record<TasksFilter, number>
+  sort: TasksSort
+  rows: TasksRow[]
+  /** What stands in for the rows when there are none (a list that went empty says so); null with rows. */
+  empty: string | null
+  /** Task files that couldn't be read, one line each (drawn as notices above the lists, the first few). */
+  problems: string[]
+  editor: TasksEditor | null
+}
+/** The Tasks section's view (the `litter` pane); `body` is absent until the first build is in. */
+export type TasksPaneView = { view: 'tasks'; v: number; body?: TasksBody }
+// ===== end tasks section (owner: WP-CE) =====
+
+// ===== begin agents section (owner: WP-CG) =====
+// ---------------------------------------------------------------------------
+// The agents pane (phase 5; COMMON decisions 5, 6, 16): agents, their
+// inboxes and transcripts, a composer and [Stop]. Built by
+// hooks/agents/view.ts, drawn by hooks/agents/pane.tsx. Texts are cleaned and
+// cut; colors are theme keys with a word or glyph beside each. Phase 5b
+// (WP-DF): only teams that run unless asked, the picker's and the roster's
+// descriptions, and the transcript a window the wheel moves.
+
+/** A status as drawn: its word, and the glyph and color beside it (15.6); `dim` for a member not in this session. */
+export type AgentsStatus = { text: string; glyph: string; color: string; dim?: boolean }
+
+/** One row: an agent of this session (keyed by its id) or a member of the team shown (keyed by its name). */
+export type AgentsRow = {
+  key: string
+  /** Its name, else its description (an agent of this session), cleaned and cut. */
+  name: string
+  /** Its agent type, or '' when the team's config names none. */
+  type: string
+  status: AgentsStatus
+  /** Entries in its inbox, all unread (the engine drops one once it's delivered); null when it has no inbox or it couldn't be read. */
+  unread: number | null
+  /** The focused row's description (WP-DF): the selected agent's last report or tool, else its task's own words when they aren't its name; '' for none. */
+  description: string
+  /** What its right-click menu offers today: a message where one reaches it, its transcript where this session has it, [Stop] where it's running or waiting. */
+  can: { message: boolean; transcript: boolean; stop: boolean }
+  /**
+   * A node of a live swarm (swarm/state.ts's binding; WP-DF): `name` is
+   * labelled by its node, and this is its swarm, drawn muted after it
+   * ("· swarm <swarm>"), and its engine description, muted ('' for none, or
+   * when it only repeats the swarm and the node). Null for any other agent.
+   */
+  swarm: { name: string; said: string } | null
+}
+
+/** One message a swarm node sent or got, from its launch ledger (`swarm.event`, kind `message`): who to whom, when, and the message's first line. */
+export type AgentsSwarmMessage = { from: string; to: string; at: string; line: string }
+
+/** One pending inbox entry: who it's from, when, and its text in at most 3 lines. */
+export type AgentsInboxEntry = { from: string; at: string; lines: string[] }
+
+/** The selected row's inbox, transcript, composer target and [Stop]. */
+export type AgentsSelected = {
+  key: string
+  name: string
+  /** Null when it has no inbox (it isn't a team's member). */
+  inbox: { entries: AgentsInboxEntry[]; hidden: number; error: string | null } | null
+  /**
+   * Null for a member not in this session: its transcript is its own
+   * session's. `lines`: its last 200 lines, oldest first, which the pane
+   * shows a window of (the wheel moves it; the hub keeps its offset from the
+   * newest, `agents:lines`); each line is spans, a sender's name and a tool's
+   * name in their own colors (WP-DF). `total`: every line it has.
+   */
+  transcript: { readable: boolean; lines: SwarmSpan[][]; total: number } | null
+  /** How [Send] reaches it, in words; null when nothing here sends to it (this session's own lead, a team that ended). */
+  sendNote: string | null
+  /** [Stop], for this session's agents that are running or waiting; `armed` while a second press stops it (decision 6). */
+  stop: { armed: boolean } | null
+  /**
+   * A node of a live swarm (WP-DF): it has no inbox, since litter routes its
+   * messages through the engine, so in the inbox's place the messages its
+   * launch ledger records to and from it, the newest AGENTS_MESSAGES of them,
+   * oldest first; `hidden` counts the earlier ones, `error` says what
+   * couldn't be read. Null for any other agent.
+   */
+  swarm: { name: string; node: string; messages: AgentsSwarmMessage[]; hidden: number; error: string | null } | null
+}
+
+/** One choice of the picker (WP-DF): this session, or a team. */
+export type AgentsOption = {
+  /** Its scope token: `session`, or `team.<name, URI-encoded>`. */
+  value: string
+  label: string
+  /** Its members; null for this session. */
+  members: number | null
+  /**
+   * Whether it's running (WP-DF §0): this session; a team this session lists
+   * a member of or leads, or whose lead session the engine's registry lists.
+   * Null when the registry can't be read, so nobody can tell.
+   */
+  active: boolean | null
+  /** The focused row's description: its lead's folder, when it was made, its members. */
+  description: string
+}
+
+export type AgentsBody = {
+  /** The body's first line: `this session`, or `team <name>` (the name null for this session), then its note, muted. */
+  head: { team: string | null; note: string }
+  notice: SwarmNotice | null
+  /** The team shown isn't running: the one notice that says so, and there's no composer (WP-DF §0); null otherwise. */
+  ended: string | null
+  /** The picker's value: `session`, or `team.<name, URI-encoded>`. Every key of the view carries it. */
+  scope: string
+  /** This session first, then each team, newest first: the active ones, the one shown and the one named, or every team with [Show all]. */
+  options: AgentsOption[]
+  /** Teams left out of the picker because they ended; 0 with [Show all]. */
+  hiddenTeams: number
+  /** [Show all] is on: the ended teams are listed too. */
+  showAll: boolean
+  /** [Change] opened the picker where it's folded to one line (inline, a short pane). */
+  picking: boolean
+  rows: AgentsRow[]
+  /** Rows past the cap, not shown. */
+  hiddenRows: number
+  selected: AgentsSelected | null
+  /**
+   * The composer's Input: its key (`agents:text:<generation>`, a new one when
+   * the pane clears or restores the field) and the text it's drawn holding;
+   * the person's typing is kept in the pane's navigation, not here. `to` is
+   * the selected row's name when [Send] reaches it, else null (a team's view
+   * keeps the composer for [Broadcast]). Null when there's nothing to send to.
+   */
+  composer: { key: string; text: string; to: string | null } | null
+  /** The team shown, for [Broadcast to <team>]; null for this session. */
+  broadcast: string | null
+  /** What couldn't be read: the agent list, the teams, an inbox, the team named. */
+  problems: string[]
+}
+/** The Agents section's view (the `litter` pane); `body` is absent until the first build is in. */
+export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
+// ===== end agents section (owner: WP-CG) =====
+
+// ===== begin hub section (owner: WP-DA) =====
+// ---------------------------------------------------------------------------
+// The one pane, `litter` (phase 5b): a header, the section strip, and the
+// shown section's body. Built by hooks/ui/hub.ts, drawn by hooks/ui/pane.tsx
+// through each section's body renderer. Each section keeps its own view
+// above; this holds only what the hub draws itself.
+
+/** The pane's sections, in the strip's order (hotkeys 1–8). */
+export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'stats' | 'doctor'
+
+/** One section in the strip. */
+export type HubTab = {
+  section: HubSection
+  label: string
+  /**
+   * What the strip draws beside the label: the band's active runs, the live
+   * swarms, the proposed rules, the open tasks, the running agents. Null when
+   * there's nothing to count, or the section hasn't been read yet.
+   */
+  count: number | null
+  /** Something there waits on you: `⚑` beside it. */
+  needsYou: boolean
+}
+
+/**
+ * One row of Home (WP-DB): its mark (a state's glyph and word, in its key),
+ * what it is in words (cleaned and cut; for a run or a swarm, the band's own
+ * words without `litter · `), and its [Open]'s key.
+ */
+export type HomeRow = {
+  /** `home:open:<section>[:<arg>]` (a lead proposal's: `home:open:swarms:<swarm>/<n>`), `#<n>` after it where two rows open the same place. */
+  open: string
+  mark: { glyph: string; word: string; color: string }
+  spans: SwarmSpan[]
+}
+
+/** One of Home's lines for another section: its label, what it has to say, and its [Open]'s key. */
+export type HomeLine = { open: string; label: string; text: string }
+
+/**
+ * Home's part of the hub's view (WP-DB), from module memory as the strip's
+ * counts are: what needs you, one row for each thing that waits (a node's
+ * open question, a lead proposal, the rules proposed or unverified, a run
+ * that ended wanting a decision), its [Open] landing on it; what runs
+ * (the band's open runs and live swarms), what ended inside the band's
+ * window, and a line for each other section with something to say.
+ */
+export type HomeView = {
+  needsYou: HomeRow[]
+  running: HomeRow[]
+  ended: HomeRow[]
+  /** The window `ended` covers: the bandEndedMinutes option. */
+  endedMinutes: number
+  others: HomeLine[]
+}
+
+/**
+ * The hub's view: the section shown, the header's live line, and the strip.
+ * WP-DA2: `focus`, the element the pane's ring is on (ui.focus), and `lists`,
+ * each in-pane list's window offset by the list's id (ui.scroll); both
+ * absent before the first of either. WP-DB: `home`, Home's rows; absent
+ * before the first write of a hub that has them.
+ */
+export type HubView = {
+  view: 'hub'
+  v: number
+  section: HubSection
+  live: SwarmSpan[]
+  tabs: HubTab[]
+  focus?: string | null
+  lists?: Record<string, number>
+  home?: HomeView
+}
+
+/** One row of an in-pane list's Client (hooks/ui/listmenu.tsx): laid out by hooks/ui/list.tsx, plain JSON. */
+export type ListClientRow = {
+  /** The item's key: a click presses it. */
+  key: string
+  /** The label and its columns, padded to the list's widths. */
+  text: string
+  /** `text` cell by cell, each in its own color (the cell's, or muted when dim): joined, they are `text`. */
+  spans: { text: string; color?: string; bold?: boolean }[]
+  description: string
+  selected: boolean
+  /** The right-click menu: each presses its `key`. */
+  actions: { key: string; label: string; color?: string }[]
+}
+
+/** The props of an in-pane list's Client: the window's rows, what's outside it, and where the description goes. */
+export type ListClientProps = {
+  /** The list's id, posted back with each pick. */
+  list: string
+  rows: ListClientRow[]
+  above: number
+  below: number
+  offset: number
+  /** The window's last offset. */
+  max: number
+  /** The description beside the rows, else on the status line. */
+  beside: boolean
+  /** The element the pane's ring is on, or null. */
+  focused: string | null
+  /** The body's columns as the hooks laid the rows out, 0 when unbounded. */
+  width: number
+}
+// ===== end hub section (owner: WP-DA) =====
+
+// ===== begin stats section (owner: WP-DH) =====
+// ---------------------------------------------------------------------------
+// Stats (phase 5b, WP-DH): what this session has spent, its context and its
+// rate limits, then each swarm's spend since launch and its tokens, the
+// lead's and each node's. Built by hooks/stats/view.ts, drawn by
+// hooks/stats/pane.tsx. Every figure is in words already (fmtTokens, `$1.23`).
+
+/** Tokens in words: uncached input, cache reads, cache writes, output, each `fmtTokens`'d; `turns` finished. */
+export type StatsTokens = { input: string; cacheRead: string; cacheWrite: string; output: string; turns: number }
+
+/** One row of a swarm's table: the lead's (its turns while the swarm was live), or a node's. */
+export type StatsRow = {
+  key: string
+  name: string
+  /** Its name's color: an orchestrator's own, the lead's; null for the name color. */
+  color: string | null
+  /** Its status glyph and color (▸ running); null for none. */
+  mark: { glyph: string; color: string } | null
+  tokens: StatsTokens
+}
+
+/** One live swarm. */
+export type StatsSwarm = {
+  name: string
+  /** `▸ live 2h 14m`, and its color. */
+  state: { text: string; color: string }
+  /** `$8.10`, or null before the first reading (the host keeps no cost ledger, or none was read yet). */
+  spend: string | null
+  /** What the spend counts, muted. */
+  spendNote: string
+  /** The lead's and every node's together. */
+  tokens: StatsTokens
+  /** The lead first, then its nodes in the tree's order. */
+  rows: StatsRow[]
+  /** Rows past the cap, not shown. */
+  hiddenRows: number
+}
+
+/** One rate-limit window: `5-hour`, `7-day`, `spend limit`; `used` as `23%`; `resets` in words or null; its color by how full. */
+export type StatsLimit = { label: string; used: string; resets: string | null; color: string }
+
+export type StatsBody = {
+  session: {
+    /** `$12.34`, or null where the host keeps no cost ledger. */
+    spend: string | null
+    /** `45k of 200k tokens · 22%`, or null before the first response. */
+    context: string | null
+    limits: StatsLimit[]
+  }
+  swarms: StatsSwarm[]
+  /** What couldn't be read. */
+  problems: string[]
+}
+
+/** The Stats section's view (the `litter` pane); `body` is absent until the first build is in. */
+export type StatsPaneView = { view: 'stats'; v: number; body?: StatsBody }
+// ===== end stats section (owner: WP-DH) =====
+
+declare module 'claude-code' {
+  interface PluginState {
+    litter: {
+      board: BoardView | null
+      rulesPane: RulesPaneView | null
+      swarmPane: SwarmPaneView | null
+      doctorPane: DoctorPaneView | null
+      // Phase 5 (WP-CA): the band, the cards, and the tasks and agents panes.
+      band: BandView | null
+      cards: CardsView | null
+      tasksPane: TasksPaneView | null
+      agentsPane: AgentsPaneView | null
+      // Phase 5b (WP-DA): the one pane's own view.
+      hub: HubView | null
+      // Phase 5b (WP-DH): the Stats section.
+      statsPane: StatsPaneView | null
+    }
+  }
+}

@@ -13,3 +13,5 @@ build/
 dev/
 screenshot.svg
 test_*.svg
+.claude/litter/
+node_modules/
