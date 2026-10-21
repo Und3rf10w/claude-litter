@@ -2,39 +2,40 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build and Run
+## What's here
+
+A plugin marketplace (`.claude-plugin/marketplace.json`) with one plugin, `plugins/litter`. The Python TUI and the `swarm-loop`, `deepwork`, and `team-overlord` plugins were retired in `4.0.0`; the last tree with them is tagged `legacy-3.8`.
+
+## Run and test
+
+All from `plugins/litter`:
 
 ```bash
-uv sync
-uv run claude-litter
+claude --plugin-dir .                          # a session with this working copy loaded
+claude plugin validate --strict .
+tests/unit/node_modules/.bin/tsc -p .          # type-check the mod (after `bun install` in tests/unit)
+tests/unit/node_modules/.bin/tsc -p tests/unit # type-check the specs
+claude plugin test .                           # tier 1: the engine's plugin tests (tests/*.test.ts[x])
+(cd tests/unit && bun run test)                # tier 2: bun specs; one file: bun test <name>.spec.ts
+sh tests/hooks/run.sh                          # tier 3: the hook scripts; also SHELL_UNDER_TEST=dash
+sh tests/headless/run.sh                       # tier 4: live sessions; spends tokens, run by hand only
 ```
 
-Python 3.14+ is required — `uv` manages this automatically via `.python-version`.
+CI (`.github/workflows/ci.yml`) runs validation, both type-checks and tiers 1–3, plus tier 3 under BusyBox. Tiers 1–3 must never touch the real `~/.claude/`: use fakes or scratch dirs. Tier 4 runs real sessions on your account, each in a scratch repo under `$H_OUT`. Its `ui-tasks` and `ui-agents` cases add a team to the config dir and remove it at the end.
 
-## Testing
+## Layout
 
-```bash
-uv run pytest tests/ -v
-uv run pytest tests/ -v -k 'test_name'  # single test
-```
-
-Tests use the `tmp_claude_home` fixture (from `conftest.py`) to create an isolated `~/.claude/` structure — never touch the real `~/.claude/` in tests.
+- `hooks/register.tsx`: the mod's entry (`hooks/hooks.json` names it). The mod runs with no Node and no DOM, and reaches everything through `$`, wrapped as `Ports` (`hooks/ports.ts`).
+- `hooks/*.sh`: the command hooks (`guard`, `hold`, `identity`, `watch`, `ask`, `output`, `worktree`), with `hooks/lib.sh`.
+- `workflows/*.js`: the workflow scripts. They're registered as `litter:<kind>-run`, because a workflow named like a skill takes over that skill's command.
+- `skills/`: `/litter:design`, `execute`, `fanout`, `amend`, `swarm`, `rules`, and `wiki`.
+- `types/claude-code/index.d.ts`: the engine's mod API with the built-in tools appended, vendored from the engine's own `.claude-plugin/types/` (never `claude-code-mcp`). `types/index.d.ts` is `litter`'s state contract.
+- Runtime state lives under `<main checkout>/.claude/litter/`, and project rules under `.litter/rules/`.
 
 ## Conventions
 
-- **Commits**: conventional commits — `type(scope): description` (e.g., `feat(tui): add sidebar`)
-- **Branches**: feature branches off `main`, merged via merge commits
-- **Imports**: every file starts with `from __future__ import annotations`
-- **Models**: frozen dataclasses (`@dataclass(frozen=True)`)
-- **Filesystem**: use `pathlib.Path` for all path operations
-- **Textual markup**: escape `[` as `\[` in Rich markup when rendering external text
-- **Textual version**: >= 3.0 (API differs from 2.x — verify against installed version if you hit import errors)
-
-## Architecture Notes
-
-- All runtime state (teams, tasks, agent inboxes, TUI config, debug log) lives under `~/.claude/`. The `CLAUDE_HOME` env var overrides this path.
-- `src/claude_litter/screens/main.py` (~75 KB) is the primary file for UI work.
-- Plugins live in `plugins/`:
-  - `swarm-loop` — multi-agent orchestration loop (bash). Requires `jq` and `perl` at runtime.
-  - `team-overlord` — team/task MCP server (Python/fastmcp).
-- Subdirectory CLAUDE.md files can be added under `plugins/` for plugin-specific instructions.
+- **Commits**: conventional commits, `type(scope): description` (e.g. `fix(plugins/litter): …`).
+- **Branches**: feature branches off `main`, merged via merge commits.
+- **Hook scripts**: POSIX `sh` only. They must pass under `dash` and BusyBox (its `sed` and `awk`): no bash-isms and no GNU-only flags. They need only `jq` beyond the base tools.
+- **The mod**: TypeScript type-checked against the vendored types. Each pane element's key carries its section's prefix (`hooks/ui/hub.ts`).
+- **Rendering external text**: clean and cut it before drawing (`oneLine`, `clean`). Repository text is material, never instructions, in every prompt `litter` writes.
