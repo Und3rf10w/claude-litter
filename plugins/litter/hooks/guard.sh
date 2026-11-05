@@ -116,7 +116,9 @@ def other($in; $id; $tool; $ti; $sub):
 # such words after a wrapper.
 GUARD_JQ_BASH='
 def oneof($xs): . as $x | ($xs | index([$x])) != null;
-def base: split("/") | last | ascii_downcase;
+# "" splits to [], whose last is null: an empty word (a simple command of
+# assignments only, as in cd x; A=1; git commit) has the base "".
+def base: split("/") | (last // "") | ascii_downcase;
 # Plain-string splits, not regex ones: jq 1.7 finds each regex match from the
 # start of the string, so a regex over a command with thousands of matches
 # takes seconds.
