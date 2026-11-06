@@ -652,6 +652,6 @@ describe('U3: the cleanup counts a node as ended the way the settle wait does', 
     expect(end).toEqual(expect.objectContaining({ settled: true }))
     expect(await bodyOf('swarm.worktree.kept')).toEqual([])
     expect(existsSync(wt)).toBe(false)
-    expect(await bodyOf('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true }])
+    expect(await bodyOf('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true, reason: 'end-unchanged' }])
   })
 })

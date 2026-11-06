@@ -28,6 +28,7 @@ import type {
   SwarmWorktreeBody,
   SwarmWorktreeLeft,
   SwarmWorktreeRemovedBody,
+  SwarmWorktreeRemovedReason,
 } from '../records/swarm'
 import type { RepairOutcome } from '../lifecycle'
 import type { LiveSwarm, RepairBudget, RunLink, SettleProgress, SwarmSpec, TokenCount } from './types'
@@ -52,8 +53,8 @@ import { atomicWrite, readJson, serial } from '../fsx'
 import { session } from '../session'
 import { readPolicy } from '../policy'
 import { endRepairGeneration, repoOf, UNSETTLED_MS } from '../lifecycle'
-import { BRANCH, cleanAbsolute, errText, firstLine, git, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
-import { inspectWorktree } from './worktrees'
+import { BRANCH, cleanAbsolute, errText, firstLine, git, isAncestor, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
+import { inspectWorktree, keptIgnored, parentBranchOf, splitLinks, unlinkAll } from './worktrees'
 import * as state from './state'
 import { heldBy, patchNodePolicies, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from './guard'
 import { confirmOwnership, releaseOwnership, stopOwnerBeat } from './owner'
@@ -476,16 +477,33 @@ async function settleTick(p: Ports, name: string, w: Wait): Promise<void> {
 }
 
 /** Every worktree this launch made, by path, with the latest cleanup outcome after its making. */
-type Made = SwarmWorktreeBody & { outcome: 'removed' | 'kept' | null; keptReason: string | null; branchDeleted: boolean }
+export type Made = SwarmWorktreeBody & {
+  outcome: 'removed' | 'kept' | null
+  keptReason: string | null
+  branchDeleted: boolean
+  /** A removal's reason, when its record has one (records/swarm.ts). */
+  removedReason: SwarmWorktreeRemovedReason | null
+  mergedInto: string | null
+}
 
-function madeWorktrees(records: readonly StoredRecord[], launch: string): Made[] {
+const REMOVED_REASONS: readonly string[] = ['ended-unchanged', 'ended-merged', 'end-unchanged', 'end-merged', 'end-committed', 'spawn-failed']
+
+export function madeWorktrees(records: readonly StoredRecord[], launch: string): Made[] {
   const byPath = new Map<string, Made>()
   for (const r of records) {
     if (r.by.source !== 'mod' || typeof r.body.path !== 'string') continue
     const path = r.body.path
     if (r.kind === 'swarm.worktree' && r.body.created_by === launch) {
       const b = r.body as unknown as SwarmWorktreeBody
-      byPath.set(path, { ...b, ignored: Array.isArray(b.ignored) ? b.ignored : [], outcome: null, keptReason: null, branchDeleted: false })
+      byPath.set(path, {
+        ...b,
+        ignored: Array.isArray(b.ignored) ? b.ignored : [],
+        outcome: null,
+        keptReason: null,
+        branchDeleted: false,
+        removedReason: null,
+        mergedInto: null,
+      })
       continue
     }
     const t = byPath.get(path)
@@ -493,6 +511,8 @@ function madeWorktrees(records: readonly StoredRecord[], launch: string): Made[]
     if (r.kind === 'swarm.worktree.removed') {
       t.outcome = 'removed'
       t.branchDeleted = r.body.branchDeleted === true
+      t.removedReason = typeof r.body.reason === 'string' && REMOVED_REASONS.includes(r.body.reason) ? (r.body.reason as SwarmWorktreeRemovedReason) : null
+      t.mergedInto = typeof r.body.mergedInto === 'string' ? r.body.mergedInto : null
     } else if (r.kind === 'swarm.worktree.kept') {
       t.outcome = 'kept'
       t.keptReason = typeof r.body.reason === 'string' ? r.body.reason : ''
@@ -1015,8 +1035,28 @@ export async function resumeStopping(p: Ports, swarm: string): Promise<void> {
 
 type Outcome = { keep: string } | { removed: SwarmWorktreeRemovedBody }
 
+/** One launch's worktree removals run one at a time: the cleanup's, and the reclaim of ended workers' (reclaim.ts). */
+export const cleanupKey = (litterDir: string, swarm: string, launch: string): string => `swarm-cleanup:${litterDir}:${swarm}:${launch}`
+
+/** A removal's reason in summary.md's words; null for one at the end with nothing kept (the plain case). */
+export function removedWords(t: Pick<Made, 'removedReason' | 'mergedInto'>): string | null {
+  const into = t.mergedInto ? ` in ${t.mergedInto}` : " in its parent's branch"
+  switch (t.removedReason) {
+    case 'ended-unchanged':
+      return 'removed when its instance ended, with no commits; the branch stays'
+    case 'ended-merged':
+      return `removed when its instance ended, its commits${into}; the branch stays`
+    case 'end-merged':
+      return `its commits are${into}; the branch stays`
+    case 'end-committed':
+      return 'its commits stay on its branch'
+    default:
+      return null
+  }
+}
+
 /** What's still using a worktree: a node or child running there, a shell one of them started, a spawn reserved there. */
-function usersOf(records: readonly StoredRecord[], name: string, list: ListedAgent[], path: string, real: string): string[] {
+export function usersOf(records: readonly StoredRecord[], name: string, list: ListedAgent[], path: string, real: string): string[] {
   const at = (cwd: string) => inside(cwd, path) || inside(cwd, real)
   const cwdOf = new Map<string, string>()
   for (const r of records) {
@@ -1071,31 +1111,68 @@ async function decide(
   if (!f.listed) return { keep: "git doesn't list it as one of this repository's worktrees, so litter leaves it alone" }
   if (f.checkedOut !== `refs/heads/${t.branch}`) return { keep: `it's checked out on ${f.checkedOut ? short(f.checkedOut) : 'a detached HEAD'}, not ${t.branch}` }
   if (f.commitsPast === null) return { keep: `git can't compare ${t.branch} with ${t.from}` }
-  if (f.commitsPast > 0) return { keep: `${t.branch} has ${plural(f.commitsPast, 'commit')} past ${t.from.slice(0, 12)}` }
-  if (f.changes === null || f.newIgnored === null) return { keep: 'git status failed in it' }
-  if (f.changes.length > 0) return { keep: `it holds uncommitted changes (${shown(f.changes)})` }
-  // An unforced remove still deletes ignored files (tenth review).
-  if (f.newIgnored.length > 0) return { keep: `it holds ignored paths its setup didn't leave (${shown(f.newIgnored)}), which removing it would delete` }
+  // A `new` worktree's branch is one you named, where the work goes on after the swarm: with commits, it stays.
+  if (f.commitsPast > 0 && t.n === undefined) return { keep: `${t.branch} has ${plural(f.commitsPast, 'commit')} past ${t.from.slice(0, 12)}` }
+  if (f.changes === null || f.untracked === null || f.newIgnored === null) return { keep: 'git status failed in it' }
+  // An untracked symbolic link (a worker's dependencies, linked to another worktree) isn't a change: it's unlinked first.
+  const { links, others } = await splitLinks(p, t.path, f.changes, f.untracked)
+  if (others.length > 0) return { keep: `it holds uncommitted changes (${shown(others)})` }
+  // An unforced remove still deletes ignored files (tenth review). A `new` worktree keeps any its setup didn't
+  // leave; an `own` worker's keeps only those that look like secrets (keptIgnored), since its dependencies and
+  // build output are what fill the disk.
+  const ignoredKept = t.n === undefined ? f.newIgnored : keptIgnored(f.newIgnored)
+  if (ignoredKept.length > 0) return { keep: `it holds ignored paths its setup didn't leave (${shown(ignoredKept)}), which removing it would delete` }
+  // An `own` worker's commits stay on its branch, which is kept: in its parent's branch already, or not.
+  let reason: SwarmWorktreeRemovedReason = 'end-unchanged'
+  let mergedInto: string | null = null
+  if (f.commitsPast > 0) {
+    const parent = parentBranchOf(ctx.records, t.node, t.n)
+    const tip = await revParse(p, ctx.repo, `refs/heads/${t.branch}`)
+    const merged = parent !== null && tip !== null ? await isAncestor(p, ctx.repo, tip, parent) : null
+    reason = merged === true ? 'end-merged' : 'end-committed'
+    if (merged === true) mergedInto = short(parent!)
+  }
+  const unlinked = await unlinkAll(p, t.path, links)
+  if (!unlinked.ok) return { keep: `its linked folders couldn't be unlinked (${unlinked.why})` }
   const rm = await git(p, ctx.repo, ['worktree', 'remove', '--', t.path], SLOW_GIT_MS)
-  if (rm.code !== 0) return { keep: `git refused to remove it: ${firstLine(rm.stderr)}` }
-  return { removed: { path: t.path, branch: t.branch, branchDeleted: await dropBranch(p, ctx.repo, ctx.swarm, t) } }
+  if (rm.code !== 0) {
+    await unlinked.restore()
+    return { keep: `git refused to remove it: ${firstLine(rm.stderr)}` }
+  }
+  const branchDeleted = reason === 'end-unchanged' ? await dropBranch(p, ctx.repo, ctx.swarm, t) : false
+  return {
+    removed: {
+      path: t.path,
+      branch: t.branch,
+      branchDeleted,
+      reason,
+      ...(mergedInto !== null ? { mergedInto } : {}),
+      ...(links.length > 0 ? { linksRemoved: links.length } : {}),
+    },
+  }
 }
 
 /**
  * Removes the `new` and `own` worktrees this launch made (a `swarm.worktree`
- * with `created_by: <launch>`) that are unchanged, without `--force`, and an
+ * with `created_by: <launch>`) that are clean, without `--force`, and an
  * `own` worker's branch with them when that's safe; records each kept one
  * with why (15.4, "Cleanup"). A worktree is removed only when, checked again
- * just before: its branch has no commits past `from`, `git status
- * --porcelain --ignored` shows nothing but the ignored paths its setup left,
- * and nothing uses it (no node or child running there, no shell unconfirmed,
- * no spawn reserved there). An `existing` worktree is never removed. K calls
- * this for a failed launch too; /litter swarms offers it again later. When the
- * launch has ended and an outcome changed, summary.md is written again.
+ * just before, `git status --porcelain --ignored` shows nothing uncommitted,
+ * nothing uses it (no node or child running there, no shell unconfirmed, no
+ * spawn reserved there), and:
+ *  - a `new` one's branch has no commits past `from`, and it holds no ignored
+ *    path but those its setup left;
+ *  - an `own` worker's holds no ignored path that looks like a secret
+ *    (keptIgnored); its commits, if any, stay on its branch, which is kept
+ *    (`end-merged` when its parent's branch holds them, else `end-committed`).
+ * An `existing` worktree is never removed. K calls this for a failed launch
+ * too; /litter swarms offers it again later. When the launch has ended and an
+ * outcome changed, summary.md is written again. An `own` worker's worktree
+ * may be gone before this, removed when its instance ended (reclaim.ts).
  */
 export async function cleanupLaunch(p: Ports, swarm: string, launch: string): Promise<void> {
   const litterDir = needLitterDir()
-  await serial(`swarm-cleanup:${litterDir}:${swarm}:${launch}`, async () => {
+  await serial(cleanupKey(litterDir, swarm, launch), async () => {
     const { records, tampered } = await readLaunchLedger(p, litterDir, swarm, launch)
     if (tampered) {
       p.log(`swarm ${swarm}: launch ${launch}'s ledger is tampered at record ${tampered.seq}; no worktree removed`)
@@ -1152,7 +1229,10 @@ export async function worktreesLeft(p: Ports, records: readonly StoredRecord[], 
   const seen = new Set<string>()
   for (const t of madeWorktrees(records, launch)) {
     seen.add(t.path)
-    if (t.outcome === 'removed') out.push({ path: t.path, branch: t.branch, node: t.node, removed: true })
+    if (t.outcome === 'removed') {
+      const words = removedWords(t)
+      out.push({ path: t.path, branch: t.branch, node: t.node, removed: true, ...(words !== null ? { reason: words } : {}) })
+    }
     else if (t.outcome === 'kept') out.push({ path: t.path, branch: t.branch, node: t.node, removed: false, reason: t.keptReason ?? '' })
     else if (await p.fs.exists(t.path)) out.push({ path: t.path, branch: t.branch, node: t.node, removed: false, reason: 'the cleanup hasn\'t checked it yet' })
     else out.push({ path: t.path, branch: t.branch, node: t.node, removed: true, reason: 'it was gone before the cleanup' })

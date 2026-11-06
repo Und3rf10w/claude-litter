@@ -47,11 +47,13 @@ import {
   putBinding,
   putLiveSwarm,
   replacedBy,
+  retire,
   status,
   stop,
   stopped,
   takeHeldBefore,
 } from './state'
+import { removedForms } from './worktrees'
 import { nodePolicyFor, notNewer, releaseActive, writeNodePolicy, writeSwarmPolicy } from './guard'
 import { readRevision } from './store'
 import { resumeStopping, sweepLeftPolicies } from './end'
@@ -95,12 +97,26 @@ export type LaunchFacts = {
   instances: SwarmInstanceBody[]
   stops: SwarmStopBody[]
   events: StoredRecord<SwarmEventBody>[]
+  /** The paths of the worktrees the mod removed (`swarm.worktree.removed`): an instance bound to one can't run again. */
+  removed: string[]
   /** Set when the chain is broken: the records above stop before it. */
   tampered: { seq: number; reason: string } | null
 }
 
 export async function readLaunchFacts(p: Ports, litterDir: string, name: string, launch: string): Promise<LaunchFacts> {
-  const facts: LaunchFacts = { name, launch, start: null, ended: false, stopping: false, nodes: new Map(), instances: [], stops: [], events: [], tampered: null }
+  const facts: LaunchFacts = {
+    name,
+    launch,
+    start: null,
+    ended: false,
+    stopping: false,
+    nodes: new Map(),
+    instances: [],
+    stops: [],
+    events: [],
+    removed: [],
+    tampered: null,
+  }
   if (!SWARM_NAME.test(name) || !LAUNCH_ID.test(launch)) return facts
   const { records, tampered } = await readLaunchLedger(p, litterDir, name, launch)
   facts.tampered = tampered
@@ -114,6 +130,7 @@ export async function readLaunchFacts(p: Ports, litterDir: string, name: string,
     } else if (r.kind === 'swarm.instance') facts.instances.push(r.body as SwarmInstanceBody)
     else if (r.kind === 'swarm.stop') facts.stops.push(r.body as SwarmStopBody)
     else if (r.kind === 'swarm.event') facts.events.push(r as StoredRecord<SwarmEventBody>)
+    else if (r.kind === 'swarm.worktree.removed' && r.by.source === 'mod' && typeof r.body.path === 'string') facts.removed.push(r.body.path)
   }
   if (facts.ended) facts.stopping = false
   return facts
@@ -378,6 +395,8 @@ export async function recoverOwnedLaunch(
   // 3. The tables: bindings from the ledger over the mirror's, instance counters, and stops the mirror lost.
   for (const rec of facts.nodes.values()) putBinding(bindingOf(facts, b, rec))
   for (const i of facts.instances) if (typeof i.node === 'string' && Number.isInteger(i.n)) noteInstance(name, i.node, i.n)
+  // The worktrees removed while it ran (reclaim.ts): their instances can't run again.
+  for (const path of facts.removed) retire(name, ...(await removedForms(p, path)))
   if (!mirror) {
     for (const st of facts.stops) {
       const fresh = (Array.isArray(st.nodes) ? st.nodes : []).filter(id => !isStopped(id))

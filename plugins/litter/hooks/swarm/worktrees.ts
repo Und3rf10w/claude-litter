@@ -246,6 +246,8 @@ export type WorktreeFacts = {
   commitsPast: number | null
   /** Uncommitted changes, `git status --porcelain` paths. */
   changes: string[] | null
+  /** The untracked ones among them (`??`). */
+  untracked: string[] | null
   /** Ignored paths beyond those its setup left (`ignoredAtSetup`, from `swarm.worktree`). */
   newIgnored: string[] | null
 }
@@ -273,6 +275,103 @@ export async function inspectWorktree(
     checkedOut: at?.branch ?? null,
     commitsPast: past,
     changes: st ? st.changes : null,
+    untracked: st ? st.untracked : null,
     newIgnored: st ? newIgnored(st.ignored, ignoredAtSetup) : null,
   }
+}
+
+// ---------------------------------------------------------------------------
+// What a removal of a worker's own worktree decides on (reclaim.ts, end.ts)
+
+/**
+ * The ignored files that hold secrets or local settings: an `.env` (any
+ * `.env.*`), an `.npmrc`, `.netrc` or `.pgpass`, a key or certificate store,
+ * or a `secrets` folder. Matched on the path as `git status --ignored` gives
+ * it, so a file inside a folder git ignores whole isn't seen.
+ */
+const SECRET_LIKE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.ssh|\.?secrets?|[^/]+\.(pem|key|p12|pfx|jks|keystore))$/i
+
+/**
+ * The ignored paths that keep an `own` worker's worktree that's otherwise
+ * clean: those that look like secrets (SECRET_LIKE). Its other ignored paths,
+ * dependencies and build output, go with it: they're what fills the disk.
+ */
+export const keptIgnored = (paths: readonly string[]): string[] => paths.filter(path => SECRET_LIKE.test(path.replace(/\/+$/, '')))
+
+/**
+ * The parent's bound branch (a full ref) of worker instance `node#n`, from the
+ * launch's `swarm.node` records: the branch of the agent that spawned it.
+ * Null for an orchestrator's, or when the records don't say.
+ */
+export function parentBranchOf(records: readonly StoredRecord[], node: string, n: number | undefined): string | null {
+  if (n === undefined) return null
+  const latest = new Map<string, Record<string, unknown>>()
+  let parent: string | null = null
+  for (const r of records) {
+    if (r.kind !== 'swarm.node' || r.by.source !== 'mod' || typeof r.body.agentId !== 'string') continue
+    latest.set(r.body.agentId, r.body)
+    if (r.body.kind === 'worker' && r.body.node === node && r.body.n === n) parent = typeof r.body.parentAgentId === 'string' ? r.body.parentAgentId : null
+  }
+  const branch = parent === null ? undefined : latest.get(parent)?.branch
+  return typeof branch === 'string' && branch.startsWith('refs/heads/') ? branch : null
+}
+
+/**
+ * A worker's changes, split: the untracked symbolic links (`git status`
+ * lists a link as `?? path`, a link to a folder too, with no `/`, and a
+ * pattern such as `node_modules/` doesn't ignore one), checked with lstat,
+ * never followed: a worker links its dependencies to its parent's worktree.
+ * Everything else is `others`: a tracked change, an untracked file or
+ * folder, or a path that can't be read.
+ */
+export async function splitLinks(p: Ports, dir: string, changes: readonly string[], untracked: readonly string[]): Promise<{ links: string[]; others: string[] }> {
+  const out = { links: [] as string[], others: [] as string[] }
+  for (const path of changes) {
+    const link = untracked.includes(path) && !path.endsWith('/') && (await p.fs.stat(`${dir}/${path}`).catch(() => null))?.isLink === true
+    ;(link ? out.links : out.others).push(path)
+  }
+  return out
+}
+
+/**
+ * Removes the links splitLinks found, one `rm --` each (never -r or -f, so a
+ * link's target is never touched), each checked to be a link again just
+ * before. On a failure the links removed so far are made again as they were
+ * (`readlink` first, then `ln -s`), and it answers why. `restore` makes them
+ * all again, for a removal git then refuses.
+ */
+export async function unlinkAll(p: Ports, dir: string, links: readonly string[]): Promise<{ ok: true; restore: () => Promise<void> } | { ok: false; why: string }> {
+  const done: { path: string; target: string }[] = []
+  const restore = async () => {
+    for (const d of done.splice(0).reverse()) await p.run(['ln', '-s', '--', d.target, d.path]).catch(() => null)
+  }
+  for (const rel of links) {
+    const path = `${dir}/${rel}`
+    const why = await (async (): Promise<string | null> => {
+      const target = await p.run(['readlink', '--', path])
+      if (target.code !== 0) return `readlink ${rel} failed: ${firstLine(target.stderr)}`
+      if ((await p.fs.stat(path).catch(() => null))?.isLink !== true) return `${rel} isn't a link any more`
+      const rm = await p.run(['rm', '--', path])
+      if (rm.code !== 0) return `rm ${rel} failed: ${firstLine(rm.stderr)}`
+      done.push({ path, target: target.stdout.replace(/\n$/, '') })
+      return null
+    })().catch((err: unknown) => errText(err))
+    if (why !== null) {
+      await restore()
+      return { ok: false, why }
+    }
+  }
+  return { ok: true, restore }
+}
+
+/**
+ * A removed worktree's path as recorded and as the binding's resolved `cwd`
+ * would hold it: its folder resolved (it's gone, so only its parent
+ * resolves), with its name after.
+ */
+export async function removedForms(p: Ports, path: string): Promise<string[]> {
+  const cut = path.lastIndexOf('/')
+  if (cut <= 0) return [path]
+  const parent = await realOf(p, path.slice(0, cut))
+  return [...new Set([path, `${parent}${path.slice(cut)}`])]
 }

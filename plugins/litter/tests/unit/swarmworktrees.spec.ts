@@ -222,6 +222,7 @@ describe('inspectWorktree', () => {
       checkedOut: 'refs/heads/feature/part-a',
       commitsPast: 0,
       changes: [],
+      untracked: [],
       newIgnored: [],
     })
   })
@@ -245,6 +246,7 @@ describe('inspectWorktree', () => {
     writeFileSync(join(spec.path, '.env'), 'SECRET=1\n')
     const facts = await inspectWorktree(p, dir, spec.path, spec.branch, main, [])
     expect(facts.changes?.sort()).toEqual(['README.md', 'new.txt'])
+    expect(facts.untracked).toEqual(['new.txt'])
     expect(facts.newIgnored).toEqual(['.env'])
     expect((await inspectWorktree(p, dir, spec.path, spec.branch, main, ['.env'])).newIgnored).toEqual([])
   })
@@ -258,6 +260,7 @@ describe('inspectWorktree', () => {
       checkedOut: null,
       commitsPast: 0,
       changes: null,
+      untracked: null,
       newIgnored: null,
     })
   })

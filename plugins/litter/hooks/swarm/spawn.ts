@@ -408,7 +408,12 @@ async function removeFresh(p: Ports, dir: string, s: LiveSwarm, made: Made): Pro
       return
     }
     const del = await git(p, made.repo, ['update-ref', '-d', `refs/heads/${made.branch}`, made.from])
-    await appendLaunchRecord(p, dir, s.name, s.launch, 'swarm.worktree.removed', { path: made.path, branch: made.branch, branchDeleted: del.code === 0 })
+    await appendLaunchRecord(p, dir, s.name, s.launch, 'swarm.worktree.removed', {
+      path: made.path,
+      branch: made.branch,
+      branchDeleted: del.code === 0,
+      reason: 'spawn-failed',
+    })
   } catch (err) {
     p.log(`swarm ${s.name}: the worktree ${made.path} of a failed spawn wasn't removed: ${errText(err)}`)
   }

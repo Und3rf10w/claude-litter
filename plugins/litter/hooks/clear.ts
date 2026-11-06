@@ -38,6 +38,7 @@ import { ownedSwarm, rebindOwnership, startOwnerBeat, stopOwnerBeat } from './sw
 import { refreshReadOnly, typesAccepted } from './swarm/recover'
 import { summaryTick } from './swarm/summary'
 import { DETAIL_MAX_BYTES, spoolLine, TOOL_MAX_BYTES } from './swarm/observe'
+import { reclaimTick } from './swarm/reclaim'
 import {
   attach,
   binding,
@@ -447,13 +448,18 @@ export async function rebindSettled(): Promise<void> {
 // ---------------------------------------------------------------------------
 // The timers
 
-/** At session.start, with the timers: the 2 s tick (a changed session id starts the rebind; the summary runs from it). */
+/**
+ * At session.start, with the timers: the 2 s tick (a changed session id
+ * starts the rebind; the summary runs from it, and about once a minute the
+ * reclaim of ended workers' worktrees, swarm/reclaim.ts).
+ */
 export function startSwarmTimers(p: Ports): void {
   timer?.cancel()
   timer = p.every(TICK_MS, () => {
     // The summary keeps its own one-at-a-time guard; a call can take 20 s, so the rebind check doesn't wait on it.
     void summaryTick(p).catch(err => p.log(`summary tick: ${errText(err)}`))
     void refreshTick(p).catch(err => p.log(`read-only refresh: ${errText(err)}`))
+    void reclaimTick(p).catch(err => p.log(`worktree reclaim tick: ${errText(err)}`))
     if (ticking) return
     ticking = true
     void tick(p)

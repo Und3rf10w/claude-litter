@@ -152,20 +152,22 @@ export async function listedAt(p: Ports, list: readonly Listed[], path: string):
  */
 export const NOT_INTO_SUBMODULES = '--ignore-submodules=dirty'
 
-export type Status = { changes: string[]; ignored: string[] }
+/** `untracked`: the changes that are untracked (`??`), a part of `changes`. */
+export type Status = { changes: string[]; ignored: string[]; untracked: string[] }
 
 /** `git status --porcelain --ignored -z` in a worktree: what's uncommitted, and the ignored paths, apart. */
 export async function statusOf(p: Ports, path: string): Promise<Status | null> {
   const r = await git(p, path, ['status', '--porcelain', '--ignored', '-z', NOT_INTO_SUBMODULES])
   if (r.code !== 0) return null
   const fields = r.stdout.split('\0')
-  const out: Status = { changes: [], ignored: [] }
+  const out: Status = { changes: [], ignored: [], untracked: [] }
   for (let i = 0; i < fields.length; i++) {
     const f = fields[i]!
     if (f.length < 4) continue
     const code = f.slice(0, 2)
     if (code === '!!') out.ignored.push(f.slice(3))
     else out.changes.push(f.slice(3))
+    if (code === '??') out.untracked.push(f.slice(3))
     // A rename or copy carries its source as the next field.
     if (code[0] === 'R' || code[0] === 'C') i++
   }

@@ -343,7 +343,7 @@ describe('End swarm', () => {
     expect(state.shells()).toEqual([])
     expect(await kinds()).toContain('swarm.end')
     expect(existsSync(wt)).toBe(false)
-    expect(await bodyOf('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true }])
+    expect(await bodyOf('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true, reason: 'end-unchanged' }])
     const [end] = await bodyOf('swarm.end')
     expect(end).toEqual(
       expect.objectContaining({
