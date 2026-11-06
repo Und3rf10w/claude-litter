@@ -47,6 +47,7 @@ import {
 import { decodeSwarmInput, SWARM_SEND } from './tools'
 import { nodePolicyFor, patchNodePolicy, writeNodePolicy } from './guard'
 import { noteSummaryTrigger } from './summary'
+import { scheduleReclaim } from './reclaim'
 import * as state from './state'
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -318,10 +319,27 @@ const resuming = (agentId: string): boolean => state.reservations().some(r => r.
 /** The node a binding counts under: its own spec node, or a child's node's. */
 const specOf = (s: LiveSwarm, b: NodeBinding): SwarmNode | null => nodeOf(s, b.node)
 
+/**
+ * Why an instance whose `own` worktree went after it ended (reclaim.ts:
+ * litter removed it, or found it gone) can't run again, and what to do
+ * instead: its directory is gone, and its branch, which stays, holds all it
+ * committed.
+ */
+export function retiredText(b: NodeBinding, dir: string): string {
+  if (b.kind === 'child') return `${labelOf(b)} worked in ${dir}, the worktree of a worker that ended, which is gone now; it can't run again`
+  return (
+    `${labelOf(b)} has ended, and its worktree ${dir} was removed to free the disk` +
+    `${b.branch ? ` (its branch ${b.branch.replace(/^refs\/heads\//, '')} stays)` : ''}, so it can't run again: ` +
+    `spawn a new ${b.node} instead, with what it needs to know`
+  )
+}
+
 /** The checks a resume needs besides room (15.4, "A node that isn't running would be resumed"). */
 function resumeRefusal(s: LiveSwarm, b: NodeBinding): string | null {
   if (!s.typesReady) return `swarm ${s.name}'s node types aren't registered in this session yet; try again in a moment`
   if (!specOf(s, b)) return `${b.node} isn't in swarm ${s.name}'s revision ${s.revision}`
+  const gone = state.retiredDir(s.name, b.cwd)
+  if (gone) return retiredText(b, gone)
   const stop = state.stopped(s.name).find(x => x.agentId === b.agentId)
   if (stop) return `${labelOf(b)} was stopped (${stop.reason})`
   const by = state.replacedBy(b)
@@ -413,6 +431,8 @@ export async function resumeSpawn(p: Ports, e: Parameters<PortHook<SpawnHook>>[1
   }
   const by = state.replacedBy(b)
   if (by) return { deny: `litter: ${labelOf(b)} was replaced by a re-spawned ${b.node} (${by.agentId}), which takes its workers and its messages; it isn't resumed` }
+  const gone = state.retiredDir(b.swarm, b.cwd)
+  if (gone) return { deny: `litter: ${retiredText(b, gone)}; it isn't resumed` }
   if (b.kind !== 'child' && e.subagentType !== '' && e.subagentType !== ownType(b)) {
     // Listed as another type, it lost its own already; listed as its own, the resume's lookup fell back (a reload's gap).
     const lost = await lostType(p, b)
@@ -1153,9 +1173,10 @@ function unadmit(p: Ports, b: NodeBinding, when: string): Promise<void> {
   return patchNodePolicy(p, dir, b.agentId, { admitted: false }).catch(err => p.log(`${labelOf(b)}: its policy kept admitted ${when}: ${errText(err)}`))
 }
 
-/** Settled: its place is free and its policy no longer admitted. */
+/** Settled: its place is free and its policy no longer admitted. An `own` worker's worktree may go soon (reclaim.ts). */
 async function finishSettle(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
+  if (b.kind === 'worker') scheduleReclaim(p)
   await unadmit(p, b, 'after it settled')
 }
 
@@ -1177,6 +1198,7 @@ async function park(p: Ports, b: NodeBinding): Promise<void> {
  */
 function unpark(p: Ports, b: NodeBinding): Promise<void> {
   state.markSettled(b.agentId)
+  if (b.kind === 'worker') scheduleReclaim(p)
   return unadmit(p, b, 'after it ended')
 }
 

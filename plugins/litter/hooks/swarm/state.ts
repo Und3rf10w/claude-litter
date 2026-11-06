@@ -468,6 +468,40 @@ function forget(name: string): void {
   roundsBy.delete(name)
   spendBy.delete(name)
   leadBy.delete(name)
+  retiredBy.delete(name)
+}
+
+// ---------------------------------------------------------------------------
+// Retired worktrees
+
+/**
+ * By swarm, the `own` worktrees of ended instances that litter removed, or
+ * is removing, while the swarm runs (reclaim.ts), as recorded and resolved:
+ * an instance (or a child) that worked in one can't run again, so a send,
+ * a wake or a resume of it is refused (admit.ts). Not mirrored: recovery
+ * reads them again from the launch ledger's `swarm.worktree.removed`.
+ */
+const retiredBy = new Map<string, Set<string>>()
+
+export function retire(swarm: string, ...paths: string[]): void {
+  let set = retiredBy.get(swarm)
+  if (!set) retiredBy.set(swarm, (set = new Set()))
+  for (const path of paths) if (path !== '') set.add(path.replace(/\/+$/, ''))
+  ver++
+}
+
+/** A removal that didn't happen: the instance may run there again. */
+export function unretire(swarm: string, ...paths: string[]): void {
+  const set = retiredBy.get(swarm)
+  if (!set) return
+  for (const path of paths) set.delete(path.replace(/\/+$/, ''))
+  ver++
+}
+
+/** The retired worktree `dir` is in, or null. */
+export function retiredDir(swarm: string, dir: string): string | null {
+  for (const path of retiredBy.get(swarm) ?? []) if (dir === path || dir.startsWith(`${path}/`)) return path
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,6 +1369,7 @@ export function resetForTests(): void {
   roundsBy.clear()
   spendBy.clear()
   leadBy.clear()
+  retiredBy.clear()
   interactiveFlag = null
   ver = 0
   ports = null

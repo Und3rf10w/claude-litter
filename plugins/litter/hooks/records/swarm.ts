@@ -167,8 +167,28 @@ export type SwarmWorktreeFailedBody = {
   log?: string
 }
 
-/** swarm.worktree.removed (P's cleanup). */
-export type SwarmWorktreeRemovedBody = { path: string; branch: string; branchDeleted?: boolean }
+/**
+ * Why a worktree went (records before reasons were kept have none):
+ *  - `ended-unchanged`, `ended-merged`: an `own` worker's, while the swarm
+ *    runs, once its instance ended with nothing uncommitted and its branch
+ *    had no commits past `from`, or its tip was in its parent's branch
+ *    (reclaim.ts); the branch stays;
+ *  - `end-unchanged`, `end-merged`, `end-committed`: at the swarm's end, a
+ *    clean worktree whose branch had no commits, had them all in the
+ *    parent's branch, or had commits litter keeps on the branch (end.ts);
+ *  - `spawn-failed`: a fresh `own` worktree of a spawn that failed (spawn.ts).
+ */
+export type SwarmWorktreeRemovedReason = 'ended-unchanged' | 'ended-merged' | 'end-unchanged' | 'end-merged' | 'end-committed' | 'spawn-failed'
+
+/** swarm.worktree.removed (P's cleanup, the reclaim of an ended worker's, a failed spawn's). */
+export type SwarmWorktreeRemovedBody = {
+  path: string
+  branch: string
+  branchDeleted?: boolean
+  reason?: SwarmWorktreeRemovedReason
+  /** For a `…-merged` reason: the parent's branch that holds the tip, short. */
+  mergedInto?: string
+}
 /** swarm.worktree.kept (P's cleanup): listed in summary.md with the reason. */
 export type SwarmWorktreeKeptBody = { path: string; branch: string; reason: string }
 

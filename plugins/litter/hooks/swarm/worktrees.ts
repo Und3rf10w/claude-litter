@@ -276,3 +276,51 @@ export async function inspectWorktree(
     newIgnored: st ? newIgnored(st.ignored, ignoredAtSetup) : null,
   }
 }
+
+// ---------------------------------------------------------------------------
+// What a removal of a worker's own worktree decides on (reclaim.ts, end.ts)
+
+/**
+ * The ignored files that hold secrets or local settings: an `.env` (any
+ * `.env.*`), an `.npmrc`, `.netrc` or `.pgpass`, a key or certificate store,
+ * or a `secrets` folder. Matched on the path as `git status --ignored` gives
+ * it, so a file inside a folder git ignores whole isn't seen.
+ */
+const SECRET_LIKE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.ssh|\.?secrets?|[^/]+\.(pem|key|p12|pfx|jks|keystore))$/i
+
+/**
+ * The ignored paths that keep an `own` worker's worktree that's otherwise
+ * clean: those that look like secrets (SECRET_LIKE). Its other ignored paths,
+ * dependencies and build output, go with it: they're what fills the disk.
+ */
+export const keptIgnored = (paths: readonly string[]): string[] => paths.filter(path => SECRET_LIKE.test(path.replace(/\/+$/, '')))
+
+/**
+ * The parent's bound branch (a full ref) of worker instance `node#n`, from the
+ * launch's `swarm.node` records: the branch of the agent that spawned it.
+ * Null for an orchestrator's, or when the records don't say.
+ */
+export function parentBranchOf(records: readonly StoredRecord[], node: string, n: number | undefined): string | null {
+  if (n === undefined) return null
+  const latest = new Map<string, Record<string, unknown>>()
+  let parent: string | null = null
+  for (const r of records) {
+    if (r.kind !== 'swarm.node' || r.by.source !== 'mod' || typeof r.body.agentId !== 'string') continue
+    latest.set(r.body.agentId, r.body)
+    if (r.body.kind === 'worker' && r.body.node === node && r.body.n === n) parent = typeof r.body.parentAgentId === 'string' ? r.body.parentAgentId : null
+  }
+  const branch = parent === null ? undefined : latest.get(parent)?.branch
+  return typeof branch === 'string' && branch.startsWith('refs/heads/') ? branch : null
+}
+
+/**
+ * A removed worktree's path as recorded and as the binding's resolved `cwd`
+ * would hold it: its folder resolved (it's gone, so only its parent
+ * resolves), with its name after.
+ */
+export async function removedForms(p: Ports, path: string): Promise<string[]> {
+  const cut = path.lastIndexOf('/')
+  if (cut <= 0) return [path]
+  const parent = await realOf(p, path.slice(0, cut))
+  return [...new Set([path, `${parent}${path.slice(cut)}`])]
+}

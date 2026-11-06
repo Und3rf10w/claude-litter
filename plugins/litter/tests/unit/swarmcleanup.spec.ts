@@ -104,7 +104,7 @@ describe('cleanupLaunch', () => {
     expect((await bodies('swarm.worktree'))[0]!.ignored).toEqual(['node_modules/'])
     await cleanupLaunch(p, 'alpha', launch)
     expect(existsSync(wt)).toBe(false)
-    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true }])
+    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true, reason: 'end-unchanged' }])
     expect(await branchExists('sw/alpha/fixer-1')).toBe(false)
     // Again: nothing more to do, nothing more recorded.
     await cleanupLaunch(p, 'alpha', launch)
@@ -130,15 +130,60 @@ describe('cleanupLaunch', () => {
     expect((await bodies('swarm.worktree.removed')).length).toBe(1)
   })
 
-  test('one with a commit past `from` is kept, its branch too', async () => {
+  test("an `own` worker's clean worktree with a commit past `from` is removed, and its branch, which holds the commit, kept", async () => {
     const wt = await make(own(1))
+    await p.fs.write(join(wt, 'work.txt'), 'work\n')
+    await git('-C', wt, 'add', 'work.txt')
+    await git('-C', wt, 'commit', '-q', '-m', 'work')
+    const tip = (await git('-C', wt, 'rev-parse', 'HEAD')).trim()
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(false)
+    expect((await git('rev-parse', 'refs/heads/sw/alpha/fixer-1')).trim()).toBe(tip)
+    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: false, reason: 'end-committed' }])
+    const summary = readFileSync(await writeSwarmSummary(p, 'alpha', launch), 'utf8')
+    expect(summary).toContain(`- Removed: ${wt} (branch sw/alpha/fixer-1), fixer: its commits stay on its branch`)
+  })
+
+  test("one whose commits its parent merged is removed as merged, naming the parent's branch", async () => {
+    const wt = await make(own(1))
+    await p.fs.write(join(wt, 'work.txt'), 'work\n')
+    await git('-C', wt, 'add', 'work.txt')
+    await git('-C', wt, 'commit', '-q', '-m', 'work')
+    await git('branch', 'feature/a', 'sw/alpha/fixer-1')
+    const node = (agentId: string, over: Record<string, unknown>) => ({
+      node: 'fixer', n: 1, agentId, parentAgentId: null, kind: 'worker', cwd: wt, branch: 'refs/heads/sw/alpha/fixer-1', model: null, revision: 1, generation: 1, ...over,
+    })
+    await appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.node', node('a-lead', { node: 'part-a', kind: 'orchestrator', cwd: dir, branch: 'refs/heads/feature/a' }) as never)
+    await appendLaunchRecord(p, litterDir, 'alpha', launch, 'swarm.node', node('a-fix1', { parentAgentId: 'a-lead' }) as never)
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(false)
+    expect(await branchExists('sw/alpha/fixer-1')).toBe(true)
+    expect(await bodies('swarm.worktree.removed')).toEqual([
+      { path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: false, reason: 'end-merged', mergedInto: 'feature/a' },
+    ])
+  })
+
+  test("a `new` worktree with a commit past `from` is kept: that branch is yours, where the work goes on", async () => {
+    const path = join(root, swarmNewWorktreeName('alpha', 'part-a'))
+    const wt = await make({ ...own(1), n: undefined, node: 'part-a', path, branch: 'feature/part-a', from: 'main' })
     await p.fs.write(join(wt, 'work.txt'), 'work\n')
     await git('-C', wt, 'add', 'work.txt')
     await git('-C', wt, 'commit', '-q', '-m', 'work')
     await cleanupLaunch(p, 'alpha', launch)
     expect(existsSync(wt)).toBe(true)
-    expect(await branchExists('sw/alpha/fixer-1')).toBe(true)
-    expect((await bodies('swarm.worktree.kept'))[0]!.reason).toBe(`sw/alpha/fixer-1 has 1 commit past ${main.slice(0, 12)}`)
+    expect((await bodies('swarm.worktree.kept'))[0]!.reason).toBe(`feature/part-a has 1 commit past ${main.slice(0, 12)}`)
+  })
+
+  test("an `own` worker's ignored dependencies and build output don't keep it; a `new` one's do", async () => {
+    const wt = await make(own(1))
+    await p.fs.write(join(wt, 'node_modules', 'pkg', 'index.js'), 'x\n')
+    const path = join(root, swarmNewWorktreeName('alpha', 'part-a'))
+    const wtNew = await make({ ...own(1), n: undefined, node: 'part-a', path, branch: 'feature/part-a', from: 'main' })
+    await p.fs.write(join(wtNew, 'node_modules', 'pkg', 'index.js'), 'x\n')
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(false)
+    expect(existsSync(wtNew)).toBe(true)
+    expect((await bodies('swarm.worktree.kept'))[0]!.reason).toContain("ignored paths its setup didn't leave (node_modules/)")
   })
 
   test('one with uncommitted changes is kept', async () => {
@@ -267,7 +312,7 @@ describe('cleanupLaunch', () => {
     p.agents[0]!.status = 'completed'
     await cleanupLaunch(p, 'alpha', launch)
     expect(existsSync(wt)).toBe(false)
-    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true }])
+    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true, reason: 'end-unchanged' }])
   })
 
   test("a `new` worktree you named is removed when unchanged, but its branch is yours and kept", async () => {
@@ -275,7 +320,7 @@ describe('cleanupLaunch', () => {
     const wt = await make({ ...own(1), n: undefined, node: 'part-a', path, branch: 'feature/part-a', from: 'main' })
     await cleanupLaunch(p, 'alpha', launch)
     expect(existsSync(wt)).toBe(false)
-    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'feature/part-a', branchDeleted: false }])
+    expect(await bodies('swarm.worktree.removed')).toEqual([{ path: wt, branch: 'feature/part-a', branchDeleted: false, reason: 'end-unchanged' }])
     expect(await branchExists('feature/part-a')).toBe(true)
   })
 
