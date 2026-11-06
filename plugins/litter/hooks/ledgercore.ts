@@ -10,7 +10,7 @@
 //
 // Contract owner: phase 1a.
 
-import type { Ports } from './ports'
+import { HookAborted, type Ports } from './ports'
 import type { Author, StoredRecord } from './records/core'
 import { RECORD_MAX_BYTES } from './records/core'
 import { ledgerDir, ledgerFileName } from './layout'
@@ -118,7 +118,9 @@ const bytes = (text: string) => new TextEncoder().encode(text).length
  */
 export function appendRecord<B>(p: Ports, runDir: string, input: AppendInput<B>, options: AppendOptions = {}): Promise<StoredRecord<B>> {
   return serial(`ledger:${runDir}`, async () => {
-    const read = await readLedger(p, runDir, input.run)
+    // An append is a write: its read isn't cut short by the hook's signal, and it takes a cached prefix
+    // however old, so it reads only what's new (the next read that isn't an append re-checks the whole chain).
+    const read = await readFor(p, runDir, input.run, true)
     const { head, tampered, brokenTail } = read
     if (tampered) throw new LedgerTampered(tampered.seq, tampered.reason)
     if (read.anchor === 'none' && read.records.length > 0 && options.adopt !== true) {
@@ -142,8 +144,17 @@ export function appendRecord<B>(p: Ports, runDir: string, input: AppendInput<B>,
     const sha = await sha256(text)
     const pending = { seq: rec.seq, sha }
     await p.store.set(headKey(runDir), { v: 2, seq: head?.seq ?? 0, sha: head?.sha ?? '', pending } satisfies Head)
-    await p.fs.write(`${ledgerDir(runDir)}/${ledgerFileName(rec.seq, rec.kind)}`, text)
+    const name = ledgerFileName(rec.seq, rec.kind)
+    await p.fs.write(`${ledgerDir(runDir)}/${name}`, text)
     await p.store.set(headKey(runDir), { v: 2, seq: rec.seq, sha } satisfies Head)
+    // The read above left the cache at the record before this one: this one joins it, so the next read lists it as verified.
+    const kept = p.ledgerCache?.peek(runDir)
+    if (kept && kept.run === input.run && kept.names.length === rec.seq - 1) {
+      kept.names.push(name)
+      kept.shas.push(sha)
+      // A copy, as a read would parse it: the caller keeps `rec`, and may change it.
+      kept.records.push(JSON.parse(text) as StoredRecord)
+    }
     return rec
   })
 }
@@ -206,11 +217,29 @@ export const elsewhere = (run: string): string => `run ${run} is driven by anoth
  * the head has moved, the read starts over from the new one; after
  * READ_TRIES walks it ends before that record instead, as a read made a
  * moment earlier would, and the next read judges it.
+ *
+ * With `p.ledgerCache`, a read walks only the files past the records an
+ * earlier read verified, from the last one's hash, while the listing still
+ * starts with their names and the stored head still fits them; any other
+ * read, and the first after `fullEveryMs`, walks the whole ledger again. So a
+ * file rewritten in place is caught by that next whole walk, not at once.
+ *
+ * With `p.signal`, a read stops before its next file once the signal has
+ * aborted (the hook's dispatch went on without it), throwing HookAborted: a
+ * read that failed, never a broken ledger.
  */
-export async function readLedger(p: Ports, runDir: string, run: string): Promise<LedgerRead> {
+export function readLedger(p: Ports, runDir: string, run: string): Promise<LedgerRead> {
+  return readFor(p, runDir, run, false)
+}
+
+async function readFor(p: Ports, runDir: string, run: string, appending: boolean): Promise<LedgerRead> {
+  const cache = p.ledgerCache
   let stored = (await p.store.get(headKey(runDir))) as Head | undefined
+  const now = cache ? await p.now() : 0
+  let from = cache?.take(runDir) ?? null
+  if (from && (from.run !== run || (!appending && !(now - from.fullAt < cache!.fullEveryMs)))) from = null
   for (let tries = 1; ; tries++) {
-    const walk = await walkLedger(p, runDir, run, stored)
+    const walk = await walkLedger(p, runDir, run, stored, from, !appending)
     if (walk.added) {
       const now = (await p.store.get(headKey(runDir))) as Head | undefined
       if (!sameHead(now, stored)) {
@@ -222,6 +251,12 @@ export async function readLedger(p: Ports, runDir: string, run: string): Promise
       }
     }
     const { records, prevSha, tampered, brokenTail } = walk
+    // A long ledger walked whole, to the debug log: with a cache, its first read and one each fullEveryMs.
+    if (!walk.fromCache && records.length >= WHOLE_LOG_MIN) p.log(`ledger ${runDir}: read whole, ${records.length} records${cache ? '' : ' (no cache)'}`)
+    if (cache) {
+      if (tampered) cache.forget(runDir)
+      else cache.keep(runDir, { run, names: walk.names, shas: walk.shas, records: records.slice(), fullAt: walk.fromCache ? from!.fullAt : now })
+    }
     const head: Head | null = records.length > 0 && prevSha ? { v: 2, seq: records.length, sha: prevSha } : null
     return { records, head, tampered, brokenTail, anchor: anchorOf(stored) }
   }
@@ -232,26 +267,107 @@ const anchorOf = (stored: Head | undefined): Anchor => (stored === undefined ? '
 /** How many times readLedger walks the files while appends keep moving the head. */
 const READ_TRIES = 8
 
+/** A whole walk of at least this many records is logged (tier 4's ui-ledger case counts them). */
+const WHOLE_LOG_MIN = 500
+
+/** A ledger's records as a read verified them, in seq order: `names[i]`, `shas[i]` and `records[i]` are seq i + 1's. */
+export type VerifiedLedger = {
+  run: string
+  names: string[]
+  shas: string[]
+  records: StoredRecord[]
+  /** When a read last walked this ledger from its first record (`p.now()`). */
+  fullAt: number
+}
+
+/**
+ * The ledgers recent reads verified (readLedger), the least recently read
+ * dropped past `max`. One per module instance: the mod's hooks and timers
+ * share it, and a tier-2 spec that wants it makes its own.
+ */
+export class LedgerReadCache {
+  readonly max: number
+  readonly fullEveryMs: number
+  private readonly kept = new Map<string, VerifiedLedger>()
+  constructor(options: { max?: number; fullEveryMs?: number } = {}) {
+    this.max = options.max ?? 16
+    this.fullEveryMs = options.fullEveryMs ?? 60_000
+  }
+  /** The entry for `runDir`, now the most recently read. */
+  take(runDir: string): VerifiedLedger | null {
+    const v = this.kept.get(runDir)
+    if (!v) return null
+    this.kept.delete(runDir)
+    this.kept.set(runDir, v)
+    return v
+  }
+  /** The entry for `runDir`, leaving the order as it is. */
+  peek(runDir: string): VerifiedLedger | null {
+    return this.kept.get(runDir) ?? null
+  }
+  keep(runDir: string, v: VerifiedLedger): void {
+    this.kept.delete(runDir)
+    this.kept.set(runDir, v)
+    for (const k of this.kept.keys()) {
+      if (this.kept.size <= this.max) break
+      this.kept.delete(k)
+    }
+  }
+  forget(runDir: string): void {
+    this.kept.delete(runDir)
+  }
+  get size(): number {
+    return this.kept.size
+  }
+}
+
+/**
+ * Whether the checks a walk makes against `stored` would pass over the
+ * cached records too: the hash at the head's seq when the head is among them,
+ * and, past a v2 head, only the one record its intent names.
+ */
+function prefixFits(stored: Head | undefined, v: VerifiedLedger): boolean {
+  const n = v.names.length
+  if (!stored) return true
+  if (stored.seq >= 1 && stored.seq <= n && v.shas[stored.seq - 1] !== stored.sha) return false
+  if (stored.v === 2 && n > stored.seq) return n === stored.seq + 1 && stored.pending?.seq === n && stored.pending.sha === v.shas[n - 1]
+  return true
+}
+
 type Walk = Omit<LedgerRead, 'head' | 'anchor'> & {
   prevSha: string | null
   /** The walk stopped at a record past `stored` that its intent doesn't name. */
   added: boolean
+  /** The verified records' file names and hashes, as VerifiedLedger keeps them. */
+  names: string[]
+  shas: string[]
+  /** The walk started past a cached prefix. */
+  fromCache: boolean
 }
 
-/** One pass over the files against `stored`. */
-async function walkLedger(p: Ports, runDir: string, run: string, stored: Head | undefined): Promise<Walk> {
+/** One pass over the files against `stored`, past `from`'s records when they're still the listing's first. */
+async function walkLedger(p: Ports, runDir: string, run: string, stored: Head | undefined, from: VerifiedLedger | null, abortable: boolean): Promise<Walk> {
   const dir = ledgerDir(runDir)
   const names = (await p.fs.exists(dir))
     ? (await p.fs.list(dir)).filter(e => e.kind === 'file' && /^[0-9]{6}-.+\.json$/.test(e.name)).map(e => e.name).sort()
     : []
   const records: StoredRecord[] = []
+  const shas: string[] = []
   let prevSha: string | null = null
   let tampered: LedgerRead['tampered'] = null
   let brokenTail: string | null = null
   let added = false
-  for (let i = 0; i < names.length; i++) {
+  let start = 0
+  if (from && from.names.length <= names.length && prefixFits(stored, from) && from.names.every((n, i) => names[i] === n)) {
+    start = from.names.length
+    records.push(...from.records)
+    shas.push(...from.shas)
+    prevSha = from.shas[start - 1] ?? null
+  }
+  for (let i = start; i < names.length; i++) {
     const name = names[i]!
     const seq = i + 1
+    if (abortable && p.signal?.aborted) throw new HookAborted(`reading ${dir}`)
     const text = await p.fs.read(`${dir}/${name}`)
     let rec: StoredRecord
     try {
@@ -283,10 +399,11 @@ async function walkLedger(p: Ports, runDir: string, run: string, stored: Head | 
       break
     }
     records.push(rec)
+    shas.push(sha)
     prevSha = sha
   }
   if (!tampered && stored && records.length < stored.seq) {
     tampered = { seq: records.length + 1, reason: `the ledger ends at ${records.length}, but its head is ${stored.seq}` }
   }
-  return { records, prevSha, tampered, brokenTail, added }
+  return { records, prevSha, tampered, brokenTail, added, names: names.slice(0, records.length), shas, fromCache: start > 0 }
 }

@@ -15,7 +15,7 @@ import type { AgentStatus, ListedAgent, Ports } from './ports'
 import type { CommandRunHook, PortHook, SessionEndHook } from './hooktypes'
 import type { Policy } from './hookfiles'
 import type { ClearKill, ClearReason, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
-import { agentLive } from './ports'
+import { agentLive, untilAborted } from './ports'
 import { session, updateSession } from './session'
 import { agentInfo, readPolicy, roleOf, updatePolicy } from './policy'
 import { registerRecordTool } from './ledger'
@@ -289,7 +289,9 @@ export async function rebound(p: Ports): Promise<void> {
   const from = rebindPending()
   // A hook between session.end and the switch to the new id: nothing has moved yet.
   if (from === null || now === from) return
-  await startRebind(p, from, now)
+  // The rebind is the session's, not this hook's: it runs on ports without the hook's signal, and the hook
+  // stops waiting for it when its own dispatch is cut short.
+  await untilAborted(p, startRebind(p.detached?.() ?? p, from, now), 'waiting for the /clear rebind')
 }
 
 /** Starts the rebind (one at a time); resolves once its gate is open again. */

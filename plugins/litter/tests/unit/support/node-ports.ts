@@ -436,6 +436,7 @@ export function nodePorts(options: { pluginRoot?: string; sessionId?: string; cw
       get: async key => clone(storeMap.get(key)),
       set: async (key, value) => void storeMap.set(key, clone(value)),
       delete: async key => void storeMap.delete(key),
+      keys: async () => [...storeMap.keys()],
     },
     // Claude Code's answer, as register.tsx's ports give it.
     ledgerOwner: claudeLedgerOwner,

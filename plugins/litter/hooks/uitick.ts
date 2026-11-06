@@ -50,15 +50,25 @@ export function startUiTimer(p: Ports): void {
   })
 }
 
+/** A tick that takes longer than this is logged with each step's time: past UI_TICK_MS, the next tick is skipped. */
+export const SLOW_TICK_MS = 1500
+
 /** One tick: each step in order, a failure logged and the next still run. */
 export async function uiTick(p: Ports): Promise<void> {
+  const start = await p.now()
+  const took: string[] = []
+  let at = start
   for (const name of STEPS) {
     try {
       await deps[name](p)
     } catch (err) {
       p.log(`ui tick: ${name} failed: ${errText(err)}`)
     }
+    const now = await p.now()
+    took.push(`${name} ${now - at} ms`)
+    at = now
   }
+  if (at - start > SLOW_TICK_MS) p.log(`ui tick: slow, ${at - start} ms (${took.join(', ')})`)
 }
 
 /** Whether a tick is running now (tests). */

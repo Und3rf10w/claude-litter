@@ -12,6 +12,7 @@ import { modeRefusal, primaryOf, repoOf } from '../lifecycle'
 import { realOf } from '../worktrees'
 import { liveSwarms } from './state'
 import { readOwner } from './owner'
+import { STORE_CAP_BYTES, type StoreMeasure, storeMeasure } from '../storeprune'
 import {
   DEFAULT_CONCURRENT_SUBAGENTS,
   DEFAULT_SPAWN_DEPTH,
@@ -238,6 +239,7 @@ export async function checkHealth(p: Ports, input: HealthInput): Promise<HealthR
     rows.push(await sessionWorktreeRow(p, spec, places, litterDir))
   }
   rows.push(await gitRow(p))
+  rows.push(storeRow(storeMeasure()))
   rows.push(trailersRow())
 
   if (litterDir) for (const live of liveSwarms()) rows.push(await ownerRow(p, litterDir, live.name))
@@ -314,6 +316,22 @@ async function gitRow(p: Ports): Promise<HealthRow> {
   const version = m[0]
   if (major > GIT_MIN[0] || (major === GIT_MIN[0] && minor >= GIT_MIN[1])) return row('git', 'ok', 'git', version)
   return row('git', 'warning', 'git', `${version} is older than ${GIT_MIN.join('.')}, which litter's fenced branch switch needs: runs still launch, with the small window the run card describes`)
+}
+
+/**
+ * litter's `$.store` against the engine's 4 MiB cap, as the last prune pass
+ * measured it (storeprune.ts): past it every `set` is refused, and each set
+ * rewrites the whole file, so a large store slows every swarm write.
+ */
+export function storeRow(m: StoreMeasure | null): HealthRow {
+  const title = "litter's store"
+  if (!m) return row('store', 'info', title, 'not measured yet: the first pass runs shortly after the session starts')
+  const kib = (n: number) => `${Math.round(n / 1024)} KiB`
+  const share = m.bytes / STORE_CAP_BYTES
+  const detail = `${m.keys} keys, ${kib(m.bytes)} of ${kib(STORE_CAP_BYTES)}${m.dropped > 0 ? `; the last pass dropped ${m.dropped} for folders that are gone` : ''}`
+  if (share >= 0.9) return row('store', 'error', title, `${detail}: nearly full, so litter's writes will soon be refused; end the swarms you're done with`)
+  if (share >= 0.5) return row('store', 'warning', title, `${detail}: over half full; each write rewrites all of it, so end the swarms you're done with`)
+  return row('store', 'ok', title, detail)
 }
 
 /** The trailers option (decision 4): litter can't read the session's own attribution settings, so it says when it adds none. */

@@ -45,6 +45,7 @@ import { getOptions, session, setOptions, updateSession } from './session'
 import { SPOOL_CONSUMERS } from './registry'
 import { recordFailed, recordTool, registerRecordTool } from './ledger'
 import { claudeLedgerOwner } from './ledgerowner'
+import { LedgerReadCache } from './ledgercore'
 import { drainAllSpools, drainOwnSpools, startDrainTimer, stopInterrupted } from './policy'
 import { activePath } from './layout'
 import { registerRoles } from './roles'
@@ -55,7 +56,18 @@ import { repairNote, repairTurnComplete } from './repair'
 import { cleanupLeftovers, startWorktreePolicy } from './worktrees'
 import { outsideWorkflow, roleSpawnRefusal, taskStop, taskStopFailed, workflowCheck, workflowCheckFailed } from './launch'
 import { holdClear, noteSessionEnd, rebound, startSwarmTimers } from './clear'
-import { addLeadTokens, attach, binding, notePromptOrigin, setInteractive, setRecordedSession, withGateClosed } from './swarm/state'
+import {
+  addLeadTokens,
+  attach,
+  binding,
+  flushed,
+  MIRROR_GAP_MS,
+  notePromptOrigin,
+  setInteractive,
+  setMirrorGap,
+  setRecordedSession,
+  withGateClosed,
+} from './swarm/state'
 import { measureSpend, noteUsage } from './stats/spend'
 import { statsMeasured } from './stats/pane'
 import { registerSwarmTools } from './swarm/tools'
@@ -92,6 +104,7 @@ import { litterAutocomplete, litterSuggestions, registerLitterCommand } from './
 import { litterCommand, onLitterUi } from './ui/hub'
 import { renderLitterPane, sectionShown } from './ui/pane'
 import { startUiTimer } from './uitick'
+import { startStorePrune } from './storeprune'
 import { restoreAsks } from './asks'
 import { bandShows, onBandUi } from './band/view'
 import { renderBand } from './band/render'
@@ -138,9 +151,19 @@ async function sectionView($: EngineInterface, section: HubSection): Promise<Sec
 const bandRenderFailed: BandRenderCatch = async ($, e, next) => next(e)
 const cardRenderFailed: CardRenderCatch = async ($, e, next) => next(e)
 
-/** The ports over this dispatch's `$` (ports.ts). */
-function enginePorts($: EngineInterface): Ports {
+/** The ledgers this module instance's reads verified: every Ports shares them (ledgercore.ts). */
+const LEDGER_CACHE = new LedgerReadCache()
+
+/**
+ * The ports over this dispatch's `$` (ports.ts). A hook passes its
+ * `next.signal`, so its ledger reads and sleeps stop once the engine has gone
+ * on without it; session.start passes none, since its timers keep its ports.
+ */
+function enginePorts($: EngineInterface, signal?: AbortSignal): Ports {
   return {
+    ledgerCache: LEDGER_CACHE,
+    ...(signal ? { signal } : {}),
+    detached: () => enginePorts($),
     fs: {
       read: path => $.fs.read(path),
       write: (path, text) => $.fs.write(path, text),
@@ -163,6 +186,7 @@ function enginePorts($: EngineInterface): Ports {
       get: key => $.store.get(key),
       set: (key, value) => $.store.set(key, value),
       delete: key => $.store.delete(key),
+      keys: () => $.store.keys(),
     },
     ledgerOwner: claudeLedgerOwner,
     sessionId: () => $.session.id(),
@@ -199,7 +223,7 @@ function enginePorts($: EngineInterface): Ports {
     },
     complete: request => $.model.complete(request),
     callTool: (tool, input) => $.tool.call({ ...input, tool } as unknown as ToolCallArgs),
-    sleep: ms => $.clock.sleep(ms),
+    sleep: ms => $.clock.sleep(ms, signal ? { signal } : undefined),
     after: (ms, fn) => $.clock.after(ms, fn),
     limits: async () => ({
       CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: await $.env.get('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH'),
@@ -314,6 +338,7 @@ export const register: Register = (on, options) => {
   setOptions(options as Readonly<Record<string, unknown>>)
 
   on('session.start', async ($, e, next) => {
+    // No signal: the timers started here keep these ports for the session.
     const p = enginePorts($)
     updateSession({ ready: false })
     // Whether anyone is at the prompt to watch a repair (2b-2, decision 15).
@@ -341,6 +366,8 @@ export const register: Register = (on, options) => {
       })
       const litterDir = session().litterDir
       await step(p, 'swarm state', async () => {
+        // Each $.store set rewrites the plugin's whole store file: a busy swarm's mirror writes once a second at most.
+        setMirrorGap(MIRROR_GAP_MS)
         if (litterDir) attach(p, litterDir)
         setRecordedSession(await p.sessionId())
       })
@@ -375,6 +402,8 @@ export const register: Register = (on, options) => {
       await step(p, 'asks', () => restoreAsks(p))
       await step(p, 'cards', () => restoreCards(p))
       await step(p, 'ui timer', async () => startUiTimer(p))
+      // The store's keys for folders that are gone (storeprune.ts), on a timer after the start.
+      await step(p, 'store prune', async () => startStorePrune(p))
     })
     updateSession({ ready: true })
     return next(e)
@@ -382,34 +411,36 @@ export const register: Register = (on, options) => {
 
   // The rebind flag at a /clear (O), then the run lease as before.
   on('session.end', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await apart(p, 'session.end swarm', () => noteSessionEnd(p, e))
+    // The swarm state's mirror writes once a second (state.ts): what changed since goes now.
+    await apart(p, 'session.end swarm state', () => flushed())
     return onSessionEnd(p, e, next)
   }).catch(($, e, next) => next(e))
 
   // The record tool, answered in the hook, never through next(e).
   on('tool.call', { tool: 'mcp__litter__record' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return recordTool(p, e, next)
   }).catch(recordFailed)
 
   // The three swarm tools, answered in their hooks, never through next(e) (plan 15.4).
   on('tool.call', { tool: 'mcp__litter__swarm_propose' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return swarmProposeTool(p, e, next)
   }).catch(swarmProposeFailed)
 
   on('tool.call', { tool: 'mcp__litter__swarm_read' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await drainFirst(p)
     return swarmReadTool(p, e, next)
   }).catch(swarmReadFailed)
 
   on('tool.call', { tool: 'mcp__litter__swarm_send' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await drainFirst(p)
     return swarmSendTool(p, e, next)
@@ -417,7 +448,7 @@ export const register: Register = (on, options) => {
 
   // The launch check (main thread only: Workflow isn't a subagent tool).
   on('tool.call', { tool: 'Workflow' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await drainFirst(p)
     return workflowCheck(p, e, next)
@@ -425,7 +456,7 @@ export const register: Register = (on, options) => {
 
   // Observes a stop of a run's task: run.stopping, then run.end once settled.
   on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return taskStop(p, e, next)
   }).catch(taskStopFailed)
@@ -437,7 +468,7 @@ export const register: Register = (on, options) => {
   // 2.1.299 raises it for a resumed run too (`resume`): never a spawn to plan; admit.ts's resumeSpawn.
   on('agent.spawn', async ($, e, next) => {
     if (outsideTeammate(e) || outsideWorkflow(e)) return next(e)
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     if (e.resume !== undefined) return resumeSpawn(p, e, next)
     const refused = roleSpawnRefusal(e)
@@ -447,14 +478,14 @@ export const register: Register = (on, options) => {
 
   // Admission for sends to and from swarm nodes (plan 15.4, "Messages").
   on('session.send', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return admitSend(p, e, next)
   }).catch(sessionSendFailed)
 
   // Every model request of every loop: a node's wake is admitted at its first step (15.9, item 15).
   on('turn.step', async function* ($, e, next) {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return yield* admitStep(p, e, next)
   }).catch(turnStepFailed)
@@ -462,7 +493,7 @@ export const register: Register = (on, options) => {
   // The main loop's turn: the lead is busy. Since 2.1.299 a subagent's or teammate's raises it too, with its agentId.
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await leadTurnStart(p, e)
     return next(e)
@@ -474,7 +505,7 @@ export const register: Register = (on, options) => {
   // may start a repair swarm; then its run's card (phase 5, CC); then the
   // block, which shows the repair swarm; then X's note.
   on('prompt.submit', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await drainFirst(p)
     notePromptOrigin(e.origin)
@@ -498,7 +529,7 @@ export const register: Register = (on, options) => {
   // A subagent's interrupted turn is its stop, which settles a stopping run.
   // A swarm node's turn settles its place (L), then P observes it.
   on('turn.complete', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     if (e.agentId !== undefined && e.isAborted) await interrupted(p, e.agentId)
     await apart(p, 'turn.complete settle', () => settleNode(p, e))
@@ -513,7 +544,7 @@ export const register: Register = (on, options) => {
   // The session's figures moved (as a turn ends, the lead's or an agent's): each live swarm's spend follows its total,
   // and Stats redraws when it's shown (WP-DH).
   on('session.measure', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     if (e.changed.includes('cost')) await apart(p, 'session.measure spend', () => noteUsage(p, e))
     await apart(p, 'session.measure stats', () => statsMeasured(p, e))
@@ -522,14 +553,14 @@ export const register: Register = (on, options) => {
 
   // Hides the types of a swarm that isn't live and owned here.
   on('agent.offer', async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return offerSwarmType(p, e, next)
   }).catch(agentOfferFailed)
 
   // /clear is held while a swarm's or a run's agents are running (O).
   on('command.run', { command: 'clear' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     await drainFirst(p)
     return holdClear(p, e, next)
@@ -538,7 +569,7 @@ export const register: Register = (on, options) => {
   // Phase 5b (WP-DA): /litter [section] [arg], the one command, registered at
   // session.start and after a /clear (it replaced the six pane commands).
   on('command.run', { command: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return litterCommand(p, e, next)
   }).catch(litterCommandFailed)
@@ -547,7 +578,7 @@ export const register: Register = (on, options) => {
   // argument is typed. Every other prompt passes on at once, before the ports.
   on('prompt.autocomplete', async ($, e, next) => {
     if (litterSuggestions(e).length === 0) return next(e)
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return litterAutocomplete(p, e, next)
   }).catch(($, e, next) => next(e))
@@ -565,25 +596,25 @@ export const register: Register = (on, options) => {
   // The pane's presses, fields, picks and Client posts: the hub answers its
   // strip and routes the rest to the shown section (ui/hub.ts's key rule).
   on('ui.message', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.message(p, e, next)
   }).catch(uiMessageFailed)
 
   on('ui.press', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.press(p, e, next)
   }).catch(uiPressFailed)
 
   on('ui.input', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.input(p, e, next)
   }).catch(uiInputFailed)
 
   on('ui.select', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.select(p, e, next)
   }).catch(uiSelectFailed)
@@ -592,13 +623,13 @@ export const register: Register = (on, options) => {
   // ring lands on (a list draws its description) and routes a wheel tick to
   // the shown section, which moves its in-pane list or passes it on.
   on('ui.focus', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.focus(p, e, next)
   }).catch(uiFocusFailed)
 
   on('ui.scroll', { requestId: 'litter' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onLitterUi.scroll(p, e, next)
   }).catch(uiScrollFailed)
@@ -625,13 +656,13 @@ export const register: Register = (on, options) => {
 
   // Their presses: any plugin's button in the band or a row; keys not `band:` or `card:` pass on.
   on('ui.press', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onBandUi.press(p, e, next)
   }).catch(uiPressFailed)
 
   on('ui.press', { component: 'UserMessage' }, async ($, e, next) => {
-    const p = enginePorts($)
+    const p = enginePorts($, next.signal)
     await rebound(p)
     return onCardUi.press(p, e, next)
   }).catch(uiPressFailed)
