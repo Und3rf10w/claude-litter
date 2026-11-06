@@ -23,7 +23,7 @@ for c in 'isolation.sh alone' 'isolation.sh broad' 'land.sh edit' 'land.sh clean
   'swarm.sh trio' 'repair.sh auto' 'repair.sh off' \
   'execute.sh basic' 'rules.sh import' 'execute.sh bridge auto' 'execute.sh bridge off' \
   'design.sh basic' 'design.sh drift' 'export.sh' 'wiki.sh' \
-  'ui-band.sh' 'ui-card.sh' 'ui-ask.sh' 'ui-tasks.sh' 'ui-agents.sh'; do
+  'ui-band.sh' 'ui-card.sh' 'ui-ask.sh' 'ui-tasks.sh' 'ui-agents.sh' 'ui-ledger.sh'; do
   # A word list on purpose: the script and its mode.
   # shellcheck disable=SC2086
   sh "$here"/$c
