@@ -25,7 +25,8 @@ const autocomplete = ($: Engine, e: PromptAutocompleteInput): Promise<PromptAuto
   ($.prompt as unknown as { autocomplete: (e: PromptAutocompleteInput) => Promise<PromptAutocompleteResult> }).autocomplete(e)
 
 describe("/litter's typeahead", () => {
-  test("the sections its first argument starts, after the rows beneath", async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.1 s on CI, against the 5 s default.
+  test("the sections its first argument starts, after the rows beneath", { timeoutMs: 15_000 }, async ($, on) => {
     on('prompt.autocomplete', async () => ({ suggestions: [{ text: 'beneath' }] }))
     expect(await autocomplete($, box('/litter r'))).toEqual({
       suggestions: [

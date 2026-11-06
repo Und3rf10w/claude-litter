@@ -206,7 +206,8 @@ async function drawn(ui: Ui, columns: number, colors = false): Promise<string[]>
 }
 
 describe('/litter agents', () => {
-  test("opens `litter` on this session's agents, with the keyboard, and writes its view", async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.7 s on CI, against the 5 s default.
+  test("opens `litter` on this session's agents, with the keyboard, and writes its view", { timeoutMs: 15_000 }, async ($, on) => {
     const w = world(on)
     const r = await run($, 'agents')
     expect(r.text).toBe("Agents shows this session's 2 agents")

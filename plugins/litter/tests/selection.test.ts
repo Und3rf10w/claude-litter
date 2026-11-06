@@ -85,7 +85,8 @@ type Reply = { ok: boolean; error?: string; field?: string; workflow?: string; r
 const parse = (r: { result?: unknown }) => JSON.parse(String(r.result)) as Reply
 
 describe('rule.find { applicable }', () => {
-  test('from the main thread, answers what an execute launch would deliver and writes nothing', async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.1 s on CI, against the 5 s default.
+  test('from the main thread, answers what an execute launch would deliver and writes nothing', { timeoutMs: 15_000 }, async ($, on) => {
     mock.store(on)
     mock.clock(on, { now: 5_000 })
     const { files, changed, arm } = world(on)

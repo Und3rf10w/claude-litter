@@ -420,9 +420,16 @@ async function start($: Engine, on: On) {
 const mountBoard = <S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, surface: S, o: Over = {}) =>
   $.ui.mount({ plugin: 'litter', surface, component: 'Pane', requestId: 'litter', props: pane('litter', o) })
 
+/**
+ * These draw the whole board and check it a piece at a time, each find a
+ * round trip to the engine: on CI's runners the first of them took 4.7 to
+ * 5.1 s, at the kit's 5 s default.
+ */
+const WHOLE_BOARD = { timeoutMs: 15_000 }
+
 describe('the board, from a recorded ledger', () => {
   for (const surface of SURFACES) {
-    test(`an execute run with one landed gate and one halted, on the ${surface}`, async ($, on) => {
+    test(`an execute run with one landed gate and one halted, on the ${surface}`, WHOLE_BOARD, async ($, on) => {
       const w = await start($, on)
       const r = await runs($, EXEC)
       expect(r.text).toBe(`Runs shows run ${EXEC} (execute, halted)`)
@@ -485,7 +492,7 @@ describe('the board, from a recorded ledger', () => {
       }
     })
 
-    test(`inline, the short form: the first lines, what needs you, the table, the dimensions on one line, no evidence, on the ${surface}`, async ($, on) => {
+    test(`inline, the short form: the first lines, what needs you, the table, the dimensions on one line, no evidence, on the ${surface}`, WHOLE_BOARD, async ($, on) => {
       await start($, on)
       await runs($, EXEC)
       const ui = await mountBoard($, surface, { columns: 100, placement: 'inline' })
@@ -502,7 +509,7 @@ describe('the board, from a recorded ledger', () => {
       expect(await ui.find({ type: 'Button', key: 'board:note:G2' })).toBeDefined()
     })
 
-    test(`a gate whose executor stopped on a plan gap after a verdict: halted, the gap the executor's, the dimensions the verdict's attempt's, on the ${surface}`, async ($, on) => {
+    test(`a gate whose executor stopped on a plan gap after a verdict: halted, the gap the executor's, the dimensions the verdict's attempt's, on the ${surface}`, WHOLE_BOARD, async ($, on) => {
       await start($, on)
       expect((await runs($, STOP)).text).toBe(`Runs shows run ${STOP} (execute, halted)`)
       const ui = await mountBoard($, surface)
@@ -516,7 +523,7 @@ describe('the board, from a recorded ledger', () => {
       expect(await ui.find({ type: 'Text', text: '⚑ rule clash' })).toBeUndefined()
     })
 
-    test(`a fanout gets its header and its last records, on the ${surface}`, async ($, on) => {
+    test(`a fanout gets its header and its last records, on the ${surface}`, WHOLE_BOARD, async ($, on) => {
       await start($, on)
       const r = await runs($, FAN)
       expect(r.text).toBe(`Runs shows run ${FAN} (fanout, done)`)

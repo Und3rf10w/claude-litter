@@ -68,7 +68,8 @@ const shownText = (n: unknown): string =>
   typeof n === 'string' ? n : n !== null && typeof n === 'object' ? ((n as Node).children ?? []).map(shownText).join('') : ''
 
 describe('the card in a row', () => {
-  test('a notification row with a card draws the card in place of the engine’s, on every surface', async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.7 s on CI, against the 5 s default.
+  test('a notification row with a card draws the card in place of the engine’s, on every surface', { timeoutMs: 15_000 }, async ($, on) => {
     mock.store(on)
     cardsHeld(on, CARDS)
     rowBeneath(on, [])

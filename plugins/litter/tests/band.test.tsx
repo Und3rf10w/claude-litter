@@ -109,7 +109,8 @@ const shownText = (n: unknown): string =>
   typeof n === 'string' ? n : n !== null && typeof n === 'object' ? ((n as Node).children ?? []).map(shownText).join('') : ''
 
 describe('the band', () => {
-  test("a view with one row draws litter's row above the tree beneath, which stays whole, on the terminal and the desktop", async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.3 s on CI, against the 5 s default.
+  test("a view with one row draws litter's row above the tree beneath, which stays whole, on the terminal and the desktop", { timeoutMs: 15_000 }, async ($, on) => {
     mock.store(on)
     bandAtom(on, ONE_ROW)
     bandBeneath(on)

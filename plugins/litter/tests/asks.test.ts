@@ -76,7 +76,8 @@ function world(on: On): Map<string, string> {
 }
 
 describe('the permission ask line', () => {
-  test("litter hooks no classic.PermissionRequest of its own: the event and its answer are the engine's", async ($, on) => {
+  // The file's first test pays the plugin's first load: 4 to 4.7 s on CI, against the 5 s default.
+  test("litter hooks no classic.PermissionRequest of its own: the event and its answer are the engine's", { timeoutMs: 15_000 }, async ($, on) => {
     mock.store(on)
     const seen: unknown[] = []
     on('classic.PermissionRequest', async (_$, e) => {
@@ -135,7 +136,7 @@ describe('the permission ask line', () => {
     expect(files.has(`${LITTER}/hooks/spool/${SESSION}.jsonl`)).toBe(false)
   })
 
-  test("the transcript row (WP-CK): none for an ask a resume's session.start replays; one for an ask the drain timer opens, at the ui tick, never twice", async ($, on) => {
+  test("the transcript row (WP-CK): none for an ask a resume's session.start replays; one for an ask the drain timer opens, at the ui tick, never twice", { timeoutMs: 15_000 }, async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on, { now: NOW })
     const files = world(on)
