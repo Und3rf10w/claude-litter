@@ -15,7 +15,7 @@ import type { AgentStatus, ListedAgent, Ports } from './ports'
 import type { CommandRunHook, PortHook, SessionEndHook } from './hooktypes'
 import type { Policy } from './hookfiles'
 import type { ClearKill, ClearReason, InflightCall, LiveSwarm, NodeBinding } from './swarm/types'
-import { agentLive } from './ports'
+import { agentLive, untilAborted } from './ports'
 import { session, updateSession } from './session'
 import { agentInfo, readPolicy, roleOf, updatePolicy } from './policy'
 import { registerRecordTool } from './ledger'
@@ -38,6 +38,7 @@ import { ownedSwarm, rebindOwnership, startOwnerBeat, stopOwnerBeat } from './sw
 import { refreshReadOnly, typesAccepted } from './swarm/recover'
 import { summaryTick } from './swarm/summary'
 import { DETAIL_MAX_BYTES, spoolLine, TOOL_MAX_BYTES } from './swarm/observe'
+import { reclaimTick } from './swarm/reclaim'
 import {
   attach,
   binding,
@@ -289,7 +290,9 @@ export async function rebound(p: Ports): Promise<void> {
   const from = rebindPending()
   // A hook between session.end and the switch to the new id: nothing has moved yet.
   if (from === null || now === from) return
-  await startRebind(p, from, now)
+  // The rebind is the session's, not this hook's: it runs on ports without the hook's signal, and the hook
+  // stops waiting for it when its own dispatch is cut short.
+  await untilAborted(p, startRebind(p.detached?.() ?? p, from, now), 'waiting for the /clear rebind')
 }
 
 /** Starts the rebind (one at a time); resolves once its gate is open again. */
@@ -445,13 +448,18 @@ export async function rebindSettled(): Promise<void> {
 // ---------------------------------------------------------------------------
 // The timers
 
-/** At session.start, with the timers: the 2 s tick (a changed session id starts the rebind; the summary runs from it). */
+/**
+ * At session.start, with the timers: the 2 s tick (a changed session id
+ * starts the rebind; the summary runs from it, and about once a minute the
+ * reclaim of ended workers' worktrees, swarm/reclaim.ts).
+ */
 export function startSwarmTimers(p: Ports): void {
   timer?.cancel()
   timer = p.every(TICK_MS, () => {
     // The summary keeps its own one-at-a-time guard; a call can take 20 s, so the rebind check doesn't wait on it.
     void summaryTick(p).catch(err => p.log(`summary tick: ${errText(err)}`))
     void refreshTick(p).catch(err => p.log(`read-only refresh: ${errText(err)}`))
+    void reclaimTick(p).catch(err => p.log(`worktree reclaim tick: ${errText(err)}`))
     if (ticking) return
     ticking = true
     void tick(p)

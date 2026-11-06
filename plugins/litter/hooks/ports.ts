@@ -25,7 +25,47 @@ import type {
   ToolSpec,
 } from 'claude-code'
 import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
-import type { LedgerRead, Owner } from './ledgercore'
+import type { LedgerRead, LedgerReadCache, Owner } from './ledgercore'
+
+/**
+ * A read stopped because the hook's signal aborted (`Ports.signal`): the
+ * dispatch went on without the hook, so nothing it would answer counts. It
+ * says the read failed, never what the files hold.
+ */
+export class HookAborted extends Error {
+  constructor(what: string) {
+    super(`stopped ${what}: the hook's signal aborted`)
+    this.name = 'HookAborted'
+  }
+}
+
+/** Whether `err` is a read the hook's signal stopped. */
+export const isHookAborted = (err: unknown): err is HookAborted => err instanceof HookAborted
+
+/**
+ * `work`, or HookAborted as soon as `p.signal` aborts, whichever comes
+ * first: a hook that waits on shared work (work it doesn't own, which goes on
+ * without it) stops waiting with its dispatch.
+ */
+export function untilAborted<T>(p: Ports, work: Promise<T>, what: string): Promise<T> {
+  const signal = p.signal
+  if (!signal) return work
+  if (signal.aborted) return Promise.reject(new HookAborted(what))
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new HookAborted(what))
+    signal.addEventListener('abort', stop, { once: true })
+    work.then(
+      v => {
+        signal.removeEventListener('abort', stop)
+        resolve(v)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', stop)
+        reject(err)
+      },
+    )
+  })
+}
 
 /** What `$.agent.register` takes (the engine doesn't export the type's name). */
 export type AgentSpec = Parameters<EngineInterface['agent']['register']>[0]
@@ -146,6 +186,8 @@ export interface Ports {
     get(key: string): Promise<unknown>
     set(key: string, value: unknown): Promise<void>
     delete(key: string): Promise<void>
+    /** Every key (`$.store.keys()`): the store prune's (storeprune.ts). A host without it is never pruned. */
+    keys?(): Promise<string[]>
   }
   /**
    * The host's answer to ledgercore's `owned`: whether this store owns the
@@ -153,6 +195,21 @@ export interface Ports {
    * and anything less `other`.
    */
   ledgerOwner?(runDir: string, read: LedgerRead): Promise<Owner>
+  /**
+   * The ledgers recent reads verified, shared by every Ports of this module
+   * instance, so a read walks only what's new (ledgercore's readLedger).
+   * Without it every read walks the whole ledger.
+   */
+  ledgerCache?: LedgerReadCache
+  /**
+   * The dispatch's `next.signal`, for the ports of a hook: long reads (a
+   * ledger walk) stop at their next step once it aborts, with HookAborted,
+   * since past it the engine counts the hook toward a runaway. Writes aren't
+   * cut short. Absent for a timer's ports, which run outside any dispatch.
+   */
+  signal?: AbortSignal
+  /** These ports without `signal`, for work a hook starts that must finish without it (the /clear rebind). */
+  detached?(): Ports
   /** The current session id. It changes at /clear and when a session is backgrounded. */
   sessionId(): Promise<string>
   /** The session's working directory, absolute (`$.session.cwd()`). It moves with EnterWorktree. */

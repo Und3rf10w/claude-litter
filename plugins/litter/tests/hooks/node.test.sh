@@ -272,6 +272,11 @@ case_node_commit_true() {
   ct_co=$(real_project)
   pass_each 'git commit -am x' 'git add a.txt && git commit -m y' "git -C $ct_co commit -m x" \
     'git -C . commit -m x' "cd $ct_co && git commit -m x" 'git add src/x.py' 'git status'
+  # A simple command of assignments only has no command word: its base is "",
+  # never a jq error that refuses the call.
+  pass_each "cd $ct_co; git commit -m x; H=\$(git rev-parse HEAD); L=/tmp/x; mkdir -p \$L" \
+    "cd $ct_co; W=$ct_co; git merge --ff-only other; git -C \"\$W\" status --short"
+  deny_each 'without cd elsewhere' 'A=1; cd /tmp && git commit -m x'
   deny_each 'runs only in your directory' "git -C $T_DIR/elsewhere commit -m x" 'git --git-dir=/x/.git commit -m x' \
     'git --work-tree=/x add a.txt'
   deny_each 'drop GIT_DIR' 'GIT_DIR=/x/.git git commit -m x'

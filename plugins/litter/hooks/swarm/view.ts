@@ -2118,8 +2118,10 @@ export function eventRow(r: StoredRecord, all: readonly NodeBinding[]): SwarmEve
       return { at, who: node || 'litter', text: `worktree failed (${String(body.step)}): ${oneLine(body.reason, 80)}`, color: COLOR.failed }
     case 'swarm.worktree.kept':
       return { at, who: 'litter', text: `worktree kept: ${oneLine(body.path, 60)}: ${oneLine(body.reason, 60)}`, color: COLOR.waiting }
-    case 'swarm.worktree.removed':
-      return { at, who: 'litter', text: `worktree removed: ${oneLine(body.path, 80)}`, color: COLOR.idle }
+    case 'swarm.worktree.removed': {
+      const why = body.reason === 'ended-unchanged' || body.reason === 'ended-merged' ? ' (its instance ended; the branch stays)' : ''
+      return { at, who: 'litter', text: `worktree removed: ${oneLine(body.path, 80)}${why}`, color: COLOR.idle }
+    }
     case 'swarm.event':
       return swarmEventRow(at, r.body as unknown as SwarmEventBody, all)
     default:

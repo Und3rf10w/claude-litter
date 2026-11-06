@@ -221,19 +221,44 @@ function schedule(): void {
   })
 }
 
-function kick(): void {
+/**
+ * The least time between two writes of the mirror. A busy swarm changes many
+ * times a second, and each `$.store.set` rewrites the plugin's whole store
+ * file, so what changes in between is written together, once the gap is out.
+ */
+export const MIRROR_GAP_MS = 1_000
+/** The gap in force: none until the mod sets it at session.start (setMirrorGap), so a spec's writes land at once. */
+let mirrorGapMs = 0
+/** The gap's timer, after a write; a change in it waits for it. */
+let cooling: { cancel(): void } | null = null
+
+/** The least time between two writes of the mirror (register.tsx: MIRROR_GAP_MS); 0 writes each burst at once. */
+export function setMirrorGap(ms: number): void {
+  mirrorGapMs = Math.max(0, ms)
+}
+
+/** One write of what's dirty, then the gap; `force` (flushed) writes in the gap too. */
+function kick(force = false): void {
   if (writing || !ports || !mirrorDir) return
+  if (cooling && !force) return
+  cooling?.cancel()
+  cooling = null
   const p = ports
   const dir = mirrorDir
   writing = (async () => {
-    while (dirty.size > 0) {
-      const names = [...dirty]
-      dirty.clear()
-      for (const name of names) await writePart(p, dir, name)
-    }
+    const names = [...dirty]
+    dirty.clear()
+    for (const name of names) await writePart(p, dir, name)
   })().finally(() => {
     writing = null
-    if (dirty.size > 0) kick()
+    if (mirrorGapMs === 0) {
+      if (dirty.size > 0) kick()
+      return
+    }
+    cooling = p.after(mirrorGapMs, () => {
+      cooling = null
+      if (dirty.size > 0) kick()
+    })
   })
 }
 
@@ -345,12 +370,12 @@ export function attach(p: Ports, litterDir: string): void {
   if (dirty.size > 0) schedule()
 }
 
-/** Resolves once every scheduled write is done (tests, and session.end). */
+/** Resolves once every scheduled write is done, the gap's waiting one too (tests, and session.end). */
 export async function flushed(): Promise<void> {
   while (ports && mirrorDir && (scheduled || writing || dirty.size > 0)) {
     if (writing) await writing.catch(() => undefined)
     else if (scheduled) await Promise.resolve()
-    else kick()
+    else kick(true)
   }
 }
 
@@ -468,6 +493,40 @@ function forget(name: string): void {
   roundsBy.delete(name)
   spendBy.delete(name)
   leadBy.delete(name)
+  retiredBy.delete(name)
+}
+
+// ---------------------------------------------------------------------------
+// Retired worktrees
+
+/**
+ * By swarm, the `own` worktrees of ended instances that litter removed, or
+ * is removing, while the swarm runs (reclaim.ts), as recorded and resolved:
+ * an instance (or a child) that worked in one can't run again, so a send,
+ * a wake or a resume of it is refused (admit.ts). Not mirrored: recovery
+ * reads them again from the launch ledger's `swarm.worktree.removed`.
+ */
+const retiredBy = new Map<string, Set<string>>()
+
+export function retire(swarm: string, ...paths: string[]): void {
+  let set = retiredBy.get(swarm)
+  if (!set) retiredBy.set(swarm, (set = new Set()))
+  for (const path of paths) if (path !== '') set.add(path.replace(/\/+$/, ''))
+  ver++
+}
+
+/** A removal that didn't happen: the instance may run there again. */
+export function unretire(swarm: string, ...paths: string[]): void {
+  const set = retiredBy.get(swarm)
+  if (!set) return
+  for (const path of paths) set.delete(path.replace(/\/+$/, ''))
+  ver++
+}
+
+/** The retired worktree `dir` is in, or null. */
+export function retiredDir(swarm: string, dir: string): string | null {
+  for (const path of retiredBy.get(swarm) ?? []) if (dir === path || dir.startsWith(`${path}/`)) return path
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,6 +1394,7 @@ export function resetForTests(): void {
   roundsBy.clear()
   spendBy.clear()
   leadBy.clear()
+  retiredBy.clear()
   interactiveFlag = null
   ver = 0
   ports = null
@@ -1343,4 +1403,7 @@ export function resetForTests(): void {
   dropped.clear()
   scheduled = false
   writing = null
+  cooling?.cancel()
+  cooling = null
+  mirrorGapMs = 0
 }

@@ -137,7 +137,17 @@ h_expect() {
 
 h_done() {
   printf '%s: %d passed, %d failed (files in %s)\n' "$H_CASE" "$H_PASS" "$H_FAIL" "$H_DIR"
+  h_store_clean
   [ "$H_FAIL" -eq 0 ]
+}
+
+# h_store_clean: the case's keys out of litter's $.store (fixtures/storeclean.ts).
+# The case's session is litter@inline, as a --plugin-dir session of yours is,
+# so its keys are in your store file. H_KEEP_STORE=1 leaves them, to look at.
+h_store_clean() {
+  [ "${H_KEEP_STORE:-}" = 1 ] && return 0
+  command -v bun >/dev/null || return 0
+  bun "$H_FIX/storeclean.ts" "$H_DIR" || echo "$H_CASE: the store's keys for $H_DIR weren't dropped"
 }
 
 # The tool log's lines for one agent: `main`, or an agent_type.

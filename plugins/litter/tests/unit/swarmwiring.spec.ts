@@ -365,6 +365,8 @@ describe("register.tsx's order and its renders", () => {
       'asks',
       'cards',
       'ui timer',
+      // The store's keys for folders that are gone, on a timer after the start.
+      'store prune',
     ])
   })
 

@@ -92,7 +92,8 @@ function bodyOf(rows: readonly string[]): string[] {
 }
 
 describe('/litter stats', () => {
-  test("answers what it shows, opens `litter` on Stats, and with no swarm live says so and names the next step", async ($, on) => {
+  // The file's first test pays the plugin's first load: 4.1 s on CI, against the 5 s default.
+  test("answers what it shows, opens `litter` on Stats, and with no swarm live says so and names the next step", { timeoutMs: 15_000 }, async ($, on) => {
     const w = world(on, { startedAt: NOW, context: { tokens: 45_000, window: 200_000, percent: 22 }, rateLimits: [], cost: { usd: 3.5 } })
     expect((await run($, 'stats')).text).toBe("Stats shows this session's $3.50")
     expect(w.opened.at(-1)).toBe('litter')

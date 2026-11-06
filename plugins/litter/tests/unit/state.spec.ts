@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as state from '../../hooks/swarm/state'
 import type { LiveSwarm, NodeBinding, Reservation, WriteScope } from '../../hooks/swarm/types'
-import { nodePorts, type TestPorts } from './support/node-ports'
+import { nodePorts, runAfters, type TestPorts } from './support/node-ports'
 
 const LITTER = '/repo/.claude/litter'
 const NOW = 1_800_000_000_000
@@ -299,6 +299,38 @@ describe('admission', () => {
     state.resetForTests()
     await state.loadSwarm(p, LITTER, 'alpha')
     expect(state.nextInstance('alpha', 'fixer')).toBe(5)
+  })
+
+  test('with the gap set, the mirror writes at most once a gap: the changes in it wait, then go in one write; flushed writes them at once', async () => {
+    const sets: string[] = []
+    const set = p.store.set
+    p.store.set = async (key, value) => {
+      sets.push(key)
+      return set(key, value)
+    }
+    state.setMirrorGap(state.MIRROR_GAP_MS)
+    state.attach(p, LITTER)
+    state.putLiveSwarm(swarm())
+    // Let the first write land, then change it three times inside the gap.
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(sets).toHaveLength(1)
+    state.noteInstance('alpha', 'fixer', 2)
+    state.noteInstance('alpha', 'fixer', 3)
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    state.noteInstance('alpha', 'fixer', 4)
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(sets).toHaveLength(1)
+    expect(p.afters.filter(a => a.state === 'pending').map(a => a.ms)).toEqual([state.MIRROR_GAP_MS])
+    // The gap ends: one write holds all three.
+    await runAfters(p, { all: true })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(sets).toHaveLength(2)
+    expect((p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart).instances).toEqual({ fixer: 4 })
+    // A change in the next gap, and flushed (session.end) writes it without waiting.
+    state.noteInstance('alpha', 'fixer', 5)
+    await state.flushed()
+    expect(sets).toHaveLength(3)
+    expect((p.storeMap.get(state.swarmStateKey(LITTER, 'alpha')) as state.SwarmPart).instances).toEqual({ fixer: 5 })
   })
 
   test('nextInstance counts from 1 per node; noteInstance only raises it', () => {
