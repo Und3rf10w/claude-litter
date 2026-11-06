@@ -10,7 +10,9 @@
 //    else works there (end.ts's usersOf: a child, a shell, a reserved spawn;
 //    and neither the session's directory nor the lead's is in it);
 //  - nothing only there: `git status` shows nothing uncommitted or
-//    untracked, no ignored path looks like a secret (keptIgnored: an `.env`,
+//    untracked but symbolic links (a worker links its dependencies to its
+//    parent's worktree; each is unlinked with `rm --` first, its target
+//    untouched), no ignored path looks like a secret (keptIgnored: an `.env`,
 //    a key), and its branch has no commits past `from`, or its tip is in its
 //    parent's branch (the parent merged it).
 // Ignored dependencies and build output go with it. The branch stays, so a
@@ -41,7 +43,7 @@ import { serial } from '../fsx'
 import { session } from '../session'
 import { repoOf } from '../lifecycle'
 import { cleanAbsolute, errText, firstLine, git, isAncestor, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
-import { inspectWorktree, keptIgnored, parentBranchOf, removedForms } from './worktrees'
+import { inspectWorktree, keptIgnored, parentBranchOf, removedForms, splitLinks, unlinkAll } from './worktrees'
 import { cleanupKey, madeWorktrees, usersOf, type Made } from './end'
 import * as state from './state'
 
@@ -62,7 +64,8 @@ type Choice =
   | { keep: string }
   /** Removed outside litter: nothing to remove or record, but its instance can't run there again either. */
   | { gone: true }
-  | { remove: { reason: 'ended-unchanged' | 'ended-merged'; mergedInto: string | null; real: string } }
+  /** `links`: the untracked symbolic links to unlink first (splitLinks). */
+  | { remove: { reason: 'ended-unchanged' | 'ended-merged'; mergedInto: string | null; real: string; links: string[] } }
 
 let pending: { cancel(): void } | null = null
 let passing: Promise<void> | null = null
@@ -231,16 +234,18 @@ async function choose(p: Ports, ctx: Ctx, s: LiveSwarm, t: Made, parentRef: stri
   const f = await inspectWorktree(p, ctx.repo, t.path, t.branch, t.from, t.ignored)
   if (f.listed !== true) return { keep: "git doesn't list it" }
   if (f.checkedOut !== `refs/heads/${t.branch}`) return { keep: `it isn't on ${t.branch}` }
-  if (f.changes === null || f.newIgnored === null) return { keep: 'git status failed in it' }
-  if (f.changes.length > 0) return { keep: 'it holds uncommitted changes' }
+  if (f.changes === null || f.untracked === null || f.newIgnored === null) return { keep: 'git status failed in it' }
+  // An untracked symbolic link (its dependencies, linked to another worktree) isn't a change: it's unlinked first.
+  const { links, others } = await splitLinks(p, t.path, f.changes, f.untracked)
+  if (others.length > 0) return { keep: 'it holds uncommitted changes' }
   if (keptIgnored(f.newIgnored).length > 0) return { keep: 'it holds ignored files that look like secrets' }
   if (f.commitsPast === null) return { keep: `git can't compare ${t.branch} with ${t.from}` }
-  if (f.commitsPast === 0) return { remove: { reason: 'ended-unchanged', mergedInto: null, real } }
+  if (f.commitsPast === 0) return { remove: { reason: 'ended-unchanged', mergedInto: null, real, links } }
   if (parentRef === null) return { keep: 'its parent has no branch to hold its commits' }
   const tip = await revParse(p, ctx.repo, `refs/heads/${t.branch}`)
   if (tip === null) return { keep: `${t.branch} doesn't resolve` }
   if ((await isAncestor(p, ctx.repo, tip, parentRef)) !== true) return { keep: `its commits aren't in ${short(parentRef)}` }
-  return { remove: { reason: 'ended-merged', mergedInto: short(parentRef), real } }
+  return { remove: { reason: 'ended-merged', mergedInto: short(parentRef), real, links } }
 }
 
 /**
@@ -262,20 +267,32 @@ async function removeOne(p: Ports, litterDir: string, repo: string, s: LiveSwarm
   if (!stillEnded(s, b, paths)) return false
   state.retire(s.name, ...paths)
   let why: string | null = null
-  try {
-    const rm = await git(p, repo, ['worktree', 'remove', '--', t.path], SLOW_GIT_MS)
-    if (rm.code !== 0) why = firstLine(rm.stderr)
-  } catch (err) {
-    why = errText(err)
+  const unlinked = await unlinkAll(p, t.path, r.links)
+  if (!unlinked.ok) why = `its linked folders couldn't be unlinked (${unlinked.why})`
+  else {
+    try {
+      const rm = await git(p, repo, ['worktree', 'remove', '--', t.path], SLOW_GIT_MS)
+      if (rm.code !== 0) why = firstLine(rm.stderr)
+    } catch (err) {
+      why = errText(err)
+    }
+    if (why !== null) await unlinked.restore()
   }
   if (why !== null) {
-    // Something git saw that the checks didn't (a file written meanwhile, a lock): it stays, and may run again.
+    // Something git saw that the checks didn't (a file written meanwhile, a lock): it stays, its links as they were, and may run again.
     state.unretire(s.name, ...paths)
     p.log(`swarm ${s.name}: ${label(b)}'s worktree ${t.path} wasn't removed: ${why}`)
     return false
   }
   endedSince.delete(b.agentId)
-  const body: SwarmWorktreeRemovedBody = { path: t.path, branch: t.branch, branchDeleted: false, reason: r.reason, ...(r.mergedInto !== null ? { mergedInto: r.mergedInto } : {}) }
+  const body: SwarmWorktreeRemovedBody = {
+    path: t.path,
+    branch: t.branch,
+    branchDeleted: false,
+    reason: r.reason,
+    ...(r.mergedInto !== null ? { mergedInto: r.mergedInto } : {}),
+    ...(r.links.length > 0 ? { linksRemoved: r.links.length } : {}),
+  }
   try {
     await appendLaunchRecord(p, litterDir, s.name, s.launch, 'swarm.worktree.removed', body)
   } catch (err) {

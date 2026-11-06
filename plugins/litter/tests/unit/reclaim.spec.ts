@@ -6,7 +6,7 @@
 // refused from then on, also after a recovery reads the ledger again.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ListedAgent } from '../../hooks/ports'
 import type { LiveSwarm, NodeBinding } from '../../hooks/swarm/types'
@@ -45,7 +45,8 @@ beforeEach(async () => {
   p = nodePorts({ cwd: dir })
   p.clock.now = 1_000_000
   ;({ git } = await scratchRepo(p, dir))
-  await p.fs.write(join(dir, '.gitignore'), '.env\n.claude/\nnode_modules\n')
+  // `node_modules/` matches folders only, as in many repositories: a link named node_modules is untracked.
+  await p.fs.write(join(dir, '.gitignore'), '.env\n.claude/\nnode_modules/\n')
   await git('add', '.gitignore')
   await git('commit', '-q', '-m', 'ignore')
   await git('branch', 'feature/a')
@@ -220,6 +221,39 @@ describe('reclaim', () => {
     expect([changed, untracked, secret].map(existsSync)).toEqual([true, true, true])
     expect(existsSync(deps)).toBe(false)
     expect((await removed()).map(b => b.path)).toEqual([deps])
+  })
+
+  test('a node_modules linked to another folder is unlinked and the worktree removed; the link’s target and its files stay', async () => {
+    const shared = join(dir, '.claude', 'shared', 'node_modules')
+    await p.fs.write(join(shared, 'pkg', 'index.js'), 'x\n')
+    const wt = await worker()
+    symlinkSync(shared, join(wt, 'node_modules'))
+    await p.fs.write(join(wt, 'pkgs', 'a', '.keep'), '')
+    await git('-C', wt, 'add', 'pkgs/a/.keep')
+    await git('-C', wt, 'commit', '-q', '-m', 'pkg a')
+    await git('update-ref', 'refs/heads/feature/a', (await git('-C', wt, 'rev-parse', 'HEAD')).trim())
+    symlinkSync(shared, join(wt, 'pkgs', 'a', 'node_modules'))
+    await twoPasses()
+    expect(existsSync(wt)).toBe(false)
+    expect(readFileSync(join(shared, 'pkg', 'index.js'), 'utf8')).toBe('x\n')
+    expect(await removed()).toEqual([
+      { path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: false, reason: 'ended-merged', mergedInto: 'feature/a', linksRemoved: 2 },
+    ])
+  })
+
+  test('a real untracked file keeps it, its links in place; so does a link beside one', async () => {
+    const shared = join(dir, '.claude', 'shared', 'node_modules')
+    await p.fs.write(join(shared, 'pkg', 'index.js'), 'x\n')
+    const plain = await worker(1)
+    await p.fs.write(join(plain, 'notes.txt'), 'mine\n')
+    const both = await worker(2)
+    symlinkSync(shared, join(both, 'node_modules'))
+    await p.fs.write(join(both, 'notes.txt'), 'mine\n')
+    await twoPasses()
+    expect([plain, both].map(existsSync)).toEqual([true, true])
+    expect(lstatSync(join(both, 'node_modules')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(shared, 'pkg', 'index.js'))).toBe(true)
+    expect(await removed()).toEqual([])
   })
 
   test('a running, waiting or reserved instance, or one with a child running there, keeps its worktree', async () => {

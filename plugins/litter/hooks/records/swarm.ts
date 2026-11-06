@@ -188,6 +188,8 @@ export type SwarmWorktreeRemovedBody = {
   reason?: SwarmWorktreeRemovedReason
   /** For a `…-merged` reason: the parent's branch that holds the tip, short. */
   mergedInto?: string
+  /** The untracked symbolic links (a worker's linked dependencies) unlinked before the removal; their targets stay. */
+  linksRemoved?: number
 }
 /** swarm.worktree.kept (P's cleanup): listed in summary.md with the reason. */
 export type SwarmWorktreeKeptBody = { path: string; branch: string; reason: string }

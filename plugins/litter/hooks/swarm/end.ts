@@ -54,7 +54,7 @@ import { session } from '../session'
 import { readPolicy } from '../policy'
 import { endRepairGeneration, repoOf, UNSETTLED_MS } from '../lifecycle'
 import { BRANCH, cleanAbsolute, errText, firstLine, git, isAncestor, litterWorktreeRoot, OID, realOf, revParse } from '../worktrees'
-import { inspectWorktree, keptIgnored, parentBranchOf } from './worktrees'
+import { inspectWorktree, keptIgnored, parentBranchOf, splitLinks, unlinkAll } from './worktrees'
 import * as state from './state'
 import { heldBy, patchNodePolicies, patchSwarmPolicy, releaseActive, removeNodePolicy, writeSwarmPolicy } from './guard'
 import { confirmOwnership, releaseOwnership, stopOwnerBeat } from './owner'
@@ -1113,8 +1113,10 @@ async function decide(
   if (f.commitsPast === null) return { keep: `git can't compare ${t.branch} with ${t.from}` }
   // A `new` worktree's branch is one you named, where the work goes on after the swarm: with commits, it stays.
   if (f.commitsPast > 0 && t.n === undefined) return { keep: `${t.branch} has ${plural(f.commitsPast, 'commit')} past ${t.from.slice(0, 12)}` }
-  if (f.changes === null || f.newIgnored === null) return { keep: 'git status failed in it' }
-  if (f.changes.length > 0) return { keep: `it holds uncommitted changes (${shown(f.changes)})` }
+  if (f.changes === null || f.untracked === null || f.newIgnored === null) return { keep: 'git status failed in it' }
+  // An untracked symbolic link (a worker's dependencies, linked to another worktree) isn't a change: it's unlinked first.
+  const { links, others } = await splitLinks(p, t.path, f.changes, f.untracked)
+  if (others.length > 0) return { keep: `it holds uncommitted changes (${shown(others)})` }
   // An unforced remove still deletes ignored files (tenth review). A `new` worktree keeps any its setup didn't
   // leave; an `own` worker's keeps only those that look like secrets (keptIgnored), since its dependencies and
   // build output are what fill the disk.
@@ -1130,10 +1132,24 @@ async function decide(
     reason = merged === true ? 'end-merged' : 'end-committed'
     if (merged === true) mergedInto = short(parent!)
   }
+  const unlinked = await unlinkAll(p, t.path, links)
+  if (!unlinked.ok) return { keep: `its linked folders couldn't be unlinked (${unlinked.why})` }
   const rm = await git(p, ctx.repo, ['worktree', 'remove', '--', t.path], SLOW_GIT_MS)
-  if (rm.code !== 0) return { keep: `git refused to remove it: ${firstLine(rm.stderr)}` }
+  if (rm.code !== 0) {
+    await unlinked.restore()
+    return { keep: `git refused to remove it: ${firstLine(rm.stderr)}` }
+  }
   const branchDeleted = reason === 'end-unchanged' ? await dropBranch(p, ctx.repo, ctx.swarm, t) : false
-  return { removed: { path: t.path, branch: t.branch, branchDeleted, reason, ...(mergedInto !== null ? { mergedInto } : {}) } }
+  return {
+    removed: {
+      path: t.path,
+      branch: t.branch,
+      branchDeleted,
+      reason,
+      ...(mergedInto !== null ? { mergedInto } : {}),
+      ...(links.length > 0 ? { linksRemoved: links.length } : {}),
+    },
+  }
 }
 
 /**

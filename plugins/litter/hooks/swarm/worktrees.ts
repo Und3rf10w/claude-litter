@@ -246,6 +246,8 @@ export type WorktreeFacts = {
   commitsPast: number | null
   /** Uncommitted changes, `git status --porcelain` paths. */
   changes: string[] | null
+  /** The untracked ones among them (`??`). */
+  untracked: string[] | null
   /** Ignored paths beyond those its setup left (`ignoredAtSetup`, from `swarm.worktree`). */
   newIgnored: string[] | null
 }
@@ -273,6 +275,7 @@ export async function inspectWorktree(
     checkedOut: at?.branch ?? null,
     commitsPast: past,
     changes: st ? st.changes : null,
+    untracked: st ? st.untracked : null,
     newIgnored: st ? newIgnored(st.ignored, ignoredAtSetup) : null,
   }
 }
@@ -311,6 +314,54 @@ export function parentBranchOf(records: readonly StoredRecord[], node: string, n
   }
   const branch = parent === null ? undefined : latest.get(parent)?.branch
   return typeof branch === 'string' && branch.startsWith('refs/heads/') ? branch : null
+}
+
+/**
+ * A worker's changes, split: the untracked symbolic links (`git status`
+ * lists a link as `?? path`, a link to a folder too, with no `/`, and a
+ * pattern such as `node_modules/` doesn't ignore one), checked with lstat,
+ * never followed: a worker links its dependencies to its parent's worktree.
+ * Everything else is `others`: a tracked change, an untracked file or
+ * folder, or a path that can't be read.
+ */
+export async function splitLinks(p: Ports, dir: string, changes: readonly string[], untracked: readonly string[]): Promise<{ links: string[]; others: string[] }> {
+  const out = { links: [] as string[], others: [] as string[] }
+  for (const path of changes) {
+    const link = untracked.includes(path) && !path.endsWith('/') && (await p.fs.stat(`${dir}/${path}`).catch(() => null))?.isLink === true
+    ;(link ? out.links : out.others).push(path)
+  }
+  return out
+}
+
+/**
+ * Removes the links splitLinks found, one `rm --` each (never -r or -f, so a
+ * link's target is never touched), each checked to be a link again just
+ * before. On a failure the links removed so far are made again as they were
+ * (`readlink` first, then `ln -s`), and it answers why. `restore` makes them
+ * all again, for a removal git then refuses.
+ */
+export async function unlinkAll(p: Ports, dir: string, links: readonly string[]): Promise<{ ok: true; restore: () => Promise<void> } | { ok: false; why: string }> {
+  const done: { path: string; target: string }[] = []
+  const restore = async () => {
+    for (const d of done.splice(0).reverse()) await p.run(['ln', '-s', '--', d.target, d.path]).catch(() => null)
+  }
+  for (const rel of links) {
+    const path = `${dir}/${rel}`
+    const why = await (async (): Promise<string | null> => {
+      const target = await p.run(['readlink', '--', path])
+      if (target.code !== 0) return `readlink ${rel} failed: ${firstLine(target.stderr)}`
+      if ((await p.fs.stat(path).catch(() => null))?.isLink !== true) return `${rel} isn't a link any more`
+      const rm = await p.run(['rm', '--', path])
+      if (rm.code !== 0) return `rm ${rel} failed: ${firstLine(rm.stderr)}`
+      done.push({ path, target: target.stdout.replace(/\n$/, '') })
+      return null
+    })().catch((err: unknown) => errText(err))
+    if (why !== null) {
+      await restore()
+      return { ok: false, why }
+    }
+  }
+  return { ok: true, restore }
 }
 
 /**

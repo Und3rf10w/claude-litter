@@ -5,7 +5,7 @@
 // kept one is recorded with why and listed in summary.md.
 
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ListedAgent } from '../../hooks/ports'
 import { launchSummaryPath, swarmNewWorktreeName, swarmOwnBranch, swarmOwnWorktreeName } from '../../hooks/layout'
@@ -184,6 +184,34 @@ describe('cleanupLaunch', () => {
     expect(existsSync(wt)).toBe(false)
     expect(existsSync(wtNew)).toBe(true)
     expect((await bodies('swarm.worktree.kept'))[0]!.reason).toContain("ignored paths its setup didn't leave (node_modules/)")
+  })
+
+  test('an untracked link to another folder is unlinked and the worktree removed; the target and its files stay', async () => {
+    const shared = join(dir, '.claude', 'shared', 'vendor')
+    await p.fs.write(join(shared, 'pkg.js'), 'x\n')
+    const wt = await make(own(1))
+    symlinkSync(shared, join(wt, 'vendor'))
+    await cleanupLaunch(p, 'alpha', launch)
+    expect(existsSync(wt)).toBe(false)
+    expect(readFileSync(join(shared, 'pkg.js'), 'utf8')).toBe('x\n')
+    expect(await bodies('swarm.worktree.removed')).toEqual([
+      { path: wt, branch: 'sw/alpha/fixer-1', branchDeleted: true, reason: 'end-unchanged', linksRemoved: 1 },
+    ])
+  })
+
+  test('a real untracked file keeps it with its links in place, and a link beside one does too', async () => {
+    const shared = join(dir, '.claude', 'shared', 'vendor')
+    await p.fs.write(join(shared, 'pkg.js'), 'x\n')
+    const plain = await make(own(1))
+    await p.fs.write(join(plain, 'notes.txt'), 'mine\n')
+    const both = await make(own(2))
+    symlinkSync(shared, join(both, 'vendor'))
+    await p.fs.write(join(both, 'notes.txt'), 'mine\n')
+    await cleanupLaunch(p, 'alpha', launch)
+    expect([plain, both].map(existsSync)).toEqual([true, true])
+    expect(lstatSync(join(both, 'vendor')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(shared, 'pkg.js'))).toBe(true)
+    expect((await bodies('swarm.worktree.kept')).map(b => b.reason)).toEqual(['it holds uncommitted changes (notes.txt)', 'it holds uncommitted changes (notes.txt)'])
   })
 
   test('one with uncommitted changes is kept', async () => {
