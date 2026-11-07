@@ -4,7 +4,7 @@
   <em>Verified multi-agent runs for Claude Code</em>
   <br /><br />
 
-<a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-4.1.0-22c55e?style=flat-square" alt="Version 4.1.0" /></a>
+<a href="https://github.com/Und3rf10w/claude-litter/releases"><img src="https://img.shields.io/badge/version-4.1.1-22c55e?style=flat-square" alt="Version 4.1.1" /></a>
 <a href="https://code.claude.com/"><img src="https://img.shields.io/badge/Claude_Code-2.1.288%2B-orange?style=flat-square" alt="Claude Code 2.1.288+" /></a>
 
 </div>
