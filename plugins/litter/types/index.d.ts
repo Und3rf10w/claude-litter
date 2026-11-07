@@ -402,6 +402,13 @@ export type SwarmBrowserView = SwarmViewCommon & {
   proposals: number[]
   /** [End swarm] was pressed: the confirm row ([Confirm end], [Cancel]) stands in for it (WP-DG). */
   confirmEnd: boolean
+  /**
+   * The roster's finished agents are listed, not folded into their one row
+   * (browser.tsx's rosterRows): you opened that row. Absent: folded.
+   */
+  showFinished?: boolean
+  /** Agents past the roster's cap (view.ts's LIVE_ROWS), the oldest finished first: in no row at all. Absent: none. */
+  unlisted?: number
 }
 
 export type SwarmHistoryView = SwarmViewCommon & { view: 'history'; swarm: string; entries: { at: string; goal: string }[] }

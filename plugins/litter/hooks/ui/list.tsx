@@ -253,12 +253,41 @@ function footer(el: PaneElements, spec: ListSpec, place: ListPlace): RenderEleme
 const cellColor = (c: Cell | undefined): string | undefined => c?.color ?? (c?.dim ? STYLE.muted : undefined)
 
 /**
+ * The most characters a Client's props take serialized, under the engine's
+ * 100,000 (past it the engine draws no pane at all) with room for the rest of
+ * the element.
+ */
+export const CLIENT_PROPS_MAX = 90_000
+
+/** The cells a description keeps once a window's props run long. */
+const SHORT_DESCRIPTION = 160
+
+const cut = (text: string, max: number): string => (text.length <= max ? text : `${[...text].slice(0, max - 1).join('')}…`)
+
+/**
  * The Client's props: the window's rows as plain data, laid out here, so the
  * module only draws and posts. Each row's cells keep their colors as spans
  * (the user's live look, 2026-10-07: a swarm's roster drew its status and
- * role in one color), the cell between two a plain space.
+ * role in one color), the cell between two a plain space. Within
+ * CLIENT_PROPS_MAX: a window too long for it has its descriptions cut, then
+ * dropped, then its last rows, which count as below it.
  */
 export function clientProps(spec: ListSpec, place: ListPlace, ctx: BodyContext): ListClientProps {
+  const props = allClientProps(spec, place, ctx)
+  const size = (x: ListClientProps): number => JSON.stringify(x).length
+  if (size(props) <= CLIENT_PROPS_MAX) return props
+  const short = { ...props, rows: props.rows.map(r => ({ ...r, description: cut(r.description, SHORT_DESCRIPTION) })) }
+  if (size(short) <= CLIENT_PROPS_MAX) return short
+  const bare = { ...props, rows: props.rows.map(r => ({ ...r, description: '' })) }
+  const over = size(bare) - CLIENT_PROPS_MAX
+  if (over <= 0) return bare
+  // Rows off the end until it fits, each row's own share measured.
+  let drop = 0
+  for (let freed = 0, i = bare.rows.length - 1; i > 0 && freed < over; i--, drop++) freed += JSON.stringify(bare.rows[i]).length + 1
+  return { ...bare, rows: bare.rows.slice(0, bare.rows.length - drop), below: bare.below + drop }
+}
+
+function allClientProps(spec: ListSpec, place: ListPlace, ctx: BodyContext): ListClientProps {
   const { shown, widths } = place.planned
   const rows: ListClientRow[] = spec.items.slice(place.window.start, place.window.end).map(item => {
     const all = rowCells(item)
