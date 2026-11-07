@@ -112,6 +112,16 @@ case_node_agent_name() {
   assert_deny 'a swarm node spawns no named agent: where agent teams are on, a named agent starts as a teammate'
 }
 
+case_node_agent_isolation() {
+  swarm_setup '.spawns = ["litter:sw-s-fixer"]'
+  lead Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-s-fixer","isolation":"worktree"}' | run_hook guard.sh
+  assert_deny 'a swarm node spawns no isolated agent: the swarm gives each agent its directory, and isolation would run it in a worktree of its own, or remotely, where litter checks none of its steps. Spawn it again without isolation'
+  lead Agent '{"description":"d","prompt":"p","subagent_type":"general-purpose","isolation":"remote"}' | run_hook guard.sh
+  assert_deny 'a swarm node spawns no isolated agent'
+  lead Agent '{"description":"d","prompt":"p","subagent_type":"general-purpose"}' | run_hook guard.sh
+  assert_pass
+}
+
 case_node_agent_spawns() {
   swarm_setup '.spawns = ["litter:sw-s-fixer", "litter:sw-s-reviewer"]'
   lead Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-s-fixer"}' | run_hook guard.sh
@@ -839,6 +849,7 @@ t "a node's plain calls pass, the record tool and the hand-back too" case_node_p
 t "a node's EnterWorktree and ExitWorktree are denied" case_node_worktree_tools
 t "tools.deny denies by name" case_node_tools_deny
 t "a node spawns no named agent" case_node_agent_name
+t "a node spawns no isolated agent" case_node_agent_isolation
 t "a node spawns only the swarm types its spec lists" case_node_agent_spawns
 t "a node spawns no litter role" case_node_agent_role
 t "spawnOther false leaves only the listed swarm types" case_node_spawn_other

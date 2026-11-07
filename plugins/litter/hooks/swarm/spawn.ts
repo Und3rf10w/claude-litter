@@ -94,7 +94,10 @@ type Plan = {
   scope: WriteScope | null
 }
 
-/** `isolation` isn't in agent.spawn's input (the 2.1.289 d.ts and engine), but refused if a call carries it. */
+/**
+ * `isolation` isn't in agent.spawn's input (2.1.289 through 2.1.319), so this never fires today: guard.sh refuses
+ * it on the Agent call itself, for a swarm type and for a node's children. Kept should the engine start passing it.
+ */
 const isolated = (e: Spawn): boolean => {
   const v = (e as unknown as Record<string, unknown>).isolation
   return v !== undefined && v !== null && v !== ''

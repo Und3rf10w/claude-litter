@@ -86,6 +86,17 @@ case_named_node() {
   assert_deny 'a swarm node takes no name: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn litter:sw-a-lead again without name'
 }
 
+case_isolated_node() {
+  setup_executor
+  call - Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-a-lead","isolation":"worktree"}' | run_hook guard.sh
+  assert_deny 'a swarm node takes no isolation: the swarm gives each node its directory, and isolation would run it in a worktree of its own, or remotely, where litter checks none of its steps. Spawn litter:sw-a-lead again without isolation'
+  call general-purpose Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-a-lead","isolation":"remote"}' | run_hook guard.sh
+  assert_deny 'a swarm node takes no isolation'
+  # Any other agent type keeps its isolation.
+  call - Agent '{"description":"d","prompt":"p","subagent_type":"general-purpose","isolation":"worktree"}' | run_hook guard.sh
+  assert_pass
+}
+
 case_unnamed_node() {
   setup_executor
   call - Agent '{"description":"d","prompt":"p","subagent_type":"litter:sw-a-lead"}' | run_hook guard.sh
@@ -612,6 +623,7 @@ t "a non-litter subagent's EnterWorktree passes" case_subagent_enter_worktree
 t "the main thread can't spawn a litter role" case_main_spawns_role
 t "a non-litter subagent can't spawn a litter role" case_subagent_spawns_role
 t "a swarm node spawned with a name is denied" case_named_node
+t "a swarm node spawned with isolation is denied, and only a swarm node" case_isolated_node
 t "a swarm node spawned without a name passes on" case_unnamed_node
 t "the main thread's other spawns pass" case_main_other_agent
 t "a bound litter agent's Read passes" case_plain_read

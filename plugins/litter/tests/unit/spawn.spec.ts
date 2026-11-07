@@ -203,9 +203,10 @@ describe('what the check applies to', () => {
     }
   })
 
-  test('a named spawn, and one with isolation, are denied', async () => {
+  test('a named spawn is denied, and one with isolation should the engine ever pass it', async () => {
     const { next, calls } = engine()
     expect((await run(spawnE(T('part-a'), undefined, { name: 'bob' }), next)).deny).toContain('swarm agents are never named')
+    // agent.spawn's input has no isolation (2.1.319), so the cast: guard.sh refuses it on the Agent call (tests/hooks). This is the backstop.
     const iso = { ...spawnE(T('part-a')), isolation: 'worktree' } as AgentSpawnInput
     expect((await run(iso, next)).deny).toContain('never take isolation')
     expect(calls).toEqual([])

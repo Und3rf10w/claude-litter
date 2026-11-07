@@ -19,6 +19,7 @@ import { others as endOthers, resetEndForTests } from '../../hooks/swarm/end'
 import type { HealthReport, LiveSwarm, NodeBinding, RecoveryCard, SwarmNode, SwarmSpec } from '../../hooks/swarm/types'
 import type { Owners } from '../../hooks/swarm/view'
 import {
+  LIVE_ROWS,
   blankNav,
   changeWords,
   clean,
@@ -42,10 +43,12 @@ import {
 } from '../../hooks/swarm/view'
 import { TEMPLATE_LIST, builderPrimary, startAbove, startListTop, startNeeds, startPrimary, templateListCtx } from '../../hooks/swarm/builder'
 import {
+  ROSTER_ROWS,
   TRANSCRIPT_INLINE_ROWS,
   TRANSCRIPT_MIN_ROWS,
   ackAllAction,
   browserNeeds,
+  browserRosterTop,
   browserTranscriptTop,
   browserWheel,
   composerCaption,
@@ -53,7 +56,9 @@ import {
   eventColumns,
   reviewKey,
   rosterActions,
+  finishedKey,
   rosterDescription,
+  rosterId,
   rosterList,
   swarmKeys,
   transcriptListId,
@@ -64,6 +69,7 @@ import {
 import { doctorActions, doctorTally } from '../../hooks/swarm/doctorpane'
 import { doctorCommand, handle, onUiInput, onUiPress, onUiScroll, paneTick, pickNode, resetPanesForTests, swarmCommand } from '../../hooks/swarm/panes'
 import { noteDrawn, resetDrawnForTests } from '../../hooks/ui/drawn'
+import { CLIENT_PROPS_MAX, clientProps, listPlace } from '../../hooks/ui/list'
 import { factsNow, listOffset, resetHubForTests, shownSection } from '../../hooks/ui/hub'
 import type { WaitBudget } from '../../hooks/swarm/admit'
 import type {
@@ -1573,5 +1579,84 @@ describe("WP-DG: a branch-moved flag says where it's checked out, and one answer
     expect(ackAllAction(shown<SwarmBrowserView>())).toBeNull()
     // Read-only, it's never offered.
     expect(ackAllAction({ ...shown<SwarmBrowserView>(), flags: [...shown<SwarmBrowserView>().flags, { seq: 99, kind: 'branch-moved', text: 'x', running: [] }], readOnly: true })).toBeNull()
+  })
+})
+
+// The user's live look (2026-11-05): a swarm of a worker per task had about
+// 180 agents, and the roster's Client props ran past the engine's 100,000
+// characters, so the `litter` pane drew nothing.
+describe('the roster past a screenful: the cap, the fold and the window', () => {
+  /** goLive's three, then `n` more reviewers under part-a, r0 bound first; the last three running. */
+  function crowd(n: number): void {
+    goLive()
+    for (let i = 0; i < n; i++) state.putBinding(bind(`r${i}`, { n: i + 2, boundAt: NOW - 50_000 + i }))
+    p.agents = [
+      { id: 'o1', description: 'part-a', type: 'litter:sw-alpha-part-a', status: 'running' },
+      ...Array.from({ length: n }, (_, i) => ({ id: `r${i}`, description: 'reviewer', type: 'litter:sw-alpha-reviewer', status: i >= n - 3 ? 'running' : 'completed' })),
+    ] as never
+  }
+  const ctx = { surface: 'terminal' as const, bodyColumns: 120, isFocused: false, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 60 }, rows: 40, focused: null, lists: {} }
+  const labels = (v: SwarmBrowserView) => rosterList(v, true).items.map(i => i.label.trim())
+
+  afterEach(() => resetDrawnForTests())
+
+  test('past LIVE_ROWS the earliest-bound finished go unlisted and the running stay; past ROSTER_ROWS the rest fold into one row, which lists them and folds them again', async () => {
+    crowd(LIVE_ROWS + 20)
+    setNav(blankNav('browser', SWARM))
+    await paneTick(p)
+    let v = shown<SwarmBrowserView>()
+    // The lead and 323 agents, 24 past the cap: reviewer #1 (w1, bound first) and r0 to r22.
+    expect(v.rows).toHaveLength(LIVE_ROWS)
+    expect(v.unlisted).toBe(24)
+    expect(v.rows.some(r => r.key === 'w1' || r.key === 'r22')).toBe(false)
+    expect(v.rows.some(r => r.key === 'r23')).toBe(true)
+    expect(labels(v)).toEqual(['part-a', 'reviewer #319', 'reviewer #320', 'reviewer #321', 'part-c', '294 finished'])
+    // Opened: every row, in a window of ROSTER_ROWS, its Client's props well within the engine's bound.
+    await handle(p, finishedKey(SWARM), {})
+    v = shown<SwarmBrowserView>()
+    expect(v.showFinished).toBe(true)
+    const spec = rosterList(v, true)
+    expect(spec.items).toHaveLength(LIVE_ROWS)
+    expect(spec.rows).toBe(ROSTER_ROWS)
+    expect(spec.items.at(-1)).toEqual(expect.objectContaining({ label: '294 finished', description: 'click to fold them · 24 older not listed at all' }))
+    expect(JSON.stringify(clientProps(spec, listPlace(spec, ctx), ctx)).length).toBeLessThan(CLIENT_PROPS_MAX / 2)
+    await handle(p, finishedKey(SWARM), {})
+    expect(shown<SwarmBrowserView>().showFinished).toBeUndefined()
+    expect(labels(shown<SwarmBrowserView>())).toHaveLength(6)
+  })
+
+  test("a row selected out of the roster's window brings the window to it, and the wheel over the rows moves it", async () => {
+    crowd(200)
+    setNav({ ...blankNav('browser', SWARM), showFinished: true })
+    await paneTick(p)
+    const id = rosterId(SWARM)
+    // part-a, reviewer #1, then r0: r150 is item 152.
+    await handle(p, `swarm:browser:select:${SWARM}/r150`, {})
+    expect(nav()?.selected).toBe('r150')
+    expect(listOffset(id)).toBe(152 - ROSTER_ROWS + 1)
+    await handle(p, `swarm:browser:select:${SWARM}/r140`, {})
+    expect(listOffset(id)).toBe(152 - ROSTER_ROWS + 1)
+    // The wheel, over the roster's first row: the body starts at the tree's row 4, unscrolled.
+    const v = shown<SwarmBrowserView>()
+    noteDrawn({ shown: 'swarms', view: v, ctx: { ...ctx, lists: { [id]: listOffset(id) } }, bodyTop: 4, scrollOffset: 0 })
+    const passed = { n: 0 }
+    const nextScroll = (async () => {
+      passed.n++
+      return {}
+    }) as never
+    const top = browserRosterTop(v, ctx)
+    const tick = (row: number, by: number) => onUiScroll(p, { component: 'Pane', requestId: 'litter', offset: 0, by, bodyRows: 60, contentRows: 120, origin: { kind: 'person' }, pointer: { column: 4, row } } as never, nextScroll)
+    expect(await tick(top + 4, 2)).toEqual({})
+    expect(listOffset(id)).toBe(152 - ROSTER_ROWS + 3)
+    expect(passed.n).toBe(0)
+    // A row above the roster: the pane's own scroll.
+    await tick(top + 3, 2)
+    expect(passed.n).toBe(1)
+    // Where the rows aren't a Client, the footer's [↓ n more] and [↑ n above] move the window a page.
+    const before = listOffset(id)
+    await handle(p, `${id}:down`, {})
+    expect(listOffset(id)).toBe(before + ROSTER_ROWS - 1)
+    await handle(p, `${id}:up`, {})
+    expect(listOffset(id)).toBe(before)
   })
 })

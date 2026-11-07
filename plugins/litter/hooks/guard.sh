@@ -49,7 +49,8 @@ fi
 . "$lt_here/lib.sh"
 
 # Who's calling, and the rules for anyone but a litter agent or a swarm node:
-# a litter role spawned outside a workflow, a named swarm node, and the main
+# a litter role spawned outside a workflow, a named or isolated swarm node
+# (agent.spawn's input carries no isolation, so the mod can't see it), and the main
 # thread's EnterWorktree and ExitWorktree. Those would move every agent the
 # run starts later ("Background sessions"), and while a swarm is live they
 # would confine every node to the session's worktree (plan 15.4, spike 1).
@@ -66,6 +67,7 @@ def swarms($p): if ($p | ok1) and ($p.swarm | type) == "object" and ($p.swarm.sw
 def other($in; $id; $tool; $ti; $sub):
   if $tool == "Agent" and ($sub | startswith("litter:sw-")) then
     (if ($ti.name | str) != "" then deny($in; "a swarm node takes no name: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn \($sub) again without name")
+     elif ($ti.isolation | str) != "" then deny($in; "a swarm node takes no isolation: the swarm gives each node its directory, and isolation would run it in a worktree of its own, or remotely, where litter checks none of its steps. Spawn \($sub) again without isolation")
      else "pass" end)
   elif $tool == "Agent" and ($sub | startswith("litter:")) then
     deny($in; "litter roles run inside litter workflows; start one with /litter:execute, /litter:design or /litter:fanout instead of spawning \($sub)")
@@ -762,6 +764,8 @@ def nodetools($in; $n; $tool; $ti):
     elif ($n.toolsDeny | strs | index([$tool])) != null then deny($in; "\($tool) is denied to node \($node) by its spec (tools.deny)")
     elif $tool == "Agent" and ($ti.name | str) != "" then
       deny($in; "a swarm node spawns no named agent: where agent teams are on, a named agent starts as a teammate, which runs in the directory of the session and ignores the cwd and background litter gives it. Spawn it again without name")
+    elif $tool == "Agent" and ($ti.isolation | str) != "" then
+      deny($in; "a swarm node spawns no isolated agent: the swarm gives each agent its directory, and isolation would run it in a worktree of its own, or remotely, where litter checks none of its steps. Spawn it again without isolation")
     elif $tool == "Agent" and ($sub | startswith("litter:sw-")) then
       (if ($n.spawns | strs | index([$sub])) != null then passcall($in)
        elif ($n.spawns | strs | length) == 0 then deny($in; "node \($node) spawns no swarm workers (its spec lists none), so not \($sub)")

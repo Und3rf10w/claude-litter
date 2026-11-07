@@ -240,6 +240,8 @@ export type SwarmNav = {
   waitedOn: number | null
   /** Browser: [End swarm] was pressed and waits on [Confirm end] or [Cancel] (WP-DG). */
   confirmEnd: boolean
+  /** Browser: the roster lists its finished agents, not one row for them all (its fold row was pressed). */
+  showFinished: boolean
   notice: SwarmNotice | null
 }
 
@@ -276,6 +278,7 @@ export const blankNav = (view: SwarmViewName, swarm: string | null): SwarmNav =>
   recoveryPicked: [],
   waitedOn: null,
   confirmEnd: false,
+  showFinished: false,
   notice: null,
 })
 
@@ -1991,7 +1994,7 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
   ]
   const seen = new Set<string>()
   const add = (b: NodeBinding, depth: number, color: string | null) => {
-    if (seen.has(b.agentId) || rows.length >= MAX_ROWS) return
+    if (seen.has(b.agentId)) return
     seen.add(b.agentId)
     const listedAgent = listed.get(b.agentId)
     const q = questions.find(x => x.agentId === b.agentId) ?? null
@@ -2030,7 +2033,36 @@ export function liveRows(name: string, listed: Map<string, ListedAgent>, flagged
   for (const b of sorted.filter(x => x.parent === null)) add(b, 1, null)
   // Anything whose parent isn't bound (a reload, a binding pruned) still gets a row.
   for (const b of sorted) add(b, 1, null)
-  return rows
+  return capRows(rows, LIVE_ROWS, new Map(all.map(b => [b.agentId, b.boundAt])))
+}
+
+/**
+ * The most rows liveRows gives, the lead's among them. A swarm that spawns a
+ * worker per task passes 200 in a day, and its newest workers come last, so a
+ * plain cut hid the ones still running; past this, the finished go first.
+ */
+export const LIVE_ROWS = 300
+
+/**
+ * A row the roster can fold or drop (browser.tsx's rosterRows): a worker or a
+ * child that has ended, with no open question and no flag. Pure.
+ */
+export const finishedRow = (r: Pick<SwarmNodeRow, 'role' | 'running' | 'question' | 'flagged'>): boolean =>
+  (r.role === 'worker' || r.role === 'child') && !r.running && r.question === null && !r.flagged
+
+/**
+ * `rows` cut to `cap`: past it, the finished rows with no row under them go
+ * first, the earliest bound first (`boundAt` by agentId), then the last rows.
+ * The tree keeps its shape: a row stays while one under it does. Pure.
+ */
+export function capRows(rows: SwarmNodeRow[], cap: number, boundAt: ReadonlyMap<string, number>): SwarmNodeRow[] {
+  if (rows.length <= cap) return rows
+  const leaves = rows
+    .map((r, i) => ({ r, i }))
+    .filter(({ r, i }) => finishedRow(r) && !((rows[i + 1]?.depth ?? 0) > r.depth))
+    .sort((a, b) => (boundAt.get(a.r.key) ?? 0) - (boundAt.get(b.r.key) ?? 0) || a.i - b.i)
+  const drop = new Set(leaves.slice(0, rows.length - cap).map(x => x.i))
+  return rows.filter((_, i) => !drop.has(i)).slice(0, cap)
 }
 
 /** An effort as a row shows it: a level, or a number of thinking tokens. */
@@ -2448,6 +2480,7 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
   const flags = s.readOnly ? [] : openFlags(ledger.records, all, await homeOf(p))
   const flaggedNodes = new Set(flags.flatMap(f => f.running))
   const rows = liveRows(name, listed, flaggedNodes)
+  const unlisted = new Set(all.map(b => b.agentId)).size + 1 - rows.length
   const events = ledger.records
     .map(r => eventRow(r, all))
     .filter((x): x is SwarmEventRow => x !== null)
@@ -2523,6 +2556,9 @@ async function buildBrowser(p: Ports, n: SwarmNav): Promise<SwarmBrowserView | S
     proposals: [...pendingProposals(name)],
     // Only while there's a live swarm this session owns to end.
     confirmEnd: n.confirmEnd === true && !s.readOnly && !s.lost && s.state === 'live',
+    ...(n.showFinished === true ? { showFinished: true } : {}),
+    // liveRows gives each agent a row, and the lead one, until its cap.
+    ...(unlisted > 0 ? { unlisted } : {}),
   }
 }
 

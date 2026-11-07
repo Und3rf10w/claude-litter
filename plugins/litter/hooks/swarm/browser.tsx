@@ -23,10 +23,11 @@ import type { PaneElements } from '../hooktypes'
 import type { SwarmPaneView } from '../ports'
 import type { SwarmBrowserView, SwarmBudgetRow, SwarmComposer, SwarmHistoryView, SwarmNodeRow, SwarmRecoveryView, SwarmSpan, SwarmUnsettledView } from '../../types/index'
 import { empty, field, fitCell, heading, itemWidth, notice, packWidths, rows, textRows, type Action, type BodyContext, type KeyHint, type SectionMeta } from '../ui/chrome'
-import { list, listPlace, type ListAction, type ListSpec } from '../ui/list'
+import { list, listPlace, listWindow, scrolled, type ListAction, type ListItem, type ListSpec } from '../ui/list'
 import { MARK, STYLE } from '../ui/style'
 import { cells } from '../band/view'
 import { actionRow, asksWhom, choose, drawsClient, headed, needsRow, needsRowCount, noticeRow, renderBuilder, renderProposal, renderStart, tableFor, titleRow } from './builder'
+import { finishedRow } from './view'
 
 /**
  * The keys a view adds to the keys line, before the hub's: the builder's
@@ -47,11 +48,11 @@ export function swarmKeys(view: SwarmPaneView | null): readonly KeyHint[] {
 
 /**
  * Swarms to the hub (chrome.tsx's SectionMeta). `fits` stays false: the
- * builder's inspector and brief, the browser's summary and transcript and a
- * proposal's diffs are drawn whole, and the lists (saved swarms, the roster)
- * draw every row, so the pane's scroll reaches all of it. Windowing them
- * needs footers and a [More] that swarm/panes.ts doesn't handle yet (the
- * report's contract changes).
+ * builder's inspector and brief, the browser's summary and a proposal's diffs
+ * are drawn whole, and the saved swarms' list draws every row, so the pane's
+ * scroll reaches all of it. The roster, the template list and the transcript
+ * draw a window of their own (ROSTER_ROWS, TRANSCRIPT_MIN_ROWS), which the
+ * wheel over them moves.
  */
 export const swarmsSection: SectionMeta<SwarmPaneView> = { fits: false, keys: swarmKeys }
 
@@ -83,8 +84,24 @@ const indent = (depth: number) => '  '.repeat(Math.max(0, depth))
 export const COMPACT_ROWS = 20
 export const compactBrowser = (e: Pick<BodyContext, 'placement' | 'rows'>): boolean => e.placement === 'inline' || (Number.isFinite(e.rows) && e.rows < COMPACT_ROWS)
 
-/** The roster list's id: under Swarms' prefix, so its Client's posts press on Swarms. */
-export const rosterId = (swarm: string): string => `swarm:browser:roster:${swarm}`
+/**
+ * The roster list's id: under Swarms' prefix, so its Client's posts press on
+ * Swarms. `/list` after the swarm, so its footer's keys (`<id>:up`, where the
+ * rows aren't a Client) still name the swarm (swarm/panes.ts's parseKey).
+ */
+export const rosterId = (swarm: string): string => `swarm:browser:roster:${swarm}/list`
+
+/** The roster's fold row's key: a press lists the finished agents, or folds them again. */
+export const finishedKey = (swarm: string): string => `swarm:browser:finished:${swarm}`
+
+/**
+ * The roster's window: its most rows at once (a swarm of a worker per task
+ * had 180 rows and more, and a Client's props, every row with its menu, ran
+ * past the engine's 100,000 characters, so the pane drew nothing). Past it
+ * the wheel over the rows, ↑↓ past the Client's edge and the footer's
+ * Buttons move it.
+ */
+export const ROSTER_ROWS = 20
 
 /** Stop and Hard stop are offered on a row: a node that's still running, in a live swarm this session owns (no Stop beside a finished one). */
 export const stoppable = (view: Pick<SwarmBrowserView, 'readOnly' | 'lost'>, r: Pick<SwarmNodeRow, 'agentId' | 'running'>): boolean =>
@@ -140,36 +157,94 @@ export function rosterActions(view: SwarmBrowserView, r: SwarmNodeRow): ListActi
  * 2026-10-07: muted, a gone row's status and role read as one), its flags
  * and the call in flight;
  * its turns, tokens and last report the focused row's description. The lead
- * is the heading's note. Every row is drawn (see swarmsSection's `fits`).
- * The right-click menu is given where the rows are a Client; elsewhere the
- * selected row's actions are the Buttons under the list. Pure.
+ * is the heading's note. A window of ROSTER_ROWS rows is drawn, the finished
+ * folded into one row after the rest (rosterRows). The right-click menu is
+ * given where the rows are a Client; elsewhere the selected row's actions are
+ * the Buttons under the list. Pure.
  */
 export function rosterList(view: SwarmBrowserView, client: boolean): ListSpec {
-  const agents = view.rows.filter(r => r.agentId !== null)
+  const { rows, finished, folded } = rosterRows(view)
+  const items: ListItem[] = rows.map(r => {
+    const flags = r.flagged ? '! flagged' : ''
+    const acts = client ? rosterActions(view, r) : []
+    return {
+      key: `swarm:browser:select:${view.swarm}/${r.agentId}`,
+      label: `${indent(r.depth - 1)}${r.name}`,
+      cells: [
+        { text: `${r.statusGlyph ? `${r.statusGlyph} ` : ''}${r.status}`, color: r.statusColor },
+        { text: r.role, color: STYLE.label },
+        { text: flags, color: STYLE.warning },
+        { text: r.tool === '' ? '' : `${MARK.running.glyph} ${r.tool}`, color: STYLE.muted },
+      ],
+      description: rosterDescription(r),
+      selected: r.agentId === view.selected,
+      ...(acts.length > 0 ? { actions: acts } : {}),
+    }
+  })
+  if (finished > 0) items.push(finishedItem(view, finished, folded))
   return {
     id: rosterId(view.swarm),
-    rows: Math.max(1, agents.length),
-    items: agents.map(r => {
-      const flags = r.flagged ? '! flagged' : ''
-      const acts = client ? rosterActions(view, r) : []
-      return {
-        key: `swarm:browser:select:${view.swarm}/${r.agentId}`,
-        label: `${indent(r.depth - 1)}${r.name}`,
-        cells: [
-          { text: `${r.statusGlyph ? `${r.statusGlyph} ` : ''}${r.status}`, color: r.statusColor },
-          { text: r.role, color: STYLE.label },
-          { text: flags, color: STYLE.warning },
-          { text: r.tool === '' ? '' : `${MARK.running.glyph} ${r.tool}`, color: STYLE.muted },
-        ],
-        description: rosterDescription(r),
-        selected: r.agentId === view.selected,
-        ...(acts.length > 0 ? { actions: acts } : {}),
-      }
-    }),
+    rows: Math.max(1, Math.min(ROSTER_ROWS, items.length)),
+    items,
     // The status never drops; the call in flight goes first, then the role, then the flags.
     columns: [{ drop: 0 }, { drop: 2 }, { drop: 1 }, { drop: 3 }],
     empty: 'no agent yet: the lead spawns them',
   }
+}
+
+/**
+ * The roster's agent rows, in tree order, and the finished ones that fold
+ * into the one row after them (`folded` until you press it). Past
+ * ROSTER_ROWS, a finished worker or child (view.ts's finishedRow) folds,
+ * unless it's selected, its transcript or Model and effort panel is open, or
+ * a row under it stays, so the tree keeps its shape. Within ROSTER_ROWS every
+ * row is listed. Pure.
+ */
+export function rosterRows(view: SwarmBrowserView): { rows: SwarmNodeRow[]; finished: number; folded: boolean } {
+  const agents = view.rows.filter(r => r.agentId !== null)
+  if (agents.length <= ROSTER_ROWS) return { rows: agents, finished: 0, folded: false }
+  const open = new Set([view.selected, view.transcript?.agentId ?? null, view.tune?.agentId ?? null].filter((x): x is string => x !== null))
+  const fold = agents.map(r => finishedRow(r) && !open.has(r.agentId!))
+  // From the end, so the rows under a row are settled before it: one that stays keeps its parents.
+  for (let i = agents.length - 1; i >= 0; i--) {
+    if (!fold[i]) continue
+    for (let j = i + 1; j < agents.length && agents[j]!.depth > agents[i]!.depth; j++) {
+      if (!fold[j]) {
+        fold[i] = false
+        break
+      }
+    }
+  }
+  const finished = fold.filter(Boolean).length
+  if (finished === 0) return { rows: agents, finished: 0, folded: false }
+  const folded = view.showFinished !== true
+  return { rows: folded ? agents.filter((_, i) => !fold[i]) : agents, finished, folded }
+}
+
+/** The fold row: how many finished agents it holds, and what a press does; those past the cap (view.unlisted) in its description. */
+function finishedItem(view: SwarmBrowserView, finished: number, folded: boolean): ListItem {
+  const unlisted = view.unlisted ?? 0
+  return {
+    key: finishedKey(view.swarm),
+    label: `${finished} finished`,
+    cells: [{ text: folded ? '+ show' : '− hide', color: STYLE.muted }],
+    description: [folded ? 'click to list them' : 'click to fold them', unlisted > 0 ? `${unlisted} older not listed at all` : ''].filter(x => x !== '').join(' · '),
+  }
+}
+
+/**
+ * The roster window's offset that brings `agentId`'s row into sight once it's
+ * selected (an [Answer] above the roster selects it), and the offset's max;
+ * null when it's in sight already, or has no row. Pure.
+ */
+export function rosterReveal(view: SwarmBrowserView, agentId: string, offset: number): { to: number; max: number } | null {
+  const spec = rosterList({ ...view, selected: agentId }, false)
+  const at = spec.items.findIndex(i => i.key === `swarm:browser:select:${view.swarm}/${agentId}`)
+  if (at < 0) return null
+  const w = listWindow(spec.items.length, offset, spec.rows)
+  if (at < w.start) return { to: at, max: w.max }
+  if (at >= w.end) return { to: at - spec.rows + 1, max: w.max }
+  return null
 }
 
 /**
@@ -313,13 +388,13 @@ const actionRows = (labels: readonly string[], columns: number): number => (labe
 const noticeRows = (text: string, columns: number): number => textRows(`! ${text}`, columns)
 
 /**
- * The rows renderBrowser draws above the transcript's first line at `ctx`:
- * the title, the notice, the exceptions, the budget, the roster's heading,
- * list and the rows under it, then the box's frame and heading. For the
- * window's height and the wheel's hit test (browserWheel). Kept in step with
- * renderBrowser: a row added above the transcript is added here.
+ * The rows renderBrowser draws above the roster's first row at `ctx`: the
+ * title, what needs you, the notice, the exceptions, the budget and the
+ * roster's heading. For the wheel's hit test over the roster (browserWheel)
+ * and browserTranscriptTop. Kept in step with renderBrowser: a row added above
+ * the roster is added here.
  */
-export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface' | 'focused' | 'lists'>): number {
+export function browserRosterTop(view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns'>): number {
   const c = ctx.bodyColumns
   const live = !view.readOnly && !view.lost
   let rows = 1
@@ -338,8 +413,24 @@ export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyConte
     const b = view.budget
     rows += packWidths([cells('Repair budget'), cells(`${b.rounds.glyph ? `${b.rounds.glyph} ` : ''}${b.rounds.text}`), 2 + cells(`${b.agents.glyph ? `${b.agents.glyph} ` : ''}${b.agents.text}`)], c).length
   }
-  // The roster: its heading a row below, the list, the selected row's actions.
-  rows += 2 + listPlace(rosterList(view, ctx.surface === 'terminal' || ctx.surface === 'desktop'), ctx).height
+  // The roster's heading, a row below what's above it.
+  return rows + 2
+}
+
+/** The roster's list as renderBrowser draws it at `ctx`: a Client on the terminal and the desktop. */
+const rosterPlace = (view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface' | 'focused' | 'lists'>) =>
+  listPlace(rosterList(view, ctx.surface === 'terminal' || ctx.surface === 'desktop'), ctx)
+
+/**
+ * The rows renderBrowser draws above the transcript's first line at `ctx`:
+ * what's above the roster (browserRosterTop), its list and the selected row's
+ * actions, then the box's frame and heading. For the window's height and the
+ * wheel's hit test (browserWheel). Kept in step with renderBrowser: a row
+ * added above the transcript is added here.
+ */
+export function browserTranscriptTop(view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface' | 'focused' | 'lists'>): number {
+  const c = ctx.bodyColumns
+  let rows = browserRosterTop(view, ctx) + rosterPlace(view, ctx).height
   const sel = view.rows.find(r => r.agentId !== null && r.agentId === view.selected) ?? null
   if (sel) rows += Math.max(1, actionRows(rosterActions(view, sel).map(a => a.label), Math.max(1, c - cells(sel.name) - 2)))
   // The box's top frame and its heading.
@@ -354,13 +445,21 @@ export function transcriptRows(view: SwarmBrowserView, ctx: Pick<BodyContext, 'b
 
 /**
  * Where a wheel tick goes in the browser, for swarm/panes.ts's onUiScroll
- * (the report's contract change): over the transcript's lines (`row`, the
- * body's row the pointer is on, the pane's scroll counted in), its window's
- * new offset from the newest, `by` > 0 toward the newest; null to pass the
- * tick on (anywhere else, every roster row being drawn, or at the window's
- * edge). Pure.
+ * (the report's contract change), `row` the body's row the pointer is on, the
+ * pane's scroll counted in: over the roster's rows, its window's new offset,
+ * `by` > 0 down the list; over the transcript's lines, its window's new
+ * offset from the newest, `by` > 0 toward the newest; null to pass the tick
+ * on (anywhere else, or at the window's edge). Pure.
  */
 export function browserWheel(view: SwarmBrowserView, ctx: Pick<BodyContext, 'bodyColumns' | 'surface' | 'focused' | 'lists' | 'rows'>, row: number, by: number): { id: string; to: number; max: number } | null {
+  if (by === 0) return null
+  const rosterTop = browserRosterTop(view, ctx)
+  const place = rosterPlace(view, ctx)
+  if (row >= rosterTop && row < rosterTop + place.height) {
+    if (place.count === 0) return null
+    const to = scrolled(place.count, ctx.lists?.[place.id] ?? 0, place.budget, by)
+    return to === place.window.offset ? null : { id: place.id, to, max: place.window.max }
+  }
   const t = view.transcript
   if (!t || !t.readable || t.lines.length === 0 || by === 0) return null
   const id = transcriptListId(view.swarm, t.agentId)

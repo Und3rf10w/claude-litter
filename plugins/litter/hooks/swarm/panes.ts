@@ -23,7 +23,7 @@ import { listOffset, litterShows, moveList, openSection } from '../ui/hub'
 import { lastDrawn } from '../ui/drawn'
 import { listHit, listPlace, listWindow, pageOf, scrolled } from '../ui/list'
 import { TEMPLATE_LIST, startListTop, templateList, templateListCtx } from './builder'
-import { browserWheel } from './browser'
+import { browserWheel, rosterId, rosterList, rosterReveal } from './browser'
 import { session } from '../session'
 import { SWARM_NAME } from '../layout'
 import { bindings, liveSwarm, modelsSeen, openQuestions, takeProposals, version } from './state'
@@ -465,14 +465,15 @@ export const onUiSelect: PortHook<UiSelectHook> = async (p, e, next) => {
 
 /**
  * ui.scroll while Swarms is shown (WP-DA2): a wheel tick over the start
- * screen's template list, or over the browser's open transcript (WP-DD's
- * window, WP-DG), moves that window (the hub keeps its offset) and answers
- * `{}`, so the pane stays put. Any other (the scroll keys, a tick over the
- * rest of the body, one at the window's edge) passes on, and the pane
- * scrolls. Where each sits is what the terminal last drew (ui/drawn.ts): the
- * body's top, the pane's offset as read, and the rows above it: startListTop,
- * the rows of the parts renderStart draws there (builder.tsx's startAbove,
- * A20), and browserTranscriptTop, kept in step with its renderer.
+ * screen's template list, the browser's roster, or its open transcript
+ * (WP-DD's window, WP-DG), moves that window (the hub keeps its offset) and
+ * answers `{}`, so the pane stays put. Any other (the scroll keys, a tick
+ * over the rest of the body, one at the window's edge) passes on, and the
+ * pane scrolls. Where each sits is what the terminal last drew (ui/drawn.ts):
+ * the body's top, the pane's offset as read, and the rows above it:
+ * startListTop, the rows of the parts renderStart draws there (builder.tsx's
+ * startAbove, A20), and browserRosterTop and browserTranscriptTop, kept in
+ * step with their renderer.
  */
 export const onUiScroll: PortHook<UiScrollHook> = async (p, e, next) => {
   const d = lastDrawn()
@@ -1451,9 +1452,33 @@ async function browserAction(p: Ports, k: PaneKey, input: Input): Promise<boolea
   const arg = k.rest
   switch (k.action) {
     case 'select':
-    case 'to':
-      setNav({ ...n, selected: (k.action === 'to' ? input.value : arg) || null })
+    case 'to': {
+      const selected = (k.action === 'to' ? input.value : arg) || null
+      setNav({ ...n, selected })
+      // An [Answer] above the roster selects a row its window may not show: the window moves to it.
+      const shown = lastSwarm
+      if (selected !== null && shown?.view === 'browser' && shown.swarm === name) {
+        const id = rosterId(name)
+        const moved = rosterReveal(shown, selected, listOffset(id))
+        if (moved !== null) await moveList(p, id, moved.to, moved.max)
+      }
       return true
+    }
+    case 'finished':
+      // The roster's fold row: its finished agents listed, or folded again.
+      setNav({ ...n, showFinished: !n.showFinished })
+      p.log(`swarm pane: ${name}'s finished agents ${n.showFinished ? 'folded' : 'listed'}`)
+      return true
+    case 'roster': {
+      // The roster's footer, where its rows aren't a Client: [↑ n above] and [↓ n more] move its window a page.
+      const shown = lastSwarm
+      if (!shown || shown.view !== 'browser' || shown.swarm !== name) return true
+      const spec = rosterList(shown, false)
+      const w = listWindow(spec.items.length, listOffset(spec.id), spec.rows)
+      const page = pageOf(spec.rows)
+      await moveList(p, spec.id, w.offset + (arg === 'list:up' ? -page : arg === 'list:down' ? page : 0), w.max)
+      return true
+    }
     case 'text':
       putInput(TEXT_KEY(name), input.value ?? '')
       if (input.kind === 'submit') return send(p, name, '', input.budget)

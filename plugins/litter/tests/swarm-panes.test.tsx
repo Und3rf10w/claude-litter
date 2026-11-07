@@ -1152,7 +1152,7 @@ describe('the browser', () => {
     const seen = watch(on)
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
     const ui = await mountSwarm($, 'terminal')
-    const roster = 'swarm:browser:roster:demo'
+    const roster = 'swarm:browser:roster:demo/list'
     // The reader is done: its menu is Transcript, and its model and effort, not known yet.
     await ui.pointer({ type: 'down', x: 4, y: 2, button: 'right', in: roster })
     expect(await ui.find({ type: 'Text', text: ' Transcript', in: roster })).toBeDefined()
@@ -1168,6 +1168,29 @@ describe('the browser', () => {
     for (let i = 0; i < 3; i++) await ui.key({ key: 'down', in: roster })
     await ui.key({ key: 'return', in: roster })
     expect(await stopped).toContain('swarm pane: stopNode demo o1 soft')
+  })
+
+  // The user's live look (2026-11-05): about 180 agents ran the roster's Client props past the engine's 100,000 characters, and the pane drew nothing.
+  test('a swarm of 180 finished workers: the roster is drawn, the running rows and one row for the finished, which a click opens', async ($, on) => {
+    const done = BROWSER.rows.find(r => r.key === 'w2')!
+    const crowd = Array.from({ length: 180 }, (_, i) => ({ ...done, key: `d${i}`, agentId: `d${i}`, name: `builder #${i + 1}`, report: `${'merged the change and its tests, '.repeat(4)}#${i}`.slice(0, 120) }))
+    mock.store(on, navStore({ view: 'browser', swarm: 'demo', selected: 'o1' }))
+    mock.clock(on, { now: 1_800_000_000_000 })
+    world(on)
+    views(on, { ...BROWSER, rows: [...BROWSER.rows, ...crowd] })
+    on('session.id', async () => ({ value: SESSION }))
+    const seen = watch(on)
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+    const ui = await mountSwarm($, 'terminal')
+    const roster = 'swarm:browser:roster:demo/list'
+    // What the Client draws: part-a asks and fixer runs; reader and the 180 builders are done.
+    const rows = drawText(await ui.drawn({ in: roster }), 100)
+    expect(rows.slice(0, 3).map(r => r.replace(/ +/g, ' ').trim())).toEqual(['part-a ⚑ waiting orchestrator ▸ Bash', '› fixer ▸ running worker ! flagged ▸ Edit', '181 finished + show'].map(r => expect.stringContaining(r)))
+    expect(rowWith(rows, 'builder #')).toBeUndefined()
+    // The fold row is the roster's third: a click presses it.
+    const opened = seen.nextLog("demo's finished agents")
+    await ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: roster })
+    expect(await opened).toContain("swarm pane: demo's finished agents listed")
   })
 
   // WP-DI, the user's live look (2026-10-07): "right click here and see the model and effort level ... bonus points for adjustment".
