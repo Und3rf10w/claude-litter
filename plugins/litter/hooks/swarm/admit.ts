@@ -1057,8 +1057,8 @@ export function tunedStep(b: NodeBinding, e: Parameters<TurnStepHook>[1]): Param
   return { ...e, ...(newModel ? { model } : {}), ...(newEffort ? { effort } : {}) }
 }
 
-/** The models the browser offers beside the ones nodes ran with: full ids, since turn.step resolves no alias (`haiku`). */
-export const MODEL_CHOICES: readonly string[] = ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001']
+/** The models the browser offers beside the ones nodes ran with: full ids, since turn.step resolves no alias (`haiku`). One list with the launch form's. */
+export { MODEL_CHOICES } from '../settings/registry'
 
 /** How long the check of a model nothing here has run with may take. */
 export const MODEL_CHECK_MS = 15_000
@@ -1116,7 +1116,7 @@ export async function tuneNode(
 }
 
 /** Why a model can't be used, from a one-token completion; null when it answered. */
-async function modelCheck(p: Ports, model: string): Promise<string | null> {
+export async function modelCheck(p: Ports, model: string): Promise<string | null> {
   try {
     const r = await p.complete({ model, prompt: 'Reply with the word OK.', maxTokens: 8, timeoutMs: MODEL_CHECK_MS })
     if (r.isAnswered || r.reason === 'empty-reply') return null

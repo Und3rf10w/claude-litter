@@ -24,7 +24,7 @@ import type {
   ToolCallResult,
   ToolSpec,
 } from 'claude-code'
-import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
+import type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SettingsPaneView, StatsPaneView, SwarmPaneView, TasksPaneView } from '../types/index'
 import type { LedgerRead, LedgerReadCache, Owner } from './ledgercore'
 
 /**
@@ -104,14 +104,14 @@ export type SettingsSourceName = 'user' | 'project' | 'local' | 'policy'
  * tasks pane and agents pane (WP-CA). The band and the cards aren't panes,
  * but setView writes them the same way.
  */
-export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents' | 'stats' | 'hub'
-export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, StatsPaneView, SwarmPaneView, TasksPaneView }
+export type PaneName = 'swarm' | 'doctor' | 'board' | 'rules' | 'band' | 'cards' | 'tasks' | 'agents' | 'stats' | 'settings' | 'hub'
+export type { AgentsPaneView, BandView, BoardView, CardsView, DoctorPaneView, HubView, RulesPaneView, SettingsPaneView, StatsPaneView, SwarmPaneView, TasksPaneView }
 /**
  * Any of those views; each view's `view` field names it, and setView writes it
  * to its atom. Phase 5b (WP-DA): the pane views are the `litter` pane's
  * sections (Stats is WP-DH's), and `hub` is the pane's own (ui/hub.ts).
  */
-export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView | StatsPaneView | HubView
+export type PaneView = SwarmPaneView | DoctorPaneView | BoardView | RulesPaneView | BandView | CardsView | TasksPaneView | AgentsPaneView | StatsPaneView | SettingsPaneView | HubView
 
 /**
  * Whom `send` addresses (the d.ts's SessionSendAddress, less `{ sessionId }`):

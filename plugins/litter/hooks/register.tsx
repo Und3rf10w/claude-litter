@@ -35,6 +35,7 @@ import type {
   SpawnStream,
   Stat,
   SwarmPaneView,
+  SettingsPaneView,
   StatsPaneView,
   TasksPaneView,
 } from './ports'
@@ -76,6 +77,7 @@ import { recoverSwarms } from './swarm/recover'
 import { swarmReadTool } from './swarm/launch'
 import { swarmProposeTool } from './swarm/propose'
 import { outsideTeammate, swarmSpawn } from './swarm/spawn'
+import { roleSpawn, roleStep } from './settings/apply'
 import { admitSend, admitStep, leadTurnStart, resumeSpawn, settleNode, swarmContext, swarmSendTool } from './swarm/admit'
 import { observeNodeTurn } from './swarm/observe'
 import { sweepNodePolicies } from './swarm/end'
@@ -129,6 +131,8 @@ const agentsPane = atom({ plugin: 'litter', key: 'agentsPane' } as const, null)
 const hub = atom({ plugin: 'litter', key: 'hub' } as const, null)
 /** Phase 5b's (WP-DH): the Stats section. */
 const statsPane = atom({ plugin: 'litter', key: 'statsPane' } as const, null)
+/** The Settings section: the launch form and your saved settings (settings/pane.tsx). */
+const settingsPane = atom({ plugin: 'litter', key: 'settingsPane' } as const, null)
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -140,6 +144,7 @@ async function sectionView($: EngineInterface, section: HubSection): Promise<Sec
   if (section === 'tasks') return read($, tasksPane)
   if (section === 'agents') return read($, agentsPane)
   if (section === 'stats') return read($, statsPane)
+  if (section === 'settings') return read($, settingsPane)
   if (section === 'doctor') return read($, doctorPane)
   return null
 }
@@ -265,6 +270,7 @@ function enginePorts($: EngineInterface, signal?: AbortSignal): Ports {
       else if (pane === 'tasks') await update($, tasksPane, () => view as TasksPaneView | null)
       else if (pane === 'hub') await update($, hub, () => view as HubView | null)
       else if (pane === 'stats') await update($, statsPane, () => view as StatsPaneView | null)
+      else if (pane === 'settings') await update($, settingsPane, () => view as SettingsPaneView | null)
       else await update($, agentsPane, () => view as AgentsPaneView | null)
     },
 
@@ -466,8 +472,10 @@ export const register: Register = (on, options) => {
   // A teammate litter has no stake in passes first, waiting on no rebind, and so
   // does a workflow's agent of no swarm type (2.1.292 raises one for each agent()).
   // 2.1.299 raises it for a resumed run too (`resume`): never a spawn to plan; admit.ts's resumeSpawn.
+  // A workflow's agent of a litter role gets its run's model for the role (settings/apply.ts), and is remembered for its requests.
   on('agent.spawn', async ($, e, next) => {
-    if (outsideTeammate(e) || outsideWorkflow(e)) return next(e)
+    if (outsideTeammate(e)) return next(e)
+    if (outsideWorkflow(e)) return roleSpawn(enginePorts($, next.signal), e, next)
     const p = enginePorts($, next.signal)
     await rebound(p)
     if (e.resume !== undefined) return resumeSpawn(p, e, next)
@@ -487,7 +495,8 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const p = enginePorts($, next.signal)
     await rebound(p)
-    return yield* admitStep(p, e, next)
+    // A litter role's request: its run's effort, and what you set for it (settings/apply.ts); a swarm node's is admitStep's.
+    return yield* admitStep(p, await roleStep(p, e), next)
   }).catch(turnStepFailed)
 
   // The main loop's turn: the lead is busy. Since 2.1.299 a subagent's or teammate's raises it too, with its agentId.

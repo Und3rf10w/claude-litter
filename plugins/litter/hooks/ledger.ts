@@ -80,6 +80,10 @@ const STRUCTURED: Readonly<Record<string, FieldType>> = {
   widened: 'objects',
   // Design D9: run.find's opt-in for the configured options.
   options: 'boolean',
+  // The run settings (settings/): run.start's and run.draft's roles, run.draft's settings and overview.
+  roles: 'object',
+  settings: 'object',
+  overview: 'strings',
 }
 
 const SCHEMA_OF: Readonly<Record<FieldType, Record<string, unknown>>> = {

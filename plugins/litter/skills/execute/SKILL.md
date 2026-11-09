@@ -20,17 +20,17 @@ $ARGUMENTS
 
 Stop at the first check that fails, and tell the user which one and what to do about it.
 
-1. **The litter mod is loaded.** If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop: the mod isn't running, or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter doctor` says which, when the mod is loaded. Don't offer to do the work another way, because without the mod nothing enforces the rules, the verify run or the authorized actions. Then record `{ kind: 'run.find' }`, and read litter's files only through the absolute `litterDir` and `runDir` paths it returns.
-2. **The working tree is clean.** Run `git status --porcelain -- . ':(exclude).claude/litter' ':(exclude).claude/worktrees' ':(exclude).litter' ':(exclude).litter.local' ':(exclude).claude/rules/litter' ':(exclude).claude/rules/litter-local'`. Anything uncommitted would be judged and committed with the first gate, so if anything is listed, show it and ask the user to commit or stash it; don't stash it for them. The mod refuses a dirty tree anyway.
+1. **The litter mod is loaded.** If the schema for `mcp__litter__record` isn't loaded, load it with ToolSearch (`select:mcp__litter__record`). If it isn't found, stop: the mod isn't running, or its tools were refused. Name the likely cause: `--bare` or a managed `allowManagedHooksOnly` policy (unless litter is installed as a managed plugin), managed `disableAllHooks`, safe mode, mods not yet enabled for this account, another plugin named `litter` loaded first, or a background session whose directory was never trusted (running `claude` there once and accepting the trust prompt fixes that). On a machine with managed settings, a managed `allowedMcpServers` list or `allowManagedModsOnly` also removes litter's tools; `/litter doctor` says which, when the mod is loaded. Don't offer to do the work another way: without the mod nothing enforces the rules, the verify run or the authorized actions. Then record `{ kind: 'run.find' }`, and read litter's files only through the absolute `litterDir` and `runDir` paths it returns.
+2. **The working tree is clean.** Run `git status --porcelain -- . ':(exclude).claude/litter' ':(exclude).claude/worktrees' ':(exclude).litter' ':(exclude).litter.local' ':(exclude).claude/rules/litter' ':(exclude).claude/rules/litter-local'`. Anything uncommitted would be committed with the first gate: show what's listed and ask the user to commit or stash it (don't stash it for them). The mod refuses a dirty tree anyway.
 
-The mod also refuses to launch in bypass-permissions or accept-edits mode, where the agents would skip every check or stall on prompts. If that happens, tell the user to switch to auto or default mode with shift+tab and launch again; their answers aren't lost. Agents take the session's mode when each one starts, so tell them too that switching to either mode during the run halts it: litter refuses the calls of every agent that starts after the switch.
+The mod also refuses to launch in bypass-permissions or accept-edits mode, where agents would skip every check or stall. Then tell the user to switch to auto or default mode with shift+tab and launch again (their answers aren't lost), and that switching to either during the run halts it: litter refuses every agent that starts after the switch.
 
 ## 2. Gates
 
 - If the request names a plan file, Read it. Gates are sections headed `### G<n>: <title>`, each with `Files:`, `Checks:` and `Done when:` lines. If a gate is missing one, tell the user which; the mod won't launch without them.
 - If the request continues an earlier run (it names one, or follows an amend, a halt or a re-split), read `plan.md` and `summary.md` in that run's `runDir`, show which gates landed and which remain, and pass `continueOf` at launch. The mod runs only the remaining gates, on that run's branch.
 - If the plan has no gate headings, or the request is a goal rather than a file, this is goal mode: the gates come from a planning run first (section 6).
-- Read enough of the code the gates touch to ask informed questions. Don't ask the user anything the code can tell you.
+- Read enough of the code the gates touch to ask informed questions, and don't ask what the code can tell you.
 
 ## 3. Settings
 
@@ -41,6 +41,7 @@ Draft these, then confirm them in one AskUserQuestion call (up to four single-se
 - **Authorized actions.** By default: the mod commits each gate that passes, on a new branch `litter/<run>`; nothing is pushed; no destructive git (`reset --hard`, `clean -f`, `checkout --`, `branch -D`, `rebase`, force flags); no publish or deploy commands. Add anything else the agents will need, such as installing the project's dependencies with its own tool. The guard enforces this list, so state it exactly.
 - **Max attempts per gate.** The configured default is `${user_config.maxAttempts}`, or 3 if that's unset.
 - **Adversary.** Gates whose section says `Adversary: yes` get an extra agent that tries to break the change before the critic judges it. Offer to turn it on for every gate; that costs roughly a third more agent calls.
+- **Models and effort.** One the user names for a role goes in `roles`, `{ <role>: { model, effort } }`; the rest come from /litter settings.
 - **Rules.** Record `{ kind: 'rule.find', applicable: { workflow: 'execute', planPath } }`. It's read-only, and returns the accepted rules each gate would get. Show them by gate, one line each (id, version, type, the situation). If the mod refuses it as not built yet, say "no rule selection yet" and go on. A constraint the user states now goes into `runRules`, for this run only. Offer to keep a lasting one with /litter:rules add. A new rule reaches this run only if the user accepts it in the rules pane before Launch.
 - **Problems you found in the plan.** If the user settles one by keeping the plan as written, whether by accepting a consequence you named or by choosing one reading of an ambiguous line, add that decision to `runRules` in their words, naming the gate and what they chose. The run's agents see only the plan and its rules, so a decision left in this conversation is asked again mid-run, and the gate halts on it. A decision that changes what a gate covers, such as letting it change a file outside its `Files:`, or dropping a gate, isn't a run rule: the critic still holds each gate to its `Files:`. To let a gate change files outside its `Files:`, put them in `widenings` as `{ gate, files, why }`, the paths relative to the repository (a trailing `/` for a folder) and the why in the user's words. The mod asks the user to confirm each gate's files in its own dialog before the run is made, and adds them to the gate in the run's copy of the plan, so a yes given to you here doesn't add them by itself. For any other change to what a gate covers, offer to stop so the user can edit the plan, or to go ahead and amend that gate with /litter:amend once it halts.
 - **Files outside a gate.** The configured setting is `${user_config.widen}` (if unset or a placeholder: `ask`). The user can change it for this run with `widen`. State it in the mod's own words:
@@ -50,31 +51,32 @@ Draft these, then confirm them in one AskUserQuestion call (up to four single-se
   - `auto`: "if a gate halts on a plan gap or runs out of attempts, a plan-template swarm continues the gates that haven't landed, in this checkout, and the mod lands each gate only if it's verified and an independent critic approves it: up to N rejected attempts in all, M per gate, and A agents; nothing is pushed".
   - `off`: "if a gate halts, the run stops and keeps everything, and you choose what's next".
 
-Then show the gate list and the settings together, and ask for an explicit "Launch" in one single-select AskUserQuestion whose first option is Launch. This confirmation is the user's opt-in to the run and the record of what they authorized, so ask for it even if the user didn't type the command.
+Then record `{ kind: 'run.draft', workflow: 'execute', overview, settings, roles }` (`overview`: short lines for the above; `settings`, `roles`: what the user asked) and do what its `next` says. Without a form, ask for an explicit "Launch" in one single-select AskUserQuestion whose first option is Launch. Either Launch is the user's opt-in and the record of what they authorized: get it even if they didn't type a command.
 
 ## 4. Launch
 
 1. Call `mcp__litter__record` with `{ kind: 'run.start', workflow: 'execute', planPath, verify, authorized, maxAttempts, adversary, runRules }`, adding `goalCheck` in goal mode, `continueOf` for a continuation, and `repair`, `repairRounds` or `repairAgents` when the user changed them for this run; also `widen` when they changed it, and `widenings` when they asked for any (section 3). `runRules` holds only the constraints and plan decisions the user stated for this run (section 3), in their words; the mod selects the accepted rules itself.
+   - After a launch form, add `draft`: the id its Launch message names.
    - Add `isolate: true` in a background session that blocks edits in the shared checkout until you isolate, unless your working directory is already under `.claude/worktrees/`.
    - The mod checks the tree and the mode, creates `litter/<run>` at the current commit, copies the plan, and returns `{ run, runDir, checkout, args }`. If it refuses, pass the reason on and stop.
-2. If you passed `isolate: true`, call EnterWorktree with `path` set to the returned `checkout`. Don't call it with a name, which would start from the remote default branch instead of the user's commit.
-3. Call Workflow with `name: 'litter:execute-run'` and the `args` it returned, as a JSON object rather than a string. If it returns an error, show it; the mod records the failed launch.
+2. If you passed `isolate: true`, call EnterWorktree with `path` set to the returned `checkout`. Not with a name, which would start from the remote default branch.
+3. Call Workflow with `name: 'litter:execute-run'` and the `args` it returned, as a JSON object, not a string. If it returns an error, show it; the mod records the failed launch.
 
 ## 5. While it runs
 
-Tell the user in two or three lines what launched (the run id, the number of gates and the branch) and that progress shows in /litter runs and /workflows. Then end your turn. The completion notification will come to you, so don't sleep, poll, re-read run files or guess at results. If the user asks about something else in the meantime, help them normally. If they ask you to stop the run, call TaskStop with the task id from the launch result; the mod records the stop.
+Tell the user in two or three lines what launched (the run id, gate count and branch) and that progress shows in /litter runs and /workflows. Then end your turn: the completion notification comes to you, so don't sleep, poll, re-read run files or guess at results. If the user asks about something else in the meantime, help them normally. If they ask you to stop the run, call TaskStop with the task id from the launch result; the mod records the stop.
 
 If a notice says the run was orphaned or interrupted and can be resumed with `resumeFromRunId`, ask the user whether to resume it. Resume only if they agree, with the `scriptPath`, `resumeFromRunId` and `args` the notice gives. Finished agents replay, and the mod never lands a gate twice. Resuming works only in this session. After /clear or in a new session, offer a continuation (`continueOf` this run), which gets only the gates that haven't landed.
 
 ## 6. Goal mode
 
-1. Record `run.start` with `workflow: 'plan'`, the goal, the verify command and the goal check. Launch Workflow `litter:plan-run` with the returned `args`, and end your turn as in section 5.
+1. Record `run.start` with `workflow: 'plan'`, the goal, the verify command and the goal check, and any `roles`. Launch Workflow `litter:plan-run` with the returned `args`, and end your turn as in section 5.
 2. When it finishes, show the proposed gates, the out-of-scope list and the assumptions, and ask the planner's questions. If it returned only questions, ask them and offer a new planning run with the answers.
 3. Once the user approves the gates, as proposed or edited, record `{ kind: 'plan.write', run, gates }`. The mod writes the plan in the gate format and returns its path. Continue from section 3 with that plan, keeping the goal check.
 
 ## 7. When the run finishes
 
-Read `summary.md` in the `runDir` from `run.start` (or from `run.find` with the run id). The mod finalizes it from the ledger before the notification reaches you, so it's the record of what happened; if the workflow's return value disagrees, say so and go by `summary.md`. If it still shows the run open, record `{ kind: 'run.end', run, taskId, status, result }` with the notification's task id, status and result, and read it again. Report plainly:
+Read `summary.md` in the `runDir` from `run.start` (or from `run.find` with the run id). The mod finalizes it from the ledger before the notification reaches you, so it's the record; if the workflow's return value disagrees, say so and go by `summary.md`. If it still shows the run open, record `{ kind: 'run.end', run, taskId, status, result }` with the notification's task id, status and result, and read it again. Report plainly:
 
 - how the run ended: done, halted, failed, stopped or interrupted;
 - each gate: landed (with the commit) or not, and how many attempts it took;
@@ -85,7 +87,7 @@ Read `summary.md` in the `runDir` from `run.start` (or from `run.find` with the 
 
 Don't soften a halt or round it up to success. Then offer the next step with AskUserQuestion:
 
-- **Rules proposed during the run:** list each with the critic's reason, and say they're waiting in the rules pane (/litter rules), where the user accepts, edits or dismisses each one. The mod has already recorded them as proposals. Don't call them accepted, and don't try to accept them from here; nothing in this session can.
+- **Rules proposed during the run:** list each with the critic's reason, and say they're waiting in the rules pane (/litter rules), where the user accepts, edits or dismisses each one. They're recorded as proposals: don't call them accepted or try to accept them here; nothing in this session can.
 - **A gate stopped on a rule** (a blocked result or plan gap naming a rule's id): show the rule and the evidence, and offer /litter:rules show for it. In the pane the user can edit it, add an exception, or keep it, before the gate runs again.
 - **A gate halted, and a repair swarm took over** (the summary's Repair part says so): say that swarm `<name>` continues the gates that haven't landed within the confirmed budget, that litter starts it after this turn, and that /litter swarms `<name>` shows it. Don't start it yourself or offer other routes. If its start is refused, litter puts /litter:swarm start `<name>` in the prompt box; tell the user to press Enter to start it, or /litter:swarm end `<name>` to stop it.
 - **A gate halted, and nothing took over** (`repair off`, or the Repair part says why not): offer with AskUserQuestion:
@@ -94,9 +96,9 @@ Don't soften a halt or round it up to success. Then offer the next step with Ask
   - amend that gate with /litter:amend;
   - stop and leave the last attempt in the tree for the user to inspect.
 
-  If two gates of this plan have already been amended, recommend /litter:design instead. By then it's usually the plan that's wrong, not the gate. If the user asks to re-split the remaining gates, run a planning run given the landed gates and the halt evidence (section 6, with `continueOf` set to this run in its `run.start` and its `plan.write`); the run after it is a continuation, so landed gates don't run again.
+  If two gates of this plan have already been amended, recommend /litter:design instead. If the user asks to re-split the remaining gates, run a planning run given the landed gates and the halt evidence (section 6, with `continueOf` set to this run in its `run.start` and its `plan.write`); the run after it is a continuation, so landed gates don't run again.
 - **The run stopped or was interrupted:** offer to resume it (section 5), or a continuation for the gates that haven't landed.
-- **All gates landed:** say so, with the branch and the commit range. The mod's commits don't run the repository's commit hooks, so suggest running them before merging. The user merges and pushes when they're ready.
+- **All gates landed:** say so, with the branch and the commit range. The mod's commits skip the repository's commit hooks, so suggest running them before the user merges and pushes.
 
 Don't commit, push or open a pull request yourself at the end, even in a background session whose instructions suggest it. Under the authorized actions, commits are the mod's and pushing is the user's.
 

@@ -187,6 +187,7 @@ const TABS = [
   { section: 'tasks', label: 'Tasks', count: 3, needsYou: false },
   { section: 'agents', label: 'Agents', count: 2, needsYou: false },
   { section: 'stats', label: 'Stats', count: null, needsYou: false },
+  { section: 'settings', label: 'Settings', count: null, needsYou: false },
   { section: 'doctor', label: 'Doctor', count: null, needsYou: false },
 ]
 const LIVE = [
@@ -252,15 +253,18 @@ const filled = (rows: readonly string[]): string[] => rows.filter(r => r.trim() 
 const SHOWN = 'text bold, subtle'
 const TAB = 'suggestion, default, subtle'
 const LAST_TAB = 'suggestion, default'
-// Eight tabs (WP-DH): at 60 columns Agents goes to the strip's second row.
+// Nine tabs (Settings): at 100 columns Doctor goes to the strip's second row, at 60 Agents.
 const HEAD_QUIET = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   ['nothing running', 'inactive'],
   ...(c >= 100
-    ? ([['› 1: Home │ 2: Runs │ 3: Swarms │ 4: Rules │ 5: Tasks │ 6: Agents │ 7: Stats │ 8: Doctor', [SHOWN, ...Array(6).fill(TAB), LAST_TAB].join(', ')]] as [string, string][])
+    ? ([
+        ['› 1: Home │ 2: Runs │ 3: Swarms │ 4: Rules │ 5: Tasks │ 6: Agents │ 7: Stats │ 8: Settings │', [SHOWN, ...Array(7).fill(TAB)].join(', ')],
+        ['9: Doctor', LAST_TAB],
+      ] as [string, string][])
     : ([
         ['› 1: Home │ 2: Runs │ 3: Swarms │ 4: Rules │ 5: Tasks │', [SHOWN, ...Array(4).fill(TAB)].join(', ')],
-        ['6: Agents │ 7: Stats │ 8: Doctor', [TAB, TAB, LAST_TAB].join(', ')],
+        ['6: Agents │ 7: Stats │ 8: Settings │ 9: Doctor', [TAB, TAB, TAB, LAST_TAB].join(', ')],
       ] as [string, string][])),
 ]
 // Each tab's count muted after its label, its ⚑ in the needs-you color.
@@ -270,22 +274,23 @@ const HEAD_BUSY = (c: number): [string, string][] => [
   ['litter · Home', 'claude bold, inactive'],
   // One line, cut to the pane (chrome's spansLine).
   [cut('▸ running: 1 run, 1 swarm · ⚑ needs you: 1 question, 1 proposal, 2 rules', c), 'background, default, subtle, permission'],
-  // With their digits the eight tabs are 102 cells, so at 100 Doctor goes to a second row.
+  // With their digits and counts the nine tabs wrap at Settings at 100 columns, and to three rows at 60.
   ...(c >= 100
     ? ([
         ['› 1: Home │ 2: Runs 1 │ 3: Swarms 1 ⚑ │ 4: Rules 2 ⚑ │ 5: Tasks 3 │ 6: Agents 2 │ 7: Stats │', [SHOWN, COUNTED, FLAGGED, FLAGGED, COUNTED, COUNTED, TAB].join(', ')],
-        ['8: Doctor', LAST_TAB],
+        ['8: Settings │ 9: Doctor', [TAB, LAST_TAB].join(', ')],
       ] as [string, string][])
     : ([
         ['› 1: Home │ 2: Runs 1 │ 3: Swarms 1 ⚑ │ 4: Rules 2 ⚑ │', [SHOWN, COUNTED, FLAGGED, FLAGGED].join(', ')],
-        ['5: Tasks 3 │ 6: Agents 2 │ 7: Stats │ 8: Doctor', [COUNTED, COUNTED, TAB, LAST_TAB].join(', ')],
+        ['5: Tasks 3 │ 6: Agents 2 │ 7: Stats │ 8: Settings │', [COUNTED, COUNTED, TAB, TAB].join(', ')],
+        ['9: Doctor', LAST_TAB],
       ] as [string, string][])),
 ]
 const KEYS = (c: number): [string, string][] =>
   c >= 100
-    ? [['1–8 section · tab next · enter press · esc back to the prompt', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive']]
+    ? [['1–9 section · tab next · enter press · esc back to the prompt', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive']]
     : [
-        ['1–8 section · tab next · enter press', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive'],
+        ['1–9 section · tab next · enter press', 'suggestion bold, inactive, subtle, suggestion bold, inactive, subtle, suggestion bold, inactive'],
         [' · esc back to the prompt', 'subtle, suggestion bold, inactive'],
       ]
 const rule = (title: string, c: number, note?: string): string => (note ? `${title} ${'─'.repeat(c - title.length - note.length - 5)} ${note} ──` : `${title} ${'─'.repeat(c - title.length - 1)}`)
@@ -342,14 +347,14 @@ const BUSY_BODY = (c: number): [string, string][] => [
 ]
 
 /**
- * MANY at 14 rows: no headings, needs you and running whole; at 100 the
- * ended runs counted (the others' line goes: focused, eight tabs with their
- * digits are 102 cells, so the strip takes two rows); at 60 (the strip and
- * the keys line take two rows each) the ended line goes too, left to the strip.
+ * MANY at 14 rows: no headings, needs you whole; at 100 running whole and the
+ * ended runs counted (the others' line goes: focused, the tabs with their
+ * digits take two rows); at 60 the strip takes three rows and the keys line
+ * two, so the running rows fold after the first and the ended line goes.
  */
 const MANY_14: Record<number, [string, string][]> = {
   100: [...HEAD_BUSY(100), ROW.question(100), ROW.proposal(100), ROW.rules(100), ROW.exec(100), ROW.swarm(100), ROW.fan(100), ['3 ended in the last 10 minutes', 'inactive'], ...KEYS(100)],
-  60: [...HEAD_BUSY(60), ROW.question(60), ROW.proposal(60), ROW.rules(60), ROW.exec(60), ROW.swarm(60), ROW.fan(60), ...KEYS(60)],
+  60: [...HEAD_BUSY(60), ROW.question(60), ROW.proposal(60), ROW.rules(60), ROW.exec(60), ['+2 more running', 'inactive'], ...KEYS(60)],
 }
 
 describe('Home with nothing running and nothing waiting', () => {

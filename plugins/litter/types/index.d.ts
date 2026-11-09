@@ -1080,8 +1080,8 @@ export type AgentsPaneView = { view: 'agents'; v: number; body?: AgentsBody }
 // through each section's body renderer. Each section keeps its own view
 // above; this holds only what the hub draws itself.
 
-/** The pane's sections, in the strip's order (hotkeys 1–8). */
-export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'stats' | 'doctor'
+/** The pane's sections, in the strip's order (hotkeys 1–9). */
+export type HubSection = 'home' | 'runs' | 'swarms' | 'rules' | 'tasks' | 'agents' | 'stats' | 'settings' | 'doctor'
 
 /** One section in the strip. */
 export type HubTab = {
@@ -1238,6 +1238,72 @@ export type StatsBody = {
 export type StatsPaneView = { view: 'stats'; v: number; body?: StatsBody }
 // ===== end stats section (owner: WP-DH) =====
 
+// ===== begin settings section (owner: settings/) =====
+// ---------------------------------------------------------------------------
+// Settings: the launch form a skill's run.draft opens (each run setting and
+// each role's model and effort, [Launch]), and your saved defaults, for every
+// project, from the same rows (hooks/settings/registry.ts). Built by
+// hooks/settings/pane.tsx. Every string is cleaned already.
+
+/** One field: a select of `options`, or an input. `note` says what applies when it's unset, or where its value came from. */
+export type SettingsField = {
+  key: string
+  label: string
+  kind: 'select' | 'input'
+  value: string
+  options?: SwarmOption[]
+  placeholder?: string
+  note: string
+}
+
+/** One role's row: its model (and, while it's being typed, a model id) and its effort. */
+export type SettingsRoleRow = {
+  role: string
+  /** What it does, and the workflows it runs in. */
+  words: string
+  model: SettingsField
+  /** Shown when the model select is on "another id", or holds one the select doesn't offer. */
+  modelId: SettingsField | null
+  effort: SettingsField
+}
+
+/**
+ * One agent of the active run, in Running: its role, what its last request
+ * named, and a Model and an Effort select whose change applies from its next
+ * request ('' for its run's). A finished one has no selects.
+ */
+export type SettingsAgentRow = {
+  agentId: string
+  role: string
+  /** `its last request: claude-sonnet-5-5 · high`, or that it made none yet. */
+  last: string
+  done: boolean
+  model: SettingsField | null
+  effort: SettingsField | null
+}
+
+export type SettingsBody = {
+  /** The active litter run's role agents, newest last; null while no run is active. */
+  running: { run: string; workflow: string; agents: SettingsAgentRow[]; hidden: number } | null
+  /** `launch`: a run.draft's form; `defaults`: your saved settings. */
+  mode: 'launch' | 'defaults'
+  /** The launch form's draft, in launch mode. */
+  draft: { id: string; workflow: string; overview: string[]; confirmed: boolean } | null
+  /** Your settings file's path, or why there's none. */
+  path: string
+  run: SettingsField[]
+  roles: SettingsRoleRow[]
+  /** Unsaved edits to the defaults. */
+  dirty: boolean
+  /** A draft waits in launch mode while the defaults are shown. */
+  draftWaiting: boolean
+  problems: string[]
+}
+
+/** The Settings section's view; `body` is absent until the first build is in. */
+export type SettingsPaneView = { view: 'settings'; v: number; body?: SettingsBody; notice: SwarmNotice | null }
+// ===== end settings section (owner: settings/) =====
+
 declare module 'claude-code' {
   interface PluginState {
     litter: {
@@ -1254,6 +1320,8 @@ declare module 'claude-code' {
       hub: HubView | null
       // Phase 5b (WP-DH): the Stats section.
       statsPane: StatsPaneView | null
+      // The Settings section: the launch form and your saved defaults.
+      settingsPane: SettingsPaneView | null
     }
   }
 }

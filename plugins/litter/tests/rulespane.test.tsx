@@ -577,7 +577,7 @@ const rowOf = (rows: readonly string[], part: string) => rows.findIndex(r => r.i
 function bodyRows(rows: readonly string[]): string[] {
   const from = rows.findIndex(r => /(^|\s)› [⚑✓] (Proposed|In force) \d/.test(r))
   expect(from).toBeGreaterThanOrEqual(0)
-  const keys = rows.findIndex((r, i) => i > from && /^(ctrl\+x tab gives the pane the keys|j\/k |right-click |1–8 )/.test(r))
+  const keys = rows.findIndex((r, i) => i > from && /^(ctrl\+x tab gives the pane the keys|j\/k |right-click |1–9 )/.test(r))
   const body = rows.slice(from, keys < 0 ? undefined : keys)
   while (body.length > 0 && body[body.length - 1]!.trim() === '') body.pop()
   return body
@@ -637,7 +637,8 @@ describe('the two tabs, at 100 and 60 columns, docked and inline', () => {
     const ui = await mountRules($, 'terminal', { bodyColumns: 100, bodyRows: 30, isFocused: true })
     const tree = await ui.drawn()
     // Rules' two key hints and the hub's wrap the keys line to two rows at 100 columns; the second comes off the body's (pane.tsx's keysOverflow).
-    const clipped = findNode(tree, n => n.type === 'Box' && n.props?.overflow === 'hidden' && n.props?.height === bodyBudget(30) - 1)
+    // Focused, the nine tabs with their digits are 102 cells, so the strip takes a second row too.
+    const clipped = findNode(tree, n => n.type === 'Box' && n.props?.overflow === 'hidden' && n.props?.height === bodyBudget(30) - 2)
     expect(clipped).not.toBeNull()
     expect(await ui.find({ type: 'Text', text: 'j/k' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'right-click' })).toBeDefined()

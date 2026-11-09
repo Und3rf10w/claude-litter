@@ -26,6 +26,7 @@ import { consumeAsks } from './asks'
 import { consumeExecutorGate } from './widen'
 import { recordRuleFind, recordRuleImport, recordRuleOpen, recordRuleProposal } from './rules/records'
 import { recordProbe, recordProposal, recordVerdict } from './design/records'
+import { recordRunDraft } from './settings/draft'
 
 export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   finding: recordGeneric,
@@ -53,6 +54,7 @@ export const KIND_HANDLERS: Readonly<Record<KnownKind, RecordHandler>> = {
   'lock.recovered': recordGeneric,
   'lock.forced': recordGeneric,
   'run.start': recordRunStart,
+  'run.draft': recordRunDraft,
   'run.launch': recordGeneric,
   'run.resume': recordGeneric,
   'run.stopping': recordGeneric,
