@@ -7,6 +7,7 @@ import type { RepairBudget } from '../swarm/types'
 import type { WidenMode } from '../options'
 import type { RuleRef } from './rules'
 import type { DesignCriterion } from './design'
+import type { RoleTunes } from '../settings/registry'
 
 export type Workflow = 'execute' | 'fanout' | 'design' | 'plan'
 export const WORKFLOWS: readonly Workflow[] = ['execute', 'fanout', 'design', 'plan']
@@ -226,6 +227,8 @@ export type RunStartReply = {
   foreignCommits?: string[]
   /** What the launch card should say (an old git's unfenced switch, for one). */
   warnings?: string[]
+  /** The roles' model and effort the run uses, where any is set (run.json's `roles`). */
+  roles?: RoleTunes
 }
 
 /**
@@ -287,6 +290,14 @@ export type RunJson = {
    * it's `ask`: only you.
    */
   widen?: WidenMode
+  /**
+   * Each of the workflow's roles' model and effort, as your saved settings
+   * and the launch set them (settings/registry.ts), covered by
+   * `runJsonSha256`. settings/apply.ts sets a role agent's model at its
+   * spawn and its effort at each request. Absent: every role runs on the
+   * session's.
+   */
+  roles?: RoleTunes
 }
 
 /** The `run.start` ledger body: run.json's facts, chained, with run.json's and the args' sha256. */

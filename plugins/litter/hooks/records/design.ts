@@ -28,7 +28,7 @@ export const KNOWN_KINDS = [
   // the run lock
   'lock.recovered', 'lock.forced',
   // launchers and the mod's own
-  'run.start', 'run.launch', 'run.resume', 'run.stopping', 'run.end',
+  'run.start', 'run.launch', 'run.resume', 'run.stopping', 'run.end', 'run.draft',
   'worktree.intent', 'worktree.create', 'worktree.setup_failed', 'worktree.removed', 'worktree.kept',
   'plan.write', 'gate.amend', 'gate.widen', 'wiki.write',
   // rules (phase 3; bodies in records/rules.ts): rule.propose above, and the
@@ -107,6 +107,8 @@ export const KIND_RULES: Readonly<Record<KnownKind, KindRule>> = {
   'lock.recovered': modKind,
   'lock.forced': modKind,
   'run.start': { by: 'launcher', run: 'none' },
+  // The launch form (settings/draft.ts): no run yet, so none is resolved.
+  'run.draft': { by: 'launcher', run: 'none' },
   'run.launch': modKind,
   'run.resume': modKind,
   'run.stopping': modKind,

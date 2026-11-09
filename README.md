@@ -57,7 +57,7 @@ Runs start from a clean, committed working tree in `auto` or `default` permissio
 
 ### The `/litter` pane
 
-`/litter [section] [arg]` opens `litter`'s in-session UI pane with eight sections:
+`/litter [section] [arg]` opens `litter`'s in-session UI pane with nine sections:
 
 1. **Home** — overview of active runs, live swarms, open questions, and pending rule proposals
 2. **Runs** — the board of runs, gates, attempts, verdicts, and summaries
@@ -66,11 +66,20 @@ Runs start from a clean, committed working tree in `auto` or `default` permissio
 5. **Tasks** — view and edit a team's tasks
 6. **Agents** — inspect agents, write to an agent's inbox, broadcast to a team, and stop an agent
 7. **Stats** — session and per-swarm spend, token/cache breakdown, context, and limits
-8. **Doctor** — environment, hook, and policy diagnostics
+8. **Settings** — the launch form a design, execute, or fanout skill opens before it launches, your saved run settings, and the running agents' models and efforts
+9. **Doctor** — environment, hook, and policy diagnostics
 
-`ctrl+x tab` focuses the pane, `1`–`8` switch sections, and `esc` returns focus to the prompt.
+`ctrl+x tab` focuses the pane, `1`–`9` switch sections, and `esc` returns focus to the prompt.
 
 `litter` keeps runtime state under `.claude/litter/` in your repository's main checkout (each run's plan, ledger, and summary, swarm state, and hook state). Project rules live in `.litter/rules/` so they can be committed and shared.
+
+### Run settings: models, effort, and the rest
+
+Every litter role (the design lenses, author and critic, the executor, gate-critic, adversary and relay, the fanout's researcher and verifier, the planner) can have its own model and effort, and every run setting (rounds, attempts, adversary, widen, repair) a saved default. All of it comes from one table, so each workflow's launch form, your saved settings, and run.start read the same rows.
+
+- **Saved settings**: `/litter settings` edits yours, `<config dir>/litter/settings.json`, which every project's launches start from, over the plugin options. No repository sets them. A model is an alias (`haiku`, `sonnet`, `opus`) or a full id; unset, a role runs on the session's model and effort.
+- **The launch form**: before a design, execute, or fanout run, the skill opens Settings on a form with the run's overview, its settings, and its roles' models and efforts, filled from your saved settings and whatever you asked for. Change anything and press **Launch**; **Save as defaults** keeps what you chose. Without a pane, the skill asks in the conversation and passes `roles` to `run.start` itself.
+- **While it runs**: Settings lists the run's agents with what each one's last request used. A Model or Effort change applies from that agent's next request; a new model re-reads its conversation without the cache, so it takes a full id, never an alias.
 
 ## Options
 

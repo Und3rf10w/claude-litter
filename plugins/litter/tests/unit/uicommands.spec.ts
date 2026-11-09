@@ -24,8 +24,8 @@ describe('registerLitterCommand', () => {
     expect(p.commands).toEqual([
       {
         name: 'litter',
-        description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents, Stats or Doctor",
-        argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | doctor] [arg]',
+        description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents, Stats, Settings or Doctor",
+        argumentHint: '[home | runs | swarms | rules | tasks | agents | stats | settings | doctor] [arg]',
         immediate: true,
       },
     ])
@@ -48,7 +48,7 @@ describe("the typeahead's sections (WP-EC)", () => {
       { text: 'runs', description: "Open litter's pane on Runs" },
       { text: 'rules', description: "Open litter's pane on Rules" },
     ])
-    expect(texts('/litter S')).toEqual(['swarms', 'stats'])
+    expect(texts('/litter S')).toEqual(['swarms', 'stats', 'settings'])
     expect(texts('/litter  ag')).toEqual(['agents'])
     expect(texts('/litter h')).toEqual(['home'])
     expect(texts('/litter do')).toEqual(['doctor'])

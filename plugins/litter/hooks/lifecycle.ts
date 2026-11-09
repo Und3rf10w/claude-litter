@@ -85,6 +85,12 @@ import { selectForRun } from './rules/select'
 import { designArgs, parseDesign } from './design/launch'
 import { finalizeDesign } from './design/finalize'
 import { designSummary } from './design/summary'
+import type { RoleName } from './hookfiles'
+import type { LoadedSettings } from './settings/store'
+import { loadSettings, optionsWithSaved, savedRoles, savedRun, emptySettings } from './settings/store'
+import { ROLES_OF, checkRoleTune, layTune, someTune, type RoleTunes } from './settings/registry'
+import { dropDraft, readDraft, takeDraft } from './settings/draft'
+import { forgetRoleAgents } from './settings/apply'
 import {
   acquireLock,
   leaseStale,
@@ -112,7 +118,18 @@ export const deps = {
   designArgs: (...a: Parameters<typeof designArgs>) => designArgs(...a),
   finalizeDesign: (...a: Parameters<typeof finalizeDesign>) => finalizeDesign(...a),
   designSummary: (...a: Parameters<typeof designSummary>) => designSummary(...a),
+  /** Your saved settings (settings/store.ts), which fill what a launch leaves out. */
+  loadSettings: (...a: Parameters<typeof loadSettings>) => loadSettings(...a),
+  /** The launch form's confirmed draft, when run.start names one (settings/draft.ts). */
+  takeDraft: (...a: Parameters<typeof takeDraft>) => takeDraft(...a),
+  /** Drops a launch form run.start launched, when it's still the one kept. */
+  dropDraft: async (p: Ports, litterDir: string, id: string): Promise<void> => {
+    if ((await readDraft(p, litterDir))?.id === id) await dropDraft(p, litterDir)
+  },
 }
+
+/** No saved settings: what parseStart reads when its caller passes none. */
+const EMPTY_SAVED: LoadedSettings = { user: emptySettings(), path: null, problems: [] }
 
 /** The modes the launch check and run.start refuse (plan section 9, "Launch check"). */
 export const REFUSED_MODES = ['bypassPermissions', 'acceptEdits'] as const
@@ -583,6 +600,7 @@ async function recordEnd(
     if (gen && gen.taskId !== '') await p.store.delete(taskKey(gen.taskId))
     await p.store.delete(agentsKey(ref.runDir))
     await forgetRunAgents(p, ref.run).catch(err => p.log(`agent map for ${ref.run} not pruned: ${errText(err)}`))
+    await forgetRoleAgents(p, ref.run).catch(err => p.log(`role agents of ${ref.run} not pruned: ${errText(err)}`))
     const pending = await getPending(p, ref.litterDir)
     if (pending?.run === ref.run) await clearPending(p, ref.litterDir)
   }
@@ -1552,6 +1570,8 @@ export type Spec = {
   widen: WidenMode | null
   /** An execute run's widenings before Launch (WP-AO), each to be confirmed in the mod's dialog. */
   widenings: WideningInput[]
+  /** Each of the workflow's roles' model and effort: your saved settings, then the launch's `roles` over them (settings/registry.ts). */
+  roles: RoleTunes
 }
 
 // The parse's helpers, exported for the design launch's parse (design/launch.ts, BD's).
@@ -1682,7 +1702,7 @@ const KNOWN_FIELDS = new Set([
   'kind', 'workflow', 'authorized', 'planPath', 'goal', 'verify', 'goalCheck', 'setup', 'maxAttempts', 'adversary',
   'isolate', 'continueOf', 'amendOf', 'carryOver', 'runRules', 'tasks', 'contract', 'linkDirs', 'mergeOrder',
   'deliverable', 'bar', 'lenses', 'empiricalUnknowns', 'anchors', 'maxRounds', 'priorRun', 'feedback',
-  'repair', 'repairRounds', 'repairAgents', 'widen', 'widenings',
+  'repair', 'repairRounds', 'repairAgents', 'widen', 'widenings', 'roles', 'draft',
 ])
 const REPAIR_FIELDS = ['repair', 'repairRounds', 'repairAgents'] as const
 /** At most this many gates widened at one launch. */
@@ -1745,8 +1765,31 @@ function parseRepair(input: RecordInput, options: LitterOptions, workflow: Workf
 /** The record tool's own fields, which reach a handler with the input. */
 const RESERVED_FIELDS = new Set(['tool', 'tool_use_id', 'agentId', 'consent', 'run'])
 
-/** Every check on the input alone, before anything else runs. */
-function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
+/**
+ * A launch's `roles` (settings/registry.ts): each of the workflow's roles a
+ * `{ model?, effort? }`, a null for "the session's" over a saved one, laid
+ * over the saved settings. A role the workflow doesn't run is refused, so a
+ * launch never states a setting that does nothing.
+ */
+function parseRoles(input: RecordInput, workflow: Workflow, saved: LoadedSettings): Parsed<RoleTunes> {
+  const roles = ROLES_OF[workflow]
+  const out = savedRoles(saved, roles)
+  const raw = input.roles
+  if (raw === undefined || raw === null) return ok(out)
+  if (typeof raw !== 'object' || Array.isArray(raw)) return fail("'roles' must be { <role>: { model?, effort? } }", 'roles', [...roles])
+  for (const [role, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(roles as readonly string[]).includes(role)) return fail(`a ${workflow} run has no ${role} role; its roles are ${roles.join(', ')}`, `roles.${role}`, [...roles])
+    const c = checkRoleTune(v, `roles.${role}`)
+    if (!c.ok) return fail(c.error, c.field)
+    const t = someTune(layTune(out[role as RoleName], c.value))
+    if (t) out[role as RoleName] = t
+    else delete out[role as RoleName]
+  }
+  return ok(out)
+}
+
+/** Every check on the input alone, before anything else runs. `saved` is your saved settings (settings/store.ts). */
+function parseStart(input: RecordInput, options: LitterOptions, saved: LoadedSettings = EMPTY_SAVED): Parsed<Spec> {
   const unknown = Object.keys(input).filter(k => !KNOWN_FIELDS.has(k) && !RESERVED_FIELDS.has(k))
   if (unknown.length > 0) return fail(`run.start doesn't take '${unknown[0]}'`, unknown[0], [...KNOWN_FIELDS])
   const workflow = input.workflow as Workflow
@@ -1790,6 +1833,10 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
   }
   const carryOver = input.carryOver === true
   if (carryOver && !amendOf) return fail("'carryOver' is for an amend ('amendOf')", 'carryOver')
+  const roles = parseRoles(input, workflow, saved)
+  if (!roles.ok) return roles
+  // The adversary has no plugin option: unset, your saved setting applies, and an execute run's only.
+  const adversary = input.adversary === undefined ? workflow === 'execute' && savedRun(saved, 'adversary', options).value === true : input.adversary === true
 
   const spec: Spec = {
     workflow,
@@ -1800,7 +1847,7 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     goalCheck: goalCheck.value,
     setup: setup.value,
     maxAttempts: maxAttempts.value,
-    adversary: input.adversary === true,
+    adversary,
     isolate,
     continueOf: continueOf.value,
     amendOf,
@@ -1816,6 +1863,7 @@ function parseStart(input: RecordInput, options: LitterOptions): Parsed<Spec> {
     repair: null,
     widen: null,
     widenings: [],
+    roles: roles.value,
   }
 
   if (workflow === 'execute') {
@@ -2787,6 +2835,8 @@ async function startHeld(
     ...(spec.repair ? { repair: spec.repair } : {}),
     // Who may add files to a gate (WP-AO), likewise.
     ...(spec.widen ? { widen: spec.widen } : {}),
+    // Each role's model and effort (settings/apply.ts reads them at each spawn and step), likewise.
+    ...(Object.keys(spec.roles).length > 0 ? { roles: spec.roles } : {}),
   }
   const jsonText = `${JSON.stringify(json, null, 2)}\n`
 
@@ -2895,6 +2945,7 @@ async function startHeld(
     await p.store.set(pendingKey(litterDir), pending)
     const host = session().host
     const reply: RunStartReply = { ok: true, run, runDir: ref.runDir, checkout: prep.checkout, args, host, next: launchStep(host, spec.workflow, run, prep.checkout, spec.isolate) }
+    if (Object.keys(spec.roles).length > 0) reply.roles = spec.roles
     if (prep.foreignCommits.length > 0) reply.foreignCommits = prep.foreignCommits
     if (prep.warnings.length > 0) reply.warnings = prep.warnings
     return reply
@@ -2910,9 +2961,14 @@ export const recordRunStart: RecordHandler = async (ctx, input) => {
   if (!litterDir) {
     return fail(`litter: this session has no litter directory (${session().litterDirError ?? "session.start hasn't resolved it"}); open a session in the repository's checkout once, then launch`)
   }
-  const parsed = parseStart(input, options)
+  // Your saved settings fill what the launch leaves out; the launch form's draft, when it names one, is what you confirmed.
+  const saved = await deps.loadSettings(p)
+  const drafted = await deps.takeDraft(p, litterDir, input)
+  if (!drafted.ok) return drafted
+  const parsed = parseStart(drafted.input, optionsWithSaved(options, saved), saved)
   if (!parsed.ok) return parsed
   const spec = parsed.value
+  spec.warnings.push(...saved.problems, ...drafted.warnings)
 
   // Step 0: the mode, jq, then the lock.
   const mode = await modeRefusal(p, litterDir)
@@ -2931,6 +2987,8 @@ export const recordRunStart: RecordHandler = async (ctx, input) => {
   try {
     const r = await startHeld(p, litterDir, options, spec, run, mode.mode, where.checkout, sessionId, lock.held)
     launched = r.ok
+    // The launch form launched: it's gone, so it launches once.
+    if (r.ok && drafted.id !== null) await deps.dropDraft(p, litterDir, drafted.id).catch(err => p.log(`launch form ${drafted.id} not dropped: ${errText(err)}`))
     return r
   } catch (err) {
     return fail(`litter: run.start failed: ${errText(err)}; nothing was launched`)

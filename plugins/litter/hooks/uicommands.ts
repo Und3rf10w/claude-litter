@@ -14,7 +14,7 @@ import { ARGUMENT_HINT, LABEL, SECTIONS } from './ui/hub'
 export async function registerLitterCommand(p: Ports): Promise<void> {
   await p.registerCommand({
     name: 'litter',
-    description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents, Stats or Doctor",
+    description: "Open litter's pane: Home, Runs, Swarms, Rules, Tasks, Agents, Stats, Settings or Doctor",
     argumentHint: ARGUMENT_HINT,
     immediate: true,
   })

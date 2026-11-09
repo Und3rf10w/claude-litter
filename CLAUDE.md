@@ -27,6 +27,7 @@ CI (`.github/workflows/ci.yml`) runs validation, both type-checks and tiers 1–
 
 - `hooks/register.tsx`: the mod's entry (`hooks/hooks.json` names it). The mod runs with no Node and no DOM, and reaches everything through `$`, wrapped as `Ports` (`hooks/ports.ts`).
 - `hooks/*.sh`: the command hooks (`guard`, `hold`, `identity`, `watch`, `ask`, `output`, `worktree`), with `hooks/lib.sh`.
+- `hooks/settings/`: the run settings, one table (`registry.ts`) for the saved files, the launch form (`run.draft`), run.start's `roles`, and each role agent's model at its spawn and effort at each request (`apply.ts`). A new run setting is a row there.
 - `workflows/*.js`: the workflow scripts. They're registered as `litter:<kind>-run`, because a workflow named like a skill takes over that skill's command.
 - `skills/`: `/litter:design`, `execute`, `fanout`, `amend`, `swarm`, `rules`, and `wiki`.
 - `types/claude-code/index.d.ts`: the engine's mod API with the built-in tools appended, vendored from the engine's own `.claude-plugin/types/` (never `claude-code-mcp`). `types/index.d.ts` is `litter`'s state contract.
